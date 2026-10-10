@@ -97,9 +97,8 @@ describe("applyCodexStrictSandboxToml", () => {
   });
 
   it("does not rewrite a sandbox_mode line that is inside a multi-line string", () => {
-    // The decoy is text, not a key. Rewriting it left the real top-level key
-    // untouched, so Codex started cleanly and the Run silently could not write
-    // — the failure with no error anywhere.
+    // The decoy is text, not a key. Do not rewrite it. The real top-level key
+    // stays untouched: Codex starts, and the Run cannot write, with no error.
     for (const quote of ['"""', "'''"]) {
       const config = [
         `notes = ${quote}`,

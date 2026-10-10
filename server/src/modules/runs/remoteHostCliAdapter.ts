@@ -117,11 +117,10 @@ interface RemoteHostCliAdapterInput {
  *
  * The dispatch's own override first — Task dispatch pins a thread's copy that
  * way — then the runtime profile's, which is where every other surface records
- * it. Reading only the override meant a Room turn and a direct chat silently
- * launched `own`: harmless on a paired machine, where `own` is the owner's
- * logged-in CLI, and fatal on the built-in host, which has no vendor CLI on
- * PATH at all. It also made the usage ledger and the quota cache disagree
- * about which copy had run.
+ * it. Do not read only the override. A Room turn and a direct chat would
+ * launch `own`: on a paired machine that is the owner's logged-in CLI, and on
+ * the built-in host there is no vendor CLI on PATH. The usage ledger and the
+ * quota cache would also disagree about which copy had run.
  */
 export function dispatchInstallation(run: {
   model_override_json?: unknown;

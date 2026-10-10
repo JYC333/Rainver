@@ -1577,9 +1577,8 @@ function assertRemoteWriteAccess(location: ActiveLocationWithHost, userId: strin
 /**
  * The saved file exactly as a fresh `getFile` would report it: `content` is the
  * decoded body without its BOM, while `size`/`sha256` describe the bytes on
- * disk. Returning a body-only shape here made the cached result drop
- * `has_bom`/`encoding`, so the next draft built from it silently stripped the
- * file's BOM.
+ * disk. Return `has_bom` and `encoding` with the body. A body-only shape drops
+ * them, and the next draft built from it strips the file's BOM.
  */
 function savedFileContent(draft: ProjectFileDraftRow, serialized: string, sha256: string): FileContent {
   const content = draft.preserve_bom && serialized.startsWith("\uFEFF") ? serialized.slice(1) : serialized;

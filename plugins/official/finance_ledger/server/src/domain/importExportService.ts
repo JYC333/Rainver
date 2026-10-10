@@ -76,18 +76,16 @@ export async function importBeancountToDb(
     }
 
     // Validate the incoming file against the existing committed ledger so
-    // references to already-open accounts do not report as unknown.
-    // Validated against the ledger *this person* can see. Loading the whole book
-    // meant a balance assertion in the upload was checked against totals that
-    // included accounts they may not read, and the difference was reported back
-    // to them.
+    // references to already-open accounts do not report as unknown. Validate
+    // against the ledger this person can see. Do not load the whole
+    // book: a balance assertion would be checked against totals that include
+    // accounts they may not read, and the difference would be reported back.
     //
-    // The consequence, deliberately taken: a `balance` assertion over a subtree
-    // that contains another member's private account is now checked against the
-    // part of that subtree the importer can see, so it can fail for them where it
-    // held for the book — and a `pad` whose source account is hidden never
-    // discharges. That is the honest answer from where they stand: a total they
-    // cannot see is a total they cannot assert. An import that trips it is
+    // A `balance` assertion over a subtree that contains another member's
+    // private account is checked against the part of that subtree the importer
+    // can see, so it can fail for them where it holds for the book. A `pad`
+    // whose source account is hidden never discharges. A total they cannot see
+    // is a total they cannot assert. An import that trips it is
     // refused only with `post_directly`; otherwise the directives land as
     // `proposed` with the error attached.
     const dbLoaded = await financeLedgerEngine.loadFromDb(db, spaceId, bookId, userId);

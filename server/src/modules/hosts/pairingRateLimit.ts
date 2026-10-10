@@ -86,9 +86,9 @@ export function rateLimitKey(ip: string): string {
 
 /** The eight hextets of an IPv6 address, or null if it cannot be read as one. */
 function expandIpv6(raw: string): string[] | null {
-  // A trailing dotted quad is two hextets — `2001:db8:1:1:0:0:192.168.0.1` is
-  // a valid, unabbreviated address, and reading it as seven groups lost its
-  // /64 and silently fell back to per-address keying.
+  // A trailing dotted quad is two hextets. `2001:db8:1:1:0:0:192.168.0.1` is
+  // a valid, unabbreviated address. Do not read it as seven groups: the /64
+  // is lost and the limiter falls back to per-address keying.
   const address = raw.replace(/(\d{1,3}(?:\.\d{1,3}){3})$/, (quad) => {
     const parts = quad.split(".").map(Number);
     return `${((parts[0]! << 8) | parts[1]!).toString(16)}:${((parts[2]! << 8) | parts[3]!).toString(16)}`;

@@ -108,4 +108,4 @@ Instance operations have only the de-identified totals route.
 
 Schema authoring lives in `server/src/db/schema/usage.ts`. A change is appended
 to `server/migrations/` with `pnpm run schema:generate -- --name <name>` from
-`server/`; the usage tables were created by the frozen `0000_baseline.sql`.
+`server/`; the usage tables are in `0000_baseline.sql`.

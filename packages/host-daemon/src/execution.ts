@@ -396,10 +396,10 @@ function isLaunching(runId: string): boolean {
  * Runs whose child has exited but whose directory is still being read.
  *
  * The diff and output uploads happen after the child is gone and take as long
- * as the network does. A reconnect in that window would otherwise let
- * `sweepStaleRunProfiles` — which now removes the whole run directory — delete
- * the outputs out from under `collectOutputFiles`, losing the deliverables
- * silently and turning every `artifact.submit` declaration into "declared but
+ * as the network does. A reconnect in that window must not let
+ * `sweepStaleRunProfiles` — which removes the whole run directory — delete
+ * the outputs out from under `collectOutputFiles`. The deliverables would be
+ * lost, and every `artifact.submit` declaration would read "declared but
  * not delivered".
  */
 const finishingRuns = new Set<string>();
@@ -694,10 +694,10 @@ function providerProfileDir(profileKey: string): string {
       throw new Error(`runtime profile key has an unusable segment: ${profileKey}`);
     }
   }
-  // Derived from the container path rather than rebuilt: archive, restore and
-  // reset all move the container level, and a second construction of the same
-  // five segments that drifted would leave launches working while every
-  // archive silently moved nothing.
+  // Derived from the container path rather than rebuilt. Archive, restore and
+  // reset all move the container level. Do not construct the same five
+  // segments a second time: a drift leaves launches working while every
+  // archive moves nothing.
   return join(
     runtimeProfileContainerPath(agentId!, containerKind, containerId!),
     runtimeKey!,
