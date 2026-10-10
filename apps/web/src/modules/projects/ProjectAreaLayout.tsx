@@ -14,8 +14,8 @@ import { ProjectFolderConversationProvider } from './ProjectFolderConversationCo
 /**
  * The three things a person switches between while running a Project.
  *
- * Everything else stays reachable under Areas. Every route is unchanged so
- * existing links keep working. The question on arriving is what is going on.
+ * Everything else stays reachable under Areas. Routes stay put, so existing
+ * links keep working. The question on arriving is what is going on.
  * Do not open with a flat list of every module.
  */
 const primary = [

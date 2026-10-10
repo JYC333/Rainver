@@ -409,10 +409,9 @@ how a CLI runtime picks a backend:
   The daemon creates a per-(Agent × container × adapter × provider) profile
   directory (B68) and sets every state-root variable the runtime's login spec
   names so the vendor's config resolves inside it, for both host kinds alike.
-  The rule that made this necessary is unchanged: forwarding a path the control
-  plane knows satisfies nothing, because the control plane knows no host path
-  (B64) — profile isolation is established where the run executes or not at
-  all.
+  Forwarding a path the control plane knows satisfies nothing, because the
+  control plane knows no host path (B64) — profile isolation is established
+  where the run executes or not at all.
 
 Two failures this prevents, both silent: a selected provider shadowed by
 machine state, so the Run's recorded `model_provider_id` is a lie; and a

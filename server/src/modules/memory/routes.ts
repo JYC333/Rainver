@@ -200,8 +200,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   // Advisory duplicate detection for memory proposal creation. It surfaces
   // existing memories (exists / probable_duplicate / unknown) so a create
-  // proposal can warn about likely duplicates. It is read-only and must never
-  // block creation — the proposal write path is unchanged. Matches returned to
+  // proposal can warn about likely duplicates. It is read-only. Do not block
+  // creation. Matches returned to
   // the caller are logged through the same memory read-trace as search.
   app.post("/api/v1/memory/create-safety", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);

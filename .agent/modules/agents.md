@@ -265,7 +265,8 @@ Host/workspace binding check, the backend-mode rules, Provider selectability,
 the option-bag schemas, the Agent-row lock every default flip takes, and the
 one `INSERT` and one `UPDATE` that write a Profile. `repository.ts` owns
 Agents, AgentVersions and the Space provisioning template, and reaches Profile
-writes only through that module — its public API is unchanged. Request bodies
+writes only through that module. Do not add a second profile writer on the
+repository. Request bodies
 for both surfaces are validated by the `@rainver/protocol` schemas
 (`AgentRuntimeProfile{Create,Update}BodySchema`,
 `SpaceAgentRuntimeDefaultWriteSchema`), whose `.strict()` is what retires

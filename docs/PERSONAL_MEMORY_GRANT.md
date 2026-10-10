@@ -6,7 +6,7 @@ PersonalMemoryGrant is an explicit, narrow, auditable mechanism that allows a us
 authorize a single shared-space run to use a summary of selected personal-space private
 memories as reasoning-only context.
 
-The safe default is unchanged: a shared-space run cannot read personal-space private
+The default is: a shared-space run cannot read personal-space private
 memory without an explicit grant. PersonalMemoryGrant is the only exception path and
 provides no shared persistence of the personal memory content.
 
