@@ -120,12 +120,10 @@ function rawPairingCode(): string {
 }
 
 function hostOut(row: HostRow): HostOut {
-  // The built-in host is a daemon connection like any other now — the same
-  // `rainver-host` process, in strict mode, inside `sandbox-runner`. It used
-  // to be reported permanently `online` because it was an in-process execution
-  // boundary with no heartbeat to be stale; reporting that today would hide
-  // exactly the failure an operator needs to see, which is the instance's own
-  // execution host not being connected.
+  // The built-in host is a daemon connection like any other: the same
+  // `rainver-host` process, in strict mode, inside `sandbox-runner`. Apply
+  // the same staleness predicate. Do not report it permanently `online`:
+  // that hides the instance's own execution host not being connected.
   const status = row.status === "online" && isStale(row.last_heartbeat_at)
     ? "offline"
     : row.status;

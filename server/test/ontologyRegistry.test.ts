@@ -118,11 +118,9 @@ describe("ontology registry", () => {
     ).toBeUndefined();
   });
 
-  // P2.5: the remaining per-mechanism lists. These were three further type
-  // universes that nothing reconciled; they converge here because the registry's
-  // subject is an Entity, so members that are not `space_objects` rows —
-  // activity records, runs, proposals, artifacts, project folders — belong
-  // without any of them becoming one.
+  // One registry. Do not keep a second per-mechanism type list. Members that
+  // are not `space_objects` rows — activity records, runs, proposals,
+  // artifacts, project folders — belong without any of them becoming one.
   it("covers every Runtime Context item type except the inline sentinel", () => {
     const declared = new Set(contextIncludableItemTypes());
     for (const itemType of [

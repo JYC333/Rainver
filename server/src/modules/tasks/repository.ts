@@ -1526,9 +1526,8 @@ function buildTaskWhere(identity: SpaceUserIdentity, filters: { boardId: string 
   if (filters.projectFolderId) clauses.push(`t.project_folder_id = ${add(filters.projectFolderId)}`);
   if (filters.projectId) clauses.push(`t.project_id = ${add(filters.projectId)}`);
   if (filters.status) clauses.push(`t.status = ${add(filters.status)}`);
-  // The same chain the Board, Needs You and `/me/tasks` use. This was a third
-  // definition of "mine", and one that disagreed with the other two: it counted
-  // a Task an Agent had claimed as still yours.
+  // The same chain the Board, Needs You and `/me/tasks` use. Do not keep a
+  // third definition of "mine". A Task an Agent has claimed is the Agent's.
   if (filters.assignedToMe) clauses.push(`${responsibleUserSql("t", "fp")} = $2`);
   if (filters.q) clauses.push(`(t.title ILIKE ${add(`%${filters.q}%`)} OR t.description ILIKE $${params.length})`);
   return { where: `WHERE ${clauses.join(" AND ")}`, params };

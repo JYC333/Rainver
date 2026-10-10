@@ -88,9 +88,9 @@ describe("hostRegisterRateLimited", () => {
 
   /**
    * The snapshot is written at most once per write already in flight, and the
-   * copy is taken when that write runs. A `.then()` chain per call was worse
-   * than the synchronous write it replaced: an unbounded queue holding one
-   * whole-map copy each, grown by exactly the flood this limiter is for.
+   * copy is taken when that write runs. Do not queue a `.then()` chain per
+   * call. An unbounded queue holds one whole-map copy each, grown by the flood
+   * this limiter is for.
    */
   it("coalesces the persisted snapshot instead of queuing one write per attempt", async () => {
     dir = await mkdtemp(join(tmpdir(), "rainver-pair-limit-"));

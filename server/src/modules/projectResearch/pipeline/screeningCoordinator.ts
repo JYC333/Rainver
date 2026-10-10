@@ -135,22 +135,19 @@ export class ProjectResearchScreeningCoordinator {
     state.current_stage = "screening";
     state.heartbeat_at = new Date().toISOString();
 
-    // The gate did two jobs, and only one of them was asking a human.
-    //
     // On the incremental path there is no drain check before this point (the
     // baseline path has `ensureItemsProcessed`), so the checkpoint opens while
     // classification is still running and each later reconcile tick refreshes
-    // its snapshot in place. What actually released the operation was the
-    // human approving *after* watching the count reach completion. Waiving on
-    // the first tick would therefore send a partly-classified corpus to
-    // synthesis, and freeze the checkpoint's snapshot at that moment, since
-    // `upsertPendingResearchCheckpoint` only refreshes rows still pending.
+    // its snapshot in place. Auto-continue waits for classification. That is a
+    // machine condition and needs no human. Do not waive on the first tick:
+    // that sends a partly-classified corpus to synthesis and freezes the
+    // checkpoint snapshot, because `upsertPendingResearchCheckpoint` only
+    // refreshes rows still pending.
     //
-    // So auto-continue waits for classification, which is a machine condition
-    // and needs no human. Until then the checkpoint stays a live pending
-    // record exactly as before — and a human approving that pending gate from
-    // the web UI remains the manual override for a classification that will
-    // never finish (approval bypasses this wait by design).
+    // Until classification finishes the checkpoint stays a live pending
+    // record. A human approving that pending gate from the web UI is the
+    // manual override for a classification that will never finish (approval
+    // bypasses this wait).
     const progress = state.screening_progress;
     const classificationComplete = !progress
       || (progress.total_items > 0 && progress.classified_items >= progress.total_items);

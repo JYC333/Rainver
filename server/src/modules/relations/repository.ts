@@ -246,9 +246,8 @@ export class RelationsRepository {
   async archivePerson(spaceId: string, objectId: string): Promise<void> {
     const now = new Date().toISOString();
     // Domain status lives on the extension table (B12D) and the root keeps the
-    // archive timestamp, but they must move together — this was one statement
-    // before status left the root, and splitting it into two unsynchronised
-    // writes would allow "archived in the extension, not archived at the root".
+    // archive timestamp. They move together. Do not split them into two
+    // writes: that allows "archived in the extension, not archived at the root".
     await this.db.query(
       `WITH person AS (
          UPDATE relation_people SET status = 'archived', updated_at = $3

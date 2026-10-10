@@ -575,9 +575,8 @@ function pushProjectCorpusClause(
   if (!normalized) return "";
   params.push(normalized);
   // An object belongs to a Project either by being in its corpus or by
-  // declaring it as its own Project. Only the first was checked, which was
-  // invisible while every Project-scoped object was corpus material — Inquiry
-  // Threads are the first that are not.
+  // declaring it as its own Project. Check both. Do not stop at the corpus:
+  // Inquiry Threads are not corpus material.
   return ` AND (${objectAlias}.primary_project_id = $${params.length} OR EXISTS (
     SELECT 1
       FROM project_corpus_items pci

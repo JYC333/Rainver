@@ -151,15 +151,14 @@ function prune(now: number): void {
 /**
  * Writes the window out without holding the request.
  *
- * This ran as a synchronous `writeFileSync` on every attempt, on the path an
- * unauthenticated caller drives — so the cheapest way to stall the event loop
- * was to pair repeatedly.
+ * Do not write the window with `writeFileSync` on the request path. An
+ * unauthenticated caller drives that path, and a synchronous write is how
+ * repeated pairing stalls the event loop.
  *
  * At most one write is queued behind the one in flight, and the snapshot is
- * taken when that write runs rather than when it is asked for. A plain
- * `.then()` chain per call was worse than what it replaced: `writeFileSync`
- * at least supplied backpressure, while an unbounded chain grows one
- * whole-map copy per request under exactly the flood this limiter exists for.
+ * taken when that write runs rather than when it is asked for. Do not queue a
+ * `.then()` chain per call. An unbounded chain grows one whole-map copy per
+ * request under the flood this limiter exists for.
  * Coalescing is safe because every write carries the complete window — the
  * skipped ones would only have written a prefix of what the next one does.
  * Serialized rather than parallel so two writes cannot interleave into a

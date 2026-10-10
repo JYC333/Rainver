@@ -676,10 +676,9 @@ not replaced by Source.
   writer, one level up (B12H).
 - **Binding a note to a Project is a write to that Project.** `primary_project_id`
   on create or update requires `assertProjectWriter`, enforced in the writer.
-  This was unchecked and harmless while the field was a label; it stopped being
-  harmless when `project_role` became the research baseline, because assigning
-  a role deliberately displaces the previous holder, so any Space member could
-  take over another Project's baseline note.
+  Do not leave it unchecked. Assigning a role displaces the previous holder,
+  so a Space member who is not a Project writer must not take over another
+  Project's baseline note.
 - Reindexing happens **after** the transaction commits when the writer owns it,
   and inside the transaction behind a savepoint when it joined someone else's.
   The projection is derived and rebuildable, so a failure is logged rather than

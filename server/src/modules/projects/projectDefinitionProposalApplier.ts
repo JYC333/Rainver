@@ -38,9 +38,9 @@ export function registerProjectDefinitionProposalAppliers(registry: ProposalAppl
  * A Project has no type field (ADR 0019); what the accepted goal asks for is
  * the only signal, and the Agent reads it. A goal that is a question opens
  * one Inquiry Thread; a goal that names something to build or deliver creates
- * the first Task. One, not a batch: the earlier "decompose into 3–5 research
- * questions" gave every Project a research shape and a starting load the
- * person had not asked for. The rest is offered in the reply and created
+ * the first Task. One, not a batch. Do not decompose the goal into several
+ * research questions: that gives every Project a research shape and a starting
+ * load the person did not ask for. The rest is offered in the reply and created
  * when they say so — the pace is theirs.
  */
 export function registerProjectDefinitionContinuation(registry: ConversationContinuationRegistry): void {

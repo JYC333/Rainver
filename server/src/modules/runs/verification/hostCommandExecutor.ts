@@ -44,9 +44,9 @@ export class HostCommandVerificationExecutor implements VerificationCommandExecu
     // `failed` (the recipe's question got a no), and losing that distinction
     // would turn an offline machine into a failing build.
     //
-    // An output-cap kill is the *other* case, and reporting it as unreachable
-    // was worse than losing a nuance: a recipe could turn its own failure into
-    // "inconclusive" by printing 256 KiB. It ran, and it did not pass.
+    // An output-cap kill is the other case. Do not report it as unreachable.
+    // A recipe could turn its own failure into "inconclusive" by printing
+    // 256 KiB. It ran, and it did not pass.
     const unreachable = !outcome.ok && outcome.error !== COMMAND_OUTPUT_LIMIT_EXCEEDED;
     return {
       returncode: outcome.exit_code,

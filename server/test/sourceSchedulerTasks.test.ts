@@ -13,10 +13,9 @@ const fakeQueue = {} as PgJobQueueRepository;
 describe("buildSourceSchedulerTasks", () => {
   it("registers each source domain as its own task", () => {
     const names = buildSourceSchedulerTasks(config, { queue: fakeQueue }).map((t) => t.name);
-    // Regression guard: these were one task whose steps ran sequentially in a
-    // single run(), so a throw in an earlier domain silently starved every
-    // later one. They must stay separate so the registry isolates their
-    // failures, alerts, and liveness independently.
+    // Each source domain is its own task. Do not fold them into one `run()`:
+    // a throw in an earlier domain then starves every later one. The registry
+    // isolates their failures, alerts, and liveness.
     expect(names).toEqual([
       "source_extraction_scheduler",
       "source_backfill_reconciler",

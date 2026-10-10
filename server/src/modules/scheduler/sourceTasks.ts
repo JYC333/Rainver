@@ -1,13 +1,10 @@
 /**
  * Source-domain scheduled tasks.
  *
- * These were one `source_extraction_scheduler` task whose `run()` performed
- * every source-side step in sequence with no per-step guard. A throw in one
- * domain therefore skipped every domain after it for that pass — backfill
- * reconciliation failing meant recipe scans and post-processing enqueue simply
- * stopped, while the only alert named the combined task. They are separate
- * tasks so each domain gets its own failure isolation, its own
- * `scheduler_task_failed` dedupe key, and its own liveness record.
+ * Each source-side step is its own scheduled task, with its own failure
+ * isolation, its own `scheduler_task_failed` dedupe key, and its own liveness
+ * record. Do not run every source-side step in one task with no per-step
+ * guard: a throw in one domain then skips every domain after it for that pass.
  *
  * Steps within one task remain sequential on purpose: they are one domain's
  * pipeline, where reclaim-then-enqueue-then-run is the intended order.

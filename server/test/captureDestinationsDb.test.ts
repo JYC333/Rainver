@@ -10,13 +10,12 @@ import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 /**
  * The four capture destinations behind one entry (D1/D2).
  *
- * What these tests are guarding is the decoupling of ownership from pipeline.
- * Binding the two — Project implies shared, personal implies reviewed — is the
- * arrangement this work replaced, and its failure mode is silent: material
- * pasted into a Project becomes the user's private marginalia, invisible to the
- * team it was meant for. The mirror of that, a margin note published to the
- * whole team on the first keystroke, is what ADR 0013 decision 3a exists to
- * prevent. Both directions are asserted here.
+ * Ownership and pipeline are separate. Do not bind them: Project does not
+ * imply shared, and personal does not imply reviewed. Material pasted into a
+ * Project would become the user's private marginalia, invisible to the team.
+ * The mirror, a margin note published to the whole team on the first
+ * keystroke, is what ADR 0013 decision 3a prevents. Both directions are
+ * asserted here.
  */
 
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

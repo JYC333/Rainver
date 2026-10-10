@@ -7,12 +7,10 @@ export { hasSubscriptionQuota };
 import { acpRuntimeProbe } from "./runtimeProbes.js";
 
 /**
- * Subscription quota, read on the host and cached here.
- *
- * Before ADR 0016 this ran beside the server against a credential the
- * broker had copied into a profile directory it owned. Nothing brokers a
- * credential any more, so the control plane asks the host and keeps only the
- * numbers. They are shown on the host card so someone can see a
+ * Subscription quota, read on the host and cached here. The control plane
+ * asks the host and keeps only the numbers (ADR 0016). Do not copy a
+ * credential into a profile directory to read them beside the server. They
+ * are shown on the host card so someone can see a
  * subscription running out before a Run does, and one gate reads them: an
  * Agent-triggered Room turn waits while its login is past the Space's reserve
  * line (`rooms/quotaGate.ts`).
