@@ -21,9 +21,9 @@ used to live here are in
 | Public internet sharing | Not present. Instance-local targeted publication exists (`publications`) |
 | Public SaaS / multi-tenant | Out of scope |
 | API key authentication and management | Not implemented: Bearer requests and `/api/v1/auth/keys` return 501; no `api_keys` table |
-| Files & Code interactive session execution | Removed. Files & Code has bounded human file editing, but no interactive Agent-session execution |
+| Files & Code interactive session execution | Not present. Files & Code has bounded human file editing, but no interactive Agent-session execution |
 | Runtime adapter bypassing credential resolver | Blocked by `RunOrchestrationService` |
-| Runtime adapter bypassing sandbox/path policy | Blocked by `execution_workspace` |
+| Runtime adapter bypassing sandbox/path policy | Blocked by `PathPolicy` and the host namespace |
 | Agent file mutation without approved proposal + PathPolicy | Blocked by code-patch apply; explicit human File-page edits are draft-backed and only Save to Folder performs the bounded direct write |
 | Automatic memory promotion from source/evidence | Blocked by proposal/apply |
 | Vector index over an **external** corpus | Not present. Space-internal pgvector recall exists |

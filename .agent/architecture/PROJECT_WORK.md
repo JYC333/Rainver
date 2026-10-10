@@ -282,16 +282,11 @@ agreeing afterwards. The runs and jobs repositories never call it: a
 repository writes its own rows, and what a Run's end means for its Task is
 decided above them.
 
-Settling used to do more: it took a host-thread queue lock and withdrew the
-Task's queued messages, so a queued message could not dispatch into a fresh Run
-behind a decision the person had just made. That queue is gone — a remote Task
-run is one Run created at admission — so there is no queued message to withdraw
-and no second lock to take. The dispatch-refusal set
-(`blocked · done · cancelled`) is now the only such set; a person may run a
-`waiting_for_review` Task again, because re-running is one of the decisions the
-hold exists to ask for. The one exception is a done Task's merge, whose
-conflict-resolution Run (`task_runs.role = 'merge'`) is admitted on a `done`
-Task ([modules/hosts.md](../modules/hosts.md), "Merging a done Task").
+The dispatch-refusal set (`blocked · done · cancelled`) is the only such set; a
+person may run a `waiting_for_review` Task again, because re-running is one of
+the decisions the hold exists to ask for. The one exception is a done Task's
+merge, whose conflict-resolution Run (`task_runs.role = 'merge'`) is admitted
+on a `done` Task ([modules/hosts.md](../modules/hosts.md), "Merging a done Task").
 
 Every append-only surface that records who acted resolves its `actors` row
 through `db/actorResolver.ts`. Two partial unique indexes (one person per
@@ -332,9 +327,8 @@ Person-facing writes:
 
 The Board and Pulse re-read on a five-second interval while visible and when
 the tab comes back (`hooks/usePeriodicRefresh.ts`, the cadence the Inquiry Area
-already used for a live Thread), quietly — no skeleton over what is drawn. They
-used to load once on arrival, so a Task or a question an Agent recorded from the
-Room appeared only after leaving the page and returning. A read cadence only;
+already used for a live Thread), quietly — no skeleton over what is drawn. A
+read cadence only;
 nothing is decided by it.
 
 ### Updates

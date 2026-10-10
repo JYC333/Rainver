@@ -517,9 +517,8 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
   Knowledge provenance fields in `knowledge_items`.
 - Implemented: updated repositories, DTOs, tests, and retrieval adapters in one coordinated
   change.
-- Superseded by ADR 0012: status moved to the extension tables and the root's
-  type-branching constraint was removed. Kept
-  note collection parent/member links same-space through composite foreign keys.
+- Superseded by ADR 0012: status lives on the extension tables. Note
+  collection parent/member links stay same-space through composite foreign keys.
 
 ### Phase 4: add global claims
 

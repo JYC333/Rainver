@@ -1,27 +1,8 @@
 # 无人值守审计与修复：待决定与未完成事项
 
-临时报告，不是权威文档（见 `.agent/INDEX.md` §7）。本文继续保留需要你决定的
-事项和未完成工作。工作总结已退役，原审计历史见提交 `28b4b0152`，本轮修复
-及验证说明见提交 `37a9c305a`。
+临时报告，不是权威文档（见 `.agent/INDEX.md` §7）。本文只保留仍要决定的事项和未完成工作。
 
-本文是 2026-09-28 至 2026-10-03 那轮审计与修复留下的未完事项。代码位置以
-2026-10-03 `dev` 分支为准。编号 D1–D94 沿用工作过程中的编号；D33 和 D41 已经修复，所以不列出。
-
-文档里写的规则凡是代码没做到的，都**保留了规则原文**，记在本文里，等你决定是改代码还是改规则。
-
-## 当前处理范围（2026-10-05）
-
-- 后续复核的 10 个 R 候选中，已修复 **R1、R2、R5、R6、R7、R8、R9**；
-  R3、R4 已确认是误判，R10 保留在下面的条件风险中。
-- 下文 D 编号的待决定项没有全部修复，仍需你决定；描述和代码位置是原审计
-  快照，落实决定前需要重新核实当前代码。R1 的 code_patch 写入修复不等于
-  D52 的 Folder 读取已修复；R2 的 Briefing run summary 不等于 D7 的 Activity
-  预览；R8 的并发整合修复不等于 D85 的所有者／审批人取舍已解决。
-- 当时整文件执行 `authRegistrationDb.test.ts` 时，Google 重认证返回 400。
-  原因是 Better Auth 对 `/sign-in` 有进程级、每地址 10 秒 3 次的限额，而
-  用例把地址写在客户端 `x-forwarded-for` 里，门面实际按 Fastify 解析的
-  地址计数。产品代码没有缺陷；用例已改为各自指定 `remoteAddress`。
-- 本文末尾的提交数量、推送状态和署名说明均为原审计结束时的历史记录。
+下文仍是待决定项。R1 的 code_patch 写入修复不等于 D52 的 Folder 读取；R2 的 Briefing run summary 不等于 D7 的 Activity 预览；R8 的并发整合修复不等于 D85 的所有者／审批人取舍。
 
 ## 条件风险：R10 日记 reflection 的多 worker 写入
 
@@ -41,7 +22,6 @@
 | D3 | Room 的后续回合以 `manual` 运行，绕过了无人值守写入门 |
 | D4 | Run 不再产出 `capability_*` 提案；persona 的 `memory_update` 仍可能不带 `required_owner_user_id` |
 | D88 | 生产环境的 `rebuild_rainver` 不经过维护门、备份和迁移 |
-| D30 | `one_shot_docker` 这个级别名映射到 worktree，不起容器 |
 | D2 | 带 `space_id` 的 system 作用域资产，到底是本 Space 的默认值，还是实例级内置 |
 
 ## 2. 待决定
@@ -116,9 +96,6 @@ Project 写者保存草稿时会覆盖唯一的已批准摘要，使它下线。
 能读共享 Activity 的非所有者，可以把它整合进所有者的私有用户记忆，并且自己批准。
 选项：(a) 变更路径要求 `owner_user_id` 是本人；(b) 把提案的所有者或主体改成操作者；(c) 保持现状。
 
-**D86 重复导入同一发布**（`server/src/modules/publications/service.ts:257-258`、`436-446`）
-再次导入仍返回 201 和已有导入记录。查看者不是导入者时 `imported_resource_id` 为 null，不再返回他人私有副本的 id。
-
 ### 2.2 授权门、审批与资产生命周期
 
 **D2 system 作用域资产**（`server/src/modules/evolution/assetPromotionProposalApplier.ts:125`、`server/src/modules/prompts/repository.ts`）
@@ -153,9 +130,6 @@ Project 写者保存草稿时会覆盖唯一的已批准摘要，使它下线。
 **D21 Project 内 Activity 整理出的 memory 提案永远无法应用**（`server/src/modules/activity/repository.ts:535`）
 选项：(a) 改为 Project 作用域的共享记忆；(b) 让 applier 把 user 作用域提案上的 `project_id` 只当作受众限制，这需要改规范 applier；(c) 去掉 `project_id`，但会扩大可见范围，没有采用。
 
-**D29 Agent 配置修改不经审批**（`server/src/modules/agents/routes.ts:398-431`）
-指南已经改成与代码一致：`PATCH /agents/:id` 和 `POST /agents/:id/config` 由所有者直接追加 `AgentVersion`，不创建提案，也不调用 `agent.config_update`。
-
 **D49 `task.plan.propose` 的门类别**（`packages/protocol/src/systemActions.ts:475`）
 它注册为 durable，且没有 gate_class；而 ADR 0017 把 plan_review 称为方向门。
 选项：在注册表里表达"条件性提案"这类动作；或者修改 ADR 0017 和 SYSTEM_ACTIONS，说明条件性提案不算注册表里的提案动作。
@@ -163,12 +137,6 @@ Project 写者保存草稿时会覆盖唯一的已批准摘要，使它下线。
 **D54 capability_update 可以覆盖导入的 Skill**（`server/src/modules/capabilities/proposalApplier.ts:115`）
 它能覆盖导入 Skill 版本的 `normalized_skill` 和 `capability_definition`，而 `content_hash` 和包快照不变。
 选项：对 imported_skill 拒绝这些键；渲染时对照包快照校验；或者等暂停中的 capability-shrink 计划。
-
-**D55 capability_enable 会把版本写成 available**（`server/src/modules/capabilities/proposalApplier.ts:164-173`）
-启用时把指定版本写成 `available`。`proposed` 和 `testing` 能通过 `status <> 'archived'`，然后进入只加载 `available` 的运行时。「这两态从未生效」已经不成立。
-
-**D56 Skill 导入没有实例开关**（`server/src/modules/capabilities/routes.ts:193-198`）
-ADR 0009 已改成当前行为：`POST /api/v1/skill-sources/import` 把包存成 `imported`，路由上没有实例开关。脚本仍不执行。转换成能力时仍然只产生停用草稿。
 
 **D84 不带 version_id 的回滚会来回摆动**（`server/src/modules/prompts/repository.ts:370`）
 它会在最近的两个版本之间来回切换。
@@ -181,27 +149,6 @@ ADR 0009 已改成当前行为：`POST /api/v1/skill-sources/import` 把包存�
 
 **D6 `repo_url` 是否禁止私网地址**（`server/src/modules/projectFolders/repositoryUrl.ts`）
 要考虑局域网里的 Git 服务器。
-
-**D30 one_shot_docker 隔离级别**（`server/src/modules/runs/orchestrationService.ts`、`ephemeralSandbox.ts:28`）
-指南已改成当前行为：严重风险的厂商 CLI 被标成这个级别，工作目录范围是 worktree，不起容器。适配器规格没有 `supports_one_shot_docker` 时准备阶段失败。
-
-**D31 出网授权审批**（`server/src/modules/proposals/applyService.ts:110`）
-§8a 和代码一致：提案空间和请求空间不一致时返回 404。第 8 节开头也已改成出口审批仍做这次核对。
-
-**D32 会话 Cookie 的 Secure 属性**（`server/src/modules/auth/authCookie.ts:14-16`）
-安全边界文档和 `modules/auth.md` 已与代码一致：只在 `FRONTEND_URL` 为 https 时设置 `Secure`。
-
-**D38 Capability 晋升的测试门**
-威胁模型已改成当前行为：启用会把版本写成 `available`，没有 `CapabilityTest`，也没有测试通过门。
-
-**D39 日志保留**
-没有按工作区的 `cleanup_after_days`。威胁模型已不再把它写成现有控制。
-
-**D40 审计表**
-没有 `CredentialAccessLog` 和 `ContentReadTrace`。现有读取审计是 `content_access_logs`。威胁模型的证据表已改成这些现有表。
-
-**D44 OpenCode 主机登录时的环境变量清洗**（`packages/host-daemon/src/providerBinding.ts:78-104`）
-注释和 B67 已经改成封闭前缀。OpenCode 登录丢掉 `ANTHROPIC_`、`CLAUDE_`、`CODEX_`、`OPENAI_`、`OPENCODE_`、`GEMINI_`、`GOOGLE_`。绑定运行仍走 `filterAmbientEnv` 白名单。
 
 **D45 Run 结束后主机仍可上传**（`server/src/modules/hosts/routes.ts:877`）
 主机在 Run 结束后仍然可以上传 diff 和输出。
@@ -237,10 +184,7 @@ realpath 检查和实际读取之间有时间窗口。验证者认为严重度�
 它拉新镜像并重建 server 和 frontend，不经过维护门、备份、迁移和排空。
 选项：(a) 生产环境拒绝执行，引导到实例更新或 `start.sh --prod`；(b) 复用 `update.sh` 的各个阶段；(c) 保留为"只换镜像"的逃生口，并在 deployment.md 里写明。
 
-### 2.4 文档规则与代码不一致（规则原文已保留）
-
-**D27 Project Folder 产物的读取上下文**（`server/src/modules/artifacts/repository.ts:142-166`）
-ARTIFACTS.md 已改成当前行为：列表上的 `project_folder_id` 只是可选过滤；详情和导出按产物自己的行做内容读取，不要求调用方再传一个匹配的文件夹。
+### 2.4 仍要决定的行为
 
 **D28 / D36 持久化的策略不生效**（`server/src/modules/proposals/applierRegistry.ts:188`）
 - `policy_change` 提案只要求 name 和 domain，任何 domain 都会被写入为生效策略；
@@ -250,17 +194,8 @@ ARTIFACTS.md 已改成当前行为：列表上的 `project_folder_id` 只是可�
 
 相关文档：POLICY_ENFORCEMENT_INVENTORY.md 的 "Policy Effect Contract"，以及 docs/POLICY_AND_PRIVACY_BOUNDARIES.md。
 
-**D34 Task 派发的 Run 被授予检索动作**
-`dispatchToolAllowance` 含 `retrieval.brief` 和 `retrieval.search`，读取使用 `instructed_by_user_id`。SYSTEM_ACTIONS.md 已写成这样。房间对话的许可名单仍然没有这两项。
-
 **D35 无 worker 时的服务状态**
-无 worker 时，`jobs_worker` 和 `jobs_queue` 报 degraded。文档已经按代码改了；如果想要 error 状态，需要改代码。
-
-**D37 私有记忆的放置**
-`docs/POLICY_AND_PRIVACY_BOUNDARIES.md` 已与 `docs/SPACE_MODEL.md` 和写入路径一致：private 在任何 Space 都允许，只要求 `owner_user_id`。没有 `check_private_memory_placement()`。
-
-**D42 Codex 沙箱设置**
-Codex 不读 `RAINVER_STRICT_SANDBOX`。守护进程把副本 `config.toml` 的 `sandbox_mode` 写成 `workspace-write`（`packages/host-daemon/src/codexStrictSandbox.ts`）。这不再是未核对问题。
+无 worker 时，`jobs_worker` 和 `jobs_queue` 报 degraded。如果想要 error 状态，需要改代码。
 
 ### 2.5 执行、调度与数据正确性
 
@@ -394,14 +329,12 @@ Plan 调度器把 `kind='action'` 节点当成普通的 LLM Agent Run 执行，�
 **技术遗留**
 - 发生 overflow 轮换后，对旧 binding 调用 `rotateMissingVendorState` 会返回 409；守护进程续接时仍然使用旧会话（`server/src/modules/runtimeContext/continuity/`）。
 - 已有的多通道 Workflow 需要做一次数据修复，才能补全复数的 `workflowBindingIds/workflowRuleIds`（相关代码在 `server/src/modules/sources/monitoringCoordinator.ts`）。
-- `GitStatus` 协议没有 `truncated` 字段，所以被截断的 `git status` 无法告知调用方。diff 的截断已经修好。
+- `GitStatus` 协议没有 `truncated` 字段，所以被截断的 `git status` 无法告知调用方。
 - Capabilities 导入时，服务端会重新抓取 URL；预览和导入之间上游包发生变化，目前检测不到，需要加 `package_hash` 校验。
 - Usage 的单会话平均值：token 总量来自 summary 接口，它也计入了 summary 级访问，而会话数只计完整访问，所以平均值略有偏差。summary 接口没有 `total` 字段，Group 行也因此会被截断。
 - `createTask` 没有检查归档状态。
 - `069#2` 的取舍：`probe_domain_budget` 上限定为 3，与数据库约束一致；已存的 4–10 读出时按 3 处理。如果要用 10，需要做一次迁移。
-- POLICY_ENFORCEMENT_INVENTORY.md 里的 `memory.cross_space_read` 在代码中找不到同名的东西，还没核实。
 - `retrievalEvalGroup.test.ts` 的偶发失败没能复现。推测原因已经随 `dbGroup` 的修复一并消除，但没有直接证据。
-- 列表顺序的拖拽回滚（`104#7`）已经修复，但没有自动化测试，因为 jsdom 无法模拟 dnd-kit 的手势。
 
 **判定为不值得修的**（修复的复杂度或风险大于问题本身）
 - 用预设创建 Provider 中途失败时，对已写入的三处设置做补偿（`012#3` 的 B 部分）。
@@ -415,7 +348,3 @@ Plan 调度器把 `kind='action'` 节点当成普通的 LLM Agent Run 执行，�
 - 两个没有使用的测试钩子：`capture/routes.ts` 的 `__setRelocationServiceFactoryForTests` 和 `captureFiling/routes.ts` 的 `__setCaptureFilingServiceFactoryForTests`。
 - `registerProjectSourceRoutingHook` 从未被调用，所以内置默认实现始终生效。
 - 仓库没有配置 ESLint，现有的 22 处 `eslint-disable` 都不起作用。
-
-**仓库操作**
-- 从 `6e542b31` 起，`dev` 上有 416 个提交，都没有推送；是否推送、何时合并到 `master`，由你决定。
-- 署名问题：low 修复第 1–5 批的 46 个提交（`83942d94` 到 `5a06e266`）实际由 Fable 5.1 完成，但署名是 Opus 5.5。之后各批已按实际模型署名。要更正这 46 个提交的署名，需要重写这段还没推送的历史。

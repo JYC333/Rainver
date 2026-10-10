@@ -62,13 +62,11 @@ instance-scoped settings store and take effect without a server restart.
 **A gap this topology created.** The built-in execution host keeps its managed
 copies of runtimes, **their login state**, every Agent's runtime profile and its
 managed workspaces under `cache/host-daemon/`, because they are the daemon's own
-directory rather than the server's. `cache/` has always been excluded from
-backups, and CLI login state used to live in `secrets/`, which the separate
-credential archive covers. A restored instance therefore comes back without the
-built-in host's logins, and an operator has to log each copy in again from the
-host card. Either that directory joins the credential archive or the daemon's
-config root moves out of `cache/`; until then this is a stated recovery step,
-not an assumption.
+directory rather than the server's. `cache/` is excluded from backups. A
+restored instance therefore comes back without the built-in host's logins, and
+an operator has to log each copy in again from the host card. Either that
+directory joins the credential archive or the daemon's config root moves out of
+`cache/`; until then this is a stated recovery step, not an assumption.
 
 CLI continuity is the vendor session inside the Agent's own runtime profile on
 the execution host, tracked by the control plane as an opaque

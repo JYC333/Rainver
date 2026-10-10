@@ -210,18 +210,13 @@ published Instruction is runtime-authoritative. Brief writer authority and
 Instruction/publish owner-level authority are rechecked and locked inside the
 mutating transaction, so concurrent member revocation wins deterministically.
 A Project has no type field ([ADR 0019](../decisions/0019-project-has-no-type-field.md)).
-There was a `primary_mode` — `research`, `delivery`, `operations`,
-`learning`, "how work advances" — chosen at creation, changed from Settings
-and logged in `project_mode_transitions`; by the end it was read in one place,
-to pick one of four wordings for the same five Loop stages, while every
-Project was in fact created as `research` with no chooser and advanced by
-research-shaped conversation policies regardless. What kind of work a Project
-is, is derived, never declared: the accepted Brief's goal says how it advances
-and the Agent reads it every turn, and what the Project comes to hold (Threads
-and Sources, or Tasks and file changes, or recurring Tasks) is its shape. A
-Project may change shape as it goes. No surface shows a type label. When a
-kind of work needs structure the shared model lacks, the answer is a new
-object owned by an Area, never a mode that switches behaviour.
+What kind of work a Project is, is derived, never declared: the accepted Brief's
+goal says how it advances and the Agent reads it every turn, and what the
+Project comes to hold (Threads and Sources, or Tasks and file changes, or
+recurring Tasks) is its shape. A Project may change shape as it goes. No
+surface shows a type label. When a kind of work needs structure the shared
+model lacks, the answer is a new object owned by an Area, never a mode that
+switches behaviour.
 
 `inquiry` and `decision` are entities with their own surfaces, not ways of
 advancing work: asking is how research starts and deciding is where it ends,
@@ -477,8 +472,7 @@ Notes also persist referenced source-item ids, on `note_revisions.refs_json`.
 Applied AI updates merge their `refs` into that set — each write starts from
 the latest revision's list — so integrity monitoring audits the material the
 living understanding actually depends on instead of inferring citations from
-prose. `notes.refs_json` used to hold a second copy of the same list, kept in
-step by hand and read back by nothing; it was removed (N8), leaving one owner.
+prose. The owner of that list is `note_revisions.refs_json`.
 
 ### Automatic Project Research lifecycle
 
@@ -1157,10 +1151,7 @@ The ordinary runtime owns sandboxing, credentials, attempts, supervision, and
 Artifacts. Terminal reconciliation validates code-patch paths against the
 Version scope, captures Run Artifacts, parses structured metrics into
 Observations, and completes or fails the same Experiment Run idempotently.
-
-The earlier `project_experiment_campaigns` / runs / provenance implementation
-was removed in a clean cutover. There is one Experiment authority and no
-compatibility or dual-write path.
+There is one Experiment authority and no compatibility or dual-write path.
 
 ## project_id query filter on durable object list APIs
 
@@ -1268,10 +1259,7 @@ space.
 The Project Shell reads `/projects/{id}/overview`, which composes the active
 Brief Version, `definition_status`, `has_project_folder`, per-user
 Attention through registered domain adapters, and `in_progress` — the
-Project's unfinished Operations. A per-Mode projection and per-entity summary
-rows used to ride along, and were removed when the front page stopped
-rendering them — an API field with no reader is the speculative code the repo
-forbids.
+Project's unfinished Operations.
 
 `in_progress` exists because Attention answers "what needs me" and nothing
 answered "what is happening": Pulse's In-progress list read the Task board,
@@ -1282,10 +1270,7 @@ It carries the fields the Research Area's own `researchOperationDetail` and
 sentence — "848/873 materials classified" — rather than a second, quieter
 version of it, and reaches it without calling an Area's endpoint.
 
-There is no readiness checklist. One used to list a Space-level Provider,
-"an Agent" (every Project now has its own), a Source only research work
-wants, and a Folder it called optional — configuration state dressed as a
-to-do and shown from every Area. A Project needs nothing configured before it
+There is no readiness checklist. A Project needs nothing configured before it
 can be talked to or have work put on it. The one Project-level readiness fact
 is whether its goal is defined: `definition_status`, which Pulse states until
 it is true and then stops. Each Area's own empty state offers its first
@@ -1502,12 +1487,9 @@ Everything else sits under a collapsible **Areas** disclosure whose open state
 is remembered per browser — six entries, flat: Notes, Inquiry, Research,
 Sources, Files & Code, Decisions. The Rooms page (roster, invitations, the
 full conversation surface) is reached from Conversations.
-What used to be thirteen entries in four groups folded without losing a route:
-Raw material and Digest are tabs of Sources (three points on one
-source → corpus pipeline); Knowledge review and Experiments are views of
-Inquiry (a candidate queue that linked back to Inquiry's Review, and a test of
-a hypothesis Thread); Learning and Operations retired to the Space. Every
-previous deep link redirects to its new home. Nothing about a Project adds, removes, or reorders an
+Raw material and Digest are tabs of Sources; Knowledge review and Experiments
+are views of Inquiry. Learning and Operations are Space-level. Every previous
+deep link redirects to its new home. Nothing about a Project adds, removes, or reorders an
 entry — navigation position carries muscle memory, and a sidebar that grows as
 a Project is used costs more than the clutter it saves. An Area with nothing in
 it is still reachable and opens on an empty state offering the first action.
@@ -1528,8 +1510,7 @@ lifecycle. Attention rows retain the owning domain's canonical object id only
 as transport state and expose a concrete URL: Tasks open Task Detail, Inquiry
 Candidates and Decisions open their selected Project-Area records, research
 operations open the Research Area's Runs tab with the row selected, and
-operational alerts open the Space Inbox filtered to the Project (the
-Project-level Operations Area is retired). Pulse does not copy the domain
+operational alerts open the Space Inbox filtered to the Project. Pulse does not copy the domain
 action workflow.
 The Board is the Project's Task surface: lanes are flow statuses, a card
 carries its Loop stage and who holds it, and a drag to Done is refused when the

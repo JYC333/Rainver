@@ -55,8 +55,7 @@ DailyCaptureReportService.generateForDate()
   is retried next scan.
   Only the scheduler's slot advance and a schedule settings change move `next_run_at`; a
   finished report, manual or scheduled, records `last_run_at` and the report date only.
-- **No removed `/activity/{id}/process` endpoint.** That route was removed. Use `/review` for
-  status-only transitions and `/consolidate` for proposal generation.
+- Status-only transitions use `/review`. Proposal generation uses `/consolidate`.
 
 ## Settings (`DailyCaptureReportSetting`)
 

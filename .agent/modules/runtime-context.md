@@ -94,12 +94,5 @@ authority is invalid.
   through normal delivery reads.
 - Delivery is passed directly at the invocation boundary and is never written
   to `CLAUDE.md`, `AGENTS.md`, Cursor rules, or another vendor context file.
-
-## Retired architecture
-
-The old Context Compiler/Builder/Prepare service, Context Profiles, routing
-manifests, Context Snapshots/Digests, manual context artifact attachment flow,
-route-owned chat bundle, session-summary cache, and vendor context-file
-rendering have been deleted. Do not reintroduce compatibility aliases or dual
-write/read paths; ADR 0014 records the decision and Git history records the
-migration.
+  There is no compatibility alias or dual write/read path. ADR 0014 records
+  the decision.

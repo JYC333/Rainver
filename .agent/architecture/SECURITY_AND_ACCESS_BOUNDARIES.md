@@ -894,9 +894,8 @@ isolation is a property of the host daemon's trust mode, not of this code
 path: a **strict** host (the instance's built-in one) wraps every Run in a
 rootless bubblewrap namespace the daemon builds on the machine
 (`packages/host-daemon/src/strictNamespace.ts`); a **trusted** paired host
-spawns natively with no namespace and no mount containment (B62). Neither
-runs the server-side sandbox this section once described — it is deleted.
-What remains below is the control plane's own file access: Artifact export and
+spawns natively with no namespace and no mount containment (B62). What this
+section covers is the control plane's own file access: Artifact export and
 the Project Folder reads and draft-backed Save to Folder path it serves.
 For Files & Code browse reads on any host, the daemon runs the same shared
 `@rainver/folder-read` PathPolicy and byte/file-count limits before returning
@@ -921,7 +920,7 @@ flow.
   bounded writes, and a short-lived preimage record; it does not create a
   Proposal. A remote Location additionally requires its owning user and an
   online paired Host. History restore is draft-only and cannot mutate the
-  Folder. The direct browser-content and rollback routes are retired.
+  Folder.
 - Protected-Folder, external-root, protected/restricted, full-diff, and secret-like
   path reads force a durable `PolicyDecisionRecord`.
 - Forbidden path patterns include `.ssh`, `.aws`, `.gcp`, `.azure`,
@@ -954,9 +953,8 @@ Namespace preflight failure is fail-closed.
 **Artifact export** (`server/src/modules/artifacts/` and run artifact materialization):
 - paths escaping the artifact storage root return no file.
 - Paths resolving into the configured sandbox root are rejected
-  (`artifacts/repository.ts`) — a defence-in-depth check kept after the
-  server-side sandbox was deleted, since the root remains a configured
-  location on the machine.
+  (`artifacts/repository.ts`). The root remains a configured location on the
+  machine.
 - Artifact read checks verify space and visibility before a stored file is resolved.
 - Custom Source handler load and retention use the same relative-path + `isInside`
   refusal (`customSources/artifactStoragePath.ts`); a `../` `storage_path` cannot
@@ -1079,10 +1077,8 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   socket is private to the deployer sidecar and is not an app, agent, evolution,
   code-patch, capability, automation, job, or scheduler surface.
 - The sidecar mounts `ops/` read-only and no checkout, and receives only the internal
-  token through `.deployer.env`. It is now the **only** holder besides the server:
-  the execution-host container used to receive the same token as
-  `SANDBOX_RUNNER_TOKEN`, and that stopped when the Runner it authenticated was
-  deleted — the daemon holds a bearer token for its own Host row and nothing that
+  token through `.deployer.env`. It is the **only** holder besides the server.
+  The daemon holds a bearer token for its own Host row and nothing that
   reaches an internal route. So the integrity of a job's stage events is bounded by
   the deployer's alone: an internal-token holder can claim a queued job or report a
   stage, but only the instance administrator can create one. ADR 0020 §1 chose that reuse deliberately; confirming it is still the
@@ -1293,8 +1289,7 @@ server-side. Avatar images accept `http(s)` and refuse `data:`.
   helper the daemon spawns *that runs a vendor runtime* — an adapter installer,
   the `--version` and `login --help` probes, the Codex usage probe, an ACP
   `session/list` — goes through `helperProcessEnv`, the same credential-cleared
-  rule. Each of those used to spread `process.env` whole, or delete two named
-  keys beside it. `keepStateRoots` is the one exception, for a helper that reads
+  rule. `keepStateRoots` is the one exception, for a helper that reads
   the machine's *own* history: `CLAUDE_CONFIG_DIR` and `CODEX_HOME` name where
   state lives, not a credential, and clearing them by prefix sent
   `session/list` to the default location and reported the machine as empty. The
@@ -1399,9 +1394,8 @@ register.
 
 The 2026-09-10 backend security review sequence covered credential egress,
 the memory/proposal write gate, isolation-exception read residue, unattended
-credential spend, and persistence / extract / plugin / deployer paths. The
-sequencing plan is retired; git history holds it. Accepted leftovers from
-that sequence stay accepted: pairing-code display, Origin + `SameSite=Lax`
+credential spend, and persistence / extract / plugin / deployer paths.
+Accepted leftovers stay accepted: pairing-code display, Origin + `SameSite=Lax`
 CSRF without a token, CSP `style-src 'unsafe-inline'`, invite tokens in URLs,
 proxy leases not pinning model/path (ADR 0008), the on-disk master key,
 revoke-after-lease host files, a new plugin type inserting `memory_entries`
@@ -1414,8 +1408,7 @@ The 2026-09-11 unreviewed-surfaces sequence reviewed context injection,
 Knowledge/Notes/Reader/Capture, membership, notifications/backup, and Sources
 extract. It closed `research_notebook` note ACL, Knowledge/Notes `summary`
 body withholding, retrieval `context_taint` owner attribution, and
-post-processing decision item ACL. The sequencing plan is retired; git
-history holds it. Accepted leftovers from that sequence stay accepted:
+post-processing decision item ACL. Accepted leftovers stay accepted:
 memory-maintenance scans still exclude only `highly_restricted` (ordinary
 `private` may appear in an owner-private report); Room rolling-summary
 workers do not receive structured `external_untrusted` (attach-time fence
@@ -1429,8 +1422,7 @@ ACL (same content gate as `GET /agents/:id`; restore is owner-only for an
 owned Agent), Activity/Artifact/Run-turn `/io` `summary` body withholding,
 `code_patch` rollback using the same `proposal.apply` and
 `project_folder.write_patch` gates as accept, and stale `cancelling` recovery
-settling as `cancelled` rather than a retryable `orphaned`. The sequencing
-plan is retired; git history holds it. Accepted leftovers from that sequence
+settling as `cancelled` rather than a retryable `orphaned`. Accepted leftovers
 stay accepted: Dev Vite bind-all (token still required); Reader artifact
 omitting `roomRunReadAccessSql`; `code_patch` payload bytes that live remote
 browse would refuse; Learning Space-global `project_id IS NULL` visibility;
@@ -1442,8 +1434,7 @@ reviews above by mechanism rather than by patch: one summary-withholding type,
 one authorizer per kind of shared command, one credential-spend authorizer, one
 persona-write rule, one outbound HTTP guard, one read predicate per data class,
 one spawn-environment builder, and one place that decides what a browser may
-fetch and keep. The plan is retired; git history holds it, and each phase's
-commit message states what it changed and why.
+fetch and keep.
 
 It closed three of the leftovers listed above. The dev Vite `/internal` proxy
 now forwards only `/internal/hosts/ws`, which is what production nginx forwards,

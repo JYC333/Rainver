@@ -28,8 +28,7 @@ third concept: an enforced process definition, not a soft instruction package.
 The current implementation is transitional: it still contains canonical
 capability definitions, packs, `NormalizedSkill`, imported skill conversion,
 capability runtime bindings, and renderers built from the normalized
-representation. The workflow template layer that this list also named was
-deleted by the capability-shrink plan. Those paths remain subject to all existing
+representation. Those paths remain subject to all existing
 proposal, policy, Delivery, and audit checks until the plan's remaining items
 replace them; this document does not treat them as the target authority model or invite
 new callers to extend them. The native `capability` runtime remains disabled.
@@ -245,8 +244,7 @@ The framework is exposed through existing product areas rather than a separate
 plugin boundary:
 
 - Project Research uses its own governed standing and Thread-scoped focus
-  services. It does not expose the deleted zero-difference research workflow
-  presets. Internal passes still execute through immutable Workflow Executions,
+  services. Internal passes still execute through immutable Workflow Executions,
   while user-facing Project Research controls call the domain application
   service rather than constructing generic run drafts in the browser.
 - The Capabilities page remains the control-plane inspection surface. It shows
@@ -278,10 +276,8 @@ The built-in `research` pack includes:
 - `research.brief_synthesize`
 - `research.idea_generate`
 
-It declares no workflow presets. The four former label-only research templates
-were removed because a preset is admitted only when it changes concrete
-behaviour or configuration, and the whole workflow template layer was deleted
-by the capability-shrink plan.
+It declares no workflow presets. A preset is admitted only when it changes
+concrete behaviour or configuration.
 
 The synthesis output artifact type is `research_report.archive.v1`; the
 user-facing report is the corresponding `project_research_reports` row.

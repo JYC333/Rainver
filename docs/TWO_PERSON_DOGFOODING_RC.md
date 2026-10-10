@@ -115,7 +115,7 @@ Do not rely on any of these for daily dogfood workflows.
 | API key persistence UI | Feature-gated; schema has no `api_keys` table |
 | Workspace console persisted sessions | Feature-gated if the surface is off |
 | Any runtime adapter bypassing the credential resolver | Blocked by `RunOrchestrationService` design |
-| Any runtime adapter bypassing sandbox/path policy | Blocked by `execution_workspace` contract |
+| Any runtime adapter bypassing sandbox/path policy | Blocked by `PathPolicy` and the host namespace |
 | Agent file mutation not protected by approved proposal + PathPolicy | Blocked by code patch apply boundary; human File-page writes use the separate audited optimistic direct path |
 
 **UI status of stub or hidden surfaces:**
@@ -852,6 +852,5 @@ Backup manifest inspected: <yes / no>
 | Instance update has no automatic rollback | A failed stage ends the job; recovery is the documented host procedure |
 | Local advisory lock only (single-host) | Current fact; see [unimplemented-from-guides.md](../.agent/plans/unimplemented-from-guides.md) §21 |
 | Cloud/offsite backup absent | Manual GPG + offsite upload if required |
-| `context_sources` table removed from schema | Sources is the current model |
 | QuickCapture `ask` mode still routes to `/sessions` | Current behavior for real conversations |
 | QuickCapture `process` mode creates new Activity | Current behavior |

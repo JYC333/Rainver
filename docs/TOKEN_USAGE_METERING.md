@@ -90,9 +90,8 @@ funding-aware routing, deferred in
 [deferred-register.md](../.agent/tasks/deferred-register.md); this phase records
 the provenance without changing routing decisions.
 
-CLI history import from a server-side profile directory is retired with the
-profiles themselves (ADR 0016); past CLI work reaches the ledger through
-ambient session import from an execution host instead. Uploaded archives,
+Past CLI work reaches the ledger through ambient session import from an
+execution host. Uploaded archives,
 server-path imports, scanner
 manifests, generic/manual event imports, and cross-instance bundle ingestion are
 reserved by protocol/schema contracts but do not have active product endpoints.

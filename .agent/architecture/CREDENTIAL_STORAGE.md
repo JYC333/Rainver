@@ -12,8 +12,7 @@ not store a fourth. Do not conflate them.
 A vendor CLI's login is the one Rainver does **not** hold. Since ADR 0016 a CLI
 runs only on an execution host, and its login lives inside that copy's own
 `HOME` on that host — never copied here, never brokered per run, never on a
-path the control plane knows (BOUNDARIES B64). `instance/secrets/cli-credentials/`
-is retired and unread; see [modules/credentials.md](../modules/credentials.md).
+path the control plane knows (BOUNDARIES B64).
 
 This doc covers the **ModelProvider API key** and **managed subscription OAuth**
 channels used by bounded server-owned ProviderTask calls and the authorized

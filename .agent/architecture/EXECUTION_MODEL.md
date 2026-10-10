@@ -476,8 +476,7 @@ do not receive independent Run attribution. The Host-daemon path currently
 skips the legacy subagent-deny config writer; therefore its static capability
 declarations do not prove that runtime-internal delegation is disabled. CLI
 candidates remain at their low effective-trust baseline until a restriction is
-actually applied and verified at the Host boundary. Dynamic C3 conformance
-probes are retired and do not qualify or gate current dispatch.
+actually applied and verified at the Host boundary.
 
 ### Containers and Agent-triggered budgets
 
@@ -534,9 +533,8 @@ The spec fields `subagent_support`, `subagent_disable_mechanism`,
 `data_exposure`, and `baseline_trust_level` describe registry-known runtime
 behavior used by runtime selection and UI. Such declarations describe product
 capability, not the enforcement installed for a specific Host Run. Planned
-runtimes are not executable merely because a registry entry exists. Dynamic
-C3 result storage and behavioral conformance gates are retired; routing trust
-must be based on controls actually enforced by current dispatch code.
+runtimes are not executable merely because a registry entry exists. Routing
+trust must be based on controls actually enforced by current dispatch code.
 
 The runtime execution lifecycle uses this external-call pattern:
 

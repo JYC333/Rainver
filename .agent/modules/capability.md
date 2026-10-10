@@ -106,9 +106,7 @@ Versioned workflow definitions use the shared `workflow_definition.v1` protocol
 schema and are stored as `workflow_template` evolvable assets. User/space
 workflow versions remain proposal-promotion governed. This phase stores and
 resolves definitions and records `runs.workflow_version_id`; it does not
-execute node graphs. The built-in-template synchronization and static fallback
-that this section also described were deleted along with the rest of the
-workflow template layer by the capability-shrink plan.
+execute node graphs.
 
 ## Related Files
 

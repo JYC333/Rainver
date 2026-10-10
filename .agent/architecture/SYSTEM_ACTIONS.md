@@ -27,12 +27,10 @@ Every system action declares:
   policy adapter (`declared_resource`, `retrieval`, or `agent_delegate`) when
   the action is Agent-callable.
 
-There are currently no public `external_mcp` actions, and no MCP surface at
-all: the Run-scoped one this repository used to mount was deleted with the
-`rainver` command that replaced it. `external_mcp` stays in the enum because
-its trigger is real and recorded — an external MCP client becoming a
-requirement, which is a different question from how Rainver's own dispatched
-agents call back.
+There are currently no public `external_mcp` actions, and no MCP surface.
+`external_mcp` stays in the enum because its trigger is real and recorded —
+an external MCP client becoming a requirement, which is a different question
+from how Rainver's own dispatched agents call back.
 
 ## Dispatch boundary
 
@@ -362,10 +360,8 @@ reason and granted to one kind of Run only — the handoff turn before a
 Conversation × Agent session rotates (`modules/hosts.md`): it writes one
 Artifact on the Agent's own thread and nothing else.
 
-**What flipped, and what did not.** `inquiry.propose_thread` became
-`inquiry.create_thread` and `inquiry.record_conclusion` became a direct write;
-their proposal types, services, appliers and the per-proposal continuation
-that had to count its own pending siblings are deleted. Still gated, each
+**Inquiry writes.** `inquiry.create_thread` and `inquiry.record_conclusion`
+are direct writes. Still gated, each
 naming its class: `inquiry.promote_knowledge` (exposure — it leaves the
 Project for Space-level Knowledge), `project.propose_definition` (direction),
 `source.channel.propose_activation` / `project.source.propose_bind` /

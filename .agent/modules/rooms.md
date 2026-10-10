@@ -217,9 +217,7 @@ Room conversation summaries:
   **Which tool (or tools) to use, and whether to wait for a delegate's result
   before replying, is the Manager's own judgment call, not a server-side
   gate**: no request text is pattern-matched to force a specific tool or an
-  automatic `agent.wait_for_results` call — a prior mechanism that did this
-  was removed as brittle (fixed phrasing only) and because it took a real
-  choice away from the model. If the Manager does not wait and its turn ends
+  automatic `agent.wait_for_results` call. If the Manager does not wait and its turn ends
   before a delegated child run finishes, the delegation completing later
   still reaches the conversation on its own: `AgentGroupRunLifecycleProjector`
   posts a `ConversationContinuationRegistry` event continuation

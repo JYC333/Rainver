@@ -189,7 +189,7 @@ what is installed.
 | Route registration | `ServerModule` + route registry | `server/src/gateway/routeRegistry.ts` |
 | Route helpers (pool access, identity, pagination, parsing, errors) | `routeUtils` support package | `server/src/modules/routeUtils/` |
 | Request/response validation and shared DTOs | `zod` | `packages/protocol/src/`, module schemas |
-| Control plane ↔ host daemon WebSocket frames | `zod` discriminated unions in `@rainver/protocol`, parsed once at each end and typed on send — **never rebuilt field by field**. There is no exception left: the dependency-free Runner that held the one hand-written mapping is deleted, and every host speaks this wire | `packages/protocol/src/hostWire.ts`, `server/src/modules/hosts/{routes,connectionRegistry}.ts`, `packages/host-daemon/src/commands/run.ts` |
+| Control plane ↔ host daemon WebSocket frames | `zod` discriminated unions in `@rainver/protocol`, parsed once at each end and typed on send — **never rebuilt field by field**. Every host speaks this wire | `packages/protocol/src/hostWire.ts`, `server/src/modules/hosts/{routes,connectionRegistry}.ts`, `packages/host-daemon/src/commands/run.ts` |
 | Database access | `pg` with hand-written SQL, confined to repositories | `server/src/db/`, module `repository.ts` |
 | Schema authoring | `drizzle-orm` — **declaration only, never a query layer** | `server/src/db/schema/` |
 | Migration artifacts | `drizzle-kit` generate appended to the committed chain | `server/migrations/`, `pnpm run schema:generate -- --name <name>` |

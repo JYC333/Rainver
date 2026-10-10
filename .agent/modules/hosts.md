@@ -1,21 +1,9 @@
 # Module: Hosts
 
 See [decisions/0016-control-plane-execution-hosts.md](../decisions/0016-control-plane-execution-hosts.md)
-for the design decision this module implements. The phase-1 rollout plan
-(`control-center-plan.md`) is retired — execution ledger in git history, as is
-phase 2's (`control-center-phase2-plan.md`, which shipped the conversational
-thread surface, normalized event pipeline, and setup simplification). So is the ACP runtime replatform plan (P1-P5, complete 2026-08-22, plan
-document retired 2026-08-23): every conversation runtime — `claude_code`,
-`codex_cli`, `opencode` — now speaks the Agent Client Protocol exclusively on
-both the server-host and remote-host execution paths; the self-maintained
-vendor CLI protocol implementations (stream-json argv, NDJSON-RPC) it
-replaced are deleted. So is the remote-host provider-binding plan
-(`remote-host-provider-binding-plan.md`, P1–P2 shipped in `404b1b87` and the
-commits that followed, retired 2026-08-28). So is the task-branch merge plan
-(`task-branch-merge-plan.md`, ADR 0016 §11: P1 in `bf27f3c5`, P2–P3 in
-`8353eaec`, retired 2026-09-24); its decisions and deviations are the Task
-worktree and "Merging a done Task" sections below. The later ACP runtime authority
-reset removed Host-wide ModelProvider defaults, their routes and UI. Current
+for the design decision this module implements. Every conversation runtime —
+`claude_code`, `codex_cli`, `opencode` — speaks the Agent Client Protocol on
+both the server-host and remote-host execution paths. Current
 backend choice is Profile-owned; a selected Profile's authorized provider
 binding may be materialized into the Host launch frame, but Hosts do not
 select or default that binding. **This document describes the current system.**
@@ -258,25 +246,15 @@ Host registry:
 
 It enforces Project write access, Location/Folder/Space scope, execution
 readiness, remote Host ownership, implemented ACP adapter and host capability
-checks, then creates one Run and enqueues the durable agent job. The former
-`POST /api/v1/hosts/dispatch` and `POST /api/v1/tasks/runs` routes are removed;
-no compatibility route is registered by the server.
+checks, then creates one Run and enqueues the durable agent job.
 
 A remote dispatch creates its Run synchronously, exactly as a server-host one
 does — the two differ in what they stamp on the Run (the thread, the adapter,
 the installation and the vendor session to resume), not in when the Run comes
-into being. It used to enqueue a message on the thread and let a per-thread
-queue turn it into a Run once nothing blocked it; that queue existed for the
-Command Center's thread page, which paused it on any non-success and offered a
-Resume button. With the page gone nothing could resume a paused queue, so a
-remote Task run whose predecessor failed would have sat queued forever. Deleted
-with it: `host_thread_messages`, `advanceThreadQueue`, `queue_paused_at`,
-`threadMessageRepository`, and the thread routes (withdraw, resume-queue,
-cancel, events read, messages read).
+into being.
 
 Cancelling a remote Run goes through `PATCH /api/v1/runs/:runId/stop` like any
-other Run — the deleted thread-cancel route was a thread-to-run lookup wrapping
-that same `orchestration.cancelRun`, not separate machinery.
+other Run.
 
 ### Profile-owned backend selection and Host launch
 
@@ -863,9 +841,7 @@ must show, and it carries no credential or account identity.
 What a dispatch may choose is decided where dispatch is validated — the
 admission resolves the backend and refuses an unusable one, so the caller
 finds out on the request it is waiting for rather than on someone's laptop
-minutes later. There is no longer a read endpoint for the option list: it
-existed for the Command Center's dispatch composer, which was deleted with
-that surface.
+minutes later. Admission does not publish a separate option-list endpoint.
 
 A thread pins its copy (`host_threads.runtime_installation`, default
 `own`) the way it pins its adapter: the vendor session lives in that copy's
@@ -1038,7 +1014,6 @@ rebuilds the environment from an **allowlist** rather than filtering a denylist
 — B67 states the rule positively for a reason, and a denylist of vendor
 prefixes lets `CLAUDE_CODE_OAUTH_TOKEN`, `XDG_DATA_HOME` (OpenCode's credential
 store) and `NODE_OPTIONS` (which injects code into the runtime process) through.
-The allowlist is the same shape the deleted server-host path used.
 A run on the machine's own login is governed by the other rule instead: it
 keeps the machine's environment apart from `clearStateRootEnv`'s two sets, and
 carries a runtime profile of its own — see "The runtime profile" above.
@@ -1080,8 +1055,7 @@ Two placeholders on the wire (`REMOTE_CWD_PLACEHOLDER`,
 executing machine knows; the daemon substitutes them in argv, the initial
 stdin, and every `stdin` frame, so a prompt can point at the Skill file by a
 path the server never had rather than an unexpanded `$RAINVER_SKILL_PATH`.
-No hand-written mapping is left anywhere on this wire: the Runner that held the
-last one is deleted, and every host speaks this contract.
+Every host speaks this contract.
 
 `hello` (the upgrade already authenticated the host bearer; hello records
 capabilities, applies the daemon's complete workspace Location reports, and
@@ -1324,9 +1298,8 @@ execution-context summary reports each pinned Agent's occupancy and links its
 handoff. Real-host acceptance is recorded in `tasks/deferred-register.md`.
 
 `vendor_session_id` is the thread's own resume target, deliberately distinct
-from the server-owned `runs.session_id`. No surface displays it any more — the
-Command Center thread page that did was deleted with the rest of that surface;
-what a remote Run produced is read as a turn, from the normalized event log
+from the server-owned `runs.session_id`. No surface displays it. What a
+remote Run produced is read as a turn, from the normalized event log
 below, through `modules/conversation`.
 
 Removing a managed Room specialist or deleting the owner's last active direct
@@ -1562,26 +1535,22 @@ window. An uncapped dispatch still sends its `launch` synchronously: awaiting
 unconditionally would push the send and its pending entry into a microtask, a
 window in which a frame for that run has no dispatch to route to.
 
-## Where the sandbox line went
+## Run Exchange and sandbox level
 
-`modules/sandbox.md` is retired. The dedicated Runner service, its private
-protocol (`server/src/modules/sandboxRunner/`), the server-side vendor CLI
-adapter and `sandbox/runner.mjs` are deleted: every CLI
-runtime is dispatched to a host daemon now, and the isolation that service
-provided is the strict-mode namespace documented above.
+Every CLI runtime is dispatched to a host daemon, and isolation is the
+strict-mode namespace documented above.
 
-Two things that document described still exist and moved here rather than
-disappearing. **Run Exchange** is server-host-only and no longer reachable from
-a CLI run at all — `HostDaemonExecutionAdapter`'s port throws, because the
-Exchange is a directory pair the server stages and reads back and there is none
-on another machine; a dispatched Run returns its work as a diff and as the
-files the daemon uploads from `$RAINVER_OUTPUT_DIR`, which
-`recordOutputArtifacts` matches against the Task's declared outputs.
-**`required_sandbox_level`** remains a routing and risk value on the Run, but it
-no longer selects an execution mechanism for a CLI run: the server escalates
-nothing it does not provision, and what the Run actually gets is the dispatch's
-`isolation` policy applied by the daemon. `projectFolders/sandbox.ts` and its
-B62 guard stay, because code-patch apply and rollback still touch server-host
+**Run Exchange** is server-host-only and is not reachable from a CLI run —
+`HostDaemonExecutionAdapter`'s port throws, because the Exchange is a directory
+pair the server stages and reads back and there is none on another machine; a
+dispatched Run returns its work as a diff and as the files the daemon uploads
+from `$RAINVER_OUTPUT_DIR`, which `recordOutputArtifacts` matches against the
+Task's declared outputs. **`required_sandbox_level`** is a routing and risk
+value on the Run. It does not select an execution mechanism for a CLI run: the
+server escalates nothing it does not provision, and what the Run actually gets
+is the dispatch's `isolation` policy applied by the daemon.
+`projectFolders/sandbox.ts` and its B62 guard stay, because code-patch apply
+and rollback still touch server-host
 Locations.
 
 ## Host daemon (`packages/host-daemon`, binary `rainver-host`)
@@ -2086,8 +2055,7 @@ branch as unknown too.
 ### Strict mode (`strictNamespace.ts`)
 
 In strict mode `execution.ts` does not spawn the runtime — it spawns `bwrap`
-around it. The namespace is ported from the Runner it replaces
-(`sandbox/runner.mjs`'s `buildNamespaceCommand`): `--die-with-parent
+around it. The namespace uses `--die-with-parent
 --new-session --unshare-pid`, a tmpfs root, `--proc`/`--dev`, a private
 `/tmp`, the system roots and the minimal `/etc` files bound read-only, and
 `--unshare-net` when the Run's egress profile is `none`. The child starts
@@ -2096,15 +2064,9 @@ through `sh -c` so it can report `ready` on fd 3 before `exec`ing the runtime:
 the same exit code otherwise, and the daemon says which in the `complete`
 frame's error.
 
-**One deliberate deviation from the Runner.** The Runner remapped every
-authority root onto a canonical target (`/workspace`, `/home/sandbox`,
-`/runtime-tool`) because the server addressed mounts by managed id and never
-knew a real path. The daemon is the opposite — it is the only component that
+Each path is bound **at its own path**. The daemon is the only component that
 resolves paths at all (B64), and everything it has already materialized for
-the Run is an absolute path on this machine — so each path is bound **at its
-own path**. The containment property is unchanged; what is dropped is a
-translation that would have to be undone again in every variable the daemon
-writes.
+the Run is an absolute path on this machine.
 
 What a Run sees, and nothing else: its workspace (read-only or read-write per
 `sandbox_mode`), any explicitly attached Workspace Location roots (each bound
@@ -2134,15 +2096,12 @@ applies to a provider-bound run) and adds only what the daemon itself built for
 the Run. `planStrictLaunch` is the one place that decides this, and it is
 unit-tested for exactly that reason.
 
-The container no longer receives the control plane's internal token at all.
-`.runner.env` existed to give the Runner `SANDBOX_RUNNER_TOKEN`, which unlocks
-the internal credential and execution routes from the network this container is
-on; with the Runner gone the file, the variable and that reachability go with
-it, and the daemon holds a bearer token for its own Host row and nothing else.
-(`SANDBOX_RUNNER_SERVER_HOST` survives under its old name: it is the server's
-own in-network hostname, which the built-in host's control-plane URL and the
-provider proxy address both derive from. Renaming it would silently break an
-instance whose `.env` still spells it the old way.)
+The container does not receive the control plane's internal token. The daemon
+holds a bearer token for its own Host row and nothing else.
+`SANDBOX_RUNNER_SERVER_HOST` is the server's own in-network hostname, which the
+built-in host's control-plane URL and the provider proxy address both derive
+from. Renaming it would silently break an instance whose `.env` still spells it
+that way.
 
 HOME is `runs/<run_id>/home`, never the container's and never a managed copy's
 shared login home. The runtime reaches its own state through the state-root
@@ -2402,30 +2361,14 @@ copy, on either host kind, through `install_tool` (above).
 
 Unimplemented host ideas: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §25.
 
-### Conformance probes: retired
-
-There were instance-admin C3 probes here, and they are gone (2026-09-09). They
-certified a vendor CLI by asking it five behavioural questions once — write
-only this file, do not print that secret, stop when told — and cached the
-verdict against `(adapter_type, runtime_version)`, which the router then
-required before any non-low-risk or file-shaped CLI work.
-
-Three things stopped holding at once. The behaviours are the *model's*, and the
-verdict carried no model, so a pass measured on one model spoke for every model
-that copy could select. One sample of a non-deterministic runtime is weak
-evidence for a permanent verdict. And the strongest question — will it write
-outside what it was given — cannot be answered by a behavioral probe. Only the
-built-in strict Host provides per-Run namespace containment; a trusted paired
-Host runs natively under its owner's OS permissions and has no namespace
-containment. Removing the probe does not imply filesystem confinement; the
-execution Host trust mode is the boundary (B62 and
-`SECURITY_AND_ACCESS_BOUNDARIES.md` §10).
-
-A vendor CLI's own interactive question (translated into an ordinary reply,
-`modules/runtime-adapters.md`) is therefore not certified by a probe either:
-the translation is covered by recorded-frame controller tests
-(`server/test/acpVendorQuestion.test.ts`), and each runtime's real question
-shape is a paired-host acceptance item in `tasks/deferred-register.md`.
+Filesystem containment follows the execution Host trust mode (B62 and
+`SECURITY_AND_ACCESS_BOUNDARIES.md` §10). Only the built-in strict Host
+provides per-Run namespace containment; a trusted paired Host runs natively
+under its owner's OS permissions. A vendor CLI's own interactive question
+(translated into an ordinary reply, `modules/runtime-adapters.md`) is covered
+by recorded-frame controller tests (`server/test/acpVendorQuestion.test.ts`),
+and each runtime's real question shape is a paired-host acceptance item in
+`tasks/deferred-register.md`.
 
 Filesystem containment follows the execution Host trust mode as described
 above. Provider-bound calls use their separately authorized egress profile

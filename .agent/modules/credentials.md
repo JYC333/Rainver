@@ -66,17 +66,6 @@ plane caches them (`hosts/usageService.ts`), refreshes on a schedule, folds in
 the live reading a finished Run carries, and shows the result beside the copy
 on the host card.
 
-## Retired in ADR 0016
-
-`cli_credential_profiles`, `cli_credential_space_grants`,
-`cli_credential_events`, the `CredentialBroker`, the server-side login engine
-and its adapters, `runtime_tool_bindings`, `space_runtime_tool_policies` and
-`cli_usage_import_cursors` are gone; the `0000_baseline.sql` baseline no
-longer contains them, so no separate drop migration exists. `runtime-tools/` and `secrets/cli-credentials/` under
-`$RAINVER_HOME` are no longer read; `start.sh` names them after migrating and
-leaves them alone, because a script that deletes a secrets directory is a
-script nobody can trust.
-
 ## Related
 
 - [ADR 0008 — credential channel isolation](../decisions/0008-credential-channel-isolation.md)

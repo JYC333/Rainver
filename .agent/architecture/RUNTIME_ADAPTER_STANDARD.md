@@ -76,19 +76,15 @@ both require the Space external-egress switch and the exact adapter id.
 CLI dispatch carries workspace identity, installation, runtime profile and an
 explicit isolation policy over the daemon WebSocket. Strict namespaces enforce
 filesystem isolation and fail closed. Verification recipes use `command_run`
-with no network; the C3 conformance suite that shared this transport is retired
-(2026-09-09, see `modules/hosts.md`). The private Runner protocol and its
-application server client are removed. Only `none` confines a Run's network;
+with no network. Only `none` confines a Run's network;
 `default` and `install` are policy and a record through the daemon's egress
 proxy.
 
 Usage providers are runtime-generic. Adapters without a real probe return
 unknown accuracy plus fallback run statistics. Live Claude Code quota uses the
 server-owned OAuth API. Codex quota comes from an RPC only its own CLI speaks,
-so it is read on the execution host that holds the copy and the login; the
-server-side probe that ran it beside the application server is gone with the
-Runner, and the host-side one lands with the usage work. No quota refresh
-spawns a vendor CLI in the application-server namespace.
+so it is read on the execution host that holds the copy and the login. No
+quota refresh spawns a vendor CLI in the application-server namespace.
 
 All implemented builtin runtimes speak ACP over stdio. The Server controller
 negotiates or resumes sessions and consumes semantic events; the daemon

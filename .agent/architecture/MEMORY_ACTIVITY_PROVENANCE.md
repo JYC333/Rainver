@@ -43,12 +43,7 @@ Memory writes are **proposal-first**. The public memory write API returns `Propo
 | `source_integrity_json` | Evidence payload: optional integrity/checksum metadata. |
 | `payload_json` / `metadata_json` | Source metadata: structured capture metadata. |
 
-### ContextSource
-
-The `context_sources` table was removed from the schema. It is not present in the current
-migration. Provenance uses
-`ActivityRecord` + `ProvenanceLink` instead. A future first-class Source model would be
-a new table, not a revival of this removed table.
+Provenance uses `ActivityRecord` and `ProvenanceLink`.
 
 ### ProvenanceLink — Provenance Chain
 

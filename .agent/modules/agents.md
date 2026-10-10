@@ -587,8 +587,7 @@ Unimplemented template authoring: [unimplemented-from-guides.md](../plans/unimpl
 
 ## Built-in Templates (no built-in concrete agents)
 
-There are no eagerly seeded per-space concrete Agents. The old boot-time
-concrete-agent seeder was removed. Built-in product behavior comes from system
+There are no eagerly seeded per-space concrete Agents. Built-in product behavior comes from system
 templates (factories), while a Project's hidden managed Assistant is provisioned lazily
 and only when someone first speaks in one of its Rooms. Keeping it off Room
 creation is what lets a Project be created with its mainline Room without a

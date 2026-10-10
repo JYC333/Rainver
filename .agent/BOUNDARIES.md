@@ -233,11 +233,8 @@ Deterministic Verification Engine checks use the
 separate `command_run` frame: it carries a server-defined command and one
 workspace identity, with no shell, no ambient environment, no provider channel
 and a minimal environment. Strict commands have no network; trusted commands
-retain native network access. The C3 conformance suite that also used this
-path is retired (2026-09-09): a one-shot behaviour probe of a vendor CLI,
-cached against a version key and blind to the model actually selected, was not
-evidence a dispatch gate could rest on, and what it stood in for — a Run that
-cannot reach past its workspace — ADR 0016 made structural.
+retain native network access. A Run that cannot reach past its workspace is
+the strict Host's namespace (ADR 0016), not a behavioural probe.
 
 **A verification recipe is code, and it runs on the host that holds the
 workspace.** Its argv comes from a `ValidationRecipe` or a Task's acceptance
@@ -354,11 +351,9 @@ the machine's `HOME`) unless the Run carries an explicit ModelProvider binding
 for the built-in host as much as a paired one — it is a daemon connection, not
 an in-process boundary, and must not be reported permanently online. Do not
 weaken strict isolation to make the two modes look uniform, and do not claim
-trusted execution carries guarantees it does not have. The daemon protocol is
-the only execution path and there is no other: the sandbox line
-(`sandbox/runner.mjs`, `modules/sandboxRunner/`, the server-side vendor CLI
-adapter) is deleted. Do not add a second one — an in-process CLI spawn, a
-per-runtime tunnel, a container-per-Run — without a decision superseding this.
+trusted execution carries guarantees it does not have. The daemon protocol is the only execution path. Do not add a second one — an
+in-process CLI spawn, a per-runtime tunnel, a container-per-Run — without a
+decision superseding this.
 
 **B63** — Two safety models, one per trust mode (ADR 0016 §3). A **paired**
 host accepts Runs and serves live Folder reads only for its own registered
@@ -534,8 +529,7 @@ account instead of the subscription this profile was given.
 Plugin are distinct concepts. External Open Skill packages can be normalized
 into capability candidates; Capability Packs group capabilities; Runtime Skills
 are generated runtime bindings; Product Plugins are optional product feature
-packages. Workflow Template was a sixth concept here until the
-capability-shrink plan deleted that layer; an enforced process is a Workflow Definition, which is
+packages. An enforced process is a Workflow Definition, which is
 execution-engine data rather than a capability grouping.
 
 **B53** — Plugin settings and enablement state must be scoped exactly as declared in the descriptor's `scope` field: `space` uses `(plugin_id, space_id)` and requires space owner/admin for writes; `user` uses `(plugin_id, user_id)` and follows the user across spaces. Space-scoped plugin state for space A must never be readable or writable in the context of space B, and user-scoped plugin state must never be readable or writable by another user. The plugin guard must check both plugin existence and descriptor scope.

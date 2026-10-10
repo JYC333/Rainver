@@ -220,8 +220,6 @@ not OS-sandboxed.
 
 **Extracted design**
 - Credential rotation/deletion UI; UI for creating or editing handlers.
-- Reuse the namespace `sandboxRunner` (see
-  [platform-reuse-cleanup.md](platform-reuse-cleanup.md)).
 - Broader generated-code execution only with a real isolated
   runner/container, instance-admin enablement, proposal review for
   permission deltas, strict resource limits, Sources-only materialization,

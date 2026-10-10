@@ -1,6 +1,6 @@
 # Memory / Runtime Context
 
-Status: implemented current state after the Runtime Context clean cutover.
+Status: implemented current state.
 
 This document describes the boundary between governed Memory and the Runtime
 Context invocation engine. Canonical Memory is durable product state; Runtime
@@ -156,16 +156,4 @@ authorities. Delivery/snapshot persistence, acknowledgement, finalization, and
 continuity writes use short transactions. Provider and CLI calls occur outside
 database transactions.
 
-Database-backed behavior tests use the shared real PostgreSQL fixture. The
-legacy absence test additionally scans production, schema, protocol, migration,
-and active-test roots so retired Context Snapshot/Compiler/Digest and vendor-file
-paths cannot return unnoticed.
-
-## 7. Retired architecture
-
-The clean cutover deleted the Context Builder/Compiler/Prepare service, Context
-Profiles and routing manifests, Context Snapshots and Context Digests, manual
-context artifact attachment/revocation UI and APIs, route-owned chat bundles,
-session-summary caches, and vendor context-file rendering. There is no dual-read,
-dual-write, fallback, or compatibility alias. ADR 0014 remains the design record;
-Git history retains the clean-cutover implementation and review evidence.
+Database-backed behavior tests use the shared real PostgreSQL fixture.

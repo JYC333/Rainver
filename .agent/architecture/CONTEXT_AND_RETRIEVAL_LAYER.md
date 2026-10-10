@@ -220,9 +220,7 @@ for the instructing user and exact work scope before an accepted Delivery is
 persisted. The planner alone decides precedence, deduplication, and window
 budgeting. Adapters never call retrieval directly.
 
-The retired `/context/build` route, Context Preview page, manual artifact picker,
-artifact revocation table, Context Snapshot evidence packs, and route-owned chat
-candidate bundle have been deleted. Retrieval artifacts remain reviewable
+Retrieval artifacts remain reviewable
 product outputs and proposal inputs; their existence does not make them
 model-visible. Any future product flow that promotes an artifact into an
 invocation must enter as a typed owning-domain acquisition with the same live

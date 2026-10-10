@@ -4,12 +4,7 @@ Ambient CLI history: the sessions a person had with their own Claude Code,
 Codex, or OpenCode inside a folder, outside Rainver, on a machine they paired
 as an execution host ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)).
 This module brings that history into the Project the folder is bound to, and
-turns what it holds into proposals.
-
-The rollout plan (`ambient-session-import-plan.md`, both phases shipped
-2026-08-28 in `293023c3`, `d162aabf` and `178bd9a8`) is retired; its execution
-ledger is in git history and its remaining citation-link item is in
-[`plans/backlog.md`](../plans/backlog.md) §9. **This document describes the
+turns what it holds into proposals. **This document describes the
 system as it stands.**
 
 ## Why it exists
