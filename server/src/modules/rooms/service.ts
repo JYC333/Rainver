@@ -411,7 +411,7 @@ export class RoomService {
     );
     // A Room with no conversation is invisible to a query over conversations,
     // and a Room is only reachable through one — so opening a limited Room and
-    // leaving before saying anything left it with no way back. Same membership
+    // leaving before saying anything would have no way back. Same membership
     // join, so this reveals no Room the list would not have.
     const emptyRooms = await this.pool.query<{
       room_id: string; room_is_mainline: boolean;

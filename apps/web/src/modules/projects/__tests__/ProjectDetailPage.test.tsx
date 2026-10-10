@@ -193,9 +193,9 @@ describe('ProjectDetailPage (Pulse)', () => {
   })
 
   /**
-   * Each of these has a dedicated Area with its own route. Rendering them here
-   * too made the front page a second, weaker copy of four other pages and made
-   * every Project visit pay for their data.
+   * Each of these has a dedicated Area with its own route. Do not render them
+   * here. The front page would be a second, weaker copy of four other pages,
+   * and every Project visit would pay for their data.
    */
   it('hosts no surface that a dedicated Area owns', async () => {
     setup()

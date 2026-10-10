@@ -5810,9 +5810,9 @@ describe("Room workflow (real Postgres)", () => {
 
     // A reference stamped ahead of the wall clock (what referenceService's
     // `base = max(now, existing + 1)` produces), then a message after it on
-    // the path but before it on the clock. Comparing the two by timestamp
-    // instead of by position is what made the sweep re-select this
-    // conversation forever, re-enqueueing a billed summary job every tick.
+    // the path but before it on the clock. Compare the two by position. Do not
+    // compare by timestamp. That re-selects this conversation forever,
+    // re-enqueueing a billed summary job every tick.
     const ahead = new Date(Date.now() + 600_000).toISOString();
     await seedConversationMessages(db.pool, {
       space: "space-1", session: conversation.id,

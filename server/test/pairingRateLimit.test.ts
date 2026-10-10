@@ -70,9 +70,9 @@ describe("hostRegisterRateLimited", () => {
 
   /**
    * The whole-map sweep is O(buckets) on an unauthenticated request path, so it
-   * runs on an interval rather than per call. Evicting only the excess left the
-   * map pinned one over the cap, which made the size trigger true on every
-   * subsequent request and put the sweep straight back on the hot path — so a
+   * runs on an interval rather than per call. Do not evict only the excess.
+   * The map stays pinned one over the cap, the size trigger stays true on
+   * every subsequent request, and the sweep is back on the hot path — so a
    * saturated map is the case worth asserting, not an empty one.
    */
   it("does not sweep the whole map on every request, even once it is full", () => {

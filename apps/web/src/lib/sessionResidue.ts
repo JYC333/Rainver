@@ -95,8 +95,8 @@ export function dropApiCacheAtBoot(): void {
  *
  * One object on purpose: a `BroadcastChannel` never delivers to itself, but it
  * does deliver to every *other* channel object — including another one in the
- * same tab. Announcing through a second object made the tab that signed out
- * hear its own logout and run the remote handler on itself.
+ * same tab. Do not announce through a second object. The tab that signed out
+ * would hear its own logout and run the remote handler on itself.
  */
 let logoutChannel: BroadcastChannel | null = null
 

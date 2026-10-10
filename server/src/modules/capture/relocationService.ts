@@ -300,8 +300,8 @@ async function removeFromSourceNote(
       spaceId: capture.space_id,
       noteId: capture.note_id!,
       // The version is passed rather than omitted. Without it `writeNote` skips
-      // the check and can only ever answer "written", which made the conflict
-      // branch below unreachable — a guard that reads as protection while
+      // the check and can only ever answer "written", and the conflict branch
+      // below is unreachable — a guard that reads as protection while
       // protecting nothing.
       expectVersion: current.rows[0].version,
       content: { kind: "doc", doc: removeBlocks(current.rows[0].content_json, blockIds) },

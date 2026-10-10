@@ -278,7 +278,7 @@ export type ProjectConversation = z.infer<typeof ProjectConversationSchema>;
  *
  * Listing conversations would hide it entirely, and a Room becomes reachable
  * only through a conversation in it — so opening one and walking away before
- * saying anything left it with no way back. It is named by its audience like
+ * saying anything would have no way back. It is named by its audience like
  * any other section.
  */
 export const ProjectEmptyRoomSchema = z.object({

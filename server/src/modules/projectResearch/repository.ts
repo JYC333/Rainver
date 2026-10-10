@@ -138,13 +138,13 @@ function screeningMaterialIdentitySql(alias = "si"): string {
  * *list* reads what that person may read: a Project member is not automatically
  * a reader of every item a scan pulled in. Do not list them by Project alone.
  *
- * The batch's counts are a different question and take `null`. Scoping them too
- * made the approval gate answer about the reviewer instead of about the work: a
- * reviewer with no subscription saw `total = 0` and was told "no material
- * matched this search window" — untrue — while a partly-subscribed one got
- * `classified >= total` and the "every item is classified" guard passed over
- * items that were not. Aggregate counts over material the Project itself
- * gathered are workflow state, in the same class as the Home summary counts
+ * The batch's counts are a different question and take `null`. Do not scope
+ * them. The approval gate would answer about the reviewer instead of about
+ * the work: a reviewer with no subscription would see `total = 0` and be told
+ * "no material matched this search window" — untrue — while a
+ * partly-subscribed one would get `classified >= total` and the "every item
+ * is classified" guard would pass over items that were not. Aggregate counts
+ * over material the Project itself gathered are workflow state, in the same class as the Home summary counts
  * SECURITY already records.
  */
 function screeningMaterialReviewCtes(userParam: string | null): string {

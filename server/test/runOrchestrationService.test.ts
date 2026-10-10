@@ -1789,10 +1789,11 @@ describe("RunOrchestrationService", () => {
     // run was created at stands. The server provisions nothing for a daemon
     // run. Do not escalate `one_shot_docker` here.
     expect(workspaceManager.calls).toEqual([]);
-    // But risk still decides the level, and the level still travels: skipping
-    // the resolution for daemon runs left every CLI run at the creation-time
-    // `none`, so a critical Folder-bound run got a read-write workspace with
-    // nothing recording that risk had stopped mattering.
+    // But risk still decides the level, and the level still travels. Do not
+    // skip the resolution for daemon runs. Every CLI run would stay at the
+    // creation-time `none`, so a critical Folder-bound run would get a
+    // read-write workspace with nothing recording that risk had stopped
+    // mattering.
     expect(repo.run.required_sandbox_level).toBe("one_shot_docker");
     expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
   });

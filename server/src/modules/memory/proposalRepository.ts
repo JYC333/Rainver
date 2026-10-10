@@ -367,8 +367,8 @@ export class PgMemoryProposalRepository {
         payload.requested_by_user_id = agentOrigin.instructedByUserId;
       }
       // The same rule a create carries, and for the same reason: decided by
-      // the Agent's owner alone, by identity and not by role. Setting it only
-      // on creates left every persona *revision* decidable by any Space
+      // the Agent's owner alone, by identity and not by role. Do not set it
+      // only on creates. A persona revision would be decidable by any Space
       // owner or admin — including the member who asked for it, which is the
       // one person ADR 0003 §5 names.
       payload.required_owner_user_id = target.owner_user_id;

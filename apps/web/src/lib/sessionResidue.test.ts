@@ -79,9 +79,9 @@ describe('cross-tab logout', () => {
 
   it('does not hear its own announcement', async () => {
     // A `BroadcastChannel` never delivers to itself, but it does deliver to
-    // every other channel object — including another one in the same tab. So
-    // announcing through a second object made the tab that signed out run the
-    // remote handler on itself.
+    // every other channel object — including another one in the same tab. Do
+    // not announce through a second object. The tab that signed out would run
+    // the remote handler on itself.
     let told = 0
     const stop = watchCrossTabLogout(() => { told += 1 })
     announceLogout()

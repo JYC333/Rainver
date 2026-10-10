@@ -118,9 +118,9 @@ function hasStageProduct(stage: StageId, input: StageInput): boolean {
       return questionRefined
     case 'acquire': {
       // A running search does not complete Acquire — it *is* Acquire, still
-      // happening. Treating it as done pushed the Thread into Digest with
-      // nothing to digest, and recommended reading evidence that had not
-      // arrived.
+      // happening. Do not treat it as done. The Thread would move into Digest
+      // with nothing to digest, and the reader would be told to read evidence
+      // that has not arrived.
       // Acquire exists to yield evidence, and a search still running has not
       // yielded any.
       const arrivedThisRound = signals.some(

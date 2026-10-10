@@ -1337,10 +1337,10 @@ server-side. Avatar images accept `http(s)` and refuse `data:`.
   JWTs and `Basic`. A value that is one of the words a process uses to say a
   credential is *absent* is deliberately left alone: redacting `secret: absent`
   hides the answer and protects nothing. The pattern that keys on a *name* is
-  anchored rather than led by an unbounded quantifier: a greedy `[\w.-]*` in
-  front of the alternation made the scan quadratic, and a member-authored Custom
-  Source handler that logged 64 KiB on one line held the event loop for eight
-  seconds. The anchoring is what protects the unbounded callers —
+  anchored rather than led by an unbounded quantifier. A greedy `[\w.-]*` in
+  front of the alternation is quadratic, and a member-authored Custom
+  Source handler that logged 64 KiB on one line would hold the event loop.
+  The anchoring is what protects the unbounded callers —
   `redactSecretPatterns` is handed a Custom Source handler's whole log, and a
   5xx provider body, with no ceiling of its own. `redactEvidenceText`, which
   persists, additionally truncates before it scans, reading a little past the

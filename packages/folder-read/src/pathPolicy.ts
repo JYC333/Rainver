@@ -149,8 +149,8 @@ export function redactSecretLikeDiff(diff: string): { diff: string; redacted: bo
   let redacted = false;
   // A credential word anywhere in the name, not only at a `\b` boundary:
   // `access_token`, `x-api-key`, `client_secret`, `token_hash`. Anchored with a
-  // lookbehind and bounded on both sides rather than led by a greedy `[\w.-]*`,
-  // which made the same shape quadratic on one long line.
+  // lookbehind and bounded on both sides. A greedy `[\w.-]*` is quadratic
+  // on one long line.
   const keyPattern =
     /(?<![\w.-])[\w.-]{0,64}?(api[_-]?key|token(?!s)|secret|password|passwd|credential|private[_-]?key)[\w.-]{0,64}?["']?\s*([:=])(?!\s*(?:absent|none|null|unset|missing|empty|true|false|set|present|redacted|nil)(?:$|[\s,;}"']))\s*/gi;
   let next = "";

@@ -657,11 +657,11 @@ describe("one Agent's memory is not another's, even under the same owner", () =>
 
   it("refuses one Agent's revision of another's persona on every route, applied or proposed", async () => {
     if (!db.available) return;
-    // Both Agents are the owner's, and the owner is the person in the turn —
-    // which is exactly what made the second Agent's revision look like the
-    // owner revising their own entry. It is not: the entry is the first
-    // Agent's, and a version chain that crossed Agents would let the second
-    // supersede the first's persona and leave it with none.
+    // Both Agents are the owner's, and the owner is the person in the turn.
+    // That does not make the second Agent's revision the owner revising their
+    // own entry. The entry is the first Agent's, and a version chain that
+    // crossed Agents would let the second supersede the first's persona and
+    // leave it with none.
     await seedOtherAgent();
     const personaId = await seedPersona(AGENT_ID, "I am the first specialist");
 
