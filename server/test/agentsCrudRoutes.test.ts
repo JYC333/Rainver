@@ -62,8 +62,8 @@ describe("agents CRUD routes", () => {
       name: "Default",
       runtime_key: "opencode",
     }).success).toBe(true);
-    // `.strict()` is the single rule that retires every deployment alias; no
-    // route keeps its own list of the retired names.
+    // `.strict()` refuses every deployment alias. Do not keep a second list
+    // of those names on a route.
     for (const retired of ["adapter_type", "default_adapter_type", "allowed_adapter_types", "credential_profile_id"]) {
       const parsed = AgentRuntimeProfileCreateBodySchema.safeParse({
         name: "Default",
@@ -1241,9 +1241,8 @@ describe("agents CRUD routes", () => {
       current_version_id: newVersionId,
       system_prompt: "New prompt",
     });
-    // Agent config reaches a Run through its immutable AgentVersion. The only
-    // Agent config reaches a Run through its immutable AgentVersion, so no
-    // retired derived-context refresh side effect is expected.
+    // Agent config reaches a Run through its immutable AgentVersion. Do not
+    // enqueue a derived-context refresh from this save.
     expect(jobs).toEqual([]);
   });
 

@@ -824,8 +824,8 @@ describe("Project Kernel (real Postgres)", () => {
       source_type: "operational_alert",
       title: "Automation failed",
     });
-    // Alerts are activity records; they are read in the Space Inbox filtered
-    // to the Project, since the Project's Operations Area is retired.
+    // Alerts are activity records. They are read in the Space Inbox filtered
+    // to the Project.
     expect(items[0]?.href).toBe(`/activity?project_id=${project.id}`);
   });
 

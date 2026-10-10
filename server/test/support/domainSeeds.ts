@@ -169,10 +169,9 @@ export async function seedRoomManager(
  * Server Host and installation provisioning path is included as well.
  *
  * `runtimeKey` is a registered runtime and is checked against the registry
- * before the insert: nothing in the schema rejects a retired key such as
- * `model_api`, so a seed naming one produced a Profile production can no
- * longer select, and whatever read it fed then failed somewhere far from the
- * fixture. Fail where the wrong key was written instead.
+ * before the insert. Do not seed a key the schema still accepts, such as
+ * `model_api`. Production cannot select that Profile, and the read that uses
+ * it fails far from the fixture. Fail where the wrong key is written.
  */
 export async function ensureDefaultRuntimeProfile(
   pool: Pool,

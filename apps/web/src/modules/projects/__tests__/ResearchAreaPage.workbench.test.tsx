@@ -410,8 +410,8 @@ async function openFocus() {
   fireEvent.click(await screen.findByRole('tab', { name: 'Focus workbench' }))
 }
 
-// Research is available from every Project independently of how it was
-// created; the retired Template concept has no runtime representation.
+// Research is available from every Project, however it was created. Do not
+// require a Template. There is no Template runtime.
 function mockResearchProject(overrides: Partial<Awaited<ReturnType<typeof projectsApi.get>>> = {}) {
   vi.mocked(projectsApi.get).mockResolvedValue({
     id: 'project-1',

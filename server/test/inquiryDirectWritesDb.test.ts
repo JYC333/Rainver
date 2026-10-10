@@ -205,9 +205,8 @@ describe("inquiry.create_thread, direct (real Postgres)", () => {
   it("reopens the same question when the statement repeats under a fresh call id", async () => {
     if (!db.available) return;
     // The case a re-planned or re-sampled turn actually produces: the same
-    // question worded identically, under a new tool-call id. The retired
-    // proposal path coalesced this under an advisory lock; without it the
-    // duplicate is durable and the person has to archive it.
+    // question worded identically, under a new tool-call id. Do not leave the
+    // duplicate durable. The person would have to archive it.
     const dispatcher = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
       (await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID))!

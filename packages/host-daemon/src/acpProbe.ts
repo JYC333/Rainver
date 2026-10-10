@@ -6,10 +6,9 @@ import { helperProcessEnv } from "./providerBinding.js";
 /**
  * What a runtime says it can be set to, asked over ACP rather than guessed.
  *
- * The alternative was hardcoding a list, and the list is wrong: Claude's
- * effort levels are not Codex's, and a bare `low`/`medium`/`high` misses
- * values a runtime really offers (`1m`, `default`). Only the runtime knows,
- * and ACP exists to ask it.
+ * Do not hardcode the list. Claude's effort levels are not Codex's, and a
+ * bare `low`/`medium`/`high` misses values a runtime really offers (`1m`,
+ * `default`). Only the runtime knows, and ACP exists to ask it.
  */
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)

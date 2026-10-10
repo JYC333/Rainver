@@ -178,9 +178,8 @@ describe("proposal applier registry", () => {
 
   it("has no applier for the Inquiry writes that became direct", () => {
     // ADR 0017 §5: opening a question and recording a conclusion are
-    // origin-gated and bounded, not reviewed. An applier for either would be a
-    // second way to make the write, reachable by anything that could still
-    // create the retired proposal row.
+    // origin-gated and bounded, not reviewed. Do not register an applier for
+    // either. It would be a second way to make the write.
     const types = createDefaultProposalApplierRegistry().registeredTypes();
     expect(types).not.toContain("inquiry_thread_create");
     expect(types).not.toContain("inquiry_conclusion");
