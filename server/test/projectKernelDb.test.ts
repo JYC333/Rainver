@@ -924,10 +924,8 @@ describe("Project Kernel (real Postgres)", () => {
 
   it("says what is running, not only what is waiting on a person", async () => {
     if (!db.available) return;
-    // The failure this closes: the front page read the Task board and nothing
-    // else, so a research acquisition screening 873 documents for four hours
-    // rendered as "nothing is being worked on right now". Attention answers
-    // "what needs me"; this answers "what is happening".
+    // Attention answers "what needs me". This answers "what is happening".
+    // Do not read only the Task board. An Operation is not a Task.
     const repo = new PgProjectRepository(db.pool);
     const overview = new ProjectOverviewService(db.pool);
     const project = await repo.create(ownerIdentity, { name: "Running Project" });

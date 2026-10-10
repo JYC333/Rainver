@@ -11,9 +11,8 @@ import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Skeleton } from '../../components/ui/skeleton'
 import { inProjectHref, projectTaskHref } from './taskHref'
-// The one place that already knows how to say what an Operation is doing —
-// "848/873 materials classified". Pulse renders that sentence rather than
-// composing a second, quieter version of it.
+// Pulse renders the Research Area's sentence —
+// "848/873 materials classified" — rather than a second, quieter version.
 import { researchOperationDetail, researchOperationPercent, researchOperationStage, researchStageIndex } from './FocusResearchWorkbench'
 
 /**

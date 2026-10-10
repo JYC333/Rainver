@@ -32,8 +32,8 @@ describe("registerResearchAcquisitionContinuation", () => {
     expect(result.directive).toBe("advance_started_acquisition");
     expect(result.context).toMatchObject({ operation_id: "op-1", screening_cap: 200, matched_estimate: 2065 });
     // What it reads comes first, and the match size is labelled as the loose
-    // upper bound it is: leading with the bigger number read as the scope
-    // having grown when it had in fact just been bounded.
+    // upper bound it is. Do not lead with the bigger number. It reads as the
+    // scope having grown.
     const capAt = result.instruction.indexOf("200 most recent");
     const matchedAt = result.instruction.indexOf("2,065");
     expect(capAt).toBeGreaterThan(-1);

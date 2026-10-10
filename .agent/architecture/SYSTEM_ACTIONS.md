@@ -681,11 +681,10 @@ payload before reporting it to the Room, so a report deferred by a busy Room
 turn is retried on its own rather than by running the pipeline again.
 
 **Bounded before it runs.** The acquisition passes
-`max_items: SCREENING_AUTO_CONTINUE_CORPUS_LIMIT` (200). Unbounded — which is
-what `history_mode: "all_available"` meant with no cap — one Room turn walked
-a source's whole history, ingested 873 documents and put every one through an
-LLM classification: hours of work and roughly a million input tokens, with no
-confirmation asked and nothing on screen until the failure four hours later.
+`max_items: SCREENING_AUTO_CONTINUE_CORPUS_LIMIT` (200). Do not run
+`history_mode: "all_available"` with no cap. One Room turn would walk a
+source's whole history and put every item through an LLM classification,
+with no confirmation and nothing on screen.
 The history walk is newest-first and the item budget is operation-wide, so the
 cap buys the most recent 200 matches and stops; earlier history stays
 reachable as a decision rather than a default. The `started` outcome carries

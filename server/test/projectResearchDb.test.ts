@@ -243,10 +243,9 @@ describe("ProjectResearchRepository (real Postgres)", () => {
 
   it("bounds a daily update and defers the rest to the next one, without asking anybody", async () => {
     if (!db.available) return;
-    // A daily update is bounded the same way a baseline is — an unbounded run
-    // put 873 documents through an LLM before anyone saw a number — but it
-    // answers differently: nobody is awake at 4am to approve anything, so the
-    // overflow waits for tomorrow instead of a decision.
+    // A daily update is bounded the same way a baseline is. Do not run it
+    // unbounded. It answers differently: nobody is awake at 4am to approve
+    // anything, so the overflow waits for tomorrow instead of a decision.
     const thread = await new InquiryThreadService(db.pool).createThread(
       identity, PROJECT, { kind: "question", statement: "Does X improve Y?" },
     );

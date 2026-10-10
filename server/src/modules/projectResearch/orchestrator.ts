@@ -754,9 +754,8 @@ export class ProjectResearchOrchestrator {
     // Backlog first, so nothing scanned long ago starves behind today's items.
     const scannedItemIds = unique([...pendingItemIds, ...stringArray(body.source_item_ids)]);
     /**
-     * A daily update is bounded the same way a baseline is, and for the same
-     * reason: an unbounded run put 873 documents through an LLM before anyone
-     * saw a number. It answers differently, though — this one does not ask.
+     * A daily update is bounded the same way a baseline is. Do not run it
+     * unbounded. This one does not ask.
      * A monitor that scans more than one update can afford leaves the rest in
      * `pending_incremental_source_item_ids`, which the next update drains, so
      * a backlog costs days rather than a decision nobody is awake to make.

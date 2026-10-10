@@ -245,12 +245,11 @@ describe("researchAcquisitionPipelineDb", () => {
       expect(operation.rows[0]!.status).toBe("active");
       expect(operation.rows[0]!.progress_json).toMatchObject({ origin_room_id: ROOM, origin_session_id: SESSION, origin_group_id: "group-1" });
 
-      // The acquisition is bounded before it runs, and says so. Unbounded,
-      // this walked a source's whole history — 873 documents, every one put
-      // through an LLM classification — with no confirmation, nothing on
-      // screen, and the first number the user ever saw inside the failure
-      // four hours later. The walk is newest-first and the budget is
-      // operation-wide, so the cap buys the most recent N items.
+      // The acquisition is bounded before it runs, and says so. Do not walk
+      // a source's whole history. Every document would go through an LLM
+      // classification with no confirmation and nothing on screen. The walk
+      // is newest-first and the budget is operation-wide, so the cap buys
+      // the most recent N items.
       expect(operation.rows[0]!.progress_json).toMatchObject({
         history: { max_items: SCREENING_AUTO_CONTINUE_CORPUS_LIMIT },
       });

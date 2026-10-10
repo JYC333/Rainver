@@ -6,13 +6,12 @@ import { ARXIV_HISTORY_FLOOR } from "../sources/sourceBackfillStrategy.js";
 /**
  * Offers the earlier history a bounded baseline left unread.
  *
- * The acquisition buys the newest N matches and stops, which is the half that
- * keeps a Room turn from silently spending hours and a million tokens. This
- * is the other half: the remainder is offered once, as a decision, at the
- * moment it can actually be acted on — the baseline is finished, its coverage
- * is recorded, and `startHistoricalBackfill` will accept the range. Offering
- * it at the start would have meant either blocking on an answer or queuing an
- * intent nothing could execute yet.
+ * The acquisition buys the newest N matches and stops. Do not walk the rest
+ * in the same turn. This offers the remainder once, as a decision, when it
+ * can be acted on — the baseline is finished, its coverage is recorded, and
+ * `startHistoricalBackfill` will accept the range. Do not offer it at the
+ * start. That would either block on an answer or queue an intent nothing
+ * can execute yet.
  *
  * Silent when there is nothing left: coverage already reaching the floor, no
  * recorded coverage, or a workflow that never bounded itself.

@@ -1248,10 +1248,9 @@ Brief Version, `definition_status`, `has_project_folder`, per-user
 Attention through registered domain adapters, and `in_progress` — the
 Project's unfinished Operations.
 
-`in_progress` exists because Attention answers "what needs me" and nothing
-answered "what is happening": Pulse's In-progress list read the Task board,
-and an Operation is not a Task, so a research acquisition screening 873
-documents for four hours rendered as "nothing is being worked on right now".
+`in_progress` is what is happening. Attention answers "what needs me".
+Pulse's In-progress list reads Operations as well as the Task board. An
+Operation is not a Task.
 It carries the fields the Research Area's own `researchOperationDetail` and
 `researchOperationPercent` renderers read, so the front page shows that same
 sentence — "848/873 materials classified" — rather than a second, quieter

@@ -204,9 +204,9 @@ export class ResearchAcquisitionPipelineRunner {
           ? { history_mode: "bounded_range" as const, from: payload.since, to: new Date().toISOString() }
           : { history_mode: "all_available" as const }),
         // The whole of a source's history is a number nobody has seen and
-        // nobody agreed to: unbounded, this ingested 873 documents and put
-        // every one of them through an LLM classification — hours of work
-        // and a million tokens — with no confirmation and nothing on screen.
+        // nobody agreed to. Do not ingest it unbounded. Every item would go
+        // through an LLM classification with no confirmation and nothing on
+        // screen.
         // The walk is newest-first and the budget is operation-wide, so this
         // buys the most recent `SCREENING_AUTO_CONTINUE_CORPUS_LIMIT` items
         // and stops. Earlier history remains reachable through the Extend
@@ -358,10 +358,9 @@ export class ResearchAcquisitionPipelineRunner {
    * query planning already recorded while choosing it — no extra provider
    * call.
    *
-   * The largest single provider's count, not the sum: providers overlap
-   * heavily (the same paper is in arXiv and OpenAlex), so summing them
-   * reported 2,065 for a query whose corpus was 873 — a number that read as
-   * the scope having grown when it had just been capped at 200. The union is
+   * The largest single provider's count, not the sum. Providers overlap
+   * heavily (the same paper is in arXiv and OpenAlex). Do not sum them.
+   * The sum reads as the scope having grown past the cap. The union is
    * at least the largest count and at most the sum; the larger of the two
    * errors is the one that misleads about size.
    */
