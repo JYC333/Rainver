@@ -44,8 +44,8 @@ describe("what a Run may reach", () => {
     for (const address of ["10.0.0.5", "172.17.0.2", "192.168.1.1", "127.0.0.1", "169.254.169.254", "::1", "fd00::1", "fe80::1"]) {
       expect(isBlockedAddress(address), address).toBe(true);
     }
-    // The cloud metadata endpoint is the one that hands out instance
-    // credentials; a Run reaching it is the failure this exists to prevent.
+    // The cloud metadata endpoint hands out instance credentials. A Run must
+    // not reach it.
     expect(isBlockedAddress("169.254.169.254")).toBe(true);
     // An IPv4-mapped address names a v4 address and is judged as one.
     expect(isBlockedAddress("::ffff:10.0.0.5")).toBe(true);

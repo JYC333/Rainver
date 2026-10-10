@@ -232,8 +232,7 @@ describe("cross-project note sharing (real Postgres)", () => {
 
     expect(await repository.getNote(beta, noteId)).toBeNull();
     expect(await repository.listNoteProjectShares(alpha, noteId)).toEqual([]);
-    // The placement goes with the share: a tree with a hole in it is the silent
-    // absence the explicit-share rule exists to prevent.
+    // The placement goes with the share. Do not leave a tree with a hole in it.
     expect(placements(await repository.getNote(alpha, noteId)))
       .toEqual([{ collection_id: folderA, sort_order: 0 }]);
   });

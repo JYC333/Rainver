@@ -562,10 +562,9 @@ describe("researchAcquisitionServiceDb", () => {
       expect(jobs.rows).toHaveLength(1);
     });
 
-    // Without an advisory lock serializing the "already starting" check against the enqueue, two
-    // concurrent calls can both observe no active job and both enqueue one —
-    // duplicating real LLM-assessment/live-search pipeline cost. Same idiom as
-    // the Inquiry Thread creation path's coalesce guard.
+    // Do not enqueue without an advisory lock on the "already starting" check.
+    // Two concurrent calls would both observe no active job and both enqueue
+    // one, duplicating a real LLM-assessment or live-search pipeline run.
     it("serializes concurrent calls for the same Thread so only one job is enqueued", async () => {
       if (!db.available) return;
       const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {

@@ -72,9 +72,9 @@ export function registerProjectWorkSystemActionExecutors(
    * dedupes on `(space_id, idempotency_key)` — so the id alone collides across
    * every Run in the Space, and the Run id alone still collides across a
    * Supervisor retry, which re-executes the *same* run id in a fresh process
-   * whose counter restarts at 1. Without the attempt, attempt 2's first call
-   * resolves to attempt 1's event: the row is written and the event is
-   * swallowed, which is the divergence the single writer exists to prevent.
+   * whose counter restarts at 1. Do not omit the attempt. Attempt 2's first
+   * call would resolve to attempt 1's event: the row is written and the event
+   * is swallowed.
    */
   async function contextFor(db: Queryable, idempotencyKey: string | null): Promise<AgentActionContext> {
     if (!run.agent_id) throw new HttpError(422, "This action requires an Agent identity");

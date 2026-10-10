@@ -1086,8 +1086,7 @@ export class PgMemoryApplyRepository {
       // Throwing rather than returning null: `setOwnStatusLocked` answers null
       // for a row that is not the caller's or is soft-deleted, and returning it
       // here would commit the archive and restore nothing — leaving an Agent
-      // with no active persona at all, reported as "not found". The one state
-      // this transaction exists to prevent.
+      // with no active persona at all, reported as "not found".
       if (!restored) {
         throw new MemoryApplyError("the version this replaced is no longer there to put back");
       }

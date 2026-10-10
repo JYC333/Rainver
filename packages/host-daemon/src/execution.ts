@@ -958,9 +958,8 @@ export async function handleLaunch(
     send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false, error: "This host registration was revoked." });
     return;
   }
-  // Refused rather than raced: this copy is being replaced, and starting
-  // against a directory that is about to be renamed away is the failure the
-  // drain exists to prevent (ADR 0016 §9).
+  // Refused rather than raced. Do not start against a directory that is about
+  // to be renamed away (ADR 0016 §9).
   if (isRuntimeKeyBeingReplaced(frame.runtime_key)) {
     send({
       type: "complete",

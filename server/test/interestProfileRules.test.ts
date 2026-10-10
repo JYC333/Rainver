@@ -89,7 +89,7 @@ describe("profile maturity", () => {
     expect(explorationShare("warming")).toBeLessThan(explorationShare("cold"));
     expect(explorationShare("warm")).toBeLessThan(explorationShare("warming"));
     // A profile that only fills computed gaps converges on the reader's own
-    // history — precisely the failure serendipity exists to prevent.
+    // history. Do not let exploration reach zero.
     expect(explorationShare("warm")).toBeGreaterThanOrEqual(MIN_EXPLORATION_SHARE);
     expect(explorationShare("warm")).toBeGreaterThan(0);
   });

@@ -38,9 +38,9 @@ export interface NotebookNoteRow {
 
 /**
  * The two outcomes a role lookup has. A caller that treats "this project has
- * no note in that role" as an empty string is exactly the silent degradation
- * the role marker exists to prevent, so the absence is a value the caller has
- * to destructure rather than a `null` that reads like "nothing to add".
+ * no note in that role" as an empty string is silent degradation. The
+ * absence is a value the caller has to destructure rather than a `null`
+ * that reads like "nothing to add".
  */
 type NotebookNoteResolution =
   | { readonly present: true; readonly note: NotebookNoteRow }

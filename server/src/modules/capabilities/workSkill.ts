@@ -20,9 +20,8 @@ import {
  * Its content has one source. The judgement rules are the same constants
  * enforced by the ACP System Action Gateway
  * (`systemActions/conversationPolicy.ts`); the CLI mechanics below describe
- * how an external runtime reaches those actions. Two hand-maintained copies
- * of "when to call which action" are precisely the drift this arrangement
- * exists to prevent.
+ * how an external runtime reaches those actions. Do not keep a second copy
+ * of "when to call which action".
  *
  * What an agent may actually call is decided elsewhere, not by this file:
  * the Run's `permission_snapshot_json.tool_grants` computed at

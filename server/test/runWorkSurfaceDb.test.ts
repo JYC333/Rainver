@@ -463,9 +463,8 @@ describe("the Work Skill", () => {
   });
 
   it("carries the shared judgement rules verbatim rather than a second copy", () => {
-    // The drift this arrangement exists to prevent: the managed loop assembles
-    // these same constants, so an edit to one must not leave the other
-    // instructing an agent differently.
+    // The managed loop assembles these same constants. Do not let an edit to
+    // one leave the other instructing an agent differently.
     const skill = renderWorkSkill();
 
     expect(skill).toContain(IDENTIFIER_POLICY);
