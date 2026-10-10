@@ -73,9 +73,8 @@ const SEARCHED_TARGET_KINDS: readonly NoteLinkTargetType[] = ['source', 'claim',
 /**
  * Which actions the selection bar offers is the registry's answer, not this
  * file's: `applies_to` exists so a surface showing an object asks what it can
- * offer instead of hard-coding a menu, and a hand-maintained copy of a backend
- * list is the exact defect that left the link picker offering two of five
- * target kinds.
+ * offer instead of hard-coding a menu. Do not keep a second copy of the
+ * backend list: the picker then offers a subset of the target kinds.
  *
  * Only the wording is local. The registry's `title` is descriptive prose for
  * audit and policy surfaces ("Promote a passage to a Knowledge Item"), which

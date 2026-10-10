@@ -799,9 +799,9 @@ describe("the boundaries around an Agent's own memory", () => {
 
   it("keeps a persona revision the owner's alone, and records who asked", async () => {
     if (!db.available) return;
-    // The blocker this repair closed: setting the owner-only marker on creates
-    // alone left every *revision* — the common path once a persona exists —
-    // decidable by any Space owner or admin, including the member who asked.
+    // The owner-only marker applies to revisions, not only creates. A
+    // revision must not be decidable by any Space owner or admin, including
+    // the member who asked.
     const personaId = randomUUID();
     await db.pool.query(
       `INSERT INTO memory_entries (id, space_id, scope_type, memory_type, content, status, created_at, updated_at,

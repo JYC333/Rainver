@@ -170,11 +170,10 @@ describe("screening gate reform (real Postgres)", () => {
     await coordinator.createGate(operationRow(), next);
 
     // A permanently failed batch never classifies its items, so waiting would
-    // show "running" forever. An earlier version parked the operation in
-    // `waiting_review` and told the Room to retry — a 409, since retry
-    // requires `failed`. Failing is the only state whose advertised remedies
-    // (retry, cancel) both actually work, and `failOperation` owns the Room
-    // notification.
+    // show "running" forever. Do not park the operation in `waiting_review`
+    // and tell the Room to retry: retry requires `failed`, so that answer is
+    // a 409. Failing is the only state whose advertised remedies (retry,
+    // cancel) both work, and `failOperation` owns the Room notification.
     expect(portsValue.failOperation).toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining("stalled"),

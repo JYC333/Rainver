@@ -272,12 +272,10 @@ describe("providerVendorCapabilities", () => {
     });
 
     it("records vendor identity and capability, and nothing about a chat implementation", () => {
-      // The registry once carried the pi-ai catalog name each vendor's models are
-      // described by. That is a fact about the chat adapter, not about the
-      // vendor, and it now lives with the adapter. Nothing implementation-shaped
-      // may grow back here: a rate table, a compat flag, or a library-specific
-      // model id would make swapping the chat implementation an edit to the
-      // server's own vendor vocabulary.
+      // The registry records vendor identity and capability. The chat adapter
+      // owns the catalog name. Do not put a rate table, a compat flag, or a
+      // library-specific model id here: swapping the chat implementation
+      // would then edit the server's vendor vocabulary.
       //
       // What the registry does carry is everything rainver knows about a
       // vendor independently of who talks to it — including the published

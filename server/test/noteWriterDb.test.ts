@@ -170,8 +170,8 @@ describe("block ids on notes written before they existed (real Postgres)", () =>
     const identity = { spaceId: SPACE, userId: OWNER };
     const note = await repository.createNote(identity, { title: "Legacy" }) as { id: string };
 
-    // Rewrite the stored document to the pre-block-id shape, exactly as a note
-    // saved before this feature would sit in the database.
+    // Rewrite the stored document to the id-less shape. A note without block
+    // ids still loads.
     const legacy = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Older text." }] }] };
     await db.pool.query(`UPDATE notes SET content_json = $2::jsonb WHERE object_id = $1`, [note.id, JSON.stringify(legacy)]);
     await db.pool.query(`UPDATE note_revisions SET content_json = $2::jsonb WHERE note_id = $1`, [note.id, JSON.stringify(legacy)]);

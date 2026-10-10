@@ -85,7 +85,7 @@ cancelled or deleted has its branch removed from every Location its Runs
 worked on (a durable `task_branch_delete` job per Location). See [`modules/hosts.md`](../modules/hosts.md), "Location
 lease, Task worktrees and `git_after`", and ADR 0016 §11.
 
-A Run finishing is not the Task finishing. Settlement runs when every Run of the Task has stopped advancing, reads the **latest** one, and closes the Task only on an accepted evaluation with its declared outputs present; everything else holds the Task in `waiting_for_review` for a person. `blocked` is no longer written by a Run outcome — it means held up by something else. See [`PROJECT_WORK.md`](PROJECT_WORK.md).
+A Run finishing is not the Task finishing. Settlement runs when every Run of the Task has stopped advancing, reads the **latest** one, and closes the Task only on an accepted evaluation with its declared outputs present; everything else holds the Task in `waiting_for_review` for a person. `blocked` is not written by a Run outcome — it means held up by something else. See [`PROJECT_WORK.md`](PROJECT_WORK.md).
 
 ## Frontend
 

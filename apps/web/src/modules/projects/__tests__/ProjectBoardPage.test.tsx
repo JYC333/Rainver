@@ -270,8 +270,8 @@ describe('Project Board', () => {
   })
 
   it('creates a Task here, in the Project', async () => {
-    // Putting work on the Board is the daily action; before this it meant
-    // leaving the Project for the cross-Project Tasks list.
+    // A Task is created on the Board, in the Project. Do not send the person
+    // to the cross-Project Tasks list for that.
     vi.mocked(tasksApi.create).mockResolvedValue({ id: 'task-new' } as never)
     renderBoard()
     fireEvent.click(await screen.findByRole('button', { name: 'New Task' }))

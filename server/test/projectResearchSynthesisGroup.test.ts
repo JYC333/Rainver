@@ -275,17 +275,12 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
 });
 
 describe("projectResearchSynthesisResumeDb", () => {
-  // Real-Postgres coverage for a second, compounding bug on top of the
-  // reconcileOperation stage-clobber fix: `queueSynthesis`'s idempotency guard
-  // (`if (state.synthesis_run_id) return;`) silently no-ops whenever a
-  // synthesis run was already queued once, even if current_stage was since
-  // reset back to "screening" (by the now-fixed clobber bug, or any other
-  // path) and the operation genuinely still needs to advance. Any operation
-  // that got clobbered even once before the reconcile fix landed is stuck
-  // forever: re-approving the checkpoint calls decideCheckpoint successfully,
-  // but resumeAfterCheckpoint -> queueSynthesis returns immediately without
-  // touching current_stage, so nothing visibly happens and the checkpoint
-  // keeps coming back on the next reconcile tick.
+  // `queueSynthesis` must not treat a stored `synthesis_run_id` as already
+  // done. `if (state.synthesis_run_id) return` no-ops even when current_stage
+  // was reset to "screening" and the operation still needs to advance.
+  // Re-approving the checkpoint then succeeds, queueSynthesis returns without
+  // touching current_stage, and the checkpoint comes back on the next
+  // reconcile tick.
 
   const CONFIG = loadConfig({});
   const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -339,9 +334,9 @@ describe("projectResearchSynthesisResumeDb", () => {
       checkpoint_ids: [],
       source_post_processing_rule_ids: [],
       source_post_processing_rule_id: null,
-      // A prior approval already queued a synthesis run once, but current_stage
-      // was reset back to "screening" afterward (the clobber bug this operation
-      // simulates having already suffered before the reconcile fix landed).
+      // A prior approval already queued a synthesis run, and current_stage was
+      // reset to "screening" afterward. The stored run id must not stop
+      // queueSynthesis from advancing.
       synthesis_run_id: EXISTING_RUN_ID,
       watermark: { before: null, after: null, overlap_hours: 48 },
     };

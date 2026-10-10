@@ -83,7 +83,7 @@ never reach it.
 | `health_check` | `deployer/scripts/health_check.sh` | check server `/health` |
 
 Building dev and test images is a host operation (`ops/scripts/start.sh --build`): the
-sidecar no longer mounts the checkout, so `rebuild_rainver` refuses with that instruction
+sidecar does not mount the checkout, so `rebuild_rainver` refuses with that instruction
 outside prod rather than handing Compose an empty build context.
 
 No other job type, arbitrary command, caller-selected script, code-patch action,

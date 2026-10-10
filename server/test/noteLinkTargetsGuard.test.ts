@@ -5,19 +5,15 @@ import { join } from "node:path";
 import { retrievableEntityTypes, spaceObjectSubtypes } from "../src/modules/ontology/entities.js";
 
 /**
- * The guardrail the plan asks for: the editor's target-kind list must be
- * derived from the backend's accepted set, never hand-maintained.
+ * The editor's target-kind list is derived from the backend's accepted set.
+ * Do not hand-maintain it. A second list drifts: the editor then offers a
+ * subset while storage and the backlinks query accept more, and notes and
+ * research material cannot be connected. This check fails when the two
+ * disagree.
  *
- * Gap 3 was exactly a hand-maintained list drifting from its backend —
- * `NoteEditor.tsx` offered `note` and `knowledge_item` while the storage and
- * the backlinks query handled far more, so notes and research material could
- * not be connected at all. Fixing the list once fixes nothing durably; what
- * stops the drift recurring is a check that fails when the two disagree.
+ * Not every `retrieval_object_type` is offerable.
  *
- * Two corrections to the plan's premise, found while implementing NB. The plan
- * says the backend "already accepts" all nine `retrieval_object_type` values.
- *
- * - The *storage column* is typed that wide, but `createNoteLink` resolves both
+ * - The storage column accepts every `retrieval_object_type`, but `createNoteLink` resolves both
  *   endpoints through `requireVisibleSpaceObject`, so an entity with no
  *   `space_objects` row — `source_item`, `extracted_evidence`, `memory_entry` —
  *   is rejected at write time. Offering those three would 404 on every use.

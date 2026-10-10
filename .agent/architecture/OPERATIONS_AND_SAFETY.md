@@ -78,7 +78,7 @@ whose store is gone; no shared vendor HOME is replay authority.
 
 Paths are resolved on the host from a Location id or a managed container. The
 application server cannot send host paths, images, or environment maps, has no
-local subprocess fallback, and no longer has a vendor CLI of its own to fall
+local subprocess fallback, and has no vendor CLI of its own to fall
 back to. Namespace failure is terminal. Runtime Context Delivery is sent directly to the adapter and no
 read-only-context staging directory or generated vendor context file exists.
 

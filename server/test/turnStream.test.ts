@@ -134,8 +134,8 @@ describe("run turn", () => {
     expect(response.headers["cache-control"]).toBe("no-store, no-cache, must-revalidate, private, no-transform");
     expect(response.headers["content-type"]).toContain("text/event-stream");
     expect(response.headers["cache-control"]).toContain("no-transform");
-    // Written by hand once per stream, which is how the server marker came to
-    // be missing from two of the three.
+    // The header set is shared. Do not write it by hand per stream: the
+    // server marker then goes missing from some of them.
     expect(response.headers["x-request-id"]).toBeTruthy();
     expect(response.headers["x-rainver-server"]).toBeTruthy();
     expect(response.headers["x-accel-buffering"]).toBe("no");

@@ -15,8 +15,7 @@ export const PROFILE_ROOT_PLACEHOLDER = "{{RAINVER_RUN_PROFILE}}";
  * An allowlist, not a denylist, because B67 states the rule that way round:
  * backend selection comes only from what the control plane injects, so the
  * question is what a runtime legitimately needs from the machine — not which
- * of the machine's variables we remembered to name. The deleted server-host
- * path reached the same conclusion; a denylist here would have let
+ * of the machine's variables we remembered to name. A denylist would let
  * `CLAUDE_CODE_OAUTH_TOKEN`, `XDG_DATA_HOME` and `NODE_OPTIONS` through, each
  * of which redirects a run somewhere the control plane did not choose.
  *

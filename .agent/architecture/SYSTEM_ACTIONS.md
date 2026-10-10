@@ -333,8 +333,8 @@ proposal names its class in the registry (`gate_class`, required by
 and a non-null class imply each other). Nothing else is a proposal, because
 "an Agent wrote it" is not a reason: under an Agent that advances work,
 per-write approval degrades into a rubber stamp on exactly the writes that
-matter, and one Room turn once produced six pending cards for a single
-decomposition a person had asked for.
+matter. One decomposition a person asked for must not become a stack of
+pending cards.
 
 Every other Project-internal write is governed by two things instead. **The
 trigger origin**: a write from a person's own turn (`manual`) executes, and a

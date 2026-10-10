@@ -4955,7 +4955,7 @@ describe("Room workflow (real Postgres)", () => {
       hostId: "host-1",
       primary: { kind: "location", workspace_location_id: "location-1" },
     });
-    // This Conversation's Run once left HEAD at H1 …
+    // This Conversation's Run left HEAD at H1.
     await db.pool.query(
       `UPDATE conversation_execution_contexts SET last_run_git_branch = 'main', last_run_git_head = 'h1' WHERE session_id = $1`,
       [conversation.id],

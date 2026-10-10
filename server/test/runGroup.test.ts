@@ -736,10 +736,10 @@ describe("runRetryPolicy", () => {
       expect(isRetryableRunErrorCode("invalid_request")).toBe(false);
     });
 
-    it("retries a host daemon's timeout and stall, and no longer knows the deleted server-host codes", () => {
-      // `cli_adapter_timeout` and `cli_stall_timeout` were the server-side CLI
-      // line's codes; ADR 0016 deleted the line and nothing emits them. These
-      // two are what a host daemon reports for the same failures.
+    it("retries a host daemon's timeout and stall, and does not retry cli_adapter_timeout or cli_stall_timeout", () => {
+      // `cli_adapter_timeout` and `cli_stall_timeout` are not emitted. Do not
+      // treat them as retryable. `runtime_timeout` and `runtime_stall_timeout`
+      // are what a host daemon reports for those failures.
       expect(isRetryableRunErrorCode("cli_adapter_timeout")).toBe(false);
       expect(isRetryableRunErrorCode("cli_stall_timeout")).toBe(false);
       expect(isRetryableRunErrorCode("runtime_timeout")).toBe(true);

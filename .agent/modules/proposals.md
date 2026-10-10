@@ -139,7 +139,7 @@ path; `memoryApplyRepository.ts` fixes it to `explicit_user_accept`.
 - A proposal exists for one of the seven gate classes in
   [ADR 0017](../decisions/0017-authorization-by-cost-not-authorship.md) §1 and
   names which (`gate_class` on the action registration). Opening an Inquiry
-  Thread and recording its conclusion are no longer among them: they are
+  Thread and recording its conclusion are not among them: they are
   origin-gated, bounded direct writes, reviewed afterwards from the Project's
   updates.
 - `code_patch` rollback requires a non-expired `available` snapshot and every applied file unchanged since apply; once used, status becomes `rolled_back` and cannot be reused. It also requires the same apply / `write_patch` authority as accept.

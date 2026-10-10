@@ -40,7 +40,7 @@ describe("server-owned health routes", () => {
     });
   });
 
-  it("does not serve the old /api/v1/gateway/health route", async () => {
+  it("does not serve /api/v1/gateway/health", async () => {
     app = buildServer(loadConfig({}), { logger: false });
     const res = await app.inject({ method: "GET", url: "/api/v1/gateway/health" });
     expect(res.statusCode).toBe(404);

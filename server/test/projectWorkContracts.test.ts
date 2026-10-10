@@ -140,8 +140,8 @@ describe("run settlement decision", () => {
 
   it("holds a successful Run whose evaluation did not accept it", () => {
     // The evaluation already computes this recommendation on every
-    // finalization; the old projection simply never read it, so a Run the
-    // evaluator called `retry` still closed its Task as done.
+    // finalization. Settlement must read it. A Run the evaluator called
+    // `retry` must not close its Task as done.
     for (const recommendation of ["review", "retry", "needs_evidence", null]) {
       expect(outcomeForRun("succeeded", recommendation, true, []), String(recommendation))
         .toMatchObject({ flow: "waiting_for_review", stage: "verify" });

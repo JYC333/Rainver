@@ -784,9 +784,9 @@ export function ConversationSurface({
         ...(activeDiscussion && discussionSendMode === 'join' ? { discussion_id: activeDiscussion.id } : {}),
         ...(effectiveInputParts.length > 0 ? { input_parts: effectiveInputParts } : {}),
         routing_mode: routingMode,
-        // Mentions route in both places a conversation is read. The panel
-        // once left this out, so an `@Agent` typed there chose which
-        // backends to send and addressed nobody.
+        // Mentions route in both places a conversation is read. Do not omit
+        // `recipient_segments` here: an `@Agent` then chooses backends and
+        // addresses nobody.
         ...(routingMode === 'direct' && segments.length > 0
           ? { recipient_segments: segments }
           : variant === 'full' ? { recipient_segments: null } : {}),

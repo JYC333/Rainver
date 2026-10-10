@@ -213,8 +213,8 @@ export default async function setup(project: GlobalSetupProject): Promise<() => 
   }
 
   let configured = new PostgreSqlContainer("pgvector/pgvector:pg18")
-    // PostgreSQL 18 stores clusters below a versioned directory here. Mounting
-    // the old /var/lib/postgresql/data path makes the pg18 image fail fast.
+    // PostgreSQL 18 stores clusters below a versioned directory here. Do not
+    // mount /var/lib/postgresql/data: the pg18 image fails fast.
     .withTmpFs({ "/var/lib/postgresql": "rw" })
     // Throughput settings for a throwaway instance serving a dozen workers:
     // durability off (tmpfs anyway), no autovacuum churn behind per-test

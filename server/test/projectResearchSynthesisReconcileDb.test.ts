@@ -17,11 +17,10 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 // Real-Postgres coverage for reconcileOperation's synthesis stage. The
-// synthesis run's terminal state is normally projected by a one-shot hook in
-// the agent_run job handler; before this coverage existed the periodic
-// reconciler ignored the synthesis stage entirely, so (a) the UI had no live
-// run-status feedback at all while synthesis executed and (b) an operation
-// whose one-shot projection was missed waited forever with no recovery.
+// synthesis run's terminal state is also projected by a one-shot hook in
+// the agent_run job handler. The periodic reconciler covers the synthesis
+// stage too. Do not leave it to the one-shot hook: the UI then has no live
+// run-status while synthesis executes, and a missed projection waits forever.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

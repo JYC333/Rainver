@@ -55,9 +55,9 @@ describe("production nginx proxy", () => {
   /**
    * nginx *replaces* rather than inherits the `add_header` set as soon as a
    * location adds one of its own, so a location that sets a cache header and
-   * forgets the security set serves the app shell with no CSP at all. Five
-   * hand-maintained copies is how one of them came to disagree with the
-   * others; the rule now is that every such location includes the one file.
+   * forgets the security set serves the app shell with no CSP at all. Every
+   * such location includes the one file. Do not keep a second copy of the
+   * header set.
    */
   it("repeats that set in every location that sets a header of its own", () => {
     expect(nginxConf).toContain(HEADERS_INCLUDE);

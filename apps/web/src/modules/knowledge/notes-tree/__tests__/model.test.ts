@@ -201,7 +201,7 @@ describe('planNoteMove', () => {
     ])
   })
 
-  /** The defect this phase exists for: a note in two folders, reordered in one. */
+  /** A note in two folders, reordered in one, moves only the placement being dragged. */
   it('plans only the placement being dragged, leaving the note\'s others alone', () => {
     const shared = makeNote({
       id: 'shared',

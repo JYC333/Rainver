@@ -691,8 +691,8 @@ expect((await repository.records(SPACE, first.session.id)).records).toHaveLength
 
     it("writes a summary the first time one is asked for, and not again", async () => {
       // On demand is the whole trigger: nothing is generated at import, so a
-      // session imported before this feature existed, or one whose Location
-      // was unregistered, is summarized the first time somebody references it
+      // session with no summary yet, including one whose Location was
+      // unregistered, is summarized the first time somebody references it
       // rather than never.
       const repository = new PgImportedSessionRepository(db.pool);
       const imported = await repository.reconcile(reconcileInput());

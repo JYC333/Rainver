@@ -75,11 +75,9 @@ describe("project note role guardrail", () => {
   });
 
   it("selects no note by title against a project scope outside the adoption", () => {
-    // The literal check above misses the shape the code actually regressed
-    // into last time: the title moved into `SECTION_LABELS[key]` and was still
-    // passed as a bind parameter to a `so.title = $n` query scoped by
-    // `primary_project_id`. That pairing — a project-scoped note query keyed on
-    // title — is the defect, whether or not a literal is visible.
+    // Do not select a note by title inside a project scope. A title in
+    // `SECTION_LABELS[key]`, bound to `so.title = $n` and scoped by
+    // `primary_project_id`, is that query whether or not a literal is visible.
     const offenders: string[] = [];
     for (const file of listTsFiles(srcDir)) {
       const relative = file.slice(join(import.meta.dirname, "..").length + 1);

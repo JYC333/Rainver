@@ -596,9 +596,8 @@ describe("environment for a daemon-side helper process", () => {
   });
 
   it("drops the named runtime's own credentials, by prefix rather than by a two-key denylist", () => {
-    // The defect: each call site deleted `ANTHROPIC_API_KEY` and
-    // `CLAUDE_CODE_OAUTH_TOKEN` beside a whole `process.env` spread, so any
-    // other key under the same prefix went straight through.
+    // Drop credentials by prefix. Do not delete two named keys beside a
+    // `process.env` spread: any other key under the same prefix goes through.
     const env = helperProcessEnv({ ...ambient, ANTHROPIC_AUTH_TOKEN: "other", CLAUDE_API_KEY: "another" }, "claude_code");
     for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) {
       expect(env, key).not.toHaveProperty(key);

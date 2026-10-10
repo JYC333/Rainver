@@ -115,10 +115,9 @@ async function proposalRowToApplyProposal(proposalId: string): Promise<ApplyProp
 
 describe("inquiry.create_thread, direct (real Postgres)", () => {
   // ADR 0017 §2. Splitting a question into sub-questions is one judgement a
-  // person made when they asked; drafting it into N proposals they approve one
-  // by one is that judgement taken N times, and one Room turn once produced
-  // six pending cards for it. What replaces the gate is the trigger origin,
-  // the per-turn bound, and Updates.
+  // person made when they asked. Do not draft it into N proposals they
+  // approve one by one. The limit is the trigger origin, the per-turn bound,
+  // and Updates.
   it("opens the Thread in the turn, with no proposal, and records it for the person", async () => {
     if (!db.available) return;
     const run = await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID);
