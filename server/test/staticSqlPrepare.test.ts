@@ -5,11 +5,10 @@ import { useTestDatabase } from "./support/testDatabase.js";
 
 // Every static SQL string in server/src is PREPAREd against a migrated
 // database. PREPARE parses, resolves names, and deduces parameter types
-// without executing, so this catches the failures that otherwise only surface
-// when a rarely-taken branch runs in production: columns dropped or renamed by
-// a schema change, ambiguous references after a new JOIN, and a parameter used
-// in two places whose types disagree (`$n` bound to a varchar column in one
-// place and compared as text in another).
+// without executing. A dropped or renamed column, an ambiguous reference
+// after a JOIN, and a parameter used in two places whose types disagree
+// (`$n` bound to a varchar column in one place and compared as text in
+// another) fail here.
 //
 // Only self-contained literals are checked. Interpolated SQL is skipped, so is
 // anything without a bound parameter (this codebase builds its composable

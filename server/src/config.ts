@@ -719,9 +719,9 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
     300,
     86_400,
   );
-  // Legacy compatibility for pre-space-setting local env files. The active
-  // retrieval LLM-stage gate is the `retrieval.space.settings` scoped setting;
-  // these keys remain deliberately absent from KNOWN_ENV_KEYS.
+  // Older local env files may still set these. The active retrieval
+  // LLM-stage gate is the `retrieval.space.settings` scoped setting. These
+  // keys stay out of KNOWN_ENV_KEYS.
   const retrievalRerankEnabled = parseBool(env.SERVER_RETRIEVAL_RERANK_ENABLED, false);
   const retrievalQueryRewriteEnabled = parseBool(env.SERVER_RETRIEVAL_QUERY_REWRITE_ENABLED, false);
   const rainverEnv = env.RAINVER_ENV?.trim() || "";

@@ -6197,9 +6197,8 @@ describe("Room workflow (real Postgres)", () => {
     expect(await pointer()).toBe(before);
     expect(await pointer()).not.toBe(manager.rows[0]!.agent_id);
 
-    // And on the create path too: a Project with no instance yet mints one,
-    // which must not claim the Space pointer either. Only the reconcile path
-    // was covered above, because project-1 already had an Assistant.
+    // The create path too: a Project with no instance yet mints one. That
+    // instance must not claim the Space pointer.
     await db.pool.query(
       `INSERT INTO projects (
          id, space_id, owner_user_id, name, status, created_at, updated_at

@@ -177,8 +177,8 @@ interface FollowUpTaskOrigin {
   proposalId?: string | null;
   /**
    * The Agent, for `task.created`. The Task belongs to the person — they own
-   * it and it inherits their access — but the stream says who made it, and a
-   * Task the Agent decided on did not appear because the person typed it.
+   * it and it inherits their access — but the stream says who made it. Do
+   * not record an Agent-decided Task as if the person typed it.
    */
   agentActorId?: string | undefined;
 }

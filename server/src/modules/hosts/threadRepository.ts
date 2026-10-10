@@ -568,10 +568,9 @@ export class PgHostThreadRepository {
       contextWindow?: { used: number; size: number } | null;
     },
   ): Promise<void> {
-    // A reset clears the stale vendor session id outright rather than
-    // COALESCE-preserving it — otherwise every subsequent dispatch into this
-    // thread keeps retrying the exact same broken `--resume <id>` forever
-    // instead of degrading to a fresh session as `session_reset` promises.
+    // A reset clears the stale vendor session id. Do not COALESCE-preserve
+    // it. Every later dispatch would retry the same broken `--resume <id>`
+    // instead of starting fresh, which is what `session_reset` means.
     //
     // The identity digest is recorded here and nowhere else: only a Run that
     // carried the block and landed may say the session holds it, so a

@@ -208,12 +208,10 @@ async function resolveDestinationSpace(
  * The capture must be one the caller can actually read, and must be a real
  * capture.
  *
- * The read gate is applied here rather than left to the note read downstream.
- * It was in fact enforced — `noteState` goes through `getNote`, which gates —
- * but by a different module for an unrelated reason, and the "was this ever
- * projected into a note" check runs first, so a colleague's private capture
- * answered 409 where a nonexistent one answered 404. A small oracle, and a real
- * hole the moment a relocation path appears that does not read the note.
+ * Apply the read gate here. Do not leave it to the note read downstream.
+ * The projection check runs first, so a colleague's private capture would
+ * answer 409 where a missing one answers 404. A relocation path that does
+ * not read the note would skip the gate.
  *
  * Read without oversight: a relocated block becomes a row other people read,
  * so an admin's audit reach must not be what makes a colleague's private

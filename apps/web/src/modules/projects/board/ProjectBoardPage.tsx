@@ -99,9 +99,9 @@ export default function ProjectBoardPage() {
     toStatus: string,
     acknowledged?: string[],
   ) => {
-    // Drawn where it was dropped before the request goes out, and put back if
-    // the server refuses. Re-reading through the loading path instead replaced
-    // the whole Board with a skeleton on every drag.
+    // Draw the card where it was dropped before the request goes out, and put
+    // it back if the server refuses. Do not re-read through the loading path.
+    // That replaces the whole Board with a skeleton on every drag.
     setBoard(current => (current ? applyCardMove(current, card.id, toStatus) : current))
     try {
       await moveCardStatus(card.id, toStatus, acknowledged)

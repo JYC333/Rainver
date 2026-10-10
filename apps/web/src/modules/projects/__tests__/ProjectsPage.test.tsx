@@ -90,10 +90,10 @@ describe('ProjectsPage', () => {
     render(<MemoryRouter><ProjectsPage /></MemoryRouter>)
     await openCreateDialog()
 
-    // Goal, scope, success and Mode were asked here before the work had a
-    // shape, so they were guessed at. They are set from inside the Project,
-    // where the Brief, the checklist and the Assistant can help; Mode starts
-    // as Research and is changed from the Project shell.
+    // The create form asks for a name. Goal, scope, success, and Mode are set
+    // from inside the Project, where the Brief, the checklist and the
+    // Assistant can help. Do not ask them here. Mode starts as Research and
+    // is changed from the Project shell.
     for (const label of ['Goal', 'Scope', 'Success definition', 'Current focus', 'How does this Project advance?']) {
       expect(screen.queryByText(label)).not.toBeInTheDocument()
     }

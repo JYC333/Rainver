@@ -14,9 +14,8 @@ import {
  *
  * Do not select `WHERE so.title = 'Current understanding'`. Renaming that
  * note would drop the research comparison's baseline and the comparison
- * would degrade with no error. A single re-introduced literal brings that
- * back, so this is a source scan rather than a behaviour test — a
- * behaviour test only covers the call path someone remembered to write one for.
+ * would degrade with no error. This is a source scan. A behaviour test
+ * only covers the call path it is written for.
  */
 
 const srcDir = join(import.meta.dirname, "..", "src");

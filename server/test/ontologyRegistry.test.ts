@@ -245,10 +245,8 @@ describe("ontology registry", () => {
     }
   });
 
-  // ND collapsed the provenance vocabulary from four copies to one, but the
-  // one it kept was a parallel list rather than an interface declaration, so
-  // this test could not see it and two of the copies survived unnoticed. It is
-  // a declaration now, which is what puts it in front of these assertions.
+  // Provenance source types are declared on the entity. Do not keep a
+  // free-floating list beside that declaration.
   it("declares provenance source types on entities, with no free-floating list", () => {
     const declared = provenanceSourceTypes();
     expect(declared.length).toBeGreaterThan(0);
@@ -256,13 +254,14 @@ describe("ontology registry", () => {
     for (const token of declared) {
       expect(isProvenanceSourceType(token)).toBe(true);
     }
-    // Renamed because it lied: it stored a run id under a step's name.
+    // `run_step` is not a provenance source type. Do not accept it. It would
+    // store a run id under a step's name.
     expect(isProvenanceSourceType("run_step")).toBe(false);
-    // Dropped: no writer, no reader, and a run's internal structure is not an
-    // entity (B12C).
+    // `run_event` is not a provenance source type. It has no writer and no
+    // reader, and a run's internal structure is not an entity (B12C).
     expect(isProvenanceSourceType("run_event")).toBe(false);
     expect(isProvenanceSourceType("nonsense")).toBe(false);
-    // Kept, for reasons recorded on the declaration: a stored token whose
+    // These stay. The declaration records why: a stored token whose
     // entity is `user`, a value with a live reader, and the one sentinel.
     expect(isProvenanceSourceType("user_confirmation")).toBe(true);
     expect(isProvenanceSourceType("source_snapshot")).toBe(true);

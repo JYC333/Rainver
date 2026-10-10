@@ -325,9 +325,9 @@ export function ConversationSurface({
   useEffect(() => { discussionsRef.current = discussions }, [discussions])
   // Held in a ref, never in a dependency list. `loadMessages` reports the
   // conversation it read, and the mount effect below depends on
-  // `loadMessages` — so a caller passing an inline arrow would make every
-  // report re-run the effect, which re-reads and reports again. That loop was
-  // real: the Project chat panel spun on it from first paint.
+  // `loadMessages`. Do not pass an inline arrow. Every report would re-run
+  // the effect, which re-reads and reports again, and the panel spins from
+  // first paint.
   const conversationUpdatedRef = useRef(onConversationUpdated)
   useEffect(() => { conversationUpdatedRef.current = onConversationUpdated }, [onConversationUpdated])
   const onSentRef = useRef(onSent)

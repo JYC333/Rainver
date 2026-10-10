@@ -11,9 +11,8 @@ describe('Pagination', () => {
   })
 
   it('brings an offset that fell past the last page back onto it', () => {
-    // The caller was on page two with one item, which an action then moved
-    // out of the filtered list: total is 30 again, offset still 30. With no
-    // control rendered the person was stuck on an empty page.
+    // An offset past the last page still has to move. Do not omit the
+    // control. The person would stay on an empty page.
     const onChange = vi.fn()
     render(<Pagination total={30} limit={30} offset={30} onChange={onChange} />)
     expect(onChange).toHaveBeenCalledWith(0)

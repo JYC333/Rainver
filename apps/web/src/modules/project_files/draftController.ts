@@ -243,8 +243,8 @@ export class ProjectFileDraftController {
     } catch (error) {
       this.inFlight = null
       this.error = error
-      // The refusal names the draft as it now is; holding the old version
-      // left rebase and discard refused on it too.
+      // The refusal names the draft as it now is. Do not keep the previous
+      // version. Rebase and discard would be refused on it too.
       const current = conflictingDraft(error)
       if (current === null) {
         // No draft any more (discarded elsewhere): the unsaved edits start a

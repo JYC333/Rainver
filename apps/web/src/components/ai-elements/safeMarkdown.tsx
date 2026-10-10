@@ -134,11 +134,10 @@ export function MarkdownImage({ src, alt, title, node: _node, ...props }: Compon
 /**
  * Syntax plugins.
  *
- * CJK spacing only. Mermaid, Shiki and LaTeX are absent for the same kind of
- * reason: a second of import time each per test file, and a large chunk in a
- * bundle every visitor downloads, to render something nobody has asked a
- * conversation to do. Add one back when a surface needs it — and pin its
- * grammar set if it is `code`.
+ * CJK spacing only. Mermaid, Shiki and LaTeX stay out: a second of import
+ * time each per test file, and a large chunk in a bundle every visitor
+ * downloads, for something no conversation asks to render. Add one when a
+ * surface needs it, and pin its grammar set if it is `code`.
  */
 const streamdownPlugins = { cjk }
 
