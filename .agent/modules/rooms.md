@@ -174,8 +174,8 @@ Room conversation summaries:
   run of ASCII letters, and whitespace, a quarter token a character; a run of
   ASCII letters and digits that holds a digit — numbers, hashes, UUIDs,
   base64 — three quarters; other ASCII punctuation half; any other character
-  one), not UTF-8 bytes. Measured against real tokenizers it stays at or
-  above the real count on prose, code, ids and encoded data. The summary
+  one), not UTF-8 bytes. The estimate is an approximate upper bound (CJK can
+  sit slightly under). The summary
   scheduler's SQL threshold gate (`conversationSummaryService.ts`)
   approximates it in the database: every ASCII character a quarter, every
   multi-byte character one. It under-counts digits and punctuation, which only

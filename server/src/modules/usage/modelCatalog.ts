@@ -80,10 +80,8 @@ export function resolveModelWindow(model: string | null, override?: ModelWindowO
  * digits that contains a digit — a number, a hash, a UUID segment, base64 —
  * costs three quarters a character, since such runs split into short pieces;
  * other ASCII punctuation half a token; CJK and any other character one token.
- * Measured against the o200k and cl100k tokenizers it stays at or above the
- * real count on English, code, Markdown, numbers, hashes, UUIDs, JSON with ids
- * and base64 (CJK on cl100k within 5 % under), and needs no dependency. It is
- * an upper bound only approximately: planners keep a margin
+ * The estimate is an approximate upper bound (CJK can sit slightly under) and
+ * needs no tokenizer dependency. Planners keep a margin
  * (`runtimeContext/windowPlanner.ts`).
  */
 export function estimateModelTokens(text: string): number {

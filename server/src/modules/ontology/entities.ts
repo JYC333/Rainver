@@ -7,8 +7,8 @@
  * and a new domain has to be added to each by hand.
  *
  * The subject here is an **Entity**, not only an ontology object. `run`,
- * `proposal`, `artifact`, `task`, and `memory_entry` are entities too — which is
- * why unification never required a domain to become a `space_objects` row.
+ * `proposal`, `artifact`, `task`, and `memory_entry` are entities too. A
+ * domain does not have to be a `space_objects` row.
  *
  * **Declaration granularity is chosen by the interface, not fixed globally.**
  * `ContentAccessible` is declared once on `space_object` and inherited by every

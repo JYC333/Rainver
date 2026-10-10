@@ -161,8 +161,8 @@ validation is the registry's job; the database keeps only format constraints.
 `Graphable`, `Evidenceable`, `ContextIncludable`, `CardSourceable`,
 `ProvenanceSourceable`, `Governed`). Its subject is
 an **Entity** — `space_objects` subtypes and independent roots such as `run`,
-`proposal`, `artifact`, `activity_record`, and `task` alike; unification never
-requires a domain to become a `space_objects` row. Each interface states its
+`proposal`, `artifact`, `activity_record`, and `task` alike. A domain does not
+have to be a `space_objects` row. Each interface states its
 own declaration granularity: `ContentAccessible` is declared once for
 `space_object` and covers every subtype, `Retrievable` is declared per
 `object_type`. **Do not add a parallel per-mechanism type list.** Every
