@@ -14,11 +14,9 @@ import { ProjectFolderConversationProvider } from './ProjectFolderConversationCo
 /**
  * The three things a person switches between while running a Project.
  *
- * Everything else stays reachable under Areas — this is a promotion, not a
- * removal, and every route is unchanged so existing links keep working. A flat
- * list of fifteen made choosing a module the first step of understanding a
- * Project, which is backwards: the question on arriving is what is going on,
- * not which subsystem to open.
+ * Everything else stays reachable under Areas. Every route is unchanged so
+ * existing links keep working. The question on arriving is what is going on.
+ * Do not open with a flat list of every module.
  */
 const primary = [
   { label: 'Pulse', path: '' },
@@ -30,13 +28,11 @@ const primary = [
 ] as const
 
 /**
- * Six, flat. Thirteen entries in four groups were six research surfaces that
- * had grown up separately and pointed at each other with banners, plus three
- * doors to one source pipeline. Each fold keeps the route: Raw material and
- * Digest are tabs of Sources; Knowledge review and Experiments are views of
- * Inquiry; every Room's conversations are one list under Conversations, and
- * the Rooms page (roster, invitations) is reached from there. Group labels
- * went with the groups — six is one glance.
+ * Six, flat. Raw material and Digest are tabs of Sources; Knowledge review
+ * and Experiments are views of Inquiry; every Room's conversations are one
+ * list under Conversations, and the Rooms page (roster, invitations) is
+ * reached from there. Do not put them back into labeled groups, and do not
+ * give each fold its own sidebar entry.
  */
 const areas = [
   { label: 'Notes', path: 'notes' },
@@ -90,7 +86,7 @@ export default function ProjectAreaLayout() {
 
   // Capture is one affordance in the app shell, not one per Area and not a
   // second one per Project: a thought that arrives while doing an experiment
-  // must not require navigating to notes first (U2). This declares the Project
+  // must not require navigating to notes first. This declares the Project
   // the shell's composer may offer as a destination; Areas that know what they
   // are currently about declare that object separately.
   // Open by default: an Area a person cannot see is one they will not

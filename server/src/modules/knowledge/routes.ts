@@ -1599,7 +1599,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 
   /**
-   * Placements (U5). A note may sit in several folders at once; adding one is a
+   * Placements. A note may sit in several folders at once; adding one is a
    * separate action from moving the note, and removing the last one is refused
    * rather than quietly leaving a note no tree can reach.
    */
@@ -1639,7 +1639,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 
   /**
-   * Cross-Project shares (U8). Listing is gated by the note's own read gate, so
+   * Cross-Project shares. Listing is gated by the note's own read gate, so
    * a caller who cannot see the note cannot learn which Projects can.
    */
   app.get("/api/v1/knowledge/notes/:noteId/shares", async (request, reply) => {

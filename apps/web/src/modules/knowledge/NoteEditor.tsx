@@ -165,7 +165,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   const [actionBusy, setActionBusy] = useState<NoteSystemActionId | null>(null)
 
   const [revisions, setRevisions] = useState<NoteRevision[] | null>(null)
-  // Which other Projects can read this note (U8). Loaded with the note rather
+  // Which other Projects can read this note. Loaded with the note rather
   // than behind the chip: the count has to be on the chip before it is opened,
   // because "who else can see this" is not something a user thinks to check.
   const [shares, setShares] = useState<NoteProjectShare[]>([])

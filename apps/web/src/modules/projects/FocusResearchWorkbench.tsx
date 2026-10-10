@@ -65,11 +65,10 @@ function isEmptySearchOperation(operation: ProjectOperation | null): boolean {
 }
 
 /**
- * Whether a source failed to contribute at all. The operation records this, but
- * the completion wording ignored it — so "no relevant evidence" was reported
- * with equal confidence whether every provider had been read or one of them had
- * never answered. Those are different claims and the reader has to be able to
- * tell them apart before acting on the suggestion to broaden the query.
+ * Whether a source failed to contribute at all. The operation records this.
+ * "No relevant evidence" after every provider was read is a different claim
+ * from the same words when one of them never answered. The reader has to
+ * tell them apart before acting on a suggestion to broaden the query.
  */
 function coverageIncomplete(operation: ProjectOperation): boolean {
   if (operation.progress_json.coverage_degraded === true) return true

@@ -17,9 +17,9 @@ vi.mock('../../core/spaceNav', () => ({
   ),
 }))
 
-// Question/hypothesis definition now happens entirely on the Inquiry Thread
-// page (see QuestionRefinementPanel.test.tsx) — by the time this dialog
-// opens, `research_question`/`research_context_version_id` already reflect
+// Question and hypothesis definition happens on the Inquiry Thread page
+// (see QuestionRefinementPanel.test.tsx). By the time this dialog opens,
+// `research_question` and `research_context_version_id` already reflect
 // whatever was confirmed there. These drafts model that already-refined state.
 const initialDraft = {
   research_question: 'How should agent tools be evaluated?',

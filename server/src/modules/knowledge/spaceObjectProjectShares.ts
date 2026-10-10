@@ -4,8 +4,7 @@ import { assertProjectWriter } from "../projects/access.js";
 
 /**
  * Additional Project scopes for a `space_objects` row — the write side of the
- * `space_object_project_shares` declaration the content-access registry reads
- * (U8/U9).
+ * `space_object_project_shares` declaration the content-access registry reads.
  *
  * A share is deliberate and narrow. It widens the **scope** half of the read
  * gate for one object and one Project: members of that Project stop being
@@ -91,7 +90,7 @@ export async function shareSpaceObjectWithProject(
  * Dropping the placements is the point rather than a side effect: a placement
  * inside a Project's tree is what puts the object in that Project's view, so
  * leaving them behind after a revoke would show that Project's members a tree
- * with a hole in it — the silent absence U8 exists to prevent, just arrived at
+ * with a hole in it — the silent absence a share must not leave, just arrived at
  * from the other direction.
  */
 export async function revokeSpaceObjectProjectShare(

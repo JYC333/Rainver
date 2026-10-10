@@ -249,7 +249,7 @@ function contentScopeSql(
 }
 
 /**
- * True when the resource is shared into some Project the viewer can read (U8).
+ * True when the resource is shared into some Project the viewer can read.
  *
  * This widens the *scope* half of the gate and nothing else: `visibility`,
  * `access_level` and `content_access_grants` are separate conjuncts evaluated

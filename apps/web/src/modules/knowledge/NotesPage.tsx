@@ -198,7 +198,7 @@ export default function NotesPage({ scope }: NotesPageProps) {
    * Without a query the centre list is one folder's contents, in the user's
    * manual order. With one it is a search over the whole surface — which is the
    * half of hoisting that matters: narrowing what is drawn while search still
-   * spans every Project would be the wrong half (U4). `collection_ids` carries
+   * spans every Project would be the wrong half. `collection_ids` carries
    * the hoisted subtree; absent, the search spans the Space.
    */
   // Every keystroke and folder change starts a new list request; only the
@@ -703,7 +703,7 @@ export default function NotesPage({ scope }: NotesPageProps) {
   }
 
   /**
-   * The additive drop (U5): the note gains a folder and keeps the ones it is
+   * The additive drop: the note gains a folder and keeps the ones it is
    * in. Not run through the optimistic queue — unlike a reorder there is no
    * local answer for the new placement's sort order, and the server's reply is
    * the note with its placements already correct.
@@ -715,7 +715,7 @@ export default function NotesPage({ scope }: NotesPageProps) {
       toast.success(`Also placed in ${collectionById.get(collectionId)?.name ?? 'that folder'}`)
     } catch (e) {
       // Dropping a note into another Project's folder is a permission change,
-      // so it is a question rather than an error (U8): the server refuses and
+      // so it is a question rather than an error: the server refuses and
       // names the case, and the user confirms it in words before it happens.
       if (e instanceof ApiRequestError && e.code === 'note_cross_project_share_required') {
         setShareDialog({ noteId: targetNoteId, collectionId })

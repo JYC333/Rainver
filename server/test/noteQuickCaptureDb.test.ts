@@ -6,7 +6,7 @@ import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
- * S5 quick capture (U11). Two shapes, and the reason there are two:
+ * Quick capture. Two shapes, and the reason there are two:
  *
  * - **With a context object** — one note per object, appending on repeat. Ten
  *   papers' annotations must not end up in one note.

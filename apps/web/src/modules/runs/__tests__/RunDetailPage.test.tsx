@@ -107,9 +107,8 @@ describe('RunDetailPage route decision panel', () => {
   })
 
   it('names a bounded provider task instead of leaving the Agent identifiers blank', async () => {
-    // A `provider_task` Run has no Agent, AgentVersion or runtime snapshot by
-    // construction, so these fields were rendering as empty strings with
-    // nothing on the page saying what kind of Run it is.
+    // A `provider_task` Run has no Agent, AgentVersion or runtime snapshot.
+    // Name the kind of Run. Do not render those fields as empty strings.
     useRunMock.mockReturnValue({
       run: {
         ...(run as unknown as Record<string, unknown>),

@@ -82,7 +82,7 @@ interface NotesTreeProps {
    * move and/or reorder that placement. */
   onDropNotes?: (updates: NoteMove[]) => void
   /**
-   * Hold Alt while dropping to add a placement instead of moving one (U5).
+   * Hold Alt while dropping to add a placement instead of moving one.
    * Trilium uses a modifier on drop for the same distinction; without one the
    * only options are silently widening every drag or never allowing a second
    * placement at all.

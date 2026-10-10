@@ -28,8 +28,7 @@ describe("additional project scope declaration", () => {
 
   it("keeps the share strictly inside the project-scope conjunct", () => {
     // A share widens *scope*. If the term ever escaped into the visibility
-    // disjunct it would silently become a grant, which is the one thing U8
-    // says sharing must never be.
+    // disjunct it would silently become a grant, which sharing must never be.
     const sql = contentReadSql("space_object", "so", "$1");
     const shareIndex = sql.indexOf("space_object_project_shares");
     const visibilityIndex = sql.indexOf("so.visibility IN ('private', 'space_shared', 'selected_users')");

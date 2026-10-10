@@ -832,8 +832,8 @@ describe('Knowledge routing', () => {
   })
 
   /**
-   * S2's substance (U4). Hoisting that filtered only what is drawn, while a
-   * search still spanned every Project, would be the wrong half of the feature.
+   * Hoisting must narrow search as well as what is drawn. Filtering only
+   * what is drawn, while search still spans every Project, is the wrong half.
    */
   it('narrows the tree and the note search to the hoisted subtree', async () => {
     const user = userEvent.setup({ delay: null })

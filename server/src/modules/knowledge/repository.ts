@@ -1251,9 +1251,9 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * The Project's notes folder, created on first use (U1: notes are a
+   * The Project's notes folder, created on first use. Notes are a
    * Project-level surface, so the folder cannot depend on the Research Area
-   * having been opened). Creating it is a write to the Project.
+   * having been opened. Creating it is a write to the Project.
    */
   async ensureProjectNotesCollection(
     identity: SpaceUserIdentity,
@@ -1461,7 +1461,7 @@ export class PgKnowledgeRepository {
 
   /**
    * Place a note in a further folder without taking it out of the ones it is
-   * already in (U5). A distinct action from moving it, because a drag that
+   * already in. A distinct action from moving it, because a drag that
    * silently widened where a note lives would be a different decision than the
    * one the user made.
    */
@@ -1469,7 +1469,7 @@ export class PgKnowledgeRepository {
     identity: SpaceUserIdentity,
     noteId: string,
     collectionId: string,
-    /** Confirms the cross-Project case; see `bindNoteToPlacementProject` (U8). */
+    /** Confirms the cross-Project case; see `bindNoteToPlacementProject`. */
     shareWithProject = false,
   ): Promise<Record<string, unknown>> {
     if (!(await this.getNoteRow(identity, noteId))) throw new HttpError(404, "Note not found");
@@ -1483,7 +1483,7 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * The contextless half of a jot (U11): append to the Project's `inbox` note.
+   * The contextless half of a jot: append to the Project's `inbox` note.
    *
    * The inbox is a fifth `project_role`, so it survives a rename and a move
    * between folders the way the research baseline's four do. It is created on
@@ -1561,7 +1561,7 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * The Projects this note is shared into, beyond the one that owns it (U8).
+   * The Projects this note is shared into, beyond the one that owns it.
    * Read through the same gate as the note itself: a caller who cannot see the
    * note cannot enumerate who else can.
    */
@@ -1666,14 +1666,14 @@ export class PgKnowledgeRepository {
    * link is created once: a second jot against a target the note already links
    * to adds the text without a duplicate edge.
    *
-   * **`target_id` is optional** (U11). A thought that arrives while doing an
+   * **`target_id` is optional**. A thought that arrives while doing an
    * experiment or weighing a decision has no object to hang on, and the two
    * obvious answers are both wrong: always appending to one inbox buries ten
    * papers' annotations in a single note, and always creating a new note turns
    * the tree into fragments. So: *with* a context object, one note per object;
    * *without* one, append to the Project's `inbox` note, created on first use.
-   * The inbox is found by its `project_role`, never by title — the previous
-   * work removed title-based note resolution and this must not reintroduce it.
+   * The inbox is found by its `project_role`, never by title. Do not resolve
+   * it by title.
    */
   async jotNoteForObject(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const targetId = optionalString(body.target_id);

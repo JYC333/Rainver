@@ -9,11 +9,11 @@ import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
- * Placement is what binds a note to a Project (U7), and the binding is
+ * Placement is what binds a note to a Project, and the binding is
  * single-valued because `space_objects.primary_project_id` is a hard AND in the
  * content read gate — display ownership may be plural, governance ownership may
- * not. Until a share table widens that gate (S6), a note placed into a second
- * Project's folder would simply be invisible to its members, so it is refused.
+ * not. An unconfirmed placement into a second Project's folder is refused.
+ * Sharing is a separate confirmation.
  */
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -133,9 +133,9 @@ describe("note project binding by placement (real Postgres)", () => {
     const secondFolder = await withTransaction(db.pool, (tx) => ensureProjectNotesFolder(tx, SPACE, second));
     const note = await repository.createNote(identity, { title: "Owned", collection_id: firstFolder }) as { id: string };
 
-    // 409 with a code rather than a flat refusal: S6 made this case reachable
-    // through an explicit share, so the client's answer is to ask the user.
-    // The drag path has no such answer and stays refused.
+    // 409 with a code rather than a flat refusal: a confirmed share makes this
+    // case reachable, so the client's answer is to ask the user. The drag path
+    // has no such answer and stays refused.
     await expect(repository.addNotePlacement(identity, note.id, secondFolder))
       .rejects.toMatchObject({ statusCode: 409 });
     await expect(withTransaction(db.pool, (client) => persistNotesTreeReorder(client, identity, {

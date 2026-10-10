@@ -13,7 +13,7 @@ import { projects } from "./projects.js";
 import { spaceObjects } from "./knowledge.js";
 
 /**
- * Additional Project scopes for a `space_objects` row (U8/U9).
+ * Additional Project scopes for a `space_objects` row.
  *
  * `space_objects.primary_project_id` is governance ownership and stays single —
  * the content read gate evaluates it as a hard AND before visibility and grants,

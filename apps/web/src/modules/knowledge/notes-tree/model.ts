@@ -201,7 +201,7 @@ export interface NoteMove { noteId: string; fromCollectionId: string; collection
 type ResolvedTreeDrop =
   | { kind: 'move-collections'; updates: CollectionMove[] }
   | { kind: 'move-notes'; updates: NoteMove[] }
-  /** An additive drop (U5): the note gains a placement instead of moving. */
+  /** An additive drop: the note gains a placement instead of moving. */
   | { kind: 'place-note'; noteId: string; collectionId: string }
 
 function applyMoves<T extends { id: string }, U extends { id: string }>(

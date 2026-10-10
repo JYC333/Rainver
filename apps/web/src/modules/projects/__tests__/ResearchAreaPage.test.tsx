@@ -103,9 +103,8 @@ describe('ResearchAreaPage', () => {
   }
 
   /**
-   * The Notebook tab is gone (U10). Notes are a Project-level surface now, and
-   * two doors to one thing is what let the Project's note editor drift into a
-   * weaker copy of the shared one.
+   * There is no Notebook tab. Notes are a Project-level surface. Do not add
+   * a second door to them here.
    */
   it('has no Notebook tab and links to the Project notes surface instead', async () => {
     renderPage()

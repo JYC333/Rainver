@@ -9,11 +9,11 @@ import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
- * S6 boundary set. `contentAccessSql` evaluates the Project scope as a hard AND
+ * `contentAccessSql` evaluates the Project scope as a hard AND
  * *before* visibility and grants, so a note owned by Project A is unreadable to
- * a non-member of A no matter what per-user grant exists — that is why
- * cross-Project placement needed a new term in the predicate rather than a
- * grant. These tests pin what that term may and may not do.
+ * a non-member of A no matter what per-user grant exists. Cross-Project
+ * placement is a term in that predicate, not a grant. These tests pin what
+ * that term may and may not do.
  *
  * The Space is a **team** space: a `personal` space grants project access to
  * every member unconditionally (see `projectReadAccessSql`), which would make
@@ -148,7 +148,7 @@ describe("cross-project note sharing (real Postgres)", () => {
     expect(await repository.listNoteProjectShares(alpha, noteId)).toEqual([
       expect.objectContaining({ project_id: projectB, project_name: "Project B", shared_by_user_id: ALPHA }),
     ]);
-    // Governance ownership does not move (U7).
+    // Governance ownership does not move.
     const owner = await db.pool.query<{ primary_project_id: string }>(
       `SELECT primary_project_id FROM space_objects WHERE id = $1`, [noteId],
     );

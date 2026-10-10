@@ -145,9 +145,9 @@ const tokensCache = new Map<string, TokenizedCode>();
 // Subscribers for async token updates
 const subscribers = new Map<string, Set<(result: TokenizedCode) => void>>();
 
-// The whole text, not a length-plus-ends digest of it: two tool results of
-// the same shape differing only in an id in the middle collided, and the
-// second was shown with the first one's tokens.
+// The whole text, not a length-plus-ends digest of it. Two tool results of
+// the same shape that differ only in an id in the middle must not share a
+// cache entry. The second would be shown with the first one's tokens.
 const getTokensCacheKey = (code: string, language: CodeLanguage) => `${language}:${code}`;
 
 /**

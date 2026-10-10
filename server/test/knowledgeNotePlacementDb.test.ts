@@ -13,7 +13,7 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 
 /**
- * Multi-placement (U5). `note_collection_items` is unique on
+ * Multi-placement. `note_collection_items` is unique on
  * `(collection_id, note_id, space_id)`, so a note may sit in several folders.
  * Return every placement. Do not collapse the read to the first one, and do
  * not reorder by `note_id` alone. These tests fail if that comes back.

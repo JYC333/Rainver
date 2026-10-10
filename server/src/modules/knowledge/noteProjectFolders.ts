@@ -20,7 +20,7 @@ import { HttpError, type Queryable } from "../routeUtils/common.js";
  *
  * Ancestry rather than a direct column: a Project's folder has subfolders, and
  * "in the Project" has to mean the whole subtree or a note dragged one level
- * deeper would silently leave it (U6).
+ * deeper would silently leave it.
  */
 export async function projectOwningCollection(
   db: Queryable,

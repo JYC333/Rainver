@@ -204,7 +204,7 @@ async function reorderNoteItems(
   }
 
   // A drag into a Project's subtree is a placement, and placement is what binds
-  // a note to a Project (U7) — so the same rule the explicit placement actions
+  // a note to a Project — so the same rule the explicit placement actions
   // run has to run here. A drag must not carry a note's baseline role out of
   // the Project the role is scoped to.
   for (const update of updates) {
@@ -334,11 +334,10 @@ async function reorderNoteCollections(
     }
   }
 
-  // A folder reparent changes every placement below it at once. Until S6 adds
-  // an explicit share operation, that must not be a back door around the
-  // per-placement Project binding/cross-Project guard. Keep Project boundaries
-  // stable here; users can create/move folders within a Project and can move
-  // notes into it through the guarded note path.
+  // A folder reparent changes every placement below it at once. It must not
+  // be a back door around the per-placement Project binding. Keep Project
+  // boundaries stable here; users can create and move folders within a
+  // Project and can move notes into it through the guarded note path.
   const checkedProjects = new Set<string>();
   for (const update of updates) {
     const current = collectionById.get(update.id)!;

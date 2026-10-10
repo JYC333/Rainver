@@ -108,7 +108,7 @@ beforeEach(() => {
 })
 
 /**
- * U1/U3: the Project's notes are the *same* page as `/knowledge/notes`, hoisted
+ * The Project's notes are the *same* page as `/knowledge/notes`, hoisted
  * to the Project's folder. There is one implementation. Do not keep a second
  * Project notebook that stops where the shared editor grows.
  */

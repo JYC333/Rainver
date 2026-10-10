@@ -19,7 +19,7 @@
  */
 
 /**
- * Where a resource's *additional* Project scopes live (U9).
+ * Where a resource's *additional* Project scopes live.
  *
  * `projectColumn` is governance ownership and single-valued; this names a table
  * that widens the scope half of the read predicate with further Projects. It is

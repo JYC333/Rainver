@@ -1577,7 +1577,7 @@ export interface NoteSummary {
 }
 
 /**
- * A Project this note is readable in beyond the one that owns it (U8).
+ * A Project this note is readable in beyond the one that owns it.
  * Read-only by construction: a share widens Project scope and nothing else, so
  * it carries no access level.
  */
@@ -1639,7 +1639,7 @@ export interface NoteUpdateBody {
 export interface NoteJotBody {
   /**
    * The `space_objects` row the jot is about — a Source, Claim, Question, …
-   * Optional (U11): without one the text appends to the Project's `inbox` note,
+   * Optional: without one the text appends to the Project's `inbox` note,
    * which is what makes capture possible when nothing is on screen to hang it
    * on. `project_id` is then required.
    */
@@ -4582,9 +4582,9 @@ export interface FocusAreaContents {
 
 // --- Project work (Board, Loop, work events) -------------------------------
 //
-// Re-exported from the protocol package rather than copied: the package is
-// already a web dependency, and a copy had already drifted (`severity` went
-// optional here while the server sorts on it).
+// Re-exported from the protocol package. Do not copy these types here. The
+// package is already a web dependency, and a local copy drifts from the
+// server contract.
 export type {
   WorkLoopStageKey,
   ResponsibleActor,

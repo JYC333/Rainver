@@ -232,7 +232,7 @@ The access semantics — scope only, never a grant — are in
 
 Neither always-append nor always-create is right on its own: one inbox would
 bury ten papers' annotations together, and a note per thought turns the tree
-into fragments (U11).
+into fragments.
 
 This inbox is the jot's destination, not capture's. The shell's single capture
 entry sends Project destinations to marginalia and raw material (see

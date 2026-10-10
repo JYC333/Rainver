@@ -408,7 +408,7 @@ export async function addNotePlacement(
   actor: NoteActor = { system: true },
   /**
    * Confirms the cross-Project case: the caller has been told that this also
-   * makes the note readable by the other Project's members, and said yes (U8).
+   * makes the note readable by the other Project's members, and said yes.
    * Absent, a placement into another Project's subtree is still refused.
    */
   shareWithProject = false,
@@ -424,8 +424,8 @@ export async function addNotePlacement(
 }
 
 /**
- * Governance ownership follows the *first* placement into a Project's subtree
- * (U7), and never moves after that.
+ * Governance ownership follows the *first* placement into a Project's subtree,
+ * and never moves after that.
  *
  * Display ownership is by placement and may be plural: a note in two Projects'
  * folders shows up in both views. `primary_project_id` is not — it is the
@@ -442,8 +442,8 @@ export async function addNotePlacement(
  *   `space_object_project_shares` row, which widens the scope half of the read
  *   gate so the second Project's members can actually see what was placed in
  *   their tree. Without it the placement would be a silent absence rather than a
- *   placement, which is why the refusal remains the default (U8: never silent
- *   widening).
+ *   placement, which is why the refusal remains the default. Do not widen
+ *   silently.
  *
  * A Project change also invalidates any baseline role scoped to the old one —
  * a note cannot hold a slot in a Project it no longer belongs to. The guard

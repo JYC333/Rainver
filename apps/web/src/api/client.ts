@@ -1134,7 +1134,7 @@ export const notesApi = {
   delete: (id: string) => del<Note>(`/knowledge/notes/${id}`),
   purgeDeleted: () => post<{ deleted: number; retention_days: number }>('/knowledge/notes/deleted/purge'),
   /**
-   * Place a note in a further folder, keeping the ones it is already in (U5) —
+   * Place a note in a further folder, keeping the ones it is already in —
    * distinct from moving it, which the tree reorder does.
    */
   addPlacement: (id: string, collectionId: string, shareWithProject = false) =>
@@ -1142,7 +1142,7 @@ export const notesApi = {
       collection_id: collectionId,
       ...(shareWithProject ? { share_with_project: true } : {}),
     }),
-  /** Which other Projects this note is readable in, and who opened it (U8). */
+  /** Which other Projects this note is readable in, and who opened it. */
   shares: (id: string) => get<NoteProjectShare[]>(`/knowledge/notes/${id}/shares`),
   /** Withdraw a share. Takes the note's placements in that Project with it. */
   revokeShare: (id: string, projectId: string) =>

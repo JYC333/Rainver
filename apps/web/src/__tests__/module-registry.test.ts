@@ -53,10 +53,10 @@ describe('module registry official plugin overlay', () => {
   })
 
   it('does not register a space-scoped Rooms index', () => {
-    // Rooms are reached through the Project they belong to; the cross-Project
-    // index was a picker in front of the layer ADR 0018 decision 2 makes
-    // invisible. `/projects/:projectId/rooms` remains, as one Room's roster
-    // surface, routed by the Projects module.
+    // Rooms are reached through the Project they belong to. Do not register
+    // a cross-Project index. It would be a picker in front of the layer
+    // ADR 0018 decision 2 makes invisible. `/projects/:projectId/rooms` stays,
+    // as one Room's roster surface, routed by the Projects module.
     expect(MODULE_REGISTRY.find(module => module.id === 'rooms')).toBeUndefined()
   })
 

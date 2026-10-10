@@ -254,7 +254,7 @@ describe("knowledgeNoteScopeDb", () => {
    * A notes surface hoisted into a folder covers that folder's subtree, and the
    * narrowing has to reach the note *query* — a surface that filters only what it
    * draws, while its search still spans every Project, is the wrong half of the
-   * feature (U4). `collection_ids` is what carries the subtree.
+   * feature. `collection_ids` is what carries the subtree.
    */
 
   const SPACE = "11111111-1111-4111-8111-111111111111";
