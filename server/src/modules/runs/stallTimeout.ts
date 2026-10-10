@@ -1,10 +1,9 @@
 /**
  * How long a CLI runtime may say nothing before the Run is given up on.
  *
- * One rule for both execution paths. The server-host path has had it all
- * along; the remote path used a third of the run budget instead, which for
- * the default budget was 100s — shorter than an ordinary long tool call, and
- * a runtime that is busy inside one emits nothing until it returns. Configured
+ * One rule for both execution paths. Do not use a third of the run budget.
+ * For the default budget that is 100s, shorter than an ordinary long tool
+ * call, and a runtime that is busy inside one emits nothing until it returns. Configured
  * per dispatch through `adapter_config.stall_timeout_seconds`; the default is
  * five minutes, never longer than the run budget itself.
  */
