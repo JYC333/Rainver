@@ -283,8 +283,7 @@ export async function materializeProviderBinding(
  * dispatch cannot answer a login prompt, so a profile silently left without a
  * credential fails the run with no reason anybody can act on.
  *
- * **Not verified on a real paired host** (this plan's open verification item):
- * whether each runtime refreshes an expired credential in place or by
+ * **Not verified on a real paired host:** whether each runtime refreshes an expired credential in place or by
  * temp-file rename. A rename replaces this link with a private copy, and that
  * profile then keeps its own credential while the others keep the shared one.
  * Each stays usable; what is unknown is whether a rotating refresh token would

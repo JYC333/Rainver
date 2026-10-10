@@ -8,7 +8,7 @@ import { InquiryIterationService } from "../src/modules/inquiry/iterationService
 import { InquirySignalService } from "../src/modules/inquiry/signalService.js";
 
 // Real-Postgres coverage for the Signals/Candidates/Review/Delta
-// vertical slice. See plan section 10.
+// vertical slice.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

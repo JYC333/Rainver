@@ -439,8 +439,7 @@ export class PgHostRepository {
    * its visibility follows Project read access, not host ownership. A
    * `private` artifact here would have let a non-owner reader see "Review
    * diff" on a run they can legitimately see, then get a false "no diff was
-   * uploaded" instead of an access-denied — found during the control-center
-   * plan's final integration review.
+   * uploaded" instead of an access-denied.
    */
   async recordDiffArtifact(
     run: RunForUpload,

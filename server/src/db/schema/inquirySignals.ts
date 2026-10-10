@@ -8,7 +8,7 @@ import { projectCorpusItems } from "./projectCorpus.js";
 import { inquiryIterations, inquiryThreads } from "./inquiry.js";
 import { experimentInterpretations } from "./experiments.js";
 
-// Signals, Candidates, Delta, and Review (plan section 10). Four levels:
+// Signals, Candidates, Delta, and Review. Four levels:
 // Raw Detection (not modeled — producers classify directly into a Signal) ->
 // Evidence Signal -> Consolidated Candidate -> confirmed Iteration (via the
 // existing InquiryIterationService) or new Thread.
@@ -25,7 +25,7 @@ export const inquiryEvidenceSignals = pgTable("inquiry_evidence_signals", {
 	experimentInterpretationId: varchar("experiment_interpretation_id", { length: 36 }),
 	classification: varchar({ length: 16 }).notNull(),
 	// Routine signals may auto-attach; material signals must consolidate into
-	// a Candidate for review (plan section 10.1-10.2).
+	// a Candidate for review.
 	isMaterial: boolean("is_material").default(false).notNull(),
 	confidence: doublePrecision(),
 	modelVersion: varchar("model_version", { length: 64 }),
@@ -161,7 +161,7 @@ export const inquirySignalCandidates = pgTable("inquiry_signal_candidates", {
 	check("ck_inquiry_signal_candidates_status", sql`(status)::text = ANY (ARRAY[('pending'::character varying)::text, ('accepted'::character varying)::text, ('merged'::character varying)::text, ('deferred'::character varying)::text, ('dismissed'::character varying)::text, ('gap'::character varying)::text])`),
 ]);
 
-// Bounded review round (plan section 10.4): a fixed small set of Candidates,
+// Bounded review round: a fixed small set of Candidates,
 // not an endlessly growing inbox.
 export const inquiryReviewPackets = pgTable("inquiry_review_packets", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -187,7 +187,7 @@ export const inquiryReviewPackets = pgTable("inquiry_review_packets", {
 	check("ck_inquiry_review_packets_status", sql`(status)::text = ANY (ARRAY[('open'::character varying)::text, ('closed'::character varying)::text])`),
 ]);
 
-// Cited change summary (plan section 10.3). Read-only: it cannot change
+// Cited change summary. Read-only: it cannot change
 // Thread position, confidence tier, status, or Next Focus.
 export const inquiryDeltaBriefs = pgTable("inquiry_delta_briefs", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

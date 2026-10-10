@@ -698,8 +698,7 @@ export class PgKnowledgeRepository {
    * provenance the model could not express before — "this knowledge came from
    * my note" — carried as a `source_refs` entry of type `note`.
    *
-   * The carrier is `provenance_links`, chosen over the plan's two other
-   * candidates. Widening `knowledge_item_sources.source_id`'s foreign key from
+   * The carrier is `provenance_links`. Widening `knowledge_item_sources.source_id`'s foreign key from
    * `sources(object_id)` to `space_objects(id)` would enlarge what B12A calls
    * a *curated citation and evidence* path so it could carry an unreviewed
    * one; a dedicated column or table would be a third provenance mechanism.

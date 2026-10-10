@@ -324,10 +324,9 @@ export class InquiryThreadService {
     };
   }
 
-  // Structure command: working relations between Threads (plan section 9.3).
-  // Manual only — AI-proposed structure changes become Candidates
-  // in a later phase, per the plan's "manual flows before autonomous
-  // candidate generation" sequencing.
+  // Structure command: working relations between Threads.
+  // Manual only. AI-proposed structure changes are Candidates. Do not generate
+  // them on this path.
   async addRelation(
     identity: SpaceUserIdentity,
     projectId: string,
@@ -423,7 +422,7 @@ export class InquiryThreadService {
     });
   }
 
-  // Structure command: primary-parent tree projection (plan section 9.3).
+  // Structure command: primary-parent tree projection.
   async setPrimaryParent(
     identity: SpaceUserIdentity,
     projectId: string,
@@ -478,7 +477,7 @@ export class InquiryThreadService {
     });
   }
 
-  // Deep writing uses the unified Note model (plan section 9.7) — this only
+  // Deep writing uses the unified Note model — this only
   // creates the link, never a copy of Note content.
   /**
    * NE: raise a passage of a note as a Question.

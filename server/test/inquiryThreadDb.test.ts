@@ -13,7 +13,7 @@ import { DecisionCaseService } from "../src/modules/decisions/caseService.js";
 // Real-Postgres coverage for the Inquiry Core vertical slice: Thread
 // creation, working relations, Note links, the cognitive Iteration command,
 // the Definition Revision command, and the work-management command's
-// boundary from both of those. See plan section 9 and ADR 0011.
+// boundary from both of those. See ADR 0011.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

@@ -39,8 +39,7 @@ export type NoteProjectRole = z.infer<typeof NoteProjectRoleSchema>;
 /**
  * Object types the note editor can offer as a link target.
  *
- * Two constraints intersect here, and the plan's gap-3 note anticipated only
- * one of them:
+ * Two constraints intersect here:
  *
  * - `createNoteLink` resolves both endpoints against `space_objects`, so the
  *   reachable set is that table's subtypes, *not* the wider

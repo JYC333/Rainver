@@ -122,7 +122,7 @@ export function resolveInputResourcePaths(
  * The wire's `launch` frame (`HostLaunchFrameSchema` in `@rainver/protocol`)
  * as this daemon executes it. Every field is the contract's own — nothing is
  * declared here that the server does not send — and the only difference is
- * the managed-workspace container, renamed to this daemon's `{ kind, id }`
+ * the managed-workspace container, mapped to this daemon's `{ kind, id }`
  * form by `commands/run.ts`. See the contract for what each field means.
  */
 export type LaunchFrame = Omit<HostLaunchFrame, "type" | "workspace"> & { workspace?: LaunchWorkspace };

@@ -217,8 +217,7 @@ describe("researchAcquisitionPipelineDb", () => {
   }
 
   describe("ResearchAcquisitionPipelineRunner (real Postgres)", () => {
-    // The Room-message assertion the plan's verification section also calls
-    // for (one posted `research_pipeline_outcome` continuation) is covered
+    // The Room-message assertion (one posted `research_pipeline_outcome` continuation) is covered
     // separately in researchAcquisitionContinuation.test.ts, which exercises
     // `registerResearchAcquisitionContinuation`'s handlers directly — full
     // Room message dispatch additionally requires a working conversation

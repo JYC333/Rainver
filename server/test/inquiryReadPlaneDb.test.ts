@@ -11,7 +11,7 @@ import { inquiryRetrievalAdapter } from "../src/modules/inquiry/retrievalAdapter
 
 // Real-Postgres coverage for the unified read plane: the Inquiry
 // retrieval adapter feeding `retrieval_objects`, and the Inquiry/Combined
-// Project graph producers. See plan section 15-16.
+// Project graph producers.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

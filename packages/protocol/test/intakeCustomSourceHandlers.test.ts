@@ -102,7 +102,7 @@ describe("CustomSourcePipelineDefinitionSchema", () => {
 });
 
 describe("CustomSourceHandlerInputSchema", () => {
-  it("parses the plan's example input.json", () => {
+  it("parses the example input.json", () => {
     const input = {
       contract_version: "custom_source.handler_input.v1",
       run: {
@@ -152,7 +152,7 @@ describe("CustomSourceHandlerInputSchema", () => {
 });
 
 describe("CustomSourceHandlerOutputSchema", () => {
-  it("parses the plan's example output.json", () => {
+  it("parses the example output.json", () => {
     const output = {
       contract_version: "custom_source.handler_output.v1",
       cursor: { etag: "def", last_modified: "Thu, 02 Jan 2026 00:00:00 GMT" },

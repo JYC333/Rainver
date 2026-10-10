@@ -6,7 +6,7 @@ import { spaces } from "./spaces.js";
 import { projects } from "./projects.js";
 import { spaceObjects } from "./knowledge.js";
 
-// Inquiry Domain (plan section 9 / ADR 0011). InquiryThread is a
+// Inquiry Domain. InquiryThread is a
 // Project-owned root table, never a `space_objects` row — see ADR 0011
 // decision 1. Business relationships use their own narrowly-owned link
 // tables (B12A "narrowly owned domain join table" exception), never
@@ -123,7 +123,7 @@ export const inquiryHypothesisStates = pgTable("inquiry_hypothesis_states", {
 	check("ck_inquiry_hypothesis_states_confidence", sql`confidence IS NULL OR (confidence >= 0 AND confidence <= 100)`),
 ]);
 
-// Material statement changes (plan section 9.4 "Thread definition"). Wording-
+// Material statement changes. Wording-
 // only edits update `inquiry_threads.statement` in place; semantic changes
 // additionally record which structural action the user chose.
 export const inquiryThreadStatementRevisions = pgTable("inquiry_thread_statement_revisions", {
@@ -247,7 +247,7 @@ export const inquiryThreadStructureEvents = pgTable("inquiry_thread_structure_ev
 	check("ck_inquiry_thread_structure_events_action", sql`(action_kind)::text = ANY (ARRAY[('relation_added'::character varying)::text, ('relation_removed'::character varying)::text, ('primary_parent_changed'::character varying)::text, ('definition_child_created'::character varying)::text, ('definition_superseded'::character varying)::text])`),
 ]);
 
-// The confirmed cognitive-progress record (plan section 9.4). Thread stores
+// The confirmed cognitive-progress record. Thread stores
 // the current projection; Iteration stores why it became current.
 export const inquiryIterations = pgTable("inquiry_iterations", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -293,8 +293,7 @@ export const inquiryIterations = pgTable("inquiry_iterations", {
 		}).onDelete("set null"),
 ]);
 
-// Audited, non-cognitive work-management history (plan section 9.4 "Work
-// management"): priority, owner, focus membership, Next Focus, blocking
+// Audited, non-cognitive work-management history: priority, owner, focus membership, Next Focus, blocking
 // reason. Never creates an Iteration.
 export const inquiryThreadWorkEvents = pgTable("inquiry_thread_work_events", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -399,7 +398,7 @@ export const inquiryThreadSteps = pgTable("inquiry_thread_steps", {
 	check("ck_inquiry_thread_steps_target_ref", sql`(target_ref_kind IS NULL) = (target_ref_id IS NULL)`),
 ]);
 
-// Personal Focus (plan section 9.6): each member's own working set, separate
+// Personal Focus: each member's own working set, separate
 // from the Shared Project Focus Set (`inquiry_threads.attention_state='focused'`).
 export const inquiryThreadPersonalFocus = pgTable("inquiry_thread_personal_focus", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -433,7 +432,7 @@ export const inquiryThreadPersonalFocus = pgTable("inquiry_thread_personal_focus
 		}).onDelete("cascade"),
 ]);
 
-// Project-configurable shared Focus WIP limit (plan section 9.6). One row
+// Project-configurable shared Focus WIP limit. One row
 // per Project, created lazily; a missing row means the default (3) applies.
 export const inquiryProjectSettings = pgTable("inquiry_project_settings", {
 	projectId: varchar("project_id", { length: 36 }).primaryKey().notNull(),

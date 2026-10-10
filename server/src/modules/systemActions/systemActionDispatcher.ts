@@ -339,8 +339,7 @@ async function enforcePolicyForAction(
       validateRetrievalToolInput(definition.id, input);
     } catch (error) {
       // Retrieval's `input_schema` in the registry stays the generic
-      // `objectInput` (its real, dynamic-per-binding schema is a documented
-      // exception — see the plan's "Remaining exceptions"), so this is the
+      // `objectInput`. Its real schema is dynamic per binding, so this is the
       // one action family whose input validation happens here instead of
       // the gateway's own `input_schema.safeParse`. Code it the same way
       // that check would, rather than falling through to a generic failure.

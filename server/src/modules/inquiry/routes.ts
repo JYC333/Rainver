@@ -544,7 +544,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // Combined Project graph composer (plan section 16): unions the Inquiry
+  // Combined Project graph composer: unions the Inquiry
   // producer with the existing space_objects/object_relations projection for
   // this Project. Lives here (not modules/graph or modules/projects) because
   // Inquiry is currently the only non-space_objects producer; move ownership

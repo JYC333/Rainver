@@ -19,7 +19,7 @@ import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("projectResearchSynthesisOnlyExecutionDb", () => {
   // Real-Postgres coverage for the synthesis_only vertical slice migrated to
-  // execution-per-pass WorkflowExecution authority (plan section 17.3): the
+  // execution-per-pass WorkflowExecution authority: the
   // Dedicated synthesis-only WorkflowExecution coverage. All Project Research
   // run kinds now use execution-per-pass authority; this file exercises the
   // specialized two-node report-snapshot pass.

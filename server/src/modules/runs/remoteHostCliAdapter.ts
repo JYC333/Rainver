@@ -206,8 +206,8 @@ function resolveTimeoutSeconds(input: RemoteHostCliAdapterInput, defaultSeconds:
  *
  * `install` widens that and comes only from the dispatch
  * (`model_override_json.egress_profile`), which the server composes and no
- * request body reaches. A *standing* grant on the Agent runtime profile was
- * the plan's other half and is deliberately not read: `runtime_config_json`
+ * request body reaches. A standing grant on the Agent runtime profile is not
+ * read: `runtime_config_json`
  * is free-form and `canWriteRuntimeProfiles` is a read predicate for an
  * ordinary Agent, so any member who can see the Agent could have widened what
  * its Runs reach. Granting `install` through the product needs an

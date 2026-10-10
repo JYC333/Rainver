@@ -9,7 +9,7 @@ export type ProjectAttentionSeverity = "low" | "normal" | "high" | "critical";
  */
 export type ProjectAttentionClass = "gate" | "remainder" | "next_step" | "uncertain";
 
-// Wire shape for `ProjectAttentionItem` (plan section 8). Computed on demand
+// Wire shape for `ProjectAttentionItem`. Computed on demand
 // from registered domain adapters — never stored, never authoritative, and
 // never a substitute for the owning Domain's own lifecycle/status.
 export interface ProjectAttentionItem {

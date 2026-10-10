@@ -1204,10 +1204,8 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
   });
 
   describe("a runtime that stops saying anything", () => {
-    // A stalled OpenCode turn burned the full run timeout in silence and then
-    // reported only "Remote Run timed out", which is equally true of a run
-    // that worked the whole time. The remote path accepted a
-    // `stall_timeout_seconds` option and never implemented it.
+    // A silent runtime is a stall, not a run that worked until the budget.
+    // Honor `stall_timeout_seconds`. Do not report only "Remote Run timed out".
 
     async function launched(sink: FakeSink, registry: HostConnectionRegistry, timeoutSeconds: number) {
       const execution = executeRemoteHostCliAdapter(

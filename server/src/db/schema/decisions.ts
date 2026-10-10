@@ -106,7 +106,7 @@ export const decisionOptionScores = pgTable("decision_option_scores", {
 
 // The Commitment is what turns a decided Case into an actionable statement;
 // createdDeliveryTaskId is set only after the explicit "Decision -> Create
-// Delivery Outcome" action (plan section 5.1) runs — a reference, never a
+// Delivery Outcome" action runs — a reference, never a
 // copy of the Commitment into modules/tasks.
 export const decisionCommitments = pgTable("decision_commitments", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

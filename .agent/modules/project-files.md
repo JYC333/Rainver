@@ -29,7 +29,7 @@ filesystem directly.
 - Proposal storage (proposals module)
 - Memory display (memory module)
 - Agent run dispatch (agents module)
-- Interactive agent-session execution over a Folder — never implemented, not planned
+- Interactive agent-session execution over a Folder
 
 ## UI Routes
 

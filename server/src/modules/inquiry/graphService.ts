@@ -26,7 +26,7 @@ interface RelationEdgeRow {
 }
 
 /**
- * Inquiry graph producer (plan section graph projection).
+ * Inquiry graph producer.
  *
  * Threads are `space_objects` rows and their edges are `object_relations`
  * (ADR 0011 decision 1/3), so this reads the same substrate as every other
@@ -95,8 +95,8 @@ export class InquiryGraphService {
         updatedAt: isoOrNull(row.updated_at),
       },
     }));
-    // Working relations only (plan section 9.3: "working Project relations,
-    // not proposal-gated canonical Ontology relations") — every edge this
+    // Working relations only, not proposal-gated canonical Ontology relations.
+    // Every edge this
     // producer emits is tagged `tier: "working"` so a combined view can
     // visually distinguish it from canonical/derived edges sourced elsewhere.
     const edges: GraphProjectionEdge[] = relations.rows

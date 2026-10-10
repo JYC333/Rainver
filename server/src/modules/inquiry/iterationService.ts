@@ -28,9 +28,8 @@ import { tryQueueAdviceForFocusedThread } from "./adviceJob.js";
 // Protected cognitive fields. Only `recordIteration` may write these — the
 // generic project PATCH route does not exist for Threads at all, and this
 // service's own `reviseDefinition`/`updateWork` deliberately never read
-// these keys. This is the concrete mechanism behind plan section 9.4's
-// "Protected cognitive fields are writable only through the Iteration
-// command."
+// these keys. Protected cognitive fields are writable only through the Iteration
+// command.
 const QUESTION_COGNITIVE_FIELDS = ["current_answer_summary", "answer_state", "known_gaps", "answerability"] as const;
 const HYPOTHESIS_COGNITIVE_FIELDS = ["evaluation_state", "confidence", "confidence_method"] as const;
 
@@ -61,7 +60,7 @@ export class InquiryIterationService {
     return new InquiryIterationService(getDbPool(config.databaseUrl));
   }
 
-  // The cognitive Iteration command (plan section 9.4). Substantive user
+  // The cognitive Iteration command. Substantive user
   // edits to the confirmed position create this directly — no proposal is
   // needed for a direct user edit; AI-proposed changes become Candidates in
   // the Candidate review service, not here.
@@ -332,7 +331,7 @@ export class InquiryIterationService {
     return rows.rows;
   }
 
-  // Thread Definition Revision command (plan section 9.4). `wording_only`
+  // Thread Definition Revision command. `wording_only`
   // updates presentation text without a Definition Revision's structural
   // consequence; `semantic_change` cannot be downgraded by the client and
   // must choose narrow-in-place, child-with-a-new-Thread, or
@@ -614,7 +613,7 @@ export class InquiryIterationService {
     }
   }
 
-  // Work-management command (plan section 9.4): priority, owner, Focus
+  // Work-management command: priority, owner, Focus
   // membership, Current Next Focus, blocking reason. Audited action history,
   // never a cognitive Iteration — this method never touches
   // inquiry_question_states/inquiry_hypothesis_states/inquiry_iterations, and

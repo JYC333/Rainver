@@ -85,15 +85,14 @@ export interface PromptSyncResult {
  * 'approved' 'built_in' version whenever the manifest content_hash changes.
  * Existing versions are never overwritten. Callable from a bootstrap script
  * or tests — not wired into automatic server startup, so it never changes
- * runtime behavior on its own (no prompt consumer resolves through this
- * registry yet; that migration starts at M3).
+ * runtime behavior on its own. No prompt consumer resolves through this
+ * registry.
  *
  * Built-in versions are written with status='approved' directly, bypassing
  * EvolvableAssetRepository's proposal-gated promotion path: that gate exists
  * for user-facing edits, whereas built-in prompt review already happened as
- * a normal source-control change to the manifest file (see the plan's
- * Permission Boundaries: "System baseline prompt changes should be treated
- * as code/catalog changes"). This mirrors server/src/db/seeds.ts, which
+ * a normal source-control change to the manifest file. System baseline prompt
+ * changes are code and catalog changes. This mirrors server/src/db/seeds.ts, which
  * seeds other built-in tables the same way.
  */
 export async function syncBuiltinPrompts(db: Queryable, catalogRoot: string): Promise<PromptSyncResult> {

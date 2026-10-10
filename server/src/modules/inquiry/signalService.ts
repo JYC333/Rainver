@@ -26,8 +26,8 @@ import {
 const SIGNAL_CLASSIFICATIONS = ["supports", "contradicts", "adds_context", "adds_method", "fills_gap", "raises_gap", "unrelated"] as const;
 type SignalClassification = (typeof SIGNAL_CLASSIFICATIONS)[number];
 
-// Deterministic routine-vs-material default per classification (plan section
-// 10.1-10.2): "routine support and context may attach automatically";
+// Deterministic routine-vs-material default per classification. Routine
+// support and context may attach automatically.
 // contradictions and gap changes are always material. A caller may still
 // force `is_material: true` for any classification.
 const MATERIAL_BY_DEFAULT = new Set<SignalClassification>(["contradicts", "raises_gap", "fills_gap"]);
@@ -145,7 +145,7 @@ function candidateToOut(row: CandidateRow): Record<string, unknown> {
 
 /**
  * Evidence Signals, Candidate consolidation, Review Packets, and Research
- * Delta Briefs (plan section 10). Candidate acceptance reuses
+ * Delta Briefs. Candidate acceptance reuses
  * `InquiryIterationService.recordIteration` rather than
  * duplicating cognitive-write logic — confirming a Candidate is exactly a
  * confirmed Inquiry Iteration with a Candidate/Signal provenance trail.
@@ -342,7 +342,7 @@ export class InquirySignalService {
     return delivery.signal;
   }
 
-  // Consolidation (plan section 10.2): find the one open Candidate for this
+  // Consolidation: find the one open Candidate for this
   // (thread, candidate_kind), or create it. Multiple Signals about the same
   // contradiction merge into that single Candidate rather than each spawning
   // a separate review item.
@@ -381,7 +381,7 @@ export class InquirySignalService {
     return existing.rows[0].id;
   }
 
-  // Retrieved/Referenced/Adopted (plan section 15.5). A raw search/graph hit
+  // Retrieved/Referenced/Adopted. A raw search/graph hit
   // that never became a Signal is "Retrieved" — ephemeral, not modeled here.
   // Creating a Signal is already the durable domain link that defines
   // "Referenced"; a Signal whose Candidate was explicitly accepted (produced
@@ -461,8 +461,7 @@ export class InquirySignalService {
 
   // Dismissing (or deferring/merging/flagging-a-gap on) a Candidate never
   // deletes or mutates the contributing Signal rows — they remain a durable
-  // audit record regardless of the review decision (plan section 10.4,
-  // Candidate review completion invariant).
+  // audit record regardless of the review decision.
   async decideCandidate(
     identity: SpaceUserIdentity,
     projectId: string,
@@ -620,7 +619,7 @@ export class InquirySignalService {
     });
   }
 
-  // Bounded review round (plan section 10.4): a fixed small set of pending
+  // Bounded review round: a fixed small set of pending
   // Candidates not already assigned to another open packet.
   async openReviewPacket(identity: SpaceUserIdentity, projectId: string, limit?: number): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
@@ -778,7 +777,7 @@ export class InquirySignalService {
     return out;
   }
 
-  // Read-only cited change summary (plan section 10.3). Never writes Thread
+  // Read-only cited change summary. Never writes Thread
   // position, confidence tier, status, or Next Focus.
   async generateDeltaBrief(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
