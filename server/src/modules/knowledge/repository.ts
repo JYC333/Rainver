@@ -1043,9 +1043,9 @@ export class PgKnowledgeRepository {
     const built = buildNoteWhere(identity, filters);
     // The membership join exists only to answer "is this note in *that* folder,
     // and where in its order" — a single collection, so it contributes at most
-    // one row. Joined unconditionally it multiplied every note by its number of
-    // placements, which is why the page rows and the DISTINCT count disagreed
-    // for any note filed in two folders.
+    // one row. Do not join it unconditionally. Every note would be multiplied
+    // by its placements, and the page rows and the DISTINCT count would
+    // disagree for any note filed in two folders.
     const membershipJoin = filters.collectionId
       ? `LEFT JOIN note_collection_items nci_filter
            ON nci_filter.note_id = n.object_id

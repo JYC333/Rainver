@@ -339,10 +339,9 @@ export class PgImportedSessionRepository {
    * import that vanished with its source would be an archive that erases
    * itself. `gone` is information for the reader.
    *
-   * Only ever called after a *successful* enumeration. An empty list from a
-   * runtime that failed to answer would otherwise mark a folder's entire
-   * history gone, which is why the failure path in the service returns before
-   * reaching this.
+   * Only ever called after a *successful* enumeration. Do not call this on a
+   * failed enumeration. An empty list would mark a folder's entire history
+   * gone. The failure path in the service returns before reaching this.
    */
   async markMissingAsGone(input: {
     spaceId: string;

@@ -267,9 +267,8 @@ describe("planning a strict launch", () => {
   });
 
   it("refuses a run id that would place the run directory outside the daemon's own", () => {
-    // `join` normalizes `../..` away, so the escaped path looks perfectly
-    // ordinary by the time a namespace is built around it — which is why the
-    // guard is on the id, as it was on the Runner's mount ids.
+    // `join` normalizes `../..` away, so the escaped path looks ordinary by
+    // the time a namespace is built around it. The guard is on the id.
     expect(() => runDir("../..")).toThrow(/usable directory name/);
     expect(() => runDir("run/../../etc")).toThrow(/usable directory name/);
   });

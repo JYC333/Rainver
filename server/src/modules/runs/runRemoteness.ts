@@ -23,8 +23,8 @@ interface RemotenessInput {
  * event cursor is bound to that vendor session. The daemon builds the
  * namespace. ProviderTask Runs stay bounded in-process invocations.
  *
- * Callers must share this function. Separate expressions disagreed once: the
- * preflight was corrected and the read model was not.
+ * Callers must share this function. Do not keep a second expression. The
+ * preflight and the read model would diverge.
  */
 export function dispatchesToHostDaemon(runtimeKey: string | null | undefined): boolean {
   return getRuntimeAdapterSpec(runtimeKey ?? undefined)?.executor_family === "local_cli";
