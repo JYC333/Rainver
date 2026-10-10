@@ -73,7 +73,7 @@ interface BindingRow {
 }
 
 export interface ResolvedConversationBackend extends ConversationBackendBinding {
-  /** Present on persisted bindings; optional for legacy test/adaptor ports. */
+  /** Present on a persisted binding. A constructed value may omit it. */
   agent_kind?: string;
   binding_id: string;
   runtime_state_key: string;

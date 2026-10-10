@@ -174,7 +174,7 @@ These routes are not `ServerModule` entries. They are mounted by `PluginHost` af
 - The route registry is the HTTP source of truth. Credential, Home, personal-view,
   and Files & Code routes are owned by `providers`, `frontendSupport`, and
   `projectFolders` as listed above. The `/context/build` route does not
-  exist; Runtime Context HTTP is `/runtime-context/*`. The legacy `/capabilities*`
+  exist; Runtime Context HTTP is `/runtime-context/*`. The `/capabilities*`
   manifest surface is owned by `catalog`; the capability/workflow/open-skill
   control plane is owned by `capabilities`.
 - The server boundary guard restricts bare runtime package imports and forbids

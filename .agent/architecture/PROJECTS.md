@@ -470,7 +470,7 @@ rewrites, sub-questions, scope, and clarification prompts. Refinement is a
 hard start gate: discovery and initial intake stay disabled until the assessment
 passes (answerable with mean FINER score at least 3) or the user adopts one of
 the bounded suggested rewrites. Drafts may still be saved before the gate
-passes; the legacy-named `question_refine_skipped` state field records whether
+passes; the `question_refine_skipped` state field records whether
 the gate is still outstanding. Saving or starting intake binds the selected
 Research Workflow to an immutable Inquiry Thread revision. It does not copy the
 Question into `projects.current_focus`.

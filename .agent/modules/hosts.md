@@ -978,7 +978,7 @@ mode, thought level, model config, then unknown), and requires every
 `session/set_config_option` response to return the requested current value
 before prompting. Each response replaces the option snapshot because a model
 change may change available reasoning levels. There are no `set_model`,
-`set_effort`, legacy `modes`, or vendor-config compatibility paths.
+`set_effort`, `modes`, or vendor-config compatibility paths.
 
 **Which model a run is recorded as having used is the server's own answer, not
 the runtime's echo of it.** The controller takes `attributed_model` separately
