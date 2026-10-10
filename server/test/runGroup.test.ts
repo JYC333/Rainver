@@ -753,12 +753,10 @@ describe("runRetryPolicy", () => {
 
 /**
  * `run_events.event_type` is CHECK-constrained, and every writer goes through a
- * best-effort append that swallows the rejection. So an event type added in
- * code but not to the constraint does not fail loudly — it silently never
- * exists. That is exactly what happened to `egress_refused`: the host enforced
- * the refusal, logged it, and reported it on the completion frame, and the one
- * thing that would have explained a 403 to the person was dropped at the last
- * step for weeks.
+ * best-effort append that swallows the rejection. An event type added in code
+ * but not in the constraint never exists, and nothing fails. `egress_refused`
+ * has to be in the constraint: the host enforces the refusal, and this event
+ * is what explains a 403. Do not rely on the append to surface a missing type.
  */
 const schema = readFileSync(join(import.meta.dirname, "..", "src", "db", "schema", "runs.ts"), "utf8");
 const constraint = schema.slice(schema.indexOf('check("ck_run_events_event_type"'));

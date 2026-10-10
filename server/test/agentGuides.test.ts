@@ -182,8 +182,7 @@ describe("repository agent hook invariants", () => {
   });
 
   it("keeps every repository path a hook matches on real", () => {
-    // Six of the mapped module directories had been renamed or deleted. Only
-    // unambiguous patterns are checked: `*<dir>/*` and `*<file>.ts(x)`.
+    // Only unambiguous patterns are checked: `*<dir>/*` and `*<file>.ts(x)`.
     const script = readFileSync(join(repoRoot, ".claude", "hooks", "check-docs-sync.sh"), "utf8");
     const targets = new Set<string>();
     for (const match of script.matchAll(/\*((?:server|apps|packages|plugins)\/[\w/.-]*?)(\/\*|\.tsx?)(?=[|)])/g)) {

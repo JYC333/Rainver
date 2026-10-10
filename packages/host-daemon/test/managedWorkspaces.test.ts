@@ -188,10 +188,9 @@ describe("managed workspaces", () => {
 });
 
 /**
- * ADR 0016 section 11 rests undo on git. A managed workspace was a plain
- * directory, so for the place an Agent works when a Conversation names no
- * Folder that was false: the Run captured no diff, nothing could be reverted,
- * and nobody could see what had been written.
+ * ADR 0016 section 11 rests undo on git. A managed workspace is a repository.
+ * A plain directory captures no diff, so nothing can be reverted and nothing
+ * records what was written.
  */
 describe("a managed workspace is a repository", () => {
   it("initialises one on first use, so its Runs have a diff and an undo", async () => {

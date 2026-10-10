@@ -55,7 +55,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | Local-first compatibility position | [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md) |
 | Architectural invariants (load before structural changes) | [BOUNDARIES.md](BOUNDARIES.md) |
 | Layer map and cross-cutting concerns | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| Shipped foundations | [ROADMAP.md](ROADMAP.md) |
+| Foundations | [ROADMAP.md](ROADMAP.md) |
 | How to run, test, and build | [COMMANDS.md](COMMANDS.md) |
 | Practical gotchas | [WORKING_TIPS.md](WORKING_TIPS.md) |
 | Repository-wide product and domain glossary | [GLOSSARY.md](GLOSSARY.md) |

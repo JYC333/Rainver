@@ -1048,9 +1048,8 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   caller passes as one: `credentialHeaders`, not `headers`. `headers` is sent
   on every hop by definition, so merging a provider key into it defeats both
   rules for any header name outside the three the guard always treats as
-  credentials — which is how two preview paths sent a Semantic Scholar or Brave
-  key to a redirect target. The port type now carries the field, so a caller
-  has somewhere to put it.
+  credentials. Do not merge a provider key into `headers`. Put it in
+  `credentialHeaders`.
 - Bodies are read with a byte ceiling and the rest is cancelled; a non-OK or 304
   response's body is not read at all. The whole chain, name resolution included,
   runs under a deadline.
@@ -1184,8 +1183,8 @@ silently drop every security header from API responses.
 The production frontend nginx sends `nosniff`, `X-Frame-Options: DENY`,
 `Referrer-Policy`, `Cross-Origin-Opener-Policy: same-origin`, a
 `Permissions-Policy` that denies the device APIs the app does not use — with
-`microphone=(self)`, which voice capture on the Capture page needs and which
-denying would have broken in production only — and a same-origin CSP — defined **once** in `apps/web/security-headers.conf` and
+`microphone=(self)`, which voice capture on the Capture page needs. Denying it
+breaks Capture, and only in production. The same-origin CSP is defined **once** in `apps/web/security-headers.conf` and
 `include`d by every location that sets a header of its own. Do not keep a
 second copy: the copies disagree.
 `img-src` allows `https:`, and that is deliberate: the Library reader renders a

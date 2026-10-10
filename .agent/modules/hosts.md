@@ -501,19 +501,16 @@ follow, on the same 30-day sweep. Two things move, with different owners:
   daemon should move, computed by `listPendingManagedWorkspaceArchives` and
   `closeConversationAgentForRoom` rather than guessed on the host.
 
-The re-add offer and the restore itself now ask the same question — "is there
-a closed thread for this Agent in this Room on this host" — rather than two
-different ones. The candidate flag is `host_state_archive_available`; it used
-to require a managed workspace *and* a heartbeat entry reporting one archived,
-which was false for every Room specialist because a conversation heartbeat
-entry carries no `agent_id` by contract, so the offer never appeared at all.
+The re-add offer and the restore ask the same question: is there a closed
+thread for this Agent in this Room on this host. The candidate flag is
+`host_state_archive_available`. Do not also require a managed workspace and a
+heartbeat entry reporting one archived. A conversation heartbeat entry carries
+no `agent_id`, so that requirement is false for every Room specialist and the
+offer never appears.
 
-Restoring rides the existing "restore workspace" request, and its target query
-is deliberately **not** gated on an archived workspace being available: that
-gate was right when the workspace was the only thing archived, and now the
-common case — one Agent leaves while others stay — archives only the profile,
-so requiring a workspace archive would have made every one of those
-permanently unrestorable and swept after 30 days. The workspace half is a flag
+Restore is not gated on an archived workspace. One Agent leaving while others
+stay archives only the profile. Requiring a workspace archive would make every
+one of those unrestorable, then swept after 30 days. The workspace half is a flag
 on the same request. The daemon restores whichever archives exist and reports
 what moved; the workspace goes first, because a live shared cwd is a real
 conflict and a live profile only means this Agent has dispatched here since.

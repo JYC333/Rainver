@@ -898,15 +898,13 @@ async function runRemoteHostCliAdapter(
 /**
  * The workspace the launch frame carries.
  *
- * The relative path has to be merged into a Location workspace the snapshot
- * already named, not merely used when there is no workspace at all. The
- * built-in host's daemon never ran `workspace add`, so a Location id alone
- * resolves to nothing there and the Run dies with "no local path registered";
- * the path under the shared workspace root is the only thing that lets it
- * resolve one (ADR 0016 section 4). A Conversation bound to a server Location
- * always arrives with a snapshot workspace, which is exactly the case the
- * previous `??` skipped — so this failed for every such Run and for none of
- * the managed-workspace ones that had been tried.
+ * The relative path is merged into a Location workspace the snapshot already
+ * named. Do not use it only when there is no workspace at all. The built-in
+ * host's daemon does not run `workspace add`, so a Location id alone resolves
+ * to nothing there and the Run dies with "no local path registered". The path
+ * under the shared workspace root is what lets it resolve one (ADR 0016
+ * section 4). A Conversation bound to a server Location always arrives with a
+ * snapshot workspace. Skipping the merge in that case fails every such Run.
  */
 export { launchWorkspace as launchWorkspaceForTest };
 

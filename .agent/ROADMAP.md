@@ -1,11 +1,11 @@
 # Roadmap
 
-This file records **shipped** foundations. Unimplemented ideas are in
+This file lists the foundations that exist. Unimplemented ideas are in
 [plans/unimplemented-from-guides.md](plans/unimplemented-from-guides.md).
 Work is pulled from [plans/backlog.md](plans/backlog.md) or
 [tasks/deferred-register.md](tasks/deferred-register.md).
 
-## Shipped Foundations
+## Foundations
 
 - Space / user / Project Folder data model with space isolation
 - Actor identity on audit/event surfaces

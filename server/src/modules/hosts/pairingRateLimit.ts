@@ -195,10 +195,10 @@ export function hostRegisterRateLimited(ip: string, now = Date.now(), persistDir
   // sweep: the sweep is periodic, and a decision must never count a stamp that
   // has already expired.
   const recent = (attempts.get(key) ?? []).filter((stamp) => now - stamp < WINDOW_MS);
-  // Deleted and re-set so Map order is last-touch: the cap evicts from the
-  // front, and without this it dropped the buckets that had been under the
-  // limit longest — so a caller with enough distinct keys could push their own
-  // throttled bucket out and earn a fresh quota.
+  // Deleted and re-set so Map order is last-touch. The cap evicts from the
+  // front. Do not leave an existing key in place: a caller with enough
+  // distinct keys can push their own throttled bucket out and earn a fresh
+  // quota.
   attempts.delete(key);
   const throttled = recent.length >= HOST_REGISTER_MAX_ATTEMPTS;
   if (!throttled) recent.push(now);

@@ -57,7 +57,7 @@ Google account was chosen, so it cannot hold the bootstrap user slot.
 
 Invitation links are `/invitations/claim#token=...`. The web page removes the
 fragment with `history.replaceState` before any network request, so the token is
-not sent in a URL or Referer. The old path and old accept endpoint do not exist.
+not sent in a URL or Referer. There is no other claim path or accept endpoint.
 An active account with the invited email can instead accept the same link via
 authenticated `POST /api/v1/invitations/accept`; the Space repository locks and
 consumes the available invitation while activating the membership in one

@@ -132,7 +132,7 @@ place every time:
 | Surface | Scope |
 |---|---|
 | `/activity` (Activity Inbox) | the whole Space; a Project filter the reader can set and clear |
-| `/projects/:projectId/sources?tab=raw` (Raw material; the old `/projects/:projectId/raw` redirects here) | pinned to that Project |
+| `/projects/:projectId/sources?tab=raw` (Raw material; `/projects/:projectId/raw` redirects here) | pinned to that Project |
 
 One queue, one implementation: both render `ActivityQueue`, which owns the
 filters, the records and the review/archive actions. A second implementation
