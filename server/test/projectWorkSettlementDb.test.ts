@@ -376,9 +376,9 @@ describe("run settlement", () => {
 
     await settleTasksForRun(db.pool!, SPACE, run);
     expect((await taskRow(task)).status).toBe("done");
-    // The second settlement had different facts, so it is a second event —
-    // a key without the outcome swallowed it and left a status change with
-    // nothing in the stream saying why.
+    // The second settlement had different facts, so it is a second event.
+    // Do not key it without the outcome. The status change would have nothing
+    // in the stream saying why.
     expect(await eventKindCounts(task)).toEqual({
       "task.run_settled": 2,
       "task.accepted": 1,

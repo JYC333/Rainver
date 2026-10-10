@@ -192,9 +192,9 @@ Board then displays. Where it goes next is a person's or an agent's decision.
 
 The `task.run_settled` idempotency key carries the outcome reason: the same
 Run can settle the same Task twice with different facts (held for a missing
-output, then closed once it is attached), and a key without the outcome
-swallowed the second settlement, leaving a status change the stream did not
-explain.
+output, then closed once it is attached). Do not key it without the outcome.
+The second settlement would be swallowed, and the stream would not explain
+the status change.
 
 `task_evaluations` is load-bearing here. `RunFinalization` already projects
 every run evaluation into one, with `recommendation ∈ accept / review / retry /
