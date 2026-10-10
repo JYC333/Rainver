@@ -77,11 +77,7 @@ export async function renderCliCommand(
 
   const extraArgs: string[] = [];
   // Model selection for an ACP adapter happens over the protocol
-  // (`session/set_config_option`), never via a CLI arg — equivalent to the
-  // former `argument_rendering_strategy !== "ndjson_rpc"` check (deleted:
-  // execution-topology-and-project-control-plane-plan.md P0.6 — every
-  // current adapter's `ndjson_rpc` rendering strategy coincided exactly
-  // with `protocol: "acp"`, so the field only ever restated this).
+  // (`session/set_config_option`), never via a CLI arg.
   if (input.model && spec.invocation.protocol !== "acp") {
     if (!spec.model.supports_model_override || !spec.model.model_arg_template) {
       throw new CliRenderError("model_override_not_supported", `runtime_key '${spec.runtime_key}' does not support model override`);

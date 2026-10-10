@@ -251,8 +251,7 @@ interface RunExecutionAdapterDeps {
   routeResolver?: RunRouteResolverPort;
   runExchange?: RunExchangePort;
   /**
-   * ADR 0016 P2 / execution-topology-and-project-control-plane-plan.md P1
-   * (D3): resolves a Run's execution site for `HostExecutionPort` selection.
+   * Resolves a Run's execution site for `HostExecutionPort` selection.
    * `workspaceLocationId` is authoritative when present (every Run dispatched
    * through the merged endpoint carries one); `projectFolderId` is the
    * fallback for a Run that has no concrete Location, resolved via that
@@ -941,23 +940,17 @@ export class RunOrchestrationService {
       // `appendRunEvent`'s `event_index` is a
       // fresh `COALESCE(MAX+1, 0)` read per INSERT, so two overlapping
       // un-awaited calls for the same run can read the same max and collide
-      // on `uq_run_events_space_run_event_index` — found via
-      // control-center-phase2-plan.md P1's remote-events test, which is the
-      // first coverage to produce two RuntimeSemanticEvents from one chunk
-      // for a remote run. `serializeCalls` (routeUtils/common.ts) fixes it by
-      // construction.
-      // Unlike host_thread_events' equivalent fix, no database-level lock is
-      // needed on top of it: run_events' uniqueness is per-run, and
-      // tryAcquireExecutionLock already guarantees only one process ever
-      // executes a given run, so this in-process chain is the whole story.
+      // on `uq_run_events_space_run_event_index`. `serializeCalls`
+      // (routeUtils/common.ts) closes that race.
+      // No database-level lock is needed on top of it: run_events' uniqueness
+      // is per-run, and tryAcquireExecutionLock already guarantees only one
+      // process executes a given run, so this in-process chain is the whole
+      // story.
       //
-      // Swallowing note: `appendRuntimeSemanticEvent` rethrows for
-      // "critical" event types, but no caller has ever actually observed
-      // that rethrow. `remoteHostCliAdapter.ts` calls this sink via `void`,
-      // un-awaited (this process has no unhandledRejection handler, so
-      // Node's default there is to crash — a rethrow was observable, just
-      // never intentionally). Nothing today reads or acts on a "critical"
-      // rethrow's signal.
+      // `appendRuntimeSemanticEvent` rethrows for "critical" event types.
+      // `remoteHostCliAdapter.ts` calls this sink via `void`. This process
+      // has no unhandledRejection handler, so Node's default is to crash.
+      // Nothing reads a "critical" rethrow as a signal.
       // `serializeCalls` turns the `void`-path's crash-on-any-write-hiccup
       // behavior into a swallow too, uniformly — a deliberate call: one
       // run's transient write failure must not take the whole process
@@ -2581,10 +2574,9 @@ export class RunOrchestrationService {
           invocation_delivery: input.invocation_delivery,
           timeout_seconds: input.timeout_ms && input.timeout_ms > 0 ? Math.ceil(input.timeout_ms / 1000) : null,
           runtime_event_sink: input.runtime_event_sink,
-          // control-center-phase2-plan.md P1 (C2): persisted as frames
-          // arrive, not batched — the thread's live read model. Serialized
-          // per run (see createSerializedThreadEventSink) since stdout and
-          // stderr chunks can arrive back-to-back through un-awaited
+          // Persisted as frames arrive, not batched. The thread's live read model.
+          // Serialized per run (see createSerializedThreadEventSink) since stdout
+          // and stderr chunks can arrive back-to-back through un-awaited
           // callbacks.
           thread_event_sink: threadEvents
             ? createSerializedThreadEventSink(threadEvents, threadId!, run.id)

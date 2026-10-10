@@ -50,16 +50,16 @@ export interface RetrievalTrace {
   dropped_reasons: Record<string, number>;
   // Optional rerank-stage diagnostics. Counts only (never candidate ids), so the
   // trace cannot leak the existence of objects sent to or dropped by the reranker.
-  // `moved` counts windowed candidates whose position changed (§2.8). `truncated`
-  // counts candidates whose text was bounded by the token budget (§2.6).
+  // `moved` counts windowed candidates whose position changed. `truncated`
+  // counts candidates whose text was bounded by the token budget.
   rerank?: { sent: number; applied: boolean; moved?: number; truncated?: number };
-  // Aggregate ranking telemetry (§2.8). `score_buckets` is a histogram of the
+  // Aggregate ranking telemetry. `score_buckets` is a histogram of the
   // visible candidates' final fused+boosted scores; `boost_attribution` counts
   // how often each boost axis (and the floor gate) fired. Both are counts over
   // the visible set / the candidates' own boost axes — never ids/titles/queries.
   score_buckets?: Record<string, number>;
   boost_attribution?: Record<string, number>;
-  // Adaptive-return diagnostics (§2.4): whether the trim fired and how many
+  // Adaptive-return diagnostics: whether the trim fired and how many
   // low-tail candidates it dropped. Aggregate only.
   adaptive_return?: { applied: boolean; trimmed: number };
   // Optional query-rewrite diagnostics. Counts only (never the variant strings).
@@ -105,7 +105,7 @@ export interface SearchCandidate {
   sourceConnectionIds?: string[];
   /**
    * The candidate's own best-chunk query/chunk cosine similarity in [0,1] when it
-   * had a vector hit, for the deterministic post-RRF cosine blend (§2.3). Carried
+   * had a vector hit, for the deterministic post-RRF cosine blend. Carried
    * separately from `evidence.confidence` because fusion may overwrite the
    * candidate's evidence with a higher-priority arm's. Access-safe: it is derived
    * only from the candidate's own embedding versus the query.

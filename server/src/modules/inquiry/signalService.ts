@@ -158,11 +158,9 @@ export class InquirySignalService {
     return new InquirySignalService(getDbPool(config.databaseUrl));
   }
 
-  // Signal creation is the manual/deterministic entry point in this phase:
-  // the caller (a human reviewer or a future automated classifier run)
-  // supplies the classification, confidence, and model_version; this service
-  // owns only routine/material routing and Candidate consolidation, not the
-  // classification judgement itself.
+  // Signal creation is the entry point. The caller supplies the
+  // classification, confidence, and model_version. This service owns routing
+  // and Candidate consolidation, not the classification judgement.
   async createSignal(
     identity: SpaceUserIdentity,
     projectId: string,

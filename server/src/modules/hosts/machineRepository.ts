@@ -2,8 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 
 /**
- * execution-topology-and-project-control-plane-plan.md P1 / D1: a physical
- * device's identity. See `server/src/db/schema/machines.ts` for what this
+ * A physical device's identity. See `server/src/db/schema/machines.ts` for what this
  * deliberately does not carry (paths, runtime state, capabilities — those
  * stay on the `hosts`/ExecutionHost rows it owns).
  */

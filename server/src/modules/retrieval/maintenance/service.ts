@@ -10,7 +10,7 @@ import {
 import type { RevalidatedObject } from "../types.js";
 
 /**
- * Retrieval maintenance scan — the "context review cycle" review-candidate generator (W7).
+ * Retrieval maintenance scan — the "context review cycle" review-candidate generator.
  *
  * The maintenance loop dedups pages, fixes links, flags contradictions, etc.
  * rainver implements the low-risk, derived-only half as a READ-ONLY scan

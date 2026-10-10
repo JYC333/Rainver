@@ -376,8 +376,7 @@ describe("researchAcquisitionPipelineDb", () => {
       expect(strategies.rows).toHaveLength(1);
     });
 
-    // Regression test for the discovery-review finding: `failOperation` can run
-    // inside a `WorkflowExecutionService` SAVEPOINT that gets rolled back on
+    // `failOperation` can run inside a `WorkflowExecutionService` SAVEPOINT that gets rolled back on
     // rethrow, so `notifyRoomOfOperationFailure` must enqueue its Room
     // notification through the same `Queryable` `failOperation` is already
     // using (sharing its commit/rollback fate) rather than posting the Room
@@ -564,8 +563,7 @@ describe("researchAcquisitionServiceDb", () => {
       expect(jobs.rows).toHaveLength(1);
     });
 
-    // Regression test for the discovery-review finding: without an advisory
-    // lock serializing the "already starting" check against the enqueue, two
+    // Without an advisory lock serializing the "already starting" check against the enqueue, two
     // concurrent calls can both observe no active job and both enqueue one —
     // duplicating real LLM-assessment/live-search pipeline cost. Same idiom as
     // the Inquiry Thread creation path's coalesce guard.

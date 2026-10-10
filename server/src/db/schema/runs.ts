@@ -30,9 +30,8 @@ export const runs = pgTable("runs", {
 	requestedRuntimeProfileId: varchar("requested_runtime_profile_id", { length: 36 }),
 	selectedRuntimeProfileId: varchar("runtime_profile_id", { length: 36 }),
 	runtimeProfileSelectionSource: varchar("runtime_profile_selection_source", { length: 16 }),
-	// execution-topology-and-project-control-plane-plan.md P1 / D3: kept as a
-	// write-once denormalized copy of `workspace_location_id`'s own Folder —
-	// a Location's Folder never changes after creation, so this cannot drift,
+	// Write-once denormalized copy of `workspace_location_id`'s own Folder.
+	// A Location's Folder never changes after creation, so this cannot drift,
 	// and a composite FK below enforces it at the database level. Read
 	// through this column when only the logical Folder matters (most
 	// queries); read `workspace_location_id` when the physical execution

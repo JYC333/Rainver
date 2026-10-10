@@ -5,8 +5,7 @@ import { projectFolders } from "./projectFolders.js";
 import { spaces } from "./spaces.js";
 
 /**
- * execution-topology-and-project-control-plane-plan.md P1 / D2: one
- * physical checkout of a logical `project_folders` row, on one
+ * One physical checkout of a logical `project_folders` row, on one
  * `hosts`/ExecutionHost. A Folder may have several Locations (the same
  * repository checked out on more than one machine or environment); a
  * Location belongs to exactly one Folder and one ExecutionHost.

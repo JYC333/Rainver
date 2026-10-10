@@ -118,9 +118,7 @@ export interface SendAgentGroupMessageInput {
   }> | null;
   /**
    * Precomputed Project state context text (mode projection + attention),
-   * prefixed onto the assigned task for a Room-dispatched run (plan:
-   * `.agent/plans/project-conversational-advancement-plan.md`, Phase A
-   * decision 3). Built once per dispatch by the caller — not here — so a
+   * prefixed onto the assigned task for a Room-dispatched run. Built once per dispatch by the caller — not here — so a
    * multi-recipient dispatch reads the Project once rather than per
    * recipient. Domain-neutral: sourced from the generic Project Overview
    * contract, never assembled from a specific domain's tables.

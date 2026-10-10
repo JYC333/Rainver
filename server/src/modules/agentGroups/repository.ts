@@ -159,12 +159,10 @@ const DELEGATION_COLUMNS_ALIASED = `
 /**
  * A delegation is readable when both of its Runs are.
  *
- * `runReadSql`, not `contentReadSql`: the Run helper carries the Room term as
- * well as the content predicate, and this read had only the second. Every
- * sibling read in the same response — the message list, the timeline — carries
- * both, so a group manager who had been removed from the Room read each
- * delegation's `instruction`, `reason` and `result_summary` while the messages
- * beside them rendered empty.
+ * Use `runReadSql`. It carries the Room term and the content predicate.
+ * Do not read a delegation with only the content predicate: a group manager
+ * removed from the Room would still see each delegation's `instruction`,
+ * `reason`, and `result_summary` while the messages beside them render empty.
  */
 function delegationRunReadSql(userExpr: string): string {
   return `${runReadSql(userExpr, "parent_run")}

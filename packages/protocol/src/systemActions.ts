@@ -519,8 +519,8 @@ export const SYSTEM_ACTION_REGISTRY = [
   // Runtime `proposal_type` is `knowledge_create` or `knowledge_update`
   // (revalidation branch) depending on `supersedes_knowledge_item_id`;
   // `knowledge_create` here is descriptive metadata only — nothing currently
-  // compares it for equality (see `acceptAgentProposalIfGranted`), and this
-  // action is not wired into that auto-apply path in this phase.
+  // compares it for equality (see `acceptAgentProposalIfGranted`). This
+  // action is not on that auto-apply path.
   gatedProposalAction("inquiry.promote_knowledge", "Propose promoting a concluded Inquiry round to Knowledge", "inquiry", "KnowledgePromotionCandidateService.proposeFromThreadForAgent", "inquiry.knowledge.promote", "knowledge_create", "exposure"),
   // Direct execution, no proposal gate. The Thread was already
   // human-accepted at creation, so starting acquisition on it is execution,

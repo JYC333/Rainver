@@ -45,11 +45,8 @@ export type InquiryNextFocusKind = z.infer<typeof InquiryNextFocusKindSchema>;
  * reaching Land closes a round rather than finishing the Thread and there is
  * no such thing as regression here.
  *
- * Stages are derived, never stored — this grouping exists so both the Room
- * Project state panel (Phase B) and, when Room dispatch has an Inquiry
- * next-focus kind to label, the Room agent's context assembly (Phase A
- * decision 3) share one classification instead of drifting copies (plan:
- * `.agent/plans/project-conversational-advancement-plan.md`).
+ * Stages are derived, never stored. The Room Project state panel and the Room
+ * agent's context assembly share this classification. Do not keep a second copy.
  */
 export const InquiryStageIdSchema = z.enum(["clarify", "acquire", "digest", "conclude", "land"]);
 export type InquiryStageId = z.infer<typeof InquiryStageIdSchema>;

@@ -26,7 +26,7 @@ import type { RevalidatedObject, ScoredCandidate } from "./types.js";
  *    invents (out of range) is dropped — the brief never points at an object the
  *    viewer did not already receive.
  *  - **advisory only (invariant 6).** Gap findings are returned, not written:
- *    the context review cycle (W7) turns them into batched review candidates; the brief
+ *    the context review cycle turns them into batched review candidates; the brief
  *    never makes a canonical write.
  *
  * The engine owns the access-safe seam + the deterministic assembly; the provider

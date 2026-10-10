@@ -12,8 +12,8 @@ import type { StrictNamespaceRequest } from "../src/strictNamespace.js";
  * a Run on the built-in host is reachable by anyone allowed to dispatch in its
  * Space, and this argv is the only thing between them. These assertions are on
  * the argv rather than on a live `bwrap`, because CI has no bubblewrap and a
- * test that silently skipped would assert nothing at all; a real namespace is
- * part of this phase's on-machine verification.
+ * test that silently skipped would assert nothing at all. A real namespace
+ * is verified on a machine; CI has no bubblewrap.
  */
 const base: StrictNamespaceRequest = {
   command: "/usr/bin/agent",

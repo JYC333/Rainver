@@ -36,7 +36,7 @@ function emptyTrace(): RetrievalTrace {
   return { arms: {}, dropped: 0, dropped_reasons: {} };
 }
 
-describe("§2.2 floor-ratio gating", () => {
+describe("floor-ratio gating", () => {
   it("gates metadata boosts when a candidate is far below the top score, even above the absolute floor", () => {
     const weak = scored({ objectId: "weak", score: 0.05 }); // > absolute floor 0.01
     // With a top score of 1.0, the 0.15 ratio threshold is 0.15 > 0.05 ⇒ gated.
@@ -79,7 +79,7 @@ describe("§2.2 floor-ratio gating", () => {
   });
 });
 
-describe("§2.3 post-RRF cosine blend", () => {
+describe("post-RRF cosine blend", () => {
   it("lifts a stronger cosine match above an equal-score weaker one and reduces a poor one", () => {
     const ranked = applyRankingSignals(
       [
@@ -117,7 +117,7 @@ describe("§2.3 post-RRF cosine blend", () => {
   });
 });
 
-describe("§2.8 telemetry / boost attribution", () => {
+describe("telemetry / boost attribution", () => {
   it("records aggregate boost-axis fire counts without ids/titles", () => {
     const telemetry = newRankingTelemetry();
     applyRankingSignals(
@@ -144,7 +144,7 @@ describe("§2.8 telemetry / boost attribution", () => {
   });
 });
 
-describe("§2.4 adaptive return (trim-only)", () => {
+describe("adaptive return (trim-only)", () => {
   it("trims the tail at a sharp score cliff while keeping the head", () => {
     const trace = emptyTrace();
     const visible = [1, 0.9, 0.8, 0.1, 0.05].map((score, i) => scored({ objectId: `c${i}`, score }));
@@ -162,7 +162,7 @@ describe("§2.4 adaptive return (trim-only)", () => {
   });
 });
 
-describe("§2.6 rerank payload token budget", () => {
+describe("rerank payload token budget", () => {
   it("truncates per-item and stops at the remaining payload budget", () => {
     expect(boundRerankText("x".repeat(5000), 2000, 24000, 0)).toEqual({ text: "x".repeat(2000), truncated: true });
     expect(boundRerankText("short", 2000, 24000, 0)).toEqual({ text: "short", truncated: false });

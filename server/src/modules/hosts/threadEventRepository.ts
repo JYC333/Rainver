@@ -5,11 +5,10 @@ import { withDbTransaction, serializeCalls } from "../routeUtils/common.js";
 const LOCK_PREFIX = "host_thread_events:";
 
 /**
- * control-center-phase2-plan.md P1 (C2): the normalized conversation event
- * log for a task thread — server-side normalized text/tool-activity/status/
- * diagnostic events, not the vendor's raw stream. See
- * `server/src/db/schema/hostThreadEvents.ts` for why this is a sibling table
- * to `run_events`, not a new value in that table's closed vocabulary.
+ * Normalized conversation event log for a task thread: server-side text,
+ * tool activity, status, and diagnostic events, not the vendor's raw stream.
+ * See `server/src/db/schema/hostThreadEvents.ts` for why this is a sibling
+ * table to `run_events`.
  */
 export type HostThreadEventType =
   | "assistant_text"

@@ -14,10 +14,9 @@ import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js
  * `POST /api/v1/agents/:agentId/host-state/reset` — "clear this Agent's CLI
  * memory on this host".
  *
- * It is the one externally reachable write this phase adds, and the thing it
- * clears is an Agent's login, vendor sessions and CLI auto-memory on a machine
- * someone owns. What is asserted here is who may reach it and what it refuses;
- * the daemon-side archive has its own tests in `packages/host-daemon`, and the
+ * What is asserted here is who may reach it and what it refuses. The thing it
+ * clears is an Agent's login, vendor sessions, and CLI auto-memory on a
+ * machine someone owns. The daemon-side archive has its own tests in `packages/host-daemon`, and the
  * session retirement is covered in `hostThreadsDb.test.ts`.
  *
  * Every case below stops before the daemon round trip or asserts the offline

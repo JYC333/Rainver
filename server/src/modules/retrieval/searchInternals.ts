@@ -28,7 +28,7 @@ export function armFetchLimit(maxResults: number): number {
   return Math.min(ARM_FETCH_MAX, Math.max(ARM_FETCH_MIN, maxResults * ARM_OVERFETCH));
 }
 
-// Embedding dimensions that have a `halfvec` HNSW ANN index in the schema (W5).
+// Embedding dimensions that have a `halfvec` HNSW ANN index in the schema.
 // The vector arm emits a constant-dimension halfvec cosine query for these so the
 // planner can use the partial index; other dimensions fall back to the exact
 // `vector` scan. MUST stay in sync with the ix_retrieval_chunks_embedding_hnsw_*
@@ -107,7 +107,7 @@ export function fuseCandidates(candidates: SearchCandidate[]): ScoredCandidate[]
       existing.evidence = candidate.evidence;
     }
     // Preserve the strongest vector similarity across the merged arms so the
-    // post-RRF cosine blend (§2.3) survives even when a higher-priority arm's
+    // post-RRF cosine blend survives even when a higher-priority arm's
     // evidence overwrites the vector evidence.
     if (typeof candidate.vectorSimilarity === "number") {
       existing.vectorSimilarity = Math.max(existing.vectorSimilarity ?? 0, candidate.vectorSimilarity);
@@ -118,7 +118,7 @@ export function fuseCandidates(candidates: SearchCandidate[]): ScoredCandidate[]
     .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
 }
 
-// Adaptive-return bounds (§2.4). Trim only — never grows the set. Keeps at least
+// Adaptive-return bounds. Trim only — never grows the set. Keeps at least
 // the first `MIN_KEEP` visible candidates, then cuts at the first sharp score
 // cliff (next score below `CLIFF_RATIO` of the previous one), so a precise answer
 // is not padded with a weak tail. Operates only on the already-visible set.
@@ -126,7 +126,7 @@ const ADAPTIVE_RETURN_MIN_KEEP = 3;
 const ADAPTIVE_RETURN_CLIFF_RATIO = 0.5;
 
 /**
- * Conservative adaptive return (§2.4): shrink the visible list at the first sharp
+ * Conservative adaptive return: shrink the visible list at the first sharp
  * score cliff. Access-safe — reads only the visible candidates' own scores, never
  * adds candidates, never reads hidden objects. Records aggregate trace only.
  */
@@ -305,8 +305,8 @@ function evidencePriority(evidence: EvidenceContract): number {
 }
 
 /**
- * Bound one rerank candidate's text by the per-item and remaining payload budget
- * (§2.6). Returns the (possibly truncated/empty) text plus whether it was cut.
+ * Bound one rerank candidate's text by the per-item and remaining payload budget.
+ * Returns the (possibly truncated/empty) text plus whether it was cut.
  * Null in → null out (a redacted object keeps its null text). Truncates only
  * already-visible, already-revalidated text that was going to be sent anyway.
  */
@@ -334,7 +334,7 @@ export function boundRerankText(
 }
 
 /**
- * Aggregate-safe score histogram bucket label (§2.8). Reuses the same thresholds
+ * Aggregate-safe score histogram bucket label. Reuses the same thresholds
  * as the explain/diagnostics surfaces so telemetry is comparable across stages.
  */
 export function scoreBucket(score: number): string {

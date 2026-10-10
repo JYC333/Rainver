@@ -145,9 +145,7 @@ export class KnowledgePromotionCandidateService {
 
   /**
    * Combines `createFromThread` and an immediate `decideCandidate({decision:
-   * "promote"})` into one call (plan:
-   * `.agent/plans/project-conversational-advancement-plan.md`, Phase A,
-   * `inquiry.promote_knowledge`). The two-hop Candidate design stays intact
+   * "promote"})` into one call. The two-hop Candidate design stays intact
    * for the manual Knowledge Review path (`createFromThread` alone,
    * `decideCandidate` as a separate later human action); this method exists
    * only so a single conversational instruction produces one reviewable

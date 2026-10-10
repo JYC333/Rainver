@@ -128,7 +128,7 @@ export const RetrievalSearchResponseSchema = z
   .passthrough();
 export type RetrievalSearchResponse = z.infer<typeof RetrievalSearchResponseSchema>;
 
-// ── Context Brief (W6): synthesis + citations + gap analysis over the retrieved
+// ── Context Brief: synthesis + citations + gap analysis over the retrieved
 // sources. The brief is built only from the viewer-visible, revalidated results;
 // citations point at those surfaced sources, and gap findings are advisory output
 // (maintenance/report/proposal-packet flows may turn them into review candidates;
@@ -480,7 +480,7 @@ const RetrievalTraceSummarySchema = z
     graph: z.record(z.unknown()).optional(),
     relational: z.record(z.unknown()).optional(),
     synthesis: z.record(z.unknown()).optional(),
-    // Aggregate ranking telemetry (§2.8): score histogram + boost-axis fire
+    // Aggregate ranking telemetry: score histogram + boost-axis fire
     // counts over the visible set, plus the adaptive-return outcome. Counts only.
     score_buckets: RetrievalEvalCountMapSchema.optional(),
     boost_attribution: RetrievalEvalCountMapSchema.optional(),

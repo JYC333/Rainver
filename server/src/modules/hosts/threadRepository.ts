@@ -466,10 +466,10 @@ export class PgHostThreadRepository {
   /**
    * Host state a reconnecting daemon still owes an archive for.
    *
-   * Not restricted to `workspace_mode = 'managed'` any more: a Conversation
-   * pinned to a registered WorkspaceLocation has no Rainver-managed cwd but
-   * still has the Agent's runtime profile on that machine, and leaving that
-   * behind is the leak this phase closes. `include_workspace` says which of
+   * Covers a Conversation pinned to a registered WorkspaceLocation, not only
+   * `workspace_mode = 'managed'`. That Conversation has no Rainver-managed
+   * cwd, and it still has the Agent's runtime profile on that machine.
+   * Leaving the profile behind leaks it. `include_workspace` says which of
    * the two the daemon should move.
    */
   async listPendingManagedWorkspaceArchives(hostId: string): Promise<Array<{

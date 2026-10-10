@@ -27,7 +27,7 @@ export function buildSynthesisPrompt(
   docs: readonly SynthesisDoc[],
   systemPrompt: string,
 ): SynthesisPrompt {
-  // §2.6 token budget: per-source cap PLUS a running total cap so a wide window of
+  // Token budget: a per-source cap plus a running total cap so a wide window of
   // long sources cannot blow the payload. Once the total is spent, later sources
   // keep only their title (citation index stays valid).
   let totalUsed = 0;

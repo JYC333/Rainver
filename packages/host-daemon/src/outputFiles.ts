@@ -2,13 +2,9 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 
 /**
- * Reads text files back out of the per-run output directory
- * (`RAINVER_OUTPUT_DIR`) for upload as run artifacts — the phase-1
- * substitute for Run Exchange (control-center-plan.md §5). Read as UTF-8:
- * phase-1 deliverables are expected to be text (code, reports, notes); a
- * binary output file would come back corrupted. Known gap, not a silent
- * one — D6 lists artifacts as a phase-1 return channel without a
- * binary-safe transport.
+ * Reads text files from the per-run output directory (`RAINVER_OUTPUT_DIR`)
+ * for upload as run artifacts. Read as UTF-8. A binary file would come back
+ * corrupted. Do not treat this as a binary-safe channel.
  */
 export async function collectOutputFiles(dir: string): Promise<Array<{ name: string; content: string }>> {
   const files: Array<{ name: string; content: string }> = [];

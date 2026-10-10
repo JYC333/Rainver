@@ -107,8 +107,8 @@ describe("executeRemoteHostCliAdapter", () => {
     const registry = new HostConnectionRegistry();
     const sink = new FakeSink();
     registry.registerConnection("host-1", sink);
-    // control-center-phase2-plan.md P3 (closure review): every early-return
-    // failure path above the ordinary `run_started`/.../`run_failed` event
+    // Every early-return failure path above the ordinary `run_started` /
+    // `run_failed` event
     // sequence writes `thread_event_sink`. A Run that ends with zero thread
     // events leaves the conversation with no signal that it finished. Do not
     // skip the sink on an early return. These early returns share
@@ -799,7 +799,7 @@ describe("executeRemoteHostCliAdapter", () => {
     expect(result.success).toBe(false);
   });
 
-  it("queues a stdin frame sent while the host is briefly offline and redelivers it in order on reconnect (P2 discovery review fix)", async () => {
+  it("queues a stdin frame sent while the host is briefly offline and redelivers it in order on reconnect", async () => {
     const registry = new HostConnectionRegistry();
     const sink1 = new FakeSink();
     registry.registerConnection("host-1", sink1);

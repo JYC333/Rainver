@@ -837,10 +837,10 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
    * The Space provisioning template, with whether it can still provision.
    *
    * Disabling or ungranting the Provider a template names does not rewrite
-   * the template and does not touch an existing Profile — it makes future
-   * provisioning fail, which the plan requires to be a *visible* repair. The
-   * state is derived from the same grant join Profile admission uses, so the
-   * page and the failing create agree about why.
+   * the template and does not touch an existing Profile. Future provisioning
+   * fails, and that failure stays visible. The state is derived from the same
+   * grant join Profile admission uses, so the page and the failing create
+   * agree about why.
    */
   async getSpaceAgentRuntimeDefault(spaceId: string): Promise<SpaceAgentRuntimeDefaultRecord | null> {
     const result = await this.pool.query<Omit<SpaceAgentRuntimeDefaultRecord, "state" | "state_reason">
@@ -1562,12 +1562,12 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
   /**
    * Why this Space's provisioning template cannot provision, in its own terms.
    *
-   * Without this, disabling the Provider a template names failed every Agent
-   * creation in the Space — including the managed Space/Project Assistant a
-   * Room mints on its first message — with the Profile-level
+   * Disabling the Provider a template names must not fail every Agent
+   * creation in the Space — including the managed Space or Project Assistant
+   * a Room mints on its first message — with the Profile-level
    * "Model provider is not selectable in this space", which names nothing the
-   * person can act on. The template is deliberately *not* rewritten to native
-   * mode: the plan requires a visible repair, not a silent downgrade.
+   * person can act on. The template is not rewritten to native mode.
+   * The repair stays visible. Do not downgrade it silently.
    */
   private async assertSpaceRuntimeTemplateUsable(
     db: Queryable,

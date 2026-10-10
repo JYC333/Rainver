@@ -187,11 +187,10 @@ describe("Retrieval bench: NamedThing entity recall (real Postgres)", () => {
 
     // Query the shared term only ("helios"), NOT the full title — so the named
     // page wins on its single dense chunk, while each distractor brings many weak
-    // chunks. Before per-page max-db.pool (W2), fusion summed RRF across an object's
-    // chunks, so distractor chunk-count inflated their score and pushed the named
-    // entity down (baseline MRR ≈ 0.33). With per-arm max-db.pool + the title-phrase
-    // boost (the query term is in the named entity's title), the named entity
-    // ranks first and the distractors fall in behind it.
+    // chunks. Fusion keeps the per-arm max pool. Do not sum RRF across an object's
+    // chunks: distractor chunk-count inflates the score. The title-phrase
+    // boost applies when the query term is in the named entity's title, so
+    // that entity ranks first and the distractors fall in behind it.
     const cases: EvalCase[] = [
       { query: "helios", expected: ["named"], graded: { named: 3, "distractor-1": 1, "distractor-2": 1 } },
     ];
@@ -321,7 +320,7 @@ describe("Retrieval bench: relational recall (real Postgres)", () => {
     expect((result.trace as { graph?: { hops: number } }).graph?.hops).toBe(2);
   });
 
-  it("seeds the graph from a lexical match, not just an exact title (W4)", async () => {
+  it("seeds the graph from a lexical match, not just an exact title", async () => {
     if (!db.available) return;
     // The query matches "anchor" only LEXICALLY (no exact title / alias). Before
     // W4 the graph arm seeded from exact hits only, so the neighbor was missed.

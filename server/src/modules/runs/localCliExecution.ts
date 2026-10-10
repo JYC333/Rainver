@@ -76,8 +76,7 @@ export interface CliRawStdioController {
 export interface CliStdioController {
   start(send: (message: Record<string, unknown>) => void): void;
   /**
-   * Async by contract (execution-topology-and-project-control-plane-plan.md
-   * P0.2): an SDK-backed implementation's next `send()` can depend on a
+   * Async by contract. An SDK-backed implementation's next `send()` can depend on a
    * Promise resolving, which never happens synchronously within this call.
    * The remote CLI adapter's own controller stays synchronous in effect by
    * resolving immediately.

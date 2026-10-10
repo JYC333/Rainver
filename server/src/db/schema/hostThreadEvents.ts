@@ -5,15 +5,14 @@ import { runs } from "./runs.js";
 import { projects } from "./projects.js";
 
 /**
- * control-center-phase2-plan.md P1 (C2): the normalized conversation event
- * log for a remote task thread. Deliberately not a new `run_events.event_type`
- * value — that table's CHECK constraint is a closed vocabulary designed
- * around the server-host semantic-event stream (tool_call_started, etc.),
- * has no `assistant_text`/`diagnostic` concept, and was never wired for
- * incremental per-remote-run writes. This is a sibling table with its own,
+ * Normalized conversation event log for a remote task thread. Not a new
+ * `run_events.event_type`: that table's CHECK constraint is a closed
+ * vocabulary for the server-host semantic-event stream (`tool_call_started`
+ * and the rest) and has no `assistant_text` or `diagnostic` concept. A remote
+ * run does not write that table incrementally. This sibling has its own
  * smaller vocabulary and its own per-thread (not per-run) monotonic cursor,
- * since the read model is "everything said in this conversation", spanning
- * every run/turn dispatched into the thread.
+ * since the read model is everything said in this conversation, spanning
+ * every run dispatched into the thread.
  *
  * Reasoning has its own `assistant_thought` type and follows ACP's explicit
  * agent-thought channel; message text is never reclassified by inspecting it.
@@ -21,8 +20,7 @@ import { projects } from "./projects.js";
 export const hostThreadEvents = pgTable("host_thread_events", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	hostTaskThreadId: varchar("host_task_thread_id", { length: 36 }).notNull(),
-	// execution-topology-and-project-control-plane-plan.md P1: write-once,
-	// denormalized from the thread's Location's Folder's Project at the
+	// Write-once, denormalized from the thread's Location's Folder's Project at the
 	// moment this event is written — a thread's Project never changes, so
 	// this cannot drift. Without it, the Project timeline (which scans this
 	// table, not `host_threads`, since this is the higher-volume one)

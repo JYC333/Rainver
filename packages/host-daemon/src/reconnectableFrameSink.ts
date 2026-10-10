@@ -1,16 +1,13 @@
 import type { HostDaemonFrame } from "@rainver/protocol";
 /**
- * A run outlives a single WebSocket connection (control-center-plan.md §5 —
- * "an interrupted connection while a run is active keeps the process
- * alive"). `handleLaunch` is only ever called once, at launch time, with
- * whatever frame sink is current then; if it captured a plain closure bound
- * to that one connection, a reconnect mid-run would leave the run's
- * eventual `output`/`complete` frames being sent on a dead socket forever
- * (silently dropped — this was a real bug, found in the plan's final
- * integration review). This class is the one stable object `handleLaunch`
- * closes over: `bind`/`unbindIfCurrent` let each connection attempt hand off
- * "where frames currently go" without `handleLaunch` ever needing to know a
- * reconnect happened.
+ * A run outlives a single WebSocket connection. An interrupted connection
+ * while a run is active keeps the process alive. `handleLaunch` is called
+ * once, at launch, with whatever frame sink is current then. Do not close
+ * over that one connection: a reconnect mid-run would send the run's
+ * `output` and `complete` frames on a dead socket. This class is the stable
+ * object `handleLaunch` closes over. `bind` and `unbindIfCurrent` hand off
+ * where frames currently go without `handleLaunch` knowing a reconnect
+ * happened.
  */
 export class ReconnectableFrameSink {
   private current: ((frame: HostDaemonFrame) => void) | null = null;

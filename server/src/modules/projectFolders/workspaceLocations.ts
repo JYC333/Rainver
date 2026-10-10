@@ -10,8 +10,7 @@ import { normalizeHostCapabilities } from "../hosts/capabilities.js";
 import { getLocalCliRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
 
 /**
- * execution-topology-and-project-control-plane-plan.md P1 / D2: one
- * physical checkout of a logical `project_folders` row. See
+ * One physical checkout of a logical `project_folders` row. See
  * `server/src/db/schema/workspaceLocations.ts` for the persisted runtime
  * readiness fact reported by the owning execution host.
  */

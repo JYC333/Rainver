@@ -363,11 +363,10 @@ export function managedToolTreeForLaunch(runtimeKey: string | undefined, install
 }
 
 /**
- * Keyed by run_id, not by connection: a run outlives a WebSocket reconnect
- * (control-center-plan.md §5 — "an interrupted connection while a run is
- * active keeps the process alive"). Same reasoning as
- * `sharedHostConnectionRegistry` on the server side — one instance for the
- * daemon process's lifetime.
+ * Keyed by run_id, not by connection: a run outlives a WebSocket reconnect.
+ * An interrupted connection while a run is active keeps the process alive.
+ * Same reasoning as `sharedHostConnectionRegistry` on the server side — one
+ * instance for the daemon process's lifetime.
  */
 const activeRuns = new Map<string, ActiveRun>();
 /**
@@ -540,9 +539,8 @@ export function stopAllRunsForRevocation(log: (line: string) => void = () => {})
  */
 export async function sweepStaleRunProfiles(): Promise<number> {
   // `launchingRuns` as well as `activeRuns`: a reconnect can land between a
-  // launch frame arriving and its child being registered, and deleting that
-  // run's profile mid-launch is the exact silent-unbinding this phase exists
-  // to prevent.
+  // launch frame arriving and its child being registered. Do not delete that
+  // run's directory mid-launch.
   return sweepOrphanedRunDirectories(
     join(configDir(), "runs"),
     new Set([...[...activeLaunches.values()].map(({ runId }) => runId), ...launchingRuns.values(), ...finishingRuns]),
@@ -1575,9 +1573,9 @@ async function launchRun(
   });
   child.stderr?.on("data", (text: string) => {
     stderrTail = (stderrTail + text).slice(-4000);
-    // control-center-phase2-plan.md P1 (C5): the full live stream, not just
-    // the failure tail the `complete` frame still carries below — normalized
-    // into diagnostic conversation events server-side.
+    // The full live stream, not only the failure tail the `complete` frame
+    // still carries. Normalized into diagnostic conversation events on the
+    // server.
     send({ type: "stderr", run_id: frame.run_id, launch_id: frame.launch_id, chunk: text });
   });
 

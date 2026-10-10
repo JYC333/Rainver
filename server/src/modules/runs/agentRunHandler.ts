@@ -190,12 +190,10 @@ async function handleAgentRun(
       worker_id: job.worker_id,
       job_id: job.job_id,
       command_source: "job",
-      // control-center-phase2-plan.md P1: the hosts dispatch endpoint no
-      // longer calls executeRun synchronously — it enqueues this job instead
-      // (async dispatch) and carries the requested timeout here (dropped
-      // silently by the P1 migration until discovery review caught it — no
-      // other agent_run job carries timeout_ms today). The vendor session to
-      // resume comes from the Run, above, so a retry keeps it.
+      // The hosts dispatch endpoint enqueues this job. The requested timeout
+      // travels here. Do not drop it: no other agent_run job carries
+      // timeout_ms. The vendor session to resume comes from the Run, above,
+      // so a retry keeps it.
       adapter_config: {
         ...recordValue(job.payload.adapter_config),
         ...(hostThread.resume_session_id ? { remote_resume_session_id: hostThread.resume_session_id } : {}),
@@ -273,12 +271,10 @@ async function handleAgentRun(
   if (completedRun && isTerminalRun(completedRun.status)) {
     await orchestration.reconcileTerminalDelegation(completedRun);
   }
-  // control-center-phase2-plan.md P1: the hosts dispatch endpoint now
-  // enqueues this job instead of awaiting executeRun inline, so task-thread
-  // outcome recording (vendor session id, session_reset detection) has to
-  // happen here instead, gated on the run actually carrying a thread.
-  // Before chat finalization on purpose: releasing the thread's dispatch
-  // lock must not depend on message materialization succeeding.
+  // Task-thread outcome recording (vendor session id, session_reset) happens
+  // here, gated on the run carrying a thread. Before chat finalization:
+  // releasing the thread's dispatch lock must not depend on message
+  // materialization succeeding.
   if (completedRun && isTerminalRun(completedRun.status) && hostThread.thread_id) {
     await recordHostThreadOutcome(
       config,

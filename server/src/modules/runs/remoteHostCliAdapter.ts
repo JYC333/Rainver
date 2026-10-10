@@ -94,10 +94,9 @@ interface RemoteHostCliAdapterInput {
   adapter_config?: Record<string, unknown>;
   runtime_event_sink?: (event: RuntimeSemanticEvent) => Promise<void> | void;
   /**
-   * control-center-phase2-plan.md P1 (C2): the normalized conversation event
-   * sink, persisted as frames arrive (not a post-hoc parse of accumulated
-   * stdout, unlike `runtime_event_sink`/`run_events`, which only reflects
-   * whatever the caller does with what has already resolved).
+   * Normalized conversation events, persisted as frames arrive. Not a
+   * post-hoc parse of accumulated stdout. `runtime_event_sink` / `run_events`
+   * only reflect what the caller does with what has already resolved.
    */
   thread_event_sink?: (drafts: ThreadEventDraft[]) => Promise<void> | void;
   process_registry?: CliProcessRegistry;
@@ -331,8 +330,7 @@ export async function executeRemoteHostCliAdapter(
 async function runRemoteHostCliAdapter(
   input: RemoteHostCliAdapterInput,
   hostId: string,
-  // execution-topology-and-project-control-plane-plan.md P1 / D2/D5: this is
-  // a WorkspaceLocation id. The daemon wire frame uses the same
+  // A WorkspaceLocation id. The daemon wire frame uses the same
   // `workspace_location_id` field, and the daemon's local config maps that id
   // to the real directory on the owning machine.
   workspaceLocationId: string | null,
@@ -361,19 +359,14 @@ async function runRemoteHostCliAdapter(
     );
   }
 
-  // control-center-phase2-plan.md P3 follow-up (real-usage feedback,
-  // 2026-08-22): every remote dispatch is workspace-bound (`dispatch`
-  // requires `project_folder_id`) and the daemon's diff capture already
-  // stages new files with `git add --intent-to-add --all` before `git diff
-  // HEAD`, so a brand-new file written directly into the workspace shows
-  // its full content in "Review diff" — nudging the agent to write
-  // deliverables to `$RAINVER_OUTPUT_DIR` instead only misdirected
-  // ordinary work out of the workspace the user actually asked for it in.
-  // The daemon still injects `RAINVER_OUTPUT_DIR` and uploads whatever
-  // lands there (kept dormant, not removed — a future structured
-  // rainver-information channel, distinct from workspace file
-  // changes, is a real open design question logged in
-  // `tasks/deferred-register.md`, not decided here).
+  // Every remote dispatch is workspace-bound (`dispatch` requires
+  // `project_folder_id`) and the daemon's diff capture stages new files with
+  // `git add --intent-to-add --all` before `git diff HEAD`, so a brand-new
+  // file written into the workspace shows its full content in "Review diff".
+  // Do not tell the agent to write ordinary work only to `$RAINVER_OUTPUT_DIR`.
+  // The daemon still injects `RAINVER_OUTPUT_DIR` and uploads whatever lands
+  // there. A structured channel for information meant for Rainver, distinct
+  // from workspace file changes, is open in `tasks/deferred-register.md`.
   let prompt = input.prompt ?? input.run.prompt ?? "";
   const supplementalInstructions: string[] = [];
 
@@ -709,14 +702,11 @@ async function runRemoteHostCliAdapter(
       const drafts = threadEvents.pushAcpProtocolEvent(event);
       if (drafts.length > 0) void input.thread_event_sink?.(drafts);
     },
-    // execution-topology-and-project-control-plane-plan.md P0.4/D7: makes
-    // the dispatch-preset pre-authorization a durable, visible fact on the
-    // thread this Run belongs to, rather than an invisible default. Reuses
-    // the existing `diagnostic` event type (§2.14's plan correction: not a
-    // new `host_thread_events` CHECK-constraint value) — kept human-readable
-    // (discovery review finding #3), not a serialized JSON blob, since
-    // `ThreadConversation.tsx`'s `DiagnosticsDrawer` renders every
-    // `diagnostic` line verbatim and this fires on essentially every
+    // Makes the dispatch-preset pre-authorization a durable, visible fact on the
+    // thread this Run belongs to. Reuses the `diagnostic` event type. Do not
+    // add a new `host_thread_events` CHECK value. Keep it human-readable, not
+    // a serialized JSON blob: `ThreadConversation.tsx`'s `DiagnosticsDrawer`
+    // renders every `diagnostic` line verbatim and this fires on essentially every
     // tool-using turn.
     on_permission_decision: (record) => {
       void input.thread_event_sink?.([{
@@ -1116,7 +1106,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         // internal throw into a rejected Promise instead of letting it
         // reach this `try/catch`, so without it a future bug inside
         // `receive()` would become an unhandled rejection rather than a
-        // contained Run failure (discovery review finding #2).
+        // contained Run failure.
         try {
           controller.receive(JSON.parse(record), sendToController, closeControllerStdin)
             .catch(() => { controller.reject("CLI protocol emitted invalid JSON"); closeControllerStdin(); });

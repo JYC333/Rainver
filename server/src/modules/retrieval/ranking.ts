@@ -24,7 +24,7 @@ export interface RankingSignalConfig {
   /** Candidate fused score floor before metadata boosts may apply. 0 disables. */
   metadataBoostFloor: number;
   /**
-   * Floor-ratio gate (§2.2): metadata boosts also require the candidate's fused
+   * Floor-ratio gate: metadata boosts also require the candidate's fused
    * score to be at least this fraction of the TOP fused score of the visible set.
    * 0 disables. The absolute `metadataBoostFloor` remains as a secondary guard.
    * `topScore` is the max over already-revalidated/visible candidates only, so it
@@ -46,7 +46,7 @@ export interface RankingSignalConfig {
   /** Max recency multiplier for a brand-new object (1 disables recency). */
   recencyMaxBoost: number;
   /**
-   * Deterministic post-RRF cosine blend strength α (§2.3). For a candidate that
+   * Deterministic post-RRF cosine blend strength α. For a candidate that
    * had a vector hit, `score *= 1 + α·(cosineSim − 0.5)` using the candidate's OWN
    * best-chunk query/chunk cosine similarity (access-safe — reads only its own
    * embedding vs the query). 0 disables. Kept small so it reorders near-ties
@@ -74,7 +74,7 @@ export const DEFAULT_RANKING_SIGNALS: RankingSignalConfig = {
 };
 
 /**
- * Aggregate-safe ranking telemetry (§2.8). Counts how often each boost axis
+ * Aggregate-safe ranking telemetry. Counts how often each boost axis
  * fired and how many candidates were gated off by the floor/ratio — never any
  * object id, title, query, or snippet. Populated by `applyRankingSignals` when a
  * sink is passed; surfaced only as aggregate `trace.boost_attribution`.
@@ -166,14 +166,14 @@ export function rankingBoost(
     recordAxis(telemetry, "floor_gated");
   }
   // Cosine blend is a relevance signal, not a metadata boost, so it applies even
-  // when the metadata floor gated the candidate off (§2.3).
+  // when the metadata floor gated the candidate off.
   const blend = cosineBlendFactor(candidate, cfg);
   if (blend !== 1) { boost *= blend; recordAxis(telemetry, "cosine_blend"); }
   return boost > 0 && Number.isFinite(boost) ? boost : 1;
 }
 
 /**
- * Post-RRF cosine blend factor from the candidate's own vector similarity (§2.3).
+ * Post-RRF cosine blend factor from the candidate's own vector similarity.
  * Returns 1 (no-op) for candidates with no vector hit or when α is disabled.
  */
 function cosineBlendFactor(candidate: ScoredCandidate, cfg: RankingSignalConfig): number {
@@ -209,7 +209,7 @@ export function applyRankingSignals(
   telemetry?: RankingTelemetry,
 ): ScoredCandidate[] {
   const normalizedQuery = normalizeTextForSearch(query);
-  // Top fused score over the (visible) input set for the floor-ratio gate (§2.2).
+  // Top fused score over the (visible) input set for the floor-ratio gate.
   const topScore = candidates.reduce((max, candidate) => Math.max(max, candidate.score), 0);
   return candidates
     .map((candidate) => {

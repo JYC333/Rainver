@@ -7,7 +7,7 @@ import type {
 import type { RetrievalSearchService } from "../index.js";
 
 /**
- * Rainver-controlled retrieval tool surface (W10).
+ * Rainver-controlled retrieval tool surface.
  *
  * Managed runs do not expose retrieval as an external MCP server. Vendor tools
  * are adapters, never the system of record:
@@ -28,8 +28,8 @@ import type { RetrievalSearchService } from "../index.js";
  *    caller; a later Runtime Context turn may acquire them only through its
  *    typed Retrieval channel and live reauthorization.
  *
- * It wraps an already-constructed `RetrievalSearchService`, so whatever egress
- * (W9) / rerank / synthesis configuration the caller built is honored
+ * It wraps an already-constructed `RetrievalSearchService`, so the egress,
+ * rerank, and synthesis configuration the caller built is honored
  * unchanged; this layer only adds the actor scoping. Managed-run binding lives
  * in `runs/managedRetrievalTools.ts`: opted-in runs expose `retrieval.search`
  * / `retrieval.brief` through a bounded tool loop and preflight modes.

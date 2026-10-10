@@ -2167,10 +2167,10 @@ export class PgKnowledgeRepository {
 
   // Kept for the import path; used by profile-key uniqueness checks.
   /**
-   * Ontology surfaces delegate to `PgOntologyRepository`. The public routes keep
-   * their `/api/v1/knowledge/` paths — moving them would be a client-visible
-   * break this phase does not imply — but the implementation and its ownership
-   * now live with the ontology (ADR 0012 decision 3, B12I).
+   * Ontology surfaces delegate to `PgOntologyRepository`. The public routes stay
+   * at `/api/v1/knowledge/`. Moving them would be a client-visible break.
+   * Implementation and ownership live with the ontology (ADR 0012 decision 3,
+   * B12I).
    */
   private ontology(): PgOntologyRepository {
     return new PgOntologyRepository(this.db, {

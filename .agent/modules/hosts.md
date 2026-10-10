@@ -1328,22 +1328,19 @@ table incrementally.
 
 `RemoteHostExecutionAdapter` (`remoteHostCliAdapter.ts`) normalizes and
 persists events as stdout/stderr chunks arrive — a `thread_event_sink`
-callback, distinct from the pre-existing `runtime_event_sink`/`run_events`
+callback, distinct from the `runtime_event_sink` / `run_events`
 callback, constructed per-run in `orchestrationService.ts` via
 `createSerializedThreadEventSink`. Per-chunk writes are fire-and-forget
 (`void`); the run's terminal status event is `await`ed, guaranteeing every
 earlier event has committed before the Run is reported terminal. Both this
-sink and the pre-existing `runtime_event_sink` are serialized (via the shared
+sink and the `runtime_event_sink` are serialized (via the shared
 `serializeCalls` in `routeUtils/common.ts`) for the same reason:
 `on_stdout_chunk`/`on_stderr_chunk` are synchronous, un-awaited callbacks,
 and a single stdout chunk can carry several JSONL lines that each normalize
 to an event — un-awaited concurrent appends would race `event_index`'s
-`COALESCE(MAX+1, 0)` read. The `runtime_event_sink` race was pre-existing
-(found via this phase's own test, the first to produce two
-`RuntimeSemanticEvent`s from one remote-run stdout chunk) and fixed
-alongside it; that fix needs only the in-process chain, since `run_events`'
-uniqueness is per-run and `tryAcquireExecutionLock` already guarantees one
-process per run. `host_thread_events`' cursor is per-**thread**, spanning
+`COALESCE(MAX+1, 0)` read. `run_events` uniqueness is per-run, and
+`tryAcquireExecutionLock` already guarantees one process per run, so that
+sink needs only the in-process chain. `host_thread_events`' cursor is per-**thread**, spanning
 every run dispatched into it, so the in-process chain alone is not enough —
 a `createSerializedThreadEventSink` instance is scoped to one Run, and two
 concurrently active Runs on the same thread (the dispatch does not prevent
@@ -1360,11 +1357,9 @@ the way `run_events` does — `tool_input_summary` is a 200-char-bounded raw
 `JSON.stringify` of a tool's input, readable by any Project member with read
 access via the events endpoint, not gated by host ownership. This is
 consistent with the already-accepted low-trust model for remote-host CLI
-runs (the daemon already uploads full unredacted diffs/output files today),
-not a new exposure category, but the asymmetry with `run_events` was found
-during P1 discovery review and is recorded here as a conscious, accepted gap
-rather than an oversight — a redaction-tier column is deferred, not built,
-since a real redaction system is disproportionate for what P1 needs.
+runs (the daemon uploads full unredacted diffs and output files),
+not a new exposure category. The asymmetry with `run_events` is accepted.
+A redaction-tier column is deferred, not built.
 
 ## The work surface a dispatched Run reports back through
 
@@ -2214,8 +2209,8 @@ write — a failure with no error anywhere.
   (`src/execution.ts`): spawns the rendered argv in the local workspace path
   (resolved from the daemon's own `config.workspaces` map by
   `workspace_location_id` — the server never sees the real path), injects
-  `RAINVER_OUTPUT_DIR` as a per-run directory outside the workspace
-  (phase-1 substitute for Run Exchange), streams stdout as `output` frames,
+  `RAINVER_OUTPUT_DIR` as a per-run directory outside the workspace,
+  streams stdout as `output` frames,
   and on exit uploads the Run's own git diff (`src/gitDiff.ts`: before the
   process starts the daemon writes the working tree — tracked and untracked,
   `.gitignore` respected — as a tree object through a private
@@ -2225,7 +2220,7 @@ write — a failure with no error anywhere.
   the dangling blobs are what `git stash create` leaves and `git gc` prunes
   them; a launch whose baseline capture failed falls back to tree-vs-HEAD) and
   the output directory's contents (`src/outputFiles.ts`, UTF-8 only — a
-  binary deliverable is a known phase-1 gap) before sending `complete`.
+  binary file would come back corrupted) before sending `complete`.
   The prompt does not mention `RAINVER_OUTPUT_DIR`. Every remote dispatch is
   workspace-bound, and the intent-to-add diff capture above already records a
   new file. Do not instruct the agent to write ordinary workspace files there:

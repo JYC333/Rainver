@@ -1592,9 +1592,7 @@ const MAX_ROOM_FOCUS_REFS = 4;
 
 /**
  * Domain-neutral "what's going on in this Project right now" block, prefixed
- * onto a Room-dispatched run's prompt (plan:
- * `.agent/plans/project-conversational-advancement-plan.md`, Phase A
- * decision 3). Sourced only from the generic Project Overview contract
+ * onto a Room-dispatched run's prompt. Sourced only from the generic Project Overview contract
  * (mode projection + attention) — never a specific domain's tables — so
  * every Mode gets the same treatment. Read once per message dispatch, not
  * per recipient. Failure to build context must never block sending a Room

@@ -104,8 +104,7 @@ export function createCliConversationController(input: {
   attributed_model?: string | null;
   on_protocol_event?: (event: Record<string, unknown>) => void;
   /**
-   * execution-topology-and-project-control-plane-plan.md P0.4/D7: fired once
-   * per permission request, whatever the outcome, so a caller with a durable
+   * Fired once per permission request, whatever the outcome, so a caller with a durable
    * event stream (a remote dispatch's task thread) can record that this Run
    * was pre-authorized rather than leaving it implicit. Callers with no such
    * stream (a server-host sandboxed Run) may omit it; the decision itself is
