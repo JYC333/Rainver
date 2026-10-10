@@ -166,9 +166,9 @@ authorization can narrow execution; runtime selection never grants tools.
 The registry declares ACP command/distribution, credential mode, sandbox and
 workspace requirements, model/backend support, cancellation and observation
 facts. Its subagent-disable declarations describe runtime capabilities only:
-the current Host-daemon launch skips the legacy server-local deny-config
-writer, so these declarations are not applied to a Run and do not raise its
-effective trust above the low baseline. Do not treat declarative capability as
+the Host-daemon launch sets `skip_subagent_disable_check`, so these
+declarations are not applied to a Run and do not raise its effective trust
+above the low baseline. Do not treat declarative capability as
 enforcement evidence. External permissions are mediated by Rainver's controller
 and policy/tool gateways, not delegated to an independent server-side Agent
 loop.

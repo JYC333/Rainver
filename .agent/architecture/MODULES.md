@@ -62,7 +62,7 @@ Core modules are `always_on=True`. Optional product routes are still mounted by 
 | `system` | infra | `/health`, `/server/health`, `/status`, `/server/features`, `/features`, `/system/instance-settings` | empty | Server health, component-level runtime status, feature descriptors, and instance-admin operational policy routes. `/health` is a container probe; `/status` reports database, per-scheduled-task liveness, jobs-worker presence, and queue depth, and requires a space owner/admin. |
 | `auth` | kernel | `/auth/*`, `/me`, `/me/spaces` | yes | Users, auth accounts, sessions, feature-gated API keys, Google auth. |
 | `spaces` | kernel | `/spaces`, `/invitations` | hook registry | Spaces, memberships, invitations, space-created hook dispatch. |
-| `catalog` | capability | `/server/catalog*`, `/capabilities*` | yes | Read-only on-disk catalog. Owns legacy catalog-backed capability/template manifest surfaces. |
+| `catalog` | capability | `/server/catalog*`, `/capabilities*` | yes | Read-only on-disk catalog of capability and template manifests. |
 | `capabilities` | capability | `/capability-definitions*`, `/capability-packs*`, `/skill-sources*`, `/skill-packages*` | yes | Capability/open-skill control plane: canonical definitions, packs, imported skill packages, and runtime skill bindings. Does not execute native capabilities. |
 | `streaming` | infra | `/runs/{runId}/turn/stream` | empty | Agent turn SSE stream, as ordered parts. |
 | `notifications` | infra | `/server/notifications/webhooks/*` | empty | Notification webhook egress policy plus durable operational-alert pointers delivered through Activity Inbox. |

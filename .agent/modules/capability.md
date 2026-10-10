@@ -59,12 +59,12 @@ supported.
 
 ## Discovery
 
-The legacy catalog registry is not a product API authority. Product capability
+The catalog registry is not a product API authority. Product capability
 pages consume `/api/v1/capability-definitions`; built-in capability definitions
 come from the server registry module. Historical catalog YAML manifests may
 exist for diagnostics or development but do not enter the product path.
 
-The legacy catalog registry loads one source when used internally:
+The catalog registry loads one source when used internally:
 
 - `builtin`: diagnostic/example capabilities bundled under `catalog/capabilities/`.
 

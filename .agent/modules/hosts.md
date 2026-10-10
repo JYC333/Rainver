@@ -846,7 +846,7 @@ advertised method id; Terminal Auth appends the advertised args and env to
 the installed Agent's normal command and runs it to completion before the
 capability is probed again. The daemon advertises ACP Terminal Auth only when
 the host can actually provide the required PTY. Terminal commands use a PTY
-from `script(1)` (no native addon to build on the host; Windows unsupported for now), with `HOME`
+from `script(1)` (no native addon on the host; Windows does not provide that PTY), with `HOME`
 set to that copy's home and the same per-runtime vendor credential filter a
 Run uses (`clearVendorCredentialEnv`), so leftover `ANTHROPIC_*` / `CLAUDE_*`
 / `CODEX_*` keys cannot divert the login onto an API account. Output comes back as

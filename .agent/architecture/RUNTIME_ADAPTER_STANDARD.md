@@ -98,7 +98,7 @@ needs no per-runtime execution loop. ModelProvider support, where appropriate,
 still needs explicit runtime configuration and compatibility tests in
 `runs/adapterProviderRequirement.ts` / `runs/remoteProviderBinding.ts`. Use registry
 predicates such as `isAcpRuntimeAdapter`; do not create parallel protocol
-drivers or legacy runtime-identity branches.
+drivers or a second runtime-identity branch.
 
 A builtin ACP adapter also declares how a *managed* copy is obtained on an
 execution host (`distribution: { registry_id }`, resolved against the ACP

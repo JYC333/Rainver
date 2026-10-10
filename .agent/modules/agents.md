@@ -248,7 +248,7 @@ Rules:
 - Editing a Profile affects future route selection only. An initialized
   Conversation/Host thread retains its pinned execution snapshot.
 - Public Run creation accepts explicit `runtime_profile_id` when the caller
-  owns that choice; it does not accept legacy per-run `adapter_type` or
+  owns that choice; it does not accept per-run `adapter_type` or
   AgentVersion model fields as alternate authority.
 - `model_provider` is available on a paired Host as well as the Server
   Runtime; the daemon receives a short-lived proxy lease URL, never a key. A
