@@ -1090,10 +1090,10 @@ async function canRejectProposal(
 /**
  * The role a decision is judged by. `required_approver_role: "owner"` on a
  * Project-scoped proposal means the Project's owner, which is what the
- * applier's own authority check (`assertProjectOwnerLevel`) asks. Comparing
- * the Space role alone let a Project owner who is a Space member be shown the
- * Accept button and then refused by it — and, read by accept alone, let the
- * same person accept a proposal they were answered 404 for declining.
+ * applier's own authority check (`assertProjectOwnerLevel`) asks. Do not
+ * compare the Space role alone. A Project owner who is a Space member would
+ * be shown the Accept button and then refused by it — and, read by accept
+ * alone, could accept a proposal they are answered 404 for declining.
  */
 async function effectiveApproverRole(
   client: PoolClient,
