@@ -142,10 +142,10 @@ describe("run evidence redaction", () => {
   });
 
   it("redacts a secret that straddles the truncation point", () => {
-    // Scanning was moved before truncation so a 1MiB error is not matched in
-    // full. Cutting first put the boundary inside a credential and left its
-    // head, which no pattern is long enough to recognise; the scan reads a
-    // little past the cut for exactly that reason.
+    // Scan before truncation. Do not match a 1MiB error in full, and do not
+    // cut first. The boundary would fall inside a credential and leave its
+    // head, which no pattern is long enough to recognise. The scan reads a
+    // little past the cut.
     const head = `${"x".repeat(MAX_EVIDENCE_TEXT_CHARS - 10)} `;
     const redacted = redactEvidenceText(`${head}sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ trailing`)!;
     expect(redacted).not.toMatch(/sk-A/);
