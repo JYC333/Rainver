@@ -404,8 +404,8 @@ describe("environment for a run on this machine's own login", () => {
       CODEX_HOME: "/home/someone/.codex",
       // The XDG *roots* go by name, not by prefix: a git credential helper
       // reaches the keyring through `XDG_RUNTIME_DIR` and rootless podman
-      // finds its socket there, so dropping it would break a Task run that
-      // pushes or builds — the same regression as moving `HOME`.
+      // finds its socket there. Do not drop it. A Task run that pushes or
+      // builds would break, the same way moving `HOME` breaks them.
       XDG_RUNTIME_DIR: "/run/user/1000",
     };
     const machine = {
