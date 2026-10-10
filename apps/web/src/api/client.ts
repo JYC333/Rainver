@@ -1165,9 +1165,9 @@ export const notesApi = {
       ...(expectVersion === undefined ? {} : { expect_version: expectVersion }),
     }),
   /**
-   * Jot a note against an object and link it in one call (N7). Two calls would
-   * strand a note whenever the link failed, and the round trip for a note id
-   * is why the connection was never made by hand.
+   * Jot a note against an object and link it in one call. Two calls would
+   * strand a note whenever the link failed. Do not make the connection by
+   * hand across a round trip.
    */
   jot: (body: NoteJotBody) => post<Note>('/knowledge/notes/jot', body),
   /** Notes citing a non-note object — the reverse of a jot. */

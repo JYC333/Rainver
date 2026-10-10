@@ -905,7 +905,7 @@ export const notes = pgTable("notes", {
 	// `role_project_id` is the Project the role is scoped to. It duplicates the
 	// root's `primary_project_id` — deliberately, and the way
 	// `inquiry_threads.project_id` does: a partial unique index cannot span two
-	// tables, and "one role, one note per Project" (N3) is exactly what has to
+	// tables, and "one role, one note per Project" is exactly what has to
 	// be enforced by an index rather than remembered by a service. The pair is
 	// written together and cleared together; nothing sets one without the other.
 	roleProjectId: varchar("role_project_id", { length: 36 }),

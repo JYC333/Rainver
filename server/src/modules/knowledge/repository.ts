@@ -1655,7 +1655,7 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * "Jot a note" from an evidence or material card (N7).
+   * "Jot a note" from an evidence or material card.
    *
    * One call from the card. Creating the note and the link separately leaves a
    * stranded note when the second call fails. Do not send the reader to the

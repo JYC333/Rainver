@@ -1184,9 +1184,9 @@ export const POLICY_ACTION_REGISTRY = [
     record_failure_mode: "fail_closed",
   },
   {
-    // NE: linking a note to evidence. A note_link is navigational and carries
-    // no graph authority (N4), so this would be low risk and allowed by
-    // default if it were ever wired.
+    // Linking a note to evidence. A note_link is navigational and carries
+    // no graph authority. That does not make the action allowed. It is not
+    // implemented, and the default decision is deny.
     action: "note.link.create",
     resource_type: "note",
     default_risk_level: "low",

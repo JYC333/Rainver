@@ -252,7 +252,7 @@ inserting a row the index rejects.
 
 Reading-list cards offer capture only where the material already has an
 `object_id`, and say why when it does not — material becomes a `space_objects`
-row when it passes triage (R3), so the absence is a state with a remedy rather
+row when it passes triage, so the absence is a state with a remedy rather
 than a missing button.
 
 ## Owns

@@ -200,11 +200,11 @@ export function ReadingListView({
                 {row.evidence_card ? 'Edit WHY / HOW / WHAT' : 'Add WHY / HOW / WHAT'}
               </Button>
             ))}
-            {/* N7: jotting is only offered where there is something linkable.
+            {/* Jotting is only offered where there is something linkable.
                 A corpus row targets exactly one of object / source_item /
                 evidence, and only the object is a `space_objects` row — the
                 other two cannot be a note_link endpoint. Material becomes one
-                when it passes triage (R3), so the absence has a reason worth
+                when it passes triage, so the absence has a reason worth
                 stating rather than an action that silently is not there. */}
             {!row.object_id && (
               <p className="text-xs text-muted-foreground">

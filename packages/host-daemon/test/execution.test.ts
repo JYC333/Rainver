@@ -202,7 +202,7 @@ describe("handleLaunch", () => {
     expect(String(done.error)).toContain("boom");
   });
 
-  it("streams stderr as live stderr frames, not only the complete frame's tail (C5)", async () => {
+  it("streams stderr as live stderr frames, not only the complete frame's tail", async () => {
     const { frames, send, complete } = collectSend();
     await handleLaunch(
       {
