@@ -13,7 +13,7 @@ import type { StrictNamespaceRequest } from "../src/strictNamespace.js";
  * Space, and this argv is the only thing between them. These assertions are on
  * the argv rather than on a live `bwrap`, because CI has no bubblewrap and a
  * test that silently skipped would assert nothing at all. A real namespace
- * is verified on a machine; CI has no bubblewrap.
+ * is verified on a machine.
  */
 const base: StrictNamespaceRequest = {
   command: "/usr/bin/agent",

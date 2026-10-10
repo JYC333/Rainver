@@ -62,9 +62,8 @@ export class ProviderPreviewGateway {
     }
     if (response === "timeout" || response.status >= 500 || response.status === 429) {
       // The retry itself failed too — surface what actually happened on that
-      // second attempt (timeout vs. a real upstream status) instead of
-      // collapsing it into an undifferentiated 503, the same masking bug
-      // already fixed for the single-attempt non-retryable-4xx path below.
+      // second attempt (timeout vs. a real upstream status). Do not collapse
+      // it into an undifferentiated 503.
       throw new HttpError(503, PREVIEW_UNAVAILABLE_MESSAGE, {
         upstream_status: response === "timeout" ? "timeout" : response.status,
       });

@@ -79,12 +79,11 @@ describe("project work event vocabulary", () => {
 });
 
 describe("work loop stages", () => {
-  // The five stages are a system constant; a Mode changes what they are
-  // called and nothing else. A missing label would silently fall back to a
-  // key, which reads as a bug in whichever Project happens to use that Mode.
-  // A status with no lane is a card that is counted and never drawn. Do not
-  // omit a status from the lane list. The list lives in the protocol; the two
-  // check constraints, the repository validator and the lanes derive from it.
+  // The five stages are a system constant, with one wording in every Project.
+  // A missing label would silently fall back to a key. A status with no lane
+  // is a card that is counted and never drawn. Do not omit a status from the
+  // lane list. The list lives in the protocol; the two check constraints, the
+  // repository validator and the lanes derive from it.
   it("draws every Task status on exactly one lane, or archives it", () => {
     const lanes = new Set(DEFAULT_COLUMNS.map((column) => column.status_key));
     for (const status of TASK_STATUSES) {

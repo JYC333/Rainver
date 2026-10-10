@@ -74,9 +74,8 @@ export function focusRefsFor(pathname: string): Array<{ type: 'task'; id: string
 export default function ProjectChatSidecar() {
   const { projectId = '' } = useParams()
   const { pathname } = useLocation()
-  // The Rooms Area is already a Room, usually this one. Two live views of the
-  // same conversation side by side is not a second opinion, it is a bug the
-  // person has to reason about.
+  // The Rooms Area is already a Room, usually this one. Do not show two live
+  // views of the same conversation side by side.
   const onRoomsArea = /\/rooms(\/|$)/.test(pathname)
   const onFilesArea = /\/files(\/|$)/.test(pathname)
 

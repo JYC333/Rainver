@@ -91,12 +91,12 @@ function findFirstTableHeader(lines: string[]): number {
  * The syntax on one line — quoted values and the `#` comment removed — and
  * whatever multi-line string is still open at the end of it.
  *
- * Counting brackets over the raw line let one unbalanced `[` inside a string or
- * a comment — `notify = ["bash","-c","echo [done"]`, or `# see the [profiles
- * docs` — pin the depth above zero for the rest of the file. The scan then
- * never found a header, fell back to matching `sandbox_mode` anywhere, and
- * rewrote the first named profile's key: the original bug, reinstated by the
- * fix for the array one. A character walk rather than a regex, because a
+ * Counting brackets over the raw line lets one unbalanced `[` inside a string
+ * or a comment — `notify = ["bash","-c","echo [done"]`, or `# see the
+ * [profiles docs` — pin the depth above zero for the rest of the file. The
+ * scan then never finds a header, falls back to matching `sandbox_mode`
+ * anywhere, and rewrites the first named profile's key. Do not count
+ * brackets on the raw line. A character walk rather than a regex, because a
  * multi-line string's state has to survive the end of the line.
  */
 function scanLine(line: string, open: MultilineDelimiter | null): { code: string; open: MultilineDelimiter | null } {
