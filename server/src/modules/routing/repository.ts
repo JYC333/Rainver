@@ -850,7 +850,7 @@ function trustLevel(value: unknown): "low" | "medium" | "high" { return value ==
  * A paired Host reaches `medium` for a different reason and only for its own
  * owner: it is that owner's machine, and a Run they are responsible for
  * carries the trust they already extend to it by running an agent there
- * themselves (ADR 0016 section 3 and its 2026-09-21 owner-trust amendment).
+ * themselves (ADR 0016 section 3, owner-trust amendment).
  * That is a statement about who bears the risk, not about containment — the
  * spawn is still native with no namespace (B62). A Run on that Host by anyone
  * else is not the owner's own and stays at the runtime's baseline, as does an

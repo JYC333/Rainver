@@ -2,7 +2,6 @@
  * arXiv category taxonomy.
  *
  * Source: https://arxiv.org/category_taxonomy
- * Checked: 2026-07-03.
  */
 interface ArxivCategoryOption {
   value: string;

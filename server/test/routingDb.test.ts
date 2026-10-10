@@ -347,7 +347,7 @@ describe("deterministic routing against shared PostgreSQL", () => {
 
   it("counts a paired Host owner's own Run as medium trust", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
-    // ADR 0016 amendment (2026-09-21): a paired Host is the owner's own
+    // ADR 0016 owner-trust amendment: a paired Host is the owner's own
     // machine, so a Run the owner is responsible for carries the trust that
     // owner already extends to it. No explicit risk level here, so this is the
     // product-default `medium` Agent every ordinary Agent starts as.

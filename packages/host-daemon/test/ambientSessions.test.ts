@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_LIMITS, buildAmbientRecords, redactAmbientText, supportsAmbientImport } from "../src/ambientSessions.js";
 
 /**
- * The update shapes here are taken from a real replay of each runtime, run
- * against this machine's own installations on 2026-08-28: Claude and OpenCode
+ * The update shapes are a real replay of each runtime: Claude and OpenCode
  * split message text across chunks sharing a `messageId`, Codex numbers its
  * ids `item-N` per session, and all three send a `tool_call` followed by
  * `tool_call_update`s carrying the result in full.
