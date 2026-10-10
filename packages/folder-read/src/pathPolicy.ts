@@ -176,9 +176,9 @@ export function redactSecretLikeDiff(diff: string): { diff: string; redacted: bo
       continue;
     }
     next += diff.slice(cursor, match.index);
-    // The whole matched name, not just the credential word inside it: printing
-    // `match[1]` alone turned `access_token=` into `token=[REDACTED]` and lost
-    // which field it was.
+    // The whole matched name, not just the credential word inside it. Do not
+    // print `match[1]` alone. `access_token=` would become `token=[REDACTED]`
+    // and lose which field it was.
     const separatorAt = match[0].lastIndexOf(match[2]!);
     next += `${match[0].slice(0, separatorAt)}${match[2]}[REDACTED]`;
     cursor = valueEnd;

@@ -7,9 +7,9 @@ import { assertProjectReadable, canWriteProject } from "../projects/access.js";
  * The readable account of how a Project has been going.
  *
  * A filter over the same append-only stream everything else folds from, so the
- * story and the record cannot disagree. A separate `project_updates` table was
- * the alternative and would have allowed exactly that, with no way afterwards
- * to say which was right.
+ * story and the record cannot disagree. Do not add a separate
+ * `project_updates` table. It could disagree, with no way afterwards to say
+ * which was right.
  */
 
 const PAGE_SIZE = 30;

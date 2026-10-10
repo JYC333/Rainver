@@ -34,12 +34,11 @@ export function applyCodexStrictSandboxToml(contents: string): string {
   // enough on its own: a final array element carries no trailing comma, so
   // `  ["a"]` before a closing `]` reads exactly like a header.
   const topLevelEnd = findFirstTableHeader(lines);
-  // The same string-awareness the header scan has. Without it a
-  // `sandbox_mode = …` line *inside* a multi-line string was taken as the
-  // top-level key and rewritten, leaving the real one untouched: Codex starts
-  // — no duplicate key — the vendor sandbox stays `read-only` inside the
-  // namespace, and the strict-host Run silently cannot write, which is the
-  // failure this module exists to prevent.
+  // The same string-awareness the header scan has. Do not treat a
+  // `sandbox_mode = …` line inside a multi-line string as the top-level key.
+  // Rewriting it would leave the real one untouched: Codex starts, the vendor
+  // sandbox stays `read-only` inside the namespace, and the strict-host Run
+  // cannot write.
   const existing = findTopLevelSandboxMode(lines, topLevelEnd);
   if (existing !== -1) {
     lines[existing] = lines[existing]!.replace(
@@ -75,10 +74,10 @@ function findFirstTableHeader(lines: string[]): number {
     const insideString = open !== null;
     const scanned = scanLine(line, open);
     open = scanned.open;
-    // Nothing inside a multi-line string is syntax. A line reading
-    // `[not a header]` in one was taken as the first table header, which hid
-    // the real top-level `sandbox_mode` and inserted a second — the TOML
-    // duplicate-key error that stops Codex from starting.
+    // Nothing inside a multi-line string is syntax. Do not treat a line
+    // reading `[not a header]` inside one as the first table header. That
+    // hides the real top-level `sandbox_mode` and inserts a second, and the
+    // TOML duplicate-key error stops Codex from starting.
     if (!insideString && depth === 0 && /^\s*\[\[?[^\]\[]+\]\]?\s*(?:#.*)?$/.test(line)) return index;
     // Net brackets carried across lines, so an array's own elements are never
     // read as headers however they are spelled.

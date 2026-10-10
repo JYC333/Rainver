@@ -431,11 +431,11 @@ export function isRuntimeKeyBeingReplaced(runtimeKey: string | null | undefined)
  * Work that runs a copy without being a Run: a verification recipe, a usage
  * probe, or an open login terminal.
  *
- * They are in neither run registry, so a drain that only counted Runs reported
- * "quiet" and then deleted the directory one of them was executing from. The
- * closed door alone is not enough either — it only orders *replacement before
- * work*, and this is the other order. Counted per runtime key because that is what
- * a replacement holds.
+ * They are in neither run registry. Count them. A drain that only counted
+ * Runs would report "quiet" and then delete the directory one of them is
+ * executing from. The closed door only orders replacement before work, and
+ * this is the other order. Counted per runtime key, because that is what a
+ * replacement holds.
  */
 const runtimeKeyHolders = new Map<string, number>();
 
