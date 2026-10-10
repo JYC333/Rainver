@@ -503,10 +503,10 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
    * Mark the instance's current version as a materialization of a seed.
    *
    * Creation goes through the ordinary `create` path, which knows nothing
-   * about seeds; this is the provisioner saying "that first version was mine".
-   * It never clears the mark and never touches a version that already carries
-   * a different one, so it cannot re-attach an instance somebody has since
-   * given a version of its own.
+   * about seeds. This marks the version just created as following the seed.
+   * Do not clear the mark. Do not touch a version that already carries a
+   * different one. That would re-attach an instance somebody has since given
+   * a version of its own.
    */
   async markCurrentVersionFollowsSeedInTransaction(
     db: Queryable,

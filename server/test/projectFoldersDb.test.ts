@@ -86,9 +86,8 @@ async function insertFolder(
 }
 
 /**
- * Save to Folder is the only human write path onto a Host, and it had no
- * database-backed coverage at all: both bugs these tests pin were invisible to
- * the fake-database route tests next door.
+ * Save to Folder is the only human write path onto a Host. These tests use a
+ * real database. The route tests next door do not.
  */
 async function draftFolder(pool: Pool, id: string): Promise<{ folderRoot: string; repo: PgProjectFolderRepository; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(join(tmpdir(), "rainver-folder-drafts-"));

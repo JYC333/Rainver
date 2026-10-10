@@ -116,9 +116,9 @@ describe("run turn", () => {
   /**
    * This stream hijacks the reply and writes its header block straight to the
    * socket, so nothing Fastify adds afterwards reaches it — including the
-   * `onSend` hook that marks every API response `no-store`. It had said
-   * `no-cache`, which forbids *reuse* without revalidation but explicitly
-   * permits a shared cache to **store** the body. The body is live
+   * `onSend` hook that marks every API response `no-store`. Do not send
+   * `no-cache`. That forbids reuse without revalidation and still permits a
+   * shared cache to store the body. The body is live
    * conversation turns.
    *
    * `no-transform` matters only on a stream: an intermediary that re-buffers

@@ -303,11 +303,10 @@ export function parseMonitorComparisons(output: unknown, expectedSourceItemIds: 
   const values = objectValue(output).comparisons;
   if (!Array.isArray(values)) return [];
 
-  // With exactly one candidate there's nothing to disambiguate — matching
-  // source_item_id only ever cost a solo retry over the model relabeling or
-  // omitting an id it didn't need to get right in the first place. Accept
-  // the first structurally valid entry and attach it to the one item
-  // actually asked about, regardless of what id (if any) it echoed back.
+  // With exactly one candidate there is nothing to disambiguate. Accept the
+  // first structurally valid entry and attach it to the one item asked
+  // about, regardless of what id it echoed. Do not retry because the model
+  // relabeled or omitted an id.
   if (expectedSourceItemIds.length === 1) {
     for (const raw of values) {
       const fields = parseComparisonFields(raw);

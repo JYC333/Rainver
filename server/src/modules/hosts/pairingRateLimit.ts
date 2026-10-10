@@ -35,11 +35,10 @@ const PRUNE_INTERVAL_MS = 30_000;
 /**
  * How often the window is written out.
  *
- * On the same clock as the sweep, and for the same reason. Coalescing bounded
- * the write *queue* at one, but a write was still asked for on every attempt,
- * and each one copies and serialises the whole map — so a throttled caller
- * flooding the endpoint kept that work running continuously. The synchronous
- * cost per attempt was what moving persistence off the request stack was for.
+ * On the same clock as the sweep. Coalescing bounds the write queue at one.
+ * Do not also write on every attempt. Each write copies and serialises the
+ * whole map, so a throttled caller flooding the endpoint keeps that work
+ * running. The interval is what takes that cost off the request.
  *
  * The cost is that a restart can lose up to this interval's attempts rather
  * than one snapshot's. Against a ten-minute window, and given that the

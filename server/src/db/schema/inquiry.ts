@@ -319,12 +319,10 @@ export const inquiryThreadWorkEvents = pgTable("inquiry_thread_work_events", {
 		}),
 ]);
 
-// A step is one attempt at advancing a Thread: what was going to be done, that
-// it was started, what it produced, and which round it belonged to. Before
-// this table the same information was a single `varchar(32)` on the Thread,
-// which could state an intention and nothing else — no start, no outcome, no
-// history — so a user who followed the call to action into another Area left
-// no trace, and rounds had no factual basis.
+// A step is one attempt at advancing a Thread: the intention, that it
+// started, what it produced, and which round it belonged to. Do not keep that
+// as a single varchar on the Thread. That can state an intention and nothing
+// else: no start, no outcome, no history.
 //
 // `slot` is what keeps human attention singular while long-running system work
 // continues: an action with an operation behind it (search, experiment) moves

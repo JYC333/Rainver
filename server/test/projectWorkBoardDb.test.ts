@@ -601,8 +601,8 @@ describe("blocked cards", () => {
     await makeTask({ id: task, status: "blocked" });
     const board = await getProjectBoard(db.pool!, owner, PROJECT);
     const card = board.cards.find((item) => item.id === task);
-    // `blocked` is an overlay rather than a column, so a card that kept its own
-    // status but had no lane would be counted and then drawn nowhere.
+    // `blocked` is an overlay, not a column. Give the card a lane. A card
+    // with a status and no lane is counted and drawn nowhere.
     expect(card?.status).toBe("blocked");
     expect(card?.column_key).toBe("in_progress");
     expect(board.columns.find((column) => column.status_key === "in_progress")?.count).toBe(1);
@@ -612,9 +612,9 @@ describe("blocked cards", () => {
 describe("cross-Project task lists", () => {
   it("returns rows at all, with the Project join in place", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // `listTasks` had no test anywhere, which is how an ambiguous-column error
-    // from joining `projects` reached a green suite: `tasks` and `projects`
-    // share `id`, `status`, `description`, `owner_user_id` and the timestamps.
+    // Qualify every column in the Project join. `tasks` and `projects` share
+    // `id`, `status`, `description`, `owner_user_id`, and the timestamps. An
+    // unqualified name is an ambiguous-column error.
     await makeTask({ id: randomUUID(), title: "Listed" });
     const repository = new PgTaskRepository(db.pool!);
     const page = await repository.listTasks(owner, {

@@ -1563,8 +1563,8 @@ export interface NoteSummary {
   /**
    * Every folder this note is placed in, in placement order. A note may sit in
    * several at once (`note_collection_items` is unique on
-   * `(collection_id, note_id, space_id)`), so there is no single "the folder" —
-   * a scalar here was what made a second placement invisible.
+   * `(collection_id, note_id, space_id)`). There is no single folder. Do not
+   * use a scalar here. A second placement would be invisible.
    */
   placements: NotePlacement[]
   /** Optimistic-concurrency version; bumped by every save (user or AI). */

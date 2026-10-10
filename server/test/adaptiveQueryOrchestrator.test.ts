@@ -42,10 +42,11 @@ describe("AdaptiveQueryOrchestrator", () => {
   });
 
   /**
-   * The real failure: a broad boolean arXiv query answered 200 at the 15-row
-   * preview and 5xx at the 100-row page history import uses. The plan was
-   * recorded as validated, imported nothing, and Research reported "no relevant
-   * sources" over a corpus missing that provider entirely.
+   * Check the selected query at the page size history import uses. A query
+   * can answer 200 at the 15-row preview and 5xx at the 100-row page. Do not
+   * record that preview as validation. Import would record nothing, and
+   * Research would report no relevant sources for a corpus missing that
+   * provider.
    */
   it("warns when the selected query fails at the page size history import uses", async () => {
     const store = new FakeStore(["arxiv"]);

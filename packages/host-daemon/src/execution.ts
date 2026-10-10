@@ -910,7 +910,7 @@ export function planStrictLaunch(input: {
     // the container's — one directory that every Run of every Space writes
     // its vendor history and scratch files into, read-write. The runtime
     // reaches its own state through the profile's state-root variables, which
-    // is what B68 keys by Agent × container in the first place.
+    // is what B68 keys by Agent × container.
     HOME: home,
   };
   const isolation = input.isolation ?? DEFAULT_STRICT_ISOLATION;

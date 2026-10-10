@@ -452,9 +452,9 @@ export class SpaceAssistantService {
   /**
    * Retires a CLI runtime profile that names no execution host.
    *
-   * Such a profile ran a copy the *server* had installed. There are none, so
-   * the profile can only fail at dispatch; disabling it lets the Assistant
-   * fall through to a profile that can actually run.
+   * A CLI profile with no execution host cannot run. There is no
+   * server-installed copy. Disable it so the Assistant falls through to a
+   * profile that can run.
    */
   private async disableUnavailableCliProfiles(spaceId: string, agentId: string): Promise<void> {
     await this.client.query(

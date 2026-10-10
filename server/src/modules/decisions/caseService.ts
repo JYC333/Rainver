@@ -132,8 +132,8 @@ export class DecisionCaseService {
         // The Thread's own gate, not the Project's: a private Thread is its
         // owner's, and refusing as "not found" does not confirm it exists.
         await assertThreadReadable(db, identity, projectId, threadId, "change");
-        // Cross-aggregate reference between two ontology objects; the domain
-        // join table it replaces had no attributes of its own.
+        // The link is an `object_relations` row. The relation has no attributes
+        // of its own. Do not keep a domain join table for it.
         assertLinkTypeAllowed({
           linkType: "derived_from",
           fromObjectType: "decision_case",

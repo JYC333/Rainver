@@ -11,9 +11,9 @@ import { Agent, ProxyAgent } from "undici";
  * Sized against what this is allowed to download rather than against a page
  * load: a Source's ceiling is 5 MiB by default, and two minutes for that is
  * ~43 KB/s, below any link a scan would otherwise succeed on. The paths that
- * take the default — a connection scan, and the manual-URL / arXiv extract that
- * may pull a whole PDF — had no ceiling at all before, so this bounds them
- * rather than tightening them. Backfill passes its own, smaller budget.
+ * take the default are a connection scan and the manual-URL / arXiv extract
+ * that may pull a whole PDF. Do not leave them without a ceiling. Backfill
+ * passes its own, smaller budget.
  */
 export const DEFAULT_OUTBOUND_DEADLINE_MS = 120_000;
 export const DEFAULT_MAX_REDIRECTS = 5;

@@ -590,8 +590,8 @@ async function validateHostExecutionBinding(
   // Two safety models (ADR 0016 §3, B63). A paired host is its owner's, so
   // binding an Agent to one requires being that owner. The built-in host has
   // no owner and serves every Space — the per-Run namespace is what makes it
-  // safe — so there is no ownership to check, and refusing it here was what
-  // made the host the execution-target picker offers impossible to select.
+  // safe. There is no ownership to check. Do not refuse it here. Refusing it
+  // makes the host the execution-target picker offers impossible to select.
   if (row.host_owner_user_id !== null && row.host_owner_user_id !== input.actorUserId) {
     throw new HttpError(403, "The execution host must belong to the caller");
   }

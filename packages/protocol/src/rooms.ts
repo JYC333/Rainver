@@ -408,8 +408,8 @@ export const RoomDetailSchema = z.object({
   /**
    * Who else is in it, and how many Agents — the same definition the Project
    * conversation list uses, so one Room is never described two ways. Computed
-   * here rather than on the client from the roster: the client's copy sorted
-   * differently and named people the catalog had not loaded yet "Someone".
+   * here. Do not sort a client-side roster copy. It names people the catalog
+   * has not loaded yet "Someone".
    */
   other_member_names: z.array(z.string()),
   agent_count: z.number().int().nonnegative(),

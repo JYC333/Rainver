@@ -6,11 +6,10 @@ import { saveConfig } from "../src/config.js";
 import { runHostCommand } from "../src/commandRun.js";
 
 /**
- * `command_run` is how the Verification Engine
- * reach a host. It had no test at all in the change that introduced it, and
- * two defects survived review because of that: the launch dropped a managed
- * copy's own environment, and the strict path reused the namespace's fd-3
- * readiness handshake without giving the child an fd 3. Both are pinned below.
+ * `command_run` is a fixed command on the host that holds the workspace.
+ * The launch keeps a managed copy's own environment. The strict path gives
+ * the child an fd 3 for the namespace readiness handshake. Do not drop the
+ * environment. Do not reuse the handshake without that fd.
  */
 let configDir: string;
 let workspaceDir: string;

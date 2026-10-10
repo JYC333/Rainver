@@ -264,7 +264,7 @@ interface RunExecutionAdapterDeps {
    * without a database — the production default is the seeded `hosts` row.
    */
   builtinHostResolver?: () => Promise<string>;
-  /** Seams for the host-daemon CLI adapter, the way `vendorCli` was for the server-host one. */
+  /** Seams for the host-daemon CLI adapter. */
   hostCli?: RemoteHostCliAdapterDeps;
   usageRecorder?: (observation: UsageObservation) => Promise<void>;
   cliContinuity?: RuntimeContextCliContinuityService;

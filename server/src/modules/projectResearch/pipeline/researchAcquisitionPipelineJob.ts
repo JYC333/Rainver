@@ -217,10 +217,9 @@ export class ResearchAcquisitionPipelineRunner {
       });
       operationId = (started as { operation: { id: string } }).operation.id;
     } catch (error) {
-      // Every domain failure reports its own message. Folding 409s into one
-      // "research is already running" line told the user — and the Agent
-      // relaying it — something that was not true of any 409 but one, and
-      // sent both down a diagnosis that had nothing to do with the failure.
+      // Every domain failure reports its own message. Do not fold every 409
+      // into "research is already running". That is true of one 409. The
+      // other failures would be diagnosed as that one.
       if (isDomainError(error)) {
         return { status: "stage_failed", stage: "start_intake", thread_id: payload.threadId, reason: error.message };
       }

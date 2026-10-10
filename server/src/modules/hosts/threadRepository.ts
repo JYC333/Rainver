@@ -558,8 +558,8 @@ export class PgHostThreadRepository {
       vendorSessionId: string | null;
       sessionReset: boolean;
       /**
-       * Whether the Run's prompt reached the runtime and the turn completed:
-       * only then did the vendor session receive what it was dispatched with.
+       * Whether the Run's prompt reached the runtime and the turn completed.
+       * The vendor session has received what it was dispatched with only then.
        */
       landed?: boolean;
       /** The identity digest the Run was dispatched with, and whether its block was in the prompt. */

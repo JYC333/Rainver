@@ -208,10 +208,9 @@ export class DailyCaptureReportService {
       `Date: ${input.localDate}\nActivity IDs:\n${captureIds.map((id) => `  - ${id}`).join("\n")}\n\n` +
       `Captures:\n\n${bounded}\n\nGenerate the daily capture report JSON:`;
 
-    // One Run for this report, whatever the key pool does behind it. It used
-    // to be one Run per provider attempt, each failed on the spot, so a report
-    // that succeeded on the second key left a failed Run beside it claiming
-    // the same work.
+    // One Run for this report, whatever the key pool does behind it. Do not
+    // open a Run per provider attempt. A report that succeeds on a later key
+    // would otherwise sit beside a failed Run claiming the same work.
     const persisted: { value: PersistedDailyReport | null } = { value: null };
     const duplicateOf: { value: { id: string; run_id: string | null } | null } = { value: null };
     const task = await runBoundedProviderTask(this.db, this.config, {

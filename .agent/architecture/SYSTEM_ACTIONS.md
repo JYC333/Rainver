@@ -601,12 +601,11 @@ cannot be adopted twice. Policy action `inquiry.advice.adopt` (low risk,
 allow, audited); a proposal gate would have meant reviewing a suggestion the
 system itself made.
 
-It exists because the advice had nowhere to go. Written the moment a search
-finishes (`tryQueueAdviceForWorkflowThread`, trigger `search_completed`), it
-rendered only in the Inquiry Area's stage workspace for the one Thread you had
-selected — so a finished four-hour search ended with the Project front page
-silent about what to do next, and the Room's Agent inventing a question of its
-own because it could not read the advice either. Three surfaces now carry it:
+Advice is written when a search finishes (`tryQueueAdviceForWorkflowThread`,
+trigger `search_completed`). Project Attention, the Room, and the completed
+instruction read it. Do not leave it only in the Inquiry Area stage workspace
+of the selected Thread. The Project front page and the Room's Agent would
+have nothing to read. Three surfaces carry it:
 Project Attention (`inquiry_advice` items, stale ones omitted), the
 `research_workflow_terminal` completed instruction (which relays the recorded
 step and its reasoning and forbids substituting one of the Agent's own), and

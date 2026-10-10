@@ -9,9 +9,8 @@ source-drift evaluation, richer Context Brief claim-review UX beyond the
 implemented Claim Candidate Packet, Memory-derived claim extraction, and future
 domain modules such as people/assets/events/tasks.
 
-This document replaces the earlier Knowledge-only claim table sketch. The audit
-found that Rainver already uses `knowledge_items` as the canonical Wiki
-model, not as a generic root object table. The implemented backend shape is now:
+`knowledge_items` is the canonical Wiki model, not a generic root object
+table. The implemented backend shape is:
 
 ```
 space_objects
@@ -27,8 +26,8 @@ atoms, but claims are not Knowledge-owned rows.
 
 ### Current database model
 
-There is no current `knowledge` table to rename. The existing canonical Wiki
-table is already `knowledge_items`.
+The canonical Wiki table is `knowledge_items`. Do not look for a `knowledge`
+table.
 
 Current Knowledge-adjacent tables:
 

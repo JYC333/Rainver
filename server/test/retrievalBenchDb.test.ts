@@ -322,8 +322,9 @@ describe("Retrieval bench: relational recall (real Postgres)", () => {
 
   it("seeds the graph from a lexical match, not just an exact title", async () => {
     if (!db.available) return;
-    // The query matches "anchor" only LEXICALLY (no exact title / alias). Before
-    // W4 the graph arm seeded from exact hits only, so the neighbor was missed.
+    // The query matches "anchor" only lexically. Seed the graph from that
+    // hit. Do not seed from exact title hits only. The neighbor would be
+    // missed.
     await seed({ id: "anchor", title: "Distributed Tracing", content: "Observability via jaeger spans." });
     await seed({ id: "neighbor", title: "Span Sampling", content: "Tail based sampling notes." });
     await relate("anchor", "neighbor", "related_to");

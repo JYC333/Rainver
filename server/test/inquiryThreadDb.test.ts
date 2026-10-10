@@ -794,9 +794,8 @@ describe("Inquiry Core (real Postgres)", () => {
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
-  // The delete paths for both recovered edge kinds. Neither had any coverage,
-  // and both were rewritten from domain tables to `object_relations` — exactly
-  // the shape where a wrong column name survives a green suite.
+  // Delete a Thread relation and a Note link through `object_relations`.
+  // A wrong column name fails here.
   it("removes a Thread relation and a Note link through object_relations", async () => {
     if (!db.available) return;
     const threads = new InquiryThreadService(db.pool);

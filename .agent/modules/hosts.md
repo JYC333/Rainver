@@ -2305,9 +2305,8 @@ copy, on either host kind, through `install_tool` (above).
   host selection is an explicit control-center choice. There is no scored
   multi-location router; the only scheduling across Runs is the daemon's
   per-Location execution lease (below) and the built-in host's run cap.
-- Worktrees and attempt records from the earlier per-Run Task worktree
-  scheme (`<location>/.rainver/worktrees/`, `<config>/worktrees/*.json`) are
-  neither migrated nor removed.
+- Directories at `<location>/.rainver/worktrees/` and
+  `<config>/worktrees/*.json` are neither migrated nor removed.
 - There is no automated daemon-process-to-live-server integration test.
   The wire contract is verified from the server side
   (`server/test/hostsRoutes.test.ts`); the daemon's `fetch`/`WebSocket`

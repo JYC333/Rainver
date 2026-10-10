@@ -1429,7 +1429,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
     // The refusal is the thing nobody can otherwise explain: the CLI saw a 403
     // from a proxy it did not choose, and the reason lives on the host. It
     // becomes an `egress_refused` Run event only by riding out on this
-    // envelope, and that link had no test.
+    // envelope.
     const registry = new HostConnectionRegistry();
     const sink = new FakeSink();
     registry.registerConnection("host-1", sink);

@@ -130,7 +130,8 @@ describe("ontology registry", () => {
     ]) {
       expect(declared.has(itemType), `${itemType} must be ContextIncludable`).toBe(true);
     }
-    // `idea` had no table and no writer; it is not resurrected here.
+    // `idea` is not a context-includable type. It has no table and no writer.
+    // Do not add it here.
     expect(declared.has("idea")).toBe(false);
   });
 
