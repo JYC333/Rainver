@@ -383,11 +383,10 @@ describe("host_threads owner constraints", () => {
 
   it("gives every Agent × container its own runtime profile, and the machine's own to none of them", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The leak this closes: `profiles/<adapter>/<provider>` was shared by every
-    // run with that adapter and provider on a machine, and an unbound run had
-    // no profile at all, so it read the machine's own `~/.claude`. Two Agents
-    // in one Room and one Agent in two Rooms are the two ways that mixed what
-    // a vendor CLI remembers.
+    // Do not share `profiles/<adapter>/<provider>` across runs. An unbound
+    // run must not read the machine's own `~/.claude`. Two Agents in one
+    // Room and one Agent in two Rooms are the two ways a shared profile
+    // mixes what a vendor CLI remembers.
     const otherAgent = "77777777-7777-4777-8777-777777777777";
     const otherVersion = "99999999-9999-4999-8999-999999999999";
     const otherConversation = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";

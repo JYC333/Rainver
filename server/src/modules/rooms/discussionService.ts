@@ -910,8 +910,8 @@ export class RoomDiscussionService {
 /**
  * The delegation budget of a turn inside a container that has already
  * charged `turnsUsed` Agent-triggered turns: never more than two per turn,
- * never past the fan-out ceiling. An Agent that delegated from every
- * completion turn with a fresh budget is the chain this closes.
+ * never past the fan-out ceiling. Do not give every completion turn a fresh
+ * budget. The chain would keep delegating.
  */
 export function delegationBudget(turnsUsed: number): { max_depth: number; max_fanout: number } {
   return { max_depth: 1, max_fanout: Math.max(0, Math.min(2, DISCUSSION_FANOUT_CEILING - turnsUsed)) };
