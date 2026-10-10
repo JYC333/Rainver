@@ -819,12 +819,12 @@ export async function runtimeRequiredCapabilities(value: unknown): Promise<strin
   if (declared.length === 0) return declared;
   const systemActions = await loadSystemActionRegistry();
   const systemActionIds = new Set<string>(systemActions.keys());
-  // `runs.capabilities_json` currently carries both runtime capabilities and
+  // `runs.capabilities_json` carries both runtime capabilities and
   // server-owned System Action declarations. System Actions execute through
   // SystemActionDispatcher and are authorized by `permission_snapshot_json`;
-  // they are not capabilities that a runtime profile must duplicate. Keeping
-  // them in the runtime hard filter makes a Room's own tool allowance reject
-  // every otherwise-valid candidate before the conversation can start.
+  // they are not capabilities that a runtime profile must duplicate. Do not
+  // keep them in the runtime hard filter. A Room's own tool allowance would
+  // reject every otherwise-valid candidate before the conversation can start.
   return declared.filter((capability) => !systemActionIds.has(capability));
 }
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : []; }

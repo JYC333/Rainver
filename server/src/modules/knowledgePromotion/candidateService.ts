@@ -58,7 +58,7 @@ function sha256(value: string): string {
 /**
  * Knowledge Candidate extraction and promotion. Scoped to the
  * knowledge_items-backed kinds (concept/lesson/procedure/decision/summary);
- * Claim and Relation keep their existing dedicated extraction flows
+ * Claim and Relation use their own extraction flows
  * (claim_candidate_packet, relation_discovery_packet in modules/knowledge/).
  * Extraction here is manual/explicit — a human names the exact source
  * revision and proposed content — matching this codebase's established

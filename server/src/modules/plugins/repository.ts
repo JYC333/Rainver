@@ -216,10 +216,11 @@ export const pluginRepository = {
     const settings = input.settings === undefined ? null : JSON.stringify(input.settings);
     const visible = input.visible ?? null;
 
-    // One statement for create and update: a SELECT-then-INSERT let two first
-    // writes of the same scope both miss the row and the loser fail on the
-    // unique index. On conflict the existing row keeps whatever this write
-    // does not set (visibility, settings, the other state's timestamps).
+    // One statement for create and update. Do not SELECT then INSERT. Two
+    // first writes of the same scope would both miss the row and the loser
+    // would fail on the unique index. On conflict the existing row keeps
+    // whatever this write does not set (visibility, settings, the other
+    // state's timestamps).
     const result = await db.query<PluginEnablementRow>(
       `INSERT INTO official_plugin_enablements
          (id, space_id, user_id, plugin_id, enabled, visible, settings_json,
