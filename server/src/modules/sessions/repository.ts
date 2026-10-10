@@ -243,9 +243,8 @@ export class PgSessionRepository {
    *
    * The transcript predicate is applied to every session, not only to a Room's:
    * `room_display = 'internal'` is written by `addRoomInternalInstruction`
-   * alone, so it is vacuous for an ordinary session — and a flag that decided
-   * whether to apply it was a second copy of the rule that a new caller could
-   * pass `false` to.
+   * alone, so it is vacuous for an ordinary session. Do not add a flag that
+   * decides whether to apply it. A new caller could pass `false`.
    */
   private async loadMessagePage(
     spaceId: string,

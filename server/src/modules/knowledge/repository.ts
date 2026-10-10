@@ -1957,8 +1957,8 @@ export class PgKnowledgeRepository {
     const finalTargetId = direction === "incoming" ? noteId : targetId;
     // The link is written *on* its source object, so that one has to be
     // writable — not merely visible. With `direction: "incoming"` the source is
-    // the caller-supplied `target_id`, which was checked for visibility alone,
-    // so a reader holding a grant on someone else's note could attach an
+    // the caller-supplied `target_id`. Do not check it for visibility alone.
+    // A reader holding a grant on someone else's note could attach an
     // outgoing link to it. The target stays a read check: being linked *to* is
     // not a change to the thing linked to.
     const sourceObject = sourceId === noteId

@@ -285,19 +285,16 @@ const CARD_SOURCE_TYPES: Record<string, string | undefined> = {
 /**
  * Stored `provenance_links.source_type` token per entity.
  *
- * This list was audited on 2026-08-06 by asking, for each member, what writes
- * it and what `source_id` actually holds. The answers did not match the names:
+ * The token is not always the entity name:
  *
- * - `run_step` was written only from `payload.source_run_id` and read back as
- *   a run id. It is the `run` entity, so it is called that now.
+ * - `run` is a run id. Do not record `run_step`.
  * - `user_confirmation` stores a user id, so the entity behind it is `user`.
  *   The token keeps its name — it is a stored identifier with rows behind it,
  *   the same reason `memory_entry` is stored as `memory` — but it is declared
  *   rather than free-floating, so the registry can say what `source_id`
  *   resolves to.
- * - `run_event` had neither a writer nor a reader, and would have been an
- *   aggregate's internal structure rather than an entity (B12C). Dropped, as
- *   `idea` was from the context item types.
+ * - `run_event` is not a type. A run's internal structure is not an entity
+ *   (B12C). Do not add it, and do not add `idea` as a context item type.
  *
  * Two members stay despite having no writer, for different reasons.
  * `source_snapshot` has a live *reader*: `retrieval/sourcePolicy.ts` joins

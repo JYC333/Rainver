@@ -518,7 +518,7 @@ async function openSpokenRoom(
 
 /**
  * Open a Room and speak in it, which is what provisions the Project's
- * Assistant now that Room creation does not (ADR 0018 decision 4). Used by the
+ * Assistant. Room creation does not (ADR 0018 decision 4). Used by the
  * Assistant-lifecycle tests, whose subject is the provisioning itself.
  */
 async function speakInNewRoom(

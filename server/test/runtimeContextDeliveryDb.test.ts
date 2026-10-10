@@ -1163,11 +1163,10 @@ describe("Invocation Delivery and Snapshot persistence", () => {
 
   /**
    * Reauthorizing an Inquiry Thread pins the viewer's project membership row
-   * for the transaction. The lock was written against the nullable side of an
-   * outer join, which PostgreSQL rejects outright — so every Delivery carrying
-   * a Thread failed with a database error, not a policy decision, and screening
-   * reported "0/N items classified". A fake `Queryable` accepts that SQL
-   * happily; only a real server refuses it.
+   * for the transaction. Lock that row. Do not lock the nullable side of an
+   * outer join: PostgreSQL rejects it, and every Delivery carrying a Thread
+   * would fail with a database error rather than a policy decision. A fake
+   * `Queryable` accepts that SQL happily; only a real server refuses it.
    */
   it("locks Inquiry Thread membership without tripping PostgreSQL's outer-join lock rule", async () => {
     if (!db.available) return;

@@ -658,7 +658,8 @@ describeWithPostgres("bounded evolution review launch", () => {
       completed_at: NOW.toISOString(),
     });
     // Finalization hands the reconciler the pool. A failure after the report
-    // was written left it orphaned, and the retry wrote a second one.
+    // is written must not leave it orphaned, and the retry must not write a
+    // second one.
     const handler = autonomyDiscovererRegistry.get("evolution_review")!;
     const spy = vi.spyOn(handler, "onCompleted").mockRejectedValueOnce(new Error("connection reset"));
     try {

@@ -370,10 +370,10 @@ export const projectResearchScreeningCriteria = pgTable("project_research_screen
 	includeKeywordsJson: jsonb("include_keywords_json").default([]).notNull(),
 	excludeKeywordsJson: jsonb("exclude_keywords_json").default([]).notNull(),
 	// Domain-specific screening axes, keyed by what the bound extraction profile
-	// declares (R4/D12). `methods` was a column, which forced every domain to
-	// carry an irrelevant domain-shaped criterion; an unconstrained bag would have been the
-	// opposite mistake, so the legal keys come from the profile registry and the
-	// column only guarantees the shape.
+	// declares. Do not store `methods` as its own column. That would force
+	// every domain to carry an irrelevant domain-shaped criterion. An
+	// unconstrained bag would be the opposite mistake, so the legal keys come
+	// from the profile registry and the column only guarantees the shape.
 	domainCriteriaJson: jsonb("domain_criteria_json").default({}).notNull(),
 	dateRangeStart: timestamp("date_range_start", { withTimezone: true, mode: 'string' }),
 	dateRangeEnd: timestamp("date_range_end", { withTimezone: true, mode: 'string' }),

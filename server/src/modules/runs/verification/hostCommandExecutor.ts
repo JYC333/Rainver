@@ -9,12 +9,11 @@ const COMMAND_OUTPUT_LIMIT_EXCEEDED = "command_output_limit_exceeded";
 /**
  * Verification, asked of the host that holds the workspace.
  *
- * It replaces an executor that spoke a private protocol to a Runner beside the
- * server — which is why verification was a server-host-only capability, and
- * why a paired host's Runs could never be verified at all. The same frame
- * serves both host kinds now: a strict host wraps the command in the same
+ * One frame for both host kinds. A strict host wraps the command in the same
  * namespace it gives a Run, and a trusted host runs it natively, which is the
- * trust its owner already extends to that machine.
+ * trust its owner already extends to that machine. Do not speak a private
+ * protocol to a Runner beside the server, and do not limit verification to
+ * the server host.
  *
  * The command comes from a server-side verification recipe and nowhere else.
  * That is the boundary — the daemon executes what the control plane hands it

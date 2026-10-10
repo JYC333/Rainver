@@ -142,8 +142,8 @@ function supportsManagedCliLogin(manifest: ToolManifest, entryArgs: string[]): P
   if (cached) return cached;
   const result = new Promise<boolean>((resolve) => {
     let settled = false;
-    // Two named deletions were a denylist of length two; this is the one the
-    // rest of the daemon uses, so a new vendor key is dropped here too.
+    // The denylist the rest of the daemon uses. A new vendor key is dropped
+    // here too. Do not keep a second list of two names.
     const env: Record<string, string | undefined> = {
       ...helperProcessEnv(process.env, manifest.runtime_key ?? ""),
       ...manifest.env,

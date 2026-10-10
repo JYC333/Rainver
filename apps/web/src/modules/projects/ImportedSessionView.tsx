@@ -115,8 +115,7 @@ export default function ImportedSessionView() {
       // `selected_users`, and `space_shared` demoted to `summary` access, both
       // name an audience narrower than the Project's readers, so continuing
       // one in the mainline would be a disclosure the server refuses without
-      // a confirmation. It could be confirmed now that the dialog exists —
-      // but a continuation is not the moment to ask. The person opened a
+      // a confirmation. Do not ask it on a continuation. The person opened a
       // session to carry on working, not to decide who else should read it,
       // and the answer that costs nothing is available: anything short of
       // fully shared continues in their personal Room, whose audience is a
