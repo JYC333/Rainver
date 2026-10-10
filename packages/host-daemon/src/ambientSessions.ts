@@ -96,8 +96,8 @@ class AcpProcess {
       stdio: ["pipe", "pipe", "ignore"],
       // Keeps the state roots: this reads the machine's own CLI history, and
       // the vendor keeps that under a variable sharing its credential prefix.
-      // Clearing them by prefix made the feature report the machine as having
-      // no history at all.
+      // Clearing them by prefix would report the machine as having no history
+      // at all. Do not.
       //
       // Worth knowing, and deliberate: `CODEX_HOME` also *selects* which
       // account's history this is. An owner who starts the daemon from a shell

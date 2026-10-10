@@ -4,8 +4,8 @@
  * They are separate because they invert independently: a reader who only ever
  * sees `headline`-depth material needs depth inversion regardless of genre, and
  * a reader who only ever reads `news` needs genre inversion even when the news
- * they read is deep. Collapsing them into one "kind" field made the inversion
- * rule unable to express either.
+ * they read is deep. Do not collapse them into one "kind" field. The
+ * inversion rule would not express either axis.
  *
  * Kept as small closed vocabularies rather than free-form strings for the same
  * reason the domain skeleton is coarse: an open vocabulary produces a

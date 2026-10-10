@@ -66,9 +66,9 @@ seq · correlation_id · causation_id · idempotency_key · data_json`.
 
 `seq` is the stream's insert sequence and the only ordering tie-break. One
 advancement chain writes several events in one transaction, so they share a
-millisecond; ordering `(occurred_at, id)` broke those ties on a random v4 UUID,
-which made "the latest event" a coin flip for the board, the Task work view and
-the Updates feed alike. Every reader orders `(occurred_at, seq)`.
+millisecond. Do not order `(occurred_at, id)`. A random v4 UUID would make
+"the latest event" a coin flip for the board, the Task work view and the
+Updates feed alike. Every reader orders `(occurred_at, seq)`.
 
 - **Actor-neutral from the start.** `actor_id` is an `actors` FK, which already
   spans user, agent, system, automation, connector, integration, service and

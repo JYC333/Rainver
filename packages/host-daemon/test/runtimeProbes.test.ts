@@ -53,9 +53,9 @@ describe("terminal WebSocket closes", () => {
   });
 
   // A version the control plane will not admit is its own outcome, not
-  // revocation and not an ordinary drop. Without this the close fell through
-  // to the reconnect loop's ≤30s backoff, which reconnected forever — no
-  // update can arrive during a retry — and made the server re-record the
+  // revocation and not an ordinary drop. Otherwise the close falls through
+  // to the reconnect loop's ≤30s backoff, which reconnects forever — no
+  // update can arrive during a retry — and the server re-records the
   // incompatible version on every attempt.
   it("separates an outdated-daemon refusal from revocation and from an ordinary close", () => {
     expect(isOutdatedDaemonClose(1008, "daemon_outdated")).toBe(true);
