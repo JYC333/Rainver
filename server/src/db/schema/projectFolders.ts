@@ -6,12 +6,11 @@ import { projects } from "./projects.js";
 import { validationRecipes } from "./tasks.js";
 
 /**
- * execution-topology-and-project-control-plane-plan.md P1 / D2: the logical
+ * execution-topology D2: the logical file/code resource — a repository
  * file/code resource — a repository identity, not a physical checkout.
- * `host_id`/`host_kind`/`root_path`/`display_path` moved to
- * `workspace_locations` (a Folder may now have several physical checkouts,
- * on different ExecutionHosts); this row itself no longer carries any
- * filesystem path.
+ * Filesystem path and host live on `workspace_locations`. A Folder may have
+ * several physical checkouts on different ExecutionHosts. This row carries
+ * no filesystem path. Do not put `host_id` or `root_path` back on it.
  */
 export const projectFolders = pgTable("project_folders", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

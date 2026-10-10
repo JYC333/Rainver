@@ -166,7 +166,7 @@ describe('ProjectDetailPage (Pulse)', () => {
     expect(projectsApi.operations).not.toHaveBeenCalled()
   })
 
-  it('carries none of the old Overview blocks', async () => {
+  it('carries none of the Overview workbench blocks', async () => {
     setup()
     renderPage()
     expect(await screen.findByText('Project One')).toBeInTheDocument()

@@ -1,11 +1,7 @@
 /**
- * The single place that knows the `space_objects` column list.
- *
- * Before this existed there were 11 hand-written `INSERT INTO space_objects`
- * across 7 modules and 10 hand-written `UPDATE space_objects` across 5, each
- * assembling its own column list and its own defaults. Every new domain that
- * joins the ontology would have added another one, and each copy is a place to
- * forget a governance column (B12H).
+ * The single place that knows the `space_objects` column list. Do not
+ * hand-write `INSERT` or `UPDATE` column lists in callers: each copy is a
+ * place to forget a governance column (B12H).
  *
  * It builds a **SQL fragment plus its parameters** rather than executing a
  * query, because several callers embed the insert in a CTE

@@ -720,9 +720,8 @@ function stringValue(value: unknown): string | null {
 }
 
 /**
- * Structured-output artifacts historically used a JSON-encoded string for
- * `content`. Newer contracts can provide the JSON object directly; persist it
- * as text so the artifact API and existing renderers remain compatible.
+ * Persist structured-output `content` as text. A string is stored as given.
+ * An object is serialized. The artifact API and renderers read one shape.
  */
 function artifactContentValue(value: unknown): string | null {
   const text = stringValue(value);

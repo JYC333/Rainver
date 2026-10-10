@@ -167,8 +167,8 @@ describe('deriveStages', () => {
   })
 
   it('waits for the assessment before ticking Clarify, and marks the work meanwhile', () => {
-    // Starting the action is not doing it. The tick used to land on the click,
-    // before the wording had been near the assessment workspace.
+    // Starting the action is not doing it. The tick waits until the wording
+    // has been near the assessment workspace.
     const started = deriveStages({ ...base, roundSteps: [step({ kind: 'clarify_or_decompose' })] })
     const clarify = started.stages.find(stage => stage.id === 'clarify')
     expect(clarify?.complete).toBe(false)
@@ -274,7 +274,7 @@ describe('recommendStep', () => {
     expect(recommendation.reason).toContain('2 material changes')
   })
 
-  it('keeps recommending after a step is chosen, which is when the old card fell silent', () => {
+  it('keeps recommending after a step is chosen', () => {
     const working: StageInput = {
       ...base,
       questionRefined: true,

@@ -212,9 +212,8 @@ beforeEach(async () => {
   );
   await db.pool.query(
     // The built-in host reports the copy these Rooms dispatch to, and a
-    // heartbeat, like any other host. It used to need neither: a server-host
-    // Room turn ran a CLI the server spawned itself. It runs the copy this
-    // host's daemon has now, so a host with no installation — or no
+    // heartbeat, like any other host. A server-host Room turn runs the copy
+    // this host's daemon has, so a host with no installation — or no
     // heartbeat — is one nothing can be dispatched to, which is the check
     // `prepareHostConversationDispatch` makes for every host alike.
     `INSERT INTO hosts (
@@ -6854,9 +6853,8 @@ describe("Room workflow (real Postgres)", () => {
        VALUES ($1, 'space-1', 'project-1', 'user-later', 'viewer', 'active', now(), now())`, [randomUUID()]);
     const later = { spaceId: "space-1", userId: "user-later" };
 
-    // Before this the panel listed only Rooms the viewer was on the roster
-    // of, so a member nobody had invited saw an empty panel — and as a
-    // viewer could not start a Room either.
+    // The list includes the Project's mainline for a member who is not on a
+    // topic Room's roster. Do not show them an empty panel.
     const opened = await service.getProjectMainline(later, "project-1");
     expect(opened.room.id).toBe(created.room.id);
     expect(opened.joined).toBe(true);

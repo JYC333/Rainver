@@ -4,10 +4,11 @@
  * `HostServerFrameSchema` is every frame the control plane pushes to a paired
  * daemon; `HostDaemonFrameSchema` is every frame a daemon sends back. Both
  * ends parse inbound frames with these schemas and type outbound frames
- * against them, so a field exists in exactly one place. Before this each side
- * rebuilt every frame by hand from untyped JSON, and a field the rebuild did
- * not name vanished without a trace — `provider_binding`, then `server_url`,
- * then `work_surface`, each shipped inert once that way.
+ * against them, so a field exists in exactly one place. Do not rebuild a
+ * frame by hand from untyped JSON on either side. A field this contract
+ * drops must leave the senders in the same change. `provider_binding`,
+ * `server_url`, and `work_surface` each shipped with one side still sending
+ * a name the other had stopped reading.
  *
  * Objects are not `.strict()`: an unknown field is dropped, not fatal. What
  * guards against a field being *lost* is that neither side names fields by

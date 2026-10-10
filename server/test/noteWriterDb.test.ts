@@ -111,8 +111,8 @@ describe("shared note writer (real Postgres)", () => {
     // An agent write: no acting user, and reached through the scope rather
     // than through `updateNote`. Every non-user path into the notebook has
     // this shape — report seeding, ask-ai, notebook chat, the monitoring
-    // reconciler — and all of them used to leave the projection untouched, so
-    // a note an agent had maintained for weeks was stale in search.
+    // reconciler. Each of them updates the projection. A note an agent has
+    // maintained stays current in search.
     await withNoteWrites(db.pool, (scope) => scope.write({
       spaceId: SPACE,
       noteId: note.id,

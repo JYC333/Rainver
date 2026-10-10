@@ -371,10 +371,9 @@ export class ExperimentRunService {
 
   /**
    * Terminal update for a Run: final status, recorded Observations, and
-   * optionally naming it the Experiment's baseline/best Run — the
-   * `decideRun`-equivalent step, minus the "keep/discard/crash" vocabulary
-   * (a Run's technical outcome and its interpreted verdict are no longer
-   * conflated; see interpretationService.ts for the verdict).
+   * optionally naming it the Experiment's baseline/best Run. A Run's technical
+   * outcome and its interpreted verdict are separate; see
+   * interpretationService.ts for the verdict.
    */
   async completeRun(
     identity: SpaceUserIdentity,

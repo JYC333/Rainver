@@ -407,11 +407,10 @@ export class PgHostRepository {
    * profile binding is the second authorization path below.
    */
   /**
-   * execution-topology-and-project-control-plane-plan.md P1 / D3: a Run
-   * binds to a Location, not a Folder — the JOIN goes through
-   * `workspace_locations` (a Location has exactly one host) rather than
-   * `project_folders` (which, after P1, no longer names one at all). Managed
-   * runs use their selected runtime profile's host binding instead.
+   * A Run binds to a Location, not a Folder. The JOIN goes through
+   * `workspace_locations` (a Location has exactly one host).
+   * `project_folders` does not name a host. Managed runs use their selected
+   * runtime profile's host binding instead.
    */
   async runOwnedByHost(hostId: string, runId: string): Promise<RunForUpload | null> {
     const result = await this.pool.query<RunForUpload>(

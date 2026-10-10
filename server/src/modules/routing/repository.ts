@@ -205,11 +205,9 @@ export class PgRouteDecisionRepository {
         "The Task Run Workspace Location does not match its pinned runtime thread.",
       );
     }
-    // An unpinned Run needs a complete execution target, not the Server Host
-    // specifically: the ACP runtime-authority cutover only removed the
-    // Conversation HostThread from that path. A Profile whose deployment
-    // authority names a paired Host stays admissible, and
-    // `host_dispatch_permitted` — not this filter — decides whether the
+    // An unpinned Run needs a complete execution target. A Profile whose
+    // deployment authority names a paired Host stays admissible.
+    // `host_dispatch_permitted`, not this filter, decides whether the
     // responsible user may dispatch there, so the refusal appears in the
     // persisted decision instead of an empty candidate set.
     const candidates = allCandidates.filter((candidate) => pinnedHostThread
@@ -841,8 +839,8 @@ function trustLevel(value: unknown): "low" | "medium" | "high" { return value ==
  * Trust is based on controls the current dispatch actually enforces, and the
  * thing that enforces them is the execution target, not the runtime registry.
  * A registry declaration that a vendor supports a setting is not evidence that
- * this Run received it — the ACP Host-daemon path never applied the legacy
- * subagent-deny config — so a runtime's own declarations never raise it.
+ * this Run received it. A runtime's own declarations never raise trust.
+ * Do not treat a vendor's declared subagent-deny as applied on the daemon path.
  *
  * What is enforced is the built-in strict Server Host: every Run it accepts
  * runs in a fresh rootless bubblewrap namespace built from an empty root and

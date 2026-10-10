@@ -7,10 +7,8 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
-// NA: the project research baseline used to be bound by title string, so
-// renaming a starter note silently removed it from the baseline and the
-// monitoring comparison degraded without reporting anything. These assertions
-// are the acceptance criterion for the role marker replacing that binding.
+// The research baseline is `notes.project_role`, not the title. Renaming a
+// starter note must not remove it from the baseline.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

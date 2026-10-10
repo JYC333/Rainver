@@ -188,10 +188,8 @@ export class PgProjectRepository {
       );
       // The mainline Room is a Project attribute on the same footing as the
       // Brief v1 row above: present from creation, empty until spoken in
-      // (ADR 0018 decision 4). Before this, the first Room created became the
-      // mainline, so "a Project with no Room" was a state every caller wanting
-      // to put something in the mainline had to handle — and one of them,
-      // continuing an imported CLI session, could not.
+      // (ADR 0018 decision 4). Do not wait for the first Room someone creates
+      // and call that the mainline. A Project with no Room is not a state.
       //
       // Nothing that can fail is done here. No Assistant is provisioned (that
       // moves to the Room's first message) and no conversation is created

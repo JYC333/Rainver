@@ -100,11 +100,9 @@ beforeEach(() => {
 })
 
 /**
- * S1's structural guarantee. The editor used to read its note from
- * `useParams()` and its callback from `useOutletContext()`, which pinned it to
- * one route and is why the Project notebook grew a second, weaker editor
- * instead of reusing this one. Mounting it here with neither a matched route
- * nor an Outlet is the test that the coupling is gone.
+ * The editor takes its note and callback as props. Do not read `useParams()`
+ * or `useOutletContext()` here: that pins it to one route. Mounting it with
+ * neither a matched route nor an Outlet is the check.
  */
 describe('NoteEditor is route-agnostic', () => {
   it('files the open note from its editor and shows its current Domain', async () => {

@@ -3,10 +3,9 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { AgentOut, AgentVersionOut } from '../types/api'
 
-// The runtime profile form used to hard-code three runtimes. It reads the
-// live adapter catalog now, so an enabled ACP registry agent and OpenCode are
-// as selectable as the two it used to know about, and what a runtime supports
-// comes from the catalog row rather than from its name.
+// The runtime profile form reads the live adapter catalog. An enabled ACP
+// registry agent and OpenCode are selectable. What a runtime supports comes
+// from the catalog row, not from its name. Do not hard-code the runtime list.
 const { getMock, listVersionsMock, listRuntimeProfilesMock, listRuntimeDefinitionsMock, executionTargetsMock, updateRuntimeProfileMock, createRuntimeProfileMock } = vi.hoisted(() => ({
   getMock: vi.fn(),
   listVersionsMock: vi.fn(),
@@ -159,7 +158,7 @@ describe('AgentDetailPage — runtime profile Runtime select', () => {
     // A paired Host is handed a short-lived proxy lease address, never a key
     // (AGENT_RUNTIME_AUTHORITY, "Paired Host path"), so admission accepts
     // `model_provider` on either Host kind and only refuses an *unbound*
-    // Profile. The composer used to force the binding back to native here.
+    // Profile. Do not force the binding back to native here.
     listRuntimeProfilesMock.mockResolvedValue([{
       id: 'p1', agent_id: 'a1', name: 'Proxied', runtime_key: 'opencode', runtime_config_json: {}, runtime_policy_json: {},
       backend_mode: 'model_provider', model: { provider_id: 'prov-1', model: 'gpt-4o' },
@@ -204,8 +203,8 @@ describe('AgentDetailPage — runtime profile Runtime select', () => {
   })
 
   it('keeps the way out of provider mode when the runtime catalog fails to load', async () => {
-    // Without the catalog every backend-mode control used to disappear while
-    // the Profile still claimed provider mode, so save() could only ever fail.
+    // A failed catalog must not hide every backend-mode control while the
+    // Profile still claims provider mode: save() could then only fail.
     listRuntimeProfilesMock.mockResolvedValue([{
       id: 'p1', agent_id: 'a1', name: 'Proxied', runtime_key: 'opencode', runtime_config_json: {}, runtime_policy_json: {},
       backend_mode: 'model_provider', model: { provider_id: 'prov-1', model: 'gpt-4o' },
@@ -354,10 +353,10 @@ describe('AgentDetailPage — runtime profile Runtime select', () => {
   })
 
   it('waits for the runtime catalog before saying a runtime refuses ModelProvider mode', async () => {
-    // `cliAdapters` starts empty, and an empty catalog used to be read as
-    // "this runtime does not support a Provider binding": every open of a
-    // `model_provider` Profile flashed that alert until the first answer
-    // landed. Not-yet-asked and answered-no are different facts.
+    // `cliAdapters` starts empty. An empty catalog is "not loaded yet", not
+    // "this runtime does not support a Provider binding". Do not flash that
+    // alert on every open of a `model_provider` Profile. Not-yet-asked and
+    // answered-no are different facts.
     let resolveCatalog: ((value: { items: typeof CATALOG }) => void) | null = null
     listRuntimeDefinitionsMock.mockReturnValue(new Promise(resolve => { resolveCatalog = resolve }))
     listRuntimeProfilesMock.mockResolvedValue([{

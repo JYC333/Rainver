@@ -20,16 +20,12 @@ import { useProjectFolderConversation, type CurrentFileAttachment } from '../Pro
 
 /**
  * Talking to the Project's Agent without leaving what you are looking at.
- *
- * Before this, the Room was a separate page: discussing anything meant leaving
- * the thing you were discussing and then describing it again in words. The
- * sidecar carries that description for you — see `focusRefsFor` — which is the
- * highest-frequency friction in a system you use every day.
+ * The sidecar carries the current focus — see `focusRefsFor`.
  *
  * It binds to the Project's **mainline** Room — the one every Project member
- * belongs to — rather than to whichever Room the viewer happened to be on the
- * roster of that was most recently active. That version switched Rooms under
- * people and was empty for anyone nobody had invited. It renders the Room's
+ * belongs to. Do not bind whichever Room the viewer was most recently on:
+ * that switches Rooms under people and is empty for anyone not invited.
+ * It renders the Room's
  * own conversation, not a private one: a teammate opening the full Room sees
  * what was said here. The rich Room surface (run progress,
  * action previews, roster, invitations) stays on that page; this is the daily

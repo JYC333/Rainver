@@ -4,9 +4,9 @@ import type { SystemActionId } from "@rainver/protocol";
  * Scenario tool allowances.
  *
  * `buildRunToolGrants` intersects what a Run declares with what it is
- * *allowed*, and fails closed when the allowance is missing. Until now the
- * allowance could only come from one place: the immutable AgentVersion's
- * `tool_permissions_json`. That models a tool as a property of the Agent —
+ * *allowed*, and fails closed when the allowance is missing. The allowance
+ * comes from two places. The immutable AgentVersion's
+ * `tool_permissions_json` models a tool as a property of the Agent —
  * "this Agent is permitted to do X" — which is right for an Agent's own
  * standing skills, and wrong for a capability that belongs to a *place*.
  *
@@ -154,9 +154,8 @@ const DISPATCH_BASE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
  * path that applies a declaration today: the executing host uploads its output
  * directory and `recordOutputArtifacts` gives those files the type and Task
  * link the Run declared. A server-host Run's artifacts come through
- * `materializationService` instead, which does not consume declarations yet
- * (the retired agent-work-surface plan, P2; see `.agent/modules/hosts.md`).
- * Granting it there would let an agent be
+ * `materializationService` instead, which does not consume declarations.
+ * Do not grant `artifact.submit` on a server-host Run: the agent would be
  * told its deliverable was recorded when nothing would ever act on it, which
  * is worse than not offering the action at all.
  */
@@ -178,10 +177,9 @@ export const ROOM_CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
  *
  * One function for every way a person or a Room talks to an Agent — a Room
  * message, a delegation the Room's Agent makes, a direct chat — so the
- * allowance is decided once. Before this each path computed it on its own:
- * direct chat kept a three-action list from before scenario allowances
- * existed, and a delegated child declared nothing and so could call nothing,
- * not even the actions its parent was granted in the same conversation.
+ * allowance is decided once. Do not give direct chat its own list, and do
+ * not let a delegated child declare nothing: it then cannot call the actions
+ * its parent was granted in the same conversation.
  *
  * Host kind is intentionally absent. It selects how the Run-scoped tool
  * surface is delivered, not what a conversation may do.

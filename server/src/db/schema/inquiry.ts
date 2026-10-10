@@ -75,12 +75,9 @@ export const inquiryThreads = pgTable("inquiry_threads", {
 	check("ck_inquiry_threads_attention_state", sql`(attention_state)::text = ANY (ARRAY[('focused'::character varying)::text, ('monitoring'::character varying)::text, ('backlog'::character varying)::text, ('blocked'::character varying)::text, ('resolved'::character varying)::text, ('rejected'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_inquiry_threads_created_from", sql`(created_from)::text = ANY (ARRAY[('user'::character varying)::text, ('ai_candidate'::character varying)::text, ('decomposition'::character varying)::text])`),
 	// A step and a blocking reason contradict each other, so a Thread may never
-	// hold both. What this no longer requires is that a focused Thread hold one
-	// of them: a Thread between rounds, or one whose only running work is a
-	// background search, is legitimately doing neither. The former XOR made
-	// "focus this Thread" refuse until a next step had been picked from a
-	// menu — the invariant was itself a source of the busywork the step model
-	// exists to remove.
+	// hold both. A focused Thread does not have to hold either: a Thread
+	// between rounds, or one whose only running work is a background search,
+	// is doing neither. Do not require a next step before focus.
 	check("ck_inquiry_threads_focused_next_focus", sql`next_focus_kind IS NULL OR blocked_reason IS NULL`),
 	check("ck_inquiry_threads_lifecycle_attention", sql`
 		(lifecycle_status = 'active' AND attention_state IN ('focused', 'monitoring', 'backlog', 'blocked'))

@@ -207,8 +207,8 @@ async function reorderNoteItems(
 
   // A drag into a Project's subtree is a placement, and placement is what binds
   // a note to a Project (U7) — so the same rule the explicit placement actions
-  // run has to run here. Before this it did not, and a drag could carry a note's
-  // baseline role out of the Project the role is scoped to.
+  // run has to run here. A drag must not carry a note's baseline role out of
+  // the Project the role is scoped to.
   for (const update of updates) {
     if (update.collectionId === update.fromCollectionId) continue;
     await bindNoteToPlacementProject(db, {

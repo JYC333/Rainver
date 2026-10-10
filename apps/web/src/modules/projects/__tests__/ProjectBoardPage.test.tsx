@@ -116,8 +116,8 @@ beforeEach(() => {
 
 describe('Project Board', () => {
   it('re-reads the Board on an interval and when the tab comes back, without a skeleton', async () => {
-    // Cards an Agent creates from the Room arrive while this page is open;
-    // it used to load once on arrival and show them only after leaving.
+    // Cards an Agent creates from the Room arrive while this page is open.
+    // The page polls; it does not load once on arrival.
     const intervals: Array<() => void> = []
     const spy = vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void) => {
       intervals.push(fn)
@@ -304,8 +304,8 @@ describe('Project Board', () => {
     vi.mocked(projectsApi.getBoard).mockResolvedValue({ ...board, viewer_can_write: false })
     renderBoard()
     expect(await screen.findByText('Draft the protocol')).toBeInTheDocument()
-    // Before this a viewer could drag any card to Done and get a 403 after
-    // the drop; the honest surface is one that offers no drag at all.
+    // A viewer is offered no drag. Do not let them drag a card to Done and
+    // answer 403 after the drop.
     expect(screen.queryByRole('button', { name: /^Move / })).not.toBeInTheDocument()
   })
 

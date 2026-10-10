@@ -33,10 +33,9 @@ const RUNTIME_OPTION_AUTHORITY_KEYS = new Set([
  * bag key that shadows `runtime_key` or `risk_level` is a real authority leak,
  * and a second walk is how the two answers drift.
  *
- * Only names this epoch owns are listed. `adapter_type` and its
- * `default_`/`allowed_` forms named runtime identity before the ACP runtime
- * authority reset; nothing defines, writes or reads them now, so listing them
- * here would be a second name for a concept that has one (B58) and would
+ * Only names this epoch owns are listed. Do not list `adapter_type` or its
+ * `default_`/`allowed_` forms. Nothing defines, writes, or reads them, and
+ * listing them would be a second name for runtime identity (B58) and would
  * refuse an unrelated runtime's own option that happened to use the word.
  *
  * Read paths keep this permissive schema; the ownership rule below is an

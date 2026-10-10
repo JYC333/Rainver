@@ -231,9 +231,9 @@ describe('ModelProvidersPage — open add form takes over the view', () => {
   })
 
   it('keeps the Providers list readable when the runtime default fails to load', async () => {
-    // One failing call in the page's fan-out used to reject the whole
-    // Promise.all and blank the page. The card reports its own failure and
-    // offers a retry; nothing is saved over a template nobody could read.
+    // One failing call must not reject the page's fan-out and blank the
+    // Providers list. The card reports its own failure and offers a retry.
+    // Nothing is saved over a template nobody could read.
     listMock.mockResolvedValue([provider])
     getRuntimeDefaultMock.mockRejectedValueOnce(new Error('runtime default unavailable'))
     render(<ModelProvidersPage />)

@@ -65,8 +65,8 @@ describe("projectChatActionPreviews", () => {
 describe("projectChatToolPermissions", () => {
   describe("Project Chat tool permissions",()=>{
     // One allowance for every way a person talks to an Agent in a Project — a
-    // Room message, a delegation, a direct chat. Direct chat used to keep its
-    // own three-action list, so it could propose a Source and nothing else.
+    // Room message, a delegation, a direct chat. Direct chat does not keep a
+    // shorter list.
     it("gives a direct chat in a Project the same allowance a Room message gets",()=>{
       expect(conversationToolGrantInput({ project_id: "project-1" })).toEqual({
         capabilities_json: [...ROOM_CONVERSATION_TOOL_ALLOWANCE],

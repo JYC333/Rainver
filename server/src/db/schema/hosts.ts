@@ -32,9 +32,10 @@ export const hosts = pgTable("hosts", {
 	arch: varchar({ length: 32 }),
 	daemonVersion: varchar("daemon_version", { length: 32 }),
 	/**
-	 * No longer read or written: a host's control-plane address is
-	 * configuration (`hostControlPlaneUrl`). Kept until every deployed release
-	 * stops reading it; the drop is in the deferred register.
+	 * Not read or written. A host's control-plane address is configuration
+	 * (`hostControlPlaneUrl`). The column stays until every deployed release
+	 * stops reading it; the drop is in the deferred register. Do not start
+	 * reading it.
 	 */
 	daemonServerUrl: varchar("daemon_server_url", { length: 512 }),
 	/**

@@ -17,8 +17,7 @@ describe("spaceAssistantService", () => {
   describe("managed Assistant backend setup targets", () => {
     // Both destinations are always real work now: a Space with no backend can
     // either add a ModelProvider or log a CLI in on an execution host. The
-    // second used to be conditional on the server having a CLI installed,
-    // which is no longer a thing that can be true (ADR 0016).
+    // server does not have a vendor CLI of its own (ADR 0016).
     it("names both places a missing backend can be configured", () => {
       expect(setupTargetsForMissingBackend()).toEqual(["model_providers", "execution_hosts"]);
     });

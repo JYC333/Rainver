@@ -353,10 +353,10 @@ export class HostDaemonExecutionAdapter implements HostExecutionPort {
   };
   constructor(
     /**
-     * Which machine, still — the built-in host is `server` and a paired one is
-     * `remote`. It no longer decides *how* the run executes (every CLI run is
-     * a daemon run now); it decides whether a server-brokered credential is in
-     * play, and what the Run read model calls remote.
+     * Which machine. The built-in host is `server` and a paired one is
+     * `remote`. It decides whether a server-brokered credential is in play,
+     * and what the Run read model calls remote. It does not decide how the
+     * run executes: every CLI run is a daemon run.
      */
     readonly hostKind: HostKind,
     readonly hostId: string,
@@ -412,9 +412,8 @@ type RuntimeAdapterExecutor = (
 const RUNTIME_EXECUTORS: Readonly<Record<RuntimeExecutorFamily, RuntimeAdapterExecutor>> = {
   // Unreachable, and fail-closed on purpose. Every `local_cli` run is handed
   // to a host daemon by `invokeAdapterUnbounded` before the registry is
-  // consulted; arriving here means no execution port was resolved, and the
-  // server no longer has a vendor CLI of its own to fall back to — that is
-  // the whole point of one execution protocol. Spawning something here would
+  // consulted; arriving here means no execution port was resolved. The
+  // server has no vendor CLI to fall back to. Spawning something here would
   // be the second dispatch path B62 forbids.
   local_cli: (_config, run) =>
     Promise.resolve(
@@ -1926,14 +1925,11 @@ export class RunOrchestrationService {
         throw error;
       }
     }
-    // The server-host CLI branch that lived here — resolving a runtime-tool
-    // version and gating a `cli_profile` credential — is gone with the path it
-    // served: every CLI run is dispatched to a host daemon, which runs the copy
-    // it installed under that copy's own login. The `runtime.use_credential`
-    // gate that still matters is the ModelProvider one above, which is keyed on
-    // `hostKind` and so still covers the built-in host's runs. Credential
-    // profiles and the runtime-tool catalog are retired in the phase that
-    // deletes their modules.
+    // Every CLI run is dispatched to a host daemon, which runs the copy it
+    // installed under that copy's own login. Do not resolve a runtime-tool
+    // version or gate a `cli_profile` credential here. The
+    // `runtime.use_credential` gate is the ModelProvider one above, keyed on
+    // `hostKind`, which covers the built-in host's runs.
     return base;
   }
 

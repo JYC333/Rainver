@@ -5,8 +5,8 @@ export type ThreadTabId = 'evidence' | 'relations' | 'notes' | 'history'
 /**
  * Where a step actually sends the user. `tab` targets stay on this page (the
  * Evidence tab is Inquiry-owned) and `link` leaves for the owning Area. Every
- * kind now has somewhere to go: the two that did not — pause and waiting on
- * monitoring — were states rather than errands and are no longer actions.
+ * kind has somewhere to go. Pause and waiting on monitoring are states, not
+ * actions. Do not offer them here.
  */
 type NextFocusDestination =
   | { kind: 'link'; to: string; cta: string }

@@ -68,8 +68,8 @@ async function configFor() {
 describe("stating the Project's goal in conversation", () => {
   it("supersedes a pending draft when the goal is revised before anyone decided", async () => {
     if (!db.available) return;
-    // "Set my goal to X" … "actually, make it Y". The second call used to hand
-    // back the draft for X: the agent reported success, and Accept published X.
+    // "Set my goal to X" … "actually, make it Y". The second call returns the
+    // draft for Y. Do not hand back the draft for X.
     const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Memory layer" });
     const service = new ProjectDefinitionProposalService(db.pool);
     const firstRun = await seedConversationRun();

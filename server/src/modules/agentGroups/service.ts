@@ -435,9 +435,9 @@ export class AgentGroupRunService {
       //
       // A group with no Room is still a conversation with a person, and gets
       // what belongs to that: the memory writes, and nothing that touches a
-      // Project. Before this it declared no capabilities at all, so whatever
-      // its Agent's standing permissions said, the intersection was empty and
-      // it could call nothing.
+      // Project. Do not leave a group with no Room at an empty allowance:
+      // the intersection with the Agent's standing permissions is then empty
+      // and it can call nothing.
       //
       // Host kind is intentionally absent from this decision. It selects the
       // delivery mechanism for the same Run-scoped tool surface; it is not a

@@ -1146,10 +1146,10 @@ describe("Leaf domain repository behavior", () => {
   });
 
   it("counts only what the viewer can read, in every part of the knowledge summary", async () => {
-    // Three of these four used to be gated by Space membership alone while the
-    // fourth applied the content gate. A count is a weaker leak than a list, but
-    // it is still an answer about content the viewer cannot open — and one
-    // gated count beside three ungated ones is how the gap stayed invisible.
+    // Every part of the knowledge summary applies the content gate, not Space
+    // membership alone. A count is still an answer about content the viewer
+    // cannot open. Do not leave one count gated and the others not: that is
+    // how the gap stays invisible.
     const gated = (sql: string, params: readonly unknown[]) => {
       expect(sql).toContain("so.visibility = 'space_shared'");
       expect(sql).toContain("content_access_grants");

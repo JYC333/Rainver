@@ -302,9 +302,9 @@ export class PgHostThreadRepository {
    * — is the Agent's alone, so it is archived whenever that Agent leaves,
    * which is what keeps what it learned in this Room out of the next one. The
    * shared Conversation **cwd** belongs to every Agent in the Session, so it
-   * follows only when the last one leaves. Before the profile existed the
-   * second condition gated both, and `pending_archive_at` was left null for a
-   * departing Agent while others remained.
+   * follows only when the last one leaves. Do not gate the profile archive on
+   * the last Agent leaving: `pending_archive_at` would stay null while others
+   * remain, and what this Agent learned stays in the Room.
    */
   async closeConversationAgentForRoom(spaceId: string, roomId: string, agentId: string): Promise<
     Array<HostThread & { include_workspace: boolean }>

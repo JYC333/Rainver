@@ -33,7 +33,7 @@ import { ConversationRunControls } from '../conversation/ConversationRunControls
  *
  * Every read is a `loadRunTurn`, so this is what keeps opening a long
  * conversation from fanning out one request per reply. Older replies render
- * as prose, which is what they were before the fold existed.
+ * as prose.
  */
 const HISTORY_TURN_READS = 20
 
@@ -283,9 +283,9 @@ export default function ChatPanel({
     // `awaitingDecision` as well as `inFlight`, because the same stop is
     // reachable two ways: a turn blocked in this session, whose request is
     // still open, and one blocked before a reload, whose is not. The note
-    // above the composer is driven by `awaitingDecision`, so a guard that
-    // only knew about `inFlight` told the person their message was held and
-    // then sent it anyway.
+    // above the composer is driven by `awaitingDecision`. Guard on both: a
+    // guard that only sees `inFlight` tells the person their message is held
+    // and then sends it anyway.
     if ((!message && parts.length === 0) || inFlight.current || awaitingDecision || loadingHistory || loadingBackends || !backend || selectedBackendOption?.usable === false) return
     inFlight.current = true
     setHostError(null)

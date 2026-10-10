@@ -109,12 +109,10 @@ describe("executeRemoteHostCliAdapter", () => {
     registry.registerConnection("host-1", sink);
     // control-center-phase2-plan.md P3 (closure review): every early-return
     // failure path above the ordinary `run_started`/.../`run_failed` event
-    // sequence used to skip `thread_event_sink` entirely, leaving a Run
-    // terminal in the database with zero thread events — the frontend
-    // conversation view's only signal that a run finished. This is one of
-    // four such early returns (all now routed through the same
-    // `remoteFailureWithEvent` helper); asserting it here covers the
-    // mechanism for all four.
+    // sequence writes `thread_event_sink`. A Run that ends with zero thread
+    // events leaves the conversation with no signal that it finished. Do not
+    // skip the sink on an early return. These early returns share
+    // `remoteFailureWithEvent`.
     // ACP runtime replatform P3: codex_cli is remote-eligible now (it speaks
     // ACP, like opencode), so gemini_cli (still implementation_status
     // "planned") is the adapter that exercises this particular early return.

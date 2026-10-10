@@ -11,10 +11,10 @@ import {
  * tagged with `primary_project_id`. Nothing prevents a project from having
  * more notes than the four role-carrying ones, or from having none of them.
  *
- * What identifies the four is `notes.project_role`, not their title (N2). The
- * old binding matched `space_objects.title` against literal English strings,
- * so a rename silently removed a note from the research baseline and the
- * comparison degraded without reporting anything.
+ * What identifies the four is `notes.project_role`, not their title. Do not
+ * match `space_objects.title` against literal English strings: a rename then
+ * removes a note from the research baseline and the comparison degrades
+ * without reporting anything.
  */
 /**
  * The four the research baseline is made of — deliberately *not* every note

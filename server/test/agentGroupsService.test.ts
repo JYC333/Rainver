@@ -603,8 +603,8 @@ describe("AgentGroupRunService", () => {
 
   // ADR 0003 §2. A conversation with no Room is still a conversation with a
   // person, and remembering what they said writes nothing anyone else reads.
-  // Before this the group declared no capabilities at all, so its Agent could
-  // call nothing whatever its own permissions said.
+  // A group with no Room still gets the memory writes. Do not leave its
+  // allowance empty.
   it("gives a group with no Room the memory writes, and nothing that touches a Project", async () => {
     const db = new AgentGroupServiceDb(null);
     const service = new AgentGroupRunService(

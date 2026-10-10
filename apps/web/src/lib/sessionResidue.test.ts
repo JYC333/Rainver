@@ -91,9 +91,8 @@ describe('cross-tab logout', () => {
   })
 
   it('tells the other tabs, and runs the handler when another tab tells this one', async () => {
-    // Signing out in one tab used to leave every other tab holding a rendered
-    // page full of the previous person's content until something made it call
-    // the API.
+    // Signing out in one tab tells the others. Another tab must not keep
+    // rendering the previous person's page until it happens to call the API.
     let told = 0
     const stop = watchCrossTabLogout(() => { told += 1 })
     const other = new BroadcastChannel('rainver:auth')

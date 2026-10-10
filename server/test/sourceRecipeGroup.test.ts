@@ -44,8 +44,7 @@ describe("sourceRecipeCreateFlow", () => {
       { cascade: true },
     );
     // The real schema enforces the connector/provider mapping and the
-    // space/user chain that the hand-maintained schema copy this suite used to
-    // load did not carry.
+    // space/user chain. Do not load a hand-maintained schema copy.
     await seedCustomSourceWorld(db.pool, IDENTITY);
     artifactStorageRoot = await mkdtemp(join(tmpdir(), "source-recipe-create-flow-artifacts-"));
     config = {

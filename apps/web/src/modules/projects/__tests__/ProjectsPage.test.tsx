@@ -59,10 +59,9 @@ async function submitCreate() {
 
 describe('ProjectsPage', () => {
   /**
-   * Creation asks for a name and presets nothing — the Project Template
-   * concept it used to offer had been emptied three times over, and every
-   * job it once held has another home. Mode starts as Research and is
-   * changed from inside the Project.
+   * Creation asks for a name and presets nothing. There is no Project
+   * Template on this form. Mode starts as Research and is changed from
+   * inside the Project.
    */
   it('creates with a name and presets nothing else', async () => {
     render(<MemoryRouter><ProjectsPage /></MemoryRouter>)

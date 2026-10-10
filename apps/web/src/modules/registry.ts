@@ -559,7 +559,8 @@ export function modulesWithEffectivePlugins(
 /**
  * Find the registered module that owns a path (used for route metadata lookups).
  * Navigation tiers live in `src/core/navigation.tsx`; the home/space scope split lives in
- * `routeScopeForPath`. The old "perspective" path classifier has been removed.
+ * `routeScopeForPath`. Path scope is home or space. Do not add a third
+ * "perspective" classifier.
  */
 export function moduleForPath(
   pathname: string,

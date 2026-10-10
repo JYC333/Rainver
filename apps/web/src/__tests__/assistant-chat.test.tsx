@@ -143,9 +143,9 @@ describe('AssistantChatPage conversation backends', () => {
   })
 
   it('does not send while a reloaded turn is still waiting for a decision', async () => {
-    // The note above the composer says the message is held. Before this, the
-    // guard behind it only knew about a turn blocked in *this* session, so on
-    // a reload the note appeared and the send went out anyway.
+    // The note above the composer says the message is held. The guard covers
+    // a turn blocked before this session too. A reload must not show the note
+    // and then send.
     messagesMock.mockResolvedValue([{
       id: 'm2', role: 'assistant', content: 'I need your approval to continue.',
       metadata_json: null, run_id: 'run-paused',
@@ -483,8 +483,7 @@ describe('AssistantChatPage conversation backends', () => {
     // that failed is the one where they matter most.
     expect(await screen.findByText('Upstream refused.')).toBeInTheDocument()
     expect(screen.getByText('write_file')).toBeInTheDocument()
-    // Still marked as a failure. The badge used to live only on the bubble
-    // that had no turn, so keeping the turn quietly took it away.
+    // Still marked as a failure. The badge stays when the turn is kept.
     expect(screen.getByText(/could not complete/i)).toBeInTheDocument()
   })
 

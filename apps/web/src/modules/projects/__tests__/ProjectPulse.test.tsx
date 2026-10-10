@@ -214,9 +214,8 @@ describe('Project Pulse', () => {
   })
 
   it('shows how far along a stage that counts nothing is', async () => {
-    // Synthesis has no item counts of its own, so the row used to be a
-    // sentence, a spinner and a bar — no number anywhere. Where it is in the
-    // pipeline, and how far, is available at every stage.
+    // Synthesis has no item counts of its own. The row still says where it is
+    // in the pipeline and how far.
     renderPulse({
       ...overview,
       in_progress: [{

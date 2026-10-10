@@ -196,8 +196,8 @@ describe('Project Files & Code Area', () => {
     expect(projectFoldersApi.list).toHaveBeenCalledWith('project-1', { limit: '200' })
   })
 
-  /** The empty state used to link back to the Project Overview, which owned
-   *  Folder creation — the Area that uses Folders could not create one. */
+  /** The empty state creates a Folder here. Do not send the user to the
+   *  Project Overview to create one. */
   it('creates a Folder in place instead of sending the user back to the Overview', async () => {
     vi.mocked(projectFoldersApi.list).mockResolvedValue({
       items: [], total: 0, limit: 200, offset: 0,

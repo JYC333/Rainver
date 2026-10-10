@@ -571,9 +571,9 @@ describe('GraphView', () => {
   })
 
   it('shows the layout the projection actually uses until the person picks one', () => {
-    // A global view comes back clustered; the toolbar used to say Force, and
-    // choosing Force then changed nothing because the control's value had
-    // not changed.
+    // A global view comes back clustered, and the toolbar says that layout.
+    // Do not label it Force while the value is still the clustered one:
+    // choosing Force then changes nothing.
     function Harness() {
       const [viewState, setViewState] = useState(() => normalizeGraphViewState())
       return (

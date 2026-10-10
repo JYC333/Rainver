@@ -120,9 +120,9 @@ describe('Project execution Areas', () => {
     for (const gone of ['Explore', 'Decide & learn', 'Digest', 'Raw material', 'Experiments', 'Knowledge review', 'Learning', 'Operations']) {
       expect(screen.queryByText(gone)).not.toBeInTheDocument()
     }
-    // Six Areas, flat. What used to be thirteen entries in four groups is
-    // three tabs of Sources, two views of Inquiry, a link to the Room, and
-    // two Areas retired to the Space; every old route still resolves.
+    // Six Areas, flat. Sources has three tabs, Inquiry has two views, the Room
+    // is a link, and Learning and Operations are Space-level. Every previous
+    // route still resolves.
     const destinations = [
       ['Pulse', ''],
       ['Board', '/board'],
@@ -143,7 +143,7 @@ describe('Project execution Areas', () => {
     expect(screen.getByText('Board content')).toBeInTheDocument()
     // The shell names the Project and the way into its Room, and nothing about
     // how it advances: Mode changes only the Loop's wording and lives in
-    // Settings. It used to also badge the Template it was created from.
+    // Settings. The header does not badge a Template.
     expect(screen.queryByText(/mode$/)).toBeNull()
     expect(screen.queryByText(/template/i)).toBeNull()
     // No readiness checklist in the shell: it listed configuration state as

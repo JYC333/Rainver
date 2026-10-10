@@ -1,13 +1,8 @@
 /**
- * ADR 0016 D7 / execution-topology-and-project-control-plane-plan.md P0.4:
- * the ACP permission decision, extracted from the protocol controller into a
- * named, inspectable seam. The decision itself is unchanged from what
- * `AcpController.approvePermissionRequest` did before this extraction — find
- * an `allow_once` option, fall back to `allow_always`, otherwise cancel — but
- * it is no longer an implicit side effect of receiving a message: it is a
- * value callers can log, and it states its own justification
- * (`preauthorized_by`) instead of leaving it to be inferred by the absence
- * of any recorded prompt.
+ * The ACP permission decision: find an `allow_once` option, fall back to
+ * `allow_always`, otherwise cancel. It is a value callers can log, and it
+ * states its own justification (`preauthorized_by`). Do not leave it as an
+ * implicit side effect of receiving a message.
  *
  * The one implementation today always pre-authorizes, because every current
  * dispatch path (server-host sandboxed Run, remote trusted-host Run) is

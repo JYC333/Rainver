@@ -162,7 +162,7 @@ export class DecisionCaseService {
       params.push(status);
       clause = " AND c.status = $3";
     }
-    // Project membership is necessary but not sufficient now that a Case is an
+    // Project membership is necessary but not sufficient. A Case is an
     // ontology object: the root's visibility decides who sees it, and a
     // `visibility` column nothing enforces is worse than none.
     params.push(identity.userId);

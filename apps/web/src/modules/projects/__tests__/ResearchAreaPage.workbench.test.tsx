@@ -431,11 +431,8 @@ function mockResearchProject(overrides: Partial<Awaited<ReturnType<typeof projec
 }
 
 /**
- * Project Research is an Area, not an Overview section.
- *
- * Every case here used to render the Project Overview, which owned the
- * workbench, its state, its polling, and its setup dialog while `/research`
- * existed as a separate route for the same domain.
+ * Project Research is an Area, not an Overview section. These cases render
+ * the Research route. Do not mount the workbench on the Project Overview.
  */
 describe('Research Area workbench', () => {
   it('renders the workbench independently of creation-time Template provenance', async () => {

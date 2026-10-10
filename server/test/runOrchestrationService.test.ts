@@ -470,14 +470,10 @@ class FakeRuntimeContextGateway {
 }
 
 /**
- * A CLI run's adapter seams, now that every CLI run is dispatched to a host
- * daemon rather than spawned here.
- *
- * The tests that used this used to inject a credential broker and a runtime
- * tool registry too — both server-host concerns the daemon path has no
- * equivalent for: a copy's login lives with the copy, and the daemon launches
- * the copy it installed. What is left is the one thing that still matters to
- * these tests, the command's result, plus a built-in host to dispatch to.
+ * A CLI run's adapter seams. Every CLI run is dispatched to a host daemon.
+ * A copy's login lives with the copy. Do not inject a server-side credential
+ * broker or a runtime-tool registry. What these tests still check is the
+ * command's result, plus a built-in host to dispatch to.
  */
 /**
  * A Location on the instance's own host: the realistic shape for a CLI run
@@ -1138,9 +1134,9 @@ describe("RunOrchestrationService", () => {
       space_id: "space-1",
       worker_id: "worker-1",
       command_source: "job",
-      // A path on *this* machine, which the run will never see. It used to
-      // reach `prepareRunExchange`, whose port throws for a daemon run — so a
-      // caller supplying one failed the whole run at preparation.
+      // A path on *this* machine, which the run will never see. Do not send it
+      // through Run Exchange: that port throws for a daemon run and fails
+      // preparation.
       sandbox_cwd: "/tmp",
     });
 
@@ -1179,10 +1175,9 @@ describe("RunOrchestrationService", () => {
       command_source: "job",
     });
 
-    // The server used to check out a worktree and stage a context directory for
-    // the CLI it was about to spawn. It spawns none: the workspace belongs to
-    // the daemon, and on the built-in host it is wrapped in a namespace the
-    // daemon builds.
+    // The workspace belongs to the daemon. On the built-in host it is wrapped
+    // in a namespace the server does not check out. Do not check out a
+    // worktree or stage a context directory here.
     expect(workspaceManager.calls).toEqual([]);
     expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
   });
@@ -1792,12 +1787,9 @@ describe("RunOrchestrationService", () => {
       command_source: "job",
     });
 
-    // Escalating to a level the server never prepares is what this used to do:
-    // `one_shot_docker` for a critical run, provisioned here. Isolation is the
-    // daemon's now, from the dispatch's `isolation` policy, so the level the
-    // run was created at stands and the server provisions nothing.
-    // The server provisions nothing for a daemon run — the workspace is the
-    // daemon's, and on the built-in host the namespace is built there.
+    // Isolation comes from the dispatch's `isolation` policy. The level the
+    // run was created at stands. The server provisions nothing for a daemon
+    // run. Do not escalate `one_shot_docker` here.
     expect(workspaceManager.calls).toEqual([]);
     // But risk still decides the level, and the level still travels: skipping
     // the resolution for daemon runs left every CLI run at the creation-time
@@ -2086,9 +2078,8 @@ describe("RunOrchestrationService", () => {
     });
 
     // A run on the copy's own subscription is metered nowhere else — the
-    // provider proxy sees nothing, because there is no provider. It used to be
-    // gated on a brokered credential profile id, which no run has had since
-    // credentials moved to the host, so every such run went unrecorded.
+    // provider proxy sees nothing, because there is no provider. Meter it
+    // here. Do not gate the observation on a brokered credential profile id.
     expect(usageObservations).toHaveLength(1);
     expect(usageObservations[0]).toMatchObject({
       execution_channel: "local_cli",
@@ -2295,8 +2286,8 @@ describe("RunOrchestrationService", () => {
 
 // A managed run's prompt can be an entire rendered batch (Source screening
 // sends sixteen items at once), while `retrieval_intent` is only the turn's
-// retrieval query and is bounded by the protocol. An unbounded prompt used to
-// fail envelope validation and fail the whole run with a Zod error.
+// retrieval query and is bounded by the protocol. A prompt that does not fit
+// is truncated. Do not fail the whole run with a Zod error.
 describe("retrievalIntentFor", () => {
   it("passes short prompts through untouched", async () => {
     expect(await retrievalIntentFor("  compare memory architectures  ")).toBe("compare memory architectures");

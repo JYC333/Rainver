@@ -137,8 +137,8 @@ describe("Project Kernel (real Postgres)", () => {
     )).resolves.toMatchObject({ rows: [{ count: "0" }] });
   });
 
-  /** Creation binds no Sources. The Project Template that used to do so is
-   *  gone, and a Space's Sources are bound from the Project's Sources Area. */
+  /** Creation binds no Sources. A Space's Sources are bound from the
+   *  Project's Sources Area. */
   it("binds no Project Source at creation", async () => {
     if (!db.available) return;
     const repo = new PgProjectRepository(db.pool);

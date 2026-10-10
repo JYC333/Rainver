@@ -260,10 +260,10 @@ describe('HostsPanel', () => {
     expect(screen.queryByText('Model backend')).toBeNull()
   })
 
-  // The built-in host used to be described as having no controls of its own.
-  // It is a daemon in strict mode now: it carries the same managed copies and
-  // logins a paired host does, and every Run on it is isolated in its own
-  // namespace — which is what makes it safe for a Space to share.
+  // The built-in host is a daemon in strict mode. It carries the same managed
+  // copies and logins a paired host does, and every Run on it is isolated in
+  // its own namespace, which is what makes it safe for a Space to share.
+  // Do not describe it as having no controls of its own.
   it('describes the built-in host as isolated, and names the capacity it runs at', async () => {
     render(<HostsPanel />)
     expect(await screen.findByText(/every Run is isolated in its own namespace/)).toBeInTheDocument()

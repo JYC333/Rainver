@@ -15,14 +15,7 @@ import {
 } from "../src/modules/sources/customSources/customSourceMaterializer.js";
 
 // Real-PostgreSQL integration tests for CustomSourceMaterializationService.
-// Exercises the actual INSERT statements against the real migrated schema
-// (CHECK constraints in particular) so constraint mismatches — e.g. an
-// artifacts.trust_level value that is valid for source_snapshots but not
-// artifacts — surface here instead of in prod.
-//
-// It used to load a hand-maintained SQL copy of the schema, which defeated the
-// entire point: the copy drifted from the real shape and the suite could no
-// longer fail when code and production disagreed.
+// Exercises the actual INSERT statements against the real migrated schema.
 //
 // Skips gracefully when Docker is unavailable so `pnpm test` runs everywhere.
 

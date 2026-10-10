@@ -113,9 +113,8 @@ describe('Continuing from an imported session', () => {
     } as never)
     renderView()
 
-    // The button used to be withheld for a private session, because the only
-    // destination was the Project's channel. The destination now keeps the
-    // boundary by construction, so nothing has to be refused.
+    // A private session continues in a personal Room. The destination keeps
+    // the boundary. Do not withhold the button.
     await user.click(await screen.findByRole('button', { name: /Continue privately/ }))
     await waitFor(() => expect(roomsApi.create).toHaveBeenCalledWith({
       project_id: PROJECT, title: 'Just me', personal: true,
@@ -128,9 +127,8 @@ describe('Continuing from an imported session', () => {
   })
   // Visibility has three values and two access levels, and only one
   // combination means "everyone in the mainline can already read all of it".
-  // The other two used to route to the mainline, where the server refuses the
-  // attach as an unconfirmed disclosure — and the dialog for that is Phase 3,
-  // so the refusal would have surfaced as a toast that discards the message.
+  // The other two do not attach to the mainline. The server refuses that
+  // attach as an unconfirmed disclosure.
   it.each([
     ['selected_users', 'full'],
     ['space_shared', 'summary'],

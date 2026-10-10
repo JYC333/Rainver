@@ -362,8 +362,8 @@ describe('Rooms page', () => {
     vi.mocked(spacesApi.members).mockResolvedValue([
       { user_id: 'user-1', display_name: 'Owner', email: 'owner@example.test' },
       { user_id: 'user-2', display_name: 'Member', email: 'member@example.test' },
-      // In the Space, not on this Project — what the old candidate source
-      // would have offered and the server would have refused.
+      // In the Space, not on this Project. Do not offer them: the server
+      // refuses a candidate who is not on the Project.
       { user_id: 'user-9', display_name: 'Outsider', email: 'outsider@example.test' },
     ] as Awaited<ReturnType<typeof spacesApi.members>>)
     vi.mocked(runsApi.streamTurn).mockResolvedValue(undefined)
@@ -842,11 +842,8 @@ describe('Rooms page', () => {
   })
 
   it('a poll delivers a newer reply without pulling back a reader scrolled up', async () => {
-    // What used to be waited for here was the conversation's five-second poll
-    // firing on real time — five seconds of sleep the hygiene test cannot see,
-    // dressed as a click on the page's Refresh button, which reloads the
-    // catalog and the Room and never the messages. The poll is the subject,
-    // so the clock is faked and advanced past it.
+    // The subject is the conversation poll, not a Refresh click and not a
+    // five-second real sleep. The clock is faked and advanced past it.
     let resolveMessages!: (value: Awaited<ReturnType<typeof roomsApi.messages>>) => void
     vi.mocked(roomsApi.messages).mockImplementationOnce(() =>
       new Promise(resolve => { resolveMessages = resolve }))
@@ -1390,7 +1387,7 @@ describe('Rooms page', () => {
     // Running while the stream is alive — so the only turn on screen is the
     // streamed one, and the read-once effect cannot reach it. It goes
     // terminal once the stream has died, which is what makes recovery
-    // possible and what the stale hold used to prevent.
+    // possible. A stale hold must not keep the turn non-terminal.
     let streamDied = false
     vi.mocked(runsApi.get).mockImplementation(async () => ({
       id: 'run-stranded',
@@ -1591,8 +1588,7 @@ describe('Rooms page', () => {
   })
 
   it('loads older Room history, and a later poll does not refetch terminal Runs', async () => {
-    // Same repair as above: the third `messages` call this test counts is the
-    // poll, not the Refresh button it used to click.
+    // The third `messages` call this test counts is the poll.
     const recent = Array.from({ length: 50 }, (_, index) => ({
       id: `message-${index}`, session_id: 'session-1', space_id: 'space-1', user_id: 'user-1',
       sender_agent_id: null, role: 'user' as const, content: `Recent ${index}`,
@@ -2825,9 +2821,8 @@ describe('Rooms page', () => {
     renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('Project initialized')).toBeInTheDocument()
-    // The panel shows the same attention list Pulse and the shell show, and
-    // nothing invented for it: the per-Mode "next actions" it used to carry
-    // all pointed at Areas the sidebar lists.
+    // The panel shows the same attention list Pulse and the shell show.
+    // Do not add a per-Mode "next actions" list: those Areas are in the sidebar.
     expect(screen.queryByText('Next')).toBeNull()
     const attentionItem = await screen.findByRole('link', { name: 'Candidate awaiting review' })
     expect(attentionItem).toHaveAttribute('href', expect.stringContaining('candidate=candidate-1'))

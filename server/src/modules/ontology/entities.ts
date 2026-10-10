@@ -1,14 +1,10 @@
 /**
  * The entity registry and its interface declarations.
  *
- * ADR 0012 decision 6. Before this, participation in a cross-cutting mechanism
- * was recorded in three unrelated places at incompatible granularity:
- * `CONTENT_RESOURCE_DEFINITIONS` (14 entries, table-level, with a `publishable`
- * flag), the `retrieval_object_type` enum (9 entries, subtype-level), and
- * `GraphProjectionRepository`'s hardcoded assumption that only
- * `space_objects` / `object_relations` exist. Nothing could cross-validate them,
- * because they were not even describing the same units, so every new domain had
- * to be added to each by hand with no mechanism to catch an omission.
+ * ADR 0012 decision 6. One entity registry. Do not record participation in
+ * separate lists at different granularity: a content-resource table, a
+ * retrieval enum, and a hardcoded graph assumption cannot cross-validate,
+ * and a new domain has to be added to each by hand.
  *
  * The subject here is an **Entity**, not only an ontology object. `run`,
  * `proposal`, `artifact`, `task`, and `memory_entry` are entities too — which is

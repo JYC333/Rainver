@@ -52,8 +52,7 @@ const MARGINALIA_DESTINATIONS: ReadonlySet<CaptureDestination> = new Set([
  *
  * Every destination writes an `activity_record` first (B9, B12), so a capture
  * has one identity regardless of where it lands. Marginalia additionally
- * projects into a note inside the same transaction, so the felt latency of
- * capturing inside a Project is what it was before the two entries merged.
+ * projects into a note inside the same transaction.
  */
 export class CaptureService {
   constructor(private readonly pool: Pool) {}

@@ -228,9 +228,8 @@ function contentScopeSql(
   if (definition.projectColumn) {
     const projectExpr = `${alias}.${definition.projectColumn}`;
     // The share term is appended only when the resource declares one. An
-    // undeclared resource must produce the predicate it produced before this
-    // existed — not `OR false`, which would be equivalent but would put a new
-    // branch in every plan for every content read in the system.
+    // undeclared resource has no share term. Do not append `OR false`: that
+    // puts a new branch in every plan for every content read.
     const sharedSql = definition.projectShare
       ? ` OR ${projectShareReadAccessSql(definition.projectShare, alias, userExpr)}`
       : "";

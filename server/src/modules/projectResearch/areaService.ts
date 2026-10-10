@@ -184,10 +184,9 @@ export class ProjectResearchAreaService {
     return { ...corpus, items: items.map((row) => ({ ...row, evidence_card: bySource.get(String(row.source_item_id)) ?? null })) };
   }
 
-  // Per-note editing, revision history, and rollback are no longer
-  // area-specific: the frontend calls the generic
-  // /api/v1/knowledge/notes/:noteId (+/revisions, +/rollback) endpoints
-  // directly, since a project's notes are ordinary Notes.
+  // Per-note editing, revision history, and rollback are the generic
+  // knowledge note endpoints: /api/v1/knowledge/notes/:noteId
+  // (+/revisions, +/rollback). A project's notes are ordinary Notes.
 
   async upsertEvidenceCard(identity: SpaceUserIdentity, projectId: string, sourceItemId: string, body: Record<string, unknown>) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);

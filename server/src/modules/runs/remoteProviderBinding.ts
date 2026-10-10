@@ -223,8 +223,8 @@ export function buildUnboundRuntimeProfile(
  *   redirects `HOME`: `XDG_DATA_HOME` is not on B67's allowlist so there is
  *   nothing to point. Here there is. **This is the one state root not verified
  *   on a real host** — if OpenCode ignores `XDG_DATA_HOME`, its state stays
- *   machine-global, which is no worse than before this phase but is not the
- *   isolation this claims. Recorded in the deferred register.
+ *   machine-global. That is not the isolation this claims. Recorded in the
+ *   deferred register.
  */
 function profileStateEnv(runtimeKey: string): Record<string, string> {
   if (runtimeKey === "claude_code") return { CLAUDE_CONFIG_DIR: ".claude" };

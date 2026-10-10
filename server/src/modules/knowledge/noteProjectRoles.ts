@@ -1,18 +1,13 @@
 import { HttpError } from "../routeUtils/common.js";
 
 /**
- * The system-reserved roles a Note can play in its Project's notebook (N2).
+ * The system-reserved roles a Note can play in its Project's notebook.
  *
- * Before this, the four notes that make up a Project's research baseline were
- * resolved by matching `space_objects.title` against literal English strings.
- * Renaming a note therefore removed it from the baseline silently — the
- * comparison kept running against a null "current understanding" and reported
- * nothing. The role is the binding instead: it survives a rename, a move
- * between collections, and a change of title language.
- *
- * The vocabulary lives here rather than in a database CHECK (B12F, matching
- * persisted source-reference kinds and `cards.source_type`). `notes` carries
- * only a format constraint; this module is what makes the demotion safe. Users
+ * The binding is `notes.project_role`, not `space_objects.title`. A rename,
+ * a move between collections, or a title in another language must not drop
+ * the note from the research baseline. The vocabulary lives here rather than
+ * in a database CHECK (B12F, matching persisted source-reference kinds and
+ * `cards.source_type`). `notes` carries only a format constraint. Users
  * assign and clear roles; they cannot invent them.
  */
 

@@ -297,11 +297,9 @@ async function insertNote(
   const at = input.at ?? new Date().toISOString();
   const actorUserId = actingUserId(input.actor);
   const projectId = input.primaryProjectId ?? null;
-  // The rule the Project role made load-bearing: binding a note to a Project
-  // is a write to that Project. Before this, any member of the Space could
-  // file a note under any Project and then claim its baseline role, which
-  // displaces the note the Project's research monitoring reads. A `system`
-  // actor has no user to check and is trusted by construction.
+  // Binding a note to a Project is a write to that Project. A Space member
+  // who is not a Project writer must not file a note there and claim its
+  // baseline role. A `system` actor has no user to check and is trusted.
   if (projectId && actorUserId) {
     await assertProjectWriter(db, input.spaceId, projectId, actorUserId);
   }

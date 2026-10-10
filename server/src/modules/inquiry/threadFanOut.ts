@@ -58,11 +58,9 @@ export function threadCallIdempotencyKey(runId: string, toolCallId: string | nul
 /**
  * An active Thread in this Project already asking the same thing.
  *
- * The retired proposal path coalesced on the statement under an advisory lock,
- * for the case a re-planned or re-sampled decomposition actually produces:
- * the same question worded identically, under a fresh tool-call id. Without
- * it that now opens a *durable* duplicate rather than a duplicate pending
- * proposal — strictly worse, because the person has to archive it.
+ * The same question worded identically, under a fresh tool-call id, is one
+ * Thread. Do not open a second durable Thread for it: the person then has to
+ * archive the duplicate.
  *
  * Statement equality after trimming, not similarity: coalescing two questions
  * that merely resemble each other would silently drop one the person asked

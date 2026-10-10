@@ -67,7 +67,7 @@ beforeAll(async () => {
 /**
  * Only the tests that assert a from-scratch apply need an empty schema;
  * dropping and re-creating ~300 tables is slow enough under parallel load
- * that doing it before every test used to dominate this file's run time. The
+ * that doing it before every test dominates this file's run time. The
  * other tests rely on `migrate` being idempotent and clear their rows with
  * `resetTables` instead.
  */
@@ -140,9 +140,7 @@ describe("server runner applies the migration chain", () => {
   });
 
   it("carries the execution topology the Folder/Location split needs", () => {
-    // What the retired upgrade file used to establish, now asserted against
-    // the baseline itself: a Location is the physical checkout, and a Folder
-    // no longer names a host or a path.
+    // A Location is the physical checkout. A Folder does not name a host or a path.
     const baseline = baselineSql();
     expect(baseline).toContain("CREATE TABLE public.workspace_locations");
     expect(baseline).toContain("CREATE TABLE public.machines");
@@ -439,11 +437,10 @@ describe("server runner applies the migration chain", () => {
                  'active', 'space_shared', 'full', 'normal', 1, 0.5, 1, 0, now(), now())`,
     )).rejects.toMatchObject({ code: "23514" });
 
-    // `object_type` used to carry a closed-set CHECK. ADR 0012 moved definition
-    // authority into the registerable entity registry and demoted the column to
-    // a format constraint (B12F), because a database CHECK cannot express that
-    // a type needs a registered implementation — and every new domain would
-    // otherwise need a migration to declare itself.
+    // `object_type` is a format constraint, not a closed-set CHECK. ADR 0012
+    // puts definition authority in the entity registry (B12F). A database
+    // CHECK cannot express that a type needs a registered implementation, and
+    // a new domain would otherwise need a migration to declare itself.
     await expect(db.pool.query(
       `INSERT INTO space_objects (id, space_id, object_type, title, visibility, access_level, owner_user_id, created_at, updated_at) VALUES (
          'object-bad', 'space-1', 'Not A Type', 'Bad format',

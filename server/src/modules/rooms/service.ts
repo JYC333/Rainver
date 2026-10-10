@@ -101,9 +101,8 @@ export class RoomService {
     );
     return withDbTransaction(this.pool, async (client) => {
       // The Project lock decides the mainline and personal-Room uniqueness
-      // below. The Space row is no longer locked here: that lock existed only
-      // to serialize Assistant provisioning, which has moved to the first
-      // message.
+      // below. Do not lock the Space row here. Assistant provisioning runs on
+      // the first message.
       await lockActiveProjectForMutation(client, identity.spaceId, input.project_id);
       await assertProjectWriter(
         client,
@@ -338,11 +337,11 @@ export class RoomService {
    * Every conversation in the Project the viewer can see, as one list.
    *
    * Rooms are where conversations live; a Project is where they are read.
-   * Listing them Room by Room meant that to know what had been discussed you
-   * opened each Room in turn. The mainline's conversations lead, then the
-   * rest by last activity. Opening this enrols the viewer in the mainline the
-   * same way opening the Project does, so a member who was never invited to a
-   * topic Room still sees the Project's conversation.
+   * One list. The mainline's conversations lead, then the rest by last
+   * activity. Do not make the reader open each Room to see what was discussed.
+   * Opening this enrols the viewer in the mainline the same way opening the
+   * Project does, so a member who was never invited to a topic Room still
+   * sees the Project's conversation.
    */
   async listProjectConversations(
     identity: RoomIdentity,
