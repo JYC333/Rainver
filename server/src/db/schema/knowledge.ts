@@ -376,10 +376,10 @@ export const spaceObjects = pgTable("space_objects", {
 	// B12E/B12F: subtype membership is validated by the entity registry at the
 	// only root writer. A closed list here would make the root know every subtype.
 	check("ck_space_objects_object_type_format", sql`(object_type)::text ~ '^[a-z][a-z0-9_]{0,31}$'::text`),
-	// The former `ck_space_objects_status` / `ck_space_objects_status_by_type`
-	// pair branched on `object_type`, so every new domain had to edit a
-	// root-table constraint. B12E forbids that: the root is ignorant of its
-	// subtypes. Each extension table now carries its own status constraint.
+	// Do not put a status constraint on the root that branches on `object_type`.
+	// Every new domain would have to edit a root-table constraint. B12E forbids
+	// that: the root is ignorant of its subtypes. Each extension table carries
+	// its own status constraint.
 	check("ck_space_objects_visibility", sql`visibility IN ('private', 'space_shared', 'selected_users')`),
 	check("ck_space_objects_access_level", sql`access_level IN ('full', 'summary')`),
 	check("ck_space_objects_private_owner", sql`visibility = 'space_shared' OR owner_user_id IS NOT NULL`),

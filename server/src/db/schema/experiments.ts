@@ -16,9 +16,9 @@ import { inquiryThreads } from "./inquiry.js";
 // conclusion, convertible to an Inquiry Evidence Signal).
 
 export const experimentDefinitions = pgTable("experiment_definitions", {
-	// Ontology object (ADR 0012 / ADR 0011 decision 1). The former `name` is the
-	// root's `title`; identity, visibility, ownership, provenance, and timestamps
-	// live on `space_objects`.
+	// Ontology object (ADR 0012 / ADR 0011 decision 1). The title is the root's
+	// `title`. Identity, visibility, ownership, provenance, and timestamps live
+	// on `space_objects`.
 	objectId: varchar("object_id", { length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	projectId: varchar("project_id", { length: 36 }).notNull(),

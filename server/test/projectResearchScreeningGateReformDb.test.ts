@@ -251,7 +251,7 @@ describe("screening gate reform (real Postgres)", () => {
 
     await coordinator.createGate(operationRow(), state());
     // The next tick re-enters createGate while the checkpoint is pending; the
-    // operation row now carries the paused stage_state.
+    // operation row carries the paused stage_state.
     const pausedRow: ScreeningOperationRow = {
       ...operationRow(),
       progress_json: { workflow_id: WORKFLOW, run_kind: "baseline", stage_state: "waiting_review" },

@@ -64,10 +64,9 @@ Proposal. Read access is allowed. The forbidden write suffixes are declared in
 
 Files & Code routes live inside the registered `projectFolders` module and
 provide bounded tree, file, git status, and git diff reads plus explicit human
-file create/edit/rollback controls. The former Workspace
-Console's runtime-status/session create/detail/run/stop surface was a
-never-implemented stub and has been removed entirely — do not describe it as
-a current local CLI execution path.
+file create/edit/rollback controls. There is no Workspace Console
+runtime-status or session surface. Do not describe one as a local CLI
+execution path.
 
 **RuntimeAdapterSpec owns local CLI command semantics.**
 

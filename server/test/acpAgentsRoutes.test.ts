@@ -166,7 +166,7 @@ describe("ACP registry agents", () => {
     expect(enabled.statusCode).toBe(201);
     expect(enabled.json()).toMatchObject({ id: "goose", runtime_key: "acp_goose" });
 
-    // The adapter catalog now carries it, shaped as low trust and remote-only.
+    // The adapter catalog includes it, shaped as low trust and remote-only.
     const spec = getRuntimeAdapterSpec("acp_goose");
     expect(spec).toMatchObject({
       display_name: "goose",

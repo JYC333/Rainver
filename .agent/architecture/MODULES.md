@@ -188,11 +188,7 @@ These routes are not `ServerModule` entries. They are mounted by `PluginHost` af
   run-finalized hooks/finalization services.
 - Proposal apply dispatch goes through `ProposalApplierRegistry`; no hardcoded proposal-type
   apply chain remains.
-- Interactive agent-session execution over a Project Folder was never
-  implemented and has been removed; current Files & Code routes are tree/file/
-  git status/git diff plus draft-backed Save to Folder and restore-as-draft
-  surfaces under `projectFolders`;
-  remote Locations round-trip through `hosts` `connectionRegistry` to the
+- Files & Code routes are tree/file/git status/git diff plus draft-backed Save to Folder and restore-as-draft surfaces under `projectFolders`. There is no interactive agent-session execution over a Project Folder. Remote Locations round-trip through `hosts` `connectionRegistry` to the
   owning daemon's `@rainver/folder-read` package. Sent current-file state is
   owned by `sessions` as an immutable message resource and read through the
   `input_resource` System Actions.

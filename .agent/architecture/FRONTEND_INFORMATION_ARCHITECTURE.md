@@ -210,10 +210,7 @@ Two stable tiers plus per-scene context (`src/core/navigation.tsx`, `src/compone
 - **Right Inspector** — scene/object-specific and owned by individual pages, never an
   app-level feature menu.
 
-The old single mixed sidebar, the "perspective" (personal-as-Space) model, the
-PersonalView-as-Space switcher entry, the module-gallery Home, the imperative
-`setActiveSpace`/`activeOperationalSpace*` context API, and `location.state` navigation handoffs
-(now `?open=` / `?draft=` URL params) have been removed. All navigation is URL-based.
+Navigation is URL-based (`?open=` / `?draft=`). There is no mixed sidebar, no personal-as-Space switcher, and no `location.state` handoff.
 
 ---
 

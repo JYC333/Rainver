@@ -1049,11 +1049,9 @@ interface ManagedConversationRestoreTarget {
 /**
  * The closed thread a re-added Agent would pick its host state back up from.
  *
- * Deliberately **not** gated on an archived workspace being available. That
- * gate was right when the workspace was the only thing archived; now the
- * common case — one Agent leaves a Conversation while others stay — archives
- * only the Agent's profile, and requiring a workspace archive would make every
- * one of those permanently unrestorable and swept after 30 days.
+ * Not gated on an archived workspace. One Agent leaving a Conversation while
+ * others stay archives only the Agent's profile. Requiring a workspace
+ * archive would make every one of those unrestorable, then swept after 30 days.
  */
 export async function findManagedWorkspaceRestoreTarget(
   client: PoolClient,

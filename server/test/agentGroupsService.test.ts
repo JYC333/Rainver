@@ -85,10 +85,10 @@ class AgentGroupServiceDb {
         rowCount: this.rootRunId ? 1 : 0,
       };
     }
-    // Before the `room_read_run` arm for the same reason the `FROM runs r` arm
-    // is after it: the timeline's message read now carries the Run predicate,
-    // so its SQL mentions `room_read_run` too and would otherwise be answered
-    // with an `allowed` row instead of a message list.
+    // The timeline's message read carries the Run predicate, so its SQL mentions
+    // `room_read_run` too. Do not answer it with an `allowed` row. This arm
+    // stays ahead of the `room_read_run` arm, and the `FROM runs r` arm stays
+    // after it, for that reason.
     if (sql.includes("FROM agent_run_messages")) {
       return { rows: [], rowCount: 0 };
     }

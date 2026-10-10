@@ -40,9 +40,9 @@ no automatic generation, assessment, or card-generation path.
 #### Project notes surface
 
 `/projects/:projectId/notes` mounts the same `NotesPage`, pinned and hoisted to
-that Project's `system_role = 'project'` collection. The former Research Area
-Notebook tab and its weaker `ProjectNoteCard` editor are removed;
-`NotebookChatPanel` lives beside the shared editor on the Project surface.
+that Project's `system_role = 'project'` collection. There is no separate
+notebook editor. `NotebookChatPanel` lives beside the shared editor on the
+Project surface.
 
 Project membership is by placement in that collection subtree, while governance
 ownership remains the note's single `space_objects.primary_project_id`.

@@ -298,8 +298,8 @@ export async function ensureManagedWorkspace(
   const path = managedWorkspacePath(agentId, container);
   await mkdir(path, { recursive: true, mode: 0o700 });
   // A repository from the first Run, so a managed workspace has the same diff
-  // and the same undo a Location does. Without it ADR 0016 section 11's "undo
-  // is git" was false for the very place an Agent works by default.
+  // and the same undo a Location does. ADR 0016 section 11's undo is git.
+  // Do not leave this workspace as a plain directory.
   await ensureGitRepository(path);
   return path;
 }

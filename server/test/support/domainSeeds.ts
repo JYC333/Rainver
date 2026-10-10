@@ -365,7 +365,7 @@ export async function seedRun(
  * The unowned built-in host (machine + host rows).
  *
  * Reports a live heartbeat and a logged-in copy of each CLI, because that is
- * what a running built-in host looks like and every check now asks it the same
+ * what a running built-in host looks like. Every check asks it the same
  * questions it asks a paired machine — it is a daemon in a container that can
  * be stopped, and only *ownership* does not apply to it (ADR 0016 §3). Pass
  * `installations: {}` for a host that is up with nothing installed.

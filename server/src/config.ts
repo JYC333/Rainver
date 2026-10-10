@@ -516,8 +516,7 @@ export function loadConfig(env: RawEnv = process.env): ServerConfig {
   );
   // The built-in execution host's capacity. bubblewrap has no cgroups, so the
   // only levers are this cap and the `sandbox-runner` container's own
-  // `cpus`/`mem_limit`; both are sized per machine, not per Run. Replaces the
-  // never-implemented `MAX_CONCURRENT_DOCKER_RUNS`, whose default it keeps.
+  // `cpus`/`mem_limit`; both are sized per machine, not per Run.
   const builtinHostMaxConcurrentRuns = parseBoundedInt(
     env.BUILTIN_HOST_MAX_CONCURRENT_RUNS,
     3,
