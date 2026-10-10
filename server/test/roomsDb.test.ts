@@ -3720,7 +3720,7 @@ describe("Room workflow (real Postgres)", () => {
       await seedQuota(40, new Date(Date.now() + 3600_000).toISOString());
       await failTurn(opened.run_ids[0]!, "subscription_quota_exhausted", "Claude AI usage limit reached|1790000000");
       await discussions.extend(owner, created.room.id, conversation.id, opened.discussion.id, 1);
-      // The whole closing chain is gone, not just its held head.
+      // The query covers the whole closing chain, not only its held head.
       const closing = await db.pool.query(
         `SELECT run.status FROM runs run
            JOIN agent_run_groups grp ON grp.id = run.run_group_id
