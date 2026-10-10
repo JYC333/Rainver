@@ -46,7 +46,7 @@ import {
  * Conversation-first Source creation (Level 2 main path): plan -> create ->
  * dry-run (recipeDryRunService) -> activate. Planning is deterministic —
  * endpoint content sniffing plus fixed recipe shapes from the primitive
- * catalog; a caller-supplied recipe (e.g. LLM-proposed later) must validate
+ * catalog. A caller-supplied recipe must validate
  * against `SourceRecipeDefinitionSchema` and stay inside the endpoint origin.
  *
  * Activation compares only the policy envelope: a within-envelope recipe
