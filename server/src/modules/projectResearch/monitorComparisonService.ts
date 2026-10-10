@@ -62,9 +62,9 @@ export const COMPARISON_BATCH_SIZE = 6;
  * Why `queue` reports three outcomes rather than returning `null` twice: "no
  * eligible material in this batch" is routine and the coordinator moves on, while
  * "this project has no note in the `understanding` role" means the comparison
- * has no baseline to compare against. Collapsing them is what let the old
- * title-string binding fail in silence — the comparison ran with an empty
- * current understanding and every item looked like a new direction.
+ * has no baseline to compare against. Do not collapse them. The comparison
+ * would run with an empty current understanding and every item would look
+ * like a new direction.
  */
 type MonitorComparisonQueueResult =
   | { readonly outcome: "queued"; readonly runId: string; readonly jobId: string; readonly sourceItemIds: string[] }

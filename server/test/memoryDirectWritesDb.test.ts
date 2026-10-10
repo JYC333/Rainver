@@ -349,8 +349,8 @@ describe("memory.remember / memory.revise, direct (real Postgres)", () => {
     expect(result.modelResult, JSON.stringify(result.modelResult)).toMatchObject({ ok: true, outcome: "proposed" });
     expect(await memoryRows()).toHaveLength(0);
 
-    // The flag restores the old gate for that Agent; it must not quietly
-    // disable memory by producing proposals nobody can accept.
+    // `requires_proposal` sends the write through a proposal. Do not emit a
+    // proposal nobody can accept: that disables memory for the Agent.
     const proposal = await db.pool.query<ApplyProposal>(
       `SELECT id, space_id, proposal_type, title, payload_json, project_folder_id,
               created_by_user_id, created_by_agent_id, created_by_run_id, project_id
