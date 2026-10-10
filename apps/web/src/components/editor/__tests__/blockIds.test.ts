@@ -53,7 +53,7 @@ describe('block ids in the editor', () => {
     editor.destroy()
   })
 
-  it('stamps a block that has none, so a note written before ids acquires them', () => {
+  it('stamps a block that has none, so a note without ids acquires them', () => {
     const editor = editorWith({ type: 'doc', content: [paragraph('older note')] })
     // Nothing has changed the document yet, so the id arrives on the first edit
     // rather than by rewriting what was loaded.
