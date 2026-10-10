@@ -194,7 +194,7 @@ An official optional module may contribute to these extension points:
 |---|---|---|
 | Backend route surface | Implemented | Via `PluginHost` + `ctx.http.pluginGuard()` |
 | Frontend module entry | Implemented | Page source in `plugins/official/<plugin_id>/web/src/`; app adapter in `apps/web/src/plugins/<plugin_id>/`; `official_plugin` source entry in `MODULE_REGISTRY` + overlay |
-| Settings | MVP (opaque JSON in enablement row) | `settings_json` field |
+| Settings | Opaque JSON in the enablement row | `settings_json` field |
 | Job handlers | Implemented | `ctx.jobs.register()`; host wraps handlers with enablement gating |
 | Scheduled tasks | Implemented | `ctx.scheduler.register()`; task code must fan out only to enabled scopes |
 | Proposal types/appliers | Implemented | `ctx.proposals.register()`; host wraps appliers with enablement gating |

@@ -72,12 +72,10 @@ export interface DaemonHelloInfo {
   daemon_version?: string | null;
   capabilities_json?: Record<string, unknown> | null;
   /**
-   * D1: which execution environment this is, distinct from `platform`
+   * Which execution environment this is, distinct from `platform`
    * (Node's `process.platform`, which cannot tell WSL apart from native
-   * Linux — both report `"linux"`). Not yet auto-detected by the daemon
-   * (a real, deliberately deferred gap — see `environmentKindFromPlatform`);
-   * a future daemon version can report it explicitly here without a
-   * protocol change.
+   * Linux — both report `"linux"`). The daemon reports that same mapping.
+   * `environmentKindFromPlatform` is the default when the field is absent.
    */
   environment_kind?: string | null;
   workspace_reports?: WorkspaceLocationHeartbeat[] | null;
@@ -86,7 +84,7 @@ export interface DaemonHelloInfo {
   managed_workspaces?: ManagedWorkspaceHeartbeat[] | null;
 }
 
-/** Safe default when a daemon does not (yet) report `environment_kind` explicitly. */
+/** Default when a daemon does not report `environment_kind`. */
 function environmentKindFromPlatform(platform: string | null): string {
   if (platform === "win32") return "windows_native";
   if (platform === "darwin") return "macos_native";

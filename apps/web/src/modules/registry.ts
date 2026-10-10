@@ -12,7 +12,7 @@ export type PerspectiveType = 'space-scoped' | 'personal' | 'neutral'
  *                  installed/enabled via the official plugin control plane).
  *                  These entries are NOT capabilities. See OFFICIAL_OPTIONAL_MODULES.md.
  * installed      — reserved for future third-party installable plugin packages.
- *                  NOT yet implemented. Do not use in MVP.
+ *                  Not implemented. Do not load third-party plugins from this registry.
  * external       — references a remote tool or external service (reserved).
  *
  * For current core features all entries are built_in.

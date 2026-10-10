@@ -408,7 +408,7 @@ a second logical Run: it records the completed attempt, writes an idempotent
 persisted fallback chain, the next untried eligible profile is selected and
 stamped for that attempt; an explicit profile remains a hard pin.
 
-The deterministic MVP retries classified transient failures plus explicit
+The supervisor retries classified transient failures plus explicit
 semantic rejection, deterministic verification failure, and required Run
 Exchange output validation failure. A successful adapter process with an
 explicit `status=rejected` or failed/error acceptance check is terminalized as

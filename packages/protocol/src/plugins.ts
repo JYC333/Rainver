@@ -121,7 +121,7 @@ export interface OfficialPluginDescriptor {
   };
   /**
    * Default values for settings_json keys. Stored in the enablement row.
-   * Opaque JSON in MVP; a typed settings schema per plugin is future work.
+   * Opaque JSON. There is no typed settings schema per plugin.
    */
   settings_defaults: Record<string, unknown>;
 }

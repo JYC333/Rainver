@@ -479,7 +479,7 @@ logins by Agents × Rooms. So the login stays where it was:
   Without that, a hard link would pin a profile to an orphaned inode silently
   and forever. A link that *fails* throws rather than leaving the run to
   discover it has no credential — a headless dispatch cannot answer a login
-  prompt. **Not yet verified on a paired host**: whether each runtime refreshes
+  prompt. **Unverified on a paired host**: whether each runtime refreshes
   in place or by temp-file rename, and whether a rotating refresh token would
   invalidate the siblings. See the deferred register;
 - provider-bound runs are unchanged: the profile carries the lease

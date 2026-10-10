@@ -7,10 +7,9 @@ import { spaces } from "./spaces.js";
 import { spaceObjects, extractedEvidence } from "./knowledge.js";
 import { sourceItems } from "./sources.js";
 
-// Relation Core MVP batch 1 (people, organizations, identities, affiliations,
-// notes, source links). Interactions/participants/important-dates and the
-// optional import/merge foundations are deferred to a follow-up batch. See
-// .agent/modules/relations.md for current ownership boundaries.
+// Relation tables in this file: people, organizations, identities, affiliations,
+// notes, source links. Interactions, participants, and important-dates are not
+// in this schema. See .agent/modules/relations.md for ownership.
 
 export const relationPeople = pgTable("relation_people", {
 	objectId: varchar("object_id", { length: 36 }).primaryKey().notNull(),

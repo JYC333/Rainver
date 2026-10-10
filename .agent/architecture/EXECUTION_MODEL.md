@@ -79,7 +79,7 @@ pause evidence; a dispatch that finds no reusable attempt backfills one marked
     allowed monotonic metadata update and never rewrites evaluation evidence.
 
 **RunSupervisorDecision** — an idempotent durable policy decision for a terminal
-attempt. The MVP aggregates `token_usage_events` across the logical Run,
+attempt. It aggregates `token_usage_events` across the logical Run,
 classifies retryable structured error codes, including explicit semantic
 rejection and deterministic acceptance/Run Exchange validation failure,
 enforces the contract attempt/cost caps, and queues either a same-route retry
@@ -852,7 +852,7 @@ It then evaluates candidate and baseline outputs with
 `verification_engine.v1`'s output-checking core, stores structured scores,
 check evidence, and regression blockers in
 `evolvable_asset_evaluation_runs`, and updates the candidate's latest
-evaluation summary. This MVP does not execute a candidate from `input_json`
+evaluation summary. The job does not execute a candidate from `input_json`
 inside the evaluation job; the candidate run must already have been produced
 by the normal run authority. The evaluation job is read-only and has no shell,
 network, or write-capable connector authority. Unsupported checks produce an

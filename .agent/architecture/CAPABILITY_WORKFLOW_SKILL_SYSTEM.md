@@ -220,7 +220,7 @@ data, normalized skill data, and profile configuration into runtime target
 content. This is
 transitional adapter glue. Its target input is the approved package snapshot
 plus binding/policy metadata, without a canonical content representation. The
-MVP renderers are pure functions that produce deterministic:
+The renderers are pure functions that produce deterministic:
 
 - Claude Code generated skill directory suggestions with `SKILL.md`
 - Codex generated skill directory suggestions with `SKILL.md` and optional
@@ -326,8 +326,8 @@ one.
   without enablement proof fall back to registry approval.
 - Safe Invocation Snapshots record the selected binding/version source ref and
   delivered content hash, not raw rendered instructions.
-- Unsupported source hosts fail closed in the MVP.
-- Private-network URL import is rejected in the MVP.
+- Unsupported source hosts fail closed.
+- Private-network URL import is rejected.
 
 ## Proposal And Policy Integration
 

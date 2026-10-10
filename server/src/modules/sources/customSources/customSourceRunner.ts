@@ -11,23 +11,22 @@ import type {
 import { redactSecretPatterns } from "../../runs/evidenceRedaction.js";
 
 /**
- * Runner MVP for Source Custom Source handlers. See
+ * Runs Source Custom Source handlers. See
  * `.agent/architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md#runner-expectations`.
  *
- * Honesty boundary (matches B13 / the audit's stated security gaps): this
- * executes the handler as a separate OS process with a temp sandbox
- * directory, a minimal explicit environment, and wall-clock/output-size
- * limits enforced as effective = min(policy envelope, instance hard limit).
- * Before loading the untrusted handler module, a generated bootstrap script
- * (`sandboxBootstrapScript`) monkey-patches `node:net`/`node:tls`/`node:http`/
- * `node:https`/`node:dgram`, `fetch`, `child_process`, `worker_threads`, and
- * common `fs`/`fs.promises` entrypoints to throw unless the operation stays
- * inside the handler contract. This is defense-in-depth, **not** container,
- * network-namespace, or OS-level filesystem isolation: a native addon, a raw
- * syscall, process internals, or an unpatched API could still reach outside
- * the sandbox at the OS permission level. Do not describe this runner as
- * OS-sandboxed in product docs — that mirrors the existing `one_shot_docker`
- * honesty requirement.
+ * The boundary (B13): this executes the handler as a separate OS process with
+ * a temp sandbox directory, a minimal explicit environment, and
+ * wall-clock/output-size limits enforced as effective = min(policy envelope,
+ * instance hard limit). Before loading the untrusted handler module, a
+ * generated bootstrap script (`sandboxBootstrapScript`) monkey-patches
+ * `node:net`/`node:tls`/`node:http`/`node:https`/`node:dgram`, `fetch`,
+ * `child_process`, `worker_threads`, and common `fs`/`fs.promises` entrypoints
+ * to throw unless the operation stays inside the handler contract. This is
+ * defense-in-depth, **not** container, network-namespace, or OS-level
+ * filesystem isolation: a native addon, a raw syscall, process internals, or
+ * an unpatched API could still reach outside the sandbox at the OS permission
+ * level. Do not describe this runner as OS-sandboxed in product docs — the
+ * same honesty requirement as `one_shot_docker`.
  */
 
 type CustomSourceRunnerBlockReason =

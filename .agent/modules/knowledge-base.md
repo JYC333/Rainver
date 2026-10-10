@@ -1,7 +1,7 @@
 # Module: Knowledge Base
 
 ## Status
-**BACKEND + FRONTEND MVP IMPLEMENTED** — Knowledge is the first-level product module.
+Knowledge is a first-level product module.
 Backend has the canonical schema,
 `/api/v1/knowledge` API, and proposal apply handlers. Frontend: `/knowledge` is a thin
 entry that redirects to the last-used workspace (default `/knowledge/notes`);
@@ -319,7 +319,7 @@ this as current product scope, not as missing backend support.
 | Write path | Proposal -> approval -> active memory | Proposal -> approval -> active KnowledgeItem |
 | Promotion | N/A | Future separate proposal, e.g. `knowledge_promote_to_memory` |
 
-Knowledge items must not be auto-injected into runtime context. Promoting Knowledge into Memory is a separate future flow and is not part of the Knowledge MVP scaffold.
+Knowledge items must not be auto-injected into runtime context. Promoting Knowledge into Memory is a separate flow and is not a Knowledge write.
 
 ## Retrieval Substrate
 
@@ -413,8 +413,8 @@ not the proposal-governed `knowledge_items` table. (Daily-capture "experience"
 candidates land as canonical `summary` KnowledgeItems.)
 
 The default `knowledge_kind` for the create proposal is `concept`. Some kinds may later
-gate on assessment flows (e.g. a Feynman/Reflection gate); these are future and must not
-block the MVP persistence/API slice.
+gate on assessment flows (e.g. a Feynman/Reflection gate); do not block the
+create path on them.
 
 ## Proposal Types
 

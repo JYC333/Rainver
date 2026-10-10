@@ -26,10 +26,10 @@ No grant → no cross-space personal memory read.
 | `granting_user_id` | UUID FK users | Server-assigned from authenticated user; not client-writable |
 | `personal_space_id` | UUID FK spaces | Server-assigned from granting user's personal space |
 | `target_space_id` | UUID FK spaces | The shared space where the target run executes |
-| `target_run_id` | UUID FK runs | Required in MVP; run-scoped grants only |
+| `target_run_id` | UUID FK runs | Required; run-scoped grants only |
 | `target_agent_id` | UUID FK agents | Always NULL; there are no agent-level grants |
-| `grant_scope` | TEXT | `run` only in current MVP |
-| `access_mode` | TEXT | `summary_only` only in current MVP |
+| `grant_scope` | TEXT | `run` only |
+| `access_mode` | TEXT | `summary_only` only |
 | `memory_filter_json` | JSON | Optional filter: `memory_layers`, `memory_types`, `namespaces`, `max_items` (1–50) |
 | `status` | TEXT | `active \| consuming \| used \| revoked \| expired \| failed` |
 | `read_expires_at` | TIMESTAMP | Required; grant is invalid after this time |

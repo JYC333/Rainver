@@ -7,7 +7,7 @@ core records improvement targets, typed trigger signals, selected strategies,
 reviewable plan artifacts, selector decisions, and validated experiences without
 delegating the core lifecycle to an external optimizer.
 
-The v1 scope is audit and review. It does not auto-apply changes, deploy code,
+The scope is audit and review. It does not auto-apply changes, deploy code,
 write active memory, mutate agent versions, or bind runtime skills directly.
 
 ## Core Model
@@ -66,12 +66,12 @@ Built-ins:
     no artifact itself; `evolution_plan.v1` is only the strategy's preferred
     artifact type hint.
 
-Evolution v1 only accepts `mode = "dry_run"` for this route. `live` execution is
-rejected because v1 produces review plans, not direct behavior changes.
+This route accepts only `mode = "dry_run"`. `live` execution is rejected: it
+produces review plans, not direct behavior changes.
 
 ## Prompt Contract
 
-`buildEvolutionPlanPrompt` is the v1 prompt builder for Evolution runs. The
+`buildEvolutionPlanPrompt` is the prompt builder for Evolution runs. The
 system prompt defines the product boundary: use only provided evidence, do not
 apply changes, do not mutate memory, knowledge, capabilities, agent versions,
 policy, files, or runtime skill bindings, and route durable changes through an
@@ -103,7 +103,7 @@ The current lifecycle hook runs after post-run finalization: if the finalized
 run has an `EvolutionSelectorDecision`, the run evaluation is recorded as an
 idempotent `run_observed` experience keyed by strategy and run. Accepted
 proposal and manual observation entry points are service methods; proposal
-acceptance does not yet automatically create an Evolution experience.
+acceptance does not create an Evolution experience.
 
 ## Validation Results
 

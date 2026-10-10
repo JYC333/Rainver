@@ -1,5 +1,5 @@
 /**
- * Deterministic, config-driven generator for MVP Custom Source handler code.
+ * Deterministic, config-driven generator for Custom Source handler code.
  *
  * "Generation" here is template-based, not LLM/agent-driven: the source
  * config supplied at draft time (`list_selector`) is enough to produce a

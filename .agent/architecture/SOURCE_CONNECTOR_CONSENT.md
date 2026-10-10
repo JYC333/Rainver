@@ -192,7 +192,7 @@ Space/User/Agent/domain gate
 
 ### Paths That Consume Source Policy
 
-Implemented in the retrieval MVP:
+Implemented:
 
 - Retrieval search and Context Brief candidate revalidation.
 - Graph and relational traversal, including every intermediate hop.
@@ -289,7 +289,7 @@ surface, run id when present, and no query/content/snippets.
 ### Metadata And Projection Requirements
 
 The canonical source connection remains the enforcement source of truth. The
-retrieval MVP carries only explicit source ids in the derived projection and
+retrieval projection carries only explicit source ids and
 reloads current source policy for enforcement:
 
 - `retrieval_objects.source_connection_ids_json` is required for source-derived
