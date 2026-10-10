@@ -32,8 +32,7 @@ every interface it declares, and that no per-mechanism type list exists in
 
 ## 2. Which domains join the ontology
 
-Two questions, in order. The first was left implicit until 2026-08-27 and is
-the one that decides whether `task` is an ontology object.
+Two questions, in order. The first decides whether `task` is an ontology object.
 
 **Does the domain join the ontology at all?** Only if its objects need to
 participate in **cross-domain semantic relations** — `about`,
@@ -198,15 +197,14 @@ edges into one table concentrates that requirement in one layer.
 ## 8. Known debt
 
 **`memory_relations` is outside the ontology and outside the registry.**
-Audited 2026-08-27, found untouched by the ADR 0012 audit:
 
-- `relation_type` has a live 8-value CHECK whose vocabulary overlaps
+- `relation_type` has an 8-value CHECK whose vocabulary overlaps
   `object_relations` in five values (`supersedes`, `contradicts`,
-  `related_to`, `supports`, `applies_to`), and which was never demoted
+  `related_to`, `supports`, `applies_to`). Do not treat that overlap as one vocabulary.
 - `source_type` / `target_type` are unconstrained `varchar(64)` — a
   polymorphic endpoint vocabulary with no registry behind it
 - one writer in `src/` (`memoryApplyProvenance`, hardcoded `'supersedes'`),
-  **no reader**; seven of the eight allowed values have never been written
+  **no reader**; the other seven values have no writer
 
 It is not absorbed: `memory_entries` is an independent root, not a
 `space_objects` row, so its edges cannot live in `object_relations` today.

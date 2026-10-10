@@ -99,8 +99,7 @@ built from an empty root and an explicit bind allowlist (B62,
 [ADR 0016](../decisions/0016-control-plane-execution-hosts.md) section 2). A
 paired Host's is ownership: it is the responsible user's own machine, and they
 extend to it the same trust they extend to a Run they start there themselves
-([ADR 0016](../decisions/0016-control-plane-execution-hosts.md) section 3 and
-its 2026-09-21 owner-trust amendment). That is a statement about who bears the
+([ADR 0016](../decisions/0016-control-plane-execution-hosts.md) section 3). That is a statement about who bears the
 risk, not about containment — a paired Host still spawns natively with no
 namespace, and no isolation claim follows from this level. A Run on that Host
 by anyone else is not the owner's own and keeps the baseline; it is already

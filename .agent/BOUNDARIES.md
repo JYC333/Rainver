@@ -118,8 +118,8 @@ the link as canonical object existence.
 
 These invariants are accepted in
 [ADR 0012](decisions/0012-ontology-ownership-and-language-alignment.md) and
-[ADR 0011](decisions/0011-inquiry-domain-model.md), and are enforced in code as
-of 2026-08-05 — the pre-migration shape is gone. `test/ontologyRegistry.test.ts`
+[ADR 0011](decisions/0011-inquiry-domain-model.md), and are enforced in code.
+`test/ontologyRegistry.test.ts`
 and the `space_objects` writer guard are what keep them enforced; a new domain
 joining the ontology registers into the same registries rather than
 re-implementing the rules.
@@ -251,9 +251,8 @@ an Agent Run. Every Agent Run — on the built-in Server Host as much as on a
 paired one — is authorized, planned and recorded by the server's Runtime
 Context Gateway before dispatch, and its semantic sections are projected into
 ACP's single user-prompt channel, which has no separate system-message role
-(ADR 0016's amendment of 2026-09-21, which supersedes the earlier daemon
-exception; a Run dispatched without that Delivery fails as
-`runtime_context_authority_missing`). The `rainver` work surface is a separate
+(ADR 0016). A Run dispatched without that Delivery fails as
+`runtime_context_authority_missing`. The `rainver` work surface is a separate
 reachability, not a second context channel: it is how a Run takes live
 governed actions, not where a runtime fetches its context from. Adapters may
 render an accepted Delivery at their invocation boundary but must not fetch,
@@ -341,9 +340,8 @@ sandbox is *intended* to be relaxed inside it so there is exactly one boundary,
 and the daemon does that for Codex by writing `sandbox_mode = "workspace-write"`
 into the copy's `config.toml` before spawn. `RAINVER_STRICT_SANDBOX=1` is still
 exported for anything downstream that reads it. A
-nested vendor sandbox does not fail — that was assumed, never tested, and is
-false; it stacks a read-only policy over the Run's own workspace instead
-(measured 2026-09-08, ADR 0016 §2) unless that config.toml switch is present. **Trusted** is a paired
+nested vendor sandbox does not fail. It stacks a read-only policy over the Run's own workspace
+(ADR 0016 §2) unless that config.toml switch is present. **Trusted** is a paired
 personal machine: native process spawn, no namespace, the machine's own login
 state (from B68, reached through the Agent's own runtime profile rather than
 the machine's `HOME`) unless the Run carries an explicit ModelProvider binding
@@ -440,11 +438,10 @@ for a bound run the daemon rebuilds the environment from an allowlist and
 points the runtime at a control-plane-provided profile. A run with no binding
 still inherits the machine's environment — minus only the vendor prefixes that
 would move a runtime's state root back out of its profile or hand it a
-credential the control plane did not choose (B68) — which is the pre-existing
-behavior and the default. Neither path may be loosened into
+credential the control plane did not choose (B68). That is the default. Neither path may be loosened into
 a wholesale ambient inherit for a bound Run. See
 [ADR 0008](decisions/0008-credential-channel-isolation.md) for the channel
-isolation this protects and ADR 0016's 2026-08-24 amendment for the binding
+isolation this protects and [ADR 0016](decisions/0016-control-plane-execution-hosts.md) for the binding
 that makes it reachable remotely.
 
 **B68** — On an execution host, a vendor CLI's own state — its login, its
@@ -649,18 +646,12 @@ previous build — expand in the release that needs the new shape, contract in a
 later one. That is a constraint on what a single release may drop or rename, not
 a licence for compatibility code: B58 still applies to the application.
 
-The chain has three explicitly authorized schema-epoch replacements. The
-**2026-09-21 ACP runtime-authority schema epoch**
-([ADR 0022](decisions/0022-acp-runtime-authority-and-schema-epoch.md) §5)
-first replaced the preceding chain. The **2026-09-23 authentication-foundation
-schema epoch**
-([ADR 0023](decisions/0023-authentication-foundation-schema-epoch.md)) then
-folded the provisional authentication add/correct/drop migrations into the
-then-current Drizzle-generated `0000_baseline.sql`, after the operator confirmed
-that no schema history or user data needed preservation. The **2026-09-26
-host-thread-tool-field schema epoch** folded the applied `0001` widening into
-a new baseline after the operator explicitly accepted recreating affected
-databases. A database from before the current
+The chain has three explicitly authorized schema-epoch replacements: the ACP
+runtime-authority epoch
+([ADR 0022](decisions/0022-acp-runtime-authority-and-schema-epoch.md) §5), the
+authentication-foundation epoch
+([ADR 0023](decisions/0023-authentication-foundation-schema-epoch.md)), and the
+host-thread-tool-field epoch. A database from before the current
 epoch has no upgrade path or compatible backup restore: it must be recreated
 from the baseline. None of these decisions itself authorizes deleting a
 running database.
