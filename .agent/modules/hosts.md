@@ -1494,7 +1494,7 @@ first. The built-in host's `medium` is its per-Run namespace, a different
 control for the same level. Neither reaches `high`, so `high`/`critical`-risk
 Agents have no candidate on either host. Owner trust says who bears the risk —
 it is not a containment claim, and a paired host still spawns natively with no
-namespace (B62, ADR 0016 §3 and its 2026-09-21 owner-trust amendment; the
+namespace (B62, ADR 0016 §3; the
 table is in `architecture/ROUTING.md`, "Effective trust").
 
 **Capacity.** `HostConnectionRegistry.dispatchLaunch` takes the built-in host's

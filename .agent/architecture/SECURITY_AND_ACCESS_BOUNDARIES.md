@@ -888,7 +888,7 @@ authority afterwards.
 
 ## 10. Project Folder and Artifact Path Safety
 
-**Scope note (revised 2026-09-08, [ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):**
+**Scope note ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):**
 the control plane resolves no host path for *any* host (B64). Execution
 isolation is a property of the host daemon's trust mode, not of this code
 path: a **strict** host (the instance's built-in one) wraps every Run in a
@@ -1388,10 +1388,7 @@ entirely, which the `host-egress` bridge still permits; making it one needs a
 userspace network helper under `--unshare-net`, recorded in the deferred
 register.
 
-The 2026-09-10 backend security review sequence covered credential egress,
-the memory/proposal write gate, isolation-exception read residue, unattended
-credential spend, and persistence / extract / plugin / deployer paths.
-Accepted leftovers stay accepted: pairing-code display, Origin + `SameSite=Lax`
+Accepted leftovers: pairing-code display, Origin + `SameSite=Lax`
 CSRF without a token, CSP `style-src 'unsafe-inline'`, invite tokens in URLs,
 proxy leases not pinning model/path (ADR 0008), the on-disk master key,
 revoke-after-lease host files, a new plugin type inserting `memory_entries`
@@ -1400,11 +1397,9 @@ workflow node Runs using `trigger_origin = job` (fail-closed), and deployer
 internal-token reuse for stage events (ADR 0020; deferred-register
 acceptance).
 
-The 2026-09-11 unreviewed-surfaces sequence reviewed context injection,
-Knowledge/Notes/Reader/Capture, membership, notifications/backup, and Sources
-extract. It closed `research_notebook` note ACL, Knowledge/Notes `summary`
-body withholding, retrieval `context_taint` owner attribution, and
-post-processing decision item ACL. Accepted leftovers stay accepted:
+`research_notebook` notes use the note ACL. Knowledge and Notes withhold
+`summary` bodies. Retrieval `context_taint` is attributed to the owner.
+Post-processing decision items have an ACL. Accepted leftovers:
 memory-maintenance scans still exclude only `highly_restricted` (ordinary
 `private` may appear in an owner-private report); Room rolling-summary
 workers do not receive structured `external_untrusted` (attach-time fence
@@ -1413,13 +1408,12 @@ detail surface; there is no Space leave/remove API (orphan private rows
 after a membership ends remain); Source `GET /jobs` and
 `GET /evidence-links` are Space-scoped metadata.
 
-The 2026-09-11 skipped-surfaces sequence closed Agent version GET/restore
-ACL (same content gate as `GET /agents/:id`; restore is owner-only for an
-owned Agent), Activity/Artifact/Run-turn `/io` `summary` body withholding,
-`code_patch` rollback using the same `proposal.apply` and
-`project_folder.write_patch` gates as accept, and stale `cancelling` recovery
-settling as `cancelled` rather than a retryable `orphaned`. Accepted leftovers
-stay accepted: Dev Vite bind-all (token still required); Reader artifact
+Agent version GET uses the same content gate as `GET /agents/:id`. Restore
+is owner-only for an owned Agent. Activity, Artifact, and Run-turn `/io`
+withhold `summary` bodies. `code_patch` rollback uses the same
+`proposal.apply` and `project_folder.write_patch` gates as accept. Stale
+`cancelling` recovery settles as `cancelled`, not a retryable `orphaned`.
+Accepted leftovers: Dev Vite bind-all (token still required); Reader artifact
 omitting `roomRunReadAccessSql`; `code_patch` payload bytes that live remote
 browse would refuse; Learning Space-global `project_id IS NULL` visibility;
 Home summary counts as Space-wide oracles (the failed-Job error preview beside those
@@ -1485,10 +1479,8 @@ enforced. Project Folder path traversal is blocked. Artifact export is space- an
 visibility-gated. Credential secrets are not exposed in API responses. Egress approval for
 personal memory is enforced and tested.
 
-Test coverage: 4248 server tests across 435 files, plus 915 in the web client
-(unit / contracts / invariants / workflows). A count goes stale the week it is
-written; what it is here for is the order of magnitude and the fact that the
-durable-behaviour tests run against real PostgreSQL rather than a fake.
+Durable-behaviour tests run against real PostgreSQL. Do not treat a printed
+test count as current.
 
 ---
 

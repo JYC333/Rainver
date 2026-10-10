@@ -269,10 +269,8 @@ describe("ontology registry", () => {
   });
 
   it("keeps no second copy of the provenance vocabulary in src", () => {
-    // The specific failure this prevents: a module keeping its own Set and
-    // *silently dropping* what it does not recognize, which is how a
-    // divergence lost provenance without an error. Two modules did exactly
-    // that until 2026-08-06.
+    // Do not keep a second Set that silently drops what it does not
+    // recognize. A divergence then loses provenance with no error.
     const srcDir = join(import.meta.dirname, "..", "src");
     const files: string[] = [];
     const walk = (dir: string): void => {
