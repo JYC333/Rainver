@@ -10,13 +10,9 @@ import type { SourceConnectionRow } from "./sourceRepositoryRows.js";
 
 /**
  * The consent/egress gate every path that ships source content to a model must
- * pass through.
- *
- * This lived as two private methods on `SourcePostProcessingService` while
- * post-processing was the only such path. The system annotation pass is the
- * second one, and a second copy of a gate whose whole purpose is to fail closed
- * is how one of them silently stops matching the other. Sources owns the gate;
- * callers own what they do when it throws.
+ * pass through. One gate. Do not keep a second copy: the copies stop matching
+ * and one of them fails open. Sources owns the gate; callers own what they do
+ * when it throws.
  */
 export async function assertSourcePromptEgressAllowed(
   db: Queryable,

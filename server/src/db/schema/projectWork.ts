@@ -97,11 +97,10 @@ export const projectWorkEvents = pgTable("project_work_events", {
  * The current Loop stage of one Task: a fold of `project_work_events`, never a
  * second authority.
  *
- * Deriving the stage from surrounding facts instead was the first design and it
- * does not survive two requirements. A Task that legitimately skips planning
+ * Do not derive the stage from surrounding facts. A Task that skips planning
  * looks identical to one still planning, and a Task sent back to `plan` after a
- * failed check looks identical to one that has already verified — in both cases
- * the facts are the same and only an actor's decision separates them. So the
+ * failed check looks identical to one that has already verified. In both cases
+ * the facts are the same and only an actor's decision separates them. The
  * decision is recorded, and this row is the replayable answer to "where is it
  * now" rather than a value anyone edits directly.
  */

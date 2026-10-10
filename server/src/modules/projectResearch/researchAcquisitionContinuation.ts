@@ -25,12 +25,10 @@ export function registerResearchAcquisitionContinuation(registry: ConversationCo
     if (status === "started") {
       const cap = typeof event.payload.screening_cap === "number" ? event.payload.screening_cap : null;
       const matched = typeof event.payload.matched_estimate === "number" ? event.payload.matched_estimate : null;
-      // Size first. "Acquisition is underway" was the whole of what the user
-      // was told while nine hundred documents went through a model, and the
-      // only number they ever saw was in the failure four hours later.
-      // Cap first, match size second, and the match size labelled as the
-      // loose upper bound it is. Leading with the larger number read as the
-      // scope having grown when it had in fact just been bounded.
+      // Size first. Cap first, match size second, and the match size labelled
+      // as the loose upper bound it is. Do not lead with the larger number:
+      // that reads as the scope having grown when it has just been bounded.
+      // Do not say only that acquisition is underway.
       const size = cap === null
         ? ""
         : matched === null

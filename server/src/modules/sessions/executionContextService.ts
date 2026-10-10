@@ -843,10 +843,9 @@ export class ConversationExecutionContextService {
     }
     let runtimeProfileId = runtime.runtime_profile_id;
     if (runtimeProfileId === null) {
-      // Every CLI runs on a host daemon now, the built-in one included, so a
-      // reusable runtime profile is what any of them needs — the message used
-      // to say the server host was the exception, and it is the one host this
-      // refusal made unusable.
+      // Every CLI runs on a host daemon, the built-in one included. A reusable
+      // runtime profile is what any of them needs. The server host is not an
+      // exception. Do not refuse it.
       if (host.kind !== "remote" && host.kind !== "server") {
         throw new ConversationExecutionContextError(422, "The selected CLI requires an execution host");
       }

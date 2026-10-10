@@ -1657,12 +1657,9 @@ export class PgKnowledgeRepository {
   /**
    * "Jot a note" from an evidence or material card (N7).
    *
-   * One call, because the two-step version is the reason the connection never
-   * got made: a user reading a paper had to leave for the Notes page, create a
-   * note, come back for the id, and link it — so in practice nobody recorded
-   * what a conclusion rested on. Creating the note and the link separately
-   * from the client would also leave a stranded note whenever the second call
-   * failed.
+   * One call from the card. Creating the note and the link separately leaves a
+   * stranded note when the second call fails. Do not send the reader to the
+   * Notes page to create a note, come back for the id, and link it.
    *
    * Appends to an existing note when given one, so jotting twice against the
    * same paper accumulates in one place rather than littering the tree. The

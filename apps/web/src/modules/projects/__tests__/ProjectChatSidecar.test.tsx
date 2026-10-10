@@ -381,8 +381,7 @@ describe('Project chat sidecar', () => {
   it('opens the full Room on the conversation being read', async () => {
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'conv-2', { limit: 50, offset: 0 }))
-    // Landing on the Rooms list and having to find this conversation again
-    // was the wrong side of the door.
+    // Full Room opens the conversation being read. Do not land on the Rooms list.
     expect(screen.getByRole('link', { name: /Full Room/ }))
       .toHaveAttribute('href', `/projects/${PROJECT}/rooms?room=room-1&conversation=conv-2`)
   })

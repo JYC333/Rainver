@@ -24,9 +24,8 @@ prefix match rather than a walk:
 
 `visibleMessagePathSql` (`modules/sessions/messagePath.ts`) is the one place
 that knows their encoding. It uses `starts_with` rather than `LIKE`, because a
-branch path can legitimately contain `%` and `_`. A recursive CTE was the first
-implementation and cost O(conversation) buffers per page; the prefix match is
-flat.
+branch path can legitimately contain `%` and `_`. The prefix match is flat.
+Do not walk the conversation with a recursive query on each page.
 
 `uq_messages_branch_position` keeps two concurrent appends from claiming the
 same position. `lockConversationForAppend` takes the conversation's lock as its

@@ -2,10 +2,9 @@ import { domainStatusSources } from "../modules/ontology/entities.js";
 /**
  * Domain status for a `space_objects` row.
  *
- * Status left the root table (ADR 0012 decision 1 / B12D): it had no
- * cross-domain reader, and keeping it there forced
- * `ck_space_objects_status_by_type` to branch on `object_type`, so every new
- * domain had to edit a root-table constraint.
+ * Status lives on the extension table (ADR 0012 decision 1 / B12D). Do not
+ * put a status constraint on the root that branches on `object_type`. A new
+ * domain must not have to edit a root-table constraint to add a status.
  *
  * A reader that already knows the object type should simply read the
  * extension table's own `status` column. These helpers exist only for

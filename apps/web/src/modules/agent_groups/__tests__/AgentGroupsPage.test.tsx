@@ -1475,9 +1475,9 @@ describe('Rooms page', () => {
   })
 
   it('reads a replied turn back on reload, so its work is still there', async () => {
-    // Nothing streams here: the Run was terminal before this surface existed,
-    // which is every reply on a reloaded page. The turn is still read for
-    // failure/diagnostic facts even though successful tools stay hidden.
+    // Nothing streams on a reloaded page: the Run is already terminal. The
+    // turn is still read for failure and diagnostic facts. Successful tools
+    // stay hidden.
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [{
         id: 'message-reply', session_id: 'session-1', space_id: 'space-1',

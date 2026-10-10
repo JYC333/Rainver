@@ -9,43 +9,23 @@ import { enqueueTaskMerges } from "../hosts/taskMerges.js";
 /**
  * What a finished Run means for the Task it was run for.
  *
- * The rule this replaces was `bool_and(terminal) AND NOT bool_or(failure)` over
- * **every Run the Task ever had**, which had two defects that pulled in
- * opposite directions:
+ * Read the **latest** Run, not every Run the Task has had. One failed Run must
+ * not keep the Task from reaching `done` after a later success. `cancelled` is
+ * a person changing their mind, `degraded` publishes real output with a
+ * warning, and `orphaned` is a crash the Supervisor is already recovering
+ * from. None of those three is a failure. `waiting_for_review` is a hold for
+ * a person. Do not leave that Task in `in_progress`.
  *
- * - `bool_or` never expired. One failed Run poisoned the Task permanently: any
- *   number of later successful re-runs still saw a historical failure and the
- *   Task could never reach `done` again.
- * - Three of the four statuses it counted as failure are not failures.
- *   `cancelled` is a person changing their mind, `degraded` publishes real
- *   output with a warning, and `orphaned` is a crash the Supervisor is already
- *   recovering from.
+ * Settle only after a `run_finalizations` row exists, except `cancelled` (a
+ * person's decision, nothing to evaluate). Finalization writes the evaluation
+ * and lets the Supervisor decide retry-or-hold, and it is the one trigger
+ * (`finalizationReconciler.ts`): every terminal Run of a Task is finalized —
+ * by the job that ran it, the route that cancelled it, or the jobs worker's
+ * sweep of the rest — and nothing calls settlement from a repository. Do not
+ * settle at the terminal status write. That is before finalization.
  *
- * And the status it should have counted, it could not see at all:
- * `waiting_for_review` is what the Supervisor writes when it stops retrying,
- * and it was absent from the terminal set, so a Run parked for a human decision
- * left its Task sitting in `in_progress` indefinitely with nothing anywhere
- * saying a person was needed.
- *
- * The replacement reads the **latest** Run rather than the whole history, and
- * dispatches on what that Run actually was.
- *
- * Two more things the first version of this file got wrong, found in review:
- *
- * - It ran at the terminal status write, which is **before** finalization —
- *   and finalization is what writes the evaluation and lets the Supervisor
- *   decide retry-or-hold. Settling then meant every successful Run held its
- *   Task as `evaluation_missing`, and a failed Run held it while the
- *   Supervisor was about to retry. So a settled Run must carry a
- *   `run_finalizations` row before it counts, except `cancelled` (a person's
- *   decision, nothing to evaluate), and finalization is the one trigger
- *   (`finalizationReconciler.ts`): every terminal Run of a Task is finalized
- *   — by the job that ran it, the route that cancelled it, or the jobs
- *   worker's sweep of the rest — and nothing calls settlement from a
- *   repository.
- * - It counted every `task_runs` row. A `planning` Run (Ask Agent to plan) and
- *   a `review` Run do not advance the work, and a successful plan closing its
- *   Task as done is precisely the wrong answer.
+ * A `planning` Run and a `review` Run do not advance the work. Do not count
+ * every `task_runs` row. A successful plan must not close its Task as done.
  */
 
 /** `task_runs.role` values that do not advance the Task's own work. */

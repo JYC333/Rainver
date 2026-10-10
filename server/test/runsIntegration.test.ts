@@ -692,8 +692,8 @@ describe("runs repositories against real PostgreSQL", () => {
     const repo = new PgRunRepository(db.pool);
     const runId = await seedRun();
 
-    // "run_orchestration_failed" is NOT in the CHECK list — this is exactly why
-    // orchestration had to switch to the constraint-valid "adapter_completed".
+    // "run_orchestration_failed" is not in the CHECK list. The type that is
+    // written is "adapter_completed". Do not append a type the constraint rejects.
     await expect(
       repo.appendRunEvent({
         run_id: runId,

@@ -63,8 +63,8 @@ function probeVersion(bin: string, timeoutMs = 4000): Promise<string | null> {
   return new Promise((resolve) => {
     let settled = false;
     // The version probe gets the same helper environment every other probe
-    // does. It passed nothing, so it was the one spawn still handed the
-    // machine's whole environment, vendor keys included.
+    // does. Do not spawn it with the machine's whole environment. That
+    // includes vendor keys.
     const child = spawn(bin, ["--version"], {
       env: helperProcessEnv(process.env),
       stdio: ["ignore", "pipe", "ignore"],

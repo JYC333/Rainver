@@ -16,9 +16,9 @@ import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
  * run's identity, the address to use it at, and the Skill that says how.
  *
  * Deliberately runtime-agnostic — two environment variables and one file. No
- * branch here or on the host is keyed on which agent is running, which is what
- * makes a newly registered ACP agent work with nothing added: the per-vendor
- * configuration writers this replaces had to be extended once per runtime.
+ * branch here or on the host is keyed on which agent is running. A newly
+ * registered ACP agent works with nothing added. Do not add a per-vendor
+ * configuration writer for each runtime.
  */
 export interface RunWorkSurfaceFrame {
   env: Record<string, string>;

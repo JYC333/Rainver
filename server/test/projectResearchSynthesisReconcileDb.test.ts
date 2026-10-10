@@ -166,9 +166,8 @@ async function seedUnderstandingNote(now: string, opts?: { contentJson?: Record<
 }
 
 /**
- * A note's current refs. They live on the note's latest revision since N8
- * removed `notes.refs_json` — a second copy of the same list that nothing read
- * back and that had to be kept in step by hand.
+ * A note's current refs. They live on the note's latest revision. Do not
+ * keep a second copy on the note row.
  */
 async function latestRefs(noteId: string): Promise<string[]> {
   const result = await db.pool.query<{ refs_json: string[] }>(

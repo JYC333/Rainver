@@ -95,7 +95,7 @@ describe("state-changing read check", () => {
   it("fails closed on a request carrying no fetch metadata and nothing first-party", () => {
     // A top-level cross-site navigation from a browser that sends no
     // `Sec-Fetch-Site` carries no `Origin` either, and `SameSite=Lax` sends the
-    // session cookie with it. Allowing this case was the hole.
+    // session cookie with it. Do not allow this case.
     expect(stateChangingReadAllowed(read({}), FRONTEND)).toBe(false);
     expect(stateChangingReadAllowed(read({ referer: "https://evil.example/" }), FRONTEND)).toBe(false);
   });

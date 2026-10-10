@@ -515,12 +515,10 @@ on the same request. The daemon restores whichever archives exist and reports
 what moved; the workspace goes first, because a live shared cwd is a real
 conflict and a live profile only means this Agent has dispatched here since.
 
-The old `<configDir>/profiles/<adapter>/<provider>` tree — the shared logins,
-session stores and dead lease tokens the new key exists to end — is archived by
-the daemon on connect (`archiveLegacyProfileTree`, to `profiles.removed-<ts>`
-at the config root) and swept with every other archive after the retention
-window. Nothing reads it; it is moved aside rather than deleted, like every
-other retired directory here.
+The `<configDir>/profiles/<adapter>/<provider>` tree is archived by the daemon
+on connect (`archiveLegacyProfileTree`, to `profiles.removed-<ts>` at the
+config root) and swept with every other archive after the retention window.
+Nothing reads it. Do not delete it in place.
 
 `POST /api/v1/agents/:agentId/host-state/reset` is the **"clear this Agent's
 CLI memory on this host"** action: owner-only twice over (the caller must own
@@ -2149,31 +2147,28 @@ owner's machine, its Runs use the machine's own network, and it runs no proxy.
 for anything that needs to know it is inside one. Codex does not read it; the
 daemon consumes the same fact (`trust === "strict"`) by writing
 `sandbox_mode = "workspace-write"` into that copy's `config.toml` before spawn
-(`packages/host-daemon/src/codexStrictSandbox.ts`). That is the switch measured
-on 2026-09-08 to stop Codex's default read-only sandbox stacking on this
-namespace. Claude Code has no vendor sandbox to relax.
+(`packages/host-daemon/src/codexStrictSandbox.ts`). That switch stops Codex's
+default read-only sandbox from stacking on this namespace. Claude Code has no
+vendor sandbox to relax.
 
 It sets the **top-level** key and only that one. TOML scopes a key to the table
-above it, so rewriting `sandbox_mode` wherever it appeared changed the first one
-found — in a config with named profiles, `[profiles.x]`'s — which left the
-top-level default untouched (the Run still could not write) and silently altered
-a profile the owner configured for something else.
+above it. Do not rewrite `sandbox_mode` wherever it appears. In a config with
+named profiles that changes `[profiles.x]` and leaves the top-level default
+untouched. The Run still cannot write, and a profile the owner configured for
+something else changes.
 
-Finding where the top-level table ends took three conjuncts, each added after
-the previous one proved insufficient. A table header is a bracketed name
-**alone on its line** — a bare leading `[` also matched a multi-line array's
-continuation (`notify = [` … `  ["a"],`), which stopped the scan early and
-produced two top-level `sandbox_mode` keys, a duplicate-key error that stops
-Codex from starting. It must be at **bracket depth zero** — a final array
+Finding where the top-level table ends takes three conjuncts. A table header is a bracketed name
+**alone on its line**. A bare leading `[` also matches a multi-line array's
+continuation (`notify = [` … `  ["a"],`), which stops the scan early and
+produces two top-level `sandbox_mode` keys. A duplicate key stops Codex from
+starting. The header must be at **bracket depth zero**. A final array
 element carries no trailing comma, so `  ["a"]` reads exactly like a header.
-And the depth is counted over the line with **strings and comments removed** —
-one unbalanced `[` inside either pinned the depth above zero for the rest of
-the file, so no header was ever found and the scan fell back to rewriting the
-first named profile's key, which is the original bug reinstated by its own fix.
-The scan for an *existing* key carries the same string-awareness: without it a
-`sandbox_mode` line inside a multi-line string was rewritten instead of the
-real one, which leaves Codex starting cleanly and the Run silently unable to
-write — a failure with no error anywhere.
+Count depth over the line with **strings and comments removed**. One
+unbalanced `[` inside either pins the depth above zero for the rest of the
+file, so no header is found and the scan rewrites the first named profile's
+key. The scan for an existing key has the same string-awareness. Do not
+rewrite a `sandbox_mode` line inside a multi-line string: Codex starts, and
+the Run cannot write, with no error.
 
 - `rainver-host register --server <url> --code <pairing-code>` — exchanges
   the pairing code for a bearer token. `--server` must be `https://` or

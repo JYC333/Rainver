@@ -6,14 +6,13 @@ import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
- * R4/D12. Two screening columns were academic in a pipeline that is not:
+ * Screening criteria:
  *
- * - `venues_json` named only the academic half of "where material may come
- *   from" — journals, outlets and sites are one concept, now
- *   `source_restrictions_json`.
- * - `methods_json` was a paper-shaped criterion every domain had to carry. It
- *   is now one key in `domain_criteria_json`, and which keys are legal comes
- *   from the extraction profiles the Project's sources are bound with.
+ * - `source_restrictions_json` is where material may come from. Journals,
+ *   outlets, and sites are one concept.
+ * - Domain criteria live in `domain_criteria_json`. Legal keys come from the
+ *   extraction profiles the Project's sources are bound with. Do not require
+ *   a paper-shaped methods column on every domain.
  *
  * The bag is the interesting half: an unconstrained one would just be free-form
  * JSON nobody can validate, which is the opposite mistake from a fixed column.

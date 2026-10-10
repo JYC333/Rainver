@@ -17,10 +17,9 @@ import { IdSchema, ISODateTimeSchema } from "./common.js";
  *
  * The five stages are a **system constant**, not per-Project configuration.
  * The stress test across delivery, research, operations, learning, events and
- * personal work found the same five everywhere; only the wording differed, and
- * a per-Project "mode" that swapped the wording was the last thing left of a
- * Project classification nothing else read, so it went (ADR 0019). The keys,
- * their order, and their meaning are identical in every Project.
+ * personal work found the same five everywhere. The keys, their order, and
+ * their meaning are identical in every Project (ADR 0019). Do not add a
+ * per-Project mode that only swaps the wording.
  */
 
 /**

@@ -590,9 +590,8 @@ describe("Room workflow (real Postgres)", () => {
 
   it("reports each research pipeline run, and each run only once", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
-    // Keying the outcome by Thread meant a retry silently returned the first
-    // attempt's message: the second failure was never reported, so an Agent's
-    // "queued" was the last word in the conversation while nothing ran.
+    // Key the outcome by the job, not only by the Thread. A retry reports its
+    // own failure. Do not return the first attempt's message for the second.
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await openSpokenRoom(owner, { project_id: "project-1", title: "Pipeline outcomes" });
     const conversation = await seedConversation(owner, created.room.id, "Main");

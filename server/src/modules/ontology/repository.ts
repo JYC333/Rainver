@@ -12,11 +12,9 @@ import { hasDeclaration } from "./linkTypes.js";
  * Ontology-owned reads and proposal writes: object profiles, their relation
  * hints, the object-schema export, and object relations.
  *
- * These lived on `PgKnowledgeRepository` because `knowledge` was the ontology's
- * de-facto owner (ADR 0012 decision 3). Two collaborators stay behind rather
- * than being duplicated: proposal creation is shared with governed Knowledge
- * writes, and Claim lookup is Knowledge's own. They are passed in as an
- * explicit seam so the dependency direction is visible instead of implied.
+ * Ontology owns these reads (ADR 0012 decision 3). Proposal creation is shared
+ * with governed Knowledge writes, and Claim lookup stays in Knowledge. Both
+ * are passed in. Do not duplicate them here.
  */
 /**
  * What a proposal-creating seam is handed. Stated here rather than typed as a

@@ -170,17 +170,15 @@ describe('ProjectDetailPage (Pulse)', () => {
     setup()
     renderPage()
     expect(await screen.findByText('Project One')).toBeInTheDocument()
-    // "Next" was Mode-generated links to Areas the sidebar lists; "Recent
-    // activity" was the raw-material queue under another name; "In this
-    // project" was the Areas list again with counts. Each doubled something
-    // already on the screen.
+    // Those headings are not on this page. Do not put the sidebar's Areas,
+    // the raw-material queue, or another Room door on the front page.
     expect(screen.queryByRole('heading', { name: 'Next' })).toBeNull()
     expect(screen.queryByRole('heading', { name: 'Recent activity' })).toBeNull()
     expect(screen.queryByRole('heading', { name: 'In this project' })).toBeNull()
     expect(screen.queryByRole('link', { name: 'Define a question to research' })).toBeNull()
     expect(screen.queryByRole('link', { name: /Research workflows/ })).toBeNull()
-    // The Room has its own ways in (the sidecar, the Rooms Area); a third
-    // button on the front page was one more copy of the same door.
+    // The Room has its own ways in (the sidecar, the Rooms Area). Do not add
+    // another door on the front page.
     expect(screen.queryByRole('link', { name: 'Rooms' })).toBeNull()
   })
 

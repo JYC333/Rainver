@@ -1819,22 +1819,19 @@ export class RunOrchestrationService {
     const callerConfig = input.command_source === "http" ? {} : input.adapter_config ?? {};
     const contract = recordValue(run.contract_snapshot_json);
     // The immutable run contract is authoritative. An internal execution
-    // caller may supply a fallback risk for legacy runs, but it can never
-    // downgrade a critical contract to reach a weaker sandbox.
+    // caller may supply a fallback risk when the contract has none. It can
+    // never downgrade a critical contract to reach a weaker sandbox.
     const riskLevel = stringConfigValue(contract.risk_level) ?? input.risk_level ?? null;
-    // Risk still decides the level, on every path. What changed is who acts on
-    // it: the server provisions a worktree or a throwaway directory for a run
-    // it executes itself, while a daemon run carries the level into its
-    // `isolation` policy and the daemon builds the namespace from it. Skipping
-    // the resolution for daemon runs — as a first cut of this did — left every
-    // CLI run at the creation-time `none`, so a critical Folder-bound run got
-    // a read-write workspace and the shared network, with nothing recording
-    // that risk had stopped mattering.
+    // Risk decides the level on every path. The server provisions a worktree
+    // or a throwaway directory for a run it executes itself. A daemon run
+    // carries the level into its `isolation` policy and the daemon builds the
+    // namespace from it. Do not skip the resolution for daemon runs: a CLI
+    // run would stay at the creation-time `none`, so a critical Folder-bound
+    // run would get a read-write workspace and the shared network.
     //
-    // `worktree` and `one_shot_docker` have no daemon analogue yet: the
-    // daemon's workspace is the Location itself, and the namespace is the
-    // isolation. They are carried but only `read_only` changes what a Run
-    // actually gets; narrowing the rest is the egress proxy's phase.
+    // `worktree` and `one_shot_docker` are not daemon workspace kinds. The
+    // daemon's workspace is the Location, and the namespace is the isolation.
+    // They are carried, and only `read_only` changes what a daemon Run gets.
     const requiredSandboxLevel = resolveSandboxLevelForRuntime({
       runtimeKey: run.runtime_key,
       configuredLevel: run.required_sandbox_level,

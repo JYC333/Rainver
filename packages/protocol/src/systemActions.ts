@@ -29,9 +29,9 @@ export const SYSTEM_ACTION_SIDE_EFFECT_VALUES = ["none", "draft", "proposal", "d
  * ([ADR 0017](../../../.agent/decisions/0017-authorization-by-cost-not-authorship.md) §1).
  *
  * The list is exhaustive and an action that registers as a proposal must name
- * one. Authorship is deliberately not on it: "an Agent wrote it" was the old
- * default, and under an Agent that advances work it degrades into a rubber
- * stamp on exactly the writes that matter. What is gated is what cannot be
+ * one. Authorship is not a gate class. Do not gate a write because an Agent
+ * wrote it: under an Agent that advances work that becomes a rubber stamp on
+ * the writes that matter. What is gated is what cannot be
  * taken back, costs money, changes who can see something, or changes the
  * Agent itself.
  */

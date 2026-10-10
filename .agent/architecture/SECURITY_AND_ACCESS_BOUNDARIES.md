@@ -976,9 +976,8 @@ this arrangement exists to prevent.
 - **Run-derived rows** — Runs, Proposals, Artifacts, `task_runs`,
   `task_evaluations`, Project work events, agent-group messages — go through
   `runReadSql` / `proposalReadSql` / `artifactReadSql` / `runInheritedReadSql`
-  in `access/contentAccessSql.ts`. They were in `frontendSupport`, which meant
-  every other domain that shows a Run's output wrote the pair itself or forgot
-  the Room half.
+  in `access/contentAccessSql.ts`. Do not write that pair in the domain that
+  shows a Run's output: the Room half gets dropped.
 - **Room transcript** — every reader of `messages` that answers a *person*
   uses `visibleRoomTranscriptSql`, applied unconditionally rather than behind a
   flag a caller could pass `false` to. Agent replay and continuation lookups
@@ -1139,7 +1138,7 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   `SameSite=Lax` cookie attached. And a request carrying neither header, and
   none of this client's own, is refused rather than allowed — a top-level
   cross-site navigation from a browser that sends no fetch metadata carries no
-  `Origin` either, and allowing that case was the hole. `SameSite=Lax` sends the cookie on a
+  `Origin` either. Do not allow that case. `SameSite=Lax` sends the cookie on a
   top-level cross-site GET, so these needed the check a POST gets for free. A
   route whose only effect is its response must not use it: the host usage route
   is a cache read of `host_runtime_usage` — the probe is the POST beside it —

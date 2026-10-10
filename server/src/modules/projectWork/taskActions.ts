@@ -311,11 +311,10 @@ export async function advanceTaskStage(
 /**
  * Say the work is finished.
  *
- * Without this an Agent could do everything a Task asked for and still not
- * close it: `task.report` only records, `task.advance_stage` moves the Loop
- * stage and not the flow, and the one action that wrote `status` could only
- * write `waiting_for_review`. A person had to move every card by hand, which
- * makes "the person is only involved at the points that are theirs" false.
+ * `task.report` only records, `task.advance_stage` moves the Loop stage and
+ * not the flow, and the review action writes `waiting_for_review`. This is
+ * the action that writes a finished status. The person is involved at the
+ * points that are theirs. Do not leave every close as a hand move of the card.
  *
  * It reads the same completion state a manual close does, and splits it the
  * only way that is defensible for a caller that cannot be asked:

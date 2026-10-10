@@ -105,13 +105,10 @@ function executionShape(
 }
 
 /**
- * Applies the canonical message-shape validation (all-
- * or-nothing on an invalid item; null content coerced to "" rather than
- * dropping the message) so the audited run_input.v1 view can never silently
- * diverge from what the Managed API adapter actually sends to the model —
- * a prior, independently-written copy of this logic disagreed on how a
- * tool-call-only turn (content: null) is handled, which meant Run Detail
- * could show a different message list than what really executed.
+ * Applies the canonical message-shape validation. An invalid item drops the
+ * whole list. Null content becomes "" rather than dropping the message.
+ * Do not keep a second copy: a tool-call-only turn (`content: null`) would
+ * show a different message list in Run Detail than the one the model got.
  */
 function canonicalMessages(value: unknown): CanonicalMessage[] {
   if (!Array.isArray(value) || value.length === 0) return [];

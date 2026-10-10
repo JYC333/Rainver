@@ -184,10 +184,9 @@ describe('Project Pulse', () => {
   })
 
   it('shows a running Operation, what it is doing, and how far in', async () => {
-    // The failure this fixes: a research acquisition screened 873 documents
-    // for four hours while this panel said "nothing is being worked on",
-    // because its only source was the Task board and an Operation is not a
-    // Task. The progress was in the Operation the whole time.
+    // In progress includes Operations. Do not source this panel only from the
+    // Task board: an Operation is not a Task, and the panel would say nothing
+    // is being worked on while acquisition is running.
     renderPulse({
       ...overview,
       in_progress: [{

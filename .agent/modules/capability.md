@@ -104,8 +104,8 @@ Returned artifacts are materialized by `materializationService` as `Artifact` ro
 
 Versioned workflow definitions use the shared `workflow_definition.v1` protocol
 schema and are stored as `workflow_template` evolvable assets. User/space
-workflow versions remain proposal-promotion governed. This phase stores and
-resolves definitions and records `runs.workflow_version_id`; it does not
+workflow versions remain proposal-promotion governed. This module stores and
+resolves definitions and records `runs.workflow_version_id`. It does not
 execute node graphs.
 
 ## Related Files

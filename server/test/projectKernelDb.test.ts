@@ -106,8 +106,8 @@ describe("Project Kernel (real Postgres)", () => {
 
     // The mainline is a Project attribute on the same footing as the Brief v1
     // row (ADR 0018 decision 4), so "a Project with no Room" is not a state
-    // any caller has to handle. Continuing an imported CLI session was the one
-    // that could not, and failed on a freshly bound Project.
+    // any caller has to handle. An imported CLI session on a freshly bound
+    // Project continues in that Room.
     const rooms = await db.pool.query<{ id: string; is_mainline: boolean; title: string; status: string }>(
       `SELECT id, is_mainline, title, status FROM rooms WHERE space_id = $1 AND project_id = $2`,
       [SPACE, project.id],

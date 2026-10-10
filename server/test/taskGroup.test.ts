@@ -173,9 +173,8 @@ describe("task contract persistence (real Postgres)", () => {
 
     it("accepts the review hold the levels below it already had", async () => {
       if (!db.available) return;
-      // `waiting_for_review` was the one state a Run and a Plan Node could both
-      // be in and the product work item above them could not, so a Task parked
-      // on a decision had nowhere to say so.
+      // A Task can be `waiting_for_review`, the same hold a Run and a Plan Node
+      // use. Do not leave a Task parked on a decision with no status for it.
       const repository = new PgTaskRepository(db.pool);
       const task = await repository.createTask(identity, {
         title: "Held for a decision",
