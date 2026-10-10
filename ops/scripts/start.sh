@@ -285,7 +285,8 @@ run_database_migrations() {
 }
 
 # ── Offline maintenance upgrade (ADR 0016 §10) ────────────────────────
-# The applications that read the old schema are stopped for the whole window;
+# Application services are stopped for the whole window so they do not read
+# the schema while it is changing.
 # PostgreSQL stays up because the migration and the dump both need it.
 APPLICATION_SERVICES=(frontend server sandbox-runner deployer)
 

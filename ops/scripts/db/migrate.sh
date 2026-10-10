@@ -183,7 +183,7 @@ resolve_host_database_url() {
     echo "       Set DATABASE_URL, or provide $ENV_FILE with POSTGRES_USER/PASSWORD/DB (+ POSTGRES_HOST)." >&2
     exit 1
   fi
-  # Existing mode env files may still carry the old SQLAlchemy-style scheme.
+  # A mode env file may still use the `postgresql+psycopg:` scheme.
   database_url="${database_url/#postgresql+psycopg:/postgresql:}"
   case "$database_url" in
     postgresql://*|postgres://*) ;;
