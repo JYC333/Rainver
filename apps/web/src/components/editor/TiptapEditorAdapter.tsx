@@ -57,12 +57,10 @@ export const TiptapEditorAdapter = forwardRef<RichTextEditorHandle, RichTextEdit
       },
     })
 
-    // `initialContent` is a fresh object reference on every parent re-render
-    // (each API response rebuilds it), even when the actual content hasn't
-    // changed. Depending on it directly here reset the live document — and
-    // silently discarded whatever the user was mid-typing — on any unrelated
-    // re-render, not just a genuine content change. `initialContentKey` is
-    // the value-stable signal for "the content actually changed."
+    // Depend on `initialContentKey`, not `initialContent`. `initialContent`
+    // is a fresh object reference on every parent re-render, even when the
+    // content has not changed. Depending on it resets the live document and
+    // discards what the user is mid-typing on any unrelated re-render.
     //
     // Even with that guard, a caller that re-confirms "what's already on
     // screen" after its own save (e.g. re-deriving `initialContent` from the

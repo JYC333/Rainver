@@ -324,9 +324,9 @@ export async function listOpenSteps(
  *
  * This is what carries context across Areas: a user who followed a call to
  * action into Operations or Notes arrives with the step still open, so the
- * destination can say which Thread sent them and offer the way back. A URL
- * parameter was rejected for this — it dies on refresh, on a second navigation,
- * and on another device, which is exactly when a person has lost the thread.
+ * destination can say which Thread sent them and offer the way back. Do not
+ * carry this in a URL parameter. It dies on refresh, on a second navigation,
+ * and on another device, which is when a person has lost the thread.
  *
  * The row carries a Thread's statement, so Project membership is necessary but
  * not sufficient: the ontology root's visibility decides who sees it, exactly

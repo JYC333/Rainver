@@ -5,11 +5,10 @@ import { threadEventBatchKey, type ThreadEventProvenance } from "./threadWorkEve
 /**
  * How many questions one turn may open.
  *
- * The bound is what replaced the approval queue on decomposition (ADR 0017
- * §2). It is not a safety limit on a dangerous write — opening a question is
- * cheap and archivable — but on how much a person is asked to take in at
- * once: past about five, a decomposition stops being reviewable at a glance,
- * which is the same threshold the screening corpus limit exists at for cost.
+ * The bound is how much a person is asked to take in at once (ADR 0017 §2).
+ * Do not put an approval queue on decomposition. Opening a question is cheap
+ * and archivable. Past about five, a decomposition stops being reviewable at
+ * a glance, the same threshold the screening corpus limit uses for cost.
  *
  * Refusing costs a turn, never a decision: the Agent is told to continue in
  * the next one.

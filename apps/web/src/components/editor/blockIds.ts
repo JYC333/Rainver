@@ -103,8 +103,8 @@ export const BlockIds = Extension.create({
          *
          * This runs after every transaction that changed the document and gives
          * a fresh id to any block sharing one with an earlier block, plus one to
-         * any block that has none (typed from scratch, or loaded from a note
-         * written before ids existed).
+         * any block that has none (typed from scratch, or loaded from a note that
+         * has no ids yet).
          *
          * Which of two claimants keeps the id is decided by content, not by
          * position. Position alone is wrong at the one boundary that matters:
