@@ -492,7 +492,7 @@ describe("provider invocation resilience", () => {
   });
 
   it("keeps an Ollama request on the original Chat Completions fields", async () => {
-    // A local server implements the fields the API had when it was written.
+    // A local server speaks the original Chat Completions fields.
     // Detecting modern OpenAI features from an arbitrary base URL would send
     // a body it answers 400 to.
     const store = makeStore({

@@ -1669,8 +1669,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // ND: promote a selected passage into a Knowledge Item. Builds an ordinary
-  // knowledge_create proposal — the review gate is unchanged — and records the
+  // Promote a selected passage into a Knowledge Item. Builds an ordinary
+  // knowledge_create proposal — the review gate still applies — and records the
   // originating Note as provenance.
   app.post("/api/v1/knowledge/notes/:noteId/promote", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);

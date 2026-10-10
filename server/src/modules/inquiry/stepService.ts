@@ -6,8 +6,8 @@ import { type NextFocusKind } from "./threadService.js";
 /**
  * Steps: the durable record of what a Thread is actually doing.
  *
- * `inquiry_threads.next_focus_kind` remains as a projection of the current
- * primary step, so the Thread read shape is unchanged and the contradiction
+ * `inquiry_threads.next_focus_kind` is a projection of the current
+ * primary step. The Thread read exposes that field, and the contradiction
  * CHECK against `blocked_reason` stays enforceable without a cross-table
  * reference. The step row is the authority; both are written in one
  * transaction, so the two can never disagree.

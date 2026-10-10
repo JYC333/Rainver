@@ -691,12 +691,11 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * Promote a passage of a Note into a Knowledge Item (ND).
+   * Promote a passage of a Note into a Knowledge Item.
    *
-   * Governance is unchanged: this builds an ordinary `knowledge_create`
-   * proposal and nothing bypasses the review gate. What it adds is the
-   * provenance the model could not express before — "this knowledge came from
-   * my note" — carried as a `source_refs` entry of type `note`.
+   * This builds an ordinary `knowledge_create` proposal and nothing bypasses
+   * the review gate. The proposal carries "this knowledge came from my note"
+   * as a `source_refs` entry of type `note`.
    *
    * The carrier is `provenance_links`. Widening `knowledge_item_sources.source_id`'s foreign key from
    * `sources(object_id)` to `space_objects(id)` would enlarge what B12A calls
@@ -738,14 +737,13 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * The knowledge items a note produced (ND).
+   * The knowledge items a note produced.
    *
-   * The forward direction already worked — an item lists its `source_refs`, so
-   * it can say it came from a note. This is the direction the note needs: a
-   * user who promoted three passages should see the three items without
-   * knowing their ids. Read from `provenance_links` rather than `note_links`,
-   * because promotion records provenance, not navigation — and an item created
-   * from a note may never be linked to it.
+   * An item lists its `source_refs`, so it can say it came from a note. The
+   * note lists the items: a user who promoted three passages sees the three
+   * items without knowing their ids. Read from `provenance_links` rather than
+   * `note_links`, because promotion records provenance, not navigation — and
+   * an item created from a note may never be linked to it.
    */
   async knowledgeItemsPromotedFromNote(identity: SpaceUserIdentity, noteId: string): Promise<Record<string, unknown>[]> {
     if (!(await this.getNoteRow(identity, noteId))) throw new HttpError(404, "Note not found");

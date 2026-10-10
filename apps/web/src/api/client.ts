@@ -1173,8 +1173,8 @@ export const notesApi = {
   /** Notes citing a non-note object — the reverse of a jot. */
   linkingTo: (objectId: string) => get<EntityLink[]>(`/knowledge/objects/${objectId}/note-links`),
   /**
-   * Promote a selected passage into a Knowledge Item (ND). Returns the
-   * proposal — the review gate is unchanged — with the note recorded as
+   * Promote a selected passage into a Knowledge Item. Returns the
+   * proposal — the review gate still applies — with the note recorded as
    * provenance.
    */
   promote: (id: string, body: NotePromoteBody) =>

@@ -7,9 +7,8 @@ import { withNoteWrites } from "./noteWriter.js";
 /**
  * Projection of a capture into the caller's private marginalia note.
  *
- * A capture whose destination is marginalia is still an `activity_record`
- * first; this is the second half of that write, and the two commit together so
- * the felt behaviour of typing a thought inside a Project is unchanged.
+ * A capture whose destination is marginalia is an `activity_record`
+ * first; this is the second half of that write, and the two commit together.
  *
  * Why the note is private and per-user: ADR 0013 decision 3 would publish a
  * margin note to the whole team on the first keystroke, and decision 3a is the

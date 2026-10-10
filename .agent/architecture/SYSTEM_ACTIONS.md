@@ -251,8 +251,8 @@ as its Room's turns — `createDelegatedChildRun` expands
 `conversationToolGrantInput` for the group's Room and Project — behind the
 root origin gate above; it declares no capabilities of its own.
 
-This is a change of scope, not of strength: the intersection is unchanged, an
-action outside the list is still denied, and the Run must still declare it.
+The intersection is the allowance list: an action outside the list is denied,
+and the Run must still declare it.
 The allowance also carries the four id-discovery reads (`inquiry.list_threads`,
 `task.list`, `proposal.list_pending`, `research.list_operations`), without
 which the id-taking actions below could only be called with a composed id —
@@ -436,8 +436,8 @@ place that flag is enforced rather than merely displayed.
 `inquiry.promote_knowledge` combines `KnowledgePromotionCandidateService
 .createFromThread` and an immediate `decideCandidate({decision:"promote"})`
 into one call so a conversational instruction produces one Proposal instead of
-a Candidate stranded pending a second manual visit to Knowledge Review; the
-two-hop Candidate design is unchanged for the manual review path.
+a Candidate stranded pending a second manual visit to Knowledge Review.
+The manual review path is two steps: create a Candidate, then decide it.
 
 `project.propose_definition` is the Room action for formal Project
 initialization. It drafts a complete next Brief version (preserving omitted

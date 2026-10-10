@@ -234,7 +234,7 @@ export class InquiryAdviceService {
         // not be focused in one transaction and receive its Step in another.
         attention_state: "focused",
         // Records that the suggestion, not the user's own reading, is where
-        // this step came from — the distinction the bare enum could not hold.
+        // this step came from. Do not leave that distinction to the focus enum.
         step_origin: "advice",
       });
       // The row was read outside this transaction. Automatic generation may

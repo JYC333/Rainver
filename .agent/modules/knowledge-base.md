@@ -280,13 +280,13 @@ than a missing button.
   rows/proposals/artifacts, never canonical Knowledge, Memory, Claim, Project,
   relation, or retrieval projection rows. The **storage** behind them belongs to
   the `ontology` module (B12I): the paths stay under `/api/v1/knowledge/` and
-  `PgKnowledgeRepository` delegates to `PgOntologyRepository`, so ownership
-  moved without a client-visible URL change.
+  `PgKnowledgeRepository` delegates to `PgOntologyRepository`. The client-visible
+  URL stays under those paths.
 - Note → Knowledge promotion (`POST /api/v1/knowledge/notes/{id}/promote`,
   `GET .../promoted`): a selected passage becomes a normal knowledge-item
   proposal, and the originating Note is recorded as a `provenance_links` row
-  with `source_type='note'`. Governance is unchanged — nothing bypasses the
-  proposal gate — and the Note keeps its content.
+  with `source_type='note'`. Nothing bypasses the proposal gate, and the Note
+  keeps its content.
 - `POST /api/v1/knowledge/notes/jot` (create-or-append a note plus its
   `note_link` in one call) and `GET /api/v1/knowledge/objects/{id}/note-links`
   (what notes cite this object; the note `backlinks` route is note-keyed on

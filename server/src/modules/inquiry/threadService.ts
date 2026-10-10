@@ -86,8 +86,7 @@ function threadToOut(row: ThreadRow): Record<string, unknown> {
 
 // A Thread is an ontology object (ADR 0012): identity, ownership, provenance,
 // and timestamps come from `space_objects`, the rest from the extension table.
-// The external field stays `id` so the API shape is unchanged — only the
-// storage moved.
+// The external field is `id`.
 const THREAD_ROOT_COLUMNS = ["owner_user_id", "created_by_user_id", "created_at", "updated_at"];
 const THREAD_OWN_COLUMNS = [
   "space_id", "project_id", "kind", "statement", "lifecycle_status", "attention_state", "priority",
