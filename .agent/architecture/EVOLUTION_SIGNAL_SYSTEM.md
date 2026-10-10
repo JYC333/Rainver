@@ -128,4 +128,4 @@ The inventory covers the current durable event classes. The manual
 signal-create route is an explicit ingestion surface; neither represents a
 missing automatic performance emitter. Direct Artifact edit evidence stays
 deferred (see [../plans/backlog.md](../plans/backlog.md))
-because there is not yet an authoritative Artifact revision event.
+because there is no authoritative Artifact revision event.

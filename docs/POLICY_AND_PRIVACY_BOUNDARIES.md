@@ -340,7 +340,7 @@ Unimplemented reserved-action wiring:
 | Action | Notes |
 |--------|-------|
 | `tool_binding.enable` | Tool binding lifecycle not wired |
-| `context.use_personal_grant` | personal_memory_grants/ does not yet call `enforce()` |
+| `context.use_personal_grant` | personal_memory_grants/ does not call `enforce()` |
 | `artifact.export` | Artifact export surface not wired |
 | `proposal.approve` | Explicit approval row recording not wired |
 | `memory.read_private` | Private memory read path not wired |

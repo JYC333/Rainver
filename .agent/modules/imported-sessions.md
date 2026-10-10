@@ -225,7 +225,7 @@ being present, and attended consent does not stand in for unattended spending
   a private session, and equally `selected_users` or a `summary`-level share:
   both name a narrower audience than the Project's readers, so landing them in
   the mainline would be a disclosure the server refuses without a confirmation
-  the UI cannot yet show. A private session still gets the button. The
+  the UI does not show. A private session still gets the button. The
   destination protects it by construction. Do not withhold the button to
   protect it.
 
