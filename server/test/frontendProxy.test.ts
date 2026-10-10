@@ -87,8 +87,7 @@ describe("production nginx proxy", () => {
       expect(imgSrc, source).not.toContain(source);
     }
     expect(imgSrc).toContain("'self'");
-    // And the property the theme script was moved out of `index.html` to
-    // preserve: an inline `<script>` must stay unrunnable, or it comes back
+    // An inline `<script>` must stay unrunnable. Otherwise it comes back
     // silently and works in dev while doing nothing in production.
     const scriptSrc = (/script-src ([^;]+);/.exec(securityHeaders)?.[1] ?? "").split(/\s+/).filter(Boolean);
     expect(scriptSrc).toEqual(["'self'"]);

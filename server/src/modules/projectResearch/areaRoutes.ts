@@ -14,10 +14,9 @@ export function registerProjectResearchAreaRoutes(
   context: ModuleContext,
   base: string,
   /**
-   * Notebook chat is Project-level, not research-level: it discusses and edits
-   * the Project's notes, and those moved out of the Research Area onto the
-   * Project's own notes surface. Its path moved with it, so it is registered
-   * under the Project base rather than under `.../research/`.
+   * Notebook chat is Project-level, not research-level. It discusses and edits
+   * the Project's notes on the Project's own notes surface. Register it under
+   * the Project base, not under `.../research/`.
    */
   projectBase: string,
 ): void {

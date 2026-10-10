@@ -1188,9 +1188,9 @@ second copy: the copies disagree.
 `img-src` allows `https:`, and that is deliberate: the Library reader renders a
 captured article with the article's own remote images
 (`image_policy: "remote_reference"`), so this header cannot be the layer that
-stops a model-named one. Tightening it broke every captured article's images,
-and only in production, since dev serves no headers — the same split the theme
-script was moved out of `index.html` to close. The **renderer** is the boundary
+stops a model-named one. Do not tighten `img-src` here. It breaks every
+captured article's images, and only in production, because dev serves no
+headers. The **renderer** is the boundary
 instead: chat markdown and every model-authored document render a cross-origin
 image as a link and never fetch it, and the reading core's `remoteImages` is off
 unless a caller opts in, which only the captured-article surface does. `http:`
