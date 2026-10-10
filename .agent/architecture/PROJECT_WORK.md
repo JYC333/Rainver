@@ -197,8 +197,8 @@ explain.
 
 `task_evaluations` is load-bearing here. `RunFinalization` already projects
 every run evaluation into one, with `recommendation ∈ accept / review / retry /
-needs_evidence` and deterministic verification status — the previous projection
-simply never read it.
+needs_evidence` and deterministic verification status. Settlement reads that
+row. Do not leave the projection unread.
 
 Required outputs: each entry in `tasks.required_outputs_json` is matched
 case-insensitively against the `artifact_type` of the Task's `role = 'output'`

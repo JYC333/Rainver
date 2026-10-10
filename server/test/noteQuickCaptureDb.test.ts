@@ -13,9 +13,8 @@ import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
  * - **Without one** — append to the Project's `inbox` note. A new note per
  *   captured thought would turn the tree into fragments.
  *
- * The inbox is found by `project_role`, never by title: the previous work
- * removed title-based note resolution and `noteProjectRoleGuard.test.ts` fails
- * if it comes back.
+ * The inbox is found by `project_role`, never by title.
+ * `noteProjectRoleGuard.test.ts` fails if title lookup comes back.
  */
 
 const SPACE = "11111111-1111-4111-8111-111111111111";

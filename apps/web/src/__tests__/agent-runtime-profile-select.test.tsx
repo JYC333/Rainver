@@ -244,11 +244,11 @@ describe('AgentDetailPage — runtime profile Runtime select', () => {
 
   it('starts a new Profile from the default Profile, not from the one on screen', async () => {
     // "New profile" clears the Profile selection, and the reset effect keyed on
-    // that selection fires on the same transition. While the defaults lived in
-    // the click handler the effect overwrote every one of them: the name went
-    // back to the previous Profile's, the execution target went to null, and
-    // the picker — which ignores a null value — kept showing the Host of the
-    // Profile that was open. Save then refused a form that looked configured.
+    // that selection fires on the same transition. Keep the defaults out of
+    // the click handler. The effect overwrites them: the name returns to the
+    // Profile that was open, the execution target goes to null, and the picker
+    // — which ignores a null value — keeps showing that Host. Save then
+    // refuses a form that looks configured.
     const runtimes = [{
       runtime_key: 'opencode', display_name: 'OpenCode',
       installations: [{ id: 'managed:1.0.0', version: '1.0.0', logged_in: true }],

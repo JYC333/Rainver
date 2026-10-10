@@ -725,10 +725,9 @@ describe("runtimeContextCliContinuityDb", () => {
   }
 
   describe("semantic checkpoint metering (real PostgreSQL)", () => {
-    // From 2026-08-10 every semantic extraction was metered to a resource
-    // type nothing registers, so attribution rejected it before the provider
-    // was called and the job failed: no checkpoint was ever written, and the
-    // "completed" jobs were the ones with too few events to extract at all.
+    // Meter the extraction to a resource type attribution accepts. An
+    // unregistered type is rejected before the provider is called, so no
+    // checkpoint is written.
     it("meters an extraction to the scope's owner, which attribution accepts", async () => {
       if (!db.available) return;
       // Attribution to a person requires that person to be an active member;

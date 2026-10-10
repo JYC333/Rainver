@@ -58,9 +58,8 @@ beforeEach(() => {
 })
 
 /**
- * These rows lived on an Operations Area beside Automations, Runs and alerts
- * — Space-level objects filtered to the Project. The research rows were the
- * only thing there that belonged to the Project, so they moved to Research.
+ * These rows belong to Research. Do not put them on an Operations page beside
+ * Automations, Runs, and alerts.
  */
 describe('Research Runs tab', () => {
   it('lists every research Workflow as its own row and lets a pending Checkpoint be decided there', async () => {

@@ -16,12 +16,10 @@ import { contentReadSql } from "../access/contentAccessSql.js";
  * A note reorder addresses a **placement**, not a note.
  *
  * `note_collection_items` is unique on `(collection_id, note_id, space_id)`, so
- * one note may sit in several folders. The previous payload carried only the
- * note id and the destination, and the UPDATE matched on `note_id` alone —
- * moving one placement silently rewrote every other placement of the same note
- * to the same folder. That is not a sort-order glitch: it destroys a placement.
- *
- * `fromCollectionId` is what identifies the row being moved. Rows that only
+ * one note may sit in several folders. `fromCollectionId` identifies the row
+ * being moved. Do not match the UPDATE on `note_id` alone: that rewrites every
+ * other placement of the same note into the destination folder and destroys
+ * them. Rows that only
  * shift position within their folder repeat their own folder there.
  */
 interface NotesTreeReorderNotePlan {

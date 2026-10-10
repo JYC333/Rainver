@@ -287,7 +287,7 @@ describe("openai-compatible structured output forced-tool fallback", () => {
     expect(attempts[1]!.body.max_completion_tokens ?? attempts[1]!.body.max_tokens).toBe(5);
     // A larger caller budget still wins.
     expect(attempts[2]!.body.max_completion_tokens ?? attempts[2]!.body.max_tokens).toBe(200_000);
-    // Unknown models keep the previous behavior (provider default).
+    // Unknown models keep the provider default.
     expect(attempts[3]!.body.max_tokens).toBeUndefined();
   });
 });

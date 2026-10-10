@@ -152,12 +152,10 @@ async function dropStaleTestDatabases(admin: Pool, currentTemplate: string): Pro
 
 /**
  * Docker's published-port path goes through the userland `docker-proxy`,
- * which copies every byte of every statement through an extra process. With
- * a dozen workers hammering one instance that proxy was the busiest thing on
- * the machine: a round trip direct to the container IP measured 3.4x the
- * throughput of the mapped port. Where the container's bridge address is
- * reachable from the host (native Linux engines, WSL2), talk to it directly;
- * where it is not (Docker Desktop on macOS/Windows), keep the mapped port.
+ * which copies every byte of every statement through an extra process. Where
+ * the container's bridge address is reachable from the host (native Linux
+ * engines, WSL2), talk to it directly. Where it is not (Docker Desktop on
+ * macOS/Windows), keep the mapped port.
  */
 async function directConnectionUri(container: StartedPostgreSqlContainer): Promise<string> {
   const mapped = container.getConnectionUri();

@@ -324,7 +324,7 @@ export class PgMemoryApplyRepository {
 
     const acceptContext = "explicit_user_accept";
     let payload: Record<string, unknown> = { ...(proposal.payload_json ?? {}) };
-    // An Agent's own write that had to become a proposal (ADR 0003 §1)
+    // An Agent's own write is a proposal (ADR 0003 §1) and
     // carries only agent-inferred provenance, and the source-monitoring gate
     // refuses that as the sole basis for an active semantic memory. The thing
     // the gate is asking for is a person's confirmation, and accepting the

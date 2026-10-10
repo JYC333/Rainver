@@ -5,10 +5,9 @@ import type { RunRecord } from "./repository.js";
 /**
  * The bearer identity a dispatched agent uses to call back into Rainver.
  *
- * Durable, unlike the in-process map it replaces: a remote run's CLI keeps
- * running across a server restart, and an identity that lived only in memory
- * came back unrecognized — the agent lost its tool surface mid-run with no way
- * to acquire another. Only the digest is stored, so reading the table cannot
+ * Durable. A remote run's CLI keeps running across a server restart. Do not
+ * keep the identity only in memory: after a restart the callback comes back
+ * unrecognized and the agent loses its tool surface mid-run. Only the digest is stored, so reading the table cannot
  * recover a live token.
  *
  * The identity authorizes the tool surface of exactly one Run. It is not a

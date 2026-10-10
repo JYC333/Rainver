@@ -623,10 +623,9 @@ describe("the origin gate at the dispatch path", () => {
   /**
    * The band the decision-table cases above cannot reach.
    *
-   * `engineCheck` with a hand-built ctx proves the rule; it says nothing about
-   * whether anything ever supplies `trigger_origin`. The first version of this
-   * phase did not, so the gate was inert at every real dispatch while its unit
-   * cases passed — the same shape of gap P1 and P2 each hit once.
+   * `engineCheck` with a hand-built ctx proves the rule. The dispatch path
+   * must also supply `trigger_origin`. A gate whose unit cases pass while no
+   * caller supplies the origin does nothing.
    */
   async function enforceFor(runOverrides: Partial<AgentRunRecord> & { trigger_origin: string }, actionId: string) {
     const registry = await loadSystemActionRegistry();

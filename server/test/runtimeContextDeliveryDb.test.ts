@@ -1309,9 +1309,9 @@ describe("Invocation Delivery and Snapshot persistence", () => {
 
     await expect(createAttempt()).resolves.toBeDefined();
 
-    // A non-member has no membership row to pin, which is an ordinary outcome
-    // and not an error — the reason the join was written outer in the first
-    // place. Personal-Space read authority still admits the read.
+    // A non-member has no membership row to pin. That is an ordinary outcome.
+    // The join is outer. Do not treat a missing membership as an error.
+    // Personal-Space read authority still admits the read.
     await db.pool.query(`DELETE FROM project_members WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT]);
     await expect(createAttempt()).resolves.toBeDefined();
   });

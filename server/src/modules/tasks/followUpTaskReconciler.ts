@@ -35,7 +35,7 @@ import type { Queryable, RunRecord } from "../runs/runRepositoryTypes.js";
  * Project's behalf), and nothing when the accept itself refuses — an egress
  * owner has not approved, or the instructing person's role cannot apply a
  * medium-risk proposal. In every one of those cases the card stays exactly
- * where it was, which is the answer this replaces, not a worse one.
+ * where it was. Do not drop it or move it when the accept refuses.
  */
 export function registerFollowUpTaskFinalizationReconciler(config: ServerConfig): void {
   runFinalizationReconcilerRegistry.register("follow_up_task", {

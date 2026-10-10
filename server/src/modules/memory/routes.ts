@@ -730,9 +730,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // Archiving and restoring your own memory (ADR 0003 §3). A proposal here
-  // was the person asking themselves for permission; someone else's entry
-  // still goes through one, which is the case the flow was for.
+  // Archiving and restoring your own memory is direct (ADR 0003 §3). Do not
+  // ask a person for permission to archive their own entry. Someone else's
+  // entry still goes through a proposal.
   app.delete("/api/v1/memory/:memoryId", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;

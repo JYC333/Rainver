@@ -114,9 +114,8 @@ function openLogoutChannel(): BroadcastChannel | null {
 /**
  * Runs `onRemote` when another tab of this browser signs out.
  *
- * Without it, signing out in one tab left every other tab holding a rendered
- * page full of the previous person's content until something happened to make
- * it call the API. Returns a stop function.
+ * Another tab's sign-out clears this tab. Do not keep rendering the previous
+ * person's page until the next API call. Returns a stop function.
  */
 export function watchCrossTabLogout(onRemote: () => void): () => void {
   const channel = openLogoutChannel()

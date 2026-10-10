@@ -46,10 +46,9 @@ describe("note link target guardrail", () => {
   });
 
   it("offers every type that is both linkable and searchable", async () => {
-    // The direction gap 3 actually failed in: the list was a strict subset of
-    // what the backend supported, and the missing entries were the ones that
-    // connected notes to research material. Registering a new searchable
-    // `space_objects` subtype must fail here until the editor offers it.
+    // The editor list is the linkable-and-searchable intersection. Registering
+    // a new searchable `space_objects` subtype fails here until the editor
+    // offers it. Do not keep the list a subset of what the backend supports.
     const { NOTE_LINK_TARGET_TYPE_VALUES } = await import("@rainver/protocol");
     const offered = new Set<string>(NOTE_LINK_TARGET_TYPE_VALUES);
     const retrievable = new Set<string>(retrievableEntityTypes());

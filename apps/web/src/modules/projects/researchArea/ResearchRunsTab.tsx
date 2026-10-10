@@ -17,10 +17,8 @@ import { ThreadOriginBar } from '../inquiryArea/ThreadOriginBar'
  * Every evidence search this Project is running, with its Checkpoint
  * controls — one row per Question or Hypothesis Thread.
  *
- * This lived on an Operations Area beside Automations, Runs and alerts. Those
- * three were Space-level objects filtered to the Project, and the alerts were
- * already in the attention list; the research rows were the only thing on
- * that page that belonged to the Project, and they belong to Research.
+ * These rows belong to Research. Do not put them on an Operations page beside
+ * Automations, Runs, and alerts.
  */
 export default function ResearchRunsTab({ projectId }: { projectId: string }) {
   const [searchParams] = useSearchParams()

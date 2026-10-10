@@ -30,7 +30,7 @@ export interface Queryable {
 }
 
 /**
- * An Agent's own write that had to become a proposal
+ * An Agent's own write is a proposal
  * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §1).
  *
  * Threaded through so the proposal records who actually wrote it and why. The

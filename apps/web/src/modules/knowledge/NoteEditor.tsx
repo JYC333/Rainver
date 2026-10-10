@@ -109,10 +109,9 @@ interface NoteEditorProps {
 }
 
 /**
- * The one open-note editor. Every notes surface mounts this component — there is
- * deliberately no second implementation, because the previous Project notebook
- * card was a subset of it and drifted (no actions, no links) the moment the two
- * existed side by side.
+ * The one open-note editor. Every notes surface mounts this component. Do not
+ * keep a second implementation. Two editors drift: the second one stops at
+ * actions and links.
  *
  * Layout is a full-bleed document: a borderless title + body that fill the pane,
  * with a bottom status bar. Links and backlinks are not rendered inline — they

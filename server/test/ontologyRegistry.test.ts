@@ -30,11 +30,9 @@ import {
   assertLinkTypeAllowed,
 } from "../src/modules/ontology/validation.js";
 
-// B12G: one registry, no parallel per-mechanism type lists. These assertions are
-// the mechanism that catches an omission — the previous arrangement had three
-// lists at incompatible granularity and nothing that could compare them, which
-// is how a relation hint came to be declarable for an edge type
-// `object_relations` would reject on write.
+// B12G: one registry. Do not keep a second per-mechanism type list. These
+// assertions catch an omission. A relation hint must not be declarable for an
+// edge type `object_relations` rejects on write.
 describe("ontology registry", () => {
   it("declares every link type in the protocol vocabulary", async () => {
     const { LINK_TYPE_VALUES } = await import("@rainver/protocol");

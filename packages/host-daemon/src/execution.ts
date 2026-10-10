@@ -557,11 +557,9 @@ function runOutputsDir(runId: string): string {
  * the run — including a work surface carrying its tool token.
  */
 function runDir(runId: string): string {
-  // The Runner this replaces resolved every mount id below a managed root and
-  // refused one that escaped it. The daemon addresses paths directly, so the
-  // equivalent guard is here: a run id is one path segment, and `join` would
-  // otherwise turn `../..` into a real parent directory that `resolve()` then
-  // considers perfectly normal — and in strict mode that directory becomes a
+  // A run id is one path segment. Do not join a value that escapes the run
+  // directory: `join` turns `../..` into a parent directory that `resolve()`
+  // then treats as normal, and in strict mode that directory becomes a
   // read-write bind carrying this daemon's own registration.
   if (!RUN_ID_SEGMENT.test(runId)) throw new Error(`run id is not a usable directory name: ${runId}`);
   return join(configDir(), "runs", runId);
@@ -725,12 +723,10 @@ function loginHomeFor(runtimeKey: string, installation: string): string | null {
 /**
  * What a strict namespace applies when the dispatch stated no policy.
  *
- * Fail-closed on both axes: a read-only workspace and no network at all. The
- * Runner this replaces refused a launch whose egress profile did not match the
- * channels it actually carried, so a request that named no channel could not
- * obtain a network; the daemon has no typed channels to cross-check against,
- * so the equivalent is to give an unpolicied Run nothing. A Run that needs
- * either says so, and a control plane that forgets to says nothing — which
+ * Fail-closed on both axes: a read-only workspace and no network at all. A
+ * request that names no channel gets no network. The daemon has no typed
+ * channels to cross-check against, so an unpolicied Run gets nothing. A Run
+ * that needs either says so. A control plane that forgets to say anything
  * must fail visibly rather than quietly hand a shared host the container's
  * network.
  */

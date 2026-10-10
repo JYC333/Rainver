@@ -100,8 +100,7 @@ describe("note placements (real Postgres)", () => {
     const before = orderIn(await repository.getNote(identity, shared.id), second);
 
     // Move the shared note to the front of `first`. Its placement in `second`
-    // must be untouched — the previous UPDATE matched on note_id alone and
-    // dragged that row into `first` too.
+    // stays where it is. Do not match the move on note_id alone.
     await withTransaction(db.pool, (client) => persistNotesTreeReorder(client, identity, {
       kind: "notes",
       updates: [

@@ -360,9 +360,9 @@ export class PgTaskRepository {
       "t.deleted_at IS NULL",
       contentReadSql("task", "t", "$1"),
       // Responsible-is-me, not "touched by me". A Task an Agent has claimed is
-      // the Agent's, even where a person is assigned or created it, so this is
-      // narrower than the previous OR — and it agrees with what the Board and
-      // Needs You show, which the OR did not.
+      // the Agent's, even where a person is assigned or created it. The filter
+      // is the responsible user. Do not OR in assignee and creator: that
+      // disagrees with what the Board and Needs You show.
       `${responsibleUserSql("t", "mp")} = $1`,
     ];
     if (filters.status) {

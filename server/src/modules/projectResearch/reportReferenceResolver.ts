@@ -13,9 +13,9 @@ type SourceItemMeta = Omit<ResolvedResearchReference, "id" | "availability" | "e
  * shape: one entry per article (`ref-N`), carrying the article metadata the
  * viewer may read plus the cited evidence excerpts as lettered sub-items
  * (`ref-Na`). Grouping follows the persistent `reference_id` labels written
- * at materialization; entries without one (reports stored before two-level
- * numbering) fall back to one positional group per entry, which reproduces
- * the previous flat output.
+ * at materialization; entries without one fall back to one positional group
+ * per entry, the flat list. Do not invent two-level numbers for a report
+ * stored without them.
  */
 export async function resolveResearchReportReferences(db: Queryable, identity: SpaceUserIdentity, content: Record<string, unknown>) {
   const references = collect(content);

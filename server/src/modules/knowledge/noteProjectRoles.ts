@@ -15,8 +15,7 @@ import { HttpError } from "../routeUtils/common.js";
  * `inbox` is not one of the research baseline's four. It is the Project's
  * capture target: a quick capture with no context object appends to it rather
  * than creating a fragment per thought. It is a role rather than a title lookup
- * for the same reason the other four are — the previous work removed
- * title-based note resolution and the inbox cannot reintroduce it.
+ * for the same reason the other four are. Do not resolve the inbox by title.
  *
  * Mirrors `NOTE_PROJECT_ROLE_VALUES` in the protocol package, which is the
  * shared vocabulary the web client reads. The server keeps its own const

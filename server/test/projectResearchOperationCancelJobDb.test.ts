@@ -231,9 +231,9 @@ describe("research_operation_cancel job (real Postgres)", () => {
     // plan `running` would keep fetching from the provider after "Stop".
     const planRow = await db.pool.query<{ status: string }>(`SELECT status FROM source_backfill_plans WHERE id=$1`, [plan]);
     expect(planRow.rows[0]?.status).toBe("cancelled");
-    // Pre-reform the checkpoint decision WAS the stop lever, so stopping
-    // resolved the row; a surviving pending gate would keep the web UI
-    // advertising a review whose approval no-ops on a cancelled operation.
+    // Stopping waives the pending checkpoint. A surviving pending gate keeps
+    // the web UI advertising a review whose approval no-ops on a cancelled
+    // operation. Do not leave the checkpoint as the stop lever.
     const checkpointRow = await db.pool.query<{ status: string }>(`SELECT status FROM project_research_checkpoints WHERE id=$1`, [checkpoint]);
     expect(checkpointRow.rows[0]?.status).toBe("waived");
     expect(result).toMatchObject({

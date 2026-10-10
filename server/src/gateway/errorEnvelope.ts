@@ -63,8 +63,8 @@ function boundedString(value: unknown, maxLength = 1000): string | undefined {
 /**
  * Keep the client-facing error generic while making uncaught failures useful
  * to the operator. PostgreSQL exposes the structured fields below on its
- * errors; recording them avoids the previous `reason: "Error"` dead end
- * without logging request bodies, headers, or credentials.
+ * errors. Record those fields. Do not log `reason: "Error"` and nothing else,
+ * and do not log request bodies, headers, or credentials.
  */
 function errorLogFields(error: unknown): ErrorLogFields {
   const known = error as {

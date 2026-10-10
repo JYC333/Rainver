@@ -740,7 +740,7 @@ may converse there: asking the Project's Assistant "is this one done?" is the
 panel's whole purpose, and reading the answer is what a viewer is for. What a
 viewer says cannot change the Project's work — every Task-addressed action an
 Agent takes on their instruction requires writer authority on the Project and
-is refused. Speaking *first* is no longer a separate authority either: the
+is refused. Speaking first is not a separate authority: the
 mainline is created with the Project, so a viewer can be the one who opens the
 Project's Conversation draft, and that explicit draft action provisions the
 Assistant. The manager

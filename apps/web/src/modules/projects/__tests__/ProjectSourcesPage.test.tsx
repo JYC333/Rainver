@@ -601,8 +601,8 @@ describe('ProjectSourcesPage', () => {
 /**
  * What this Project's sources produced, and saving a URL into them.
  *
- * These lived on the Project Overview while the bindings and items they
- * derive from lived here, so one source pipeline was split across two pages.
+ * Derived source signals are on this page, with the bindings and items they
+ * come from. Do not split the pipeline onto the Project Overview.
  */
 describe('ProjectSourcesPage derived source signals', () => {
   it('shows active evidence, recommendations, and reader annotations for the project', async () => {

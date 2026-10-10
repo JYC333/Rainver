@@ -8,9 +8,8 @@ import type { Pool } from "pg";
  * users CASCADE` reaches 281 of the ~300 tables through foreign keys, and for
  * every one of them (plus its ~1000 indexes) Postgres allocates a fresh
  * relfilenode and takes an AccessExclusiveLock, whether or not the table holds
- * a row. Measured on the shared test container that was 1–15 seconds per
- * call; with a dozen workers hammering one instance it was most of the wall
- * clock of the whole suite. DELETE on an empty table is microseconds.
+ * a row. Do not pay that in `beforeEach`. DELETE on an empty table is the
+ * reset.
  *
  * This keeps TRUNCATE's semantics — `cascade` follows foreign keys to every
  * referencing table, transitively, exactly as `TRUNCATE ... CASCADE` does —

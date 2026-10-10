@@ -109,9 +109,8 @@ beforeEach(() => {
 
 /**
  * U1/U3: the Project's notes are the *same* page as `/knowledge/notes`, hoisted
- * to the Project's folder. The guardrail that matters is that there is one
- * implementation — the previous Project notebook was a weaker copy, and every
- * capability the shared editor grew stopped at its edge.
+ * to the Project's folder. There is one implementation. Do not keep a second
+ * Project notebook that stops where the shared editor grows.
  */
 describe('Project notes surface', () => {
   it('mounts the shared notes surface hoisted to the Project folder', async () => {

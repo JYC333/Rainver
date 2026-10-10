@@ -1320,19 +1320,17 @@ server-side. Avatar images accept `http(s)` and refuse `data:`.
 - **Codex's strict-host sandbox rewrite** sets the *top-level* `sandbox_mode`
   and writes only inside the Run's own profile directory — the Agent × container
   profile, never the installation's login home, which every Agent on the host
-  shares. TOML scopes a key to the table above it, so matching `sandbox_mode`
-  anywhere rewrote the first named profile's key instead — leaving the default
-  the Run actually reads untouched, and quietly changing a profile configured
-  for something else. Recognising where the top-level table ends took three
-  conjuncts, each added after the previous one was found insufficient: a table
-  header is a bracketed name **alone on its line** (a bare leading `[` also
-  matched a multi-line array's continuation), **at bracket depth zero** (a final
-  array element carries no trailing comma and so reads exactly like a header),
-  counted over the line with **strings and comments removed** (one unbalanced
-  `[` inside either pinned the depth and disabled the scan entirely). The scan
-  for an existing key carries the same string-awareness, or a `sandbox_mode`
-  line inside a multi-line string is rewritten instead of the real one — which
-  leaves Codex starting cleanly and the Run silently unable to write.
+  shares. TOML scopes a key to the table above it. Do not match `sandbox_mode`
+  anywhere it appears: that rewrites the first named profile's key, leaves the
+  default the Run reads untouched, and changes a profile configured for
+  something else. A table header is a bracketed name **alone on its line** (a
+  bare leading `[` also matches a multi-line array's continuation), **at
+  bracket depth zero** (a final array element carries no trailing comma and so
+  reads exactly like a header), counted over the line with **strings and
+  comments removed** (one unbalanced `[` inside either pins the depth and
+  disables the scan). The scan for an existing key carries the same
+  string-awareness. Do not rewrite a `sandbox_mode` line inside a multi-line
+  string: Codex starts, and the Run cannot write, with no error.
 - **Evidence and audit redaction.** One module (`runs/evidenceRedaction.ts`)
   decides what a secret looks like in free text. It covers what
   `\b(token|secret)` could not — `\b` does not fire between `_` and a letter,
