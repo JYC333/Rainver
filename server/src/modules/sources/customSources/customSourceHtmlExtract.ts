@@ -1,13 +1,12 @@
 import { sha256 } from "../sourceRepositoryMappers.js";
 
 /**
- * Real TypeScript port of the string-processing heuristics embedded as a
- * text template in `customSourceHandlerTemplate.ts` (the `typescript_node`
- * generation mode's generated `.cjs` handler). The declarative pipeline
- * interpreter (`customSourcePipelineInterpreter.ts`) calls these directly —
- * it runs trusted, in-process code, so there is no need to serialize this
- * logic into a string executed by a spawned child process the way the
- * code-template mode must.
+ * The string-processing heuristics the `typescript_node` handler template
+ * embeds (`customSourceHandlerTemplate.ts`, the generated `.cjs` handler).
+ * The declarative pipeline interpreter (`customSourcePipelineInterpreter.ts`)
+ * calls these directly. It runs trusted, in-process code, so there is no need
+ * to serialize this logic into a string executed by a spawned child process
+ * the way the code-template mode must.
  *
  * Deliberately the same shallow heuristics as the code-template mode for
  * parity: one CSS class name identifies repeated list items, not a full CSS

@@ -27,9 +27,9 @@ export const outboundGuard: OutboundGuard = createOutboundGuard();
  * Fetches a user-influenced URL through the boundary.
  *
  * Every server outbound call that takes a URL from a Source, a Recipe, a
- * handler or a redirect goes through here. Provider API calls do not: ADR-level
- * decision D2 keeps `base_url` free to name a private address, because a local
- * Ollama is a real deployment.
+ * handler or a redirect goes through here. Provider API calls do not.
+ * `base_url` may name a private address, because a local Ollama is a real
+ * deployment.
  */
 /**
  * The boundary refused the address, rather than the URL being malformed.

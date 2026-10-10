@@ -25,8 +25,8 @@ export function sourceItemReadableClause(
  * briefing.
  *
  * Readable is not enough: a `summary`-level reader is served the item without
- * its body, so a path that read the row and then copied `excerpt` back out at
- * `space_shared` visibility undid that withholding. Full access or nothing.
+ * its body. Do not read the row and copy `excerpt` back out at `space_shared`
+ * visibility. That would undo the withholding. Full access or nothing.
  *
  * The ordinary item gate, connection consent included, plus the level — not a
  * second shape of it. Oversight is excluded: a Space owner or admin may read a

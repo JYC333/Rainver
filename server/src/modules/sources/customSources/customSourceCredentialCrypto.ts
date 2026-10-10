@@ -13,8 +13,8 @@
  * one existing credential class (see its own header comment); duplicating
  * ~15 lines of AES-256-GCM here with a distinct `secret_ref` prefix keeps
  * each credential class's at-rest format independently readable and
- * independently versionable, rather than introducing a shared abstraction
- * two call sites don't yet need.
+ * independently versionable. Do not introduce a shared abstraction. The two
+ * call sites do not use one.
  */
 
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
