@@ -93,12 +93,11 @@ export function ReferenceMessage({
  * Where the source can be opened, or null when it cannot be.
  *
  * Logical, unscoped paths: `SpaceLink` adds the Space prefix every route in
- * this app lives under. Building it here instead is how the conversation link
- * came to point outside the router and land on Home.
+ * this app lives under. Do not build the Space prefix here. The conversation
+ * link would point outside the router and land on Home.
  *
- * Null rather than a guess: a conversation attached before `source_room_id`
- * was recorded has no Room to open, and a link onto the wrong Room is worse
- * than none.
+ * Null rather than a guess. A conversation with no `source_room_id` has no
+ * Room to open, and a link onto the wrong Room is worse than none.
  */
 function originLink(
   reference: ThreadReferenceProvenance,

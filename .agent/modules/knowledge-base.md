@@ -735,8 +735,8 @@ One read and one write check, and both are the module's own.
 
 - **Read:** the content predicate on `space_objects` plus the effective access
   level (`getNoteRow`, `getSourceRow`, `noteColumnsWithAccess`). `listNotes`,
-  `listSources`, `listItems` and `listClaims` all carry it; a list that answers
-  something the detail page refuses is the defect to watch for.
+  `listSources`, `listItems` and `listClaims` all carry it. A list must not answer
+  something the detail page refuses.
 - **Write:** `assertWritableSpaceObject` (`knowledgeWriteAccess.ts`). Anything
   but `space_shared` belongs to its owner; a Project-bound object also needs
   writer authority in that Project; a reader served the object at `summary` may

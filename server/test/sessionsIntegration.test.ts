@@ -8,14 +8,14 @@ import { PgSessionRepository } from "../src/modules/sessions/repository.js";
 import { PgProposalRepository } from "../src/modules/proposals/repository.js";
 
 // Real-PostgreSQL integration tests for the server sessions repository. The unit
-// suites use a fake that records arguments but never runs SQL, so they cannot
-// catch the defects that only surface on the real stack: the required
+// suites use a fake that records arguments but never runs SQL. These lock what
+// the real schema enforces: the required
 // default columns (id/status/created_at/updated_at) a raw INSERT must supply,
 // the ck_messages_role CHECK, jsonb param binding, varchar lengths, and the
-// add-message + session-touch CTE. These run the actual SQL against a throwaway
+// add-message + session-touch CTE. They run through `useTestDatabase`.
 //
-// The suite skips gracefully when Docker is unavailable so `pnpm test` still runs
-// everywhere; where Docker is present (dev, CI) it always runs.
+// The suite skips when that database is unavailable so `pnpm test` still runs
+// everywhere; where it is present (dev, CI) it always runs.
 
 let repo: PgSessionRepository | undefined;
 

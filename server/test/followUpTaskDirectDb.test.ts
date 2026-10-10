@@ -299,8 +299,8 @@ describe("follow-up Tasks from a Run's output (real Postgres)", () => {
       { proposal_status: "staged" },
     );
     await promoteStagedProposals(run.id);
-    // Through the registry, not the function: deleting the registration line
-    // is the failure this case exists to catch.
+    // Through the registry, not the function. Deleting the registration line
+    // must fail here.
     await runFinalizationReconcilerRegistry.reconcileAll(db.pool, run);
     expect(await tasks()).toHaveLength(1);
   });

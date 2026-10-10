@@ -493,9 +493,9 @@ function ModelTab({
   }, [agentId, defaultProfile?.id])
 
   // The one place the composer is seeded from. "New profile" only clears the
-  // selection: this effect is keyed on that selection and fires on the very
-  // transition the click causes, so defaults written in the handler were
-  // overwritten here a render later. A new Profile inherits the default
+  // selection. Do not also write defaults in the click handler. This effect
+  // is keyed on that selection and fires on the transition the click causes,
+  // so those defaults would be overwritten a render later. A new Profile inherits the default
   // Profile's execution target, which is what a second Profile for the same
   // Agent almost always wants and is the only complete target the composer
   // can offer without another round of picking.

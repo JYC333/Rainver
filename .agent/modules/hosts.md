@@ -1529,8 +1529,8 @@ A deliberately thin bridge — no planner, no memory, no business logic (ADR
 `~/.rainver-host/config.json` (override root via
 `RAINVER_HOST_CONFIG_DIR`), mode 0600, the **only** place a workspace's
 real local path is ever written down. It also records the daemon's `trust`
-mode, written with the credential it registered with; a config that predates
-the field is a paired host, which is all a daemon could be then.
+mode, written with the credential it registered with. A config with no
+`trust` field is a paired host.
 
 ### Location lease, Task worktrees and `git_after`
 

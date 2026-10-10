@@ -533,10 +533,10 @@ predicates in `modules/access/contentAccessSql.ts` — `runReadSql`,
 exists because of a Run. That is the Task's run/evaluation/artifact/proposal
 lists, the Board card columns, the Task work view, the Project updates feed and
 the undo path. A work event names its Run inside `data_json`, so that is what
-the predicate reads — `appendProjectWorkEvent` takes a `runId` and stamps it
-there, rather than leaving each writer to remember the convention, which is how
-three Agent-completion writers came to set only the correlation column and leave
-their events ungated; the visited-stage rail is the one deliberate exemption,
+the predicate reads. `appendProjectWorkEvent` takes a `runId` and stamps it
+there. Do not leave each writer to remember the convention. An event with only
+the correlation column stays ungated. The visited-stage rail is the one
+deliberate exemption,
 because it reads stage keys and no content, and gating it would make the rail
 claim a Task never reached a stage it reached in a Room the reader is not in.
 

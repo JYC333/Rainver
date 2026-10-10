@@ -49,9 +49,9 @@ const fetchOnce = (path: string, timeoutMs?: number) => fetchSourceConnection({
 });
 
 /**
- * A provider that answers slowly and a provider that cannot be reached were
- * both recorded as `network` with a null status, which is what sent a real
- * investigation looking at connectivity while the actual cause was a deadline.
+ * Classify a slow answer and an unreachable provider apart. Do not record
+ * both as `network` with a null status. A deadline would be investigated as
+ * a connectivity failure.
  */
 describe("source fetch failure classification", () => {
   it("reports a deadline as a timeout, with the budget that produced it", async () => {

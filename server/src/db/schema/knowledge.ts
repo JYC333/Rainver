@@ -224,9 +224,9 @@ export const knowledgeItems = pgTable("knowledge_items", {
 	version: integer().notNull(),
 	deprecatedAt: timestamp("deprecated_at", { withTimezone: true, mode: 'string' }),
 	// Discriminated, immutable pointer to the exact source revision this
-	// version was promoted/revalidated from — never a pointer
-	// to a live mutable object. Null for Knowledge created outside promotion or
-	// through a path that predates the promotion-Candidate flow.
+	// version was promoted or revalidated from — never a pointer to a live
+	// mutable object. Null when the version was not promoted or revalidated
+	// from a source revision.
 	pinnedSourceRefJson: jsonb("pinned_source_ref_json"),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_knowledge_items_created_from_proposal_id").using("btree", table.createdFromProposalId.asc().nullsLast()),

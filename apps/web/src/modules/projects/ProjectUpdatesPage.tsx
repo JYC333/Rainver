@@ -214,9 +214,9 @@ function subjectHref(projectId: string, subject: NonNullable<UpdateRow['subject'
     case 'memory_entry': return `/memory/${subject.id}`
     case 'inquiry_thread': return `/projects/${projectId}/inquiry?thread=${subject.id}`
     default: {
-      // Exhaustive on purpose: a catch-all is what sent memory subjects to the
-      // Inquiry Area with an id it had never heard of, and a fourth subject
-      // type would do it again silently.
+      // Exhaustive on purpose. Do not add a catch-all. A memory subject would
+      // be sent to the Inquiry Area with an id that area has never heard of,
+      // and a fourth subject type would do it again silently.
       const unreachable: never = subject.type
       return inProjectHref(projectId, `/updates#${String(unreachable)}`)
     }

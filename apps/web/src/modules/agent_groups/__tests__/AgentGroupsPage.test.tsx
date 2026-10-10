@@ -2240,9 +2240,9 @@ describe('Rooms page', () => {
   })
 
   it('links a conversation reference back to the thread it came from', async () => {
-    // The branch `source_room_id` exists for, and the one that was broken:
-    // hand-building the path missed the Space prefix every route lives under,
-    // so "open the source" navigated to Home.
+    // `source_room_id` is what this link needs. Do not hand-build the path.
+    // It misses the Space prefix every route lives under, and "open the
+    // source" navigates to Home.
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [{
         id: 'm-ref', space_id: 'space-1', session_id: 'session-1', role: 'system',

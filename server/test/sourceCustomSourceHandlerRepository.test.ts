@@ -7,12 +7,11 @@ import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSo
 import { HttpError } from "../src/modules/routeUtils/common.js";
 
 // Real-PostgreSQL integration tests for PgCustomSourceHandlerRepository.
-// Repository-level tests with a fake Queryable cannot catch the SQL bugs
-// that only surface on the real schema (CHECK constraints, the
-// space_id + source_connection_id same-space gate, FK behavior). These run
-// the actual SQL against a throwaway Postgres (testcontainers) loaded with
+// A fake Queryable does not enforce the schema. These lock the CHECK
+// constraints, the space_id + source_connection_id same-space gate, and FK
+// behavior, through `useTestDatabase`.
 //
-// Skips gracefully when Docker is unavailable so `pnpm test` runs everywhere.
+// Skips when that database is unavailable so `pnpm test` runs everywhere.
 
 const SPACE_A = "space-a";
 const SPACE_B = "space-b";

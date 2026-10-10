@@ -174,7 +174,7 @@ predicates), which the client-facing package must not import. The copy is
 allowed **only with a server-side test pinning it to the registry** —
 `NOTE_LINK_TARGET_TYPE_VALUES` and `NOTE_PROJECT_ROLE_VALUES` are the pattern.
 A copy without that test is a violation, not a shortcut: a hand-maintained list
-drifting from its backend is the defect this section exists to prevent, and the
+drifting from its backend. Do not ship a copy without that test. The
 test is the entire difference between a projection and a fork. Prefer no copy
 at all where protocol already owns the declaration — the Note selection bar
 reads `systemActionsForObjectType` directly and keeps only its own wording.
@@ -629,8 +629,8 @@ completion pair.
 
 **B58** — Do not introduce compatibility aliases or dual authorities. When a
 concept is renamed or replaced, the old name is removed in the same change. Two
-names for one thing, or two documents claiming the same authority, is the defect
-this rule exists to prevent — not a migration convenience.
+names for one thing, or two documents claiming the same authority. Do not
+leave that as a migration convenience.
 
 **B59** — `server/migrations/` is an append-only chain. `0000_baseline.sql`
 is frozen, and every schema change after it is a new numbered file appended by

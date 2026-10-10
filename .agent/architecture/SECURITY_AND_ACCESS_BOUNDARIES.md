@@ -970,8 +970,7 @@ memory_entries` remains only `memoryApplyRepository`; a new plugin type that
 wrote that table directly would bypass ADR 0003.
 
 **Reads are grouped by what kind of data they return, and each kind has one
-helper.** A list that answers something the detail page refuses is the defect
-this arrangement exists to prevent.
+helper.** A list must not answer something the detail page refuses.
 
 - **Run-derived rows** — Runs, Proposals, Artifacts, `task_runs`,
   `task_evaluations`, Project work events, agent-group messages — go through

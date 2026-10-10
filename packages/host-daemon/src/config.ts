@@ -21,7 +21,7 @@ import { dirname, join } from "node:path";
  * bubblewrap namespace — which is what makes a shared, multi-user execution
  * host safe at all. The mode is chosen by how this daemon registered, never
  * per Run, and is written into this file with the credential it registered
- * with; a config that predates the field is a paired host.
+ * with. A config with no `trust` field is a paired host.
  */
 export type HostTrustMode = "trusted" | "strict";
 

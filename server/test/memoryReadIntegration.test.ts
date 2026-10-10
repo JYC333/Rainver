@@ -6,13 +6,12 @@ import { PgMemoryReadRepository, MemoryReadValidationError } from "../src/module
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-PostgreSQL integration tests for the server memory read model. The
-// route/unit suites use fakes, so they cannot catch the defects that only
-// surface on the real stack: the scoped WHERE + post-filter
-// pagination, jsonb tags parsing, ILIKE search, summary access redaction,
-// redaction, cross-user/cross-space visibility, and the project_id membership
-// check. These run the actual SQL against a throwaway Postgres (testcontainers)
+// route/unit suites use fakes. These lock what the real schema enforces: the
+// scoped WHERE plus post-filter pagination, jsonb tags parsing, ILIKE search,
+// summary access redaction, cross-user and cross-space visibility, and the
+// project_id membership check. They run through `useTestDatabase`.
 //
-// Skips gracefully when Docker is unavailable so `pnpm test` runs everywhere.
+// Skips when that database is unavailable so `pnpm test` runs everywhere.
 
 let repo: PgMemoryReadRepository | undefined;
 

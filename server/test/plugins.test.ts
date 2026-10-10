@@ -6,7 +6,7 @@
  *   - Service: list, effective map, enable, disable, settings patch
  *   - Guards: disabled guard fails closed, enabled guard passes
  *   - Cross-space leakage prevention
- *   - DB integration tests using testcontainers
+ *   - DB integration tests through `useTestDatabase`
  */
 
 import { randomUUID } from "node:crypto";

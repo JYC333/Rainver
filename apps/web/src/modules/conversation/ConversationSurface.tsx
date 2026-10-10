@@ -1180,11 +1180,10 @@ export function ConversationSurface({
         />
       </div>
       <div className={compact ? 'space-y-2 border-t border-border p-3' : 'space-y-3 border-t border-border bg-card px-5 py-3'}>
-        {/* A draft has to be visible to be a draft; until this, the pick rode
-            the composer with nothing naming it and no way to drop it.
-            On the same condition the send uses, not merely "there are picks":
-            a banner promising content the send would drop is the failure this
-            exists to close. */}
+        {/* A draft has to be visible to be a draft. Name the pick and give it
+            a way to drop. On the same condition the send uses, not merely
+            "there are picks". Do not show a banner for content the send
+            would drop. */}
         {(references?.length ?? 0) > 0 && (
           <div className="flex items-center gap-2 rounded border border-dashed border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
             <Quote className="size-3.5 shrink-0" />

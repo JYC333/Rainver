@@ -149,10 +149,9 @@ export default function TaskDetailPage() {
     })
     return () => { current = false }
   }, [profileAgentId])
-  // Navigating to another Task starts at Work again — where a fresh mount
-  // starts. The guard is the point: this effect predates the Work tab and ran
-  // on mount too, so it silently overrode the default above on every visit,
-  // and a tab clicked before it flushed was undone.
+  // Navigating to another Task starts at Work again, where a fresh mount
+  // starts. Do not run this on mount. It would override the default above,
+  // and a tab clicked before it flushed would be undone.
   const shownTaskId = useRef(taskId)
   useEffect(() => {
     if (shownTaskId.current === taskId) return

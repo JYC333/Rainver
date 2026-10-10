@@ -93,9 +93,8 @@ const LOOPBACK = buildLoopbackList();
  *
  * **Fails closed.** Anything this cannot parse as an address is treated as
  * blocked, not as fine: an empty host resolves to `null`, and a block list
- * that answers "not blocked" for what it does not understand is a block list
- * pointed the wrong way. `CONNECT []:PORT` reached loopback through exactly
- * that gap and was recorded as allowed.
+ * that answers "not blocked" for what it does not understand is pointed the
+ * wrong way. `CONNECT []:PORT` is loopback. Do not record it as allowed.
  */
 /**
  * Whether an address is this machine itself.
