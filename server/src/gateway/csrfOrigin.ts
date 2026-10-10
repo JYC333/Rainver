@@ -7,10 +7,10 @@
  * cross-site POST and `Sec-Fetch-Site` on everything; inject tests and host
  * daemons send neither.
  *
- * There is no same-host fallback: behind the frontend proxy the Host header
- * carries no port and the scheme is the proxy's, so a derived origin never
- * matched a real browser origin, and a request-derived allowlist is exactly
- * what `FRONTEND_URL` exists to replace.
+ * There is no same-host fallback. Behind the frontend proxy the Host header
+ * carries no port and the scheme is the proxy's, so a derived origin does not
+ * match a real browser origin. Do not allow a request-derived allowlist.
+ * `FRONTEND_URL` is the allowlist.
  *
  * Do not require `application/json` on writes. The
  * property it would buy — that a cross-origin HTML form cannot send the body,

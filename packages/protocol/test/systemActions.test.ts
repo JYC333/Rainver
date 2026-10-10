@@ -219,9 +219,8 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
 
   it("every gated action names why it is gated, and nothing else claims a gate", () => {
     // ADR 0017 §1/§5: the hard-gate list is exhaustive, and a proposal is what
-    // you register when you can name which row of it applies. A default is how
-    // "draft a proposal" became the shape of every Agent write without anyone
-    // deciding it should be.
+    // you register when you can name which row of it applies. Do not default
+    // the gate class.
     for (const definition of SYSTEM_ACTION_REGISTRY) {
       if (definition.side_effects === "proposal") {
         expect(definition.gate_class, `${definition.id} is a proposal with no gate class`).not.toBeNull();

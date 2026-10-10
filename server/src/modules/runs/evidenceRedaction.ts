@@ -32,12 +32,13 @@ const FORBIDDEN_EVIDENCE_KEYS = new Set([
  * of diagnostics, and under-redacting persists someone's key. Three shapes of
  * miss are why each group is written the way it is.
  *
- * - `\b` does not fire between `_` and a letter, so a name-anchored pattern
- *   that began `\b(token|secret)` never matched `access_token=`,
- *   `refresh_token=`, `id_token=` or `client_secret=`. The name now allows any
- *   leading word characters, which also catches `x-api-key` and `MY_API_KEY`.
- * - A quoted JSON key puts a `"` between the name and the colon, so
- *   `"api_key": "sk-…"` went through untouched. The quote is optional now.
+ * - `\b` does not fire between `_` and a letter. Do not anchor the name as
+ *   `\b(token|secret)`. That misses `access_token=`, `refresh_token=`,
+ *   `id_token=` and `client_secret=`. The name allows any leading word
+ *   characters, which also catches `x-api-key` and `MY_API_KEY`.
+ * - A quoted JSON key puts a `"` between the name and the colon. Do not
+ *   require the colon immediately after the name. `"api_key": "sk-…"` would
+ *   pass through. The quote is optional.
  * - A URL carries `?key=` with no `api` in front of it, and Google's own keys
  *   are `AIza…`. Both are matched on their own.
  */

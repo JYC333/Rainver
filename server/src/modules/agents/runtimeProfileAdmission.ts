@@ -334,9 +334,9 @@ export async function insertRuntimeProfile(
 
 /**
  * The one writer for an existing Profile row. Both update paths — the explicit
- * PATCH and the idempotent provisioning upsert — went through their own
- * 16-parameter `UPDATE` with the same column list; a second copy is a second
- * place for a new column to be forgotten.
+ * PATCH and the idempotent provisioning upsert — use this. Do not keep a
+ * second 16-parameter `UPDATE` with the same column list. A second copy is a
+ * second place for a new column to be forgotten.
  */
 export async function updateRuntimeProfileRow(
   db: Queryable,

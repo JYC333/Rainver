@@ -1329,11 +1329,12 @@ server-side. Avatar images accept `http(s)` and refuse `data:`.
   string-awareness. Do not rewrite a `sandbox_mode` line inside a multi-line
   string: Codex starts, and the Run cannot write, with no error.
 - **Evidence and audit redaction.** One module (`runs/evidenceRedaction.ts`)
-  decides what a secret looks like in free text. It covers what
-  `\b(token|secret)` could not — `\b` does not fire between `_` and a letter,
-  so `access_token=`, `refresh_token=`, `id_token=` and `client_secret=` all
-  went through — plus quoted JSON keys, a bare `?key=`, `AIza…`, GitHub tokens,
-  JWTs and `Basic`. A value that is one of the words a process uses to say a
+  decides what a secret looks like in free text. The name allows leading word
+  characters, because `\b` does not fire between `_` and a letter. Do not
+  anchor it as `\b(token|secret)`: `access_token=`, `refresh_token=`,
+  `id_token=` and `client_secret=` would pass through. It also covers quoted
+  JSON keys, a bare `?key=`, `AIza…`, GitHub tokens, JWTs and `Basic`. A value
+  that is one of the words a process uses to say a
   credential is *absent* is deliberately left alone: redacting `secret: absent`
   hides the answer and protects nothing. The pattern that keys on a *name* is
   anchored rather than led by an unbounded quantifier. A greedy `[\w.-]*` in

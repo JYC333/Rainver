@@ -653,11 +653,9 @@ function objectAction<const Id extends string>(
  * An action whose write waits for a person, and says why
  * ([ADR 0017](../../../.agent/decisions/0017-authorization-by-cost-not-authorship.md) §1/§5).
  *
- * The gate class is a required argument rather than a default, because a
- * default is how "draft a proposal" became the shape of every Agent write
- * without anyone deciding it should be. An action that cannot name its class
- * is not a proposal action; it is a direct write governed by trigger origin
- * and bounds.
+ * The gate class is a required argument. Do not default it. An action that
+ * cannot name its class is not a proposal action; it is a direct write
+ * governed by trigger origin and bounds.
  */
 function gatedProposalAction<const Id extends string>(id: Id, title: string, owningModule: string, applicationService: string, policyAction: PolicyActionId, proposalType: string, gateClass: SystemActionGateClass, policyResource: Partial<Pick<SystemActionPolicyResource, "resource_type" | "resource_id_input_field" | "resource_id_fallback">> = {}): SystemActionDefinition & { readonly id: Id } {
   return { id, version: 1, title, description: title, visibility: visibility("agent_tool", "public_api"),
