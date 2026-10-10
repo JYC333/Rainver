@@ -80,7 +80,7 @@ export class CustomSourceMaterializationService {
     rawOutputJson: unknown;
     /** False for Level 2 recipe scans, which have no `source_handler_runs` row to update (`run.runId` is the extraction job id there). Defaults to true. */
     recordHandlerRun?: boolean;
-    /** Identifies which source implementation produced the validated output. Defaults to the Level 3 Custom Source handler path for backward compatibility. */
+    /** Which source implementation produced the validated output. Omitted means the Level 3 Custom Source handler path. */
     sourceKind?: SourceMaterializationKind;
   }): Promise<CustomSourceMaterializationResult> {
     const recordHandlerRun = input.recordHandlerRun ?? true;

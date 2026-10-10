@@ -246,9 +246,9 @@ function normalizeBudgetSources(
   const explicit = Array.isArray(input?.budget_sources)
     ? input!.budget_sources.map((item) => normalizeBudgetSource(item)).filter(Boolean) as RunBudgetSource[]
     : [];
-  // Legacy callers provide the source and flat budget fields. Treat those
-  // fields as one source so old task/automation/workflow creation paths get
-  // the same deterministic resolution and audit metadata.
+  // Callers may still provide the source and flat budget fields. Treat those
+  // fields as one source so task, automation, and workflow creation get the
+  // same deterministic resolution and audit metadata.
   const legacy: RunBudgetSource = {
     source: { kind: source.kind, id: source.id ?? null },
     precedence: finiteNumberOrNull(input?.budget_precedence),

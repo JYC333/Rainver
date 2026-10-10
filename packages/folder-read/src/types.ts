@@ -13,7 +13,7 @@ export interface FileContent {
   line_count: number;
   /** SHA-256 of the exact UTF-8 bytes returned, for conversation snapshots. */
   sha256?: string;
-  /** Admission metadata; optional for compatibility with older daemons. */
+  /** Admission metadata. An older daemon may omit it. */
   encoding?: "utf8" | "utf16le" | "utf16be" | "binary" | "unknown";
   has_bom?: boolean;
   line_ending_mode?: "lf" | "crlf" | "mixed" | "none";
