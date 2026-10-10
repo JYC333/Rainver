@@ -2,8 +2,7 @@ import { readFile } from "node:fs/promises";
 import { builtinCredentialPath, loadConfig, normalizeServerUrl, saveConfig } from "./config.js";
 
 /**
- * Registration of the instance's own built-in host (ADR 0016, decision 4 of
- * the unified execution host plan).
+ * Registration of the instance's own built-in host (ADR 0016 decision 4).
  *
  * The pairing-code flow answers "does this person own this machine". That
  * question does not arise here: the built-in host is a container of the same

@@ -74,8 +74,8 @@ const ETC = [
  * needs to know it is inside one. Codex does not read it; the daemon consumes
  * the same fact (`trust === "strict"`) by writing
  * `sandbox_mode = "workspace-write"` into that copy's `config.toml` before
- * spawn (`codexStrictSandbox.ts`), which is the switch measured to stop
- * Codex's default read-only sandbox stacking on top of this namespace.
+ * spawn (`codexStrictSandbox.ts`). That switch stops Codex's default
+ * read-only sandbox stacking on top of this namespace.
  */
 const STRICT_SANDBOX_ENV: Readonly<Record<string, string>> = Object.freeze({
   RAINVER_STRICT_SANDBOX: "1",

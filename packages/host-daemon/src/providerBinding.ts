@@ -398,10 +398,10 @@ function resolveInsideProfile(root: string, relativePath: string): string {
 /**
  * Removes the directories of runs that are not running here any more.
  *
- * A run directory holds this run's outputs and its work surface — the Skill it
- * was given — and an earlier daemon also scoped a provider profile into it.
- * The same run id never comes back, so nothing else would ever remove one: a
- * daemon killed mid-run would otherwise leave it forever.
+ * A run directory holds this run's outputs, its work surface — the Skill it
+ * was given — and may hold a provider profile. The same run id never comes
+ * back, so nothing else removes one. A daemon killed mid-run would leave it
+ * forever.
  */
 export async function sweepOrphanedRunDirectories(runsRoot: string, activeRunIds: Set<string>): Promise<number> {
   const { readdir } = await import("node:fs/promises");

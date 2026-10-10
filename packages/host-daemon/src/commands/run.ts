@@ -159,7 +159,7 @@ function toLaunchWorkspace(workspace: HostServerFrameOf<"launch">["workspace"]):
  * `hello_ack`, never from anything in the frame: which binary implements an
  * adapter is the server's knowledge (ADR 0016 §6), and a frame that could
  * name its own command would make this daemon spawn whatever it was told to.
- * The workspace's real path is resolved here and never sent (ADR 0016 D3).
+ * The workspace's real path is resolved here and never sent (ADR 0016).
  */
 function toAmbientImportRequest(
   frame: HostServerFrameOf<"ambient_import">,

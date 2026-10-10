@@ -1289,10 +1289,9 @@ async function launchRun(
   //
   // For a run on this machine's own login, B67's closing rule stands — it is
   // "not affected" — so the machine's environment is kept and only the
-  // runtime's *state root* moves into the Agent's profile. Filtering here
-  // instead would take `~/.gitconfig`, `~/.ssh/config` and the proxy variables
-  // away from every Task run on a paired machine, which no part of this was
-  // meant to do.
+  // runtime's *state root* moves into the Agent's profile. Do not filter
+  // this run. It would take `~/.gitconfig`, `~/.ssh/config` and the proxy
+  // variables away from every Task run on a paired machine.
   //
   // The default is the credential-cleared environment, not `process.env` whole.
   // Every branch below narrows, so the bare spread was reachable only when a
