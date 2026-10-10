@@ -24,10 +24,9 @@ import {
 /**
  * How many items go into one annotation request.
  *
- * Matches the batch size Project Research screening settled on. Larger batches
- * make one provider hiccup cost more items and push the prompt toward the
- * context limit, where the model starts dropping entries from the tail
- * silently.
+ * Larger batches make one provider hiccup cost more items and push the prompt
+ * toward the context limit, where the model starts dropping entries from the
+ * tail silently.
  */
 const ANNOTATION_BATCH_SIZE = 10;
 

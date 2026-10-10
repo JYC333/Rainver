@@ -7,9 +7,9 @@ import type { Queryable } from "../routeUtils/common.js";
  * Every report / packet / brief / eval / explain / session artifact writes the
  * exact same `artifacts` row; the only differences are values
  * (artifact type, content, canonical format, visibility, run/project refs). This
- * helper owns that one INSERT so the positional-parameter ordering lives in a
- * single place (it was an easy `$10/$11` footgun when copy-pasted), and callers
- * only describe the fields that vary.
+ * helper owns that one INSERT so the positional-parameter ordering lives in
+ * one place. Do not copy the INSERT. Callers only describe the fields that
+ * vary.
  *
  * `content` is the already-rendered `content` column (callers decide pretty vs
  * compact); `metadata` is the object stored in `metadata_json`.
