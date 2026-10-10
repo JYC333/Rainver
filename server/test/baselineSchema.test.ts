@@ -4,8 +4,8 @@ import { createHash } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 // Every test here drops and reapplies the whole baseline, so each one costs
-// 5-10s alone and considerably more under parallel load. The global 30s ceiling
-// was failing them on contention rather than on anything being wrong.
+// 5-10s alone and considerably more under parallel load. The global 30s
+// ceiling would fail them on contention rather than on anything being wrong.
 vi.setConfig({ testTimeout: 180_000 });
 import { Pool } from "pg";
 import { useTestDatabase } from "./support/testDatabase.js";
