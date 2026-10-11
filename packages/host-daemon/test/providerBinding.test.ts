@@ -419,8 +419,8 @@ describe("environment for a run on this machine's own login", () => {
 
     // Per launched runtime: Claude Code reads none of the OpenAI or Google
     // variables, and `GOOGLE_APPLICATION_CREDENTIALS` is how gcloud and a GCS
-    // toolchain authenticate in a Task run — dropping it takes a tool away
-    // from exactly the run this rule exists to leave the machine's.
+    // toolchain authenticate in a Task run. Do not drop it. That takes a tool
+    // away from the run that keeps the machine's environment.
     expect(clearStateRootEnv(ambient, "claude_code")).toEqual({
       ...machine,
       OPENAI_API_KEY: "sk-openai",

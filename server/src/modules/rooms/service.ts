@@ -1518,9 +1518,9 @@ function createRoomFingerprint(input: {
       project_id: input.project_id,
       project_folder_id: input.project_folder_id ?? null,
       title: input.title.trim(),
-      // A shared Room and a personal one are different requests; without this
-      // a replayed key with the flag flipped returns the other kind instead of
-      // the 409 the mismatch branch exists to produce.
+      // A shared Room and a personal one are different requests. Do not omit
+      // the flag. A replayed key with it flipped would return the other kind
+      // instead of 409.
       personal: input.personal === true,
     }))
     .digest("hex");
