@@ -380,7 +380,7 @@ previous index and its embeddings intact.
 
 ## Activity-First Input Boundary
 
-Raw user input, session content, file imports, web captures, and run outputs enter Activity, Run, or Artifact first. Future Knowledge generation normally follows:
+Raw user input, session content, file imports, web captures, and run outputs enter Activity, Run, or Artifact first. A Knowledge write follows:
 
 ```
 Activity / Run / Artifact

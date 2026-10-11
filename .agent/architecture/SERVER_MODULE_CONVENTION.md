@@ -76,7 +76,7 @@ The module is then added to `SERVER_MODULES` in `gateway/routeRegistry.ts`.
 `modules/system/service.ts` (`computeFeatures`); a module that needs a feature
 id there adds it by hand. `ModuleContext` carries the
 validated config plus its immutable `ConfigSnapshot` (schema version + content
-hash + load timestamp); future shared deps go there — it is dependency passing,
+hash + load timestamp). Shared dependencies are passed on `ModuleContext`. It is dependency passing,
 not a plugin system.
 
 **Registration order is binding:** the registry mounts `SERVER_MODULES` first,

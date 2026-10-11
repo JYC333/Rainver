@@ -76,7 +76,7 @@ Read-only local copies; never written back as truth:
 
 ## 3. New Syncable Table Guidelines
 
-Any future table designed to participate in sync should prefer these columns:
+A table that participates in sync uses these columns:
 
 ```
 id                        -- stable UUID

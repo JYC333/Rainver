@@ -270,10 +270,6 @@ concrete behaviour or configuration.
 The synthesis output artifact type is `research_report.archive.v1`; the
 user-facing report is the corresponding `project_research_reports` row.
 
-This model allows future Research Lab product surfaces to consume the same
-capabilities and profiles without making Research a plugin boundary from day
-one.
-
 ## Security And Governance
 
 - External skills default to imported, unreviewed, and disabled.
