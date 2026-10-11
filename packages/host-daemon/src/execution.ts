@@ -533,9 +533,8 @@ export function stopAllRunsForRevocation(log: (line: string) => void = () => {})
 
 /**
  * Removes run directories left behind by a daemon that was killed mid-run.
- * Each holds that run's outputs and work surface, and an older layout also put
- * a live lease token there; nothing else would ever remove one, because the
- * same run id never comes back.
+ * Each holds that run's outputs and work surface, including its tool token.
+ * Nothing else removes one, because the same run id never comes back.
  */
 export async function sweepStaleRunProfiles(): Promise<number> {
   // `launchingRuns` as well as `activeRuns`: a reconnect can land between a
@@ -565,7 +564,7 @@ function runDir(runId: string): string {
   return join(configDir(), "runs", runId);
 }
 
-/** Same shape `sandbox/runner.mjs` validated its run and scope ids against. */
+/** Run and scope ids are one path segment of this shape. */
 const RUN_ID_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
 
 /** Exported for the containment test; not part of this package's public API. */

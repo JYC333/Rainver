@@ -329,11 +329,9 @@ function providerFinishReason(protocol: string, message: AssistantMessage): stri
  * The status line is only a verdict when the provider actually reached one.
  * Once 2xx headers have arrived, the response is committed and a failure while
  * reading the body is the transport dropping it — undici surfaces exactly that
- * as a bare `terminated`. Classifying it from the 200 already in hand filed it
- * as `permanent`, which fails immediately with no same-key retry and no
- * provider fallback; the longest single generation on the platform (a whole
- * research report in one structured response) therefore died for good every
- * time its socket was cut.
+ * as a bare `terminated`. Do not classify that from the 200 already in hand.
+ * A permanent decision fails immediately, with no same-key retry and no
+ * provider fallback.
  *
  * It is deliberately not `provider_network_error`: that code carries the
  * larger retry budget meant for failures that cost nothing because no response
