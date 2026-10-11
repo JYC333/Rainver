@@ -122,9 +122,8 @@ describe('AssistantChatPage conversation backends', () => {
   })
 
   it('still says a reloaded turn is blocked, with somewhere to go', async () => {
-    // A paused turn keeps its state across a reload. Reading a saved reply as
-    // proof the turn finished would drop the approval link — the one thing a
-    // paused turn exists to show.
+    // A paused turn keeps its state across a reload. Do not read a saved
+    // reply as proof the turn finished. That drops the approval link.
     messagesMock.mockResolvedValue([{
       id: 'm2', role: 'assistant', content: 'I need your approval to continue.',
       metadata_json: null, run_id: 'run-paused',

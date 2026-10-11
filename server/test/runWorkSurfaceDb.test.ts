@@ -281,8 +281,8 @@ describe("artifact declarations", () => {
 
   it("leaves the same Task waiting when nothing was declared", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The gap this whole surface exists to close: an uploaded file typed
-    // `remote_output` matches no declared required output, so a finished Run
+    // An uploaded file typed `remote_output` matches no declared required
+    // output. Do not treat that file as the declared output. A finished Run
     // parks its Task however well the work went.
     const task = randomUUID();
     const run = randomUUID();

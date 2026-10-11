@@ -27,8 +27,8 @@ let maxTrackedSources = MAX_TRACKED_SOURCES;
  * Do not sweep on every call. That is O(buckets) of synchronous work on an
  * unauthenticated request path: at the cap it is milliseconds per call, paid
  * by everyone once an attacker has filled the map. The window each call
- * actually depends on is its own bucket's, which is filtered on read; the sweep
- * only exists to let a bucket nobody touches again be forgotten.
+ * actually depends on is its own bucket's, which is filtered on read. The
+ * sweep forgets a bucket nobody touches again.
  */
 const PRUNE_INTERVAL_MS = 30_000;
 

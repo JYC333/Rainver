@@ -1245,9 +1245,8 @@ describe('Rooms page', () => {
     // The server writes an assistant row at the pause, not only at the end
     // (`chatTurnFinalizer` posts the waiting-for-review notice under the
     // Agent's name). So a paused Run reaches a steady state where a reply and
-    // a blocked turn coexist — and a surface that reads "there is a reply" as
-    // "the turn is over" silently drops the approval link, which is the one
-    // thing a paused turn exists to show.
+    // a blocked turn coexist. Do not read "there is a reply" as "the turn is
+    // over". That drops the approval link a paused turn shows.
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [
         {
@@ -2319,10 +2318,9 @@ describe('Rooms page', () => {
   })
 
   it('renders a reference as its origin, not as somebody speaking', async () => {
-    // A reference is `role: 'system'` and has no speaker. Rendered as a
-    // bubble it would read as the Agent having said a colleague's words, or a
-    // vendor transcript's — which is exactly what the trust label exists to
-    // prevent anyone concluding.
+    // A reference is `role: 'system'` and has no speaker. Do not render it as
+    // a bubble. It would read as the Agent having said a colleague's words,
+    // or a vendor transcript's.
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [{
         id: 'm-ref', space_id: 'space-1', session_id: 'session-1', role: 'system',

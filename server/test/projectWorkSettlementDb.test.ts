@@ -491,8 +491,8 @@ describe("run settlement", () => {
 
   it("lets a person run a Task again after it stopped for review", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // Re-running is one of the decisions waiting_for_review exists to ask for.
-    // The queue-settling status set must not double as the dispatch refusal
+    // Re-running is one of the decisions a review hold asks for.
+    // Do not let the queue-settling status set double as the dispatch refusal
     // set, or the review hold becomes a dead end.
     const task = randomUUID();
     await makeTask(task);
