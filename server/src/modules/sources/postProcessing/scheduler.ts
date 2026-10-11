@@ -17,10 +17,9 @@ export async function enqueueDueSourcePostProcessingRules(
   let enqueued = 0;
   for (const rule of due) {
     try {
-      // One transaction: the job and the advance of `next_run_at` land
-      // together, or neither does. Advancing after a committed enqueue left a
-      // job behind when the advance failed, and the next tick enqueued the
-      // same fire again.
+      // The job and the advance of `next_run_at` land in one transaction.
+      // Do not advance after the enqueue commits. A failed advance would
+      // leave the job behind, and the next tick would enqueue the same fire.
       await withQueryableTransaction(db, async (client) => {
         await new PgJobQueueRepository(client).enqueue({
           job_type: SOURCE_POST_PROCESSING_EVENT_JOB_TYPE,

@@ -281,10 +281,10 @@ export class CustomSourceCreateFlowService {
           }),
         });
       } catch (error) {
-        // Do not let a dispatcher-level failure escape (a stored
-        // pipeline definition that no longer passes schema validation, or a
-        // missing source artifact) would propagate uncaught and leave the
-        // `source_handler_runs` row stuck in 'running' forever.
+        // A dispatcher-level failure — a stored pipeline definition that does
+        // not pass schema validation, or a missing source artifact — is a
+        // failed test. Do not let it escape. The `source_handler_runs` row
+        // would stay `running`.
         return this.recordTestOutcome(identity, connectionId, versionId, runId, {
           status: "failed",
           failure_class: "handler_execution_error",
