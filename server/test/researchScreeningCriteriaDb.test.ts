@@ -108,7 +108,7 @@ describe("research screening criteria (real Postgres)", () => {
       required_evidence_fields: ["excerpt"],
     }) as Record<string, unknown>;
 
-    // Journals, outlets and sites go in the same list — that is the point.
+    // Journals, outlets and sites go in the same list.
     expect(saved.source_restrictions).toEqual(["arxiv.org", "The Economist"]);
     expect(saved.include_keywords).toEqual(["latency"]);
     expect(saved.domain_criteria).toEqual({});

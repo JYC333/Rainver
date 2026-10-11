@@ -80,7 +80,7 @@ export interface Module {
   visible: boolean
 
   /**
-   * Dev-status flag: feature is not yet implemented.
+   * Dev-status flag: the feature is not implemented.
    * Shows a "soon" badge on the card. Implies non-interactive regardless
    * of `enabled`. Does NOT mean permanently disabled — `enabled` handles that.
    */
@@ -142,7 +142,7 @@ export interface Module {
  * GET /api/v1/plugins/effective (official module control plane).
  *
  * ── State semantics ─────────────────────────────────────────────────────────
- *   planned   = not yet built ("soon" badge, non-interactive, dev concern)
+ *   planned   = not built ("soon" badge, non-interactive, dev concern)
  *   !enabled  = capability off for this space (grayed card, runtime concern)
  *   !visible  = hidden from gallery (space policy or user pref, shown nowhere)
  *   pinned    = promoted in gallery (user preference, future)

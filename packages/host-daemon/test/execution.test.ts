@@ -782,7 +782,7 @@ describe("the work surface a dispatched run is given", () => {
     );
 
     const done = await complete();
-    // Failing the run is the point: a run with no work surface cannot report
+    // Do not let the run look finished. A run with no work surface cannot report
     // anything back, and one that looks finished but advanced nothing is worse
     // than one that never started.
     expect(done.exit_code).toBe(1);

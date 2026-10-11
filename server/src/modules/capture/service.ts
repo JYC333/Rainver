@@ -43,12 +43,12 @@ const MARGINALIA_DESTINATIONS: ReadonlySet<CaptureDestination> = new Set([
 /**
  * The single capture entry point behind one floating affordance.
  *
- * Ownership and pipeline are decoupled here, and that is the point: material
+ * Ownership and pipeline are separate. Material
  * pasted into a Project is Project-owned but still raw, while a thought typed
- * against a Thread is Project-scoped but private marginalia. Binding the two
- * together — Project implies shared, personal implies reviewed — privatises
- * external material the user meant to give the team, which is the mirror of
- * what ADR 0013 guards against.
+ * against a Thread is Project-scoped but private marginalia. Do not bind the two.
+ * Project does not imply shared, and personal does not imply reviewed. That
+ * would privatise external material the user meant to give the team, which
+ * ADR 0013 guards against.
  *
  * Every destination writes an `activity_record` first (B9, B12), so a capture
  * has one identity regardless of where it lands. Marginalia additionally

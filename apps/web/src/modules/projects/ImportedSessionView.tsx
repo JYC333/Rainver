@@ -29,7 +29,7 @@ function isFullyShared(session: Pick<ImportedSession, 'visibility' | 'access_lev
 /**
  * One imported CLI session, read-only.
  *
- * There is no composer, and that absence is the point: this is a transcript
+ * There is no composer. This is a transcript
  * of work done elsewhere, not a conversation Rainver can continue. Continuing
  * from it means starting a Rainver conversation seeded from what was
  * extracted, never resuming the vendor's own session.

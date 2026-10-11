@@ -69,7 +69,7 @@ export async function recordTaskCreated(
 /**
  * Refuse a close that has not met what the Task declared.
  *
- * The refusal is the point: a Task closed with its declared outputs missing
+ * A Task closed with its declared outputs missing
  * means the completion contract described nothing. Overriding stays available
  * — a person can always decide a requirement no longer applies — but it names
  * what it skipped, so the record says the Task was closed early rather than
