@@ -385,9 +385,10 @@ describe("manual close gate", () => {
     const repository = new PgTaskRepository(db.pool!);
 
     // An evaluation comes from an execution Run's review, so most Tasks never
-    // have one. Prompting on it fired for essentially every close, which
-    // trains the person to click through and buries the reason that is a
-    // claim about deliverables under one that is only a process step.
+    // have one. Do not prompt on a missing evaluation at close. That prompt
+    // would fire for essentially every close, train the person to click
+    // through, and bury the reason that is a claim about deliverables under
+    // one that is only a process step.
     await repository.updateTask(owner, task, { status: "done" });
 
     const after = await db.pool!.query<{ status: string }>(`SELECT status FROM tasks WHERE id = $1`, [task]);
@@ -810,10 +811,10 @@ describe("who may change a Task", () => {
 describe("closing twice on purpose", () => {
   it("records each deliberate close, even within one second", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The idempotency key is built from the row the writer read. It has to
-    // keep millisecond precision: a key from `String(Date)` is per-second,
-    // and a close, reopen and close inside one second lost the second
-    // acceptance silently.
+    // The idempotency key is built from the row the writer read. Keep
+    // millisecond precision. Do not build the key from `String(Date)`. That
+    // is per-second, and a close, reopen and close inside one second would
+    // lose the second acceptance silently.
     const task = randomUUID();
     await makeTask({ id: task, status: "in_progress" });
     await makeRunWithEvaluation(task, "accept");

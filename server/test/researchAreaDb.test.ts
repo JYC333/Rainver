@@ -622,10 +622,10 @@ describe("Research Area (real Postgres)", () => {
 
   it("settles a queued ProviderTask Run whose preparer can never rebuild it, once the job has no retries left", async () => {
     if (!db.available || !config) return;
-    // The preparer reads the Run's frozen contract; a Run that never froze its
-    // provider binding can never be rebuilt, and nothing downstream settled it
-    // — `recoverStaleRuns` only reclaims rows that actually started, so the
-    // Run sat `queued` forever while still counting against the daily budget.
+    // The preparer reads the Run's frozen contract. A Run that never froze its
+    // provider binding cannot be rebuilt. Do not leave it queued.
+    // `recoverStaleRuns` only reclaims rows that actually started, so this
+    // Run would stay `queued` and keep counting against the daily budget.
     const runs = new PgRunRepository(db.pool);
     const stranded = await runs.createQueuedProviderTaskRun({
       space_id: SPACE,

@@ -733,9 +733,9 @@ describe("provider invocation resilience", () => {
 
   it("retries and falls back when the stream dies after the provider already answered 200", async () => {
     // undici reports a response body torn off mid-flight as a bare
-    // `terminated`. Classifying that from the 200 already in hand called it
-    // permanent, so the call failed with no retry and no fallback — fatal
-    // every time for the longest generation on the platform, a whole research
+    // `terminated`. Do not classify that from the 200 already in hand. A
+    // committed status is not a finished body. Treating the tear as permanent
+    // skips retry and fallback on the longest generation, a whole research
     // report returned in one structured response.
     const outcomes: Array<{ member: string; outcome: PoolOutcome }> = [];
     const store = makeStore(

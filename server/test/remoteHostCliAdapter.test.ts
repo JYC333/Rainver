@@ -113,9 +113,9 @@ describe("executeRemoteHostCliAdapter", () => {
     // events leaves the conversation with no signal that it finished. Do not
     // skip the sink on an early return. These early returns share
     // `remoteFailureWithEvent`.
-    // codex_cli is remote-eligible (it speaks
-    // ACP, like opencode), so gemini_cli (still implementation_status
-    // "planned") is the adapter that exercises this particular early return.
+    // codex_cli is remote-eligible (it speaks ACP, like opencode).
+    // gemini_cli is `implementation_status: "planned"`, so it is the adapter
+    // that exercises this early return.
     const threadEventSink = vi.fn().mockResolvedValue(undefined);
     const result = await executeRemoteHostCliAdapter(
       { run: run({ runtime_key: "gemini_cli" }), prompt: "hi", model: null, resume_session_id: null, thread_event_sink: threadEventSink },

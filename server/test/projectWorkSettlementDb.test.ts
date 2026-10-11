@@ -427,10 +427,11 @@ describe("run settlement", () => {
   it("does not settle a finished Run that has not been finalized", async (ctx) => {
     if (!db.available) return ctx.skip();
     // The terminal status is written before finalization, and finalization is
-    // what writes the evaluation and lets the Supervisor decide. Settling at
-    // the status write held every successful Run as evaluation_missing and
-    // held failed Runs the Supervisor was about to retry. The finalization
-    // reconciler is the trigger that runs settlement once the facts exist.
+    // what writes the evaluation and lets the Supervisor decide. Do not settle
+    // at the status write. A successful Run would be held as
+    // evaluation_missing, and a failed Run the Supervisor is about to retry
+    // would be held too. The finalization reconciler is the trigger that runs
+    // settlement once the facts exist.
     const task = randomUUID();
     const run = randomUUID();
     await makeTask(task);

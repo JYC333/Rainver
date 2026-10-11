@@ -18,7 +18,7 @@ import { ProjectResearchAreaService } from "../src/modules/projectResearch/areaS
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
-// R5's standing service deliberately has no Workflow or Inquiry Thread
+// The standing service has no Workflow or Inquiry Thread
 // prerequisite. These tests keep PostgreSQL, Project ACLs, durable Jobs, Run
 // records, advice materialization, and the explicit user action real; only the
 // model-produced terminal output is seeded at the Run boundary.

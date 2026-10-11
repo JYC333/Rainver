@@ -149,10 +149,9 @@ async function seedUnderstandingNote(now: string, opts?: { contentJson?: Record<
      VALUES ($1,$2,'note','Current understanding','space_shared',$3,$4,$3,$5,$5)`,
     [objectId, SPACE, OWNER, PROJECT, now],
   );
-  // The `understanding` role is what makes this note the comparison baseline
-  // (NA). The title is only a default now, so a fixture that sets the title
-  // alone would produce a project the monitoring comparison correctly refuses
-  // to run against.
+  // The `understanding` role is what makes this note the comparison baseline.
+  // The title is a default. Do not set only the title. Monitoring comparison
+  // refuses a project whose baseline is the title alone.
   await db.pool.query(
     `INSERT INTO notes (object_id,space_id,content_json,content_format,content_schema_version,plain_text,version,content_hash,role_project_id,project_role)
      VALUES ($1,$2,$3::jsonb,'prosemirror_json',1,$4,$5,'hash',$6,'understanding')`,
