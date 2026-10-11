@@ -418,8 +418,8 @@ export function assertSqlIdentifier(value: string, label: string): void {
  * visibility boundary that holds against them too (ADR 0018 decision 3). A read
  * of a Run, or of a row whose only reason to exist is a Run — a Proposal, an
  * Artifact, a Task's Run list, an evaluation, a work event — must carry both
- * terms, or the boundary holds on the detail page and leaks on whichever list
- * forgot.
+ * terms. Do not carry only one. The detail page and every list have to
+ * agree, or a list shows a Run the detail page then denies.
  *
  * The Task, Board, work-view, updates-feed, Home and agent-group surfaces
  * use these. Other readers still carry the content predicate alone, and
