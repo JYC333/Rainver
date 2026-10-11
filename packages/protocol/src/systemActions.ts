@@ -504,13 +504,12 @@ export const SYSTEM_ACTION_REGISTRY = [
   agentAction("memory.remember", "Remember something across sessions", "memory", "PgMemoryApplyRepository.applyDirect", "memory.write", "durable", { resource_type: "memory_entry", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("memory.revise", "Revise a memory this Agent wrote", "memory", "PgMemoryApplyRepository.applyDirect", "memory.write", "durable", { resource_type: "memory_entry", resource_id_input_field: "memory_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("inquiry.adopt_next_step", "Adopt the recorded next step for an Inquiry Thread", "inquiry", "InquiryAdviceService.adoptAdvice", "inquiry.advice.adopt", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }),
-  // Direct, origin-gated and bounded (ADR 0017 §2). Splitting a question into
-  // sub-questions is one judgement a person made when they asked; drafting it
-  // into N proposals they then approve one by one is that judgement taken N
-  // times, and it taught them to approve without reading. What replaces the
-  // gate is the trigger origin — an unattended run still waits — the per-turn
-  // fan-out bound, and Updates, where every Thread an Agent opens can be
-  // archived in one click.
+  // Direct, origin-gated and bounded (ADR 0017 §2). Do not draft the split as
+  // N proposals. Splitting a question is one judgement a person made when they
+  // asked; approving each draft would take that judgement N times. What holds
+  // the bound is the trigger origin — an unattended run still waits — the
+  // per-turn fan-out bound, and Updates, where every Thread an Agent opens can
+  // be archived in one click.
   agentAction("inquiry.create_thread", "Open an Inquiry Thread", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable", { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }),
   // A conclusion is the Thread's own state and every Iteration keeps the
   // position it replaced, so it is recorded and revertible rather than

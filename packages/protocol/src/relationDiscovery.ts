@@ -4,13 +4,12 @@
  * The discovery pass reads viewer-visible note / knowledge-item text plus
  * policy-allowed Activity/Artifact text, extracts typed internal links
  * deterministically, and resolves them against other viewer-visible Knowledge
- * items. Service-level LLM extraction is injectable for future provider
- * wiring; the public HTTP route rejects the flag until that adapter exists. It
- * produces a single batched, confidence-tiered proposal packet of candidate
- * `object_relation_create` edges (and, optionally, candidate `knowledge_item`
- * stubs for unresolved targets). It is the proposal-gated analogue of the context-and-retrieval design's
- * self-wiring graph: discovery NEVER writes an edge or item directly — accepting
- * the packet only creates child pending proposals, which still go through normal
+ * items. An extractor can be injected into the service. The public HTTP route
+ * rejects `llm_extraction_enabled`. Discovery produces a single batched,
+ * confidence-tiered proposal packet of candidate `object_relation_create`
+ * edges (and, optionally, candidate `knowledge_item` stubs for unresolved
+ * targets). It never writes an edge or item directly — accepting the packet
+ * only creates child pending proposals, which still go through normal
  * review. Discovery is access-safe: only visible source text and only visible
  * resolution targets are ever used, so it cannot leak hidden object existence.
  */

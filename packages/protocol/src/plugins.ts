@@ -182,7 +182,7 @@ export interface PluginDisabledError {
 // ── Plugin Host API ───────────────────────────────────────────────────────────
 //
 // These types define the contract between the plugin host and plugin code.
-// Official plugins (Level 1 built-in, Level 2 downloaded) use these interfaces
+// Official plugins use these interfaces
 // to contribute routes, jobs, scheduler tasks, proposal appliers, and context
 // providers to the running server. Activation is deliberately synchronous:
 // plugin routes and contribution registrations must complete before the host
@@ -368,8 +368,7 @@ export interface PluginMigration {
  *
  * Bundled official plugins implement this interface and are compiled into
  * server/dist/official-plugins before the server loads them at startup.
- * Downloaded plugins (Level 2) will use the same startup-load contract from
- * {RAINVER_HOME}/plugins/{id}/server/dist/index.js.
+ * Remote package download is not implemented.
  */
 export interface RainverPlugin {
   /** Must match OfficialPluginDescriptor.id. */
