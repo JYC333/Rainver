@@ -144,9 +144,10 @@ export class AutonomyService {
              -- run_id/status pointing at the dead Run, and refuse it as
              -- 'candidate_not_launchable' forever.
              -- ... but only once its launch tick's coordinator has settled.
-             -- Until then the failure is this tick's to count: clearing the
-             -- row's run and launch tick here lost it, and a coordinator still
-             -- waiting on a sibling reported the tick as succeeded.
+             -- Do not clear the row's run and launch tick before that coordinator
+             -- has settled. The failure is still this tick's to count. Clearing
+             -- it loses the failure, and a coordinator still waiting on a
+             -- sibling reports the tick as succeeded.
              status = CASE
                WHEN autonomy_candidates.status IN ('discovered', 'ranked', 'observed', 'refused')
                  OR (autonomy_candidates.status = 'failed' AND ${FAILED_CANDIDATE_RESETTABLE_SQL})
