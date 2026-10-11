@@ -281,7 +281,7 @@ export class CustomSourceCreateFlowService {
           }),
         });
       } catch (error) {
-        // Without this catch, a dispatcher-level failure (e.g. a stored
+        // Do not let a dispatcher-level failure escape (a stored
         // pipeline definition that no longer passes schema validation, or a
         // missing source artifact) would propagate uncaught and leave the
         // `source_handler_runs` row stuck in 'running' forever.

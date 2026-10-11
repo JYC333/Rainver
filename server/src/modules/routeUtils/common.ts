@@ -354,7 +354,7 @@ export function escapeLikePattern(value: string): string {
  * Wraps an async callback so every call chains strictly after the one
  * before it, instead of racing when called from synchronous, un-awaited
  * call sites (a live output-stream callback firing several times per
- * chunk, none of which its caller awaits). Without this, two calls whose
+ * chunk, none of which its caller awaits). Do not let those calls race. Two calls whose
  * work reads-then-writes some shared "current max" state (an
  * `event_index`-style cursor) can both read the same starting point and
  * collide. A rejection from one call does not skip or block the next —

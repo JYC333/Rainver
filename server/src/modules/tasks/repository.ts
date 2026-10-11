@@ -512,7 +512,7 @@ export class PgTaskRepository {
       const currentTask = await getVisibleTaskRow(client, identity, taskId, { lock: true });
       if (!currentTask) throw new HttpError(404, "Task not found");
       // Reading a Task is not licence to change it. A Project `viewer` can see
-      // every shared Task; without this they could drag one to Done, move its
+      // every shared Task. Do not treat a viewer as a writer. They could drag one to Done, move its
       // Loop stage, or reassign it. The Project the Task is *moving to* is
       // gated too, or a viewer there could pull work into a Project they
       // cannot write. An archived Project is frozen for writers as well:

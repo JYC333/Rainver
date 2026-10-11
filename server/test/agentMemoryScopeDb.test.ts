@@ -547,8 +547,8 @@ describe("revising what the Agent already knows", () => {
 
   it("will not revise a note learned somewhere else into this conversation", async () => {
     if (!db.available) return;
-    // The audience filter guards delivery; without this the write path walks
-    // past it — this Room's content in a note whose origin Room says
+    // The audience filter guards delivery. Do not revise from another Room.
+    // This Room's content would land in a note whose origin Room says
     // otherwise, delivered to that Room's audience.
     const elsewhere = await makeRoom("Elsewhere", [OWNER]);
     await db.pool.query(

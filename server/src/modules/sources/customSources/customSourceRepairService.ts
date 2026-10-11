@@ -100,8 +100,8 @@ export class CustomSourceRepairService {
       });
     } catch (error) {
       // testHandler can throw uncaught (e.g. recordTestOutcome's "no longer
-      // testable" guard, or a raw DB error) — without this catch,
-      // repair_status would be left at repair_pending forever, since the
+      // testable" guard, or a raw DB error). Do not let it escape.
+      // repair_status would be left at repair_pending, since the
       // automatic scan-worker trigger deliberately never touches
       // repair_pending.
       await this.resetRepairStatusAfterFailure(identity, connectionId, connection.repair_status, error);

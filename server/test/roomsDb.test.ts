@@ -1730,7 +1730,7 @@ describe("Room workflow (real Postgres)", () => {
     expect(withFocus).toContain(`"Draft the memory chapter" (in_progress, task_id: ${readable})`);
     expect(withFocus).toContain("hint, not a restriction");
 
-    // Recorded, not only prompted: without this the sole trace of an injected
+    // Recorded, not only prompted. Do not leave it only in the prompt. The sole trace of an injected
     // Task is free text inside `runs.prompt`, which cannot be queried back to
     // "which Task entered which turn".
     const injected = await db.pool.query<{ metadata_json: Record<string, unknown> }>(
@@ -7066,8 +7066,7 @@ describe("Room workflow (real Postgres)", () => {
     const dispatch = { actor: { type: "agent", id: "agent-1" }, visibility: "agent_tool", idempotency_key: randomUUID() } as never;
 
     // How the Agent learns which id to decide. Nothing in the rendered
-    // conversation carries one, so without this read the id can only be
-    // composed — and a composed id decides nothing.
+    // conversation carries one. Do not invent the id. A composed id decides nothing.
     const pending = await executors.get("proposal.list_pending" as SystemActionId)!({}, dispatch) as { modelResult: Record<string, unknown>; summary: Record<string, unknown> };
     expect((pending.modelResult as { proposals: Array<{ proposal_id: string; title: string }> }).proposals)
       .toEqual([

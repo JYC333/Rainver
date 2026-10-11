@@ -76,7 +76,7 @@ export const sourceItemAnnotations = pgTable("source_item_annotations", {
 	check("ck_source_item_annotations_stance_confidence", sql`stance_confidence IS NULL OR stance_confidence BETWEEN 0 AND 100`),
 	check("ck_source_item_annotations_stance_shape", sql`stance_polarity IS NULL OR ((stance_polarity IN ('supports','opposes') AND stance_target IS NOT NULL AND stance_target_key IS NOT NULL) OR (stance_polarity IN ('mixed','neutral') AND stance_target_key IS NULL))`),
 	// A succeeded annotation must carry the fields the digest pipeline reads;
-	// without this a partially-parsed result would look usable and then rank
+	// Do not accept a partial result. It would look usable and then rank
 	// against a NULL domain.
 	check("ck_source_item_annotations_succeeded_complete", sql`status <> 'succeeded' OR (domain_key IS NOT NULL AND depth IS NOT NULL AND genre IS NOT NULL AND stance_polarity IS NOT NULL AND stance_confidence IS NOT NULL)`),
 ]);

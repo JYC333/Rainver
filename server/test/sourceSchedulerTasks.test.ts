@@ -80,8 +80,9 @@ describe("reconcileSourceBackfills", () => {
       spy.mockRestore();
     }
     expect(reconciled).toEqual(["plan-next"]);
-    // Its failed reconcile rolled back its own bump; without this it would
-    // lead the `ORDER BY updated_at` page on every pass.
+    // Its failed reconcile rolled back its own bump. Do not leave that failed
+    // write first in the page. It would lead the `ORDER BY updated_at` page
+    // on every pass.
     expect(queries.some(({ sql, params }) =>
       /SET updated_at=now\(\)/.test(sql) && !sql.includes("status='approved'") && params[0] === "plan-stuck")).toBe(true);
   });

@@ -87,9 +87,7 @@ describe("the reads an Agent gets ids from (real Postgres)", () => {
 
   it("adopts the recorded next step on the user's word, the same write the Area's button makes", async () => {
     if (!db.available) return;
-    // A finished search records its next step; without this the only way to
-    // take it was to leave the conversation, open the Inquiry Area, find the
-    // Thread and press Adopt.
+    // A finished search records its next step. Do not hide that step.
     const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Agent memory" });
     const thread = await new InquiryThreadService(db.pool).createThread(identity(), project.id as string, {
       kind: "question", statement: "How should agent memory be classified?",

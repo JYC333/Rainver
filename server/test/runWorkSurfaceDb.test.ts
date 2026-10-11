@@ -386,7 +386,7 @@ describe("artifact declarations", () => {
 describe("declaring against a Task the Run may not write", () => {
   it("refuses when the instructing person is not a member of the Project", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The Agent's reach is the instructing person's. Without this check an
+    // The Agent's reach is the instructing person's. Do not skip the check. An
     // Agent in any Run could name a private Task's id and attach an artifact
     // to it, reading its Project back out of the failure.
     const task = randomUUID();

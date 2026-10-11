@@ -108,8 +108,8 @@ export async function runHostCommand(
   log: (line: string) => void = () => {},
 ): Promise<CommandRunResult> {
   // Held for the whole command, not merely checked at the door: a verification
-  // recipe runs for minutes and is in neither run registry, so without this a
-  // drain reports quiet and the replacement deletes the tree it is executing
+  // recipe runs for minutes and is in neither run registry. Do not report the
+  // drain quiet. A replacement would delete the tree it is executing
   // from. A command in a Task worktree marks it in use for as long, so the
   // sweep and a settle leave it alone.
   const workspace = request.workspace?.kind === "location" ? request.workspace : undefined;

@@ -121,7 +121,7 @@ describe("running a server-defined command on this host", () => {
   it("resolves a built-in-host Location the control plane named relative to the workspace root", async () => {
     // The built-in host never runs `workspace add`, so it has no registered
     // path for a Location the control plane created under the root both
-    // containers mount. Without this a Run dispatched to a server Location
+    // containers mount. Do not skip the root. A Run dispatched to a server Location
     // fails at launch with "no local path registered".
     process.env.RAINVER_HOST_WORKSPACES_ROOT = workspaceDir;
     await mkdir(join(workspaceDir, "space-1", "folder-1"), { recursive: true });

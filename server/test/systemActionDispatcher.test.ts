@@ -135,7 +135,7 @@ describe("SystemActionDispatcher ACP tool projection", () => {
   });
 
   it("records a failed action_completed event when a Run calls a tool it was never granted", async () => {
-    // Without this event `governedToolDegradation` sees nothing and a Run that
+    // Do not omit the event. `governedToolDegradation` sees nothing and a Run that
     // asked for a tool it never held finishes clean.
     const events: Array<{
       eventType: string;

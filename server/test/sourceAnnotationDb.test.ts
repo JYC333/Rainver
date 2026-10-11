@@ -271,7 +271,7 @@ describe("annotation outcomes", () => {
     const itemId = await seedItem();
     await repo().enqueueItems(SPACE, [itemId], CHANNEL);
 
-    // Without this constraint a partially parsed result looks usable and then
+    // Do not accept a partial result. It looks usable and then
     // ranks against a NULL domain.
     await expect(db.pool.query(
       `UPDATE source_item_annotations SET status = 'succeeded' WHERE space_id = $1 AND source_item_id = $2`,

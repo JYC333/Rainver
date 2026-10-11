@@ -261,7 +261,7 @@ export const ProjectBoardResponseSchema = z
     /** Who asked. The filters below are relative to this person. */
     viewer_user_id: IdSchema,
     /** Whether they may move, close or reassign a card. A viewer sees the
-     * Board and drags nothing; without this the drag would 403 after the drop. */
+     * Board and drags nothing. Do not hide that. The drag would 403 after the drop. */
     viewer_can_write: z.boolean(),
     /** Card counts per filter, so the control can show them without a second fetch. */
     filters: z.object({
