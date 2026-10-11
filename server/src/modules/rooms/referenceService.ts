@@ -43,9 +43,9 @@ export class RoomReferenceService {
    * something that simply exists.
    *
    * The access gate runs first and under the attacher's own identity. A
-   * summary is a metered call charged to the session's *owner*, so without
-   * this anyone could spend a colleague's budget by naming their session id —
-   * and would learn from the timing whether it exists. `includeOversight`
+   * summary is a metered call charged to the session's *owner*. Do not skip
+   * the gate. Naming a session id would spend a colleague's budget, and the
+   * timing would say whether it exists. `includeOversight`
    * stays false for the same reason the copy does: oversight is audit, not a
    * licence to publish, still less to spend.
    */

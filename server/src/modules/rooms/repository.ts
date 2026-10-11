@@ -189,11 +189,11 @@ export class PgRoomRepository {
    * anyone else joins, so this only ever returns a Room that is still private
    * to them.
    *
-   * It matches on the marker and `status`, not on live membership. That is
-   * safe only because nothing removes a Room's owner — `removeUser` refuses
-   * the mainline and roster removal never touches the owner row. If that ever
-   * changes, reuse could return a Room the caller is no longer in, which
-   * `getVisibleRoom` would then 404 with no replacement ever created.
+   * It matches on the marker and `status`, not on live membership. Do not
+   * remove a Room's owner. `removeUser` refuses the mainline and roster
+   * removal never touches the owner row. Reuse would otherwise return a Room
+   * the caller is no longer in, which `getVisibleRoom` would then 404 with no
+   * replacement ever created.
    */
   async getPersonalRoom(spaceId: string, projectId: string, userId: string): Promise<RoomRecord | null> {
     const result = await this.db.query<RoomRecord>(
