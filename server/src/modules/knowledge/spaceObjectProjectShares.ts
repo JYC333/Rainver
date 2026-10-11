@@ -87,7 +87,7 @@ export async function shareSpaceObjectWithProject(
  * Withdraws a share, and with it every placement the object holds inside that
  * Project's folder subtree.
  *
- * Dropping the placements is the point rather than a side effect: a placement
+ * Do not leave the placements. A placement
  * inside a Project's tree is what puts the object in that Project's view, so
  * leaving them behind after a revoke would show that Project's members a tree
  * with a hole in it — the silent absence a share must not leave, just arrived at

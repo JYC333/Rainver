@@ -6700,7 +6700,7 @@ describe("Room workflow (real Postgres)", () => {
     // predicate is not simply excluding everything.
     expect(asAdmin.has(sharedRun)).toBe(true);
 
-    // Same answer from both paths, which is the point.
+    // Same answer from both paths.
     await expect(runs.getVisibleRun("space-1", "user-2", limitedRun)).resolves.toBeNull();
     await expect(runs.getVisibleRun("space-1", "user-1", limitedRun)).resolves.toMatchObject({ id: limitedRun });
 

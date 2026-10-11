@@ -12,7 +12,7 @@
  *
  * This is deliberately the opposite of the topic axis in the interest profile.
  * There, a fixed taxonomy would *be* the bubble, so topics grow under control
- * from what the reader actually reads. Here, a fixed taxonomy is the point.
+ * from what the reader actually reads. Here the taxonomy stays fixed.
  * Both statements are true because they act on different things: the skeleton
  * is coarse, code-owned, and about the world; the topic axis is fine, user
  * data, and about the person. Topics map onto domains, so "which cells are

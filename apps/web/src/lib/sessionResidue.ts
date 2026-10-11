@@ -29,9 +29,9 @@ const KEEP_LOCAL_EXACT = [
   'project.sidecar.width',
 ]
 /**
- * No prefix is safe to keep wholesale, which is the point. `project.sidecar.`
+ * Do not keep a prefix wholesale. `project.sidecar.`
  * covers both a pane width and `project.sidecar.room.<id>.conversation`, and
- * `rainver:` covers both the theme and every notebook chat session — so a new
+ * `rainver:` covers both the theme and every notebook chat session. A new
  * preference is listed by name, and anything nobody listed is cleared.
  */
 const KEEP_LOCAL_PREFIXES: string[] = []
