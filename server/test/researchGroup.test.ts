@@ -810,9 +810,9 @@ describe("researchQueryRepositoryDb", () => {
       const reset = await queries.resetProviderPlan(SPACE, plan.id);
       expect(reset).toEqual({ nextRound: 1 });
 
-      // The old provider_query_provider_selections row must be gone — otherwise
-      // the retry's own selectAttempt would collide on the provider_plan_id
-      // primary key.
+      // The previous round's `provider_query_provider_selections` row is gone.
+      // Do not leave it. The retry's `selectAttempt` would collide on
+      // `provider_plan_id`.
       const secondAttempt = await queries.createAttempt(SPACE, {
         providerPlanId: plan.id,
         round: reset.nextRound,

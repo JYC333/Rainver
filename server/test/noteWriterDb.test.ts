@@ -160,8 +160,8 @@ describe("shared note writer (real Postgres)", () => {
 });
 
 /**
- * Notes without block ids. Absence is legal: nothing migrates
- * them, nothing rewrites their revisions, and they must keep loading.
+ * Notes without block ids. Absence is legal. Do not migrate them, and do not
+ * rewrite their revisions. They must keep loading.
  */
 describe("block ids on notes that have none (real Postgres)", () => {
   it("loads an id-less note and stamps it on the next write, leaving its history alone", async () => {
