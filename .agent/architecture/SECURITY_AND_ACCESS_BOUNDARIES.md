@@ -1437,26 +1437,28 @@ private address (D2). An external *link* in chat can still carry data in its URL
 when a person clicks it — rendering cannot close that, because the root is
 prompt injection into the model's output, and the link is shown with its
 confirmation step rather than removed; external *images* do not load on their
-own (D5). A trusted image-host allowlist is deferred (O3) until a real need
-appears — and that allowlist is what would let `img-src` drop `https:` again.
+own (D5). There is no trusted image-host allowlist (O3). `img-src` still
+includes `https:`. Do not drop `https:` without that allowlist.
 
-Two more, found by the integration review and recorded rather than fixed, both
-outside what this plan set out to do. **Knowledge body search has a hit/miss
-oracle through the retrieval index**: `bodyMatchSql` gates an `ILIKE` on `full`
-access, but the sibling `retrieval_chunks` search matches `tsv`/`plain_text`
-with no viewer term, and although revalidation redacts the returned text, the
-row still comes back as a hit — so a summary-level reader can probe candidate
-substrings and reconstruct a withheld body a piece at a time. Closing it means
-giving that search a viewer predicate, which is a design change to the retrieval
-module. **The Open Skill importer reads a response body with no ceiling**
-(`capabilities/skillImporter.ts`): `await response.text()` runs before the byte
-limit is checked, across up to 200 package files, so a member pointing it at
-large files in a repository they control can exhaust server memory. It is
-bounded by a host allowlist and sits outside the outbound guard. The body half needs no redirect and no cooperation from the host. The finance plugin's transaction create is not atomic, which needs a
-transaction port on `PluginHostContext`. And `completeTask` judges completion in
-the asking person's view while settlement judges the same Task unscoped, so an
-Agent can be refused a close that settlement then accepts — each half is right
-on its own.
+**Knowledge body search has a hit/miss oracle through the retrieval index.**
+`bodyMatchSql` gates an `ILIKE` on `full` access, but the sibling
+`retrieval_chunks` search matches `tsv`/`plain_text` with no viewer term.
+Revalidation redacts the returned text, and the row still comes back as a hit.
+A summary-level reader can probe candidate substrings and reconstruct a
+withheld body a piece at a time. Do not treat that redaction as closing the
+oracle.
+
+**The Open Skill importer reads a response body before the byte limit**
+(`capabilities/skillImporter.ts`). `await response.text()` runs first, across
+up to 200 package files, so a member pointing it at large files in a repository
+they control can exhaust server memory. The fetch is bounded by a host
+allowlist and sits outside the outbound guard.
+
+Finance ledger transaction create posts inside `withLockedBook`. A refused
+posting does not leave a draft. `completeTask` judges completion in the asking
+person's view. Settlement uses `missingRequiredOutputsForSettlement` and sees
+every output. An Agent can be refused a close that settlement then accepts.
+Each caller follows its own rule.
 
 ---
 

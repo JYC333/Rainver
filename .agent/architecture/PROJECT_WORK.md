@@ -465,40 +465,24 @@ is a Project member or its owner, or an Agent that is Space-wide or bound to
 this Project. An Agent that could hand a Task to anyone in the Space would be a
 way to disclose it. `to: null` releases the claim back to the assignment chain.
 
-### Deferred, recorded
+### Task visibility
 
-`task.create` writes `visibility: "space_shared"`, discarding the narrowing a
-Room Run carries (Room runs are `selected_users` scoped to the Room's
-members). Threading it through would need `createTask` to write
-`content_access_grants`, which it has no path for — narrowing without the
-grants would leave the Task readable by its owner alone, which is worse than
-the current widening. A Task-domain change, recorded rather than done.
+`task.create` writes `visibility: "space_shared"`. It discards the narrowing a
+Room Run carries (`selected_users` scoped to the Room's members). Do not
+narrow the Task without `content_access_grants`. Narrowing without the grants
+would leave the Task readable by its owner alone.
 
-## 9. Not here yet
+## 9. What this surface does not write
 
-- An Agent-written `project.reported`. `POST /projects/:projectId/updates` is
-  the only producer and it is a person's; the Steward that would post a
-  cross-Task summary is later. Task close-out likewise writes no
-  `task.reported` — the readable account belongs to whoever wrote one — so
-  Updates renders the `task.accepted` event itself rather than inventing prose
-  for it.
-- Actor-neutral handoff with join and resume semantics, plus role/capability
-  declaration on the contract. `task.handoff` as a single responsibility
-  transfer is the intended starting point.
-- **Steward autonomy.** Event-triggered wake-up on `task.run_settled` /
-  `task.reported`, with per-Project autonomy settings (level, budget, wake
-  policy). The Agent identity is one instance per Project. Under an
-  autonomous origin `task.create` becomes a
-  proposal rather than a write, which is what the `unattended_project_write`
-  rule in `decisionCore.ts` already anticipates.
-- **Roadmap and dependencies.** Milestone nodes and a live `task_dependencies`
-  table; both are new designs, not extensions of this one.
+- There is no Agent writer of `project.reported`. `POST /projects/:projectId/updates`
+  is the only producer, and it is a person's. Task close-out writes no
+  `task.reported`. Updates renders the `task.accepted` event itself rather
+  than inventing prose.
+- `task.handoff` transfers one responsibility.
 
-**Known smaller gaps**, recorded so they are decisions rather than oversights:
-
-- No periodic job re-materializes a managed Assistant when its seed changes;
-  it happens on the next Room creation in that Project. See
-  [`../modules/agents.md`](../modules/agents.md).
+Seed changes reach existing Assistants at boot and on the daily
+`managed_assistant_seed_reconcile` job. See
+[`../modules/agents.md`](../modules/agents.md).
 
 **Who may write.** Reading a Task is not licence to change it. `PATCH
 /tasks/:taskId`, `POST /tasks/:taskId/stage`, `POST /tasks/:taskId/evaluations`
