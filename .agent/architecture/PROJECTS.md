@@ -1475,8 +1475,10 @@ is remembered per browser — six entries, flat: Notes, Inquiry, Research,
 Sources, Files & Code, Decisions. The Rooms page (roster, invitations, the
 full conversation surface) is reached from Conversations.
 Raw material and Digest are tabs of Sources; Knowledge review and Experiments
-are views of Inquiry. Learning and Operations are Space-level. Every previous
-deep link redirects to its new home. Nothing about a Project adds, removes, or reorders an
+are views of Inquiry. Project `/learning` redirects to Pulse. `/operations`
+redirects to Research's Runs tab. `/digest` and `/raw` redirect to Sources
+tabs, `/experiments` to the Inquiry experiments view, and `/knowledge-review`
+to the Inquiry review candidates tab. `/delivery` redirects to Board. Nothing about a Project adds, removes, or reorders an
 entry — navigation position carries muscle memory, and a sidebar that grows as
 a Project is used costs more than the clutter it saves. An Area with nothing in
 it is still reachable and opens on an empty state offering the first action.

@@ -42,18 +42,18 @@ export default function ProjectsModule() {
       <Route path=":projectId" element={<Suspense fallback={<PageFallback />}><ProjectAreaLayout /></Suspense>}>
         <Route index element={<Suspense fallback={<PageFallback />}><ProjectDetailPage /></Suspense>} />
         <Route path="sources" element={<Suspense fallback={<PageFallback />}><SourcesAreaPage /></Suspense>} />
-        {/* Sources Area tabs. These paths still resolve. */}
+        {/* `digest` and `raw` redirect to Sources tabs. */}
         <Route path="digest" element={<Navigate to="../sources?tab=digest" replace />} />
         <Route path="raw" element={<Navigate to="../sources?tab=raw" replace />} />
         <Route path="files" element={<Suspense fallback={<PageFallback />}><ProjectFilesPage /></Suspense>} />
         <Route path="folders/:folderId" element={<Suspense fallback={<PageFallback />}><ProjectFolderSettingsPage /></Suspense>} />
         <Route path="inquiry" element={<Suspense fallback={<PageFallback />}><InquiryAreaPage /></Suspense>} />
         <Route path="inquiry/:threadId/assess" element={<Suspense fallback={<PageFallback />}><QuestionAssessmentPage /></Suspense>} />
-        {/* Inquiry views. These paths still resolve. */}
+        {/* `experiments` redirects to the Inquiry experiments view. */}
         <Route path="experiments" element={<Navigate to="../inquiry?view=experiments" replace />} />
         <Route path="decisions" element={<Suspense fallback={<PageFallback />}><DecisionAreaPage /></Suspense>} />
-        {/* Learning is Space-level. Operations rows for this Project are on
-            Research's Runs tab. */}
+        {/* Project learning redirects to Pulse. Operations rows for this
+            Project are on Research's Runs tab. */}
         <Route path="learning" element={<Navigate to=".." replace />} />
         <Route path="knowledge-review" element={<Navigate to="../inquiry?view=review&tab=candidates" replace />} />
         <Route path="board" element={<Suspense fallback={<PageFallback />}><ProjectBoardPage /></Suspense>} />
@@ -68,7 +68,7 @@ export default function ProjectsModule() {
             conversations; it is a transcript of work done elsewhere, never a
             conversation this app continues in place. */}
         <Route path="imported-sessions/:sessionId" element={<Suspense fallback={<PageFallback />}><ImportedSessionView /></Suspense>} />
-        {/* Delivery is the Board. This path still resolves. */}
+        {/* `/delivery` redirects to Board. */}
         <Route path="delivery" element={<Navigate to="../board" replace />} />
         <Route path="operations" element={<Navigate to="../research?tab=runs" replace />} />
         <Route path="rooms" element={<Suspense fallback={<PageFallback />}><ProjectRoomsPage /></Suspense>} />
