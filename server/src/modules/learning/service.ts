@@ -58,10 +58,9 @@ function masteryToOut(row: MasteryRow): Record<string, unknown> {
 }
 
 /**
- * Learning Domain: an independent global
- * Domain and a Project-contextual Area. Learning Items anchor to a
- * stable, versioned Knowledge item (never a Note directly). Mastery is
- * per-user and kept in its own table, separate from the shared Item content.
+ * Learning items are Space-global or pinned to a Project. They anchor to a
+ * versioned Knowledge item, never a Note. Mastery is per-user and kept in
+ * its own table, separate from the shared item content.
  */
 export class LearningService {
   constructor(private readonly db: Queryable) {}

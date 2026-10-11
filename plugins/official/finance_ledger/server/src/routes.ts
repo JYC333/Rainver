@@ -220,10 +220,8 @@ export function registerFinanceLedgerRoutes(
         if (err instanceof RequestError) throw err;
         // A unique violation on (book_id, name) says an account by that name
         // exists — including one hidden from this person, since the constraint
-        // is book-wide and visibility is not part of it. Answered as a plain
-        // conflict rather than by echoing the driver's message, which named the
-        // constraint and confirmed the row. The import path already did this;
-        // the direct create did not.
+        // is book-wide and visibility is not part of it. Answer 409. Do not
+        // echo the driver's message: it names the constraint and confirms the row.
         if (isUniqueViolation(err)) {
           throw new RequestError(409, "an account with that name already exists in this book");
         }
