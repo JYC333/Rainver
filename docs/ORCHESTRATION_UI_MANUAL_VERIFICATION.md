@@ -52,7 +52,4 @@ operational space selected in the shell and never requires direct database edits
 6. Choose **Promotion proposal**, select evidence and target scope, then follow
    the link to `/evolution/inbox` and approve through the normal Proposal flow.
 
-The UI intentionally does not launch a candidate Run automatically from an
-Evaluation Case. That remains D2.1. Workflow Canvas, runtime conformance
-administration, and runtime-session checkpoint/fork semantics remain outside
-this manual UI path.
+The UI does not launch a candidate Run automatically from an Evaluation Case.
