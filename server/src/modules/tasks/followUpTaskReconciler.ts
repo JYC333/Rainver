@@ -58,7 +58,7 @@ export async function applyAttendedFollowUpTasks(
   // created in this Run's own Project" — because otherwise an Agent writes
   // into a Project the person it acts for is not working in. Here the
   // foreign-Project follow-up is not refused, it is left as a card: the
-  // person decides, which is what the card is for.
+  // person decides. Do not turn the card into a refusal.
   const pending = await db.query<{ id: string }>(
     `SELECT id FROM proposals
       WHERE space_id = $1 AND created_by_run_id = $2

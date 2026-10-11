@@ -6,8 +6,8 @@ import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 // owned by the Projects domain adapter. source_item / extracted_evidence are
 // owned by the Source domain adapter. inquiry_thread is owned by the Inquiry
 // domain adapter; Threads are `space_objects` rows (ADR 0011 decision 1), and
-// the adapter exists for the domain fields the generic projection has no reason
-// to know about. The contract is shared but each domain registers
+// the adapter carries the domain fields the generic projection does not know
+// about. The contract is shared but each domain registers
 // its own adapter into its own registry, so the surfaces stay isolated.
 export const RETRIEVAL_OBJECT_TYPE_VALUES = [
   "knowledge_item",

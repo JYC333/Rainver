@@ -456,7 +456,7 @@ describe("imported history extraction", () => {
     );
     expect(children.rows).toHaveLength(1);
 
-    // The half the packet exists for: a child that cannot be applied would
+    // A child that cannot be applied would
     // make the whole memory path produce nothing, and the packet's own
     // acceptance would still look like a success.
     // In a transaction, because the apply path takes a savepoint around its

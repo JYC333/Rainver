@@ -46,8 +46,8 @@ export default defineConfig({
   },
   resolve: {
     alias: [
-      // The shadcn CLI writes `@/…` imports into the components it copies, so
-      // the alias exists for those. Everything hand-written here stays on
+      // The shadcn CLI writes `@/…` imports into the components it copies.
+      // Those imports resolve through this alias. Everything hand-written here stays on
       // relative paths.
       { find: /^@\//, replacement: `${resolve(projectRoot, 'src')}/` },
       { find: /^react$/, replacement: resolve(projectRoot, 'node_modules/react/index.js') },

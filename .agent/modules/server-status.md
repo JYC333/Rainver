@@ -56,7 +56,7 @@ evidence: LLM Provider reachability, per-adapter runtime tools
   `max(interval × 3, timeout + interval)`.
 
 The distinction matters: `failing` is loud (it raises, alerts, and is visible),
-`stalled` is the silent failure this surface exists for — a task whose `run()`
+`stalled` is a silent failure: a task whose `run()`
 never settles stops forever while the process stays healthy.
 
 Each task has a reporting deadline (`DEFAULT_TASK_TIMEOUT_SECONDS`, 600s, or

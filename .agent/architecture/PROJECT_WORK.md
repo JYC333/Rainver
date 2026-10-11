@@ -437,8 +437,8 @@ about the work.
 
 The others are ungated at any origin. A report only records, a handoff can
 only give work away, a review request can only stop work, and a declaration
-only says what a file is — none can take ground. Gating them would mean an Agent advancing work unattended could not say
-what it had done, which is the opposite of what the origin gate is for.
+only says what a file is — none can take ground. Do not gate them. An Agent
+advancing work unattended still has to record what it had done.
 
 The origin the rule reads is the **root** Run's: a delegated child carries
 `delegation` whoever started the chain, so reading its own would let an

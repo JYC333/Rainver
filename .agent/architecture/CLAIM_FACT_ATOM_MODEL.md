@@ -508,7 +508,7 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
   are implemented (see
   [`CONTEXT_AND_RETRIEVAL_LAYER.md`](CONTEXT_AND_RETRIEVAL_LAYER.md)).
   Canonical claim writes stay proposal-gated.
-- Runtime read/egress revalidation exists for claim evidence. There is no
+- Runtime read/egress revalidation covers claim evidence. There is no
   source-policy change detector or scheduled claim-source review.
 - Structured proposal packets exist. There is no separate claim workspace or
   productized Context Brief claim-review workflow.

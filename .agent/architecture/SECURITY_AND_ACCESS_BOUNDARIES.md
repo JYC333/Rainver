@@ -1114,7 +1114,8 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   address. Expired buckets are dropped and the map is capped, so an
   unauthenticated caller cannot grow it, and the window is written out off the
   request's own stack. The pairing code is 13 Crockford base32 characters — 65
-  bits — with a ten-minute life, so guessing it is not what the limiter is for.
+  bits — with a ten-minute life. The limiter counts repeated attempts. It does
+  not stand in for guessing that code.
   The host WebSocket upgrade requires a
   host bearer; a pairing code is not a bearer, and an upgrade without one is
   answered 401.

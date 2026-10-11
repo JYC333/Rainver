@@ -169,8 +169,8 @@ export function helperProcessEnv(
   // where that history is. The prefixes above are credential prefixes, but a
   // vendor puts its state root under the same one — `CLAUDE_CONFIG_DIR`,
   // `CODEX_HOME` — so clearing by prefix sends an ambient `session/list` to the
-  // default location and it reports the machine as having no history at all,
-  // which is the opposite of what that feature is for.
+  // default location and it reports the machine as having no history at all.
+  // Do not drop those state roots.
   for (const key of VENDOR_STATE_ROOT_KEYS) {
     const value = ambient[key];
     if (value !== undefined) cleared[key] = value;

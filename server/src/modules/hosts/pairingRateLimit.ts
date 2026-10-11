@@ -157,7 +157,7 @@ function prune(now: number): void {
  * At most one write is queued behind the one in flight, and the snapshot is
  * taken when that write runs rather than when it is asked for. Do not queue a
  * `.then()` chain per call. An unbounded chain grows one whole-map copy per
- * request under the flood this limiter exists for.
+ * request under a pairing flood.
  * Coalescing is safe because every write carries the complete window — the
  * skipped ones would only have written a prefix of what the next one does.
  * Serialized rather than parallel so two writes cannot interleave into a
@@ -201,11 +201,11 @@ export function hostRegisterRateLimited(ip: string, now = Date.now(), persistDir
   const throttled = recent.length >= HOST_REGISTER_MAX_ATTEMPTS;
   if (!throttled) recent.push(now);
   attempts.set(key, recent);
-  // On the interval, and always at the moment a bucket fills. The second half
-  // is what persistence is *for*: a restart must not hand a caller who has
-  // just spent their quota a fresh one. Everything after that — the flood from
-  // an already-throttled caller — is what the interval is for, since the
-  // window it would write is the one already on disk.
+  // On the interval, and always at the moment a bucket fills. Persist that
+  // fill: a restart must not hand a caller who has just spent their quota a
+  // fresh one. After that, the interval covers the flood from an
+  // already-throttled caller. The window it would write is the one already
+  // on disk.
   const justFilled = !throttled && recent.length >= HOST_REGISTER_MAX_ATTEMPTS;
   if (persistDir && (justFilled || now - lastPersistRequestedAt >= PERSIST_INTERVAL_MS)) {
     lastPersistRequestedAt = now;

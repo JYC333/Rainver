@@ -732,8 +732,8 @@ Conversations destination in the Project shell; the Rooms page stays the full
 per-Room surface.
 
 A Project **viewer** is a Project member and is therefore in the mainline, and
-may converse there: asking the Project's Assistant "is this one done?" is the
-panel's whole purpose, and reading the answer is what a viewer is for. What a
+may converse there. A viewer may ask the Project's Assistant "is this one done?"
+and read the answer. What a
 viewer says cannot change the Project's work — every Task-addressed action an
 Agent takes on their instruction requires writer authority on the Project and
 is refused. Speaking first is not a separate authority: the

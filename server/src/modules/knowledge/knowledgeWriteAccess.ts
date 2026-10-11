@@ -13,9 +13,8 @@ import { canWriteProject } from "../projects/access.js";
  * rewrite a member's. Two terms decide it:
  *
  * - anything but `space_shared` belongs to its owner, who is the only person
- *   who may change it. `space_shared` stays collaboratively writable, which is
- *   the point of sharing it — and is why this keys on visibility rather than on
- *   `owner_user_id`, which a shared object may also carry;
+ *   who may change it. `space_shared` stays collaboratively writable. Key on
+ *   visibility rather than on `owner_user_id`, which a shared object may also carry;
  * - a Project-bound object additionally needs writer authority in that Project,
  *   because a Project share widens read scope only;
  * - a reader who is served this object at `summary` may not write it. The body

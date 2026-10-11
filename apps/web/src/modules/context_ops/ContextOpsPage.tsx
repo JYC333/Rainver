@@ -132,8 +132,8 @@ function Drilldown({
   const [loading, setLoading] = useState(false)
   const [selectedArtifactIds, setSelectedArtifactIds] = useState<string[]>([])
 
-  // Fetched while expanded, and again whenever the summary reloads: the
-  // reports a scan or packet just created are what this list is for.
+  // Fetched while expanded, and again whenever the summary reloads. The
+  // list is the scans and packets just created.
   useEffect(() => {
     if (!open) return
     let cancelled = false

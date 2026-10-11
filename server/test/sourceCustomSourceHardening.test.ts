@@ -298,7 +298,7 @@ describe("pruneSupersededCustomSourceHandlerArtifacts", () => {
     // never disagree about which superseded version is "most recent" —
     // otherwise retention could prune the exact version a no-argument
     // rollback would target. Both use version_number DESC as a tiebreaker
-    // for this reason; this test forces the tie the tiebreaker exists for.
+    // for this reason. This test forces that tie.
     const permissiveConfig = { ...config!, customSourceGenerateRateLimitPerHour: 10 };
     const flow = new CustomSourceCreateFlowService(db.pool, permissiveConfig);
     const repairService = new CustomSourceRepairService(db.pool, permissiveConfig);

@@ -7,9 +7,9 @@ import { BLOCK_ID_ATTR, BlockIds, stripEmptyBlockIds } from '../blockIds'
 /**
  * The split guard, against the real ProseMirror schema rather than a mock.
  *
- * The failure it exists for is silent: ProseMirror copies a node's attrs onto
- * the new node when Enter splits a block, so both halves would carry the same
- * id and relocating "the captured paragraph" would extract two paragraphs.
+ * ProseMirror copies a node's attrs onto
+ * the new node when Enter splits a block. Do not leave both halves with the
+ * same id. Relocating "the captured paragraph" would extract two paragraphs.
  */
 
 function editorWith(doc: unknown): Editor {

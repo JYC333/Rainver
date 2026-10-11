@@ -1199,8 +1199,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         // Caught, not just fired: this is the last write of a connection that
         // is already gone, and an unhandled rejection terminates the process
         // under Node's default. A database that cannot take the write leaves
-        // the Host looking online until the next heartbeat sweep, which is
-        // what that sweep is for.
+        // the Host looking online until the next heartbeat sweep.
         void hostsOnClose?.markOffline(hostId).catch(() => undefined);
       });
     });

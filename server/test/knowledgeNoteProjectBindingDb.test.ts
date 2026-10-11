@@ -155,8 +155,8 @@ describe("note project binding by placement (real Postgres)", () => {
     const projectFolder = await withTransaction(db.pool, (tx) => ensureProjectNotesFolder(tx, SPACE, projectId));
     const loose = await makeFolder("Loose");
     const note = await repository.createNote(identity, { title: "Stale role", collection_id: loose }) as { id: string };
-    // A role scoped to a Project the note is not (yet) in — the shape the guard
-    // exists for. The role write path refuses to create this, so it is set up
+    // A role scoped to a Project the note is not in. The guard drops that role
+    // on a drag. The role write path refuses to create this, so it is set up
     // directly.
     await db.pool.query(
       `UPDATE notes SET project_role = 'understanding', role_project_id = $2 WHERE object_id = $1`,
