@@ -421,7 +421,7 @@ describe("host release installer", () => {
       expect((await readFile(daemonEnvironment, "utf8")).split(delimiter).slice(0, 2)).toEqual([binDir, fakeBin]);
 
       // A launcher produced by an update must also repair the effective PATH
-      // of a legacy service.env without overwriting that user-owned file.
+      // of an existing service.env without overwriting that user-owned file.
       await writeFile(serviceEnv, `PATH="${fakeBin}"\nRAINVER_HOST_CONFIG_DIR="${configDir}"\n`);
       await runCommand(join(installRoot, "rainver-host-daemon"), [], {
         PATH: "/usr/bin:/bin",

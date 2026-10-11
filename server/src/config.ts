@@ -122,9 +122,9 @@ export interface ServerConfig {
   customSourceArtifactRetentionEnabled: boolean;
   customSourceArtifactRetentionDays: number;
   customSourceArtifactRetentionIntervalSeconds: number;
-  /** Legacy env gate parsed for older env files; route enablement is space-scoped. */
+  /** Older env files may still set this. The active gate is `retrieval.space.settings`. */
   retrievalRerankEnabled: boolean;
-  /** Legacy env gate parsed for older env files; route enablement is space-scoped. */
+  /** Older env files may still set this. The active gate is `retrieval.space.settings`. */
   retrievalQueryRewriteEnabled: boolean;
   rainverEnv: string;
   appVersion: string | null;

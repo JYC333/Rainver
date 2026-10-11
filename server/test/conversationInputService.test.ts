@@ -388,8 +388,8 @@ describe("ConversationInputService image storage", () => {
     });
     expect(withDelivery.blocks).toEqual([hydrated.blocks[0]]);
     // The ACP resource link stays in the prompt. The Host locator list is
-    // reserved for legacy file references; new resource ids are resolved
-    // through Run-scoped System Actions.
+    // reserved for file references that still hydrate a snapshot; new
+    // resource ids are resolved through Run-scoped System Actions.
     expect(hydrated.resources).toEqual([]);
     expect(withDelivery.resources).toEqual([]);
   });

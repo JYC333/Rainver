@@ -832,7 +832,7 @@ export class ConversationInputService {
    * objects are ACP v1-shaped but remain plain records so this service does
    * not become an ACP transport owner. A normal dispatch exposes file
    * references as authorized ResourceLinks and relative-path instructions.
-   * Legacy file references may still hydrate their historical snapshot body on
+   * File references may still hydrate their stored snapshot body on
    * manual retry; new immutable resources are always descriptors for the
    * run-scoped input_resource tools.
    */

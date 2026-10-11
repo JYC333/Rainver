@@ -60,7 +60,7 @@ export const ProjectPublicSummaryListResponseSchema = z
 /**
  * PUT body. A bare write stages a `draft`; `review_status` other than `draft`
  * is a publish/unpublish action and is gated to project-owner-level authority
- * server-side. Legacy `*_json` aliases are accepted and pass through.
+ * server-side. Older `*_json` aliases are accepted and pass through.
  */
 export const ProjectPublicSummaryUpsertRequestSchema = z
   .object({
