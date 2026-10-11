@@ -287,9 +287,8 @@ export function isRevocationClose(code: number, reason: string): boolean {
 
 /**
  * The control plane refused this daemon's `hello` because its version is below
- * the minimum it admits. Not revocation: the registration is still valid and
- * the fix is an update, not re-pairing — so the daemon holds instead of
- * removing its credentials.
+ * the minimum it admits. The registration is still valid. Update the daemon.
+ * Do not re-pair. The daemon holds instead of removing its credentials.
  */
 export function isOutdatedDaemonClose(code: number, reason: string): boolean {
   return code === 1008 && reason === "daemon_outdated";

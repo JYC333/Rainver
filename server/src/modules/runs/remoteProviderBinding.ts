@@ -249,7 +249,7 @@ export const RUNTIME_PROFILE_MODEL_SOURCE = "runtime_profile";
  * correct: it says which backend was chosen, and the run's own failure says
  * the rest.
  *
- * Without this the two disagree in the strong form: the router stamps the
+ * Do not leave the router's prediction in place. The router stamps the
  * provider its candidate scoring chose, execution uses the Host's binding, and
  * usage attributes to the second while the Run row names the first. Clearing
  * the column for an unbound run matters just as much — a run on the machine's

@@ -721,9 +721,8 @@ async function runRemoteHostCliAdapter(
     command: argv,
     cwd: null,
     timeout_seconds: timeoutSeconds,
-    // The same rule as the server-host path: a runtime running a long tool
-    // call emits nothing for its duration, and a third of the run budget
-    // (100s for the default) was killing legitimate turns mid-call.
+    // Same rule as the server-host path. A long tool call emits nothing until
+    // it returns. Do not use a third of the run budget.
     stall_timeout_seconds: stallTimeoutSeconds(input.adapter_config, timeoutSeconds),
     env: {},
     run_id: input.run.id,
