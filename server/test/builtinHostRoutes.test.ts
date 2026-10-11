@@ -16,8 +16,8 @@ import { PgHostRepository } from "../src/modules/hosts/repository.js";
  * (installing a runtime, logging a copy in) is instance-admin work; being told
  * what is installed on it is not, because that is what says whether a member's
  * Run can run at all. And two things it must keep refusing: being revoked, and
- * being handed an existing directory on the machine (plan decision 12 — a
- * server Location is always a managed workspace).
+ * being handed an existing directory on the machine. A server Location is
+ * always a managed workspace.
  */
 const ADMIN = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";

@@ -13,7 +13,7 @@ import { canonicalRunOutput } from "./orchestrationResults.js";
 /**
  * One bounded ProviderTask, one Run.
  *
- * ADR 0022 §2/§3 and plan decision 14: bounded work that needs Run lifecycle,
+ * ADR 0022 §2/§3: bounded work that needs Run lifecycle,
  * retry, artifacts or verification records a `provider_task` Run — no Agent,
  * no AgentVersion, no manufactured Runtime Profile — while incidental calls
  * (title generation, query rewriting, reranking) use the ProviderTask ledger

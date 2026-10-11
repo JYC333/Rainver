@@ -13,7 +13,7 @@ import {
 } from "../src/modules/hosts/builtinRegistration.js";
 
 /**
- * The built-in host has no pairing step (plan decision 4): the control plane
+ * The built-in host has no pairing step: the control plane
  * issues its bearer token and leaves it in a directory only these two
  * containers share. What matters is that publishing is idempotent across
  * restarts — a token rotated on every boot would cut the daemon off from its

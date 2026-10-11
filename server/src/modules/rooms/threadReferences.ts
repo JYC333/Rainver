@@ -227,10 +227,10 @@ async function roomAudience(
     // itself requires — not the roster alone. Removing somebody from a
     // Project deletes their `project_members` row and leaves every
     // `room_user_members` row active, so a roster-only audience counts people
-    // who can no longer read anything here. Today that only over-warns,
-    // because same-Project containment keeps such a phantom out of the target
-    // audience too; asking the predicate is what stops that from being one
-    // rule-change away from a missed disclosure.
+    // who can no longer read anything here. A roster-only count over-warns
+    // while same-Project containment also keeps that person out of the target.
+    // Do not drop the predicate. One rule change would turn the warning into
+    // a missed disclosure.
     `SELECT member.user_id
        FROM room_user_members member
        JOIN users u ON u.id = member.user_id AND u.status = 'active'

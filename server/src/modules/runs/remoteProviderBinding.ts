@@ -104,8 +104,7 @@ export async function resolveRuntimeProfileScope(
       // The thread's Agent and the Run's are the same on every path that
       // creates one, and the archive keys off the thread's column — so a
       // divergence would write this run into another Agent's profile and
-      // archive the wrong one. Enforced rather than assumed: failing open here
-      // crosses the boundary this whole phase exists to draw.
+      // archive the wrong one. Do not fail open. The profile is keyed by Agent.
       if (row.agent_id && row.agent_id !== run.agent_id) {
         throw new RemoteProviderBindingError(
           "runtime_profile_agent_mismatch",
@@ -205,12 +204,11 @@ export function buildUnboundRuntimeProfile(
  * profile-relative paths the daemon resolves.
  *
  * Deliberately **not** `HOME`. A bound run gets `HOME: "."` because B67 wants
- * the machine contributing nothing at all, and pays for it by losing
- * `~/.gitconfig` and `~/.ssh` — a cost that phase accepted for bound runs and
- * recorded. An unbound run must not pay it: a Task run on a paired machine
- * commits and pushes inside a registered Location, and moving its `HOME` would
- * break `git commit` on the author identity and `git push` on the user's ssh
- * config, for runs that worked the day before.
+ * the machine contributing nothing at all, and that drops `~/.gitconfig` and
+ * `~/.ssh`. An unbound run must not pay that cost: a Task run on a paired
+ * machine commits and pushes inside a registered Location, and moving its
+ * `HOME` would break `git commit` on the author identity and `git push` on
+ * the user's ssh config.
  *
  * Each runtime names its own state root instead, and each of these is the
  * variable that runtime's own binding already uses:

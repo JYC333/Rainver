@@ -78,7 +78,7 @@ function isRemoteDispatchEligible(runtimeKey: string): boolean {
  * in or out, choosing its default CLI) is instance-admin work rather than
  * anyone's ownership. `allowBuiltin` says a route is one of those; a route
  * that is meaningless for the built-in host, such as attaching an existing
- * directory on the machine (plan decision 12) or pointing it at a provider
+ * directory on the machine, or pointing it at a provider
  * proxy it reaches in-network, leaves it off and keeps answering 404.
  *
  * Returns null after having already answered the request.
@@ -368,14 +368,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.send({ items });
   });
 
-  // What a dispatch to this host can choose from, decided where dispatch is
-  // validated: the runtime copies the host has and, for the chosen copy,
-  // every backend with whether it is usable and why not. The composer
-  // renders this rather than reconstructing it from bindings, providers and
-  // capabilities — three sources that drifted apart in the browser.
-  // Plan host-workspace-frontend-registration: the web UI's remote-directory
-  // browser and workspace registration. Both are owner-only host actions the
-  // daemon answers; the server forwards a request and never opens a path.
+  // Owner-only host actions the daemon answers. The server forwards the
+  // request and never opens a path.
   app.post("/api/v1/hosts/:hostId/browse-directories", async (request, reply) => {
     const resolved = await resolveOwnedHost(context, request, reply);
     if (!resolved) return reply;

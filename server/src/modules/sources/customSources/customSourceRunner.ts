@@ -94,8 +94,8 @@ export function evaluateCustomSourceRunnerBlockReason(
 }
 
 /**
- * Instance hard limits always win over a handler version's policy envelope
- * (an explicit plan decision rule) — a handler version cannot request a
+ * Instance hard limits always win over a handler version's policy envelope.
+ * A handler version cannot request a
  * timeout/log/output/download/file budget beyond what the instance allows.
  */
 export function effectiveCustomSourceLimits(
