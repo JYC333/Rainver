@@ -172,11 +172,10 @@ The implemented settings API keeps that ownership split explicit:
 
 The runner executes TypeScript/Node handlers. Python handlers are not implemented.
 
-The runner must execute generated code in a separate process with a temporary
-sandbox, minimal environment, controlled network, no repository write access, no
-ambient credentials, and strict resource limits. Existing worktree sandboxing is
-not enough for generated Custom Source code, and `one_shot_docker` must not be
-treated as active isolation until it is implemented.
+Generated handler code runs in a separate process with a temporary sandbox, a
+minimal environment, no repository write access, and no ambient credentials. A
+worktree sandbox is not this boundary. `one_shot_docker` is not this boundary
+either. Do not treat it as active isolation for generated handler code.
 
 If runner support is disabled or unavailable, Custom Source execution fails
 closed.
@@ -210,15 +209,13 @@ inside the declared handler contract (`input.json`, `output.json`, the
 handler entrypoint, and sandbox `files/`). **This is defense-in-depth, not
 OS-level network, process, or filesystem isolation** — a native addon, a
 raw syscall, process internals, or an unpatched file API could still reach
-outside the sandbox at the OS permission level. The same runner is used by
+outside the sandbox at the OS permission level. Do not describe this runner
+as OS-sandboxed. The same runner is used by
 fixture tests and live scan jobs and does not grant network access to the
 handler process. Trusted server code fetches `source_connections.endpoint_url`,
 enforces the handler policy envelope's allowed origins before each
 request/redirect, and passes the fetched HTML through
-`input.json.source.config.fetched_html`. Do not describe this runner as
-OS-sandboxed until a real process/network/filesystem isolation layer exists —
-this mirrors the same honesty requirement already applied to `one_shot_docker`
-(B13).
+`input.json.source.config.fetched_html`.
 
 The contract validator (`customSourceContractValidator.ts`) rejects a
 snapshot `file_path` that is a symlink (`lstat`, not `stat`) and separately

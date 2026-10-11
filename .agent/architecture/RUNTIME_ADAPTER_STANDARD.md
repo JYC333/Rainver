@@ -48,7 +48,7 @@ upgrading and rolling back a CLI copy, and `AgentRuntimeDefinition` plus its
 `RuntimeAdapterSpec` for runtime semantics. `runtime_key` is the one name a
 runtime has on the host wire and in a managed installation's manifest; there is
 no second identity field. The `/runtime-adapters` and `/runtime-tools` instance
-APIs are both retired.
+APIs are not registered. Do not add them.
 
 What a host reports about a copy is non-mutating: its id, version, native
 account state, ACP session availability and options, held account names, and

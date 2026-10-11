@@ -34,8 +34,9 @@ export function readConversationDraft(destination: string, storage: Storage | nu
     const age = Date.now() - savedAt
     if (!Number.isFinite(savedAt) || age > CONVERSATION_DRAFT_MAX_AGE_MS || age < -5 * 60 * 1000) return null
     const input = ConversationMessageInputSchema.safeParse({ text: record.text, input_parts: record.input_parts })
-    // An empty draft is not useful, and parsing it through the same input
-    // contract also rejects unknown/old part kinds before they reach a send.
+    // An empty draft is not useful. Parsing through the send contract rejects
+    // unknown part kinds before they reach a send. Do not restore a draft the
+    // contract refuses.
     if (!input.success) return null
     return {
       version: CONVERSATION_DRAFT_VERSION,

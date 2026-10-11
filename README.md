@@ -167,10 +167,8 @@ Run explicit TS migrations through the ops wrapper:
 
 ### Runtime target
 
-The runtime is **Linux / WSL / server + browser UI**. An `apps/web/src-tauri/` directory exists
-but desktop support is **deferred and not part of the current product**. If it ships later it
-will be a lightweight launcher (start/stop the server, open the browser) — not a reimplementation
-of the backend.
+The runtime is **Linux / WSL / server + browser UI**. An `apps/web/src-tauri/` directory exists.
+Desktop support is not part of the current product. Do not reimplement the backend as a desktop app.
 
 ## Sandbox Architecture
 

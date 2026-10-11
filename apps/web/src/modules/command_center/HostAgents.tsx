@@ -10,10 +10,10 @@ import type { Host, HostRuntimeDefinitionOption, HostRuntimeUsage, RuntimeInstal
 import HostAgentRow, { type HostAgentLoginTarget } from './HostAgentRow'
 import RuntimeLoginTerminal from './RuntimeLoginTerminal'
 
-/** The copies of an adapter a host reports (the server has already normalized older daemons' reports). */
 /** How long a finished, successful login stays on screen before the panel closes itself. */
 const LOGIN_PANEL_AUTO_CLOSE_MS = 3_000
 
+/** The copies of an adapter a host reports, in the shape the server stored. */
 function installationsOn(host: Host, adapter: HostRuntimeDefinitionOption): RuntimeInstallation[] {
   return host.capabilities_json?.installations?.[adapter.runtime_key] ?? []
 }

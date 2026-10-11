@@ -350,7 +350,7 @@ simulation path: the automation policy preflight.
 | `proposal.create` | `server/src/modules/proposals/` and target modules via `enforce()` | Code patch collection uses `force_record=True` |
 | `proposal.apply` | `server/src/modules/proposals/applyService.ts` via `enforceProposalApply()` | Before accepted proposal side effects |
 | `project_folder.write_patch` | `server/src/modules/projectFolders/` and proposal appliers via `enforce()` | Before any Project Folder file writes |
-| `project_folder.apply_patch` | `server/src/modules/projectFolders/repository.ts` via `enforce()` | Before human Save to Folder after exact draft/version and Host preconditions; direct user context is allowed and no Proposal is created. Restore-as-draft and retired rollback paths do not write the Folder |
+| `project_folder.apply_patch` | `server/src/modules/projectFolders/repository.ts` via `enforce()` | Before human Save to Folder after exact draft/version and Host preconditions; direct user context is allowed and no Proposal is created. Restore as draft never mutates the Folder. There is no direct browser-content write or user-facing rollback route |
 | `policy.change` | `server/src/modules/proposals/applyService.ts` via `enforceProposalApply()` | Protected by the `proposal.apply` gate for `policy_change` proposals |
 | `runtime_skill.render` | execution-control policy resolution | Before enabled runtime-skill content may enter an accepted Delivery |
 | `retrieval.search` | `server/src/modules/retrieval/tool/service.ts` via `enforce()` | Before managed-run Knowledge search execution |

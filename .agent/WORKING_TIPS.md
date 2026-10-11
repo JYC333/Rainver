@@ -72,11 +72,12 @@ execution path.
 
 Model flags, permission bypass flags, invocation templates, and output parser
 selection are declared in `server/src/modules/runtimeAdapters/specs.ts`. CLI binary install
-and status use the host card and `/api/v1/hosts/:hostId/installations/*`; the retired
-`/api/v1/runtime-adapters` instance API must not be used.
+and status use the host card and `/api/v1/hosts/:hostId/installations/*`. There is
+no `/api/v1/runtime-adapters` instance API. Do not add one.
 
-Managed CLI execution belongs to the server `runs` path, which prepares
-ephemeral/worktree sandboxes and records evidence, artifacts, and proposals.
+Managed CLI execution belongs to the server `runs` path, which records evidence,
+artifacts, and proposals. The daemon owns the working directory. Do not provision
+a server sandbox for a daemon Run.
 
 ---
 
