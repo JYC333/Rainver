@@ -64,9 +64,9 @@ export class PgVerificationRepository implements VerificationPlanReader {
       }
     }
 
-    // A workflow/plan node may name one or more validation recipes. These are
-    // execution inputs, not metadata: resolve them in the run's space and
-    // merge them into the same deterministic declaration plan used by A2.
+    // A workflow or plan node may name one or more validation recipes. These are
+    // execution inputs, not metadata. Resolve them in the Run's space and
+    // merge them into the declaration plan above. Do not build a second plan.
     const routeHints = recordValue(contractRecord(run.contract_snapshot_json).route_hints_json);
     const recipeRefs = stringArray(routeHints.verification_recipe_refs);
     if (recipeRefs.length === 0) return plan;

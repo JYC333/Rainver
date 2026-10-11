@@ -99,8 +99,7 @@ export async function renderCliCommand(
     redacted.splice(redactedInsertAt >= 0 ? redactedInsertAt : redacted.length, 0, ...extraArgs);
   }
 
-  // No current adapter ever set `argument_rendering_strategy: "stdin"` (the
-  // deleted field's third value) — the prompt always stays an argv token.
+  // The prompt stays an argv token. Do not put it on stdin.
   return {
     argv,
     redacted_argv: redacted,
