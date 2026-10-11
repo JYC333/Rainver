@@ -85,10 +85,10 @@ export function registerRoutes(app: FastifyInstance, context: { config: ServerCo
       const projectId = requiredString(params(request).projectId, "project_id");
       const parsed = protocol.ProjectUpdateRequestSchema.safeParse(jsonBody(request));
       if (!parsed.success) throw new HttpError(422, parsed.error.message);
-      // A person's own account of where the Project stands. `project.reported`
-      // has no Agent writer yet — the Steward that would post one is later —
-      // so this is the only producer, and Updates is a filter over the same
-      // stream rather than a second place the story could be told.
+      // A person's own account of where the Project stands. There is no Agent
+      // writer for `project.reported`. This route is the only producer, and
+      // Updates is a filter over the same stream rather than a second place
+      // the story could be told.
       //
       // Writer authority, not read: this appends to the record the Project is
       // judged by. A `viewer` who can read the Project can read the Updates,

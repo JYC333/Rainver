@@ -12,9 +12,8 @@ import { appendProjectWorkEvent } from "./eventWriter.js";
  * append-only stream, so the Project has one story rather than one per
  * domain.
  *
- * Written inside the caller's transaction. An advancement that happened
- * without a row saying so is exactly the invisibility the direct write was
- * allowed on the promise of avoiding.
+ * Written inside the caller's transaction. Do not advance without the event
+ * row. An advancement with no row is invisible.
  *
  * Shared rather than copied per domain: attribution, the batch key and the
  * undo linkage are the properties the feed and the undo route both depend on,

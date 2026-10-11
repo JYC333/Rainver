@@ -139,7 +139,7 @@ async function listRunArtifactDeclarations(
  * settlement match it against `required_outputs_json` and close the Task.
  *
  * An undeclared upload keeps whatever type the uploader gave it and links to
- * no Task — the pre-existing behavior, unchanged. A declaration whose file
+ * no Task. A declaration whose file
  * never arrived is reported into the Task's stream rather than dropped: the
  * agent believed it had delivered something, and the difference between that
  * and having delivered it is exactly what a person needs to see.
