@@ -329,7 +329,7 @@ Managed host workspaces are surfaced consistently across the Agents and Rooms ro
 | **Cards** | `enabled: false, visible: false` | Standalone `/cards` hidden. Knowledge › Cards is an empty-state placeholder. Schema exists; no review API. |
 | Time | `planned: true` | Stub page only; no backend |
 
-Do not register a gallery entry as interactive unless its backend surface exists.
+Do not add a Global Rail item for a module whose backend surface does not exist.
 
 ---
 

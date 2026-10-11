@@ -88,8 +88,9 @@ export interface OfficialPluginDescriptor {
    */
   default_enabled: boolean;
   /**
-   * Whether the gallery card / nav entry is shown by default, even when
-   * disabled. true = visible but grayed out when disabled.
+   * Visible value used when there is no enablement row. The Global Rail
+   * shows an official plugin only when `enabled`. It does not gray out a
+   * disabled plugin. Do not treat this as a gallery card.
    */
   default_visible: boolean;
   scope: OfficialPluginScope;
