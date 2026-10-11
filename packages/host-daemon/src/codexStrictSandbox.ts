@@ -16,12 +16,11 @@ export const CODEX_STRICT_SANDBOX_TOML = `sandbox_mode = "${CODEX_STRICT_SANDBOX
 /**
  * Sets the top-level `sandbox_mode`, and only the top-level one.
  *
- * TOML scopes a key to the table above it, so a pattern that matched
- * `sandbox_mode` anywhere in the file rewrote the first one it found — which in
- * a config with named profiles is `[profiles.something]`'s. That left the
- * top-level default exactly as it was, so the Run still could not write, and
- * silently changed a profile the person configured for a different purpose.
- * The search stops at the first table header; the insert goes above it.
+ * TOML scopes a key to the table above it. Do not match `sandbox_mode`
+ * anywhere in the file. In a config with named profiles the first match is
+ * `[profiles.something]`'s, which leaves the top-level default unchanged and
+ * rewrites a profile the person configured for something else. The search
+ * stops at the first table header; the insert goes above it.
  */
 export function applyCodexStrictSandboxToml(contents: string): string {
   const lines = contents.split("\n");
