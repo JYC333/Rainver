@@ -330,7 +330,7 @@ replaced recipient ids as `retry_superseded_run_ids`. Failed Agent replies for
 those Runs are retained in storage with `retry_superseded = true` for audit but
 excluded by the canonical Room transcript predicate; pagination, summaries,
 runtime-context tails and both conversation surfaces therefore agree that the
-old error is no longer history the person must read. Drafts are kept in
+replaced error is not history the person must read. Drafts are kept in
 destination-scoped sessionStorage as validated logical references;
 they never contain image bytes, absolute Host paths, or credentials.
 
@@ -385,7 +385,7 @@ resumed one only when its sha256 differs from `host_threads.identity_digest`,
 the digest of what that session last received. A revised persona, a roster
 change that alters which notes may be delivered, or a rules edit is a new
 digest and goes out on the next turn; an unchanged block is not repeated, so a
-resumed session no longer grows by one copy per turn and its prefix stays
+resumed session does not grow by one copy per turn and its prefix stays
 stable for vendor caching. The digest is written **only** by the terminal
 outcome of a Run that carried the block and completed
 (`PgHostThreadRepository.recordRunOutcome`, `landed`): a dispatch that never
@@ -990,7 +990,7 @@ a discussion's spend cap. Inside a discussion the count is the row's
 bounded by rounds); otherwise it is one counter on the task group of the
 person's message, `budget_json.container_turns_used`, which every branch of
 the chain charges through its `budget_json.container_group_id` pointer. A
-completion turn can therefore no longer delegate again with a fresh budget.
+completion turn cannot delegate again with a fresh budget.
 A research acquisition an Agent starts (`research.start_acquisition`) carries
 its turn's group (`origin_group_id`, through the pipeline job and the
 Operation's progress), so its result and status turns are charged to that

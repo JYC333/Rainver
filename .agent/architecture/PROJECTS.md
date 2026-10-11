@@ -675,7 +675,7 @@ artifact content remains available through the artifact record; logs only add a
 bounded, redacted preview/tail for diagnosis. The operation and Run detail
 views expose the same diagnostics, and the server emits a structured
 `[project-research.synthesis] validation_failed` log line. An `idea_review`
-checkpoint is recorded (and auto-waived — it no longer gates) before the
+checkpoint is recorded and auto-waived before the
 source schedule is activated.
 
 When a failed synthesis operation is retried, the retry clears the old
