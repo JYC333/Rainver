@@ -1,6 +1,6 @@
 # Modules
 
-> Current module map and ownership facts. Source of truth is still the code:
+> Current module map and ownership facts. Source of truth is the code:
 > `server/src/gateway/routeRegistry.ts`,
 > package facades, and boundary tests.
 

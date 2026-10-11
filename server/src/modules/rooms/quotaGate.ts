@@ -36,8 +36,8 @@ import {
  * has reset. A **person's** turn is never held: it runs until the CLI itself
  * refuses, and that refusal is itself a reading (`subscriptionLogins.ts`).
  *
- * The gate replaces the admission's own job enqueue, so a held Run has no
- * job to run and nothing else to undo. A held Run does not hold the
+ * This gate is the job enqueue. A held Run has no job to run and nothing
+ * else to undo. A held Run does not hold the
  * conversation's turn (`conversationTurnTaken`): a person may speak while
  * Agents wait, and a held Run is admitted only once the turn is free again.
  */
