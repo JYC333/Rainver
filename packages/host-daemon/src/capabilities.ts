@@ -49,8 +49,9 @@ export interface RuntimeLookup {
 /**
  * What this machine can run. One identity for a runtime on a host — the
  * runtime key and the copy — and everything about a copy lives on the
- * copy. `runtimes`/`versions` remain as the plain PATH inventory (vendor
- * binaries and git) for display and for readers that predate installations.
+ * copy. `runtimes`/`versions` are the plain PATH inventory (vendor
+ * binaries and git), for display and for readers that do not know
+ * installations.
  */
 export interface DaemonCapabilities {
   runtimes: ProbedBinary[];

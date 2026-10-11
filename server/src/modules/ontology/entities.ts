@@ -369,8 +369,8 @@ function registerCoreEntities(): void {
     });
   }
 
-  // Entities that are not `space_objects` rows. Their presence here is the
-  // point: unification is about one registry, not one table.
+  // Entities that are not `space_objects` rows belong in this registry.
+  // Do not require every entity to be a `space_objects` row.
   const independentRoots: readonly (Omit<EntityDefinition, "owner"> & { owner: string })[] = [
     {
       entityType: "memory_entry",

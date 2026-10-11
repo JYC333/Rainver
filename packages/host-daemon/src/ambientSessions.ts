@@ -99,13 +99,10 @@ class AcpProcess {
       // Clearing them by prefix would report the machine as having no history
       // at all. Do not.
       //
-      // Worth knowing, and deliberate: `CODEX_HOME` also *selects* which
-      // account's history this is. An owner who starts the daemon from a shell
-      // exporting a non-default one imports from that account, while dispatch
-      // uses the profile's own root — so what was imported can be history
-      // Rainver will not itself continue. That is the honest answer for a
-      // feature whose subject is "this machine's own history"; the alternative
-      // is to import nothing.
+      // `CODEX_HOME` also selects which account's history this is. A daemon
+      // started from a shell that exports a non-default one imports from that
+      // account. Dispatch uses the profile's own root, so the import can be
+      // history Rainver will not continue.
       env: { ...helperProcessEnv(process.env, runtimeKey, { keepStateRoots: true }), ...env },
     });
     this.child.stdout?.on("data", (chunk: Buffer) => this.consume(chunk.toString("utf8")));

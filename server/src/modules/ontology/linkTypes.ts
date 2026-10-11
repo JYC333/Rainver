@@ -26,8 +26,7 @@ type LinkGovernance =
 interface LinkTypeDefinition {
   linkType: LinkType;
   /**
-   * Object types allowed at each end. `"any"` means any registered entity —
-   * used by the generic association types that predate this registry.
+   * Object types allowed at each end. `"any"` means any registered entity.
    */
   from: readonly string[] | "any";
   to: readonly string[] | "any";

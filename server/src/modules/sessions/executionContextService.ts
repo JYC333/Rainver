@@ -909,8 +909,8 @@ function gitContextChanged(
   context: Pick<ExecutionContextRow, "git_observed_at" | "git_branch" | "git_head" | "git_execution_ready" | "primary_workspace_location_id" | "last_run_git_branch" | "last_run_git_head">,
   current: ConversationGitSnapshot | null,
 ): boolean {
-  // Older initialized contexts predate the baseline fields. They remain
-  // usable and acquire the baseline on the next new Conversation.
+  // A context with no git observation has no baseline yet. It stays
+  // usable and acquires the baseline on the next new Conversation.
   if (!context.git_observed_at) return false;
   if (!current) return true;
   if (context.primary_workspace_location_id !== current.workspace_location_id

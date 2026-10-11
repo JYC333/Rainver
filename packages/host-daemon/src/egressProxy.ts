@@ -184,9 +184,9 @@ export async function startEgressProxy(
   server.on("connection", (client: Socket) => {
     clients.add(client);
     client.once("close", () => clients.delete(client));
-    // Accumulated, not read from the first chunk: a CONNECT request arrives
-    // split whenever the client writes its headers separately, and reading one
-    // chunk turned that into a 405 or a 407 depending on where the split fell.
+    // Accumulated, not read from the first chunk. A CONNECT request arrives
+    // split whenever the client writes its headers separately. Reading one
+    // chunk answers 405 or 407 depending on where the split falls.
     let head = Buffer.alloc(0);
     const onData = (chunk: Buffer) => {
       head = Buffer.concat([head, chunk]);

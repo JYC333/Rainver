@@ -97,10 +97,10 @@ export interface ProjectFolderOut {
   updated_at: string;
 }
 
-/** `workspace add`'s response shape — a merged view the host daemon expects
- * (`packages/host-daemon/src/api.ts`'s `WorkspaceOut`), predating the
- * Folder/Location split. `id` is the Location's id, not the Folder's — see
- * `createRemoteWorkspace`'s doc comment for why. */
+/** `workspace add`'s response shape — the merged view the host daemon expects
+ * (`packages/host-daemon/src/api.ts`'s `WorkspaceOut`). `id` is the Location's
+ * id, not the Folder's. The daemon pins a task thread and a Run to that
+ * execution site. */
 interface RemoteWorkspaceOut {
   id: string;
   project_id: string;

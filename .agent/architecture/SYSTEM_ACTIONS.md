@@ -292,11 +292,10 @@ about:
   conversation allowance does not include them: a Room reply is visible to
   every Room member, and the sender's private reads would otherwise surface
   in that shared reply.
-- `capabilityIdsForRun` selects runtime-skill bindings from the same field, so
-  a Run carrying a scenario allowance selects bindings keyed on these action
-  ids rather than the AgentVersion's own capability list. Inert today (nothing
-  writes `agent_versions.capabilities_json` either), but it is why the two
-  concerns should be separated if either grows.
+- `capabilityIdsForRun` selects runtime-skill bindings from the Run's
+  `capability_id` and `capabilities_json`. A scenario allowance written into
+  that field is what the lookup sees. It does not read
+  `agent_versions.capabilities_json`.
 
 The allowance and its resulting grants are persisted together in
 `permission_snapshot_json`. Production execution binds queued Runs to their

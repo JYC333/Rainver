@@ -1430,9 +1430,8 @@ export class PgKnowledgeRepository {
         at: now,
       });
     }
-    // Content changes go through the versioned writer so every save (not
-    // just AI-driven ones) produces a note_revisions row and an incrementing
-    // version — see .agent knowledge-base notes-vs-AI-co-edit unification.
+    // Content changes go through the versioned writer. Every save produces
+    // a note_revisions row and an incrementing version.
     if (Object.hasOwn(body, "content_json")) {
       const plainText = Object.hasOwn(body, "plain_text") ? optionalString(body.plain_text) ?? "" : undefined;
       const result = await scope.write({

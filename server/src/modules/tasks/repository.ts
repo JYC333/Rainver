@@ -539,7 +539,7 @@ export class PgTaskRepository {
       }
       const flowChanged = requestedStatus !== null && requestedStatus !== currentTask.status;
       // The Project the Task ends up in, so a move between Projects records the
-      // change in the stream that now owns it rather than the one it left.
+      // change in that Project's stream rather than the one it left.
       const effectiveProjectId = targetProjectId;
       const eventContext = {
         spaceId: identity.spaceId,

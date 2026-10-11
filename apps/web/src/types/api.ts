@@ -3000,7 +3000,7 @@ export interface ProjectFolder {
   kind: ProjectFolderKind
   is_primary: boolean
   repo_url: string | null
-  /** Deprecated compatibility field; use WorkspaceLocation.root_path. */
+  /** Not the path to display. Read `WorkspaceLocation.root_path`. */
   root_path?: string | null
   default_branch: string | null
   status: ProjectFolderStatus
@@ -3020,7 +3020,7 @@ export interface WorkspaceLocation {
   execution_host_id: string
   execution_host_kind: 'server' | 'remote'
   display_path: string | null
-  /** Deprecated compatibility field; physical paths now live on locations. */
+  /** Server-host directory. Null on a remote Location; the label is `display_path`. */
   root_path?: string | null
   branch: string | null
   git_head: string | null
