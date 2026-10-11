@@ -1512,10 +1512,9 @@ async function launchRun(
     // is the reason the run is started through `sh -c` at all.
     (child.stdio[3] as NodeJS.ReadableStream | null)?.once("data", (value: Buffer) => {
       namespaceReady = value.toString("utf8").startsWith("ready");
-      // The Runner killed a child that answered anything else, and so does
-      // this: whatever is on the other side of that fd is not the launch
-      // handshake, and letting it run to completion would report a namespace
-      // failure about a process that ran.
+      // Anything other than the readiness report is not the launch handshake.
+      // Kill it. Letting it run would report a namespace failure about a
+      // process that ran.
       if (!namespaceReady) terminateWithEscalation(child, true, log);
     });
   }
