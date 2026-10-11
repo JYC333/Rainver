@@ -24,9 +24,9 @@ import {
 
 /**
  * Bridges a `declarative_pipeline_v1` handler version into a Level 2 recipe
- * source. The handler version stays readable. The bridge creates a new
- * paused recipe connection and draft recipe version; activation still requires
- * the normal recipe dry-run/activate path.
+ * source. The handler version is readable. Do not drop it. The bridge creates
+ * a paused recipe connection and a draft recipe version. Activation uses the
+ * recipe dry-run/activate path.
  */
 export class SourceRecipePipelineBridgeService {
   constructor(

@@ -1278,7 +1278,7 @@ export class SourceExtractionWorker {
             throw new HttpError(415, `Unsupported source content type (${response.contentType ?? "unknown"})`);
           }
           // Copy the bytes: pdf.js detaches the buffer it parses, and the
-          // caller still writes response.bytes as the raw artifact.
+          // caller writes response.bytes as the raw artifact.
           readerContent = await extractPdfReaderContent(response.bytes.slice(), candidate.url);
         }
         return {

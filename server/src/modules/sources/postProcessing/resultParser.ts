@@ -122,7 +122,7 @@ const RESULT_PAYLOAD_FIELDS = [
 /**
  * Runtime adapters expose model output differently. Keep the durable source
  * contract strict while normalizing the small set of unambiguous envelopes
- * produced by model/CLI runtimes. Semantic validation still happens in the
+ * produced by model/CLI runtimes. Semantic validation happens in the
  * caller below, including completeness, item ownership, and evidence refs.
  */
 function normalizeResultEnvelope(value: unknown): Record<string, unknown> {

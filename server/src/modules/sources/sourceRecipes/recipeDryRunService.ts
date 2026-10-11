@@ -35,7 +35,7 @@ import {
  * (`test_result_json` + the draft/test_failed status transition). The
  * interpreter runs in `dry_run` mode (offline except the caller-owned
  * primary-endpoint pre-fetch, which a `fixture_content` body field replaces
- * for deterministic regression runs), and successful output still goes
+ * for deterministic regression runs), and successful output goes
  * through the shared source output contract validator so the sample preview
  * shows exactly what a live run would be allowed to materialize.
  *
