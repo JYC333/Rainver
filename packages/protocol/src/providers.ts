@@ -143,8 +143,8 @@ export const ModelProviderModelsResponseSchema = z.object({
  *
  * These are facts rainver owns about a vendor — identity, wire protocol,
  * what it can be asked to do, where it publishes its API, and how it is
- * credentialed. The client reads them rather than keeping its own copy, which
- * is how the two drifted before.
+ * credentialed. The client reads them. Do not keep a second copy. The two
+ * would diverge.
  */
 export const ProviderVendorDTOSchema = z
   .object({

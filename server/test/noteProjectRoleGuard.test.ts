@@ -101,9 +101,8 @@ describe("project note role guardrail", () => {
   it("keeps the server registry and the shared protocol vocabulary identical", async () => {
     // The server list is a deliberate copy: the server registry is the
     // authority and the protocol package carries the client-facing vocabulary.
-    // A copy without a check is how gap 3 happened — the editor's target-kind
-    // list drifted from the backend's accepted set with nothing to notice.
-    // This is that check.
+    // Do not leave the copy unchecked. The editor's target-kind list would
+    // drift from the backend's accepted set with nothing to notice.
     expect([...NOTE_PROJECT_ROLES]).toEqual([...NOTE_PROJECT_ROLE_VALUES]);
   });
 

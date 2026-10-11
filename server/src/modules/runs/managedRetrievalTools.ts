@@ -40,8 +40,8 @@ export interface ResolvedRetrievalToolBinding {
   settingsSnapshot: Record<string, unknown>;
 }
 
-// The Knowledge domain's own retrieval types, not a second copy of them: this
-// list was character-for-character identical and would have drifted silently.
+// The Knowledge domain's own retrieval types, not a second copy. Do not
+// duplicate the list. It would drift with nothing to notice.
 const RETRIEVAL_TOOL_OBJECT_TYPES = KNOWLEDGE_RETRIEVAL_OBJECT_TYPES;
 const MEMORY_RETRIEVAL_TOOL_OBJECT_TYPES = ["memory_entry"] as const;
 const PROJECT_RETRIEVAL_TOOL_OBJECT_TYPES = ["project_public_summary"] as const;
