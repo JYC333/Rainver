@@ -431,7 +431,7 @@ These proposal types are supported by `ProposalApplyService`. They remain review
 `knowledge_create` sets `owner_user_id` to the proposal creator. Ownership cannot be assigned to another user through the Knowledge API; sharing is managed through the content-access API.
 
 Proposal creation is viewer-aware, and proposal apply performs defense-in-depth
-authorization again. Malformed, internally seeded, or future system-created
+authorization again. Malformed, internally seeded, or system-created
 proposals cannot update, archive, relate, or archive relations involving another
 user's private or selected-user Knowledge without canonical access. Agent/run
 provenance is not treated as human ownership authority.

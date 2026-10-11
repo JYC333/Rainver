@@ -82,9 +82,9 @@ then produces a `context_observation_report.v1` shape:
 
 When `persist_report=true`, the scan writes one private
 `context_observation_report` artifact. It never writes active Memory,
-Knowledge, Capability, Assistant preference, or Proposal rows. Any future
-promotion from observation to Memory/Knowledge/Capability/Preference must go
-through the existing proposal/review packet boundaries.
+Knowledge, Capability, Assistant preference, or Proposal rows. Promotion from
+an observation to Memory, Knowledge, Capability, or Preference goes through
+the existing proposal/review packet boundaries.
 
 ## Engine & domain adapters
 
@@ -220,9 +220,9 @@ budgeting. Adapters never call retrieval directly.
 
 Retrieval artifacts remain reviewable
 product outputs and proposal inputs; their existence does not make them
-model-visible. Any future product flow that promotes an artifact into an
-invocation must enter as a typed owning-domain acquisition with the same live
-read, source-policy, egress, and Delivery authorization gates.
+model-visible. An invocation acquires one only as a typed owning-domain
+acquisition, with the same live read, source-policy, egress, and Delivery
+authorization gates.
 
 ## Maintenance scan (read-only "context review cycle")
 

@@ -202,8 +202,7 @@ There is no open signup. Set `BETTER_AUTH_SECRET` (generated
 by the ops scripts) and optionally `GOOGLE_CLIENT_ID` /
 `GOOGLE_CLIENT_SECRET`. Password recovery is currently an instance-admin
 manual-copy link flow; `pnpm --dir server auth:recovery` is the local sole-admin
-recovery command. A future mail adapter can deliver the same Better Auth links
-without changing registration or recovery semantics.
+recovery command. Do not add a second token issuer or change registration or recovery semantics.
 Persisted API keys are feature-gated and not enabled in the current build.
 
 ## Key Concepts

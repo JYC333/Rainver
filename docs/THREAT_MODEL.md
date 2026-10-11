@@ -34,7 +34,7 @@ over-permissive security UI.
 - Password-reset identifiers use Better Auth's hashed, single-use verification
   store. Public recovery responses are generic; manual reset links are returned
   only once to an authenticated instance administrator or the sole-admin local
-  CLI. A future mail adapter can consume the same delivery boundary.
+  CLI. There is no mail delivery. Do not add a second token issuer.
 
 ---
 

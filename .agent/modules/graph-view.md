@@ -160,9 +160,8 @@ around the shared view:
 - guards async responses against active-space changes;
 - exposes dev-only `?debug=synthetic:n` projection generation.
 
-The Graph page is read-only. Any future relation creation from a graph surface
-must route through the existing proposal-gated object-relation flow, not through
-direct graph interaction writes.
+The Graph page is read-only. A relation write goes through the proposal-gated
+object-relation flow. Do not write a relation from the graph surface.
 
 ## Domain Consumption
 

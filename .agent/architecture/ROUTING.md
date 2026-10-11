@@ -153,8 +153,7 @@ The `required_tools` request/hint channel currently has an important limitation:
 the repository supplies an empty candidate-side tool list, while client-owned
 hints may still provide required tools. Such a hint can therefore reject every
 candidate. Do not use it as an authorization mechanism or equate it with Run
-tool grants. Any future use must define a server-owned candidate capability
-source and retain the System Action authorization boundary.
+tool grants.
 
 ## Durable decision and failure behavior
 
