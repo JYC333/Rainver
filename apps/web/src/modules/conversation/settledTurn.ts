@@ -46,10 +46,10 @@ export function settledTurn(
  * correct it, and the reply would sit under a permanent "Working…" with its
  * work withheld.
  *
- * `blocked` is kept — that one is still true, and it carries the link out —
- * except `blocked` on the workspace, which is a turn still running (its host
- * queued it behind another writer of the directory) and reads back like
- * `working`: a reply exists, so it is over.
+ * `blocked` stays. It carries the link out. The exception is `blocked` on
+ * the workspace, which is a turn still running (its host queued it behind
+ * another writer of the directory) and reads back like `working`: a reply
+ * exists, so it is over.
  */
 export function readBackTurnState(
   state: RunTurn['state'],
