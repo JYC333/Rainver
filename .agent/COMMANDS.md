@@ -220,22 +220,16 @@ pnpm run build
 # Preview production build
 pnpm run preview
 
-# Lint  [TODO: configure eslint]
-# pnpm run lint
+# There is no lint script.
 
-# Tests. A DOM test that fails at ~15s spent `asyncUtilTimeout`
-# (src/test/setup.ts) waiting for something that never arrived. Under machine
-# load that shows up as a *rotating* failure — a different test each run —
-# which reads as flakiness but has been a real render race every time: an
-# effect from mount flushing after the click the test just made. Reproduce it
-# by running the one file in a loop rather than by re-running the suite.
-# `maxTestMs` in src/test/perf-budget.json stays above that ceiling so such a
-# failure is reported as a failure, not as a budget violation.
-#
-# Run this suite alone: its budget *totals* are per-file sums that inflate
-# with parallelism, so running it beside the server suite trips the gate
-# (~130s/390s against 90s/240s limits) on a suite that is ~60s/185s when it
-# has the machine to itself.
+# Tests. A DOM wait that hits `asyncUtilTimeout` (15s, src/test/setup.ts)
+# is a test waiting for something that never arrived. An effect from mount
+# can flush after the click the test just made. Reproduce that by running
+# the one file in a loop.
+# `maxTestMs` in src/test/perf-budget.json stays above that 15s ceiling, so
+# the wait is reported as a test failure rather than a budget violation.
+# Run this suite alone. Its budget totals are per-file sums and grow when
+# another suite runs beside it.
 pnpm test
 ```
 

@@ -204,10 +204,9 @@ files that spy on the same method in several tests restore mocks in
 
 ## Time Budgets Are Enforced
 
-The suites blew up twice without anyone writing a slow test: the cost of old,
-reasonable tests grew with the schema (`TRUNCATE ... CASCADE` across 300 tables)
-and with the module graph (building the whole server to test one module). Rules
-cannot catch a cost that appears retroactively, so every run is measured and
+Per-call cost grows with the schema (`TRUNCATE ... CASCADE` across the tables)
+and with the module graph (building the whole server to test one module). A
+rule that only looks at new tests misses that, so every run is measured and
 fails on a doubling:
 
 1. Vitest's `experimental.importDurations` with `failOnDanger` fails a run when
@@ -220,9 +219,9 @@ fails on a doubling:
    so the tolerance is 2x: the gate catches doublings and the ten slowest files
    it prints every run make drift visible. Raising a limit is an edit to the
    budget file, reviewed with the change that needed it.
-3. `testHygiene.test.ts` in each suite fails on the patterns behind past
-   blow-ups (the rules in the two sections above, plus real-time sleeps and
-   bare `userEvent.setup()`), with exemptions listed per file.
+3. `testHygiene.test.ts` in each suite fails on the rules in the two sections
+   above, plus real-time sleeps and bare `userEvent.setup()`, with exemptions
+   listed per file.
 
 ## Product Rules Tests Protect
 
