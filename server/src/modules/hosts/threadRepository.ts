@@ -402,9 +402,9 @@ export class PgHostThreadRepository {
    * The other half of `host-state/reset`: the profiles that held those
    * sessions are archived on the machine, so a thread that still believed it
    * could resume `vendor_session_id` would fail on its next turn with the
-   * runtime reporting no such conversation. `session_reset` is the existing
-   * state for exactly that, and the retired ids are kept so ambient session
-   * import can still tell the Agent's old sessions from the owner's own.
+   * runtime reporting no such conversation. Mark that thread `session_reset`.
+   * Keep the retired ids so ambient session import can still tell the Agent's
+   * sessions from the owner's own.
    *
    * Two shapes of thread hold this Agent's sessions and they are matched
    * differently. A Conversation or direct thread carries `agent_id` itself. A
