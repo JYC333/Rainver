@@ -13,8 +13,9 @@
  *   descriptors and per-space/user enablement state for optional product features
  *   such as diary. These are NOT listed here as always-on features.
  *
- *   GET /api/v1/catalog (catalog module) lists CAPABILITY manifests — agent AI skill
- *   descriptors. Also NOT product plugins.
+ *   GET /api/v1/server/catalog lists on-disk catalog manifests. That catalog
+ *   is diagnostic. Product capabilities are `/api/v1/capability-definitions`.
+ *   Neither is a product plugin.
  *
  *   See .agent/architecture/OFFICIAL_OPTIONAL_MODULES.md and ADR 0006.
  */

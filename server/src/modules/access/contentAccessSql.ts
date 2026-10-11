@@ -422,8 +422,8 @@ export function assertSqlIdentifier(value: string, label: string): void {
  * agree, or a list shows a Run the detail page then denies.
  *
  * The Task, Board, work-view, updates-feed, Home and agent-group surfaces
- * use these. Other readers still carry the content predicate alone, and
- * several of them return artifact bodies. `projects`, `proposals`, `runs`
+ * use these. Other readers carry the content predicate alone, and several
+ * of them return artifact bodies. `projects`, `proposals`, `runs`
  * and `artifacts` write the same pair beside their own predicates rather
  * than calling these.
  *

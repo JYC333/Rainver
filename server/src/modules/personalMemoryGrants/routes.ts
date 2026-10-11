@@ -247,10 +247,10 @@ class GrantRepository {
   }
 
   /**
-   * Nothing moves an active grant to expired when its read window closes,
-   * so lists kept reporting it active and it kept the one active slot the
-   * unique index allows a Run. Settled here, on the owner's own reads and
-   * writes; consumers already require `read_expires_at > now()`.
+   * An active grant whose read window has closed is marked `expired` on the
+   * owner's reads and writes. Do not leave it `active`: it would keep the
+   * one active slot the unique index allows a Run. Consumers also require
+   * `read_expires_at > now()`.
    */
   private async expireLapsedGrants(userId: string): Promise<void> {
     await this.db.query(

@@ -42,16 +42,22 @@ official plugin code activation; Official Optional Module = product feature
 package with runtime enablement state.
 
 ### Capability
-An **agent AI skill/behavior descriptor**. Defined in `catalog/capabilities/<name>/capability.yaml`. Loaded by `CapabilityRegistry` from the catalog. Represents a versioned, executable agent skill (e.g. `memory.reflect`).
+A product capability is a built-in definition in
+`server/src/modules/capabilities/registry.ts`, read through
+`/api/v1/capability-definitions`. YAML under `catalog/capabilities/` is a
+diagnostic catalog. Do not execute a catalog manifest. `memory.reflect` in
+that catalog is manifest metadata. Session reflection does not run it.
 
-Capabilities are NOT product plugins. They do not have a per-space enable/disable toggle. They do not control product feature visibility. A capability may be *used by* an official optional module (e.g., an AI reflection capability used by diary), but the two concepts are separate:
+Capabilities are not Official Optional Modules. Do not turn a capability on
+with a plugin enablement row, and do not use a capability id as a plugin id.
 
 | | Capability | Official Optional Module |
 |---|---|---|
-| Unit | Agent skill / behavior | Product feature package |
-| Discovery | `GET /api/v1/server/catalog` (`/capabilities` for the capability list) | `GET /api/v1/plugins` |
-| Toggle | None (metadata only) | DB-backed per space or user |
-| Frontend | `/capabilities` browse page | Controls module visibility |
+| Unit | Built-in definition in `capabilities/registry.ts` | Product feature package |
+| Discovery | `GET /api/v1/capability-definitions` | `GET /api/v1/plugins` |
+| Enablement | `capability_enable` / `capability_disable` proposals; state in `capability_enablements` | DB-backed per space or user |
+| Frontend | `/capabilities` | The plugin's own page; a rail item only when `enabled` |
+| Catalog | `GET /api/v1/server/catalog` lists manifests and is not the product path | Not listed there |
 
 ### RuntimeAdapter
 A backend plugin for the agent runtime execution layer (CLI runtime, model API, etc.). Defined under `server/src/modules/runtimeAdapters/`. Not a product feature visible to end users. Not related to official optional modules.

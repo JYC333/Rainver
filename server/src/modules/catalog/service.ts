@@ -2,10 +2,11 @@
  * Catalog module service — reads built-in definitions from the top-level
  * `catalog/` directory (capability manifests and agent template specs).
  *
- * This is the RAW catalog read surface: it reports which definition files exist
- * on disk and their declared summary fields. Product routes may adapt this
- * data into API-compatible shapes, but the catalog parser itself applies no
- * business policy beyond skipping missing directories.
+ * This is the raw catalog read surface: which definition files exist on disk
+ * and their declared summary fields. The parser applies no business policy
+ * beyond skipping missing directories. Product capability pages do not read
+ * this catalog. `/api/v1/agent-templates` reads `catalog/agent_templates`
+ * on its own.
  *
  * Read-only. A missing catalog directory is reported as
  * `catalog_available: false` with empty items, never an error — the control

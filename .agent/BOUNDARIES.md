@@ -518,7 +518,7 @@ account instead of the subscription this profile was given.
 
 **B51** — Official optional modules are gated at the route-handler/contribution level via the plugin guard (`requireOfficialPluginEnabled()` or `ctx.http.pluginGuard()`), not by conditionally registering core server modules. Backend routes for bundled official plugins are mounted by `PluginHost`; behavior is gated by DB-backed plugin enablement state. Plugin job handlers and proposal appliers must fail closed when disabled, and scheduled tasks must fan out only to enabled scopes. Frontend entries with `source: 'official_plugin'` must overlay their `enabled`/`visible` state from `GET /api/v1/plugins/effective`, not from static values.
 
-**B52** — Capability (`catalog/capabilities/`) and Official Optional Module (`/api/v1/plugins`) are distinct concepts and must not be conflated in code, comments, or API design. Capabilities are agent AI skill descriptors; Official Optional Modules are product feature packages. A module may use a capability internally, but they are not the same type.
+**B52** — Product capabilities (`server/src/modules/capabilities/`, `/api/v1/capability-definitions`) and Official Optional Modules (`/api/v1/plugins`) are distinct and must not be conflated in code, comments, or API design. Catalog YAML under `catalog/capabilities/` is diagnostic. Do not execute it. Official Optional Modules are product feature packages.
 
 **B52A** — Open Skill, Capability, Capability Pack, Runtime Skill, and Product
 Plugin are distinct concepts. External Open Skill packages can be normalized

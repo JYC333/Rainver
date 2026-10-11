@@ -1,7 +1,8 @@
 # Capability System
 
 > **Capability ≠ Official Optional Module.**
-> A Capability is an agent AI skill/behavior descriptor (this document).
+> A product capability is a definition in `server/src/modules/capabilities/`.
+> Catalog YAML is diagnostic and is not executed.
 > An Official Optional Module is a product feature package with DB-backed enable/disable state per space/user.
 > They are separate concepts. See `.agent/architecture/OFFICIAL_OPTIONAL_MODULES.md` and ADR 0009.
 
