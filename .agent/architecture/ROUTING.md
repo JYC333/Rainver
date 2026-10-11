@@ -12,8 +12,8 @@ validates Provider eligibility for the Run's responsible user, and resolves
 the execution target from the Profile. An ordinary Agent Run admits any
 Profile that names a complete execution target — Host, workspace mode and
 installed copy — whether that Host is the built-in Server Runtime or a paired
-Host; what the ACP runtime-authority cutover removed from this path is the
-Conversation HostThread, not the paired Host. A Conversation or Task with a pinned Host thread is limited to
+Host. The Conversation HostThread is not on this path. A paired Host still is.
+A Conversation or Task with a pinned Host thread is limited to
 that thread's Host, workspace mode/location and runtime key. A Conversation
 uses its persisted backend snapshot rather than rebinding to later Profile or
 Provider edits, so `credential_available` is recomputed from that snapshot's own

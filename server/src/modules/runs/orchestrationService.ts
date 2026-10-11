@@ -2296,8 +2296,7 @@ export class RunOrchestrationService {
 
       // Unreachable. Every `local_cli` adapter is a daemon run, so this
       // condition is false. A CLI run's working directory belongs to the
-      // daemon. Leave the block until `workspaceManager`'s other orchestration
-      // callers leave with it.
+      // daemon.
       if (isVendorCliAdapter(run.runtime_key) && !prepared.sandbox_cwd && !dispatchesToHostDaemon(run.runtime_key)) {
         const scope = workingDirScopeForLevel(run.required_sandbox_level);
         if (scope === "ephemeral") {

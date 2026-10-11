@@ -1,6 +1,6 @@
 # Authentication and registration
 
-Rainver authentication is a clean Better Auth cutover. Better Auth owns
+Rainver authentication uses Better Auth. Better Auth owns
 password hashing, OAuth state/callback handling, verification values and the
 durable session model; the Rainver facade owns active-user status, bootstrap /
 invitation admission, registration provisioning, Space membership, audit facts,

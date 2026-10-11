@@ -100,9 +100,8 @@ Every newly created Space is seeded with an immutable empty root Runtime
 Context Policy version and active binding. Run execution resolves the current
 Space/Project/Folder/Agent/User chain after the existing execution-policy gate
 and persists an immutable `execution_control_snapshots` row before invoking an
-adapter. Adapters do not receive that snapshot until the Runtime Context
-Gateway delivery cutover; the preflight record is already durable and real,
-never a placeholder id.
+adapter. The Runtime Context Gateway turns that row into the Delivery the
+adapter receives. The row is a real snapshot, never a placeholder id.
 
 Invocation attempt creation uses a short transaction and a per-Space/invocation
 advisory lock. It loads and locks the persisted same-Space Execution Control

@@ -77,8 +77,7 @@ bounded provider calls stay in the Provider subsystem.
 
 ## Current fail-closed gaps
 
-These are intentional fail-closed gaps, not evidence that the
-TypeScript backend cutover failed:
+These are intentional fail-closed gaps:
 
 - DB-persisted API-key storage; the API-key routes return the canonical
   feature-gated response while the schema has no `api_keys` table;
