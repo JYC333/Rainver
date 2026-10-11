@@ -60,7 +60,7 @@ describe('module registry official plugin overlay', () => {
     expect(MODULE_REGISTRY.find(module => module.id === 'rooms')).toBeUndefined()
   })
 
-  it('does not register the retired research atlas top-level route', () => {
+  it('does not register a research_atlas route', () => {
     expect(MODULE_REGISTRY.some(module => module.id === 'research_atlas')).toBe(false)
     expect(MODULE_REGISTRY.some(module => module.path === '/atlas')).toBe(false)
   })

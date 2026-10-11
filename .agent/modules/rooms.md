@@ -102,9 +102,8 @@ task/audit authority, not a second conversation UI.
 - A Project showing no Rooms has failed to load them, since every Project is
   created with its mainline (ADR 0018 decision 4). The empty state offers a
   retry, never creation: a Room made there would be a second shared one beside
-  the mainline it could not see. Clients present the retired
-  `Project conversation` default as `<Project name> Room` for existing
-  records.
+  the mainline it could not see. A Room whose stored title is `Project conversation`
+  is shown as `<Project name> Room`.
 - Roster controls follow the authority each one needs, not one flag. Invite,
   remove, transfer and the specialist controls go through the server's
   `withRoomWriter` and are shown only to a Project writer. Deciding a

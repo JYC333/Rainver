@@ -57,7 +57,7 @@ describe("agents CRUD routes", () => {
     expect(response.json()).toMatchObject({ detail: expect.stringContaining("provider and model") });
   });
 
-  it("rejects the retired adapter_type alias at Profile API boundaries", () => {
+  it("rejects deployment aliases at Profile API boundaries", () => {
     expect(AgentRuntimeProfileCreateBodySchema.safeParse({
       name: "Default",
       runtime_key: "opencode",

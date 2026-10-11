@@ -229,7 +229,7 @@ describe("source post-processing actions", () => {
     });
   });
 
-  it("no longer accepts the legacy array form of actions, falling back to defaults", () => {
+  it("applies defaults when actions is an array", () => {
     const actions = normalizeActions(["batch_digest", "mark_items"]);
     expect(actions).toEqual({
       batch_digest: true,

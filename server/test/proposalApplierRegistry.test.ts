@@ -207,7 +207,7 @@ describe("proposal applier registry", () => {
     );
   });
 
-  it("applies policy changes without scheduling retired context digests", async () => {
+  it("applies a policy change without enqueueing a job", async () => {
     const db = new FakeApplyDb();
 
     const result = await createDefaultProposalApplierRegistry().apply({

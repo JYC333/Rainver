@@ -739,7 +739,7 @@ describe('Rooms page', () => {
     ]))
   })
 
-  it('presents the legacy generic Room title as a real project Room name', async () => {
+  it('shows a Room titled Project conversation as the project Room name', async () => {
     const legacyRoom = { ...room, title: 'Project conversation' }
     vi.mocked(roomsApi.list).mockResolvedValue({ items: [legacyRoom], total: 1, limit: 50, offset: 0 })
     vi.mocked(roomsApi.get).mockResolvedValue({ ...detail, room: legacyRoom })

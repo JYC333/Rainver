@@ -266,9 +266,9 @@ writes only through that module. Do not add a second profile writer on the
 repository. Request bodies
 for both surfaces are validated by the `@rainver/protocol` schemas
 (`AgentRuntimeProfile{Create,Update}BodySchema`,
-`SpaceAgentRuntimeDefaultWriteSchema`), whose `.strict()` is what retires
-`adapter_type`, `credential_profile_id` and the other deployment aliases; no
-route keeps a second list of retired names.
+`SpaceAgentRuntimeDefaultWriteSchema`), whose `.strict()` rejects
+`adapter_type`, `credential_profile_id`, and the other deployment aliases.
+Do not keep a second list of those names on a route.
 
 `runtime_config_json` and `runtime_policy_json` have disjoint authored keys
 (see [AGENT_RUNTIME_AUTHORITY](../architecture/AGENT_RUNTIME_AUTHORITY.md));

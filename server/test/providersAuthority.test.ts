@@ -130,7 +130,7 @@ describe("providers read authority", () => {
     expect(res.json()).toEqual({ detail: "Authentication required" });
   });
 
-  it("serves the vendor registry, and no longer serves the retired catalog routes", async () => {
+  it("serves the vendor registry and 404s unknown provider paths", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProvidersDbPortForTests(fakeDb({}));
     app = buildModuleServer(providerRoutesConfig(), [providersModule, systemModule]);
