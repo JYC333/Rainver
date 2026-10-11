@@ -26,8 +26,8 @@ import { declareRunArtifact, type RunArtifactRole } from "./artifactDeclarations
  * The gate for the two structural writes is not here: `decisionCore.ts` decides
  * by trigger origin, so the same definition serves a person asking in a
  * conversation and an unattended wake-up, and only the second needs approval.
- * Putting that distinction in two action definitions would have meant two
- * schemas, two executors, and two places to forget one of them.
+ * Do not split that into two action definitions. That would be two schemas,
+ * two executors, and two places to forget one of them.
  */
 /** Enough for an Agent to find the Task meant without flooding the turn. */
 const MAX_LISTED_TASKS = 50;

@@ -182,11 +182,9 @@ export type AmbientImportPolicy = z.infer<typeof AmbientImportPolicySchema>;
  * What the product reads back: one imported session and one of its records.
  *
  * Here rather than only in the web's own types because these are wire shapes
- * with rows behind them, and a second declaration drifts — as it already had:
- * the location and host columns are nullable by design (a folder can be
- * unbound and a host unpaired without destroying the history), and a client
- * copy that typed them non-null would have been wrong the first time either
- * happened.
+ * with rows behind them. Do not keep a second declaration. It drifts. The
+ * location and host columns are nullable: a folder can be unbound and a host
+ * unpaired without destroying the history. Do not type them non-null.
  */
 export const ImportedSessionSchema = z.object({
   id: z.string(),

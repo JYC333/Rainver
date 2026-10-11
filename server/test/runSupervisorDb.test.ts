@@ -1070,8 +1070,8 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       output_json: { status: "succeeded" },
       completed_at: new Date().toISOString(),
     });
-    // A first pass wrote its evaluation and then failed before the
-    // finalization row that would have made the retry a no-op.
+    // A first pass wrote its evaluation and stopped before the finalization
+    // row. Without that row the retry is not a no-op.
     const prior = await repository.insertRunEvaluation({
       space_id: SPACE,
       run_id: runId,

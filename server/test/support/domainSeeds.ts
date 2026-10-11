@@ -82,8 +82,8 @@ export async function seedProjectMainlineRoom(
 }
 
 /**
- * Give every Project that lacks one the mainline Room it would have been
- * created with (ADR 0018 decision 4), plus its owner's membership.
+ * Give every Project that lacks one the mainline Room production creates
+ * with it (ADR 0018 decision 4), plus its owner's membership.
  *
  * For tests that insert `projects` rows directly. Production has one creation
  * path and it writes the Room in the same transaction; a fixture that inserts

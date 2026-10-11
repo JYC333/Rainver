@@ -688,7 +688,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     const state = (await db.pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
     expect(state.progress_json.comparison_missing_baseline_role).toBe("understanding");
     // No run was queued, and the papers were not consumed — the stage is
-    // waiting, not finished. Finalizing here is what would have looked like a
+    // waiting, not finished. Do not finalize here. That would look like a
     // successful scan that found nothing.
     expect(state.progress_json.comparison_run_id).toBeNull();
     expect(state.progress_json.comparison_pending_source_item_ids).toEqual(items);

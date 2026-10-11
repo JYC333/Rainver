@@ -293,8 +293,8 @@ describe("project board read model", () => {
     const privateRunId = await makeRunWithEvaluation(task, "accept", { visibility: "private" });
     const actorId = await resolveUserActorId(db.pool!, SPACE, OWNER);
     // Written through the real writer, naming its Run the way a Run-produced
-    // event does. Hand-inserting `data_json.run_id` would have tested a shape
-    // no production writer produces.
+    // event does. Do not hand-insert `data_json.run_id`. That shape is not
+    // what a production writer produces.
     await appendProjectWorkEvent(db.pool!, {
       spaceId: SPACE,
       projectId: PROJECT,

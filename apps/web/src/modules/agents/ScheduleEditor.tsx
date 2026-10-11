@@ -11,7 +11,7 @@ import { SCHEDULE_CADENCE_OPTIONS } from './scheduleEditorState'
 
 /**
  * The stored config may carry a `timezone` the editor preserves but does not
- * edit; naming UTC regardless would have been wrong for exactly those.
+ * edit. Do not label the hour UTC when that timezone is set.
  */
 function hourLabel(value: ScheduleEditorValue): string {
   const timezone = value.preserved?.timezone
