@@ -122,7 +122,7 @@ a hand-typed capture are equally raw, and they belong in different places.
 Both directions of getting this wrong are silent failures. Admitting source
 items row by row buries the user's own captures under machine volume and the
 queue stops being reviewable at all. Aggregating user captures into "3 things
-captured today" deletes the per-record decision the queue exists to collect.
+captured today" drops the per-record decision the queue collects.
 
 Project-owned raw material stays in **the Space's one queue** — but that queue
 has two mountings, because checking on a capture is something done from inside

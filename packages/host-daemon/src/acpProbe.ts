@@ -8,7 +8,7 @@ import { helperProcessEnv } from "./providerBinding.js";
  *
  * Do not hardcode the list. Claude's effort levels are not Codex's, and a
  * bare `low`/`medium`/`high` misses values a runtime really offers (`1m`,
- * `default`). Only the runtime knows, and ACP exists to ask it.
+ * `default`). Only the runtime knows. Ask it over ACP.
  */
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)

@@ -75,11 +75,10 @@ profile and the serendipity quota are two states that never write to each
 other. `server/src/modules/interestProfile/` must not read serendipity signals.
 
 **B55** — Serendipity gaps are computed against the code-owned domain skeleton,
-never against the reader's own coverage distribution. With their own history as
-the reference frame, "not yet encountered" can only be drawn from material their
-own sources already surfaced, and the source pool is itself a product of their
-interests — so the ceiling is the bubble the mechanism exists to break. The
-skeleton's independence from the reader is the property that makes it work, and
+never against the reader's own coverage distribution. Do not use that coverage
+as the reference frame. "Not yet encountered" would only be drawn from material
+their own sources already surfaced, and the source pool is itself a product of
+their interests. The skeleton's independence from the reader is the property that makes it work, and
 is also why cold start needs no special case.
 
 **B56** — Per-user reading state leaves the individual only as an anonymous
@@ -507,7 +506,7 @@ account instead of the subscription this profile was given.
 
 ## Module / Plugin Boundaries
 
-**B33** — Server modules should prefer shared gateway/db/protocol helpers over direct cross-module coupling. Cross-domain imports are allowed only when they express an explicit product boundary recorded in the relevant architecture doc or ADR, and they must not bypass the owning module's public route/service boundary. A read predicate that more than one domain needs belongs in `modules/access/`, not in the domain the data is named after: `runReadSql` / `proposalReadSql` / `artifactReadSql` / `runInheritedReadSql` are read by tasks, projectWork, agentGroups, sources, plans and frontendSupport, and each of those importing them from `runs` would be exactly the coupling this rule exists to prevent. The canonical `runs`, `proposals`, `artifacts` and `projects` repositories still compose the same pair by hand beside their own predicates rather than calling these — recorded at the helpers' own definition. A term added to one of them does not reach every reader.
+**B33** — Server modules should prefer shared gateway/db/protocol helpers over direct cross-module coupling. Cross-domain imports are allowed only when they express an explicit product boundary recorded in the relevant architecture doc or ADR, and they must not bypass the owning module's public route/service boundary. A read predicate that more than one domain needs belongs in `modules/access/`, not in the domain the data is named after: `runReadSql` / `proposalReadSql` / `artifactReadSql` / `runInheritedReadSql` are read by tasks, projectWork, agentGroups, sources, plans and frontendSupport. Do not import them from `runs`. That is the coupling B33 forbids. The canonical `runs`, `proposals`, `artifacts` and `projects` repositories still compose the same pair by hand beside their own predicates rather than calling these — recorded at the helpers' own definition. A term added to one of them does not reach every reader.
 
 **B34** — Every server module's HTTP routes must live in `server/src/modules/<module>/routes.ts` and be mounted through `server/src/gateway/routeRegistry.ts`. Official plugin package routes live under `plugins/official/<plugin_id>/server/src/`, are compiled into `server/dist/official-plugins/<plugin_id>/`, and are mounted only through `PluginHost` after core `SERVER_MODULES` and before the catch-all. Routes must not be registered directly in `server.ts`, `index.ts`, or ad hoc shared API files.
 

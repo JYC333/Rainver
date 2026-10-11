@@ -373,7 +373,7 @@ rules applies, and they are deliberately different:
   `XDG_RUNTIME_DIR` is how a git credential helper reaches the keyring and how
   rootless podman finds its socket. Do not drop it. A Task run that pushes or
   builds would break, the same way moving `HOME` breaks them. The
-  credential set matters as much as the state roots: this run exists to spend
+  credential set matters as much as the state roots. This run spends
   the owner's *subscription*, linked into its profile, and a runtime that
   prefers an ambient `ANTHROPIC_API_KEY` bills an API account instead — B67's
   own second named failure.
