@@ -207,11 +207,9 @@ export class PgHostRepository {
 
   /**
    * `machineId` names an *existing* Machine this host should join (the
-   * Windows-native + WSL case: two hosts, one physical device) — omitted,
-   * a fresh Machine is auto-created and named after the host, matching the
-   * common case where each personal host is its own device. There is no
-   * pick-or-create Machine UI. This parameter is where that flow lands
-   * without a further schema change.
+   * Windows-native + WSL case: two hosts, one physical device). Omitted,
+   * a fresh Machine is created and named after the host. There is no
+   * pick-or-create Machine UI.
    */
   async issuePairingCode(
     ownerUserId: string,
@@ -431,10 +429,9 @@ export class PgHostRepository {
    * also carries `project_id`/`project_folder_id` — see the `artifact`
    * ontology entity's `contentAccessible` declaration), not `private`: a
    * remote Run is visible to any Project reader, not just the host owner —
-   * its visibility follows Project read access, not host ownership. A
-   * `private` artifact here would have let a non-owner reader see "Review
-   * diff" on a run they can legitimately see, then get a false "no diff was
-   * uploaded" instead of an access-denied.
+   * its visibility follows Project read access, not host ownership. Do not
+   * store it `private`. A non-owner reader would see "Review diff" on a run
+   * they can read, then get "no diff was uploaded" instead of an access denial.
    */
   async recordDiffArtifact(
     run: RunForUpload,

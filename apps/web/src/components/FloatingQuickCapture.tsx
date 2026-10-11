@@ -35,9 +35,9 @@ export function FloatingQuickCapture() {
   // Set by the paste event, not derived from the text: a paste is where the
   // content came from, which is the only deterministic signal available.
   const [pasted, setPasted] = useState(false)
-  // Deliberately reset after every capture. ADR 0013 decision 2 removed a
-  // sticky write target once already — a destination remembered from last time
-  // is invisible at the moment of writing, which is a mode error.
+  // Reset after every capture (ADR 0013 decision 2). Do not remember a
+  // destination from last time. It is invisible at the moment of writing,
+  // which is a mode error.
   const [chosen, setChosen] = useState<CaptureDestination | null>(null)
   const textRef = useRef<HTMLTextAreaElement>(null)
 

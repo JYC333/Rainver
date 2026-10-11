@@ -14,13 +14,13 @@ import { roomConversationReadAccessSql } from "../access/contentAccessSql.js";
  * owner has no origin Room and reaches only that direct chat.
  *
  * "May read" is asked of the read gate (`roomConversationReadAccessSql`), not
- * of the roster: a mainline's audience is every Project reader, of whom the
- * roster holds only those who have opened it, and a limited Room's is its
- * roster intersected with Project readability. Measuring by roster understated
- * the mainline — a note from a limited Room was delivered into a mainline
- * nobody but the owner had opened yet, and whoever opened it next read the
- * reply. The audience is enumerated over the Space's active members, which is
- * what `projectReaderIds` does for Thread References.
+ * of the roster. A mainline's audience is every Project reader; the roster
+ * holds only those who have opened it. A limited Room's audience is its
+ * roster intersected with Project readability. Do not measure by roster. A
+ * note from a limited Room would reach a mainline nobody but the owner had
+ * opened, and whoever opened it next would read the reply. The audience is
+ * enumerated over the Space's active members, which is what
+ * `projectReaderIds` does for Thread References.
  *
  * The test is computed here, at dispatch, and not at write time: a Room whose
  * roster or Project changed must change what is delivered into it, and ADR

@@ -755,10 +755,10 @@ export class ProjectResearchOrchestrator {
     const scannedItemIds = unique([...pendingItemIds, ...stringArray(body.source_item_ids)]);
     /**
      * A daily update is bounded the same way a baseline is. Do not run it
-     * unbounded. This one does not ask.
-     * A monitor that scans more than one update can afford leaves the rest in
+     * unbounded, and do not stop for a decision. A monitor that scans more
+     * than one update can afford leaves the rest in
      * `pending_incremental_source_item_ids`, which the next update drains, so
-     * a backlog costs days rather than a decision nobody is awake to make.
+     * a backlog costs days.
      */
     const takeWithin = (alreadyInCorpus: number) => {
       const headroom = Math.max(0, SCREENING_AUTO_CONTINUE_CORPUS_LIMIT - alreadyInCorpus);
@@ -1031,13 +1031,11 @@ export class ProjectResearchOrchestrator {
         && (state.current_stage === "backfill" || state.current_stage === "screening");
       if (backfillDone && stillAtOrBeforeScreening && !plans.rows.some((plan) => plan.status === "failed")) {
         state.coverage_degraded = deferredPlans.length > 0;
-        // Keep the items-in-scope list and screening progress fresh on every
-        // reconcile tick, independent of whether classification batches are
-        // still running. isSourcePipelineDrained below only gates the stage
-        // transition (finalizing coverage and creating the screening_gate
-        // checkpoint) — without this, "Items classified"/"Batches" only ever
-        // showed their pre-run (empty) and post-run (final) values, never
-        // anything in between while batches were actually in flight.
+        // Refresh the items-in-scope list and screening progress on every
+        // reconcile tick, whether or not classification batches are still
+        // running. `isSourcePipelineDrained` below only gates the stage
+        // transition. Do not refresh only when that transition runs. The
+        // counts would jump from empty to final and skip the batches in flight.
         const sourceRecoveryPreview = new SourcePostProcessingRecoveryService(this.db);
         state.source_item_ids = await sourceRecoveryPreview.channelScopedItemIds(
           spaceId,
@@ -3266,9 +3264,8 @@ function canonical(value: unknown): unknown {
 }
 
 /**
- * A Workflow's monitor bindings and screening rules. Intake wrote only the
- * singular id before it wrote these lists, so a Workflow from then reads its
- * one binding and rule from the singular key.
+ * A Workflow's monitor bindings and screening rules. A row that stores only
+ * the singular id is read from that key.
  */
 function workflowBindingIds(state: Record<string, unknown>): string[] {
   const ids = stringArray(state.project_source_binding_ids);

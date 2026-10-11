@@ -71,7 +71,7 @@ const MEMORY_DEFINITION = contentResourceDefinition("memory")!;
  *
  * Boundaries this adapter must preserve:
  * - The single read-access gate is `revalidate`, which reuses the canonical
- *   the canonical content rules plus summary-access content redaction. The derived
+ *   content rules plus summary-access content redaction. The derived
  *   `retrieval_*` projection is never trusted for read access.
  * - This adapter never writes `memory_entries`. Memory create/update/archive
  *   stay proposal-gated; the projection is derived index data only.
