@@ -36,9 +36,9 @@ export const ROOM_SESSION_ROTATE_SHARE = 0.6;
 /**
  * Budgets as shares of the model's context window — summary 3 %, recent 15 %,
  * summary source 30 %, rotation at 60 % — never below the floors, so a small
- * or unknown model is no worse off than with the fixed constants these
- * replaced. The caller resolves the window from the Conversation × Agent pin;
- * the assembler receives numbers and never looks a model up.
+ * or unknown model stays at the floor. The caller resolves the window from
+ * the Conversation × Agent pin; the assembler receives numbers and never
+ * looks a model up.
  */
 export function roomContextBudgets(
   contextWindowTokens: number,
