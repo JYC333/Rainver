@@ -252,11 +252,11 @@ describe("compose server config", () => {
       expect(runner).toContain("no-new-privileges=true");
       expect(runner).toContain("cap_drop:");
       expect(runner).toContain("read_only: true");
-      // No env file at all now. `.runner.env` existed to give the Runner
-      // `SANDBOX_RUNNER_TOKEN`, which is the control plane's internal token and
-      // unlocks the internal credential and execution routes from the network
-      // this container is on. With the Runner gone the token goes with it: the
-      // daemon holds a bearer token for its own Host row and nothing else.
+      // The Runner has no env file. Do not mount `.runner.env` or
+      // `.server.env`. `SANDBOX_RUNNER_TOKEN` is the control plane's internal
+      // token and would unlock the internal credential and execution routes
+      // from the network this container is on. The daemon holds a bearer
+      // token for its own Host row and nothing else.
       expect(runner).not.toContain(".runner.env");
       expect(runner).not.toContain(".server.env");
       expect(runner).not.toContain("SANDBOX_RUNNER_TOKEN");

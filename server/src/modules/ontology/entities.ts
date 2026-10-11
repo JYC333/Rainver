@@ -240,9 +240,9 @@ let provenanceSourceTypeSet: Set<string> | null = null;
  * Registry-backed check for `provenance_links.source_type`.
  *
  * The database keeps only a format constraint (B12F), so this is what makes a
- * bad value an error rather than a row. Callers should not re-implement it:
- * three separate copies of this list existed, two of which *silently dropped*
- * unrecognized entries, so a divergence lost provenance without an error.
+ * bad value an error rather than a row. Do not re-implement the list. A
+ * second copy that drops an unrecognized entry loses provenance without an
+ * error.
  */
 export function isProvenanceSourceType(value: unknown): value is string {
   provenanceSourceTypeSet ??= new Set(provenanceSourceTypes());

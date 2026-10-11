@@ -5,14 +5,12 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { ProjectResearchExecutionProfileService } from "../src/modules/projectResearch/executionProfileService.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
-// Real-Postgres coverage for the system-managed "Auto Research" agent's
-// capabilities_json. It is fixed on the agent's current version at first
-// provisioning with no versioned-edit path, so a capability a later stage
-// adds (e.g. research.monitor_compare) is missing forever for any space
-// whose agent already existed — every run of that stage then fails routing
-// with "No runtime candidate passed routing hard filters." resolve() must
-// self-heal an existing agent's capabilities in place, not just set them
-// correctly for a brand-new one.
+// The system-managed "Auto Research" agent's capabilities_json is fixed on
+// its current version at first provisioning, with no versioned-edit path.
+// Do not leave a later required capability off an agent that already has a
+// version. Every run of that stage then fails routing with "No runtime
+// candidate passed routing hard filters." resolve() writes the capability
+// onto the current row.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

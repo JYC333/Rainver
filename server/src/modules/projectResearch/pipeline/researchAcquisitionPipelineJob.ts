@@ -308,12 +308,11 @@ export class ResearchAcquisitionPipelineRunner {
   }
 
   /**
-   * A pipeline that stops before `startInitialIntake` never created an
-   * Operation, so the attempt existed only inside `jobs.result_json` — the
-   * Project's own surfaces (Pulse, the Research Area's runs, and
-   * `research.list_operations`) all read Operations and showed nothing at
-   * all, which reads as "it is still running". A terminal, managed Operation
-   * records the attempt where the work is looked for.
+   * A pipeline that stops before `startInitialIntake` has no Operation.
+   * Do not leave the attempt only in `jobs.result_json`. Pulse, the Research
+   * Area's runs, and `research.list_operations` read Operations and would
+   * show nothing, which reads as "it is still running". A terminal, managed
+   * Operation records the attempt where the work is looked for.
    */
   private async recordFailedAttempt(
     identity: SpaceUserIdentity,

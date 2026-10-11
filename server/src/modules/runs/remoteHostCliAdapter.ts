@@ -781,9 +781,9 @@ async function runRemoteHostCliAdapter(
     // Say which kind of stuck this was. "Remote Run timed out" is true of a
     // runtime that worked for the whole budget, of one that said nothing
     // after the first second, and of one the host never started; only the
-    // second is worth retrying quickly, and the third was not the runtime's
-    // doing at all. The executor's stderr carries that third reason, and the
-    // idle count measured while no process existed says nothing.
+    // second is worth retrying quickly, and the third is not the runtime's
+    // doing at all. The executor's stderr carries that third reason. Do not
+    // read the idle count when no process started. It says nothing.
     const detail = neverLaunched
       ? result.stderr || `The host did not start this run within its ${timeoutSeconds}s budget.`
       : stalled

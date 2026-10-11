@@ -113,9 +113,8 @@ describe('Project execution Areas', () => {
     )
 
     expect(await screen.findByText('Execution Project')).toBeInTheDocument()
-    // Three promoted destinations, then everything else under Areas. The
-    // promotion must not cost reachability: every route that existed before is
-    // still one click away.
+    // Three promoted destinations, then everything else under Areas. Do not
+    // drop a route when promoting one. Every route stays one click away.
     expect(screen.getByRole('link', { name: /^Pulse/ })).toBeInTheDocument()
     for (const gone of ['Explore', 'Decide & learn', 'Digest', 'Raw material', 'Experiments', 'Knowledge review', 'Learning', 'Operations']) {
       expect(screen.queryByText(gone)).not.toBeInTheDocument()
