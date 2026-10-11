@@ -313,8 +313,8 @@ export default function InquiryAreaPage() {
             <TabsTrigger value="review">
               Review{candidates.length > 0 ? ` (${candidates.length})` : ''}
             </TabsTrigger>
-            {/* An Experiment tests a hypothesis Thread and reports back into
-                Inquiry; it was a separate Area only by accident of history. */}
+            {/* Experiments are a view here. An Experiment tests a hypothesis
+                Thread and reports back into Inquiry. */}
             <TabsTrigger value="experiments">Experiments</TabsTrigger>
           </TabsList>
         </Tabs>
