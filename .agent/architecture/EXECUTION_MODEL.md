@@ -429,9 +429,8 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
 - **Run authority:** server `runs` owns run execution, stop,
   top-level run read/status/trace, post-run evaluation/finalization, the
   internal `POST /internal/runs/execute` port, server execution locks, and
-  `agent_run` job dispatch (the server entrypoint runs the worker loop;
-  The agents module owns run creation subresources (`POST /agents/{id}/runs`
-  compatibility alias). The server authorizes, plans and snapshots Runtime
+  `agent_run` job dispatch (the server entrypoint runs the worker loop).
+  The agents module owns `POST /agents/{id}/runs`. The server authorizes, plans and snapshots Runtime
   Context Delivery before sending its semantic content through ACP. Project
   Folder paths and workspace mounts remain Host-owned; artifact/proposal
   materialization and finalization remain Server-owned.

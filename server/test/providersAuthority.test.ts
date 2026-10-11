@@ -157,7 +157,7 @@ describe("providers read authority", () => {
     expect(body.some((vendor) => vendor.id === "openai_codex" && vendor.subscription_only === true)).toBe(true);
     expect(body.every((vendor) => !("api_key" in vendor) && !("secret_ref" in vendor))).toBe(true);
 
-    // `/presets` is the surviving static sibling and must stay claimed.
+    // `/presets` is a static route and must stay claimed.
     const presets = await app.inject({ method: "GET", url: "/api/v1/providers/presets" });
     expect(presets.statusCode).toBe(200);
     expect((presets.json() as Array<{ id: string }>).map((preset) => preset.id)).toEqual(

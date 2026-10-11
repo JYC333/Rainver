@@ -107,7 +107,7 @@ Backend and API naming uses `knowledge`; space-specific product labels are
 presentation concerns. Knowledge is distinct from Memory: Memory is agent
 context; Knowledge is durable content for people to inspect, revise, relate, and reuse.
 
-No removed route or compatibility alias exists. The API path is `/api/v1/knowledge`;
+The API path is `/api/v1/knowledge`;
 canonical table names are `space_objects`, `notes`, `note_collections`,
 `note_collection_items`, `knowledge_items`, `sources`,
 `knowledge_item_sources`, `claims`, `claim_sources`, and `object_relations`.
