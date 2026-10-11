@@ -255,7 +255,7 @@ describe("deterministic route selector", () => {
     }
   });
 
-  it("rejects a tool-free, file-less adapter from file work, and now admits the CLI", () => {
+  it("admits a CLI that can do the file work and rejects one that cannot", () => {
     const result = new DeterministicRouteSelector().select({
       required_sandbox_level: "none",
       execution_mode: "live",

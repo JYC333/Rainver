@@ -4,12 +4,11 @@ import type { Queryable } from "../modules/routeUtils/common.js";
 /**
  * Get-or-create an `actors` row for a person or a service.
  *
- * Every append-only surface that records *who did this* — run steps, and now
- * Project work events — needs a non-null Actor FK, and each of them arrived at
- * the same select-then-insert. Keeping one copy matters less for the SQL than
- * for the lookup key: an actor found by a slightly different predicate is a
- * second identity for the same person, and nothing downstream can tell the two
- * apart afterwards.
+ * Every append-only surface that records who did this — run steps and
+ * Project work events — needs a non-null Actor FK. Do not keep a second
+ * select-then-insert. An actor found by a different predicate is a second
+ * identity for the same person, and nothing downstream can tell the two
+ * apart.
  *
  * Not covered here: the Space Assistant's actor, which deliberately pins its
  * row id to the Agent id so Room provisioning can reconcile it idempotently

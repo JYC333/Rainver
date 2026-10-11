@@ -241,10 +241,9 @@ describe('Project chat sidecar', () => {
   })
 
   it('shows a failed mainline read as an error, not as an empty Project', async () => {
-    // The mainline read can now fail outright — a Project without one is a
-    // broken invariant the server reports as 500 — and the empty state's
-    // button is disabled for a viewer, so rendering the failure that way
-    // would show a dead end instead of what went wrong.
+    // A Project without a mainline Room is a 500. Do not render that failure
+    // as an empty Project: the empty state's button is disabled for a viewer,
+    // so the failure would look like a dead end.
     vi.mocked(projectsApi.mainlineRoom).mockRejectedValue(new Error('Project has no mainline Room'))
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     expect(await screen.findByText('Project has no mainline Room')).toBeInTheDocument()

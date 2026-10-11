@@ -34,10 +34,9 @@ import { supportsStructuredOutput } from '../providers/providerMetadata'
 interface ResearchSetupDialogProps {
   projectId?: string
   workflowId?: string | null
-  // The Inquiry Thread this search is for — question/hypothesis definition
-  // happens entirely on that Thread's own page now; this dialog only ever
-  // configures how the search runs against whatever wording is confirmed
-  // there.
+  // The Inquiry Thread this search is for. Question and hypothesis wording
+  // live on that Thread's page. This dialog only configures how the search
+  // runs against the wording confirmed there.
   threadId: string
   open: boolean
   draft: ResearchSetupDraft

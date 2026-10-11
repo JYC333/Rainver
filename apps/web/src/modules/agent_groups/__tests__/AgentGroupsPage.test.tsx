@@ -1906,8 +1906,8 @@ describe('Rooms page', () => {
   })
 
   it('surfaces the canonical Host recovery link before the first message', async () => {
-    // A missing Host/CLI is a preflight state now. The composer stays blocked
-    // with its draft intact while the user gets the canonical Host recovery link.
+    // A missing Host or CLI blocks the composer and keeps the draft. The
+    // recovery link is the command center.
     vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
     renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1')
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Anyone there?' } })

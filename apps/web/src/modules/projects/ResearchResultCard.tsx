@@ -31,8 +31,8 @@ const toneClasses: Record<ResearchResultState['kind'], string> = {
 function actionHref(action: ResearchResultAction, state: ResearchResultState, projectId: string): string | null {
   if (action === 'open_report' && state.latestReport) return `/projects/${projectId}/research/reports/${state.latestReport.id}`
   if (action === 'view_corpus') return `/projects/${projectId}/sources`
-  // Deciding a Checkpoint lives only in Operations Area now — a second,
-  // independent decide UI here would risk a stale view after either one applies.
+  // Checkpoint decisions live in Operations Area. Do not add a second
+  // decide control here. The two would disagree after either one applies.
   if (action === 'review_results') return `/projects/${projectId}/research?tab=runs`
   return null
 }

@@ -711,7 +711,7 @@ an operator's reference): runner disabled
 (`language_not_allowed`), and browser automation/shell/dependency
 installation requests (unconditionally refused regardless of instance
 availability flags) all record a `blocked` handler run with the reason as
-`failure_class`, visible through `handler-runs` and now through
+`failure_class`, visible through `handler-runs` and
 `recent_run_status_counts`.
 
 ## Non-Goals
