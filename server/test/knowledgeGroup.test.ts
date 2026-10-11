@@ -26,9 +26,8 @@ afterAll(() => {
 });
 
 describe("knowledgeNotePurgeDb", () => {
-  // purgeDeletedNotes reported a 30-day retention window that its DELETE did not
-  // apply, so it hard-deleted a note the moment that note was soft-deleted. The
-  // purge is irreversible, so the window has to be real.
+  // A soft-deleted note stays for 30 days. Do not purge it in the same moment
+  // it is soft-deleted. The purge is irreversible.
 
   const SPACE = "11111111-1111-4111-8111-111111111111";
   const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
