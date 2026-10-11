@@ -205,12 +205,12 @@ An official optional module may contribute to these extension points:
 | Job handlers | Implemented | `ctx.jobs.register()`; host wraps handlers with enablement gating |
 | Scheduled tasks | Implemented | `ctx.scheduler.register()`; task code must fan out only to enabled scopes |
 | Proposal types/appliers | Implemented | `ctx.proposals.register()`; host wraps appliers with enablement gating |
-| Context providers | Future | Not wired yet |
-| Activity sources | Future | Not wired yet |
-| Memory proposal generators | Future | Not wired yet |
-| Artifacts | Future | Not typed yet |
+| Context providers | Not wired | No registration point |
+| Activity sources | Not wired | No registration point |
+| Memory proposal generators | Not wired | No registration point |
+| Artifacts | Not typed | No contribution type |
 
-Future contribution types must preserve the same fail-closed enablement rule.
+Any other contribution type preserves the same fail-closed enablement rule.
 
 ## 7. Bundled Official Modules
 

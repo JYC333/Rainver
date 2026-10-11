@@ -101,7 +101,7 @@ export interface OfficialPluginDescriptor {
    * These are informational; they do not affect route mounting.
    */
   backend_feature_ids: string[];
-  /** Declared sensitive integrations. Used in UI and future permission gates. */
+  /** Declared sensitive integrations. Shown in the UI. They are not a permission gate. */
   permissions: {
     /** Plugin creates ActivityRecord entries. */
     creates_activity?: boolean;
@@ -319,8 +319,8 @@ export interface PluginProposalPort {
  * Full context passed to RainverPlugin.activate().
  *
  * Official plugins (trusted, same-process) receive the raw Fastify instance
- * and a Queryable DB wrapper. Third-party plugins (future) will receive a
- * restricted proxy. Plugins MUST NOT import server internals (server/src/**)
+ * and a Queryable DB wrapper. Third-party plugins are not loaded. Do not
+ * hand them this context. Plugins MUST NOT import server internals (server/src/**)
  * directly — use this context instead.
  */
 export interface PluginHostContext {

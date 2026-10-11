@@ -307,6 +307,5 @@ export const RESEARCH_SYNTHESIS_OUTPUT_CONTRACT: StructuredOutputContract = {
   },
 };
 
-// Keep the citation schema exported for future schema refinements without
-// coupling provider transport to the protocol implementation.
+// Citation schema export. Provider transport does not import the protocol implementation.
 export const RESEARCH_CITATION_REF_SCHEMA = citationRef;

@@ -175,8 +175,8 @@ export function launchFailureMessage(input: {
 
 /**
  * The daemon must not become a vendor
- * protocol translator. Raw placeholder substitution remains for argv and
- * non-ACP values; structured ACP JSON goes through `substituteAcpInput`,
+ * protocol translator. Argv and non-ACP values use raw placeholder
+ * substitution; structured ACP JSON goes through `substituteAcpInput`,
  * which changes only the protocol's `cwd` fields and server-issued resource
  * links, never user text, filenames, or snapshot bodies.
  */

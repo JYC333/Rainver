@@ -46,10 +46,10 @@ outputs:
 
 Capability manifests are catalog metadata today. `entrypoint.type: none` means
 the capability is discoverable but not directly executable by a capability
-runtime. A future server-native capability executor must be added through
-`server/src/modules/runtimeAdapters` and guarded like any other runtime
-adapter; shell commands, remote code loading, broad filesystem access, and
-subprocess execution remain unsupported.
+runtime. A server-native capability executor goes through
+`server/src/modules/runtimeAdapters` and is guarded like any other runtime
+adapter. Shell commands, remote code loading, broad filesystem access, and
+subprocess execution are not supported.
 
 ## Catalog
 

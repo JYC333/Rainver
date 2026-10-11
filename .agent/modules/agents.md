@@ -101,7 +101,7 @@ Rules:
     and source links (a source is not an item type; an answer is a relation).
   - `research_reader` (category `research`) — reads selected sources only; no web search/crawl.
   - `coding_reviewer` (category `workspace`) — read-only review/report outputs; no file write,
-    no shell, no patch apply. (`coding_task_agent`, a code-writing agent, is future scope.)
+    no shell, no patch apply. There is no code-writing `coding_task_agent`.
 - **Output policy uses `allowed_output_types`** (never a misleading `default_outputs`/`allowed_outputs`).
   The set is a ceiling; the model selects which output(s) to emit per run
   (`classification_mode: model_selects`), bounded by `allow_multiple_outputs_per_run` /
@@ -615,7 +615,7 @@ than a space-wide default:
 - `research_reader` (`research`) — reads selected sources only; no web search / crawling; produces
   source summaries, questions, and knowledge proposals
 - `coding_reviewer` (`workspace`) — read-only review/report outputs; no file write, no shell, no
-  patch apply (a code-writing `coding_task_agent` is future scope)
+  patch apply. There is no code-writing `coding_task_agent`.
 
 Why no `general_chat` or generic DirectChat: a generic session-only chat object would be a naked
 conversation with no Agent identity or space-aware policy. Every Room conversation, and every
@@ -623,8 +623,8 @@ host-bound direct chat, instead targets an explicit, space-scoped `Agent` — ca
 context policy and proposal-only output policy — resolved through the conversation backend
 binding (`modules/rooms.md`). Host-bound direct chat is owner-only, uses one direct container per
 Agent × owner, and exposes reset/archive/opt-in restore semantics; it does not make arbitrary
-Agents into a global default. Templates not seeded
-initially (future scope): `coding_task_agent`, `research_scout`, `source_processor`,
+Agents into a global default. These template ids are not seeded:
+`coding_task_agent`, `research_scout`, `source_processor`,
 `weekly_planner`, `finance_reviewer`, `health_reviewer`, `task_manager`.
 
 There is **no** single global "default agent" that runs implicitly. Every `Run` targets an

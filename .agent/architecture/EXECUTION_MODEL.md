@@ -950,16 +950,15 @@ create a Plan or `plan_review`. Schedule automations can carry same-space
 `AutomationCredentialGrant` pre-authorization. No external trigger is
 implemented. No proposal type auto-applies without user acceptance.
 
-### Future Work
+### Runtime session and Run Detail Resume
 
 - Runtime session checkpoint/fork/resume semantics are delivered through the
   CLI-conversation path; see the "Runtime session" section of ADR 0007 and
   [../modules/rooms.md](../modules/rooms.md). The Run Detail Resume action is a
   different thing: it resumes a `waiting_for_review` Run through the existing
   server endpoint and is not a runtime-session checkpoint.
-- Apply handlers for `project_folder_execution_config_update`, `validation_recipe_update`, `policy_update`.
 
-## What Is Intentionally Not Modeled Yet
+## What this model does not include
 
 - Full tool-call ontology (individual tool invocation records per step).
 - Token-level traces.

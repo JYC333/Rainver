@@ -52,17 +52,16 @@ outputs:
 ```
 
 `entrypoint.type: none` is the active manifest convention for catalog-only
-capabilities. A future server-native capability executor must be added through the
-runtime adapter layer; shell commands, remote code loading, package
-installation, broad filesystem access, and subprocess execution are not
-supported.
+capabilities. A server-native capability executor goes through the runtime
+adapter layer. Shell commands, remote code loading, package installation,
+broad filesystem access, and subprocess execution are not supported.
 
 ## Discovery
 
 The catalog registry is not a product API authority. Product capability
 pages consume `/api/v1/capability-definitions`; built-in capability definitions
-come from the server registry module. Historical catalog YAML manifests may
-exist for diagnostics or development but do not enter the product path.
+come from the server registry module. Catalog YAML under `catalog/capabilities/`
+is a read-only diagnostic catalog. It does not enter the product path.
 
 The catalog registry loads one source when used internally:
 
@@ -77,7 +76,7 @@ Built-in definitions come from `RESEARCH_CAPABILITIES` (`registry.ts`); there is
 no external capability discovery. Enabling or disabling a capability creates a
 `capability_enable` / `capability_disable` proposal and takes effect only when
 that proposal is accepted (ADR 0009); the enabled state lives in
-`capability_enablements`, not in manifests. This is still not a marketplace or
+`capability_enablements`, not in manifests. This is not a marketplace or
 remote install system.
 
 ## Execution Model
@@ -88,16 +87,15 @@ Capability execution is not active. `runtime_key="capability"` is a declared,
 returns nothing for it.
 Capability manifests are catalog/UI metadata only.
 
-Returned artifacts are materialized by `materializationService` as `Artifact` rows linked to the Run and project. Returned activities are not materialized: each one records an `output_activity_materialization_error` (activity materialization is deliberately deferred).
+Returned artifacts are materialized by `materializationService` as `Artifact` rows linked to the Run and project. Returned activities are not materialized: each one records an `output_activity_materialization_error`.
 
 ## Boundaries
 
 - Executing a capability never installs, updates, or enables capabilities.
 - Capability code must not mutate core code directly.
 - Durable changes still go through proposals; capability execution does not bypass proposal approval.
-- Capability development remains a separate coding-agent workspace, sandbox, and reviewed `code_patch` or future `capability_update` proposal flow.
-- External capability installation and updates should eventually go through proposal review.
-- Automation can later trigger capability Runs, but scheduling is not part of this module.
+- `capability_update` is applied by the capabilities module's registered applier.
+- This module does not install external capabilities and does not schedule Runs.
 
 ## Workflow-as-data (B1)
 

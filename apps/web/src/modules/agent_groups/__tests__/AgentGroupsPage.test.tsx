@@ -1291,8 +1291,7 @@ describe('Rooms page', () => {
     //
     // What must NOT happen is the read-once path claiming it: a paused Run is
     // skipped there by design, so a turn released to it would be lost for
-    // good. (That the client no longer reports a blocked ending as a fault at
-    // all is covered directly in `chat-api.test.ts`.)
+    // good.
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [{
         id: 'message-notice', session_id: 'session-1', space_id: 'space-1',

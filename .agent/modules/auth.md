@@ -112,19 +112,17 @@ an authenticated instance administrator can retrieve a reset link exactly
 once; unauthenticated recovery responses never reveal it. `pnpm
 auth:recovery` is the sole-admin local CLI path.
 
-## Administration and future delivery
+## Administration
 
 Instance admins can list users, disable/enable admitted accounts (disable
 invalidates sessions; a `pending` identity belongs to `RegistrationService`
 and both routes answer 400 for it), issue a one-time reset link and inspect
 pending intents. No
 impersonation, arbitrary email editing, Space-admin recovery or open signup is
-implemented. The recovery and registration lifecycles expose stable link
-boundaries so a future mail adapter can deliver the same links without adding a
-second token issuer or changing token semantics.
+implemented. The recovery and registration lifecycles expose one link
+boundary. Do not add a second token issuer or change token semantics.
 
 See [SECURITY_AND_ACCESS_BOUNDARIES.md](../architecture/SECURITY_AND_ACCESS_BOUNDARIES.md),
 [DATABASE_AND_TRANSACTIONS.md](../architecture/DATABASE_AND_TRANSACTIONS.md),
 and [ADR 0023](../decisions/0023-authentication-foundation-schema-epoch.md)
-for the current access, transaction, and schema-epoch boundaries. The completed
-implementation's phase history remains in Git.
+for the current access, transaction, and schema-epoch boundaries.

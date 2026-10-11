@@ -84,10 +84,10 @@ export interface Module {
    */
   planned: boolean
 
-  // ── Display preferences (user-adjustable in future) ────────────────────────
-  /** Pin to the top row of the home gallery. */
+  // Optional registry fields. The gallery does not read them.
+  /** Unused by the gallery. */
   pinned?: boolean
-  /** Explicit display order within the group. Lower = earlier. */
+  /** Unused by the gallery. */
   order?: number
 
   // ── UI hints ──────────────────────────────────────────────────────────────
@@ -143,7 +143,7 @@ export interface Module {
  *   planned   = not built ("soon" badge, non-interactive, dev concern)
  *   !enabled  = capability off for this space (grayed card, runtime concern)
  *   !visible  = hidden from gallery (space policy or user pref, shown nowhere)
- *   pinned    = promoted in gallery (user preference, future)
+ *   pinned    = optional registry field; the gallery does not read it
  * ───────────────────────────────────────────────────────────────────────────
  */
 export const MODULE_REGISTRY: Module[] = [

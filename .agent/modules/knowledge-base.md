@@ -512,7 +512,7 @@ Note:                                 # working-knowledge layer (direct CRUD)
   content_json                    # ProseMirror/Tiptap JSON
   content_format                  # markdown|plain|prosemirror_json
   content_schema_version          # int, default 1
-  plain_text                      # derived projection for preview / future search
+  plain_text                      # derived text; preview and retrieval read it
   status                          # active|archived|deleted (domain-owned)
   version, content_hash           # optimistic version + revision history
   created_from_activity_id        # optional capture provenance (FK activity_records)
@@ -567,10 +567,10 @@ ObjectRelation:                       # governed FK-backed graph layer
 KnowledgeItem:
   object_id, space_id             # object_id is PK/FK to SpaceObject.id
   root_item_id, supersedes_item_id
-  redirect_to_item_id             # self-FK; readiness for future merge/rename/deprecate
+  redirect_to_item_id             # self-FK; stored and returned; readers do not follow it
   knowledge_kind                  # canonical Wiki kinds above
   slug                            # readable-URL slug; indexed (space_id, slug), NOT unique
-  aliases_json                    # alternate names for future search/linking
+  aliases_json                    # alternate names; relation discovery and retrieval read them
   content
   content_json                    # ProseMirror/Tiptap JSON once a rich editor is wired
   content_format                  # markdown|plain|prosemirror_json
