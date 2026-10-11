@@ -76,8 +76,8 @@ describe("promote a note passage to knowledge (real Postgres)", () => {
     }) as { id: string };
     const proposal = await repository.promoteNoteToKnowledge(identity, note.id, { content: PASSAGE });
 
-    // Accepted through the real gate, not by calling the applier directly —
-    // the point of ND is that promotion changes nothing about governance.
+    // Accepted through the real gate, not by calling the applier directly.
+    // Promotion changes nothing about governance.
     const config = loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
       SERVER_INTERNAL_TOKEN: "test-internal-token",

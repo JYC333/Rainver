@@ -40,7 +40,7 @@ describe('ThreadOriginBar', () => {
   })
 
   it('does not claim a Thread whose step belongs to another Area', async () => {
-    // The whole point of the filter: Operations must not announce a Thread that
+    // Operations must not announce a Thread that
     // is off being read or written up somewhere else.
     vi.mocked(inquiryApi.listOpenSteps).mockResolvedValue([
       openStep({ id: 'step-2', kind: 'read_evidence', slot: 'primary', statement: 'Elsewhere entirely' }),

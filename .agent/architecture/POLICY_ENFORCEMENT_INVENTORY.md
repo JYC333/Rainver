@@ -288,9 +288,8 @@ Delivery persistence; there is no manual context-artifact attachment guard.
 
 One authorizer per kind of decision, so a new route inherits the rule instead of
 restating it. None of these is an action-registry entry; each is the single
-function every caller of its kind goes through, and the point of listing them
-here is that a reviewer can find every enforcement point by finding the
-function's callers.
+function every caller of its kind goes through. Listing them here is how a
+reviewer finds every enforcement point: by finding the function's callers.
 
 | Authorizer | Where | What it decides |
 |---|---|---|

@@ -124,8 +124,8 @@ async function launchTickConfig(
   }
   // Subscription quota is read on the host that holds the login and cached
   // here (ADR 0016 §7). An autonomous launch that cannot see a fresh number
-  // is refused by `autonomousAdmission`, which is the safe direction: the
-  // whole point of the gate is not to spend someone's subscription unattended.
+  // is refused by `autonomousAdmission`, which is the safe direction.
+  // Do not spend someone's subscription unattended.
   if (!runtimeProfile.execution_host_id || !runtimeProfile.runtime_installation) {
     return { policy, runtimeProfileId: runtimeProfile.id, quota: unavailableQuota(runtime) };
   }

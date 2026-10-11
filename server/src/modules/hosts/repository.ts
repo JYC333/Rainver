@@ -294,8 +294,7 @@ export class PgHostRepository {
    * pairing code shares the `token_hash` column with the real bearer token
    * before `/register` runs, so accepting `pending_pairing` here would let
    * the short-lived, low-care pairing code itself act as a full host
-   * credential for its whole TTL, defeating the point of a one-time
-   * exchange-only secret.
+   * credential for its whole TTL.
    */
   async authenticate(token: string): Promise<HostRow | null> {
     const result = await this.pool.query<HostRow>(

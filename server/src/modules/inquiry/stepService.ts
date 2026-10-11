@@ -134,8 +134,8 @@ export async function assignSettledStepsToRound(
  * part of a round's history.
  *
  * Background steps are left alone unless `includeBackground` is set: a search
- * does not stop because the user picked something else to do, which is the
- * whole point of the background slot.
+ * does not stop because the user picked something else to do. That is what
+ * the background slot is.
  *
  * Touches step rows only. The caller owns the projection write — see
  * {@link STEP_PROJECTION_SET_SQL}.

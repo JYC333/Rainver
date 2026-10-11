@@ -155,8 +155,7 @@ describe("probing one copy on this host", () => {
     const quota = await probeUsage({ runtime_key: "claude_code", installation: "managed:1.0.0", login: null, timeout_seconds: 10 });
 
     expect(quota).toMatchObject({ available: true, session_pct: 50 });
-    // The whole point of moving this to the host: the credential is spent
-    // here and never travels back.
+    // The credential is spent here and never travels back.
     expect(JSON.stringify(quota)).not.toContain("secret-token");
     expect(fetchMock.mock.calls[0]?.[1]?.headers?.Authorization).toBe("Bearer secret-token");
   });

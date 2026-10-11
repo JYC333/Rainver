@@ -1722,7 +1722,7 @@ describe("Room workflow (real Postgres)", () => {
       return run.rows[0]?.prompt ?? "";
     };
 
-    // The whole point of the sidecar: "this" resolves without the person
+    // "this" resolves without the person
     // restating which Task they mean.
     const withFocus = await promptOf(focused.run_ids[0]!);
     // With its id: the Task a turn is most likely to act on arrives

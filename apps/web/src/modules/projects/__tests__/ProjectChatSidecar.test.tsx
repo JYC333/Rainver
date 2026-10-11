@@ -176,7 +176,7 @@ beforeEach(() => {
 
 describe('focus refs', () => {
   it('names the Task when one is being looked at, and nothing otherwise', () => {
-    // The whole point of the sidecar: "is this one done?" resolves without the
+    // "Is this one done?" resolves without the
     // person restating which Task they mean.
     expect(focusRefsFor(`/spaces/s/projects/${PROJECT}/tasks/${TASK}`))
       .toEqual([{ type: 'task', id: TASK }])

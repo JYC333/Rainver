@@ -109,7 +109,7 @@ describe("quick capture (real Postgres)", () => {
     const first = await repository.jotNoteForObject(identity, {
       project_id: projectId, text: "First thought.",
     }) as { id: string };
-    // The whole point of the role: a rename must not orphan the inbox and
+    // A rename must not orphan the inbox and
     // silently start a second one.
     await repository.updateNote(identity, first.id, { title: "Scratch" });
 

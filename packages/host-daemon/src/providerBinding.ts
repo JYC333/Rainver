@@ -65,8 +65,8 @@ const ALLOWED_AMBIENT_KEYS = new Set([
  *   auto-memory back out of the profile it was just given. The profile
  *   supplies `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and the XDG roots itself, so
  *   these are covered by the vendor prefixes below plus `XDG_*`.
- * - **Credentials the machine has lying around.** The whole point of this run
- *   is that it spends the owner's *subscription*, linked into the profile. An
+ * - **Credentials the machine has lying around.** This run spends the owner's
+ *   *subscription*, linked into the profile. An
  *   ambient `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` would be
  *   preferred by the runtime over that login and bill an API account instead —
  *   B67's second named failure, "a subscription login converted into API
