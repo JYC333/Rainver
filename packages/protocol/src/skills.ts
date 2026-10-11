@@ -234,9 +234,8 @@ export const SkillImportRequestSchema = z.object({
 export const SkillConvertToCapabilityRequestSchema = z.object({
   capability_id: z.string().min(1).optional(),
   namespace: z.string().min(1).optional(),
-  // Reserved for the future proposal-gated enablement flow (ADR 0009).
-  // Conversion currently only produces a disabled draft; supplying this field
-  // is rejected until capability enablement goes through proposal review.
+  // Conversion produces a disabled draft. Supplying a project enablement is
+  // rejected: enablement goes through proposal review (ADR 0009).
   enable_for_project_id: IdSchema.nullish(),
   create_runtime_bindings: z.boolean().default(true),
 });

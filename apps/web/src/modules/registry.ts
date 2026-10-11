@@ -11,12 +11,10 @@ export type PerspectiveType = 'space-scoped' | 'personal' | 'neutral'
  * official_plugin — an official optional module (developed by rainver maintainers,
  *                  installed/enabled via the official plugin control plane).
  *                  These entries are NOT capabilities. See OFFICIAL_OPTIONAL_MODULES.md.
- * installed      — reserved for future third-party installable plugin packages.
- *                  Not implemented. Do not load third-party plugins from this registry.
- * external       — references a remote tool or external service (reserved).
+ * installed      — not used. Do not load third-party plugins from this registry.
+ * external       — not used. Do not add a remote tool as an app entry here.
  *
- * For current core features all entries are built_in.
- * Optional features added by rainver maintainers use official_plugin.
+ * Core entries are `built_in`. Maintainer optional modules use `official_plugin`.
  */
 export type AppSource = 'built_in' | 'official_plugin' | 'installed' | 'external'
 

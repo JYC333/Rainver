@@ -1315,8 +1315,8 @@ cursor **per thread**, not per run, since the read model is the whole
 conversation across every run/turn dispatched into it; enforced by
 `uq_host_thread_events_thread_event_index`.
 
-This is a sibling table to `run_events`, not a new `run_events.event_type`
-value — that table's CHECK constraint is a closed vocabulary built for the
+This is a sibling table to `run_events`. Do not store these as a
+`run_events.event_type` value. That table's CHECK constraint is a closed vocabulary built for the
 server-host semantic-event stream (`tool_call_started`, etc.) and has no
 `assistant_text` or `diagnostic` concept. A remote run does not write that
 table incrementally.

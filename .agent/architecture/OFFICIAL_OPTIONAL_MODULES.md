@@ -56,8 +56,10 @@ Capabilities are NOT product plugins. They do not have a per-space enable/disabl
 ### RuntimeAdapter
 A backend plugin for the agent runtime execution layer (CLI runtime, model API, etc.). Defined under `server/src/modules/runtimeAdapters/`. Not a product feature visible to end users. Not related to official optional modules.
 
-### Future Third-Party Plugin Package
-A hypothetical future extension type: externally developed, downloaded, sandboxed, with its own migration runner and permissions model. This is **explicitly out of scope** for the current implementation. See Non-Goals below. Requires a much stricter sandbox/SDK and is not part of this framework.
+### Third-party plugin packages
+
+Third-party plugin packages are not loaded. There is no download, sandbox, or
+migration runner for them. See Non-Goals below.
 
 ---
 
