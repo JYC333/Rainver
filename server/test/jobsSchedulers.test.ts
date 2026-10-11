@@ -999,11 +999,11 @@ describe("AutomationService policy preflight", () => {
   });
 
   it("preflights the fire under the origin the Run will actually carry", async () => {
-    // The preflight and the Run row are two authorities over one fire. Before
-    // ADR 0003 §5 / D1 the preflight asserted `automation` outright, so a
-    // person firing with their own prompt — a `manual` Run they could have
-    // started against the Agent directly — was refused for want of the
-    // automation's standing credential grant.
+    // The preflight and the Run row are two authorities over one fire. A
+    // person firing with their own prompt is a `manual` Run they could have
+    // started against the Agent directly (ADR 0003 §5 / D1). Do not preflight
+    // it as `automation`. That refuses it for want of the automation's
+    // standing credential grant.
     vi.mocked(enforce).mockResolvedValue({ status: "allow" });
     const fakePool = new AgentAutomationFireFakePool();
     dbPoolMock.current = fakePool;
@@ -1027,7 +1027,7 @@ describe("AutomationService policy preflight", () => {
     expect(asked).toMatchObject({ trigger_origin: "manual" });
 
     // The same automation firing its own prompt is unattended work, and that
-    // still needs the grant.
+    // needs the grant.
     await expect(new AutomationService(config, withoutGrant()).fire({
       spaceId: "space-1",
       automationId: "auto-1",
