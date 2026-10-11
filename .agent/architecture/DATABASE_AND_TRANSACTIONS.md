@@ -408,8 +408,8 @@ descriptor, writes or reuses a bounded content-addressed blob, inserts its
 message-owned `conversation_input_resources` row, and appends the normalized
 `input_resource` part in that same transaction. The resource is immutable and
 later read through Run-scoped actions; it is not materialized on a Host.
-`conversation_file_snapshots` rows remain readable for historical messages and
-compatibility retries. `conversation_turn_idempotencies` records client turn
+`conversation_file_snapshots` stores the frozen text of a `file_reference`
+part. A retry reads that row. Do not re-read the workspace. `conversation_turn_idempotencies` records client turn
 keys and the committed response for replay-safe sends. Expired or orphaned
 media/resources are tombstoned or unreferenced by retryable sweeps, so a
 filesystem or blob cleanup failure does not lose the database record needed for

@@ -236,9 +236,8 @@ function nodeContract(node: WorkflowNode): Record<string, unknown> {
   const declared = record(raw.contract_json);
   const contract: Record<string, unknown> = { ...declared };
   const metadata = record(raw.metadata_json);
-  // WorkflowNode keeps passthrough fields for forward-compatible definitions.
-  // Accept contract fields at the node level as well, but let the explicit
-  // contract_json object win when both forms are present.
+  // A node may carry these contract fields beside `contract_json`.
+  // The explicit `contract_json` object wins when both forms are present.
   for (const key of [
     "acceptance_criteria_json",
     "definition_of_done",

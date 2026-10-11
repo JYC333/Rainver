@@ -1339,8 +1339,9 @@ is slow to answer is decided on the cached reading.
   sender's message claims them in the same transaction. Current-file
   references are re-authorized through Project Folder reads and frozen as
   bounded message-owned resources, so later workspace changes do not rewrite
-  transcript or retry input. The older `conversation_file_snapshots` shape is
-  retained only for readable historical messages.
+  transcript or retry input. A `file_reference` freezes its text in
+  `conversation_file_snapshots`. An `input_resource` freezes a
+  content-addressed blob. Do not re-read the workspace for either.
 - A reference is resolved once, under the attacher's identity, with oversight
   excluded, and never re-read. Nothing re-authorizes it per turn, because
   there is nothing live to re-authorize.
