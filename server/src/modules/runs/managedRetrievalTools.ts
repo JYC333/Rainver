@@ -280,13 +280,11 @@ export async function runRetrievalToolCall(
     }
     const service = binding.services[spec.domain];
     if (!service) {
-      // Structurally unreachable today: `enforcePolicyForAction`'s own
-      // `domainEnabled` check (`systemActionDispatcher.ts`) derives the same
-      // domain from the same action id and denies before the gateway ever
-      // calls this executor, so a second policy decision here would only
-      // ever duplicate the one already recorded for that denial. Kept as a
-      // defensive guard for this exported function's contract, not as a
-      // second enforcement point — no policy call, no second audit row.
+      // `enforcePolicyForAction`'s `domainEnabled` check
+      // (`systemActionDispatcher.ts`) derives the same domain from the same
+      // action id and denies before the gateway calls this executor. Do not
+      // add a second policy decision here. This guard is the exported
+      // function's contract: no policy call, no second audit row.
       return {
         modelResult: {
           ok: false,

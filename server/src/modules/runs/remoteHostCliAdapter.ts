@@ -718,9 +718,8 @@ async function runRemoteHostCliAdapter(
     process_registry: input.process_registry,
     stdio_controller: stdioController,
     on_stdout_chunk: (chunk) => {
-      // Kept only as the last-resort output_text/measurement fallback for
-      // the (effectively unreachable today) case where the controller never
-      // formed at all — see its own doc comment below.
+      // Fallback output_text when the controller never formed. See its doc
+      // comment below.
       stdoutText += chunk;
     },
     on_stderr_chunk: (chunk) => {

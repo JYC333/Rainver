@@ -7,7 +7,7 @@
  * they read is deep. Do not collapse them into one "kind" field. The
  * inversion rule would not express either axis.
  *
- * Kept as small closed vocabularies rather than free-form strings for the same
+ * Small closed vocabularies, not free-form strings, for the same
  * reason the domain skeleton is coarse: an open vocabulary produces a
  * distribution too sparse to invert against.
  */

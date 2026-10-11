@@ -950,9 +950,9 @@ export class PgTaskRepository {
   }
 
   /**
-   * Both branches create a Run inside the admission transaction now, so there
-   * is nothing left to finish outside it. Kept as the single exit so callers
-   * do not have to know which branch ran.
+   * Returns the Run the admission already created, inside the admission
+   * transaction. Do not finish the Run outside that transaction. Callers
+   * share this exit.
    */
   private async finishTaskRunAdmission(
     admission: Awaited<ReturnType<PgTaskRepository["createTaskRunAdmission"]>>,

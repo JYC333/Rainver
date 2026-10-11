@@ -5,10 +5,10 @@ import { PgJobQueueRepository } from "../jobs/repository.js";
 
 export const RESEARCH_OPERATION_CANCEL_JOB = "research_operation_cancel";
 
-/** The statuses in which a research Operation is over. Kept as one list —
- * the SQL below is built from it — because a status missed in one copy would
- * let cancel flip a finished Operation back to `cancelled` and enqueue a kill
- * for Runs that legitimately produced its result. */
+/** The statuses in which a research Operation is over. One list — the SQL
+ * below is built from it. Do not copy the statuses at a call site: a status
+ * missed in one copy would let cancel flip a finished Operation back to
+ * `cancelled` and enqueue a kill for Runs that produced its result. */
 const RESEARCH_OPERATION_TERMINAL_STATUSES = ["completed", "failed", "cancelled"] as const;
 
 const TERMINAL_SQL_LIST = RESEARCH_OPERATION_TERMINAL_STATUSES.map((status) => `'${status}'`).join(",");

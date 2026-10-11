@@ -40,9 +40,9 @@ export type Id = z.infer<typeof IdSchema>;
 
 /**
  * ISO-8601 datetime string as emitted by the API
- * (e.g. `"2026-06-09T12:00:00.123456+00:00"`). Kept as a permissive string so a
- * valid server timestamp is never rejected; treat it as an instant, not a
- * structurally-validated value.
+ * (e.g. `"2026-06-09T12:00:00.123456+00:00"`). A permissive string, so a
+ * valid server timestamp is never rejected. Treat it as an instant, not a
+ * structurally validated value.
  */
 export const ISODateTimeSchema = z.string();
 
