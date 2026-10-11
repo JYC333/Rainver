@@ -1604,9 +1604,9 @@ export class RunOrchestrationService {
           const current = await this.repository.getRun(run.space_id, run.id);
           if (current?.status === "waiting_for_dependency") {
             // A delegated child is created `queued` with no job; it is
-            // admitted when its parent yields. Parking is a yield — before
-            // this call nothing admitted a child whose parent waited on it in
-            // the same turn, and the two waited on each other for ever.
+            // admitted when its parent yields. Parking is a yield. Admit
+            // those children here. Do not leave a child queued while its
+            // parent waits on it.
             await this.delegationProjector?.queueDelegatedChildren?.(current);
             await this.delegationProjector?.reconcileWaitingRun?.(current);
           }
@@ -1819,12 +1819,11 @@ export class RunOrchestrationService {
     // caller may supply a fallback risk when the contract has none. It can
     // never downgrade a critical contract to reach a weaker sandbox.
     const riskLevel = stringConfigValue(contract.risk_level) ?? input.risk_level ?? null;
-    // Risk decides the level on every path. The server provisions a worktree
-    // or a throwaway directory for a run it executes itself. A daemon run
-    // carries the level into its `isolation` policy and the daemon builds the
-    // namespace from it. Do not skip the resolution for daemon runs: a CLI
-    // run would stay at the creation-time `none`, so a critical Folder-bound
-    // run would get a read-write workspace and the shared network.
+    // Risk decides the level on every path. A daemon run carries the level
+    // into its `isolation` policy and the daemon builds the namespace from
+    // it. Do not skip the resolution for daemon runs: a CLI run would stay
+    // at the creation-time `none`, so a critical Folder-bound run would get
+    // a read-write workspace and the shared network.
     //
     // `worktree` and `one_shot_docker` are not daemon workspace kinds. The
     // daemon's workspace is the Location, and the namespace is the isolation.
@@ -2443,18 +2442,13 @@ export class RunOrchestrationService {
     run: RunRecord,
     prepared: PreparedRuntimeContext,
   ): Promise<void> {
-    // Never for a run the daemon owns the directory of: the Exchange is a pair
-    // of directories the server stages and reads back, and there is no such
-    // pair on another machine — the daemon's port throws rather than touch one.
-    // Guarded on the runtime rather than on `sandbox_cwd` being absent,
-    // because a caller can supply that and a thrown Exchange would fail the
-    // whole run at preparation.
-    //
     // A daemon Run returns here. Its outputs are the diff and the files it
     // uploads from `$RAINVER_OUTPUT_DIR`, which `recordOutputArtifacts`
     // matches against the Task's declared outputs. Do not prepare an Exchange
     // for it. The Exchange is a pair of directories the server stages, and a
-    // daemon Run has no such pair.
+    // daemon Run has no such pair. Guard on the runtime, not on `sandbox_cwd`
+    // being absent: a caller can supply that path, and preparing an Exchange
+    // would fail the run.
     if (dispatchesToHostDaemon(run.runtime_key)) return;
     if (!isVendorCliAdapter(run.runtime_key) || !prepared.sandbox_cwd) return;
     const executionPort = prepared.execution_port ?? this.serverExecutionPort;
