@@ -146,9 +146,9 @@ export async function migrate(
     const done = await appliedMap(client);
 
     for (const file of files) {
-      // A test or an explicitly staged rollout may need the still-running
-      // release's schema without applying an offline cutover. Production
-      // migration commands leave this false and apply every pending file.
+      // skipMaintenance keeps the release that is still running and skips
+      // maintenance migrations. Production migration commands leave this false
+      // and apply every pending file.
       if (opts.skipMaintenance && requiresMaintenance(file.sql)) continue;
       const prev = done.get(file.version);
       if (prev) {

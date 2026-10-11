@@ -36,8 +36,8 @@ Relations writes object-backed records through the shared object model:
   `person`.
 - `relation_organizations` extends `space_objects` rows whose `object_type` is
   `organization`.
-- `academic_papers` extends the existing `sources` object extension for papers;
-  papers are not a new `space_objects.object_type`.
+- `academic_papers` extends `sources` for papers. A paper is a `sources` row.
+  Do not add a `space_objects.object_type` for it.
 - Affiliations, authorship, and citations are proposed through the Knowledge
   proposal path. Only proposal acceptance materializes their canonical
   `object_relations` edge; structured affiliation/author metadata lives in the

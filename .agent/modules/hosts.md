@@ -1347,14 +1347,11 @@ constructor takes a real `Pool`, not the generic `Queryable` most repos in
 this module accept (same reasoning as `evolution/bundleRepository.ts`, which
 needs the identical connection control for its own advisory locks).
 
-`host_thread_events` carries no `data_exposure_level`/redaction-tier column
-the way `run_events` does — `tool_input_summary` is a 200-char-bounded raw
-`JSON.stringify` of a tool's input, readable by any Project member with read
-access via the events endpoint, not gated by host ownership. This is
-consistent with the already-accepted low-trust model for remote-host CLI
-runs (the daemon uploads full unredacted diffs and output files),
-not a new exposure category. The asymmetry with `run_events` is accepted.
-A redaction-tier column is deferred, not built.
+`host_thread_events` has no `data_exposure_level` column. `tool_input_summary`
+is a 200-char-bounded raw `JSON.stringify` of a tool's input, readable by any
+Project member with read access via the events endpoint, not gated by host
+ownership. A remote-host CLI run follows the same rule: the daemon uploads
+full unredacted diffs and output files.
 
 ## The work surface a dispatched Run reports back through
 

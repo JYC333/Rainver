@@ -345,9 +345,8 @@ async function runRemoteHostCliAdapter(
   if (spec.implementation_status !== "implemented") {
     return remoteFailureWithEvent(input, spec.runtime_key, "runtime_adapter_not_implemented", `Runtime adapter '${runtimeKey}' is not executable.`, startedAt);
   }
-  // Every currently-implemented local_cli adapter is ACP; this defends only
-  // against a hypothetical future non-ACP adapter slipping past routes.ts's
-  // own remote-eligibility gate.
+  // This path runs ACP adapters. A spec whose protocol is not `acp` fails
+  // closed here. Do not dispatch it.
   if (spec.invocation.protocol !== "acp") {
     return remoteFailureWithEvent(
       input,

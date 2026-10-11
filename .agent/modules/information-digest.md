@@ -39,9 +39,7 @@ idempotent.
 Fine-grained topics are owner data. Recurring normalized phrases become
 deterministic candidates after configurable occurrence/read thresholds; no
 model call invents or activates a topic. Only owner acceptance or direct owner
-creation activates one. This confirmation-gated deterministic design is the
-semantic boundary; an Agent-proposal dependency is intentionally not part of
-the current implementation.
+creation activates one. Do not let an Agent activate a topic.
 
 Profile maturity is explicit (`cold`, `warming`, `warm`). Cold readers still
 receive a digest using recency and source-diversity fairness. The profile is

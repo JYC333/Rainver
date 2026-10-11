@@ -81,9 +81,17 @@ import `apps/web/src` directly. This keeps feature source colocated with the plu
 package without introducing remote frontend bundle loading.
 
 ### Official optional modules install before they enable
-In the current implementation there is no remote package download. Built-in official plugin source is kept in this monorepo under `plugins/official/*`, compiled into package artifacts under `server/dist/official-plugins/*`, loaded by `builtInPlugins.ts`, and activated by `PluginHost` at startup. The package lifecycle is still explicit: a plugin is catalog-visible first, then `POST /api/v1/plugins/:id/install` runs its plugin-owned schema migrations and writes `plugin_installs`/`plugin_migrations`, and only then can `POST /api/v1/plugins/:id/enable` enable it for a user or space.
+There is no remote package download. Built-in official plugin source lives in
+this monorepo under `plugins/official/*`, is compiled into
+`server/dist/official-plugins/*`, loaded by `builtInPlugins.ts`, and activated
+by `PluginHost` at startup. A plugin is catalog-visible first, then
+`POST /api/v1/plugins/:id/install` runs its plugin-owned schema migrations and
+writes `plugin_installs`/`plugin_migrations`, and only then can
+`POST /api/v1/plugins/:id/enable` enable it for a user or space.
 
-This is a **Level 2** boundary: plugin source lives in the monorepo under `plugins/official/*`, but the package format (`plugin.json` manifest, compiled artifacts, installer-managed migrations) matches the shape required for downloaded official plugins. Install state and plugin schema are managed independently of the core baseline migration. The remaining Level 2 gap is remote package download and verification — the startup-load activation contract (`RainverPlugin.activate(ctx)`) is already in place.
+Install state and plugin schema are managed independently of the core baseline
+migration. `RainverPlugin.activate(ctx)` is the startup activation contract.
+Do not download a plugin package.
 
 ### Remote package download is not implemented
 There is no remote download, manifest verification, or compatibility check for

@@ -88,8 +88,8 @@ derivation needs facts a client does not have:
   chain or discussion proceeds as after any reply. The web shows "waiting for
   an answer" under such a reply (`AwaitingAnswerMarker`).
 
-A client that re-derives state from the Run's status gets `degraded` wrong, and
-that is not hypothetical — it happened during this work, on two surfaces.
+A client that re-derives state from the Run's status gets `degraded` wrong.
+Do not re-derive `turn.state` on the client.
 
 ### Reading a turn back
 
