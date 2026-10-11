@@ -55,7 +55,7 @@ instance-scoped settings store and take effect without a server restart.
 | `workspaces/` — Project Folder files | Always |
 | `cache/host-daemon/` — the built-in execution host's own state | **Not yet**, and it holds login state — see below |
 | `backups/` — previous archives | **Never** (recursion prevention) |
-| `sandboxes/` — ephemeral sandbox | **Never** |
+| `sandboxes/` — server-side sandbox clones | **Never** |
 | `cache/` — ephemeral cache | **Never** |
 | `logs/` — application logs | Only if `BACKUP_INCLUDE_LOGS=true` |
 

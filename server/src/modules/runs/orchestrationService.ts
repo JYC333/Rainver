@@ -301,16 +301,17 @@ export type HostKind = "server" | "remote";
  * prepare/cleanup the workspace, run exchange, and
  * code-patch collection — selected once per run from its Location's Host
  * kind (`resolveExecutionPort`, below). `ServerHostExecutionAdapter` wraps
- * the existing sandbox/exchange/code-patch pieces; `RemoteHostExecutionAdapter`
- * dispatches over the daemon and collects uploaded payloads. The CLI process
- * executor (`CliCommandExecutor`) and artifact materialization remain outside
- * this seam because both host adapters share those higher-level services.
+ * the server sandbox, exchange, and code-patch pieces.
+ * `HostDaemonExecutionAdapter` does not prepare a server directory; the
+ * daemon owns the working directory. The CLI process executor
+ * (`CliCommandExecutor`) and artifact materialization remain outside this
+ * seam because both host adapters share those higher-level services.
  */
 export interface HostExecutionPort {
   readonly hostKind: HostKind;
-  /** Set only for a remote port — which daemon connection to dispatch to. */
+  /** Set on a daemon port — which daemon connection to dispatch to. */
   readonly hostId?: string;
-  /** Set only for a remote port — which WorkspaceLocation this Run executes in. */
+  /** Set on a daemon port — which WorkspaceLocation this Run executes in. */
   readonly workspaceLocationId?: string | null;
   readonly workspaceRelativePath?: string | null;
   readonly workspace?: LaunchWorkspace;
@@ -332,15 +333,11 @@ export class ServerHostExecutionAdapter implements HostExecutionPort {
 }
 
 /**
- * A remote run always dispatches with `required_sandbox_level:
- * "none"` (the dispatch endpoint's job), so `workingDirScopeForLevel`
- * naturally skips every local-filesystem branch in `prepareRuntimeContext` —
- * `sandbox_cwd`/`cleanup`/`exchange` never get set, so `workspaceManager`/
- * `codePatchCollector`/`runExchange` are never actually invoked for a
- * remote run. `runExchange` still needs a real (non-optional)
- * `RunExchangePort` value to satisfy the interface; this one throws instead
- * of silently touching a local path if that "never invoked" assumption is
- * ever violated by a future change.
+ * A daemon Run does not use this server's workspace manager, code-patch
+ * collector, or run exchange. Those fields stay unset, and the local
+ * filesystem branches in `prepareRuntimeContext` do not run. `runExchange`
+ * still has to satisfy `HostExecutionPort`; these methods throw. Do not let
+ * them touch a server path.
  */
 export class HostDaemonExecutionAdapter implements HostExecutionPort {
   readonly workspaceManager = undefined;

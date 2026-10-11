@@ -8,10 +8,11 @@
  * belongs to the daemon. Do not provision this directory for a daemon Run.
  *
  * The directory lives under the shared sandbox root (same root as worktrees),
- * is isolated per run, and is removed on every terminal path (success, failure,
- * cancel). It is NOT a git repo and carries no persistent workspace — adapter
- * output is materialized to artifacts before teardown, so removing the dir never
- * loses history (B18: sandboxes are short-lived execution areas).
+ * is isolated per run, and, when provisioned, is removed on every terminal
+ * path (success, failure, cancel). It is NOT a git repo and carries no
+ * persistent workspace — adapter output is materialized to artifacts before
+ * teardown, so removing the dir never loses history (B18: sandboxes are
+ * short-lived execution areas).
  */
 import { mkdir, rm, rmdir } from "node:fs/promises";
 import { dirname, resolve, sep } from "node:path";

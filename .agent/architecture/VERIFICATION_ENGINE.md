@@ -7,8 +7,8 @@ it must consume verification facts rather than infer completion from exit code.
 ## Ownership and lifecycle
 
 The Runs module owns the engine and the `verification_results` table. A run's
-orchestration path evaluates checks in two phases, both before the
-worktree/ephemeral sandbox is cleaned up: `pre_materialization` checks run on
+orchestration path evaluates checks in two phases, both before the server
+removes a working directory it prepared: `pre_materialization` checks run on
 the adapter output, and only if they pass are artifacts/proposals materialized
 and the code patch collected; `post_materialization` checks
 (`artifact_exists`, `proposal_created`, and `code_patch:*` declarations) then

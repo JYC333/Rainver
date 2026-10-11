@@ -65,7 +65,7 @@ export interface ServerConfig {
   providerProxyExternalBaseUrl: string | null;
   /** Root for registered workspace directories. */
   workspaceRoot: string;
-  /** Root for short-lived run sandboxes (worktrees, ephemeral working dirs). */
+  /** Root for server-side sandbox clones and the ephemeral directory in `ephemeralSandbox.ts`. A daemon Run's working directory is not under this root. */
   sandboxRoot: string;
   /** Root for persisted artifact file storage. Artifact.storage_path is relative to this. */
   artifactStorageRoot: string;
