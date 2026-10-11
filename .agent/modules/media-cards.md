@@ -5,5 +5,3 @@
 
 Spaced-repetition tables exist but have no write path. See
 [spaced-repetition.md](spaced-repetition.md).
-
-Design notes: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §3.

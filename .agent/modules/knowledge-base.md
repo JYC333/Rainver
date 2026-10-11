@@ -92,9 +92,8 @@ into subdomains by *lifecycle*, not just by view:
   graph relations and evidence. Review-gated and versioned. Table `knowledge_items`.
 - **Sources** — external references / evidence. Table `sources`.
 - **Cards** — schema only (`cards`, `card_review_states`, `card_reviews`).
-  No server module, no review API, and no FSRS runtime. Knowledge › Cards is
-  an empty-state placeholder. See
-  [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §3.
+  No server module, no review API, and no FSRS runtime. Knowledge › Cards
+  does not schedule reviews.
 
 Notes and Wiki are **related but not the same**: Wiki is not merely a different view
 of Notes. The working/canonical split is the reason they are separate models — folding
@@ -466,8 +465,7 @@ endpoints remain collaborative within the current scope.
 
 ## Source Monitoring
 
-Knowledge proposal apply relies on proposal approval and the `proposal.apply` policy gate (`PgProposalApplyService`). The Knowledge appliers run no source-monitoring evaluation (it exists only in `modules/memory/sourceMonitoring.ts`); a full evaluator for external or untrusted Activity/Artifact-derived Knowledge is not implemented
-([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9).
+Knowledge proposal apply relies on proposal approval and the `proposal.apply` policy gate (`PgProposalApplyService`). The Knowledge appliers run no source-monitoring evaluation (it exists only in `modules/memory/sourceMonitoring.ts`). There is no evaluator for external or untrusted Activity/Artifact-derived Knowledge.
 
 ## Policy Actions
 
@@ -725,9 +723,6 @@ not replaced by Source.
 - [activity.md](activity.md) - raw input and source events
 - [spaced-repetition.md](spaced-repetition.md) - Cards schema exists; no review product
 - [proposals.md](proposals.md) - proposal review and apply boundary
-
-Unimplemented Knowledge/Cards ideas:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §3 and §9.
 
 ## Reading and writing a note or a Knowledge object
 

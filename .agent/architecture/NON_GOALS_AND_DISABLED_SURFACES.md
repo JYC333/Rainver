@@ -10,7 +10,7 @@ Current absences and product-scope refusals. Unimplemented designs are in
 | Broad autonomous discovery / crawling | No crawler engine |
 | Connector marketplace / integration lifecycle | No marketplace; Sources connections and recipes exist |
 | Capability marketplace or remote install UX | File-defined registry; local workspace roots; no remote install |
-| Automatic system self-evolution | Removed; no privileged Evolver Agent |
+| Automatic system self-evolution | No privileged Evolver Agent |
 | App-container self-deployment | Blocked by deployer allowlist |
 | Deployment from an Agent, automation, or Proposal | Blocked; instance admin creates the job |
 | Arbitrary deployer commands | Only `rebuild_rainver`, `restart_rainver`, `health_check` |
