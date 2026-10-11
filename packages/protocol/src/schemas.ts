@@ -21,7 +21,7 @@ export const SpaceRefSchema = z.object({
   id: IdSchema,
   name: z.string(),
   type: z.string(), // personal | family | team (see SPACE_TYPE_VALUES)
-  // Older consumers may omit the field. Server-produced Space DTOs always
+  // The field may be omitted. Server-produced Space DTOs always
   // include the persisted mode. Parsing maps an omitted mode to the
   // fail-closed default.
   oversight_mode: SpaceOversightModeSchema.default("none"),

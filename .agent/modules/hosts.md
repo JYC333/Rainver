@@ -892,10 +892,12 @@ advertised. The login request selects either an ACP method id or this
 Rainver-owned action, never a synthetic ACP method. It runs only that
 installation's fixed executable entry plus the
 `login` subcommand in the same isolated HOME; it accepts terminal input but
-does not expose a shell or a remotely supplied command. New manifests preserve
-the executable-entry prefix separately from ACP arguments, so this also works
-for package-backed Agents. Older binary manifests safely imply an empty prefix;
-older Node package manifests must be reinstalled. After five seconds without
+does not expose a shell or a remotely supplied command. A manifest keeps the
+executable-entry prefix separate from ACP arguments, so this also works
+for package-backed Agents. A manifest that omits `entry_args` is probed with
+no prefix when its command is not Node. A Node manifest that omits
+`entry_args` is not probed. Reinstall that copy so the manifest carries the
+prefix. Do not guess a Node prefix. After five seconds without
 an Agent Auth response, the stream points the user to CLI login instead of
 appearing silently stuck. When neither an explicit adapter login command nor a
 selected ACP method/CLI action exists, both the server route and daemon fail

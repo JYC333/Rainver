@@ -174,15 +174,17 @@ function supportsManagedCliLogin(manifest: ToolManifest, entryArgs: string[]): P
 }
 
 /**
- * Compatibility for Agents that advertise ACP auth but require their own
- * top-level `login` command first. This is a fixed managed command, not a
- * remotely programmable shell. Old binary manifests safely imply no entry
- * args; old Node package manifests must be reinstalled to learn that prefix.
+ * Agents that advertise ACP auth but need their own top-level `login`
+ * command first. This is a fixed managed command, not a remotely
+ * programmable shell. A manifest that omits `entry_args` is probed with no
+ * prefix when its command is not Node. A Node manifest that omits
+ * `entry_args` is not probed. Reinstall that copy so the manifest carries
+ * the prefix. Do not guess a Node prefix.
  */
 async function withManagedCliLogin(manifest: ToolManifest, options: RuntimeOptions | null): Promise<RuntimeOptions | null> {
   if (manifest.login || !options || options.cli_login_available || !terminalAuthAvailable()) return options;
-  // This compatibility path is only useful for Agents that advertised ACP
-  // Agent Auth but cannot complete it until their own CLI has credentials.
+  // Only Agents that advertised ACP Agent Auth but cannot complete it until
+  // their own CLI has credentials.
   if (!options.auth_methods?.some((method) => method.type === "agent")) return options;
   const entryArgs = manifest.entry_args ?? (manifest.command === process.execPath ? null : []);
   if (!entryArgs) return options;
