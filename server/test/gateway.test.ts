@@ -206,9 +206,9 @@ describe("safe header access", () => {
   });
 
   /**
-   * The query string too: an OAuth callback carries its authorization code
-   * and state there, and the default serializer logged `req.url` whole on
-   * every "incoming request" line.
+   * The query string too. An OAuth callback carries its authorization code
+   * and state there. Do not log those values. The incoming-request line
+   * includes `req.url`.
    */
   it("keeps a request's query string out of the request log line", async () => {
     const lines: string[] = [];

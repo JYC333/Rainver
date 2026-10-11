@@ -7,13 +7,10 @@ import { projects } from "./projects.js";
 import { spaceObjects } from "./knowledge.js";
 import { inquiryThreads } from "./inquiry.js";
 
-// Experiment Domain. Replaces the earlier, narrower
-// `project_experiment_campaigns`/`_runs`/`_provenance` model: a code/prompt
-// A-B comparison becomes one `executor_type` this domain supports
-// (`managed_code_comparison`), not a second top-level Experiment concept.
-// Definition -> Version (immutable config) -> Run (immutable config
-// snapshot) -> Observation (raw recorded data) -> Interpretation (reviewed
-// conclusion, convertible to an Inquiry Evidence Signal).
+// Experiment Domain. `managed_code_comparison` is one `executor_type`, not a
+// second Experiment concept. Do not add a parallel campaign, run, and
+// provenance model beside Definition -> Version -> Run -> Observation ->
+// Interpretation.
 
 export const experimentDefinitions = pgTable("experiment_definitions", {
 	// Ontology object (ADR 0012 / ADR 0011 decision 1). The title is the root's

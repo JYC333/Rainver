@@ -1046,12 +1046,10 @@ describe("hosts routes", () => {
   });
 
   /**
-   * The wire is versioned by the daemon, not per frame: a daemon from before
-   * the `adapter_type` -> `runtime_key` rename reads `runtime_key` as absent
-   * and silently falls back to the raw argv command, so every Run it accepts
-   * fails for a reason that names neither the daemon nor the rename. The
-   * host is refused at hello instead, and stays offline with the version it
-   * reported recorded beside it.
+   * A hello below `MIN_HOST_DAEMON_VERSION` is refused, and the host stays
+   * offline with the version it reported. Do not admit it. An older daemon
+   * answers none of the Task-merge frames and would launch a resolution Run
+   * as an ordinary Task Run.
    */
   it("refuses a hello from a daemon below the minimum version and leaves the host offline", async (ctx) => {
     if (!db.available || !app) return ctx.skip();

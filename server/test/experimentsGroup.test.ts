@@ -58,10 +58,9 @@ describe("experimentsCommon", () => {
 describe("experimentsDb", () => {
   // Real-Postgres coverage for the Experiment Domain: Definition
   // -> Version (manual or managed_code_comparison) -> Run -> Observation ->
-  // Interpretation -> convert to Inquiry Evidence Signal. Replaces the earlier
-  // project_experiment_campaigns/runs/provenance model — managed_code_comparison
-  // is one executor_type here, not a second Experiment concept (see
-  // projectResearchIntegrityDb.test.ts for the retargeted integrity check).
+  // Interpretation -> convert to Inquiry Evidence Signal.
+  // `managed_code_comparison` is one executor_type, not a second Experiment
+  // concept. Do not add a parallel campaign model beside it.
 
   const SPACE = "11111111-1111-4111-8111-111111111111";
   const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

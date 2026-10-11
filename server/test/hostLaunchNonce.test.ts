@@ -2,11 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostConnectionRegistry, type HostFrameSink } from "../src/modules/hosts/connectionRegistry.js";
 
 // A supervisor retry reuses the run id within seconds of the first attempt's
-// kill, before that attempt's child has finished uploading and reported. The
-// registry keys pending runs by run id, so without a per-dispatch nonce the
-// first attempt's late `complete` resolved the second attempt's promise with
-// the first attempt's exit code — and the second attempt's tool token was
-// revoked while its process was still running.
+// kill, before that attempt's child has finished uploading and reported.
+// Each dispatch carries its own nonce. Do not key the pending run by run id
+// alone. A late `complete` from attempt 1 would resolve attempt 2's promise
+// and revoke attempt 2's tool token while its process is still running.
 describe("launch nonce routing", () => {
   afterEach(() => { vi.useRealTimers(); });
 
