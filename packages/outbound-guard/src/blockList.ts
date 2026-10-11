@@ -10,8 +10,8 @@ import { BlockList, isIP } from "node:net";
  * boundary. `::ffff:7f00:1`, `0:0:0:0:0:0:0:1` and `127.0.0.1` are the same
  * host; the first two are what a caller writes when it does not want to be
  * recognised. BlockList parses rather than compares, and folds IPv4-mapped
- * IPv6 onto the IPv4 rules — which is also why `::ffff:0:0/96` must *not* be
- * added as a range of its own: BlockList maps an IPv4 check into that prefix,
+ * IPv6 onto the IPv4 rules. Do not add `::ffff:0:0/96` as a range of its
+ * own: BlockList maps an IPv4 check into that prefix,
  * so listing it would refuse every IPv4 address there is. `::ffff:10.0.0.5` is
  * already refused by the `10.0.0.0/8` rule.
  *

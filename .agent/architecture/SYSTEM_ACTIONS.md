@@ -595,8 +595,8 @@ the Thread takes the recommended focus (`step_origin: "advice"`, attention
 `focused`) and the advice row becomes `adopted`. It refuses anything that is
 not currently open and current, so an already-taken or stale recommendation
 cannot be adopted twice. Policy action `inquiry.advice.adopt` (low risk,
-allow, audited); a proposal gate would have meant reviewing a suggestion the
-system itself made.
+allow, audited). Do not put a proposal gate on it. That would review a
+suggestion the system itself made.
 
 Advice is written when a search finishes (`tryQueueAdviceForWorkflowThread`,
 trigger `search_completed`). Project Attention, the Room, and the completed

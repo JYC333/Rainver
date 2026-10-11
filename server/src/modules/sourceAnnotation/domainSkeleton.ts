@@ -7,8 +7,8 @@
  * distribution can only ever draw from material their own sources already
  * surfaced, and the source pool is itself a product of their interests — the
  * ceiling is the bubble. Against a fixed external frame, "you cover 12 of 60
- * domains" holds on day one and needs no history at all, which is also why cold
- * start stops being a special case.
+ * domains" holds on day one and needs no history. Cold start is not a
+ * special case.
  *
  * This is deliberately the opposite of the topic axis in the interest profile.
  * There, a fixed taxonomy would *be* the bubble, so topics grow under control

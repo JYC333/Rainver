@@ -147,12 +147,9 @@ Rules:
   rather than from the version, so declining to republish an instance's prompt
   does not also stop it working.
 
-  Two further decisions, recorded rather than left to be rediscovered:
-
-  - **`agents.project_id` is `ON DELETE NO ACTION`, deliberately.** Projects are
-    archived, never deleted, so there is no live failure mode. Should a deletion
-    path land, it must **archive** the Project's Assistant — a non-`active`
-    status frees the partial-unique slot — rather than delete a row that owns
+  - **`agents.project_id` is `ON DELETE NO ACTION`.** Projects are
+    archived, never deleted. Do not delete the Project's Assistant. Archive
+    it: a non-`active` status frees the partial-unique slot. The row owns
     Run and token-usage history.
   - **An Assistant's name follows its Project's and is refreshed on the next
     reconcile**, so a Project renamed between Room creations carries the old

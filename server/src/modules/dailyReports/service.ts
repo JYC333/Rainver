@@ -111,7 +111,7 @@ const VALID_MEMORY_TYPES = new Set(["semantic", "episodic", "preference", "proce
 const SERVICE_VERSION = "1";
 
 /**
- * A report someone asked for now spends as them. A scheduled one spends on
+ * A report a person asked for spends as that person. A scheduled one spends on
  * their daily-report setting, re-read at spend time: switched off, or its
  * person no longer a member of the Space, it spends nothing.
  */
