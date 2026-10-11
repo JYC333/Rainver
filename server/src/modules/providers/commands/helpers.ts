@@ -117,7 +117,7 @@ function openAiCompatibleBaseUrlFromRow(row: ProviderRow): string | null {
 /**
  * Ollama and a custom OpenAI-compatible endpoint publish no single address — a
  * local server may be anywhere, and a gateway is whatever the operator points
- * it at. Their registry entry still offers a starting point for the form, but
+ * it at. Their registry entry offers a starting point for the form, but
  * the server will not silently apply one: an omitted base URL for those two is
  * a validation error rather than a guess.
  */

@@ -95,10 +95,9 @@ const VENDORS: readonly VendorDescriptor[] = [
   {
     id: "minimax",
     displayName: "MiniMax",
-    // MiniMax publishes both an Anthropic-compatible and an OpenAI-compatible
-    // endpoint. The Anthropic one is the vendor's own protocol here; the
-    // OpenAI-compatible gateway is the one whose forced tool-call arguments
-    // arrive corrupted, which `structuredOutputCapabilities` still guards.
+    // MiniMax publishes an Anthropic endpoint and an OpenAI-compatible one.
+    // This row uses the Anthropic endpoint. Do not point MiniMax at the
+    // OpenAI-compatible gateway: its forced tool-call arguments arrive corrupted.
     protocol: "anthropic_messages",
     supportsChat: true,
     supportsStructuredOutput: true,

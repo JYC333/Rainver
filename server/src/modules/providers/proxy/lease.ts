@@ -119,10 +119,9 @@ export function providerProxyExternalBaseUrl(): string | null {
 
 /**
  * Where one lease lives under a proxy base URL. The shape is the proxy's own
- * routing contract (`server.ts` splits the path back into route and lease id),
- * so every caller that builds such a URL goes through here rather than
- * repeating it — there were four copies, and a wire format spread across four
- * expressions is one edit away from disagreeing.
+ * routing contract (`server.ts` splits the path back into route and lease id).
+ * Every caller that builds such a URL goes through here. Do not copy the path
+ * format at a call site.
  */
 export function providerProxyLeaseUrl(baseUrl: string, route: ProviderProxyRoute, leaseId: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/${route}/${encodeURIComponent(leaseId)}`;

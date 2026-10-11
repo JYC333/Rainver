@@ -36,7 +36,7 @@ export interface RetrievalEgressPolicy {
   externalEgressEnabled: boolean;
   /**
    * Destination class for the current operation. Omitted means external
-   * provider, preserving conservative behavior for old call sites.
+   * provider. Do not treat a missing class as local.
    */
   destination?: RetrievalEgressDestination;
   /**

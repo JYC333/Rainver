@@ -251,9 +251,9 @@ function structuredTool(output: ProviderStructuredOutput): Tool {
     name: output.schema_id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64) || "structured_output",
     description: `Return the ${output.schema_id} structured result.`,
     parameters: output.schema as Tool["parameters"],
-    // `strict` remains an output-validation contract at rainver's
-    // boundary. Provider-side strict tools are best-effort so vendors without
-    // that capability can still reach the text scavenger and be validated.
+    // `strict` is an output-validation contract at rainver's boundary.
+    // Provider-side strict tools are best-effort so vendors without that
+    // capability can reach the text scavenger and be validated.
     constrainedSampling: { type: "json_schema", strict: "prefer" },
   };
 }
