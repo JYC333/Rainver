@@ -1,7 +1,7 @@
 # Module: Mobile Client
 
 ## Status
-**NOT IMPLEMENTED** as a mobile product surface.
+There is no mobile product surface.
 
 The web app ships a PWA manifest. Layout uses a five-item bottom tab bar
 (`MOBILE_TAB_ITEMS`: Home, Inbox, Library, Review, Tasks) on narrow
