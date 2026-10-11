@@ -136,7 +136,7 @@ export async function resolveRetrievalToolBinding(
   if (runMode === "off") return null;
   if (deps.retrievalToolService) {
     // The test-injected path has no DB to read the space setting from, so it
-    // still requires explicit run-level opt-in. It intentionally models only
+    // requires explicit run-level opt-in. It models only
     // the Knowledge surface; Memory/Project domain tests use the DB-backed path
     // so registry-specific revalidation and artifact trimming are exercised.
     if (!runMode) return null;
