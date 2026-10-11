@@ -13,7 +13,6 @@ process. This is not an external monitoring dashboard.
 - `GET /api/v1/status`
 - The checks listed below
 
-Unimplemented chrome: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §8.
 
 ## Does Not Own
 - Alerting or paging (not in scope)

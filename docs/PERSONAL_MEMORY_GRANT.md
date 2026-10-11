@@ -244,8 +244,6 @@ grant test suite; test coverage is partial: cross-space read with and without a 
 - **No multi-user grants.** Only one granting user per grant.
 - **No admin grant-stats endpoint.**
 
-Unimplemented expansions: [`.agent/plans/unimplemented-from-guides.md`](../.agent/plans/unimplemented-from-guides.md) §13.
-
 ---
 
 ## See Also
@@ -253,7 +251,6 @@ Unimplemented expansions: [`.agent/plans/unimplemented-from-guides.md`](../.agen
 - `docs/SPACE_MODEL.md` — space types and private memory definition
 - `docs/CONTENT_PUBLICATIONS.md` — independent targeted snapshot transfer
 - `docs/POLICY_AND_PRIVACY_BOUNDARIES.md` — policy enforcement inventory
-- [`.agent/plans/unimplemented-from-guides.md`](../.agent/plans/unimplemented-from-guides.md) §13 — unimplemented grant expansions
 - `server/src/modules/personalMemoryGrants/` — API implementation
 - `server/src/modules/proposals/` — approval/apply gate
 - `server/src/modules/runtimeContext/` — grant-aware context assembly and Delivery claim

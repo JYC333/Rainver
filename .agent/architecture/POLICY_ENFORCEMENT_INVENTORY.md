@@ -470,5 +470,3 @@ re-loads the target taint and requires database-backed, unrevoked
 `egress_granting_user` approvals from every contributing owner. Payload flags
 are declarations, never proof of approval.
 
-Unimplemented grant/publication expansions:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §13–§14.

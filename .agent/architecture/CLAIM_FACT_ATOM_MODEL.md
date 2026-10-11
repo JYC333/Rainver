@@ -175,9 +175,7 @@ Implemented fields:
   `organization`, `claim`, `inquiry_thread`, `decision_case`, `experiment`, and
   `research_workflow`; `test/ontologyRegistry.test.ts` asserts the CHECK stays
   open and every registered subtype is valid. `project` and `project_folder` are
-  registered *entities* without being `space_objects` rows (B12G). Types not in
-  the registry are listed in
-  [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §19.
+  registered *entities* without being `space_objects` rows (B12G).
 - `title` (a projection of the domain's own label, truncated by the writer)
 - `summary` or `excerpt`
 - `visibility`, `access_level`
@@ -516,5 +514,3 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
 - There is no legacy-data compatibility path; tests and seeds assume a clean
   break.
 
-Unimplemented claim follow-ups:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §19 and §24.

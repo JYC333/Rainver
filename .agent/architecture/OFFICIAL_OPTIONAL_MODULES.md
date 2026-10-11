@@ -97,8 +97,6 @@ Do not download a plugin package.
 There is no remote download, manifest verification, or compatibility check for
 official plugin packages. The startup-load contract and installer are
 implemented for in-repo artifacts. Third-party plugins are out of scope.
-Related deferred plugin work (marketplace, third-party sandbox/SDK) is recorded in
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §20 and §24.
 
 ---
 
@@ -192,7 +190,6 @@ Disabling a module preserves all its data. `disabled_at` and `disabled_by_user_i
 - Plugin settings must not leak across spaces or users — the guard and repository enforce the descriptor's `space` or `user` scope
 - Third-party modules are not supported.
 
-Unimplemented plugin expansions: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §24.
 
 ---
 

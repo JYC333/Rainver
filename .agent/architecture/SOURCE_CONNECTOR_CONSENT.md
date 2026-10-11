@@ -243,8 +243,6 @@ Implemented for provider content egress:
 - Diagnostics reports aggregate only the operator's own private artifact
   metadata and carry no source-derived titles/snippets.
 
-Unimplemented source-gate extensions:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §23.
 
 ### Read Gate Shape
 
@@ -330,5 +328,3 @@ Context retrieval planning and delivery,
 maintenance/Context Ops reads, claim evidence rendering, and retrieval
 provider content egress.
 
-Unimplemented extensions:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §23.

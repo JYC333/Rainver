@@ -425,8 +425,6 @@ The frontend is ready for personal dogfooding. The core product loop is usable:
 - Home has no Assistant chat entry; project-bound conversation lives only in
   the Rooms surface.
 
-Unimplemented Home/capture ideas:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §6 and §26.
 
 ---
 
@@ -488,9 +486,8 @@ does not apply proposals or infer approval; all mutations go through the server 
 | Module | Current fact |
 |---|---|
 | Graph | Implemented at `/graph` over `GraphProjection` |
-| Cards | Schema only; `/cards` hidden; Knowledge › Cards is a placeholder |
+| Cards | Schema only; `/cards` hidden; Knowledge › Cards does not schedule reviews |
 | Time | `planned: true` stub; no backend |
 | Editor / Calendar | No module |
 | Automation triggers | `manual` and `schedule` only |
 
-Unimplemented stubs: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §2, §3, §16, §26.

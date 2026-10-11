@@ -164,8 +164,7 @@ Proposals are the product review and application boundary for durable mutations.
 - Knowledge proposal apply is implemented through the server
   `ProposalApplierRegistry`. Source monitoring has an explicit code boundary
   for Knowledge. A full evaluator for external or untrusted
-  Activity/Artifact-derived Knowledge is not implemented
-  ([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9).
+  Activity/Artifact-derived Knowledge is not implemented.
 - Accepted proposals keep enough result detail for callers to identify the applied product effect.
 - Automatic grant acceptance records `approval_source=action_grant:<id>` and
   increments the bounded grant use count in the same transaction as apply.

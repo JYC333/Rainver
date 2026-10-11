@@ -563,8 +563,6 @@ and domain keys only; no member id leaves the repository.
 | Deployment/deployer client | `deployment_jobs` persist (ADR 0020); socket/network remains outside the DB | High: socket/network |
 
 Advisory locks are process-local. `RunStep` ordering uses `MAX()+1`.
-Unimplemented multi-host locking ideas:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §21.
 
 ## Schema Authoring (drizzle-kit as a generator)
 

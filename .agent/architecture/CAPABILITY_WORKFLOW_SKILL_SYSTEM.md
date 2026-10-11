@@ -157,8 +157,7 @@ for a capability. It can store runtime preference, prompt overrides, source
 mode, output policy, budget, and review policy.
 
 The implementation stores capability enablement configuration. Broader
-profile surfaces are not implemented
-([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §12).
+profile surfaces are not implemented.
 
 ### CapabilityPack
 
@@ -365,8 +364,7 @@ a native execution path exists.
 - Import preview supports safe GitHub `blob`/`tree` package roots and
   `raw.githubusercontent.com` URLs that resolve to `SKILL.md`.
 - Registry, local workspace, upload, and official-catalog skill source types
-  are modeled and not implemented
-  ([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §12).
+  are modeled and not implemented.
 - Binary asset storage is not implemented; binary/non-text assets are kept as
   package inventory metadata where GitHub exposes blob metadata.
 - No native web search service is implemented.

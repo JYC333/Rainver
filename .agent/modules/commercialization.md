@@ -9,5 +9,3 @@ billing, org SSO, plugin marketplace, or multi-tenant SaaS router.
 Current data layout is the source repo plus `RAINVER_ROOT` /
 `RAINVER_HOME` runtime roots — not a `core/` vs `instance/` tree.
 
-Enterprise and marketplace ideas:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §18.

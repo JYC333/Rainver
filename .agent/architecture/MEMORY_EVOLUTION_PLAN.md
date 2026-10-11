@@ -11,8 +11,6 @@ Retrieval, maintenance, and write rules:
   [MEMORY_CONTEXT_RUNTIME.md](MEMORY_CONTEXT_RUNTIME.md),
   [ADR 0003](../decisions/0003-memory-proposal-flow.md).
 
-**Unimplemented Memory-quality ideas** (duplicate clustering, Memory-arm
-ranking, Knowledge-to-Memory promotion, context-digest maturity, Personal
-Radius) live in
-[../plans/unimplemented-from-guides.md](../plans/unimplemented-from-guides.md)
-§9.
+Not in the current implementation: duplicate clustering, Memory-arm
+ranking, Knowledge-to-Memory promotion, context-digest maturity, and Personal
+Radius.

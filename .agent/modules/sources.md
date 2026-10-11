@@ -17,8 +17,6 @@ source support are backend-only (no dedicated frontend). Rate limiting,
 artifact retention, and an observability read model exist. There is no
 browser or Python handler evaluation.
 
-Unimplemented Custom Source UI/sandbox ideas:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11.
 
 ## Purpose
 

@@ -448,4 +448,3 @@ Falls through to registry default only for **known** registered actions when no 
 - Policy rows are domain-specific; there are no space-level row overrides.
 - Reserved / placeholder actions are registered and denied until a call site exists.
 
-Unimplemented wiring: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §22.

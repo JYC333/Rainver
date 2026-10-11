@@ -2318,7 +2318,6 @@ copy, on either host kind, through `install_tool` (above).
   How a host Run's change lands is settled and built (ADR 0016 §11). Location `execution_ready` is persisted and
   heartbeat-driven; it is not inferred from Host liveness.
 
-Unimplemented host ideas: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §25.
 
 Filesystem containment follows the execution Host trust mode (B62 and
 `SECURITY_AND_ACCESS_BOUNDARIES.md` §10). Only the built-in strict Host

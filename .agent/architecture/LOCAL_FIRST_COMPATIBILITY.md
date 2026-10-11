@@ -208,5 +208,3 @@ design. There is no local-first infrastructure. When adding new syncable
 objects, apply the column guidelines in section 3. When adding
 server-authoritative objects, do not expose them to offline mutation paths.
 
-Unimplemented mobile/sync ideas:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §5.

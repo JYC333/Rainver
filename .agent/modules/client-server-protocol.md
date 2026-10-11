@@ -181,8 +181,6 @@ There is no Chat-specific streaming endpoint and no polling execution path.
 - [server-status.md](server-status.md)
 - [agents.md](agents.md)
 
-Unimplemented generic WS / chunk SSE:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §7.
 ## Authentication protocol
 
 The auth client uses the explicit `/api/v1/auth/*` facade. Login and recovery

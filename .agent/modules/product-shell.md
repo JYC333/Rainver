@@ -49,7 +49,6 @@ switcher, or `RuntimeStatusBar`.
 - [0001-space-model.md](../decisions/0001-space-model.md)
 - [0005-desktop-runtime.md](../decisions/0005-desktop-runtime.md)
 
-Unimplemented chrome ideas: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §1.
 ## Authentication surfaces
 
 `/login`, `/register`, `/invitations/claim`, and `/reset-password` are public

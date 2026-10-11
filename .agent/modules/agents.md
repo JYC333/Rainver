@@ -581,7 +581,6 @@ direct memory writes, or faked frontend data. There are no template
 create/publish endpoints; templates are catalog files and the Agents UI does
 not author custom templates.
 
-Unimplemented template authoring: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §24.
 
 ## Built-in Templates (no built-in concrete agents)
 

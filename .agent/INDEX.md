@@ -139,7 +139,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/MEMORY_MODEL.md](architecture/MEMORY_MODEL.md) | Memory scopes, visibility, access control |
 | [architecture/SHARED_SPACE_MEMORY_ISOLATION.md](architecture/SHARED_SPACE_MEMORY_ISOLATION.md) | Current Memory layers and the shared SQL predicate for HTTP, retrieval, maintenance, and context injection |
 | [architecture/PROPOSALS.md](architecture/PROPOSALS.md) | Proposal types, lifecycle, apply flow |
-| [architecture/MEMORY_EVOLUTION_PLAN.md](architecture/MEMORY_EVOLUTION_PLAN.md) | Pointer: Knowledge retrieval and Memory maintenance are current-state elsewhere; remaining Memory-quality ideas live in plans/unimplemented-from-guides.md |
+| [architecture/MEMORY_EVOLUTION_PLAN.md](architecture/MEMORY_EVOLUTION_PLAN.md) | Points at current retrieval and maintenance docs; names Memory-quality ideas that are not implemented |
 | [architecture/EVOLUTION_SIGNAL_SYSTEM.md](architecture/EVOLUTION_SIGNAL_SYSTEM.md) | Current rule-based evolution signal emitters, target resolution, deduplication, and A2 verification facts |
 
 ### Sources / Evidence / Provenance

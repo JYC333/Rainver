@@ -14,8 +14,7 @@ web surfaces for this feature are `CustomSourceSpacePolicyPanel` (Space
 Settings) and `CustomSourceRunnerSettingsPanel` (Instance Settings).
 Repair/rollback and credentialed source support are implemented backend-side
 (see "Repair" and "Credentialed Sources" below). Browser/Python handlers are
-not implemented. There is no Repair or credential-management UI — those routes exist as API/service only
-([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11).
+not implemented. There is no Repair or credential-management UI — those routes exist as API/service only.
 
 `typescript_node` is the generated-code Level 3 fallback. Existing
 `declarative_pipeline_v1` handler versions stay readable and executable and can
@@ -38,8 +37,6 @@ Level 3 advanced fallback:
   (conversation-first Source creation) is the main path.
 - Broader generated-code execution is not supported.
 
-Unimplemented runner expansions:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11.
 
 ## Boundary
 
@@ -517,7 +514,6 @@ changes the connection's credential, at which point the same
 
 Credential rotation/deletion and a UI for creating or selecting a Custom
 Source credential are not implemented (API/service layer only).
-See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11.
 
 ## Schema in the baseline
 

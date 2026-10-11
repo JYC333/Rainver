@@ -164,8 +164,6 @@ and oversight is not it.
   memory, and logging every row of a filtered list would bury the reads that
   matter.
 
-Unimplemented Memory-policy ideas:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §24.
 
 ## Non-goals
 

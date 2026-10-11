@@ -127,7 +127,6 @@ they stamp the firing person and a literal `automation`. Those Runs complete in
 process, queue no agent turn and write no memory, and the person they name owns
 the owner-private output — an attribution leftover, not a gate.
 
-Unimplemented trigger kinds: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §16.
 
 ## Native target authority
 

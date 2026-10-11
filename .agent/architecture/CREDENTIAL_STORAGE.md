@@ -171,4 +171,3 @@ The master key is a **local-file symmetric key**, not KMS/HSM-managed. Consequen
   carries decryptable material.
 - This is appropriate for a single self-hosted instance. KMS/HSM envelope
   encryption is not implemented.
-  ([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §13)

@@ -334,9 +334,6 @@ They are **not** wired to any business code call site.
 Deployment jobs are instance-admin only (ADR 0020) and do not use
 `deployment.propose` / `deployment.execute`.
 
-Unimplemented reserved-action wiring:
-[`.agent/plans/unimplemented-from-guides.md`](../.agent/plans/unimplemented-from-guides.md) §22.
-
 | Action | Notes |
 |--------|-------|
 | `tool_binding.enable` | Tool binding lifecycle not wired |

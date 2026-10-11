@@ -197,8 +197,6 @@ ledger cover the implemented personal/family operational model: keys are
 encrypted, user-owned, Space-granted, policy-gated, and never injected as broad
 process environment.
 
-Unimplemented commercial provider surfaces:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §18.
 
 ## Provider Risks to Document
 

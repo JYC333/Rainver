@@ -218,5 +218,4 @@ merged into one generic "evidence" table.
 
 ### Promotion from source candidate to curated wiki evidence
 
-Not implemented. The two stacks stay independent. Extracted design:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §10.
+Not implemented. The two stacks stay independent.

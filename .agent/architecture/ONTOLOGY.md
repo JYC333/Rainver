@@ -210,7 +210,6 @@ It is not absorbed: `memory_entries` is an independent root, not a
 `space_objects` row, so its edges cannot live in `object_relations` today.
 The disposition (shrink to what is written, or declare a link-type set if
 Memory joins the ontology) is not decided.
-See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §24.
 
 ## Non-goals
 

@@ -1,8 +1,6 @@
 # Context & Retrieval Layer
 
 Status: implemented. This is a current-state architecture doc.
-Unimplemented retrieval ideas live in
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9 and §23.
 
 Rainver's knowledge retrieval is a deterministic recall **substrate** plus a
 **context layer** layered on top: hybrid recall,
@@ -511,7 +509,6 @@ history is queried per resource through
 `GET /api/v1/content-access/:resourceType/:resourceId/access-logs`; only the
 resource owner may query it by default. There is no finding-row follow-up
 proposal authoring UI.
-See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9.
 
 ## Governance
 
@@ -707,7 +704,6 @@ Load-bearing boundaries:
 ## Cross-references
 
 - Current-state pointers: [`ROADMAP_AND_FUTURE_RISKS.md`](ROADMAP_AND_FUTURE_RISKS.md).
-- Unimplemented ideas: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9 and §23.
 - Module current-state: `.agent/modules/knowledge-base.md`,
   `.agent/modules/memory.md`.
 - Credential channel for all provider calls: ADR 0008.

@@ -129,5 +129,3 @@ name: a Project destination takes its Space from the caller's `project_id`, so
 The preview offers rather than decides: the anchored block is preselected and
 the blocks after it, up to the next capture or heading, are listed unchecked.
 
-Unimplemented capture extensions:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §6.
