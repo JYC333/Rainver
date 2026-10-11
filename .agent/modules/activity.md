@@ -37,9 +37,10 @@ proposal generation becomes `proposals_generated`, and worker errors become
 - Raw input always creates an ActivityRecord first
 - ActivityRecords go through the proposal workflow before becoming memory
 - Activity-derived proposals carry Activity provenance in `provenance_entries`
-  and set `source_activity_id` on the pending payload. Accepted Memory
-  provenance is written to `provenance_links`. Do not treat
-  `source_activity_id` as the accepted provenance record.
+  and set `source_activity_id` on the pending payload. Readers fold that id
+  into the provenance list. Accepted Memory provenance is written to
+  `provenance_links`. Do not treat `source_activity_id` as the accepted
+  provenance record.
 - Activity-derived proposals inherit the source Activity's visibility because
   the proposed content is the Activity's own text.
 - `access_level=summary` withholds `content` and `metadata_json` from

@@ -256,8 +256,8 @@ through the built-in extraction worker.
 
 ## Declarative Pipeline Model
 
-A compatibility handler execution model, `language: "declarative_pipeline_v1"`,
-can still exist beside `typescript_node` rows. The `typescript_node` template
+A handler execution model, `language: "declarative_pipeline_v1"`,
+exists beside `typescript_node` rows. The `typescript_node` template
 generator's customization surface is a single CSS class name (list vs.
 single-page mode). It cannot paginate, follow a list
 item's own link, download a non-HTML asset, or capture per-item snapshots in
@@ -362,7 +362,7 @@ Schema: `source_handler_versions.language`'s `CHECK` constraint in
 ## Level 2 Source Recipes
 
 Status: `server/src/modules/sources/sourceRecipes/`,
-`server/src/modules/sources/sourceRecipeRoutes.ts`, and the compatibility
+`server/src/modules/sources/sourceRecipeRoutes.ts`, and the pipeline
 bridge. Backend only; no web page calls these APIs.
 
 Source Recipes are the normal configurable source path. They do not execute

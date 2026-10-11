@@ -72,7 +72,7 @@ accepted into Memory or Knowledge.
 | `source_monitoring_result` | Snapshot of the source-monitoring gate, written at acceptance when the gate requires review. |
 | `consolidation_run_id` | Which consolidation run produced this proposal. |
 | `source_run_id` (stored payload, normalized on read) | Denormalized run reference; normalized into `provenance_entries` at build time. |
-| `source_activity_id` (stored payload, normalized on read) | Compatibility shortcut on pending proposals; normalized into `provenance_entries` via `provenanceEntriesFromPayload`. Active Memory provenance is not stored on `memory_entries.source_activity_id`. |
+| `source_activity_id` (stored payload, normalized on read) | Denormalized Activity id on the pending payload. `provenanceEntriesFromPayload` folds it into an activity provenance entry. Accepted Memory provenance is `provenance_links`, not a column on `memory_entries`. |
 
 ### MemoryEntry — Approved Knowledge Layer
 
@@ -209,7 +209,7 @@ Future automated source work must enter the Sources/Activity → proposal path b
 | Question | Answer source |
 |---|---|
 | Which Activity generated this proposal? | `Proposal.payload_json["provenance_entries"]` with `source_type="activity"` |
-| What source kind / URL was involved? | Pending: `Proposal.payload_json["provenance_entries"]` or compatibility `source_activity_id`; accepted: `provenance_links` source row → `ActivityRecord.activity_type`, `ActivityRecord.source_url` |
+| What source kind / URL was involved? | Pending: `Proposal.payload_json["provenance_entries"]`, including an entry folded from `source_activity_id`; accepted: `provenance_links` source row → `ActivityRecord.activity_type`, `ActivityRecord.source_url` |
 | What trust state was known? | `Proposal.payload_json["provenance_entries"][*].source_trust`, `source_monitoring_result` |
 | Was SourceMonitoring run? | `Proposal.payload_json["source_monitoring_result"]` |
 | Which Proposal approved it? | `MemoryEntry.created_from_proposal_id` |

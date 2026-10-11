@@ -26,7 +26,7 @@ export const RUN_TRIGGER_ORIGIN_VALUES = [
   "job",
   "system",
   "delegation",
-  // Read-side compatibility values emitted by older/API-derived records.
+  // Accepted on read so existing rows still parse. Do not write these as a new trigger origin.
   "user",
   "api",
   "workflow",

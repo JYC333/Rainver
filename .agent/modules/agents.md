@@ -449,8 +449,8 @@ Run:
 `parent_run_id` supports user-created lineage: follow-up runs, retries, manual continuations, and
 external run imports. `trigger_origin="parent_run"` is not a valid trigger origin — parent lineage
 is a structural link, not a trigger type. Valid trigger origins: `manual`, `automation`,
-`autonomous`, `job`, `system`, `delegation`; `user`, `api`, and `workflow` are read-side
-compatibility values only.
+`autonomous`, `job`, `system`, `delegation`. `user`, `api`, and `workflow` are
+accepted on read so existing rows parse. Do not write them as a new trigger origin.
 
 Agent-to-agent child-run creation is represented by `run.spawn_child` inside
 `AgentRunGroup`. The backend route surface lets a human manager create rooms,

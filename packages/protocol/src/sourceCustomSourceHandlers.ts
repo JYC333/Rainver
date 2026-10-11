@@ -118,7 +118,7 @@ export type CustomSourcePolicyEnvelope = z.infer<typeof CustomSourcePolicyEnvelo
 
 // --- Declarative pipeline definition (`language: "declarative_pipeline_v1"`) ---
 //
-// A compatibility catalog of steps interpreted by trusted, server-owned
+// A catalog of steps interpreted by trusted, server-owned
 // platform code (`customSourcePipelineInterpreter.ts`) — never generated or
 // executed code. A handler version's `manifest_json.pipeline` holds one of
 // these; `recipeFromPipelineDefinition` wraps it as a Level 2 recipe for the

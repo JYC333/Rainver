@@ -151,8 +151,9 @@ mounting drops it, since every row would repeat it.
 - ActivityRecords become memory only through the Proposal → ProposalApplyService path
 - `agent_inferred` activities cannot produce active semantic memory or policy without explicit user accept
 - Activity-derived proposals carry Activity provenance in `provenance_entries`
-  and may include `source_activity_id` as a pending-proposal compatibility
-  shortcut
+  and set `source_activity_id` on the pending payload. Readers fold that id
+  into the provenance list. Accepted Memory provenance is `provenance_links`.
+  Do not treat `source_activity_id` as the accepted provenance record.
 - Consolidation is idempotent: visible Memory duplicate checks run before proposal
   creation, and duplicate proposals are blocked by `proposal_dedupe_key`
 - Direct and batch consolidation lock the same Activity row and recheck its

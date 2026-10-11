@@ -334,7 +334,7 @@ Implemented fields:
 - `created_by_user_id`
 - `created_at`
 
-`provenance_links` and `evidence_links` can still exist for generic provenance,
+`provenance_links` and `evidence_links` exist for generic provenance,
 but claim truth/evidence semantics should be represented here.
 
 ### `object_relations`

@@ -26,7 +26,7 @@ vi.mock('../../../contexts/AuthContext', () => ({
 }))
 
 // This file covers the Area's own documents. The workbench and standing panel
-// it now hosts are covered against the real components in
+// are covered against the real components in
 // ResearchAreaPage.workbench.test.tsx.
 vi.mock('../FocusResearchWorkbench', () => ({
   FocusResearchWorkbench: () => <div>Focus workbench</div>,
