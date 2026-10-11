@@ -10,7 +10,7 @@ import { spaces } from "./spaces.js";
  * repository checked out on more than one machine or environment); a
  * Location belongs to exactly one Folder and one ExecutionHost.
  *
- * `execution_host_kind` is retained as a denormalized immutable discriminator
+ * `execution_host_kind` is a denormalized immutable discriminator
  * so the remote-root invariant is enforceable in SQL. A composite foreign key
  * below prevents it from drifting from `hosts.kind`.
  *

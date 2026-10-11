@@ -36,7 +36,7 @@ import { effectiveCustomSourceLimits, type CustomSourceRunnerSettings } from "..
  * Level 2 Source recipe interpreter: executes a `source.recipe.v1` definition
  * with trusted, in-process platform code only. The recipe is data, never
  * code, so there is nothing to sandbox. `customSourcePipelineInterpreter.ts`
- * remains for `declarative_pipeline_v1` handler versions and the explicit
+ * runs `declarative_pipeline_v1` handler versions and the explicit
  * bridge path. Level 2 adds feed-parsing and dedupe
  * primitives, a per-step execution trace, and followed/skipped URL accounting
  * for dry-run preview.

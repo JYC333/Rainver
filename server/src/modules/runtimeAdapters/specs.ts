@@ -357,8 +357,9 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     },
     permissions: {
       // ACP's permission requests are answered by the controller. Keep the
-      // policy key and an empty argv template so existing high-risk dispatch
-      // policy remains valid without reviving Claude's CLI-only bypass flag.
+      // policy key and an empty argv template, so a high-risk dispatch that
+      // names `allow_permission_bypass` still matches. Do not put a CLI
+      // bypass flag on that argv.
       supports_permission_bypass: true,
       permission_bypass_arg_template: [],
       permission_bypass_policy_key: "allow_permission_bypass",
