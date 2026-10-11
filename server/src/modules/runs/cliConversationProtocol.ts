@@ -487,14 +487,12 @@ export class AcpController implements CliStdioController {
       );
       return;
     }
-    // A notification we do not recognise is ignorable by definition: it
-    // carries no id, so nothing is waiting on an answer and skipping it leaves
-    // the protocol in the same state. Failing the turn on one instead made
-    // every vendor extension a broken conversation — `codex-acp` announces
+    // A notification we do not recognise is ignorable: it carries no id, so
+    // nothing is waiting on an answer, and skipping it leaves the protocol in
+    // the same state. Do not fail the turn on one. `codex-acp` announces
     // `_auth/status_update` right after `initialize`, and the underscore is
-    // ACP's own marker for an extension, so this will keep happening. An
-    // unknown *request* is different and is refused above, because the peer
-    // does wait for that one.
+    // ACP's own marker for an extension. An unknown *request* is different
+    // and is refused above, because the peer does wait for that one.
     if (typeof message.method === "string") return;
     this.fail(`${this.label()} ACP returned an unsupported protocol message`, closeStdin);
   }

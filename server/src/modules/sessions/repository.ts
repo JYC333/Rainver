@@ -257,9 +257,7 @@ export class PgSessionRepository {
     const result = await this.db.query<MessageRow>(
       // Newest-first with LIMIT/OFFSET selects the window, then the outer
       // query returns it in transcript order. `path` restricts both to the
-      // conversation's visible branch.
-      // Newest-first with LIMIT/OFFSET selects the window, then the outer
-      // query returns it in transcript order. Ordering is by `path_depth`,
+      // conversation's visible branch. Ordering is by `path_depth`,
       // which is the conversation's own order — `created_at` would order two
       // branches by when each was written rather than by where each sits.
       `SELECT *

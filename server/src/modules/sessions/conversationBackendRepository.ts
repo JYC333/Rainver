@@ -264,11 +264,10 @@ export class PgConversationBackendRepository {
         return [];
       }
       // The built-in host is a daemon like any other: it can be stopped, and
-      // its container can be down while the control plane is up. Waiving the
-      // liveness check for it showed "Server" as usable with nothing running,
-      // and the person found out at send time from the one gate that is
-      // honest. Ownership is the only thing that does not apply to it — there
-      // is no owner to be (ADR 0016 §3).
+      // its container can be down while the control plane is up. Do not waive
+      // the liveness check. "Server" would look usable with nothing running,
+      // and the person would find out at send time. Ownership is the only
+      // thing that does not apply to it — there is no owner to be (ADR 0016 §3).
       const hostOnline = hostBound
         && profile.host_status === "online"
         && !isStale(profile.host_last_heartbeat_at);

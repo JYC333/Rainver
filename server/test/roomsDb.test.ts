@@ -5703,8 +5703,8 @@ describe("Room workflow (real Postgres)", () => {
 
     // referenceService stamps an attached reference past the wall clock, so
     // the message written after it carries an earlier timestamp. A replay
-    // window that bounded on the clock instead of the path would drop that
-    // message from the Agent's prompt while the transcript still showed it.
+    // window bounds on the path, not the clock. Do not drop that message
+    // from the Agent's prompt while the transcript still has it.
     const ahead = new Date(Date.now() + 600_000).toISOString();
     await seedConversationMessages(testPool, {
       space: "space-1", session: conversation.id,
@@ -6687,8 +6687,8 @@ describe("Room workflow (real Postgres)", () => {
 
     // With oversight they are admitted by the predicate's oversight branch,
     // and the Room boundary is the only thing left holding (ADR 0018 decision
-    // 3). The detail path has always carried this rule; the list did not, so
-    // it showed Runs the detail page then 404'd on.
+    // 3). The list uses the same Room rule as the detail path. Do not show a
+    // Run the detail page then 404s on.
     await db.pool.query("UPDATE spaces SET oversight_mode = 'full' WHERE id = 'space-1'");
     await db.pool.query(
       "UPDATE space_memberships SET role = 'admin' WHERE space_id = 'space-1' AND user_id = 'user-2'",

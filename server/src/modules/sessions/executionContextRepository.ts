@@ -647,8 +647,8 @@ export class PgConversationExecutionContextRepository {
 /**
  * Whether this host is actually reachable right now.
  *
- * The built-in host is not exempt: its daemon runs in a container that can be
- * stopped, and reporting it online regardless showed "Server" as a usable
+ * The built-in host is not exempt. Its daemon runs in a container that can be
+ * stopped. Do not report it online regardless: "Server" would be a usable
  * backend with nothing running behind it. What does not apply to it is
  * *ownership* — it has no owner (ADR 0016 §3) — which is a different check.
  */

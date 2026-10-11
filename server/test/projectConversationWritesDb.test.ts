@@ -91,8 +91,8 @@ describe("stating the Project's goal in conversation", () => {
   it("lets the Project's owner accept it even when they are only a Space member", async () => {
     if (!db.available) return;
     // The proposal asks for an "owner" approver; that is the Project's owner,
-    // which is what the applier itself checks. Comparing the Space role alone
-    // showed this person the Accept button and then refused them.
+    // which is what the applier itself checks. Do not compare the Space role
+    // alone: this person would see Accept and then be refused.
     const project = await new PgProjectRepository(db.pool).create(identity(MEMBER), { name: "My own project" });
     const proposed = await new ProjectDefinitionProposalService(db.pool)
       .proposeDefinition(identity(MEMBER), project.id as string, { goal: "Finish the thesis" }, { agentId: AGENT });

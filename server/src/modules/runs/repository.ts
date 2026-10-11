@@ -1040,10 +1040,9 @@ export class PgRunRepository {
    * The Room rule and the content rule, in the shape a single-row read needs:
    * a non-member gets a 404 rather than a silently filtered row.
    *
-   * It calls `roomRunReadAccessSql` rather than restating it. This method used
-   * to hand-write the equivalent join, and `listRuns` carried no Room rule at
-   * all — so the list showed Runs this path then denied. One definition is
-   * what stops that recurring.
+   * It calls `roomRunReadAccessSql` rather than restating it. Do not
+   * hand-write the join, and do not omit the Room rule from `listRuns`.
+   * One definition is what keeps the list and this path in agreement.
    */
   async getVisibleRun(spaceId: string, userId: string, runId: string): Promise<VisibleRunRecord | null> {
     const roomReadable = await this.db.query<{ allowed: boolean }>(
@@ -1069,9 +1068,9 @@ export class PgRunRepository {
       contentReadSql("run", "runs", "$2"),
       // A Room is a visibility boundary (ADR 0018 decision 3), and the content
       // predicate alone does not enforce it: its oversight branch admits a
-      // Space owner or admin who is inside the Project but not the Room. The
-      // detail path has always carried this rule, so without it here the list
-      // showed Runs the detail page then 404'd on. Same predicate the Proposal
+      // Space owner or admin who is inside the Project but not the Room.
+      // The list uses the same Room rule as the detail path. Do not show a
+      // Run the detail page then 404s on. Same predicate the Proposal
       // and Artifact reads use, so there is one definition of it.
       roomRunReadAccessSql("runs.id", "runs.space_id", "$2"),
     ];
