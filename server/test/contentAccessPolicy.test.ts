@@ -94,7 +94,7 @@ describe("content access policy matrix (member/grant, no oversight)", () => {
 });
 
 describe("admin/owner role is not an implicit read bypass", () => {
-  it("denies without an oversightLevel in context — today's (pre-oversight) behavior, byte-identical", () => {
+  it("denies an admin when oversightLevel is absent", () => {
     expect(decideContentAccess(resource(), context(ADMIN))).toBe("deny");
   });
 

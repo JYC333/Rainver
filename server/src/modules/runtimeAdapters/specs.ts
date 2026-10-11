@@ -105,10 +105,10 @@ export interface RuntimeAdapterSpec {
      * The daemon-probed vendor binary name to
      * check `capabilities_json.runtimes` against for remote eligibility,
      * when it differs from `executable.command`. An ACP adapter package
-     * (e.g. `codex-acp`) is our own bundled client, not something a trusted
+     * (e.g. `codex-acp`) is the bundled client, not something a trusted
      * host has installed — the daemon's capability probe checks for the
-     * underlying vendor CLI (`codex`) instead (see A6, hosts.md). Unset for
-     * adapters whose vendor CLI natively speaks the wire protocol we use
+     * underlying vendor CLI (`codex`) instead. See hosts.md. Unset for
+     * adapters whose vendor CLI natively speaks the wire protocol
      * (opencode: the daemon probes for "opencode" and that is also
      * `executable.command`).
      */
@@ -413,7 +413,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     side_effect_level: "workspace",
     data_exposure: "provider",
     baseline_trust_level: "low",
-    // `codex-acp` is our own pinned ACP adapter (A6), not the vendor CLI
+    // `codex-acp` is the pinned ACP adapter, not the vendor CLI
     // itself — it bundles a compatible `@openai/codex` and, absent
     // `CODEX_PATH`, spawns that bundled copy directly. `remote_capability_probe`
     // below still points capability checks at the vendor CLI name a trusted

@@ -308,9 +308,9 @@ export class ContextOpsService {
   ): Promise<{ objects: ContextOpsDrilldownObject[]; truncated: boolean }> {
     const objectTypes = registry.objectTypes();
     if (objectTypes.length === 0) return { objects: [], truncated: false };
-    // Over-fetch: candidates may be dropped by the read gate, and we still want a
-    // full readable page when possible, so scan a bounded multiple before
-    // revalidating. Capped so a large index cannot force an unbounded scan.
+    // Over-fetch: the read gate may drop candidates. Scan a bounded multiple
+    // before revalidating so a full readable page is still possible. Capped
+    // so a large index cannot force an unbounded scan.
     const fetch = Math.min(500, Math.max(limit * 5, limit + 1));
     const rows = section === "index_freshness"
       ? await this.queryStaleObjects(spaceId, objectTypes, fetch)

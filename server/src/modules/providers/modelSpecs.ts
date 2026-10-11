@@ -38,8 +38,8 @@ const STANDARD_OUTPUT_RESERVE_TOKENS = 16_384;
 
 const MODEL_SPECS: Array<{ pattern: RegExp; spec: ModelSpec }> = [
   // MiniMax M3 (minimax.io/models/text/m3): "up to 1M tokens context window
-  // with a guaranteed minimum of 512K" — the guaranteed floor is what we plan
-  // against. Recommended max output 131072, hard cap 524288.
+  // with a guaranteed minimum of 512K" — planning uses the guaranteed floor.
+  // Recommended max output 131072, hard cap 524288.
   {
     pattern: /(^|\/)minimax-m3/i,
     spec: {

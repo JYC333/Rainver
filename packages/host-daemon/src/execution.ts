@@ -1294,18 +1294,16 @@ async function launchRun(
   // variables away from every Task run on a paired machine.
   //
   // The default is the credential-cleared environment, not `process.env` whole.
-  // Every branch below narrows, so the bare spread was reachable only when a
-  // frame carries no `provider_binding` — which the wire contract allows and
-  // today's single producer never sends. Reachable or not, the default for
-  // "we do not yet know what this run is" must not be the one that hands the
-  // runtime an ambient `ANTHROPIC_API_KEY`. This keeps `~/.gitconfig`,
-  // `~/.ssh/config` and the proxy variables: it drops vendor prefixes only.
+  // Every branch below narrows, so the bare spread applies only when a
+  // frame carries no `provider_binding` — which the wire contract allows.
+  // Do not hand that case an ambient `ANTHROPIC_API_KEY`. This keeps
+  // `~/.gitconfig`, `~/.ssh/config` and the proxy variables: it drops vendor
+  // prefixes only.
   // `?? ""` means "drop every vendor prefix", which is the right answer for a
   // frame that does not say what it is running — and the wrong one to arrive at
   // by accident, since it also takes `GOOGLE_APPLICATION_CREDENTIALS` from a
-  // Task run that needs gcloud. Today's single producer always sends a real
-  // adapter type; the wire contract allows it to be absent, and this is what
-  // that case gets.
+  // Task run that needs gcloud. The wire contract allows the adapter type
+  // to be absent, and this is what that case gets.
   let baseEnv: Record<string, string> = clearVendorCredentialEnv(process.env, frame.runtime_key ?? "");
   let bindingEnv: Record<string, string> = {};
   let workSurfaceEnv: Record<string, string> = {};

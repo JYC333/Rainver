@@ -23,8 +23,8 @@ import type { HostEgressTransport } from "@rainver/protocol";
  * fetches — because the proxy declines rather than the client neglecting to ask. Nothing dialled
  * through this reaches the instance's own network, a sibling container, a
  * cloud metadata endpoint, or loopback — under every profile, `install`
- * included. That is the difference between "we asked it not to" and "it
- * cannot".
+ * included. That is the difference between asking a client not to dial
+ * and the proxy refusing the dial.
  */
 export type EgressProfile = "none" | "default" | "install";
 

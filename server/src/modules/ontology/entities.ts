@@ -56,8 +56,9 @@ export interface ContentAccessibleDeclaration {
   contextTaintColumn?: string;
   /**
    * Additional Project scopes. Absent for every resource that has no sharing
-   * story — and absent means the term is *not emitted*, not emitted as false,
-   * so an undeclared resource's predicate is byte-identical to before.
+   * story — and absent means the term is *not emitted*, not emitted as false.
+   * Do not emit `false`. The predicate for an undeclared resource would gain
+   * a term it does not have.
    */
   projectShare?: ContentProjectShareDeclaration;
   /** Predicate that excludes rows the gate should treat as gone. */

@@ -49,9 +49,9 @@ export interface ServerConfig {
    */
   providerProxyListenHost: string;
   /**
-   * Fixed listen port for the provider proxy. `0` keeps the historical
-   * OS-assigned port, which is reachable only inside the deployment network —
-   * a paired execution host needs a published, therefore fixed, port.
+   * Fixed listen port for the provider proxy. `0` asks the OS for a port,
+   * which is reachable only inside the deployment network — a paired
+   * execution host needs a published, therefore fixed, port.
    */
   providerProxyPort: number;
   /** Runs the built-in execution host executes at once; see `BUILTIN_HOST_MAX_CONCURRENT_RUNS`. */
@@ -311,7 +311,7 @@ function validateHttpBaseUrl(value: string, name: string): string {
       "invalid_url_protocol",
     );
   }
-  // Normalise: drop a trailing slash so we can concatenate request paths cleanly.
+  // Drop a trailing slash so request paths concatenate cleanly.
   return value.replace(/\/+$/, "");
 }
 

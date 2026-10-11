@@ -132,7 +132,7 @@ export interface ResearchOperationState {
   // one at a time instead of batched.
   comparison_degraded?: boolean;
   // The notebook role the comparison needs a note in and this project has
-  // none for (N2 — normally `understanding`). Set when the stage stops for
+  // none for (normally `understanding`). Set when the stage stops for
   // want of a baseline rather than for want of material, and cleared as soon as
   // a batch queues, so "no comparison happened" always carries its reason
   // instead of looking like an empty scan.

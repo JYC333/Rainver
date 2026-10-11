@@ -116,7 +116,7 @@ export class RetrievalMaintenanceService {
   async scan(spaceId: string, viewerUserId: string): Promise<MaintenanceReport> {
     const objectTypes = this.registry.objectTypes();
     const limit = this.config.perKindLimit;
-    // Over-fetch by one so we can report truncation without a second count query.
+    // Over-fetch by one so truncation is visible without a second count query.
     const fetch = limit + 1;
 
     const [duplicates, orphans, thin, stale, relations] = await Promise.all([
