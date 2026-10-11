@@ -20,11 +20,10 @@ const MAX_TOOL_INPUT_SUMMARY_CHARS = 200;
  * Turns a remote-host vendor CLI's ACP protocol traffic into the thread's
  * normalized conversation events, incrementally as it arrives.
  *
- * This is deliberately a thin ACP projection, matching Zed's thread model:
- * agent-message and agent-thought chunks stay on the channel the protocol
- * assigned, in arrival order; ToolCall creates or replaces an entry and
- * ToolCallUpdate carries patch fields for that same id. It never infers
- * reasoning from message text.
+ * This is a thin ACP projection. Agent-message and agent-thought chunks stay
+ * on the channel the protocol assigned, in arrival order. ToolCall creates or
+ * replaces an entry and ToolCallUpdate carries patch fields for that same id.
+ * It never infers reasoning from message text.
  */
 export function createThreadEventNormalizer(): {
   pushStderr(chunk: string): ThreadEventDraft[];

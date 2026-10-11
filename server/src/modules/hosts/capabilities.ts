@@ -30,9 +30,10 @@ export function hasSubscriptionQuota(runtimeKey: string): boolean {
  * `managed:<version>`) — and everything reported about a copy (version, login
  * state, options) is resolved from that installation and its stable HOME.
  *
- * Normalized once when a daemon's hello/heartbeat is recorded. The daemon and
- * server ship together, so obsolete capability layouts are rejected instead
- * of maintaining a second interpretation path.
+ * Normalized once when a daemon's hello/heartbeat is recorded. Readers see
+ * `runtimes`, `versions`, and `installations` only. An installation entry
+ * that does not parse is dropped. Do not add a second parser for another
+ * layout.
  */
 export type { HostCapabilities, RuntimeInstallation, RuntimeOptions, RuntimeSessionConfigOption, RuntimePromptCapabilities } from "@rainver/protocol";
 export { OWN_INSTALLATION } from "@rainver/protocol";

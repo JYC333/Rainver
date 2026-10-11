@@ -183,8 +183,8 @@ const wsUpgradeHosts = new WeakMap<FastifyRequest, string>();
  * read field by field here. Every field of `DaemonHelloInfo` is optional, and
  * a field-by-field mapping that forgot one would compile cleanly. Do not
  * rebuild it that way. The one transformation is the
- * capabilities blob, normalized into the shape every reader uses; its wire
- * format and history are `capabilities.ts`'s concern alone.
+ * capabilities blob, normalized into the shape every reader uses. Its wire
+ * format is `capabilities.ts`'s concern alone.
  */
 function daemonHelloInfo(frame: HostHelloInfo): DaemonHelloInfo {
   const { capabilities_json, ...info } = frame;
