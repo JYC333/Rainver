@@ -114,7 +114,7 @@ export const BlockIds = Extension.create({
          * first-wins rule would anchor the capture on the empty block and
          * relocation would extract nothing. A non-empty claimant therefore
          * outranks an empty one; between two non-empty blocks the earlier keeps
-         * it, which is the mid-text split the naive rule already handled.
+         * it.
          *
          * The rewrite stays **in** the history, and that is the half of this
          * that is easy to get wrong. Undo reverts a split by merging the two

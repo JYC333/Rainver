@@ -5,8 +5,8 @@ import { runs } from "./runs.js";
 import { projects } from "./projects.js";
 
 /**
- * Normalized conversation event log for a remote task thread. Not a new
- * `run_events.event_type`: that table's CHECK constraint is a closed
+ * Normalized conversation event log for a remote task thread. Do not store
+ * these as `run_events.event_type`. That table's CHECK constraint is a closed
  * vocabulary for the server-host semantic-event stream (`tool_call_started`
  * and the rest) and has no `assistant_text` or `diagnostic` concept. A remote
  * run does not write that table incrementally. This sibling has its own

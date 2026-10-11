@@ -114,7 +114,8 @@ export interface Module {
  * Every entry is simultaneously:
  *   - A gallery card on the home page (uses group, icon, description, enabled, visible)
  *   - A React Router route (uses path, component, hasSubRoutes)
- *   - A future capability link (uses capabilityId, source, enabled)
+ *
+ * capabilityId names an agent skill, not a product module.
  *
  * ── Extension boundary ──────────────────────────────────────────────────────
  * To add a new BUILT-IN app:
@@ -133,9 +134,8 @@ export interface Module {
  *      server/src/modules/plugins/builtInPlugins.ts
  *   7. Add an app-owned adapter under src/plugins/<pluginId>/ that injects frontend host APIs
  *
- * To support future INSTALLED third-party plugins (do not implement yet):
- *   - Reserved for a future plugin package system with sandboxing/SDK.
- *   - Do NOT implement third-party plugin loading in this registry.
+ * Third-party plugin packages are not loaded here. Do not implement
+ * third-party plugin loading in this registry.
  *
  * NOTE: Capabilities are agent AI skills, NOT product modules. Do not confuse
  * GET /api/v1/capability-definitions (agent skill framework) with
