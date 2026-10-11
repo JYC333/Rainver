@@ -160,11 +160,10 @@ function registerCoreLinkTypes(): void {
     owner: "relations",
   });
 
-  // Recovered from `inquiry_thread_relations` (ADR 0011 decision 3). Thread
-  // structure is a direct user action at editing frequency; routing it through
-  // proposals would be a behaviour change, not a refactor. Five of these words
-  // are also Knowledge/Claim link types where they are reviewed assertions —
-  // the endpoint-specific declaration is what lets both keep their behaviour.
+  // Thread structure is a direct user action at editing frequency (ADR 0011
+  // decision 3). Do not route it through proposals. Five of these words
+  // are also Knowledge/Claim link types where they are reviewed assertions.
+  // The endpoint-specific declaration is what lets both keep their behaviour.
   for (const linkType of [
     "decomposes_into",
     "proposes",
@@ -184,10 +183,9 @@ function registerCoreLinkTypes(): void {
     });
   }
 
-  // Recovered from `decision_case_sources`: a cross-aggregate reference between
-  // Project-owned objects, direct-write like the domain table it replaces.
-  // `experiment_definitions.primary_hypothesis_thread_id` stays a column — it
-  // is a single required pointer with its own FK, not a set of links.
+  // A cross-aggregate reference between Project-owned objects, written
+  // directly. `experiment_definitions.primary_hypothesis_thread_id` stays a
+  // column — it is a single required pointer with its own FK, not a set of links.
   registerLinkType({
     linkType: "derived_from",
     from: ["decision_case"],

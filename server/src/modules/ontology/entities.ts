@@ -94,9 +94,9 @@ interface EntityDefinition {
   provenanceSourceable?: { sourceType: string };
   /**
    * Where this object type keeps its domain status, for polymorphic readers.
-   * Declared rather than hardcoded so a new domain cannot be forgotten by the
-   * shared status helper — which is exactly how Inquiry Threads first vanished
-   * from the generic graph projection.
+   * Declared rather than hardcoded. Do not forget a new domain in the
+   * shared status helper. Inquiry Threads would vanish from the generic
+   * graph projection.
    */
   domainStatus?: { table: string; column: string };
   /** Canonical writes go through the proposal flow. */
@@ -132,8 +132,8 @@ export function registeredEntities(): readonly EntityDefinition[] {
  * The `content_access_grants.resource_type` key an entity is gated under.
  *
  * Not the entity type: a `space_objects` subtype inherits the root's
- * declaration, so an Experiment is gated as `space_object`. Callers that
- * guessed the entity type got "Unknown content resource type" at runtime.
+ * declaration, so an Experiment is gated as `space_object`. Do not guess
+ * the entity type. That is "Unknown content resource type".
  */
 export function resolveContentResourceType(entityType: string): string | null {
   let current = registry.get(entityType);

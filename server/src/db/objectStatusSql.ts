@@ -21,9 +21,10 @@ import { domainStatusSources } from "../modules/ontology/entities.js";
  */
 
 /**
- * Derived from the entity registry rather than listed here: a hardcoded list is
- * how Inquiry Threads first vanished from the generic graph projection — their
- * status resolved to NULL, and `NULL NOT IN (...)` filtered every Thread out.
+ * Derived from the entity registry rather than listed here. Do not hardcode
+ * the list. A domain left off it resolves to NULL, and `NULL NOT IN (...)`
+ * filters every row of that domain out. That is how an Inquiry Thread
+ * disappears from the generic graph projection.
  */
 function statusSources(): readonly { table: string; alias: string; column: string }[] {
   return domainStatusSources().map((source, index) => ({
