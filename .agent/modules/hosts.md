@@ -1346,14 +1346,13 @@ needs the identical connection control for its own advisory locks).
 `host_thread_events` has no `data_exposure_level` column. `tool_input_summary`
 is a 200-char-bounded raw `JSON.stringify` of a tool's input, readable by any
 Project member with read access via the events endpoint, not gated by host
-ownership. A remote-host CLI run follows the same rule: the daemon uploads
-full unredacted diffs and output files.
+ownership. A daemon CLI run uploads full unredacted diffs and output files.
 
 ## The work surface a dispatched Run reports back through
 
-A remote Run that carries tool grants is given a way to call Rainver back, and
-it is the same one a server-host Run gets: two files and a few environment
-variables, with no branch on which runtime is executing.
+A daemon Run that carries tool grants is given a way to call Rainver back:
+two files and a few environment variables. Do not add a second surface that
+depends on which runtime is executing.
 
 The launch frame gains `work_surface` — `{ env, files, dir_env }`, the same
 shape `provider_binding` uses and for the same reason (the control plane names
