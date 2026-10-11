@@ -2,8 +2,8 @@
 
 See [decisions/0016-control-plane-execution-hosts.md](../decisions/0016-control-plane-execution-hosts.md)
 for the design decision this module implements. Every conversation runtime —
-`claude_code`, `codex_cli`, `opencode` — speaks the Agent Client Protocol on
-both the server-host and remote-host execution paths. Current
+`claude_code`, `codex_cli`, `opencode` — speaks the Agent Client Protocol.
+The process is a host daemon, on the built-in host or a paired machine. Current
 backend choice is Profile-owned; a selected Profile's authorized provider
 binding may be materialized into the Host launch frame, but Hosts do not
 select or default that binding. **This document describes the current system.**
@@ -149,12 +149,8 @@ throws before any server-host local-filesystem operation runs against a Location
 (`server/src/modules/projectFolders/sandbox.ts`), code-patch proposal apply
 (`server/src/modules/projectFolders/codePatch.ts`), and code-patch rollback
 (`server/src/modules/proposals/applyService.ts`) — every code path capable of
-touching disk. The last two are unreachable for a remote-host row today (no
-Run can currently produce a `code_patch` proposal against one, since proposal
-creation only happens downstream of the already-guarded sandbox-prep path),
-but the guard is placed at the point of disk access rather than relied on as
-an emergent property of the call graph. A later change to how proposals get
-created must not silently reopen disk access.
+touching disk. The guards sit on the disk access. Do not rely on the call
+graph to keep a non-server Location off those paths.
 
 ## REST surface (`server/src/modules/hosts/routes.ts`)
 
@@ -247,14 +243,12 @@ It enforces Project write access, Location/Folder/Space scope, execution
 readiness, remote Host ownership, implemented ACP adapter and host capability
 checks, then creates one Run and enqueues the durable agent job.
 
-A remote dispatch creates its Run synchronously, exactly as a server-host one
-does — the two differ in what they stamp on the Run (the thread, the adapter,
-the installation and the vendor session to resume), not in when the Run comes
-into being. The Run takes `body.agent_id`, else the Task's `assigned_agent_id`.
+Dispatch creates its Run synchronously. What it stamps differs (the thread,
+the adapter, the installation, and the vendor session to resume), not when
+the Run comes into being. The Run takes `body.agent_id`, else the Task's `assigned_agent_id`.
 A Task with neither returns 422.
 
-Cancelling a remote Run goes through `PATCH /api/v1/runs/:runId/stop` like any
-other Run.
+Cancelling a Run goes through `PATCH /api/v1/runs/:runId/stop`.
 
 ### Profile-owned backend selection and Host launch
 
@@ -991,7 +985,7 @@ Reading the echo instead reports an alias (`default`) on a fresh session and
 the *previous* turn's model on a resumed one, which is precisely when the
 answer matters.
 
-The server-host and remote paths use this same generic controller. Provider-
+ACP conversation runtimes use this controller. Provider-
 bound Codex/OpenCode runs add their translated model as a normal model-category
 selection. Claude remains environment-controlled because provider model names
 do not share Claude ACP's alias namespace. Usage attribution remains the
@@ -1448,12 +1442,12 @@ runtime launch, local paths and namespace construction. A daemon Run's tools
 are reached through the `rainver` work surface, separately from its prompt
 context; the daemon uploads diffs/output for Server-side materialization. The
 server-local CLI Run Exchange is not used by the current ACP Agent path.
-`hostKind` is left meaning only *which machine*. It decides where a Run's
-**ModelProvider** spend is checked, not whether: the Run executor checks a
-server-host Run's recorded provider before it starts, and a daemon Run on
-either kind of host is checked when its proxy lease is minted — no lease exists
-without a decided spend. There is no `cli_profile` credential check. A daemon
-Run spends the copy's own login, which no server-side profile grants.
+`hostKind` means which machine. It decides where a Run's **ModelProvider**
+spend is checked: the executor checks a built-in-host Run's recorded provider
+before it starts, and a paired machine is checked when its proxy lease is
+minted. No lease exists without a decided spend. There is no `cli_profile`
+credential check. A daemon Run spends the copy's own login, which no
+server-side profile grants.
 
 `resolveExecutionPort` returns a `HostDaemonExecutionAdapter` for a CLI Run on
 either kind of host, and for a CLI Run with nothing bound only when its runtime
@@ -1507,9 +1501,9 @@ window in which a frame for that run has no dispatch to route to.
 Every CLI runtime is dispatched to a host daemon, and isolation is the
 strict-mode namespace documented above.
 
-**Run Exchange** is server-host-only and is not reachable from a CLI run —
-`HostDaemonExecutionAdapter`'s port throws, because the Exchange is a directory
-pair the server stages and reads back and there is none on another machine; a
+**Run Exchange** is not reachable from a CLI run.
+`HostDaemonExecutionAdapter`'s port throws. The Exchange is a directory pair
+the server stages and reads back, and a daemon Run has no such pair. A
 dispatched Run returns its work as a diff and as the files the daemon uploads
 from `$RAINVER_OUTPUT_DIR`, which `recordOutputArtifacts` matches against the
 Task's declared outputs. **`required_sandbox_level`** is a routing and risk
