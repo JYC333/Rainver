@@ -80,8 +80,8 @@ describe('AuthProvider', () => {
    * A session revoked server-side reaches only whichever tab happens to make
    * the next API call, so a 401 tells the others too.
    *
-   * Both halves of that are silent when broken, which is why they are pinned
-   * here. Attaching the handler to the event directly would pass the `Event`
+   * Both halves of that are silent when broken. They are pinned here.
+   * Attaching the handler to the event directly would pass the `Event`
    * object as `fromAnotherTab` — truthy — and a 401 would then never announce.
    * And announcing for an announcement we just *received* makes two tabs tell
    * each other forever.

@@ -60,10 +60,9 @@ export async function writeNote(db: Queryable, input: {
   if (input.expectVersion !== null && input.expectVersion !== undefined && input.expectVersion !== current.version) {
     return { outcome: "version_conflict", currentVersion: current.version };
   }
-  // Every note write in the system funnels through here, which is why block
-  // ids are stamped at this line and nowhere else: a doc save, an AI ops write,
-  // a capture append and a rollback all leave with ids, and no caller can
-  // forget to ask for them.
+  // Every note write funnels through here. Block ids are stamped at this
+  // line and nowhere else: a doc save, an AI ops write, a capture append
+  // and a rollback all leave with ids. Do not stamp them in a caller.
   //
   // The stamping happens on the *current* document first, and that is
   // load-bearing rather than tidy. Diffing against the raw stored document

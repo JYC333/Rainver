@@ -94,7 +94,7 @@ describe("ambient record building", () => {
   });
 
   it("gives Codex's per-session ids record keys that carry their session scope", () => {
-    // `item-1` repeats in every Codex session, which is why the server's
+    // `item-1` repeats in every Codex session. The server's
     // identity is (session, key) and never the key alone. The daemon's job is
     // only to report the key it was given, unchanged.
     const { records } = buildAmbientRecords([chunk("user_message_chunk", "item-1", "hello")]);

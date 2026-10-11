@@ -6,8 +6,7 @@ import { roomConversationReadAccessSql } from "../access/contentAccessSql.js";
  * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §4).
  *
  * Two kinds, with different reach. The **persona** — one active entry per
- * Agent — is delivered everywhere, which is why it is free of Project facts by
- * rule. A **note** carries the Room it was learned in and is delivered only
+ * Agent — is delivered everywhere. It is free of Project facts by rule. A **note** carries the Room it was learned in and is delivered only
  * where everyone who may read the current Room's conversations may also read
  * the origin Room's: an audience that could not have seen the conversation the
  * note came from never receives the note. A note taken in direct chat with the

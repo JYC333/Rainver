@@ -868,7 +868,7 @@ Known limits: the grid is fixed at `LOGIN_TERMINAL_COLS × LOGIN_TERMINAL_ROWS`
 at both ends (no resize frame yet; `script(1)` gives the daemon no PTY fd to
 resize), so the browser scrolls sideways when the card is narrower; and input
 travels one authenticated request per batch of keystrokes rather than over a
-socket, which is why the daemon bounds it.
+socket. The daemon bounds it.
 None of that is an authorization boundary — stdin reaches only the fixed
 login program the adapter spec names, behind `exec`, so there is never a
 shell to type into — it bounds the channel to what a keyboard can produce;
@@ -1401,7 +1401,7 @@ in-network address for the built-in host. It is configuration: neither the
 daemon's report nor the request that carried it can move where a Run's bearer
 token is sent. `hosts.daemon_server_url` is not read or written. Dropping the
 column waits in the deferred register. Production nginx forwards `/api/`
-and `/internal/hosts/ws` and nothing else, which is why the tool surface a
+and `/internal/hosts/ws` and nothing else. The tool surface a
 paired host's children call lives at `/api/v1/runs/:runId/tools…`: it is gated
 by the Run's own bearer token, not by the instance token `/internal` carries,
 and a Run reaches the instance through `FRONTEND_URL` like any other client.

@@ -217,7 +217,7 @@ export function buildUnboundRuntimeProfile(
  *   transcripts and the `.credentials.json` the login link lands on.
  * - Codex — `CODEX_HOME`, likewise for `sessions/` and `auth.json`.
  * - OpenCode — the XDG roots. Its data directory is `$XDG_DATA_HOME/opencode`,
- *   falling back to `HOME/.local/share/opencode`, which is why the bound path
+ *   falling back to `HOME/.local/share/opencode`. The bound path
  *   redirects `HOME`: `XDG_DATA_HOME` is not on B67's allowlist so there is
  *   nothing to point. Here there is. **This is the one state root not verified
  *   on a real host** — if OpenCode ignores `XDG_DATA_HOME`, its state stays
@@ -507,7 +507,7 @@ export async function buildRemoteProviderBinding(input: {
  * runtime learns its model.
  *
  * The spaces genuinely differ, and each is defined by the config this module
- * writes, which is why the translation lives here rather than in the protocol
+ * writes. The translation lives here rather than in the protocol
  * controller:
  *
  * - **OpenCode** addresses a model as `<providerId>/<model>`; a bound run's

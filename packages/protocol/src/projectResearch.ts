@@ -88,7 +88,7 @@ export const ProjectResearchQuestionRefinementSchema = z.object({
   }).strict()).max(3),
 }).strict();
 /** The model's own output. The refine service stamps the context version onto
- * it afterwards, which is why that field lives on the Result below and not
+ * it afterwards. That field lives on the Result below and not
  * here: this schema also validates what the model returned. */
 export type ProjectResearchQuestionRefinement = z.infer<typeof ProjectResearchQuestionRefinementSchema>;
 

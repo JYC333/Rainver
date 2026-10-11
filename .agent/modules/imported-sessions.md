@@ -93,7 +93,7 @@ decision.
 - **The visibility picker is the only gate**, and it states the consequence at
   the point of choice: *Project shared* is readable by members and is what
   extraction reads; *only me* is a read-only archive that extraction never
-  touches. There is deliberately no second confirmation later, which is why the
+  touches. There is no second confirmation later. The
   choice is persisted to the Location's policy rather than held in the page —
   a background sync reads the stored default.
 - **Standing consent per (Location, runtime)** is what lets a later heartbeat

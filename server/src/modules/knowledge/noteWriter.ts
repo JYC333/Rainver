@@ -441,9 +441,8 @@ export async function addNotePlacement(
  *   the first Project. What the confirmation adds is a
  *   `space_object_project_shares` row, which widens the scope half of the read
  *   gate so the second Project's members can actually see what was placed in
- *   their tree. Without it the placement would be a silent absence rather than a
- *   placement, which is why the refusal remains the default. Do not widen
- *   silently.
+ *   their tree. Without it the placement would be a silent absence. The
+ *   refusal stays the default. Do not widen silently.
  *
  * A Project change also invalidates any baseline role scoped to the old one —
  * a note cannot hold a slot in a Project it no longer belongs to. The guard

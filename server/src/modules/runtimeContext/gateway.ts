@@ -1373,7 +1373,7 @@ async function lockRetrievalAuthority(
     // on the nullable side of an outer join, and a non-member has no row to
     // pin anyway — an outer join could only ever have produced a NULL that
     // locks nothing. Zero rows is therefore the correct, unremarkable result
-    // for a non-member, which is why nothing is asserted about the result.
+    // for a non-member. Do not assert about the result.
     await db.query(
       `SELECT member.user_id FROM inquiry_threads thread
         JOIN project_members member ON member.space_id=thread.space_id AND member.project_id=thread.project_id

@@ -389,7 +389,7 @@ export const validationRecipes = pgTable("validation_recipes", {
 /**
  * What a Task is advancing: an Experiment, an Inquiry Thread, a Decision.
  *
- * An **execution binding**, not a semantic relation, which is why it is not an
+ * An **execution binding**, not a semantic relation. It is not an
  * `object_relations` edge: those assert something is true about the world and
  * are hard-FK'd to `space_objects` on both ends, and `tasks` is deliberately
  * an independent root (ADR 0012 decision 4). This records *which work advanced

@@ -6260,7 +6260,7 @@ describe("Room workflow (real Postgres)", () => {
 
     // An unmarked version whose content differs cannot be told apart from a
     // person's edit, so it is left alone. The unmarked column is itself the
-    // record of that, which is why nothing else needs to write one.
+    // record of that. Nothing else writes one.
     await db.pool.query(
       `UPDATE agent_versions SET follows_seed_key = NULL, system_prompt = 'Hand-written'
         WHERE id = (SELECT current_version_id FROM agents WHERE id = $1)`,
@@ -6293,8 +6293,8 @@ describe("Room workflow (real Postgres)", () => {
     const created = await openSpokenRoom(owner, { project_id: "project-1", title: "Detail" });
     // user-2 is a Space member and not on the Project: enrolled by the invite,
     // still without write authority. Every roster control is gated on this
-    // flag, and an `undefined` here would be read as `false` — which is why
-    // every `RoomDetail` producer is annotated to carry it.
+    // flag, and an `undefined` here would be read as `false`. Every
+    // `RoomDetail` producer is annotated to carry it.
     await service.inviteUser(owner, created.room.id, { user_id: "user-2" });
     const asOwner = await service.getRoom(owner, created.room.id);
     expect(asOwner).toMatchObject({ viewer_can_write: true, other_member_names: ["Room Member"], agent_count: 1 });
@@ -6618,10 +6618,9 @@ describe("Room workflow (real Postgres)", () => {
     expect(first.room.is_mainline).toBe(false);
 
     // Somebody else's personal Room in the same Project is a different Room.
-    // A viewer cannot open one — creating a Room asserts writer authority —
-    // which is why continuing a *private* session needs it while continuing a
-    // shared one, which only speaks in the mainline that already exists, does
-    // not.
+    // A viewer cannot open one. Creating a Room asserts writer authority.
+    // Continuing a private session needs that authority. Continuing a shared
+    // one only speaks in the mainline that already exists, and does not.
     await db.pool.query(
       "UPDATE project_members SET role = 'member' WHERE space_id = 'space-1' AND project_id = 'project-1' AND user_id = 'user-2'",
     );

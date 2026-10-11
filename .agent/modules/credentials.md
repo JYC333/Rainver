@@ -37,7 +37,7 @@ One copy on one host, logged in on that host:
 - The Command Center's host card installs a managed copy, opens its login
   terminal, and reports whether it is logged in and which accounts it holds.
 - The login state lives inside that copy's own `HOME`
-  (`packages/host-daemon/src/tools.ts`), which is why keeping the previous
+  (`packages/host-daemon/src/tools.ts`). Keeping the previous
   version directory makes a rollback a step rather than a re-login.
 - The control plane never sees the credential, its path, or its contents
   (BOUNDARIES B64). What crosses the wire about it is: logged in or not,

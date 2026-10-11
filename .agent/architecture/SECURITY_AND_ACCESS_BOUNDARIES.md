@@ -329,7 +329,7 @@ Artifact lists (`access/contentAccessSql.ts`'s `runReadSql`,
 `proposalReadSql`, `artifactReadSql`, which `frontendSupport` calls); the Project Pulse in-progress count; and the canonical
 Proposal and Artifact repository reads. It also gates Proposal accept, reject
 and egress approval (`proposals/applyService.ts`), so widening it widens a
-write authority — which is why the predicate has no mainline exemption even
+write authority. The predicate has no mainline exemption even
 though the mainline's `room_user_members` row is written lazily, on first open
 of the Project. Not seeing a mainline Run until you have opened the Project
 once is stricter and self-healing; exempting the mainline would have let a
@@ -1215,7 +1215,7 @@ defences, because no one of them covers the whole surface:
   Click-to-load is not used. The click sends the same URL, so it only turns
   zero-click into one-click;
 - `urlTransform` blanks a `src` that is neither same-origin nor `http(s)`. It
-  is called only for the keys in `html-url-attributes`, which is why it cannot
+  is called only for the keys in `html-url-attributes`. It cannot
   be the whole answer;
 - the **sanitize schema** drops `<source>`. `<picture>` resolves to its first
   matching `<source>`, so an external `srcset` there fetches with no click —

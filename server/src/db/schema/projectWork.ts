@@ -43,7 +43,7 @@ export const projectWorkEvents = pgTable("project_work_events", {
 	// is total. `byDefault` rather than `always` so a fixture that restores a
 	// stream can write its own values.
 	// `bigint`, not `number`: the column is 64-bit and a JS number loses
-	// precision past 2^53, which is why the Updates cursor keeps `seq` as a
+	// precision past 2^53. The Updates cursor keeps `seq` as a
 	// decimal string end to end.
 	seq: bigint("seq", { mode: "bigint" }).generatedByDefaultAsIdentity().notNull(),
 }, (table): PgTableExtraConfigValue[] => [

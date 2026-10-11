@@ -44,8 +44,8 @@ export const IMPORTED_HISTORY_PACKET_PROPOSAL_TYPE = "imported_history_memory_pa
  *
  * A month of a real folder's history is thousands of records; the window
  * planner is not in this path, so the bound is explicit. Records not covered
- * stay unextracted and are picked up by the next run, which is why this is a
- * batch size rather than a truncation.
+ * stay unextracted and are picked up by the next run. This is a batch size,
+ * not a truncation.
  */
 const MAX_RECORDS_PER_EXTRACTION = 400;
 /**

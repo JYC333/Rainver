@@ -1377,8 +1377,7 @@ context window — and it is applied unconditionally rather than behind a flag:
 `room_display = 'internal'` is written only by `addRoomInternalInstruction`, so
 it is vacuous for an ordinary session. Do not put the filter behind a flag.
 That flag would be a second copy of the same rule. Agent replay and continuation lookups still read
-the internal rows through `visibleMessagePathSql`, which is why they are stored
-in order at all.
+the internal rows through `visibleMessagePathSql`, so those rows stay in order.
 
 A domain-event continuation is the system talking to the Room's own Agents. It
 is stored as a `user_instruction` so replay sees it in order, and carries

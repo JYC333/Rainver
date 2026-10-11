@@ -2040,7 +2040,7 @@ export class RunOrchestrationService {
    * registered path for a Location the control plane created — and without
    * this a Run dispatched to a server Location fails at launch with "no local
    * path registered". ADR 0016 §4 keeps `root_path` populated exactly for
-   * these Locations, which is why the server can answer here and cannot for a
+   * these Locations. The server can answer here and cannot for a
    * paired host.
    */
   private async builtinLocationRelativePath(locationId: string | null): Promise<string | null> {

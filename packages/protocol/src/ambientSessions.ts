@@ -282,8 +282,8 @@ export type ExtractionOutcome = z.infer<typeof ExtractionOutcomeSchema>;
  *
  * Deterministic on purpose: it needs no model, it is right the moment an
  * import lands, and it can invent nothing. Two callers need exactly this — the
- * session page's header and the summarizer's input, which is why it lives with
- * the contract rather than being written out twice.
+ * session page's header and the summarizer's input. It lives with the
+ * contract. Do not write it out twice.
  *
  * Structurally typed on the fields it reads, so both the server's row shape
  * and the wire record satisfy it without either importing the other's.
