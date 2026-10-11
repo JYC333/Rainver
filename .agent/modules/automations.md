@@ -125,7 +125,7 @@ The `agent_run` and `workflow` targets stamp their Runs from that decision.
 The retrieval-maintenance, context-ops and information-digest targets do not:
 they stamp the firing person and a literal `automation`. Those Runs complete in
 process, queue no agent turn and write no memory, and the person they name owns
-the owner-private output — an attribution leftover, not a gate.
+the owner-private output. That stamp is not a gate.
 
 
 ## Native target authority

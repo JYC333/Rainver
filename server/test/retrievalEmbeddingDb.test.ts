@@ -10,7 +10,7 @@ import {
 import { EMBED_DIMENSIONS, EMBED_MAX_ATTEMPTS } from "../src/modules/retrieval/embedding/config.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
-// Exercises the Phase-2 embedding pipeline AND the vector schema end-to-end on a
+// Exercises embedding backfill and the vector schema end-to-end on a
 // pgvector Postgres: the `vector` extension, the retrieval_chunks.embedding
 // column, async backfill, staleness, and the dim-mismatch guard.
 

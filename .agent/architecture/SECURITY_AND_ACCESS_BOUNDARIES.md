@@ -1055,7 +1055,7 @@ paths, the extract/snapshot paths, and the declarative interpreters'
 - A blocked address and a name that resolves nowhere answer with the same
   message and the same persisted diagnostics, so the refusal is not an oracle
   for which internal names exist.
-- Accepted leftovers. The Open Skill importer
+- This guard does not cover these. The Open Skill importer
   (`capabilities/skillImporter.ts`) is bounded by a host allowlist rather than
   by this guard: it follows redirects itself and re-checks the final URL after
   the transfer, so a redirect off `raw.githubusercontent.com` would be dialled
@@ -1065,7 +1065,7 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   own budget still bounds.
 - Provider (ModelProvider) calls are deliberately **outside** this boundary: a
   `base_url` may name a private or loopback address, because a local Ollama is a
-  real deployment. Accepted leftover: a member can probe internal addresses
+  real deployment. A member can probe internal addresses
   through the models list and the connection test; responses do not echo
   upstream bodies.
 
@@ -1388,7 +1388,7 @@ entirely, which the `host-egress` bridge still permits; making it one needs a
 userspace network helper under `--unshare-net`, recorded in the deferred
 register.
 
-Accepted leftovers: pairing-code display, Origin + `SameSite=Lax`
+Current limits, not closed by the rules above: pairing-code display, Origin + `SameSite=Lax`
 CSRF without a token, CSP `style-src 'unsafe-inline'`, invite tokens in URLs,
 proxy leases not pinning model/path (ADR 0008), the on-disk master key,
 revoke-after-lease host files, a new plugin type inserting `memory_entries`
@@ -1399,7 +1399,7 @@ acceptance).
 
 `research_notebook` notes use the note ACL. Knowledge and Notes withhold
 `summary` bodies. Retrieval `context_taint` is attributed to the owner.
-Post-processing decision items have an ACL. Accepted leftovers:
+Post-processing decision items have an ACL. Current limits:
 memory-maintenance scans still exclude only `highly_restricted` (ordinary
 `private` may appear in an owner-private report); Room rolling-summary
 workers do not receive structured `external_untrusted` (attach-time fence
@@ -1413,7 +1413,7 @@ is owner-only for an owned Agent. Activity, Artifact, and Run-turn `/io`
 withhold `summary` bodies. `code_patch` rollback uses the same
 `proposal.apply` and `project_folder.write_patch` gates as accept. Stale
 `cancelling` recovery settles as `cancelled`, not a retryable `orphaned`.
-Accepted leftovers: Dev Vite bind-all (token still required); Reader artifact
+Current limits: Dev Vite bind-all (token still required); Reader artifact
 omitting `roomRunReadAccessSql`; `code_patch` payload bytes that live remote
 browse would refuse; Learning Space-global `project_id IS NULL` visibility;
 Home summary counts as Space-wide oracles (the failed-Job error preview beside those

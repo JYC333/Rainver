@@ -11,8 +11,8 @@
  *
  * Objects are not `.strict()`: an unknown field is dropped, not fatal. What
  * guards against a field being *lost* is that neither side names fields by
- * hand. Both ends ship from this repository together, so there is no older
- * peer to stay compatible with and nothing here is optional for that reason.
+ * hand. Do not keep a field optional for an older sender, and do not add a
+ * second frame shape beside this one.
  *
  * Wire shapes only. What a daemon does with a frame — resolving a Location to
  * a path, choosing a profile directory — is the daemon's, and the server's
@@ -135,9 +135,10 @@ export type WorkspaceStatusReport = z.infer<typeof WorkspaceStatusReportSchema>;
 /**
  * What a daemon says about itself in `hello` and every `heartbeat`.
  *
- * `capabilities_json` is deliberately loose here: the daemon's wire format for
- * it and its history are the server's `hosts/capabilities.ts` concern, which
- * normalizes it into `HostCapabilities` before anything reads it.
+ * `capabilities_json` is deliberately loose here. Its wire format is
+ * `hosts/capabilities.ts`'s concern alone, which normalizes `runtimes`,
+ * `versions`, and `installations` into `HostCapabilities` before anything
+ * reads them. Do not parse capabilities in this schema.
  */
 export const HostHelloInfoSchema = z.object({
   platform: z.string(),
