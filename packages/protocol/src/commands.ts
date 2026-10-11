@@ -19,7 +19,7 @@ import { IdSchema, ISODateTimeSchema } from "./common.js";
 /**
  * Generic command envelope. `payload` is `unknown` here; the per-command schemas
  * below narrow `type` + `payload`. `command_id` is a client-generated
- * idempotency key — it does not grant authority; the server still authenticates
+ * idempotency key — it does not grant authority. The server authenticates
  * and authorizes every command.
  */
 export const CommandEnvelopeSchema = z.object({

@@ -9,9 +9,9 @@
  * confidence-tiered proposal packet of candidate `object_relation_create`
  * edges (and, optionally, candidate `knowledge_item` stubs for unresolved
  * targets). It never writes an edge or item directly — accepting the packet
- * only creates child pending proposals, which still go through normal
- * review. Discovery is access-safe: only visible source text and only visible
- * resolution targets are ever used, so it cannot leak hidden object existence.
+ * only creates child pending proposals, which go through review. Discovery
+ * is access-safe: only visible source text and only visible resolution
+ * targets are ever used, so it cannot leak hidden object existence.
  */
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
