@@ -122,8 +122,8 @@ export async function fetchSourceConnection(input: {
       // A refusal by the outbound boundary is reported exactly like any other
       // failure to reach the provider: `network`, no error code. A host inside
       // this instance's network and a host that resolves nowhere must look the
-      // same here too, or the persisted diagnostics become the name oracle the
-      // uniform message exists to remove.
+      // same here too. Do not name which host failed. The persisted diagnostics
+      // would become a name oracle.
       if (error instanceof OutboundRefusedError) {
         if (attempt < maxAttempts) continue;
         throw transportFailure(input.provider, error, attempt, input.backfill, {

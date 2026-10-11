@@ -264,8 +264,8 @@ export async function applyNextFocus(
  * Completes the running background step a domain event just finished.
  *
  * Manual steps are deliberately not closed this way — there is no fact that
- * says a person finished reading, and asking them to click "done" would be the
- * bookkeeping this model exists to remove. Those end when the round does.
+ * says a person finished reading. Do not ask them to click "done". Those end
+ * when the round does.
  *
  * The target reference records what the step produced, which is what lets the
  * destination Area say which Thread sent the user there.

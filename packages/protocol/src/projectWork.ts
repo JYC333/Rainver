@@ -449,10 +449,10 @@ const ProjectWorkUpdateBaseSchema = z.object({
   undo: ProjectWorkUpdateUndoSchema.nullable(),
   /**
    * What this update replaced, when it replaced something a person would want
-   * to weigh it against — today, an Agent's previous persona. Reversing is one
-   * action, but deciding whether to reverse needs both sides, and sending the
-   * person to the version chain for the other half is the thing ADR 0017 §4's
-   * "records every write with what changed" exists to avoid.
+   * to weigh it against. A persona revision carries the previous one.
+   * Reversing is one action, but deciding whether to reverse needs both
+   * sides. Do not send the person to the version chain for the other half
+   * (ADR 0017 §4).
    */
   previous_summary: z.string().nullable(),
   /** Set once a later update reversed this one. */

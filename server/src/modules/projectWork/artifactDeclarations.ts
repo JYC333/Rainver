@@ -213,8 +213,8 @@ async function reportMissingDeclarations(
   if (!agentId) return;
   const actorId = await resolveAgentActorId(db, run.space_id, agentId);
   // The Task's Project, not the Run's: `declareRunArtifact` files its event
-  // under the Task's, and a report that lands in a different stream than the
-  // declaration it is about is the silent drop this function exists to end.
+  // under the Task's. Do not report into a different stream. The declaration
+  // would have no matching report.
   const projects = await db.query<{ id: string; project_id: string | null }>(
     `SELECT id, project_id FROM tasks WHERE space_id = $1 AND id = ANY($2::varchar[])`,
     [run.space_id, [...byTask.keys()]],

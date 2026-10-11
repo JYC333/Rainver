@@ -59,9 +59,8 @@ export function registerLinkType(definition: LinkTypeDefinition): void {
       return;
     }
     // Two declarations that can both match the same edge would make governance
-    // depend on registration order, which is exactly the ambiguity this
-    // registry exists to remove. Specific-versus-`any` is fine; the resolver
-    // prefers the specific one.
+    // depend on registration order. Do not allow that overlap.
+    // Specific-versus-`any` is allowed; the resolver prefers the specific one.
     const bothSpecific = definition.from !== "any" && definition.to !== "any"
       && other.from !== "any" && other.to !== "any";
     if (bothSpecific && endpointsOverlap(definition, other)) {

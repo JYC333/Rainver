@@ -35,8 +35,9 @@ export interface Queryable {
  *
  * Threaded through so the proposal records who actually wrote it and why. The
  * public-API path stamps a user confirmation, which for an Agent's write
- * would be a false record of a person's action — the same falsehood
- * `approved_by = null` exists to avoid on the direct path.
+ * would be a false record of a person's action. Do not stamp that confirmation
+ * on an Agent's write. The direct path leaves `approved_by` null for the same
+ * reason.
  */
 interface AgentProposalOrigin {
   agentId: string;

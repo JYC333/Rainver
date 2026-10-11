@@ -1097,13 +1097,12 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         // `CliStdioController`'s interface (localCliExecution.ts); this
         // controller's body is fully synchronous, so the returned promise
         // is already resolved by the time this call returns and needs no
-        // `await` — awaiting it here would only reintroduce a microtask hop
-        // this synchronous design exists to avoid. The `.catch()` below
-        // guards a different hazard: `async` turns even a synchronous
-        // internal throw into a rejected Promise instead of letting it
-        // reach this `try/catch`, so without it a future bug inside
-        // `receive()` would become an unhandled rejection rather than a
-        // contained Run failure.
+        // `await`. Awaiting it here would only reintroduce a microtask hop.
+        // Do not await it. The `.catch()` below guards a different hazard:
+        // `async` turns even a synchronous internal throw into a rejected
+        // Promise instead of letting it reach this `try/catch`. Do not drop
+        // the catch. A throw inside `receive()` would become an unhandled
+        // rejection rather than a contained Run failure.
         try {
           controller.receive(JSON.parse(record), sendToController, closeControllerStdin)
             .catch(() => { controller.reject("CLI protocol emitted invalid JSON"); closeControllerStdin(); });

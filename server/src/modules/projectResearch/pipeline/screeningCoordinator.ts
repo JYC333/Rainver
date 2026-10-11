@@ -73,8 +73,8 @@ export interface ProjectResearchScreeningPorts {
  * before the operation is called stuck rather than slow.
  *
  * Deliberately generous: a false positive fails a recoverable operation
- * (retryable, and the user is told), while a false negative is the hang this
- * exists to end. On the incremental path classification is driven by the
+ * (retryable, and the user is told). A false negative leaves the hang in
+ * place. On the incremental path classification is driven by the
  * source pipeline's own cadence, so short windows would misread a quiet
  * source as a stall.
  */

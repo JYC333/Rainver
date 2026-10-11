@@ -712,9 +712,8 @@ export class PgKnowledgeRepository {
     const note = await this.getNoteRow(identity, noteId);
     if (!note) throw new HttpError(404, "Note not found");
     const content = requiredString(body.content, "content");
-    // The passage the user selected, not the note's whole text: a note usually
-    // holds several ideas, and promoting all of them as one item is what N6's
-    // selection scoping exists to avoid.
+    // The passage the user selected, not the note's whole text. A note usually
+    // holds several ideas. Do not promote all of them as one item.
     const title = optionalString(body.title) ?? note.title;
     const projectId = optionalString(body.project_id) ?? note.primary_project_id;
     return this.proposeCreate(identity, {

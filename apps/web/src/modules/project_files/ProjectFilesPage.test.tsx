@@ -214,9 +214,8 @@ describe('Project Files & Code Area', () => {
 
   it('opens the connect dialog on arrival from a ?setup=folder link, once', async () => {
     // Pulse and the conversation preflight send someone here to connect a
-    // Folder; landing on the page and then hunting for the button is the
-    // extra click the link exists to remove. The parameter is consumed so a
-    // reload does not reopen the dialog.
+    // Folder. Do not land on the page and leave them to find the button.
+    // The parameter is consumed so a reload does not reopen the dialog.
     vi.mocked(projectFoldersApi.list).mockResolvedValue({
       items: [], total: 0, limit: 200, offset: 0,
     })

@@ -402,8 +402,8 @@ describe("memory.remember / memory.revise, direct (real Postgres)", () => {
       expect((await dispatch.dispatch(remember({ content: `Fact ${index}` }, `p-${index}`))).modelResult)
         .toMatchObject({ ok: true, outcome: "proposed" });
     }
-    // A loop that produces proposals instead of entries is the queue nobody
-    // reads, which is exactly what the breaker exists to stop.
+    // A loop that produces proposals instead of entries is a queue nobody
+    // reads. Do not let that loop continue.
     const refused = await dispatch.dispatch(remember({ content: "Fact 4" }, "p-4"));
     expect(refused.modelResult).toMatchObject({ ok: false });
     expect(JSON.stringify(refused.modelResult)).toContain("paused");

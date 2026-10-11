@@ -53,8 +53,8 @@ export default function ProjectUpdatesPage() {
   const load = useCallback(async (nextCursor?: string) => {
     if (!nextCursor) {
       setFailed(false)
-      // Held until the retry answers, so the surface does not flash the empty
-      // state — the confident all-clear this error path exists to avoid.
+      // Held until the retry answers. Do not flash the empty state. That would
+      // read as a confident all-clear.
       setLoading(true)
     } else {
       setLoadingMore(true)
@@ -152,10 +152,9 @@ export default function ProjectUpdatesPage() {
                     <p className="text-sm">{update.summary}</p>
                   )}
                   {update.previous_summary && (
-                    // Both sides of the change, because deciding whether to
-                    // put the previous one back needs both — and sending the
-                    // person to the version chain for the other half is what
-                    // the one-step undo exists to avoid.
+                    // Both sides of the change. Deciding whether to put the previous
+                    // one back needs both. Do not send the person to the version
+                    // chain for the other half.
                     <p className="mt-0.5 text-xs text-muted-foreground">
                       was: {update.previous_summary}
                     </p>
