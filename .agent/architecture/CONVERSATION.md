@@ -66,9 +66,9 @@ failure; only a provider-reported failed status is one.
 
 ### State is decided once, on the server
 
-`turnReadModel.turnState` is the sole authority for which of D3's four states a
-turn is in, and clients render `turn.state` without re-deriving it. That rule
-exists because the derivation needs facts a client does not have:
+`turnReadModel.turnState` is the sole authority for which of the four states a
+turn is in, and clients render `turn.state` without re-deriving it. The
+derivation needs facts a client does not have:
 
 - A `degraded` Run can still carry a complete reply — the status records a
   non-blocking warning — so it maps to `done`, not `failed`.

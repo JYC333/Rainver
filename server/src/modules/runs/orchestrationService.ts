@@ -310,7 +310,7 @@ export interface HostExecutionPort {
   readonly hostKind: HostKind;
   /** Set only for a remote port — which daemon connection to dispatch to. */
   readonly hostId?: string;
-  /** Set only for a remote port — which WorkspaceLocation this Run executes in (D3). */
+  /** Set only for a remote port — which WorkspaceLocation this Run executes in. */
   readonly workspaceLocationId?: string | null;
   readonly workspaceRelativePath?: string | null;
   readonly workspace?: LaunchWorkspace;

@@ -354,8 +354,8 @@ export function projectRunEventTurn(
     }
   }
 
-  // The reply comes last, after the steps that produced it — which is the
-  // order D3 renders: the work folds up above, the answer is the bubble.
+  // The reply comes last, after the steps that produced it. The work folds
+  // up above, and the answer is the bubble.
   if (input.replyText) {
     parts.push({ type: "text", index: parts.length, text: input.replyText });
   }

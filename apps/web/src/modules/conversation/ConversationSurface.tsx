@@ -1364,8 +1364,7 @@ function RoomMessageView({
           </div>
           {/*
             An Agent reply is its turn, when one is held: the reply with the
-            work that produced it folded above, which is what D3 asks for and
-            what a plain bubble cannot show.
+            work that produced it folded above. A plain bubble cannot show that.
 
             The state is the turn's own. The server decides it in one place
             (`turnReadModel.turnState`) with facts a client does not have — that
