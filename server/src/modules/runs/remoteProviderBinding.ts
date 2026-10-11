@@ -370,8 +370,8 @@ export async function buildRemoteProviderBinding(input: {
   if (!providers) {
     throw new RemoteProviderBindingError("providers_db_unavailable", "Provider database read port is unavailable.");
   }
-  // `userId: null` matches the server-host runtime path and excludes
-  // subscription providers, which have no key and no compatible base URL.
+  // `userId: null` excludes subscription providers. They have no key and no
+  // compatible base URL for this binding. Do not pass a person id here.
   const provider = await providers.getProvider(input.run.space_id, null, input.binding.provider_id);
   if (!provider || typeof provider !== "object") {
     throw new RemoteProviderBindingError(

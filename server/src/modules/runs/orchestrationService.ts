@@ -1881,8 +1881,8 @@ export class RunOrchestrationService {
       );
       if (decisionId) base.policy_decision_record_ids.push(decisionId);
     }
-    // Only a server-host Run's recorded provider is the one it spends; a
-    // remote Run's backend is decided at launch, where its lease is
+    // A Run on the built-in host spends the provider recorded on the row. A
+    // paired machine's backend is decided at launch, where its lease is
     // authorized. The key is decided again where it is spent — each
     // managed-API turn and each lease. This check fails the Run before any
     // work starts. Do not treat it as the only check.
@@ -2519,9 +2519,9 @@ export class RunOrchestrationService {
     };
     const promise = this.invokeAdapterUnbounded(run, adapterInput);
     if (!timeoutMs || timeoutMs <= 0) return promise;
-    // Local CLI adapters own their deadline: the scoped Runner terminates
-    // the process group and waits for exit. Racing that cleanup here would
-    // release the Job while the child process was still alive.
+    // A `local_cli` adapter's deadline belongs to the daemon. It stops the
+    // process and waits for exit. Do not race a server timeout against that:
+    // the Job would be released while the child was still alive.
     if (spec?.executor_family === "local_cli") return promise;
     return withTimeout(
       promise,

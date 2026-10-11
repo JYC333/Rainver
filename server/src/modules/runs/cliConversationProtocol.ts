@@ -104,10 +104,9 @@ export function createCliConversationController(input: {
   attributed_model?: string | null;
   on_protocol_event?: (event: Record<string, unknown>) => void;
   /**
-   * Fired once per permission request, whatever the outcome, so a caller with a durable
-   * event stream (a remote dispatch's task thread) can record that this Run
-   * was pre-authorized rather than leaving it implicit. Callers with no such
-   * stream (a server-host sandboxed Run) may omit it; the decision itself is
+   * Fired once per permission request, whatever the outcome, so a caller with
+   * a durable event stream can record that this Run was pre-authorized. A
+   * caller with no such stream may omit it. The decision itself is
    * unaffected either way.
    */
   on_permission_decision?: (record: PermissionDecisionRecord) => void;
@@ -128,8 +127,7 @@ const AUTHENTICATE_REQUEST_ID = 2.5;
 
 /**
  * General Agent Client Protocol controller. All three conversation runtimes
- * use the same lifecycle on both server-host and remote paths. Claude uses
- * its ACP adapter.
+ * use this lifecycle. Claude uses its ACP adapter.
  */
 export class AcpController implements CliStdioController {
   private phase: "initialize" | "session_new" | "authenticate" | "set_config" | "prompt" | "phase_acknowledge" | "terminal" = "initialize";
