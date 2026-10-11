@@ -604,8 +604,8 @@ export class RoomService {
   /**
    * A person's message that waits for a taken turn instead of being refused
    * (`modules/rooms.md`, "A person's message during a turn"): posted now when the turn is free, otherwise queued and
- * posted at the next turn boundary. A message with input parts is never
- * queued — its parts are claimed at send — and gets that same refusal.
+   * posted at the next turn boundary. A message with input parts is never
+   * queued — its parts are claimed at send — and gets that same refusal.
    */
   async sendOrQueueMessage(identity: RoomIdentity, roomId: string, sessionId: string, input: RoomSendInput) {
     if (input.input_parts?.length) return this.sendMessage(identity, roomId, sessionId, input);

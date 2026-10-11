@@ -298,12 +298,10 @@ async function resolveConversationPick(
       .map((message) => `${message.role}:\n${message.content}`)
       .join("\n\n");
     const fitted = fitRoomSummaryToBudget(body, budget);
-    // Trust follows provenance, and provenance is more than one hop deep. A
-    // `reference` message is itself pickable, and so is an Agent's reply
-    // quoting one. Ask about the whole conversation, not only the rows that
-    // were picked. Either way the reader would
-    // otherwise be told the opposite of the truth while the content travelled
-    // on unchanged.
+    // Trust was decided for the whole conversation above. Do not recompute it
+    // from the picked rows alone. A `reference` message is itself pickable,
+    // and so is an Agent's reply quoting one. The reader would be told the
+    // opposite of the truth while the content travelled on unchanged.
     return {
       content: fenced(`From “${label}” — ${messages.rows.length} message${messages.rows.length === 1 ? "" : "s"}:`, fitted, trust),
       provenance: provenance(pick.kind, source.id, source.room_id, label, messages.rows.map((m) => m.id), trust, fitted !== body.trim(), identity),
@@ -443,8 +441,8 @@ function provenance(
  * means the owner plus grantees, and a `space_shared` session whose
  * `access_level` is `summary` opens to nobody but its owner, because a
  * transcript needs `full`. Both overstate the source's audience, and
- * overstating it understates who a copy discloses to — the same failure the
- * mainline roster had.
+ * overstating it understates who a copy discloses to — the same miss as
+ * reading a mainline's roster instead of its Project readers.
  */
 async function importedSessionAudience(
   db: Queryable,
