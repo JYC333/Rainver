@@ -1199,7 +1199,7 @@ describe("RunOrchestrationService", () => {
       },
       ...daemonCli({
           async runCommand() {
-            throw new Error("must not spawn a process through the server-host executor for a remote run");
+            throw new Error("must not spawn a process in the server for a daemon run");
           },
         }),
     });

@@ -13,11 +13,10 @@ import type { AgentActionContext } from "./taskActions.js";
  * anonymous paths typed `adapter_file`. Do not leave them untyped. An agent
  * can finish the work and still leave every such Task parked for review.
  *
- * The declaration carries no content and uploads nothing: the file's final
- * state is collected after the run — by the executing host for a remote run,
- * by materialization for a server-host one — and the declared type and role
- * are applied to what actually arrived. A file declared but never written
- * therefore closes nothing: the Task still needs the artifact to exist.
+ * The declaration carries no content and uploads nothing. The executing host
+ * uploads the file afterward, and `applyRunArtifactDeclarations` applies the
+ * type and role to what arrived. Materialization does not. A file declared
+ * but never written closes nothing: the Task still needs the artifact to exist.
  */
 export type RunArtifactRole = "output" | "evidence" | "draft";
 

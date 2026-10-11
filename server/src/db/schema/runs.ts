@@ -41,12 +41,12 @@ export const runs = pgTable("runs", {
 	// to a specific Location. No `host_id` column —
 	// fully determined by the Location, which never changes host.
 	workspaceLocationId: varchar("workspace_location_id", { length: 36 }),
-	// `sandboxed` (server host, full isolation) or `trusted_host`
-	// (personal machine, ADR 0016's trusted-host mode) — surfaced in the UI
-	// so a merged dispatch endpoint never leaves the trust model implicit.
+	// `sandboxed` is a built-in-host Task Run. `trusted_host` is a paired
+	// machine. A Conversation on the built-in host may leave this null.
 	trustMode: varchar("trust_mode", { length: 16 }),
-	// ADR 0016 D14: set only for a run dispatched into a host task thread
-	// (remote-host runs); null for every server-host run.
+	// Set when the Run is dispatched into a host thread, on the built-in host
+	// or a paired machine. Null when the Run has no host thread. Do not treat
+	// a built-in-host CLI Run as threadless.
 	hostTaskThreadId: varchar("host_task_thread_id", { length: 36 }),
 	sessionId: varchar("session_id", { length: 36 }),
 	parentRunId: varchar("parent_run_id", { length: 36 }),

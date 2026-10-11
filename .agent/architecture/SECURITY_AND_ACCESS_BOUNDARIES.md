@@ -841,7 +841,8 @@ authority afterwards.
   decides every ModelProvider spend before a key is resolved or a proxy lease
   is minted. The provider invocation layer calls it for every chat, embedding
   and rerank call; a proxy lease cannot be created without its result; and the
-  Run executor calls it before a server-host Run starts. Each spend names its
+  Run executor calls it before a built-in-host Run starts. A paired machine is
+  checked when its proxy lease is minted. Each spend names its
   basis:
   - a person in the request being served (`manual`);
   - a Run, decided on its root Run, since a delegated, Plan or Workflow child

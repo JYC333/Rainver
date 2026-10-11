@@ -558,8 +558,8 @@ Policy gates run in this order inside server run orchestration:
 
 2. **`runtime.use_credential`** — decided by `authorizeCredentialSpend`
    **before** a server-owned ModelProvider key is fetched. The Run executor
-   calls it before a server-host Run starts; the provider layer decides again on
-   every managed-API turn, and proxy lease minting decides a daemon Run. The
+   calls it before a built-in-host Run starts; the provider layer decides again on
+   every managed-API turn, and proxy lease minting decides a paired machine. The
    resource is the selected ModelProvider in the Run's active Space; host-copy
    login is not a server-brokered CLI profile grant. Active-space grant
    resolution happens before secret material is loaded; missing or disabled

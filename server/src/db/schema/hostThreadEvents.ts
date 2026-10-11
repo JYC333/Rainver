@@ -5,11 +5,11 @@ import { runs } from "./runs.js";
 import { projects } from "./projects.js";
 
 /**
- * Normalized conversation event log for a remote task thread. Do not store
- * these as `run_events.event_type`. That table's CHECK constraint is a closed
- * vocabulary for the server-host semantic-event stream (`tool_call_started`
- * and the rest) and has no `assistant_text` or `diagnostic` concept. A remote
- * run does not write that table incrementally. This sibling has its own
+ * Conversation event log for a host thread, on the built-in host or a paired
+ * machine. Do not store these as `run_events.event_type`. That table's CHECK
+ * constraint is a closed vocabulary (`tool_call_started` and the rest) and
+ * has no `assistant_text` or `diagnostic`. A daemon Run does not write that
+ * table incrementally. This sibling has its own
  * smaller vocabulary and its own per-thread (not per-run) monotonic cursor,
  * since the read model is everything said in this conversation, spanning
  * every run dispatched into the thread.

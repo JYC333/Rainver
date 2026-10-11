@@ -436,9 +436,8 @@ describe("the dispatched Run's tool surface", () => {
   });
 
   it("withholds artifact.submit where no path applies a declaration", async () => {
-    // A server-host Run's artifacts come through materialization, which does
-    // not consume declarations yet. Offering the action there would tell an
-    // agent its deliverable was recorded when nothing would act on it.
+    // `sandboxed` does not include `artifact.submit`. Do not grant it on
+    // that trust mode.
     const granted = await grantedActionIds("sandboxed");
 
     expect(granted).not.toContain("artifact.submit");

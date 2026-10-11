@@ -383,7 +383,8 @@ before a key is resolved or a proxy lease minted:
   a spend basis, so a caller that names none does not compile);
 - proxy lease minting (`runs/remoteProviderBinding.ts`), since
   `ProviderProxyLeaseRegistry.create` takes the authorization it returns;
-- the Run executor, before a server-host Run starts.
+- the Run executor, before a built-in-host Run starts. A paired machine is
+  checked when its proxy lease is minted.
 
 Each spend names its basis:
 

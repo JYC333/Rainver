@@ -122,14 +122,11 @@ own directory under its config root and removes them with the Run
 (`packages/host-daemon/src/execution.ts`). Do not write them into the
 workspace. On a paired machine that directory is the user's checkout.
 
-`artifact.submit` is granted only on the remote-host path. It declares that a
-file the Run leaves behind is a Task's output, and only that path applies a
-declaration (the executing host uploads its output directory and
-`hosts/repository.ts` gives those files the declared type and Task link, which
-is what lets settlement match `tasks.required_outputs_json`). A server-host
-Run's artifacts come through `materializationService` instead, which does not
-consume declarations, so the action is withheld rather than accepted and
-ignored.
+`artifact.submit` is granted only for `trusted_host`. It declares that a
+file the Run leaves behind is a Task's output. The paired host uploads its
+output directory and `hosts/repository.ts` gives those files the declared type
+and Task link, which is what lets settlement match
+`tasks.required_outputs_json`. Do not grant it on a `sandboxed` Run.
 
 The `task.create.required_outputs` field therefore carries only concrete file
 Artifact type labels. Replies, reports, inspections, and edits to an existing

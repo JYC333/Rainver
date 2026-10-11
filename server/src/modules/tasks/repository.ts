@@ -1073,10 +1073,9 @@ export class PgTaskRepository {
       resumeVendorSessionId = null;
     }
 
-    // A dispatch to someone's own machine runs under that machine's trust,
-    // not in a sandbox the control plane owns — and the read model reads this
-    // to decide whether the adapter actually consumed the provider it
-    // recorded. Only a server-side execution host is sandboxed.
+    // A paired machine is `trusted_host`. The built-in host is `sandboxed`.
+    // The read model uses this to decide whether the adapter consumed the
+    // provider it recorded.
     const trustMode = target.execution_host_kind === "server" ? "sandboxed" : "trusted_host";
     // What a dispatched agent may call back with: the allowance belongs to
     // the dispatch scenario rather than to whichever Agent the thread names.

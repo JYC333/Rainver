@@ -149,14 +149,9 @@ const DISPATCH_BASE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
 /**
  * What a dispatched Run may call, given where it executes.
  *
- * `artifact.submit` is offered only on a remote host, because that is the only
- * path that applies a declaration today: the executing host uploads its output
- * directory and `recordOutputArtifacts` gives those files the type and Task
- * link the Run declared. A server-host Run's artifacts come through
- * `materializationService` instead, which does not consume declarations.
- * Do not grant `artifact.submit` on a server-host Run: the agent would be
- * told its deliverable was recorded when nothing would ever act on it, which
- * is worse than not offering the action at all.
+ * `artifact.submit` is offered only for `trusted_host`. The paired host
+ * uploads its output directory and `recordOutputArtifacts` applies the
+ * declared type and Task link. Do not grant it on a `sandboxed` Run.
  */
 export function dispatchToolAllowance(
   trustMode: "sandboxed" | "trusted_host",

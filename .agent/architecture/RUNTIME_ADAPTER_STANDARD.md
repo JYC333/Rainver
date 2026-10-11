@@ -103,14 +103,14 @@ drivers or a second runtime-identity branch.
 A builtin ACP adapter also declares how a *managed* copy is obtained on an
 execution host (`distribution: { registry_id }`, resolved against the ACP
 registry) and how it is logged into (`credentials.login`: PATH command,
-`managed_command` inside a tree, `home_subdir`, `credential_file`) — the
-server-host login adapters and the daemon both read those fields, so the
-knowledge is written once. See `modules/hosts.md` "Installations".
+`managed_command` inside a tree, `home_subdir`, `credential_file`). The
+server sends that spec; the daemon logs the copy in. Do not keep a second
+login procedure on the server. See `modules/hosts.md` "Installations".
 
 An agent from the ACP registry needs no spec at all: enabling it
 (`modules/acpAgents`) publishes a dynamic adapter built from the registry
 entry plus low-trust, remote-host-only defaults
 (`acpAgentRuntimeAdapterSpec`). Write a builtin spec for such an agent only
 when it should get more than that — a ModelProvider binding, subagent
-lockdown, usage accounting, server-host execution — each of which is
-vendor-specific code, not configuration.
+lockdown, usage accounting, or an install on the built-in host — each of
+which is vendor-specific code, not configuration.

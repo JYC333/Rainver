@@ -4,12 +4,8 @@
  * states its own justification (`preauthorized_by`). Do not leave it as an
  * implicit side effect of receiving a message.
  *
- * The one implementation today always pre-authorizes, because every current
- * dispatch path (server-host sandboxed Run, remote trusted-host Run) is
- * headless — there is no human present mid-run to answer an interactive
- * prompt. A gate that can actually suspend a Run for a human decision is
- * deferred (`backlog.md`): it needs suspend/notify/resume machinery this
- * policy does not have.
+ * Every CLI dispatch is headless. This decision always pre-authorizes.
+ * Do not wait here for a person.
  */
 
 interface PermissionOptionInput {

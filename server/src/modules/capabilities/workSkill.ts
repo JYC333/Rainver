@@ -40,20 +40,15 @@ export interface WorkSkillOptions {
   /**
    * Whether this Run can deliver a declared output.
    *
-   * `artifact.submit` and the output directory it names exist on the
-   * remote-host path; a server-sandbox Run has neither, so telling it to copy
-   * a file into an unset `$RAINVER_OUTPUT_DIR` and declare it would send the
-   * agent through a workflow that silently writes nothing and then refuses.
-   * Everything else about reporting back is identical, so everything else in
-   * the Skill is.
+   * Set only when `artifact.submit` was granted. Do not tell a Run without
+   * that grant to write `$RAINVER_OUTPUT_DIR` and declare the file.
    */
   deliverOutputs: boolean;
   /**
-   * Whether this Run is a turn in a conversation with a person. Then the
-   * reply *is* the message they read, and the commands record durable
-   * objects alongside it; a dispatched Task has no reader for its reply at
-   * all. The dispatched text told a Room agent its reply reached nobody,
-   * and it answered "what should I do next?" with tool calls and a blank.
+   * Whether this Run is a turn in a conversation with a person. The reply
+   * is the message they read, and the commands record durable objects
+   * alongside it. A dispatched Task has no reader for its reply. Do not
+   * tell a Room agent its reply reached nobody.
    */
   conversation?: boolean;
 }

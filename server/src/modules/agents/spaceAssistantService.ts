@@ -20,8 +20,8 @@ import { TASK_CONTRACT_POLICY } from "../systemActions/conversationPolicy.js";
 
 const MANAGED_ASSISTANT_NAME = "Space Assistant";
 const MANAGED_ASSISTANT_PROMPT_KEY = "agent_template.personal_assistant.system";
-// The server-host CLIs only: a remote-only adapter (ACP registry agent) has
-// no runtime tool or credential profile on the server for this to provision.
+// Builtin CLI adapters only. A `remote_host_only` adapter has no server-side
+// runtime tool or credential profile for this provisioning. Do not include one.
 //
 // OpenCode first because it takes any OpenAI-compatible endpoint and so works
 // where the vendor-locked CLIs' accounts are hard to obtain; Codex last for
