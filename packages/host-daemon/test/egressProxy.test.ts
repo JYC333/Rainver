@@ -345,9 +345,8 @@ describe("the proxy as a running server", () => {
       "http://server:3000/api/v1",
       "http://server:9000/lease/abc",
       "not-a-url",
-      // Two of the three CLI adapters receive their lease URL inside a config
-      // file rather than the environment, so the file's contents are scanned
-      // too — reading only the environment covered one adapter in three.
+      // `codex_cli` and `opencode` receive their lease URL inside a config
+      // file. Scan that text too. Do not read only the environment.
       'base_url = "http://proxy.internal:9000/lease/xyz"\nmodel = "gpt-5"',
     ]);
     expect(bypass.sort()).toEqual(["proxy.internal", "server"]);

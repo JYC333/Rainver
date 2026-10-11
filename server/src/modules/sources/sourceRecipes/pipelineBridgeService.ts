@@ -23,9 +23,8 @@ import {
 } from "./recipeVersionStore.js";
 
 /**
- * Compatibility bridge: existing `declarative_pipeline_v1` handler
- * versions remain readable/debuggable as Level 3 history, but an operator can
- * explicitly wrap one as a Level 2 recipe source. The bridge creates a new
+ * Bridges a `declarative_pipeline_v1` handler version into a Level 2 recipe
+ * source. The handler version stays readable. The bridge creates a new
  * paused recipe connection and draft recipe version; activation still requires
  * the normal recipe dry-run/activate path.
  */

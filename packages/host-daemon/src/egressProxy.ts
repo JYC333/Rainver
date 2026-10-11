@@ -493,13 +493,11 @@ function openUpstreamTunnel(
  * break the Run on the *default* path and log a refusal for every attempt, so
  * they bypass the proxy rather than being blocked by it.
  *
- * Read out of what is actually handed over, not from a list somebody has to
- * remember to update — and that means **both** channels. Only `claude_code`
- * takes its lease URL through the environment; `codex_cli` and `opencode`
- * receive theirs inside a config file the daemon writes, so scanning the
- * environment alone covered one adapter in three. It happened to work because
- * both URLs are built from the same host, which is exactly the kind of
- * accident that survives until someone sets `provider_proxy_base_url`.
+ * Read the hostnames from what is actually handed over, on both channels.
+ * Only `claude_code` takes its lease URL through the environment; `codex_cli`
+ * and `opencode` receive theirs inside a config file the daemon writes. Do
+ * not scan the environment alone. The two URLs can name different hosts when
+ * `provider_proxy_base_url` is set.
  */
 export function proxyBypassHosts(sources: readonly string[]): string[] {
   const hosts = new Set<string>();
