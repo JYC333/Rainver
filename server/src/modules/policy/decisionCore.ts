@@ -903,9 +903,8 @@ const ORIGIN_GATED_PROJECT_WRITES = new Set([
   "inquiry.iteration.record",
   "inquiry.advice.adopt",
   "research.acquisition.start",
-  // `memory.write` is here and not in `ruleMemoryScope`: what the older rule
-  // gates — scope and operation — ADR 0003 §1 now settles in the applier,
-  // and what remains for policy is the origin.
+  // `memory.write` is origin-gated here. Scope and operation are settled
+  // by the applier (ADR 0003 §1). Do not move that gate into `ruleMemoryScope`.
   "memory.write",
 ]);
 

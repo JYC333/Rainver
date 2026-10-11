@@ -196,9 +196,10 @@ export function jobEventToOut(event: JobEventRecord): JobEventOut {
 }
 
 /**
- * The Run a cancelled `agent_run` / `provider_task_run` job was going to
- * perform ended with it (`PgJobQueueRepository.cancelJob`); finalizing it
- * now settles its Task at once rather than at the worker's next sweep.
+ * Cancelling an `agent_run` or `provider_task_run` job ends the Run it was
+ * going to perform (`PgJobQueueRepository.cancelJob`). Finalizing that Run
+ * settles its Task in this call. Do not leave the settlement for the
+ * worker's next sweep.
  */
 async function finalizeRunBehindCancelledJob(config: ServerConfig, job: JobRecord): Promise<void> {
   const runId = job.payload_json?.run_id;
