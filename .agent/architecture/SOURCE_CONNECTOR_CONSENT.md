@@ -213,15 +213,15 @@ Implemented:
   adapter gate and the source read gate before returning a title.
 - Context artifact attachment: a Context Brief records the
   `source_connection_ids` it synthesized from in its payload (`brief.ts`) so a
-  later attachment can be re-gated; no attachment path re-checks source policy
-  yet.
+  later attachment can be re-gated; no attachment path re-checks source policy.
 - Runtime Context retrieval: `PgRetrievalAuthorization`
   (`runtimeContext/productionAcquisition.ts`) takes source connection ids from
   the domain adapter's `loadCanonical` result and records them on the item's
   revalidation; Invocation Delivery (`runtimeContext/gateway.ts`) reloads the
   current source policy snapshots and re-applies the source read gate before
-  the item is delivered. Activity records still have no canonical source
-  connection field, so they remain source-unlinked until that model exists.
+  the item is delivered. Activity records have no canonical source
+  connection field, so they stay source-unlinked. Do not invent that field
+  to satisfy the source read gate.
 
 Implemented for provider content egress:
 

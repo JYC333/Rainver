@@ -538,7 +538,7 @@ differently and only one is recoverable: a thread still claiming a
 `vendor_session_id` whose store has been archived resumes into nothing, while a
 thread reset without the archive happening starts a fresh session in a profile
 that still holds the old one — wasteful, visible in the error the caller gets,
-and fixed by running it again. There is no web surface for it yet.
+and fixed by running it again. There is no web surface for this reset.
 
 A remote run is given up on for two distinct reasons, and the failure says
 which: `runtime_timeout` when the whole run budget elapsed, and

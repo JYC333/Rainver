@@ -212,7 +212,7 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
   `capability.enable`, `capability.disable`, `capability.update`, `runtime_skill.binding_update`,
   `source.connection.activate`, `source.backfill.start`.
 - **reserved** (11): `lifecycle_status=reserved` — registered for vocabulary completeness and fail-closed
-  defence-in-depth, but not wired to business code yet. `PolicyGateway` always denies reserved actions.
+  defence-in-depth. `PolicyGateway` always denies reserved actions.
   `current_enforcement_point="not_implemented"` is a human-readable marker.
   Actions: `context.use_personal_grant`, `artifact.export`, `proposal.approve`,
   `memory.read_private`, `memory.promote_shared`, `runtime_skill.execute`, `tool_binding.enable`,

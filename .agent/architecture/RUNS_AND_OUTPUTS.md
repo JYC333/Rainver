@@ -458,7 +458,7 @@ runtime definitions provide command, installation, backend and capability
 facts. Static runtime capability declarations are not dynamic conformance
 evidence. The Host-daemon path does not apply a vendor subagent-deny
 declaration, so local CLI candidates stay at low
-effective trust until that control is enforced at the Host boundary.
+effective trust. Do not treat a static declaration as that control.
 
 Workflow definitions are versioned through the evolvable-asset control plane.
 `runs.workflow_version_id` records the approved version selected for a fixed

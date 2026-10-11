@@ -9,7 +9,7 @@ services, Source Recipe proposal applier, recipe scan worker,
 `source_runs` read model, and declarative-pipeline bridge exist as backend
 APIs/services. The web `/sources` area is `SourceChannelsPage` plus
 `/sources/:sourceId` (`SourceChannelDetailPage`); no page calls the Custom
-Source draft/handler or Source Recipe plan/create/dry-run/activate APIs yet. The
+Source draft/handler or Source Recipe plan/create/dry-run/activate APIs. The
 web surfaces for this feature are `CustomSourceSpacePolicyPanel` (Space
 Settings) and `CustomSourceRunnerSettingsPanel` (Instance Settings).
 Repair/rollback and credentialed source support are implemented backend-side
@@ -397,7 +397,7 @@ Implemented flow:
   `declarative_pipeline_v1` handler versions into draft recipe sources.
 
 The Source Recipe plan, create, dry-run, and activate flow is API-only; the
-web client declares these calls but no frontend page wires them yet.
+web client declares these calls. No frontend page wires them.
 
 ## Repair
 

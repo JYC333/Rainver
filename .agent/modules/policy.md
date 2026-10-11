@@ -93,7 +93,7 @@ The registry has three lifecycle categories:
 **Proposal actions** (`lifecycle_status=WIRED_VIA_PROPOSAL`) are protected by `proposal.apply`.
 **Reserved actions** (`lifecycle_status=RESERVED`) are registered for registry completeness and
 fail-closed defence-in-depth. `current_enforcement_point="not_implemented"`. Not wired
-to any business code yet. `computeDecision` (`gateway.ts`) always denies reserved actions
+to any business code. `computeDecision` (`gateway.ts`) always denies reserved actions
 (`policy_action_not_implemented`) regardless of registry `default_decision`. Not full RBAC/ABAC — they express intent and default risk.
 
 ### Wired actions

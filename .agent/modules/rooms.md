@@ -772,8 +772,7 @@ directly-executed action is a general Agent permission.
 Retrieval is excluded on purpose: it would execute under the message sender's
 identity, including their `private` content, and answer into a conversation
 every Room member can read. Grounding a drafted conclusion in Project material
-needs a retrieval path scoped to what the Room may read, which does not exist
-yet.
+needs a retrieval path scoped to what the Room may read. That path does not exist.
 
 Both direct action executors clamp their Proposal to the Room Run's
 `selected_users` visibility and inherit the active Run grants transactionally.

@@ -474,8 +474,8 @@ runtime-internal subagents, which are not represented as Rainver Agent Runs and
 do not receive independent Run attribution. The Host-daemon path does not
 apply a vendor subagent-deny declaration, so its static capability
 declarations do not prove that runtime-internal delegation is disabled. CLI
-candidates remain at their low effective-trust baseline until a restriction is
-actually applied and verified at the Host boundary.
+candidates stay at their low effective-trust baseline. Do not raise it from a
+static declaration the Host path does not apply.
 
 ### Containers and Agent-triggered budgets
 

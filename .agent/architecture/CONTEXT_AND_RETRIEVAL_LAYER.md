@@ -274,9 +274,9 @@ Context Ops scan-gated) is the proposal-gated graph review path. It reads
 viewer-visible Knowledge item / Note text plus visible Activity
 and inline Artifact text. Source-connected Knowledge and Artifact rows also pass
 the source read gate; missing or denied source-policy snapshots fail closed.
-Activity records currently have no canonical source-connection field, so they
-are gated by Activity visibility until that source-linkage model exists. The
-deterministic pass extracts wikilinks plus typed hints such as
+Activity records have no canonical source-connection field. They are gated by
+Activity visibility. Do not invent a source-connection field on Activity to
+satisfy the source read gate. The deterministic pass extracts wikilinks plus typed hints such as
 `[[relation::Target]]`, `[[relation: Target]]`, `[[Target#relation]]`, and
 `link_type -> [[Target]]`, then resolves each target against
 viewer-visible Knowledge items (exact title/slug = high tier, alias = medium;
