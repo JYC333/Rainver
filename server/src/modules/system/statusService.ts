@@ -9,8 +9,8 @@
  * This surface reports the components the server actually owns and can observe
  * from inside this process. Components documented in
  * `.agent/modules/server-status.md` that need separate probes (LLM provider
- * reachability, per-adapter runtime tools, sandbox runner) are not reported
- * here yet rather than being reported as healthy on no evidence.
+ * reachability, per-adapter runtime tools) are not reported here. Do not
+ * report them as healthy on no evidence.
  */
 
 import type { ServerConfig } from "../../config.js";

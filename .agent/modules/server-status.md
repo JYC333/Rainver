@@ -38,7 +38,7 @@ from a source that can count the queue without a worker.
 
 Not implemented — deliberately absent rather than reported healthy on no
 evidence: LLM Provider reachability, per-adapter runtime tools
-(`claude_code` / `codex_cli`), capability load results, sandbox runner.
+(`claude_code` / `codex_cli`), and capability load results.
 
 ## Scheduled-task liveness
 
