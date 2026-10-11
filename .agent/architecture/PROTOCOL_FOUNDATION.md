@@ -31,7 +31,7 @@ Request schemas whose fields carry `.default()` export two projections of the on
 schema: `X` is `z.infer`, the parsed value the server reads with defaults
 applied, and `XInput` is `z.input`, the payload a client may actually send. A
 client typed against the parsed form would be required to supply the very values
-the server exists to default.
+the server defaults.
 
 ## What It Owns
 

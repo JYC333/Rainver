@@ -130,7 +130,7 @@ offline capture → ActivityDraft → sync → ActivityRecord (server-accepted)
                                        → [optional] Reflector → Proposal → ProposalApply → Memory
 ```
 
-Raw offline input must not become active Memory directly, even when the content is clearly factual. The proposal workflow exists to enforce quality, context, and authorization checks that cannot run offline.
+Raw offline input must not become active Memory directly, even when the content is clearly factual. The proposal workflow enforces the quality, context, and authorization checks that cannot run offline.
 
 ---
 

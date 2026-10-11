@@ -267,8 +267,8 @@ repository writes its own rows, and what a Run's end means for its Task is
 decided above them.
 
 The dispatch-refusal set (`blocked · done · cancelled`) is the only such set; a
-person may run a `waiting_for_review` Task again, because re-running is one of
-the decisions the hold exists to ask for. The one exception is a done Task's
+person may run a `waiting_for_review` Task again. Re-running is one of the
+decisions a review hold asks for. The one exception is a done Task's
 merge, whose conflict-resolution Run (`task_runs.role = 'merge'`) is admitted
 on a `done` Task ([modules/hosts.md](../modules/hosts.md), "Merging a done Task").
 

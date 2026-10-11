@@ -230,8 +230,8 @@ and selects only the uncaptured recent tail, enforcing the 2,000-summary +
 per imported session, unique on `imported_session_id`, holding the short
 account a whole-session reference carries. It has no version chain, cursor or
 lease, because an imported session's records are fixed until its folder is
-re-synced — there is no growing thread to compact incrementally, which is the
-one thing the Room's machinery exists to do.
+re-synced. There is no growing thread to compact incrementally. That
+compaction is what a Room summary does.
 
 Its integrity rests on two properties instead. The upsert is **monotonic**: it
 declines to write when the incoming `covered_through_record_at` is older than
