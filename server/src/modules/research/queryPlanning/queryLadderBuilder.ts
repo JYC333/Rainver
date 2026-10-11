@@ -61,10 +61,9 @@ export class ResearchQueryLadderBuilder {
   }
 }
 
-// One relaxation per call. Dropping the AND'd qualifier and adding an OR'd
-// expansion in the same step jumps a small result set by orders of magnitude.
-// Try expansion first, when it genuinely broadens for this provider; reach
-// for the qualifier, then core, only after that.
+// One relaxation per call. Do not drop the AND'd qualifier in the same step
+// that adds an OR'd expansion. Try expansion first, when it genuinely broadens
+// for this provider; reach for the qualifier, then core, only after that.
 function broaden(current: ResearchSemanticQuery, intent: ResearchSemanticQuery, strategy: QueryAdaptationStrategy): ResearchSemanticQuery {
   if (strategy.expansionsBroaden) {
     const expansion = firstMissing(ranked(intent.expansions), current.expansions);
