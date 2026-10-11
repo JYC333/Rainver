@@ -270,10 +270,9 @@ export function registerMemoryDirectWriteExecutors(
    * applied provenance and pending proposals. A manual Run must not evade the
    * bound merely because its first change is waiting for the owner.
    *
-   * Not a variable: a host-bound conversation builds a fresh dispatcher for
-   * every tool call (`runs/cliToolTransport.ts`), so anything held in this
-   * closure resets between calls and the bound never fired on the one surface
-   * this whole plan is about.
+   * Count it in the database. Do not hold the count in this closure. A
+   * host-bound conversation builds a fresh dispatcher for every tool call
+   * (`runs/cliToolTransport.ts`), so a closure counter resets between calls.
    */
   const personaWritesInThisRun = async (queryable: Queryable): Promise<number> => {
     const row = await queryable.query<{ total: string }>(

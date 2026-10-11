@@ -78,9 +78,8 @@ export class MemoryApplyError extends Error {
  * can see the memory, whose it is, or replace what a person wrote
  * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §1).
  *
- * The executor turns this into a proposal rather than a failure: the Agent
- * still gets to record what it learned, the person still decides anything
- * that widens reach.
+ * The executor turns this into a proposal rather than a failure. The Agent
+ * records what it learned. The person decides anything that widens reach.
  */
 export class MemoryReachError extends Error {
   readonly code = "memory_reach_requires_proposal";
@@ -630,13 +629,12 @@ export class PgMemoryApplyRepository {
    * An Agent's own bounded memory write
    * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §2).
    *
-   * It goes through this repository because the applier stays the only writer
-   * of `memory_entries` — what changes is the authority, not the path. The row
-   * records that an Agent wrote it (`created_by = agent:<id>`), that nobody
-   * approved it (`approved_by = null`, rather than the false record naming a
-   * person who never saw it) and that no proposal produced it. A revision is
-   * always a new version, so the previous one survives and one action restores
-   * it.
+   * The applier is the only writer of `memory_entries`. Do not add a second
+   * writer. The row records that an Agent wrote it (`created_by = agent:<id>`),
+   * that nobody approved it (`approved_by = null`, rather than the false record
+   * naming a person who never saw it) and that no proposal produced it. A
+   * revision is always a new version, so the previous one survives and one
+   * action restores it.
    *
    * Refuses anything that changes reach; the caller turns that refusal into a
    * proposal.
