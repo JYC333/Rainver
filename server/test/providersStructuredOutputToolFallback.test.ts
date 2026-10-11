@@ -215,9 +215,9 @@ describe("openai-compatible structured output forced-tool fallback", () => {
     expect(caught).toBeInstanceOf(ProviderInvocationError);
     const failure = caught as ProviderInvocationError;
     expect(failure.code).toBe("structured_output_invalid");
-    // Without the tool-call arguments the failure logger only ever showed the
-    // reasoning prose, leaving the payload that actually failed the schema
-    // unrecorded anywhere.
+    // The failure record includes the tool-call arguments. Do not log only
+    // the reasoning prose. The payload that failed the schema would go
+    // unrecorded.
     expect(failure.responseText).toContain('{"wrong":"shape"}');
     expect(failure.responseText).toContain("I'll call the tool now.");
   });

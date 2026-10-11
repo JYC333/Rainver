@@ -12,7 +12,7 @@ import {
 import type { Queryable } from "../routeUtils/common.js";
 
 /**
- * Slice F packetization: the discovery report becomes an owner-private (or
+ * The discovery report becomes an owner-private (or
  * `space_ops`) artifact plus a single batched `relation_discovery_packet`
  * proposal. Accepting the packet creates child pending `object_relation_create`
  * / `knowledge_create` proposals — it never writes a canonical edge or item

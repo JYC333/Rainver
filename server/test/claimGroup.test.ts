@@ -365,7 +365,7 @@ describe("claimProposalApplier", () => {
 });
 
 describe("claimReviewLoopDb", () => {
-  // Real-PostgreSQL coverage for the Slice E claim review loop. FakeDb unit tests
+  // Real-PostgreSQL coverage for the claim review loop. FakeDb unit tests
   // can't catch SQL-facing bugs in CLAIM_COLUMNS/CLAIM_FROM joins or the readable
   // space-object visibility gate, so this exercises the real queries.
 

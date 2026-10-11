@@ -19,7 +19,7 @@ import {
 import { hasDeclaration } from "../ontology/linkTypes.js";
 
 /**
- * Slice F backend: deterministic candidate-relation discovery.
+ * Deterministic candidate-relation discovery.
  *
  * Reads viewer-visible note / knowledge-item text plus policy-allowed Activity
  * and inline Artifact text, extracts typed internal links deterministically, and

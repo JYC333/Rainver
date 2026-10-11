@@ -10,7 +10,7 @@ import {
 } from "./contentAccessTypes.js";
 
 /**
- * Canonical effective-level rule (see the oversight/grant-upgrade plan):
+ * Canonical effective-level rule:
  *
  *   scope gates (membership, space, project_folder/project, active row) → deny if failed
  *   effective = widest( base-by-visibility, active-grant level, oversight level )

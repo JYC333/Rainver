@@ -5,7 +5,7 @@ import { resetTables } from "./support/resetTables.js";
 import { runRelationDiscoveryScan } from "../src/modules/knowledge/relationDiscovery.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
-// Real-PostgreSQL coverage for Slice F discovery. Locks the SQL-facing behavior
+// Real-PostgreSQL coverage for relation discovery. Locks the SQL-facing behavior
 // the FakeDb unit tests cannot: the knowledge_items/space_objects join, the
 // readable visibility gate on both sources and targets, and alias resolution.
 

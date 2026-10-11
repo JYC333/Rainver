@@ -133,9 +133,8 @@ describe('deriveStages', () => {
   it('starts the next round over instead of opening it pinned at Land', () => {
     // Every stage but Clarify is measured against this round. Do not read
     // all-time state. A Thread that had ever concluded would show Conclude
-    // complete forever, so round two would open at Land recommending
-    // Knowledge promotion before any new evidence existed — the spiral never
-    // comes round.
+    // complete forever, so round two would open at Land and recommend
+    // Knowledge promotion with no new evidence.
     const roundTwo: StageInput = {
       ...base,
       questionRefined: true,

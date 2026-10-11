@@ -7,7 +7,7 @@ import { knowledgeModule } from "../src/modules/knowledge/index.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthRepositoryForTests } from "../src/modules/auth/identity.js";
 
-// HTTP route coverage for the Slice E/F review-loop endpoints: Context Ops scan
+// HTTP route coverage for the review-loop endpoints: Context Ops scan
 // gating, response shape, and artifact/proposal persistence wiring. The DB pool
 // is mocked (the deeper SQL is covered by the *Db real-Postgres tests).
 

@@ -421,11 +421,11 @@ export function assertSqlIdentifier(value: string, label: string): void {
  * terms, or the boundary holds on the detail page and leaks on whichever list
  * forgot.
  *
- * The Task, Board, work-view, updates-feed, Home and agent-group surfaces are
- * on these. Readers outside that sweep still carry the content predicate alone
- * — several of them return artifact bodies — and are the next place to look;
- * `projects`, `proposals`, `runs` and `artifacts` write the same pair by hand
- * beside their own predicates rather than calling these.
+ * The Task, Board, work-view, updates-feed, Home and agent-group surfaces
+ * use these. Other readers still carry the content predicate alone, and
+ * several of them return artifact bodies. `projects`, `proposals`, `runs`
+ * and `artifacts` write the same pair beside their own predicates rather
+ * than calling these.
  *
  * These live here rather than in `runs` because every domain that shows a Run's
  * output reads them: tasks, projectWork, projects, proposals, plans, Home. A

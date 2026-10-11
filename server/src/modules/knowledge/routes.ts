@@ -605,7 +605,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // Slice E: advisory claim trajectory. Read-only and viewer-gated (the service
+  // Advisory claim trajectory. Read-only and viewer-gated (the service
   // only loads visible claims), so it needs no Context Ops scan authority.
   app.get("/api/v1/knowledge/claims/trajectory", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -635,7 +635,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // Slice E: deterministic, access-safe contradiction-discovery scan. Gated by
+  // Deterministic, access-safe contradiction-discovery scan. Gated by
   // Context Ops scan authority; optionally fans findings into a Claim Candidate
   // Packet so the only canonical write path stays the proposal-gated packet flow.
   app.post("/api/v1/knowledge/claims/contradiction-scan", async (request, reply) => {
@@ -711,7 +711,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // Slice F: deterministic candidate-relation discovery scan. Gated by Context Ops
+  // Deterministic candidate-relation discovery scan. Gated by Context Ops
   // scan authority; emits a single batched proposal packet — never a direct edge
   // or item write.
   app.post("/api/v1/knowledge/relations/discovery-scan", async (request, reply) => {

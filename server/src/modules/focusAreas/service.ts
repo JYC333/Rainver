@@ -179,12 +179,12 @@ export class FocusAreaService {
     focusAreaId: string | null,
   ): Promise<void> {
     if (focusAreaId !== null) await this.requireActive(identity, focusAreaId);
-    // Owned content is classified by its owner. Content with no owner — the
-    // agent-ingested sources and knowledge items this feature exists to
-    // organise — is classified by anyone who can already read it, which the
-    // shared gate decides. Readability is required either way, so this never
-    // reveals anything, and `ck_space_objects_private_owner` guarantees the
-    // ownerless case is always `space_shared`: it can never mean "hidden".
+    // Owned content is classified by its owner. Content with no owner —
+    // agent-ingested sources and knowledge items — is classified by anyone
+    // who can already read it, which the shared gate decides. Readability is
+    // required either way, so this never reveals anything, and
+    // `ck_space_objects_private_owner` guarantees the ownerless case is always
+    // `space_shared`: it can never mean "hidden".
     // Oversight is excluded deliberately — it is a read-only admin capability
     // (ADR 0013) and must not authorize a write.
     const writable = await this.db.query<{ id: string }>(

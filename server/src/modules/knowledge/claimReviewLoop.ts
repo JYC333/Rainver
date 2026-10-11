@@ -18,7 +18,7 @@ import {
 } from "../retrieval/sourcePolicy.js";
 
 /**
- * Slice E backend: claim trajectory (advisory, read-only change-over-time
+ * Claim trajectory (advisory, read-only change-over-time
  * signals) and the deterministic, access-safe contradiction-discovery scan.
  *
  * Both only ever read viewer-visible claims (the same readable space-object gate

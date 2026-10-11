@@ -272,7 +272,7 @@ async function buildCandidates(
 }
 
 /**
- * Slice E bridge: a contradiction-discovery report already carries concrete
+ * A contradiction-discovery report already carries concrete
  * `from_object_id` / `to_object_id` pairs (the scan only judged visible claims), so
  * each finding becomes a real `object_relation_create` (contradicts) candidate
  * rather than a review note. Accepting the packet still only creates child

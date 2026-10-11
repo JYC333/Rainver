@@ -308,7 +308,7 @@ export default function ContextOpsPage() {
   const [scanBusy, setScanBusy] = useState<null | 'maintenance' | 'diagnostics' | 'review' | 'contradictions' | 'discovery' | 'shape'>(null)
   const [includeMemoryMaintenance, setIncludeMemoryMaintenance] = useState(true)
   const [packetBusy, setPacketBusy] = useState<string | null>(null)
-  // Review Loops (Slice E/F) options.
+  // Review Loops options.
   const [loopReviewScope, setLoopReviewScope] = useState<'private' | 'space_ops'>('private')
   const [discoveryIncludeNotes, setDiscoveryIncludeNotes] = useState(false)
   const [discoveryIncludeUnresolved, setDiscoveryIncludeUnresolved] = useState(false)
@@ -421,7 +421,7 @@ export default function ContextOpsPage() {
     }
   }, [includeMemoryMaintenance, load, windowDays])
 
-  // Slice E: deterministic, access-safe contradiction-discovery scan. Reuses the
+  // Deterministic, access-safe contradiction-discovery scan. Reuses the
   // Claim Candidate Packet flow so the only canonical write stays proposal-gated.
   const runContradictionScan = useCallback(async () => {
     setScanBusy('contradictions')
@@ -441,7 +441,7 @@ export default function ContextOpsPage() {
     }
   }, [load, loopReviewScope])
 
-  // Slice F: deterministic candidate-relation discovery; emits one batched
+  // Deterministic candidate-relation discovery; emits one batched
   // discovery packet of child Knowledge relation/item proposals.
   const runRelationDiscovery = useCallback(async () => {
     setScanBusy('discovery')

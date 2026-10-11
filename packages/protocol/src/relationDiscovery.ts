@@ -1,5 +1,5 @@
 /**
- * Candidate-relation discovery contracts (Slice F — Gap 6).
+ * Candidate-relation discovery contracts.
  *
  * The discovery pass reads viewer-visible note / knowledge-item text plus
  * policy-allowed Activity/Artifact text, extracts typed internal links

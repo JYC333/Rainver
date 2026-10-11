@@ -60,10 +60,8 @@ function sha256(value: string): string {
  * knowledge_items-backed kinds (concept/lesson/procedure/decision/summary);
  * Claim and Relation use their own extraction flows
  * (claim_candidate_packet, relation_discovery_packet in modules/knowledge/).
- * Extraction here is manual/explicit — a human names the exact source
- * revision and proposed content — matching this codebase's established
- * manual-first sequencing;
- * an AI-driven auto-extraction pipeline is a documented follow-up.
+ * Extraction here is manual and explicit: a human names the exact source
+ * revision and proposed content.
  *
  * `decideCandidate("promote")` never writes `knowledge_items` directly — it
  * creates a pending `knowledge_create`/`knowledge_update` proposal carrying
