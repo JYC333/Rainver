@@ -455,9 +455,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         actorUserId: resolved.userId,
       });
     }
-    // `detail` as well as `error`: the web client reads `detail`, and without
-    // it a real reason from the host — "Runs are still using claude_code; try
-    // again once they finish" — reached the person as "502 Bad Gateway".
+    // The web client reads `detail`. Copy `error` there on failure. Do not
+    // send only `error`.
     return reply.code(result.ok ? 200 : 502)
       .send({ host_id: resolved.hostId, runtime_key: runtimeKey, ...result, ...(result.ok ? {} : { detail: result.error }) });
   });
@@ -529,9 +528,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         actorUserId: resolved.userId,
       });
     }
-    // `detail` as well as `error`: the web client reads `detail`, and without
-    // it a real reason from the host — "Runs are still using claude_code; try
-    // again once they finish" — reached the person as "502 Bad Gateway".
+    // The web client reads `detail`. Copy `error` there on failure. Do not
+    // send only `error`.
     return reply.code(result.ok ? 200 : 502)
       .send({ host_id: resolved.hostId, runtime_key: runtimeKey, ...result, ...(result.ok ? {} : { detail: result.error }) });
   });
@@ -569,9 +567,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         actorUserId: resolved.userId,
       });
     }
-    // `detail` as well as `error`: the web client reads `detail`, and without
-    // it a real reason from the host — "Runs are still using claude_code; try
-    // again once they finish" — reached the person as "502 Bad Gateway".
+    // The web client reads `detail`. Copy `error` there on failure. Do not
+    // send only `error`.
     return reply.code(result.ok ? 200 : 502)
       .send({ host_id: resolved.hostId, runtime_key: runtimeKey, ...result, ...(result.ok ? {} : { detail: result.error }) });
   });

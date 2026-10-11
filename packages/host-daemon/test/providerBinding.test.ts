@@ -44,7 +44,7 @@ describe("ambient environment for a bound run", () => {
       LC_ALL: "C",
       HOME: "/home/someone",
       ANTHROPIC_API_KEY: "sk-machine",
-      // The three a denylist of vendor prefixes would have missed:
+      // Names a vendor-prefix denylist would still pass:
       CLAUDE_CODE_OAUTH_TOKEN: "oauth-from-this-machine",
       XDG_DATA_HOME: "/home/someone/.local/share",
       NODE_OPTIONS: "--require /home/someone/inject.js",

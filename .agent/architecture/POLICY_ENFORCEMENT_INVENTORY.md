@@ -439,7 +439,7 @@ No server path loads `policies` while making a decision, so a malformed effect o
 
 ## PersonalMemoryGrant
 
-**Status:** Active. Further expansion requires a separate design.
+**Status:** Active.
 
 ### Tables and entities
 

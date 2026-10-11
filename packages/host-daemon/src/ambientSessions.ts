@@ -2,11 +2,10 @@
  * Reading this machine's own CLI history over the Agent Client Protocol.
  *
  * Every supported runtime exposes its past sessions through `session/list`
- * and replays one through `session/load`, so there is one generic client here
- * and no vendor session-file parser anywhere — those formats are
- * undocumented, self-corrupting (broken parent chains, sessions rewritten on
- * resume, one conversation split across files by compaction), and three of
- * them would have to be maintained forever.
+ * and replays one through `session/load`. This is one generic client. Do not
+ * add a vendor session-file parser. Those formats are undocumented and change
+ * under the daemon: broken parent chains, sessions rewritten on resume, one
+ * conversation split across files by compaction.
  *
  * This module holds no dependency beyond Node and the ACP adapters the daemon
  * already ships, and no knowledge of any vendor: the server names the adapter

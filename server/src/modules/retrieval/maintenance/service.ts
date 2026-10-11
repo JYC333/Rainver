@@ -31,8 +31,8 @@ import type { RevalidatedObject } from "../types.js";
  * Stale detection uses `retrieval_objects.source_updated_at` — the CANONICAL
  * object's last-update time projected by the adapters — so "stale" means the
  * content is genuinely old, not just that the index was rebuilt a while ago.
- * Memory is not scanned here (private-row exposure is a separate design); the
- * scan is Knowledge-registry only.
+ * Memory is not scanned here. Callers pass `knowledgeRetrievalRegistry`.
+ * Memory maintenance is `MemoryMaintenanceService`.
  */
 export type MaintenanceFindingKind = "duplicate" | "orphan" | "thin" | "stale" | "relation_suggestion";
 
