@@ -205,8 +205,8 @@ export async function tryQueueAdviceForFocusedThread(
  * Marks a Thread's evidence-gathering step finished because its search
  * actually finished.
  *
- * This is why a step is a record rather than a label: the search knows it is
- * done, so the user should never have to come back and say so. Best-effort and
+ * A step is a record, not a label. The search knows it is done, so the user
+ * should never have to come back and say so. Best-effort and
  * post-commit like the advice queue beside it — a completion that fails must
  * not fail the search that triggered it.
  */

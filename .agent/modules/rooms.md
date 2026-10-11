@@ -227,7 +227,7 @@ Room conversation summaries:
   Room turn has the resource tools to follow the link — so the `delegation_result`
   message, the continuation and its retry job all hand it on; a turn whose
   instruction carries such a link is granted the resource tools that read it. A Manager that *did* wait is unaffected — that
-  case already resumes through the pre-existing dependency-wait path and
+  case already resumes through the dependency-wait path and
   never reaches this second notification. `research.start_acquisition`
   reports the same way: `research_pipeline_outcome` (started, the question
   failing FINER assessment, or a stage failure) and `research_workflow_terminal`

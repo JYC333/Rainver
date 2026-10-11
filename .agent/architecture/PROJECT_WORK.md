@@ -47,7 +47,7 @@ ordering to label a move `advance / regress / skip / reopen`:
 - **regress** — verification that fails because the method was wrong belongs
   back at `plan`; because the goal was misunderstood, back at `frame`.
 
-This is why the stage is **stored rather than derived**. A Task that skipped
+The stage is **stored rather than derived**. A Task that skipped
 planning and one still planning have identical surrounding facts; so do one
 sent back after a failed check and one that has already verified. Only an
 actor's decision separates them, so the decision is what gets recorded.
@@ -70,24 +70,22 @@ millisecond. Do not order `(occurred_at, id)`. A random v4 UUID would make
 "the latest event" a coin flip for the board, the Task work view and the
 Updates feed alike. Every reader orders `(occurred_at, seq)`.
 
-- **Actor-neutral from the start.** `actor_id` is an `actors` FK, which already
+- **Actor-neutral.** `actor_id` is an `actors` FK, which
   spans user, agent, system, automation, connector, integration, service and
-  job. A handoff whose recipient could only be an Agent would need redesigning
-  the first time the answer is "wait for the supplier" or "wait for Tuesday".
-- **Idempotency is the design point.** At-least-once delivery means settlement
+  job. Do not restrict a handoff recipient to an Agent. The answer can be
+  "wait for the supplier" or "wait for Tuesday".
+- **Idempotent.** At-least-once delivery means settlement
   re-enters with the same facts; a partial unique index on
   `(space_id, idempotency_key)` is the dedupe, so a retry inserts
   optimistically and treats the conflict as success.
 - **`event_kind` carries a format check only.** The closed set lives in
   `modules/projectWork/eventKinds.ts`, open for modules and plugins to register
-  into, exactly as link types are. A demoted constraint is only safe while
-  something asks the registry — `assertWorkEventKind` is that something, and it
-  is called from the one writer.
+  into, exactly as link types are. The format check is safe only while
+  `assertWorkEventKind` asks the registry, and it is called from the one writer.
 
 `eventWriter.ts` is the only place that writes the table. A test asserts no
-second writer appears, and asserts it before any of the writer's own rules,
-because hardening a choke point is worthless if a domain can hand-roll the
-insert next to it.
+second writer appears, and asserts it before any of the writer's own rules.
+Do not hand-roll the insert beside it.
 
 ### Kinds
 
@@ -99,7 +97,7 @@ thread.concluded · thread.next_step_adopted · memory.remembered ·
 memory.revised · memory.archived · agent.persona_revised ·
 agent.persona_restored`
 
-`task.merged` and `task.merge_blocked` are what became of a done Task's
+`task.merged` and `task.merge_blocked` record a done Task's
 change on an execution host: on a Location's main branch, or stopped on
 something a person has to see (`reason`: `waiting_local_changes`,
 `conflict`, `verification_failed`, `failed`, with the files or failed checks).
@@ -107,10 +105,10 @@ The service actor `task_merge` writes them (ADR 0016 §11;
 [modules/hosts.md](../modules/hosts.md), "Merging a done Task").
 
 The `thread.*` kinds are Inquiry advancement, subject `inquiry_thread`,
-declared by the `inquiry` module in the same registry. They exist because
-[ADR 0017](../decisions/0017-authorization-by-cost-not-authorship.md) §4 makes
-a direct write conditional on the person seeing it afterwards and being able
-to reverse it: this stream is where they see it. Each carries the statement,
+declared by the `inquiry` module in the same registry. A direct write is
+visible here afterwards and reversible
+([ADR 0017](../decisions/0017-authorization-by-cost-not-authorship.md) §4).
+Each carries the statement,
 `origin` (`agent`/`user`), the `run_id` when a Run did it, and a `batch_key`
 (`<run id>:<kind>`) so one turn's writes of one kind fold into one row.
 `thread.concluded` also carries the Iteration id and both positions, because
@@ -447,14 +445,10 @@ set is an allowlist (`manual`) rather than a denylist, so a new origin is gated
 until someone decides it should not be.
 
 `require_approval` here is a **refusal**, not a prompt. Nothing produces an
-unattended Project write. There is no Steward to make one. When that exists,
-the right shape for `task.create` under an autonomous origin is a proposal —
-the person sees the draft cards — rather than an approval dialog. Until then
-the gate is a closed door with nothing behind it, which is the correct state
-for a capability that has no caller.
+unattended Project write. There is no Steward. The gate refuses.
 
-Two definitions — one "manual" and one "autonomous" — were the alternative, and
-would have meant two schemas, two executors, and two places to forget one.
+Do not split the definition into a manual one and an autonomous one. That
+would mean two schemas, two executors, and two places to forget one.
 
 ### Attribution
 

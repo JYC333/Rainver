@@ -103,10 +103,10 @@ export function registeredLinkTypes(): readonly LinkTypeDefinition[] {
 
 
 /**
- * Core declarations. Governance follows the pre-existing behaviour: everything
- * that `object_relations` already gated behind a proposal stays gated, and the
- * two types recovered from `inquiry_thread_relations` keep the direct writes
- * they had as a domain table.
+ * Core declarations. `object_relations` types stay proposal-gated.
+ * Thread-to-thread structure, a thread's note `references`, a decision's
+ * `derived_from`, and a workflow's `about` its pinned thread are direct
+ * writes. Do not route those through proposals.
  */
 function registerCoreLinkTypes(): void {
   const proposalGated: readonly LinkType[] = [
@@ -207,7 +207,7 @@ function registerCoreLinkTypes(): void {
     owner: "projectResearch",
   });
 
-  // Thread-to-Note working links, recovered from `inquiry_thread_note_links`.
+  // Thread-to-Note working links, written directly.
   registerLinkType({
     linkType: "references",
     from: ["inquiry_thread"],

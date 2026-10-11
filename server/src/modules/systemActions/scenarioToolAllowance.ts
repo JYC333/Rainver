@@ -109,8 +109,7 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "proposal.list_pending",
   "proposal.decide",
   // Bringing a Source into the Project. Both are proposals (ADR 0017 §1), so
-  // they widen nothing that skips approval. They were the whole of what a
-  // direct chat could do before it shared this list.
+  // they widen nothing that skips approval.
   "project.source.propose_bind",
   "source.backfill.propose_start",
 ];
