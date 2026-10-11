@@ -2,12 +2,11 @@ import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { Skeleton } from '../../components/ui/skeleton'
 
-// Each project sub-route pulls in a genuinely separate page (and, for the
-// research Area, its own large dependency tree — notebook, reading
-// list, checklist, chat panel). Without per-route lazy loading, opening the
-// plain project detail page forced the browser to also fetch and parse
-// every other sub-route's modules up front, competing with this page's own
-// data requests for the same connection pool.
+// Each project sub-route is its own page. The research Area pulls in a
+// large tree — notebook, reading list, checklist, chat panel. Load each
+// route on navigation. Do not import them eagerly: the project detail
+// page would then fetch and parse every other sub-route before its own
+// data requests.
 const ProjectsPage = lazy(() => import('./ProjectsPage'))
 const ProjectDetailPage = lazy(() => import('./ProjectDetailPage'))
 const SourcesAreaPage = lazy(() => import('./SourcesAreaPage'))

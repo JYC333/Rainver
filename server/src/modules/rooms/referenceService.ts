@@ -1,13 +1,12 @@
 /**
  * Copying picked content into a Room conversation.
  *
- * Split out of `RoomService` the way the roster service is: the reference
- * machinery has its own gates, its own cost (a model call per unsummarized
- * whole-session pick) and its own ordering rules, and shares nothing with the
- * rest of the service but the pool and the config. The public endpoint stays
- * on `RoomService`, which delegates the two halves here — the pre-transaction
- * preparation and the in-transaction copy — so the transaction boundary is
- * visible in one place.
+ * The reference machinery has its own gates, its own cost (a model call per
+ * unsummarized whole-session pick) and its own ordering rules, and shares
+ * nothing with the rest of RoomService but the pool and the config. The
+ * public endpoint stays on `RoomService`, which delegates the two halves
+ * here — the pre-transaction preparation and the in-transaction copy — so
+ * the transaction boundary is visible in one place.
  */
 
 import type { ServerConfig } from "../../config.js";

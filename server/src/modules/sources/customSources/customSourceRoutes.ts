@@ -19,7 +19,7 @@ import { CustomSourceRepairService } from "./customSourceRepairService.js";
 import { CustomSourceCredentialService } from "./customSourceCredentialService.js";
 import { applyContentCreationContext, resolveContentCreationContext } from "../../access/creationContext.js";
 
-/** Custom Source create-flow, repair/rollback, credentials, and read-model routes, split out of routes.ts per its own size. */
+/** Custom Source create-flow, repair/rollback, credentials, and read-model routes. */
 export function registerCustomSourceRoutes(app: FastifyInstance, context: ModuleContext): void {
   const customSourceRepository = () =>
     new PgCustomSourceHandlerRepository(dbPool(context.config), context.config);
