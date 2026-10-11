@@ -1,14 +1,14 @@
 import type { Queryable } from "../routeUtils/common.js";
 
 /**
- * Which research checkpoints still stop the workflow, and why.
+ * Which research checkpoints stop the workflow.
  *
- * Checkpoints are informational by default. The checkpoint row is still
- * written: it is the durable record of what the machine concluded. The
- * workflow continues and the Room gets a report instead of a permission
- * request. Do not make them blocking gates.
+ * Checkpoints are informational by default. The checkpoint row is written:
+ * it is the durable record of what the machine concluded. The workflow
+ * continues and the Room gets a report instead of a permission request. Do
+ * not make them blocking gates.
  *
- * Two exceptions remain:
+ * Two exceptions:
  *
  * - `manuscript_gate` blocks because its output is external-facing and
  *   high-stakes. Nothing downstream can un-send a manuscript.

@@ -798,9 +798,9 @@ the cancellation job and becomes the Run's terminal cancellation reason.
 ## Research checkpoint policy
 
 `researchCheckpointPolicy.ts` is the single authority for which checkpoints
-still stop a workflow. Checkpoints are informational by default. The row
-stays as the durable record of what the machine concluded, and the workflow
-continues. Do not make them blocking gates.
+stop a workflow. Checkpoints are informational by default. The row is the
+durable record of what the machine concluded, and the workflow continues.
+Do not make them blocking gates.
 
 `manuscript_gate` blocks, because its output is external-facing and
 nothing downstream can un-send it. `screening_gate` blocks conditionally, on

@@ -831,9 +831,9 @@ human-confirmed `triage_status`.
 counts. `POST /projects/{id}/research/question/resolve` accepts `rescreen`,
 `synthesis_only`, or `apply_forward`: all three refresh the profile and Auto
 Research rule judgement fields; re-screen resets only unconfirmed AI corpus
-projection and runs the normal screening/review/synthesis gates, synthesis-only
-reuses the corpus, queues a new synthesis, and still stops at idea review;
-apply-forward leaves existing decisions and artifacts unchanged. The older apply-forward endpoint delegates
+projection and runs the normal screening/review/synthesis gates; synthesis-only
+reuses the corpus and queues a new synthesis, and `idea_review` is recorded
+without holding the operation; apply-forward leaves existing decisions and artifacts unchanged. The older apply-forward endpoint delegates
 to the same transaction. Active or queued research/source-processing work must
 finish before resolution begins.
 

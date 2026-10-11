@@ -339,8 +339,8 @@ export class PgHostRepository {
 
   /**
    * A daemon below `MIN_HOST_DAEMON_VERSION` is not admitted, so this is the
-   * inverse of `recordHeartbeat`: the version it reported is still written —
-   * it is what names the reason beside the host in the Command Center — but
+   * inverse of `recordHeartbeat`: the version it reported is written — it
+   * is what names the reason beside the host in the Command Center — but
    * the host does not go online, keeps no fresh heartbeat, and is therefore
    * not a dispatch target anywhere `host_online` is read.
    */
