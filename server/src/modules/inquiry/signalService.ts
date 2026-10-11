@@ -712,7 +712,7 @@ export class InquirySignalService {
       );
       if (!packet.rows[0]) throw new HttpError(404, "Review packet not found");
       // Still-pending Candidates go back into the unassigned pool so a later
-      // packet can pick them up; decided Candidates keep the historical link.
+      // packet can pick them up. Decided Candidates keep their packet link.
       await db.query(
         `UPDATE inquiry_signal_candidates SET review_packet_id = NULL WHERE review_packet_id = $1 AND status = 'pending'`,
         [packetId],

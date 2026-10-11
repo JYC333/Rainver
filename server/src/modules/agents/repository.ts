@@ -1244,7 +1244,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
 
   /**
    * Replaces the current version of a system-managed Agent without mutating
-   * historical AgentVersion rows. The Agent row is locked so concurrent
+   * other AgentVersion rows. The Agent row is locked so concurrent
    * refreshes either observe the newly-published version or serialize behind
    * the publisher instead of allocating the same version label.
    */

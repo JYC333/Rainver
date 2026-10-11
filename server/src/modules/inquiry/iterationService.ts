@@ -417,7 +417,7 @@ export class InquiryIterationService {
       }
 
       // child/supersede: create a new Thread carrying the revised definition.
-      // The historical Thread is deliberately not mutated before the branch.
+      // Do not mutate the Thread being superseded before the branch.
       const newThreadId = randomUUID();
       // The branch copies this Thread's fields, so it starts no wider than this
       // Thread: same visibility and level. Selected-people grants are not

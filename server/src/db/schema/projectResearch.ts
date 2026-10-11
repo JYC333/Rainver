@@ -142,9 +142,9 @@ export const projectResearchQuestionAssessmentMessages = pgTable("project_resear
 	check("ck_project_research_question_assessment_messages_structured_object", sql`structured_output_json IS NULL OR jsonb_typeof(structured_output_json) = 'object'::text`),
 ]);
 
-// Immutable outcomes of completed monitoring scans. Keeping this separate
-// from workflow/operation projections means later re-screening cannot rewrite
-// the historical "what was found on this scan" timeline.
+// Immutable outcomes of completed monitoring scans. Kept separate from
+// workflow and operation projections so a later re-screen cannot rewrite
+// what that scan found.
 export const researchScanSummaries = pgTable("research_scan_summaries", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),

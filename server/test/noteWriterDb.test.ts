@@ -185,8 +185,8 @@ describe("block ids on notes that have none (real Postgres)", () => {
     }) as { content_json: unknown };
     expect(blockIds(updated.content_json).every(id => typeof id === "string")).toBe(true);
 
-    // The historical revision is untouched — history is evidence, not something
-    // to backfill.
+    // The stored revision stays as it was written. Do not backfill it.
+    // History is evidence.
     const revisions = await db.pool.query<{ content_json: unknown }>(
       `SELECT content_json FROM note_revisions WHERE note_id = $1 ORDER BY version ASC LIMIT 1`,
       [note.id],

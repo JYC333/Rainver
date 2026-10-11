@@ -27,8 +27,8 @@ export const CUSTOM_SOURCE_HANDLER_KIND_VALUES = ["built_in", "generated_custom"
 
 /**
  * Level 3 generated-handler language identifiers. `typescript_node` is the
- * generated-code fallback. `declarative_pipeline_v1` remains for advanced or
- * historical handler versions and can be explicitly bridged into Level 2
+ * generated-code fallback. `declarative_pipeline_v1` remains readable on
+ * existing handler versions and can be explicitly bridged into Level 2
  * Source Recipes; normal source creation should write `source_recipe_versions`
  * instead of new pipeline-as-handler rows. See
  * `.agent/architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md`.
