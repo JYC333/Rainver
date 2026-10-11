@@ -6,7 +6,7 @@ import { cn } from '../../lib/utils'
 export interface SelectOption {
   value: string
   label: string
-  /** Shown but not choosable — e.g. an offline host, a "next phase" runtime. */
+  /** Shown but not choosable — for example an offline host. */
   disabled?: boolean
 }
 

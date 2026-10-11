@@ -113,9 +113,8 @@ describe('HostsPanel', () => {
   })
 
   it('shows versions on installed Agent rows and omits uninstalled runtime badges', async () => {
-    // codex_cli is remote-eligible (its own
-    // adapter is codex-acp), so a still-genuinely-ineligible adapter
-    // (gemini_cli, implementation_status "planned") exercises this case.
+    // codex_cli is remote-eligible. gemini_cli is not. An ineligible runtime
+    // does not get a phase badge on the host row.
     const GEMINI_ADAPTER = { runtime_key: 'gemini_cli', display_name: 'Gemini CLI', command: 'gemini', capability_probe: 'gemini', remote_eligible: false, supports_runtime_native: false, supports_model_provider: false }
     vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER, GEMINI_ADAPTER] })
     vi.mocked(hostsApi.list).mockResolvedValue({
@@ -128,10 +127,9 @@ describe('HostsPanel', () => {
   })
 
   it('lists an installed registry agent even though it is not dispatch-eligible', async () => {
-    // A registry agent's managed copy is installable and managed on the host
-    // while `remote_eligible` stays false (no login/state-root contract yet).
-    // Do not filter the host list by eligibility. The copy would disappear
-    // right after install.
+    // A registry agent's managed copy is installable on the host while
+    // `remote_eligible` stays false. Do not filter the host list by
+    // eligibility. The copy would disappear right after install.
     const CURSOR_ADAPTER = { runtime_key: 'acp_cursor', display_name: 'Cursor', command: 'acp_cursor', capability_probe: 'acp_cursor', remote_eligible: false, supports_runtime_native: true, supports_model_provider: false }
     vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER, CURSOR_ADAPTER] })
     vi.mocked(hostsApi.list).mockResolvedValue({
