@@ -760,9 +760,8 @@ export class ProjectResearchAreaService {
     /** The notebook role this note is created to hold, when it has one. */
     projectRole?: NoteProjectRole | null;
   }): Promise<{ id: string; version: number }> {
-    // Auto-created scaffolding (starter notes) has no acting user. Attributing
-    // it to the Project owner is accurate — the notes exist because that
-    // Project does — and leaves the object traceable, which B12H requires.
+    // Auto-created scaffolding (starter notes) has no acting user. Attribute
+    // it to the Project owner so the note stays traceable (B12H).
     const createdByUserId = input.createdByUserId
       ?? (input.createdByRunId ? null : await this.projectOwnerUserId(input.spaceId, input.projectId));
     return scope.create({

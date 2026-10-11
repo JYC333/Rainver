@@ -17,15 +17,15 @@ const PAGE_SIZE = 30;
 // the readable account belongs to whoever wrote one — so the acceptance is
 // rendered as itself rather than given invented words.
 //
-// The Inquiry kinds are here because an Agent now advances a Thread directly
-// (ADR 0017 §2): this is where the person sees what it did, so it is also
-// where they undo it. Task lifecycle kinds stay out — Board state is not a
+// The Inquiry kinds belong here. An Agent advances a Thread directly
+// (ADR 0017 §2): this is where the person sees what it did, and where they
+// undo it. Task lifecycle kinds stay out — Board state is not a
 // readable account, and it has its own surface.
 const UPDATE_KINDS = [
   "task.reported",
   "project.reported",
   "task.accepted",
-  // What became of a done Task's change: on the main branch, or stopped on
+  // A done Task's change on the main branch, or stopped on
   // something a person has to see (ADR 0016 §11).
   "task.merged",
   "task.merge_blocked",

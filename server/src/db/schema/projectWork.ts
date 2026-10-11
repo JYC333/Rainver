@@ -18,16 +18,15 @@ export const projectWorkEvents = pgTable("project_work_events", {
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	projectId: varchar("project_id", { length: 36 }).notNull(),
 	// Closed-set validation is the registry's job (B12F), so the column carries
-	// a format constraint only. `modules/projectWork/eventKinds.ts` is the
-	// replacement, and a demoted constraint without one would be strictly worse
-	// than the constraint it replaced.
+	// a format constraint only. `modules/projectWork/eventKinds.ts` asks the
+	// registry on the one writer. Do not add a closed-set CHECK here.
 	eventKind: varchar("event_kind", { length: 64 }).notNull(),
 	subjectType: varchar("subject_type", { length: 32 }).notNull(),
 	subjectId: varchar("subject_id", { length: 36 }).notNull(),
-	// Actor-neutral from the start. A responsibility handoff whose recipient can
-	// only be an Agent has to be redesigned the first time the answer is "wait
-	// for the supplier" or "wait for Tuesday", and `actors` already spans user,
-	// agent, system, automation, connector, integration, service and job.
+	// Actor-neutral. Do not restrict a handoff recipient to an Agent. The answer
+	// can be "wait for the supplier" or "wait for Tuesday". `actors` already
+	// spans user, agent, system, automation, connector, integration, service
+	// and job.
 	actorId: varchar("actor_id", { length: 36 }).notNull(),
 	occurredAt: timestamp("occurred_at", { withTimezone: true, mode: 'string' }).notNull(),
 	correlationId: varchar("correlation_id", { length: 64 }),

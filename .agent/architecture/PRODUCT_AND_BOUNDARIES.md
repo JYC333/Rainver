@@ -8,8 +8,8 @@ projects, recurring workflows, automation, and code work—through auditable hum
 collaboration. It captures inputs, runs agents, produces reviewable artifacts and proposals,
 and governs what becomes durable memory or action.
 
-Personal, household, and small-team use are first-order contexts from the start; collaboration
-is not a later enterprise add-on. Memory and context are foundational substrate for the
+Personal, household, and small-team use are first-order contexts. Collaboration
+is not an enterprise add-on. Memory and context are foundational substrate for the
 workbench, not the complete product identity. Reviewable Evolution workflows are supporting
 cast and always execute through an explicitly selected ordinary Agent.
 

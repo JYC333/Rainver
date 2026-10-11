@@ -708,5 +708,5 @@ by routing and the Host daemon.
 ## Related Docs
 
 - [runtime-adapters.md](runtime-adapters.md) — adapter registry, three-way separation, license notes
-- [hosts.md](hosts.md) — execution hosts, the strict-mode namespace, and what became of the sandbox line
+- [hosts.md](hosts.md) — execution hosts and the strict-mode namespace
 - [provider-policy.md](provider-policy.md) — model provider configuration

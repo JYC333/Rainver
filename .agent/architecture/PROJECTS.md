@@ -196,7 +196,7 @@ current Project-owned status/focus in the same transaction.
 
 A Project's **mainline Room** is a second structural singleton on the same
 footing ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision
-4): created in the same transaction, present from the start, empty until a
+4): created in the same transaction, present with the Project, empty until a
 user explicitly opens a Conversation draft. "A Project with no Room" is not a
 state, so no caller handles its absence. Project/Room creation provisions no
 Assistant and opens no Conversation; the explicit draft action performs lazy

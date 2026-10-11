@@ -103,8 +103,7 @@ interface TaskLinkInput {
  *
  * The entity type is checked against the Entity registry rather than a list
  * here, so a domain joins by registering — the column carries a format check
- * only, and a demoted constraint with nothing asking the registry would be
- * worse than the constraint it replaced.
+ * only. Do not add a closed-set CHECK with nothing asking the registry.
  */
 export async function linkTaskEntities(
   db: Queryable,

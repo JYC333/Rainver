@@ -273,15 +273,14 @@ on a `done` Task ([modules/hosts.md](../modules/hosts.md), "Merging a done Task"
 Every append-only surface that records who acted resolves its `actors` row
 through `db/actorResolver.ts`. Two partial unique indexes (one person per
 Space, one service name per Space) make its insert-on-conflict real; without
-them two concurrent first writes for the same person produced two actors.
+them two concurrent first writes for the same person would produce two actors.
 
 ## 7. Read models and the surfaces over them
 
 `GET /projects/:projectId/board` and `GET /tasks/:taskId/work` are the two read
-models (`boardReadModel.ts`). They exist because the client cannot answer their
+models (`boardReadModel.ts`). The client cannot answer their
 questions from domain rows alone — which stage a Task is in, who is on the
-hook, why it cannot close — and reconstructing any of it in the browser would
-put a second copy of the rules where nothing tests them against the write path.
+hook, why it cannot close. Do not reconstruct those rules in the browser.
 Both are one statement plus their bounded detail queries; the completion check
 reads attached outputs in the same query rather than per card. Run status,
 evaluation, and attached output types on those surfaces are filtered with the

@@ -49,7 +49,7 @@ export function acpSessionConfigFromRunOverride(value: unknown): AcpSessionConfi
  * Forces the selections a runtime's spec declares for a strict host, over
  * whatever the caller asked for on the same option.
  *
- * The caller's choice loses on purpose: these exist because the built-in
+ * The caller's choice loses. The built-in
  * host's namespace is already the boundary, and a vendor sandbox left on
  * inside it does not add a boundary — it takes the Run's own workspace away
  * (ADR 0016 section 2). A member who picked "ask for approval" on a host with
