@@ -419,7 +419,7 @@ function isInsideRoot(path: string, root: string): boolean {
 
 /**
  * Drops a trailing incomplete UTF-8 multi-byte sequence, if the buffer was
- * cut mid-character. Without this, decoding a mid-sequence cut with
+ * cut mid-character. Do not decode that cut as-is.
  * `.toString("utf8")` substitutes a 3-byte U+FFFD replacement character,
  * which can make the decoded string's byte length exceed the buffer's own
  * byte budget and break the byte-count log cap.

@@ -162,8 +162,9 @@ async function handleProviderTaskRun(
   // `agent_run` uses: `runBoundedProviderTask` settles the Run for a provider
   // or contract failure, but the preparer itself can throw — a Run missing the
   // provider binding its contract froze can never be rebuilt — and so can the
-  // database calls around it. Without this the Run stayed `queued` forever
-  // after the last attempt, and kept spending its domain's daily budget.
+  // database calls around it. Do not let that throw escape the guard. The Run
+  // would stay `queued` after the last attempt and keep spending its domain's
+  // daily budget.
   try {
     const request = await preparer({ db, config, run, job });
     const result = await runBoundedProviderTask(db, config, {

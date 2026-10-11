@@ -196,8 +196,8 @@ export async function enqueueTaskMerges(
  * The Task left `done` (reopened, cancelled, deleted): each merge not yet
  * finished runs once more, sees the Task is not done, and gives back what it
  * holds on the host — a conflict, a rebased branch — before it is superseded.
- * Without this a blocked merge would keep holding the Task's worktree against
- * its next Run.
+ * Do not leave a blocked merge holding the Task's worktree. Its next Run
+ * would be unable to take it.
  */
 export async function withdrawTaskMerges(db: Queryable, input: { spaceId: string; taskId: string }): Promise<void> {
   const open = await db.query<{ id: string; workspace_location_id: string; requested_by_user_id: string; execution_host_id: string }>(

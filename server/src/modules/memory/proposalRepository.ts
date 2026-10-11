@@ -350,9 +350,10 @@ export class PgMemoryProposalRepository {
     }
     if (target.scope_type === "agent") {
       // An Agent proposes changes to its own memory only. The applier already
-      // refuses the direct write; without this, its fallback proposal would
-      // carry one Agent's revision of another's persona to the owner they
-      // share, and an accept would hand the entry's authorship across.
+      // refuses the direct write. Do not omit the same check on the proposal.
+      // Its fallback would carry one Agent's revision of another's persona to
+      // the owner they share, and an accept would hand the entry's authorship
+      // across.
       if (agentOrigin && agentOrigin.agentId !== target.agent_id) {
         throw new MemoryProposalValidationError(
           "an Agent may propose changes only to its own memory, not another Agent's",
@@ -574,10 +575,9 @@ export class PgMemoryProposalRepository {
       projectFolderId: input.projectFolderId,
       projectId: input.projectId,
       createdByUserId: input.userId,
-      // The Agent is recorded as the author when it is one. Without this the
-      // applied entry would carry the person as `created_by` and no
-      // `agent_id`: an Agent-authored memory attributed to someone who never
-      // wrote it.
+      // The Agent is recorded as the author when it is one. Do not record the
+      // person as `created_by` with no `agent_id`. An Agent-authored memory
+      // would be attributed to someone who never wrote it.
       ...(input.agentOrigin
         ? { createdByAgentId: input.agentOrigin.agentId, createdByRunId: input.agentOrigin.runId }
         : {}),

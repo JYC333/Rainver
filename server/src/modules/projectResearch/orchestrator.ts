@@ -1006,7 +1006,7 @@ export class ProjectResearchOrchestrator {
       const backfillDone = backfillCanProceed(plans.rows, backfillPlanIds.length);
       // Once the workflow has advanced past screening (synthesis, idea_review,
       // complete, failed, ...), this whole backfill->screening transition must
-      // stay inert. Without this guard, backfillDone stays true forever (plans
+      // stay inert. Do not re-enter it. backfillDone stays true (plans
       // never leave 'completed'), so every later reconcile tick would still
       // re-enter it, stomp current_stage back to "screening", and — since
       // createCheckpoint only recognizes a still-*pending* checkpoint as

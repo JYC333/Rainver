@@ -432,8 +432,8 @@ export async function enforceDeclaredResourcePolicy(
       instructed_by_user_id: run.instructed_by_user_id,
       // Who wanted this. `ruleUnattendedProjectWrite` distinguishes a write a
       // person asked for in a conversation from the same call made by an
-      // unattended wake-up, and without this key it read every dispatch as
-      // `manual` and never fired.
+      // unattended wake-up. Do not omit this key. Every dispatch would read as
+      // `manual` and the rule would never fire.
       trigger_origin: (await effectiveRunTrigger(getDbPool(databaseUrl), run)).origin,
       // What a memory write is, resolved by the module that owns the answer
       // rather than taken from the call: `ruleUnattendedProjectWrite`'s one

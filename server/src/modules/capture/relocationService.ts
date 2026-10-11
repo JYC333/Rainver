@@ -104,9 +104,9 @@ export class RelocationService {
       const offered = new Set(
         relocationCandidates(blocks, capture.block_id, otherAnchors).map((block) => block.block_id),
       );
-      // Only the blocks the preview offered. Without this the client could name
-      // any block in the note — including a colleague's paragraph — and have it
-      // carried out of the Space.
+      // Only the blocks the preview offered. Do not accept a block the preview
+      // did not name. The client could carry a colleague's paragraph out of
+      // the Space.
       for (const id of input.blockIds) {
         if (!offered.has(id)) throw new HttpError(422, "Block is not part of this capture's selection");
       }

@@ -65,8 +65,8 @@ export function startBackgroundServices(
     },
     {
       // A deployer that dies mid-update leaves a `running` job nothing will
-      // ever finish; without this the single-active invariant would block
-      // every later update until someone edited the row by hand.
+      // ever finish. Do not leave that job active. The single-active invariant
+      // would block every later update until someone edited the row by hand.
       name: "deployment_lost_deployer_sweep",
       intervalSeconds: 300,
       runOnStart: false,
@@ -393,7 +393,8 @@ export function startBackgroundServices(
       // reconciler cadence checks whether the configured interval is due.
       intervalSeconds: 300,
       // A dump legitimately runs far longer than the default reporting
-      // deadline; without this a normal backup would be reported as a stall.
+      // deadline. Do not use that deadline here. A normal backup would be
+      // reported as a stall.
       timeoutSeconds: 3600,
       run: async () => {
         const settings = await readInstanceOperationsPolicy(config);

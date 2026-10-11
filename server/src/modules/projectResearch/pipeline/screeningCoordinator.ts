@@ -206,8 +206,8 @@ export class ProjectResearchScreeningCoordinator {
         "pending",
       ));
       // Only the tick that pauses speaks; later ticks just refresh the
-      // snapshot. Without this edge check the nudger would enqueue a notify
-      // job every few seconds for the whole wait.
+      // snapshot. Do not notify on a later tick. The nudger would enqueue a
+      // notify job every few seconds for the whole wait.
       if (!wasAlreadyPaused) {
         await this.ports.notifyRoom(
           operation,
