@@ -395,7 +395,7 @@ Current local deployment assumes one server process owns bootstrap and scheduler
 - Timestamps must be UTC with timezone.
 - Store large files in storage; store metadata and relative paths in DB.
 - Avoid long transactions and transaction-spanning external calls.
-- Do not rely on application-only `MAX()+1` ordering for distributed writers without a future lock/constraint note. Current `RunStep.step_index` uses `MAX()+1` — a documented distributed-runner risk.
+- Do not rely on application-only `MAX()+1` ordering for distributed writers. Current `RunStep.step_index` uses `MAX()+1` — a documented distributed-runner risk.
 
 ## Conversation input persistence
 

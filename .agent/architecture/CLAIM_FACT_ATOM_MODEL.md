@@ -370,7 +370,7 @@ move accepted rows out of the active graph.
 
 `object_relations` intentionally keeps the wider `space_objects` endpoint model
 instead of limiting writes to Knowledge-retrieval object types. Relations that
-touch future or non-indexed object types are still canonical graph rows, but
+touch object types with no retrieval adapter are canonical graph rows, but
 they do not become retrieval graph edges until both endpoint types have a
 registered retrieval adapter/projection path. Read APIs expose this as
 `retrieval_projected` rather than silently implying every canonical relation is

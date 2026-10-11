@@ -83,9 +83,9 @@ collected patch changed files and did not touch Project Folder
 Execution Config-forbidden paths. A patch proposal is never marked as validated merely
 because git text collection succeeded.
 
-`manual_review` and `model_judge` are declared verifier types with explicit
-`skipped` results. They cannot make a run pass until their authorities land;
-the future model judge must use a model distinct from the generator.
+`manual_review` and `model_judge` return `skipped`. A skipped result cannot
+make a run pass. Do not implement `model_judge` with the same model that
+generated the output.
 
 Workflow/Plan nodes may declare `verification_recipe_refs`. The run contract
 propagates these references in route hints, the repository resolves enabled

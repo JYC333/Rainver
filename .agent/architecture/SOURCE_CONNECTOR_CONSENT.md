@@ -153,9 +153,10 @@ worker persists extracted text artifacts. `extract_evidence` does not fetch or
 persist broader source content; it remains a candidate-evidence action and is
 not currently retention-escalating.
 
-Import trust tracks the connection `trust_level` and should be carried into
-extracted evidence or proposal provenance when future ingestion flows automate
-more of this path.
+Import trust is the connection `trust_level`. A source snapshot records that
+level. The post-processing prompt includes it, and an `untrusted` connection
+adds a corroboration instruction. A post-processing artifact row is stored at
+`trust_level` `medium`; it does not copy the connection level.
 
 ## Derived Writes
 

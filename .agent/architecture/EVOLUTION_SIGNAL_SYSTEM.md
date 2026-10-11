@@ -126,6 +126,5 @@ The proposal lifecycle has no `request_changes` status.
 The inventory covers the current durable event classes. The manual
 `review_requested` signal is an explicit user intent record, and the direct
 signal-create route is an explicit ingestion surface; neither represents a
-missing automatic performance emitter. Direct Artifact edit evidence stays
-deferred (see [../plans/backlog.md](../plans/backlog.md))
-because there is no authoritative Artifact revision event.
+missing automatic performance emitter. There is no direct Artifact-edit
+signal. There is no authoritative Artifact revision event to emit one from.

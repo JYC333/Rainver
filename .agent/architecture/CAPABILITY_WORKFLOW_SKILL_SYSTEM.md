@@ -67,15 +67,14 @@ points at `list` rather than naming a fixed set. Each Run records the content
 hash of the Skill it was given.
 
 It is delivered as a file. An imported Open Skill is flattened into prompt
-text by the Runtime Context gateway. Modelling that import as a `SkillPackage`
-with a `runtime`-scoped
-`SkillBinding` is deferred in [`plans/capability-shrink-plan.md`](../plans/capability-shrink-plan.md).
+text by the Runtime Context gateway.
 
 ### Open Skill
 
-An Open Skill is an external, portable skill source package. It may come from
-GitHub, future registries, a local workspace, an upload, or an official catalog.
-It usually contains `SKILL.md` plus optional references, assets, scripts, and
+An Open Skill is an external, portable skill source package. Import fetches
+GitHub only. A `source_type` other than `github`, or a fetch host other than
+`raw.githubusercontent.com`, is rejected as `unsupported_skill_source`. It
+usually contains `SKILL.md` plus optional references, assets, scripts, and
 vendor metadata.
 
 An Open Skill is not trusted by default, but its approved package snapshot
@@ -97,9 +96,7 @@ conversion path. Do not extend it. It captures:
 - vendor extensions
 - deterministic risk analysis
 
-It is not a content authority and must not gain new consumers. Capability-shrink
-item 4 removes it so policy metadata is extracted alongside the immutable
-package snapshot without regenerating the skill's instructions. Vendor
+It is not a content authority and must not gain new consumers. Vendor
 declarations such as `allowed-tools` remain permission requests, not grants.
 
 ### SkillPackageFile
