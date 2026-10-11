@@ -400,8 +400,7 @@ that binds the Project writes to a Room applies. That reasoning survives the
 ([ADR 0003](../decisions/0003-memory-proposal-flow.md) §4): an agent-scope
 entry is not private to the *speaker* but to the Agent and its owner, and it
 still touches no Project and still crosses no audience that could not already
-see it — a note's origin-Room filter is what replaces "private to the speaker"
-there, and a persona's gate is §5. They are also the one action family
+see it. A note's audience is its origin-Room filter, and a persona's gate is §5. They are also the one action family
 registered for a Run with **no** instructing person, because §5 lets an
 unattended Run revise a persona; everything else the family can do refuses
 there with a reason rather than being invisible. They are the same shape applied to

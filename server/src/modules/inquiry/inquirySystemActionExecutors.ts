@@ -20,9 +20,10 @@ import { InquiryAdviceService } from "./adviceService.js";
  *
  * `inquiry.create_thread` and `inquiry.record_conclusion` write directly
  * ([ADR 0017](../../../../.agent/decisions/0017-authorization-by-cost-not-authorship.md)
- * §2): a person asking in the turn is the authorization, and what replaces
- * the proposal gate is the trigger origin, the per-turn fan-out bound, and
- * the Project's updates, where every write here can be undone.
+ * §2). A person asking in the turn is the authorization. The gates are the
+ * trigger origin, the per-turn fan-out bound, and the Project's updates,
+ * where every write here can be undone. Do not put a proposal gate on these
+ * two.
  * `inquiry.promote_knowledge` is still a proposal — promoting leaves the
  * Project for Space-level Knowledge, which is a change in reach.
  */
