@@ -81,12 +81,11 @@ export async function recordInformationalIdeaReview(
 /**
  * Records that a checkpoint was passed without a human decision.
  *
- * `waived` already means "this gate did not stop the work" and needs no
- * migration; leaving `user_decision` NULL is what separates an automatic
- * waiver from one a person granted, so an audit of the row can still tell
- * whether anybody looked. `decided_by_user_id` stays NULL for the same
- * reason — attributing an automatic advance to the project writer whose
- * identity the pass happens to run under would be a false record.
+ * `waived` means this gate did not stop the work. Leave `user_decision` NULL.
+ * That is what separates an automatic waiver from one a person granted, so an
+ * audit of the row can still tell whether anybody looked. `decided_by_user_id`
+ * stays NULL for the same reason. Do not attribute an automatic advance to the
+ * project writer whose identity the pass happens to run under.
  */
 export async function waiveCheckpointAutomatically(
   db: Queryable,

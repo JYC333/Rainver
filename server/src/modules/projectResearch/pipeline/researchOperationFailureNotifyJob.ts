@@ -16,21 +16,20 @@ export const RESEARCH_OPERATION_FAILURE_NOTIFY_JOB = "research_operation_failure
 const TURN_BUSY_RETRY_DELAY_MS = 2_000;
 
 /** The statuses `notifyRoomOfOperationStatus` reports. `waiting_review` is
- * not terminal — the operation is paused and will report again — which is
- * why the Room event key carries the status (and, for `failed`, the pass
- * generation as `episode`). */
+ * not terminal — the operation is paused and will report again. The Room
+ * event key carries the status (and, for `failed`, the pass generation as
+ * `episode`). */
 const NOTIFIABLE_STATUSES = ["failed", "completed", "waiting_review"];
 
 /**
  * Posts a `research_workflow_terminal` Room continuation for a research
- * Operation's status change. Split into its own job — enqueued via
+ * Operation's status change. This is its own job, enqueued via
  * `ProjectResearchOrchestrator.notifyRoomOfOperationStatus` through
- * whichever `Queryable` the reporting write is already using — specifically
- * so the enqueue shares the same commit/rollback fate as the state write it
- * reports on (see that method's doc comment for why a direct,
- * independently-committing Room call is unsafe here). This file has no
- * dependency on `projectResearch/orchestrator.ts`, so importing the job type
- * constant from there does not create an import cycle.
+ * whichever `Queryable` the reporting write is already using. The enqueue
+ * shares the same commit/rollback fate as the state write it reports on.
+ * Do not call the Room on a connection that commits on its own. This file
+ * has no dependency on `projectResearch/orchestrator.ts`, so importing the
+ * job type constant from there does not create an import cycle.
  */
 export function registerResearchOperationFailureNotifyHandler(registry: JobHandlerRegistry, config: ServerConfig): void {
   if (!config.databaseUrl) return;

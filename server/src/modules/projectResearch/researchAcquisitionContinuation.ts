@@ -70,11 +70,9 @@ export function registerResearchAcquisitionContinuation(registry: ConversationCo
     }
     if (status === "completed") {
       const reason = typeof event.payload.reason === "string" ? event.payload.reason : "The research operation finished.";
-      // The system works out a next step the moment a search finishes and
-      // writes it to inquiry_thread_advice. Without it here the Agent ends a
-      // four-hour search by inventing a question of its own, which is both
-      // worse than the recorded advice and disagrees with what the Project's
-      // attention list is simultaneously telling the user.
+      // The system writes the next step to inquiry_thread_advice when a search
+      // finishes. Do not omit it here. The Agent would invent a question of
+      // its own, and that would disagree with the Project's attention list.
       const advice = await nextStepAdvice(db, event.payload.operation_id);
       const next = advice
         ? ` The system's recorded next step for this Thread is ${advice.recommended_focus_kind.replace(/_/g, " ")}, because: ${advice.rationale} Put that to the user as the suggested next step — it is the same one the Project's attention list is showing them — and offer to adopt it with inquiry.adopt_next_step if they agree. Do not substitute a next step of your own invention; if you disagree with it, say why and let them choose.`
