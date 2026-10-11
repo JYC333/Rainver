@@ -52,8 +52,8 @@ const MAX_RECORDS_PER_EXTRACTION = 400;
  * And by size, because a count is not a budget: one message may be 64 KB
  * (`AMBIENT_TEXT_MAX_BYTES`), so 400 of them can exceed any model's window.
  * A batch that overruns throws identically on every retry, and the selection
- * is deterministic, so without this a folder could become permanently
- * unextractable.
+ * is deterministic. Do not send an overrun batch. A folder could become
+ * permanently unextractable.
  */
 const MAX_CHARACTERS_PER_EXTRACTION = 400_000;
 

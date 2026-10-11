@@ -227,8 +227,8 @@ async function materializeAcademicPaperInTransaction(
     primaryProjectId: input.projectId,
     // Background ingestion has no acting user or run, but the SourceItem it
     // derives from has an owner, and "this exists because that user's source
-    // produced it" is accurate attribution. Without this the object would be
-    // untraceable to anyone (B12H).
+    // produced it" is accurate attribution. Do not leave the object without
+    // that owner. It would be untraceable (B12H).
     createdByUserId: item.created_by_user_id ?? item.owner_user_id,
     createdAt: now,
   });

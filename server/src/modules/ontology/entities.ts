@@ -526,8 +526,8 @@ function registerCoreEntities(): void {
         projectFolderColumn: "project_folder_id",
         publishable: false,
       },
-      // A memory extracted from imported history says where it came from, and
-      // without this declaration that provenance is silently dropped and the
+      // A memory extracted from imported history says where it came from.
+      // Do not omit that declaration. The provenance is silently dropped and the
       // memory is then rejected for having none.
       provenanceSourceable: { sourceType: "imported_session" },
     },

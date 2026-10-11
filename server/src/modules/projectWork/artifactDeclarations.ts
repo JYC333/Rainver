@@ -10,8 +10,8 @@ import type { AgentActionContext } from "./taskActions.js";
  * Settlement (`architecture/PROJECT_WORK.md` §4) closes a Task only when the
  * `artifact_type` of one of its `role = 'output'` artifacts matches each entry
  * of `required_outputs_json`. Files collected from a CLI Run arrive as
- * anonymous paths typed `adapter_file`, so without this an agent can finish
- * the work and still leave every such Task parked for review.
+ * anonymous paths typed `adapter_file`. Do not leave them untyped. An agent
+ * can finish the work and still leave every such Task parked for review.
  *
  * The declaration carries no content and uploads nothing: the file's final
  * state is collected after the run — by the executing host for a remote run,

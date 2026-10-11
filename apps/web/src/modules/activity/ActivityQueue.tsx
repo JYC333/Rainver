@@ -359,8 +359,8 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
               <Badge variant="outline">{r.status.replace('_', ' ')}</Badge>
               <ScopeBadge visibility={r.visibility} omitShared />
               {/* Which Project owns this. A capture made inside a Project lands
-                  in the Space's raw queue by design, and without this tag that
-                  reads as the capture having gone somewhere else entirely. */}
+                  in the Space's raw queue by design. Do not omit the tag. The
+                  capture would read as having gone somewhere else entirely. */}
               {!pinned && r.project_id && (
                 <button
                   type="button"

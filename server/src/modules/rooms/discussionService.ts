@@ -1253,8 +1253,8 @@ function addressedTargets(replies: WaveReply[], roster: RoomAgentMemberRecord[])
 /**
  * In a debate every participant takes every round, and is handed every
  * answer of the round before: a participant's own window starts after its
- * own last reply, so without this it would never see the answers given
- * before it in that round.
+ * own last reply. Do not start the window there. The participant would never
+ * see the answers given before it in that round.
  */
 function critiqueTargets(
   discussion: DiscussionRecord,

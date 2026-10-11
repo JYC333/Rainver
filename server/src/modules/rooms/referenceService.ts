@@ -57,9 +57,9 @@ export class RoomReferenceService {
     const wanted = (picks ?? []).filter((pick) => pick.kind === "imported_session");
     if (wanted.length === 0) return;
     // The destination first. Reading a session is not licence to spend its
-    // owner's budget on behalf of a Room the asker cannot reach: without this,
-    // naming any Room id would generate — and bill — a summary per pick before
-    // the transaction got as far as its 404.
+    // owner's budget on behalf of a Room the asker cannot reach. Do not
+    // generate the summary first. Naming any Room id would generate — and
+    // bill — a summary per pick before the transaction got as far as its 404.
     //
     // Not a second authority. `requireRoom` inside the caller's own
     // transaction still decides, and holds the row lock while it does; this is

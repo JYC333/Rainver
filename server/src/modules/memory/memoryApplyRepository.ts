@@ -950,8 +950,8 @@ export class PgMemoryApplyRepository {
       throw new MemoryReachError("it was learned outside any Room, from someone who is not this Agent's owner");
     }
     // A revision must happen where the note was learned. The audience filter
-    // guards delivery; without this the write path walks straight past it —
-    // a turn in a narrow Room revising a note whose origin Room is a wide one
+    // guards delivery. Do not revise from a Room the note was not learned in.
+    // A turn in a narrow Room revising a note whose origin Room is a wide one
     // puts this Room's content in front of that Room's audience, keeping an
     // `origin_room_id` that now says something false about where it came from.
     if (old && originRoomId !== context.roomId) {

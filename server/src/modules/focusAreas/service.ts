@@ -112,8 +112,8 @@ export class FocusAreaService {
   async update(identity: SpaceUserIdentity, id: string, body: Record<string, unknown>): Promise<FocusArea> {
     const current = await this.get(identity, id);
     // Anyone in the Space may read an area; only whoever created it may rename
-    // it. Without this, a member could rename another's area and — because the
-    // active-name index is unique per Space — take the name they wanted.
+    // it. Do not let another member rename it. They could take the name they
+    // wanted, because the active-name index is unique per Space.
     if (current.owner_user_id !== null && current.owner_user_id !== identity.userId) {
       throw new HttpError(403, "Only the focus area's owner can change it");
     }

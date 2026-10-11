@@ -330,9 +330,9 @@ export class PgProjectRepository {
             AND a.surface_role <> 'system_archive'
             AND ${contentReadSql("artifact", "a", "$3")}
             -- An Artifact inherits its Run's Room, and a count is an existence
-            -- signal (ADR 0018 decision 3): without this an oversight admin
-            -- inside the Project sees "2 artifacts" over an Artifacts page
-            -- that lists none.
+            -- signal (ADR 0018 decision 3). Do not count an archive the page
+            -- cannot list. An oversight admin inside the Project would see
+            -- "2 artifacts" over an Artifacts page that lists none.
             AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}`,
         [identity.spaceId, projectId, identity.userId],
       ),

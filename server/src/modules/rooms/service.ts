@@ -1384,9 +1384,9 @@ export class RoomService {
           // to them.
           ...(input.kind === "user" ? {} : { room_display: "internal" }),
           // What the route said the person was looking at, recorded because it
-          // was written into the prompt. Without this the only trace of an
-          // injected Task is free text inside `runs.prompt`, which cannot be
-          // queried back to "which Task entered which turn".
+          // was written into the prompt. Do not leave that only in free text.
+          // The only trace of an injected Task would be inside `runs.prompt`,
+          // which cannot be queried back to "which Task entered which turn".
           ...(projectState.focusTaskIds.length
             ? { injected_focus_task_ids: projectState.focusTaskIds }
             : {}),

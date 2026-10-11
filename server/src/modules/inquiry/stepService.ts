@@ -109,8 +109,9 @@ export const STEP_NOTE_SET_SQL = `next_focus_note = ${STEP_PRIMARY_NOTE_SQL}`;
 /**
  * Stamps every finished-but-unassigned step with the round that just closed.
  *
- * Without this, `iteration_id IS NULL` does not mean "this round": a background
- * step that ended earlier keeps a null pointer forever and every later round
+ * Do not leave a finished step unstamped. `iteration_id IS NULL` would not
+ * mean "this round": a background step that ended earlier keeps a null
+ * pointer forever and every later round
  * inherits it, so a round-1 search would make round 5 believe its evidence
  * gathering was already done.
  */
