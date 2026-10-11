@@ -282,11 +282,10 @@ export async function completeBackgroundStep(
     targetRefId?: string | null;
   },
 ): Promise<boolean> {
-  // One step per completion, oldest first. `startStep` returns the running row
-  // rather than inserting a second of the same kind, so today this matches at
-  // most one step anyway; the narrowing is here so that if a Thread ever runs
-  // two same-kind operations, each completion closes the one it produced
-  // instead of attributing the wrong Workflow to both.
+  // One step per completion, oldest first. `startStep` returns the running
+  // row rather than inserting a second of the same kind, so this matches at
+  // most one step. Do not close every in-progress step of that kind: two
+  // same-kind operations would then attribute the wrong Workflow to both.
   const updated = await db.query<{ id: string }>(
     `UPDATE inquiry_thread_steps
         SET status = 'done', completed_at = $1,

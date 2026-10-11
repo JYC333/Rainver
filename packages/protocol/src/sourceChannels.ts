@@ -24,7 +24,7 @@ export type SourceProviderCategoryGroup = z.infer<typeof SourceProviderCategoryG
 
 /**
  * Setup guidance a Provider offers the channel-creation form. Only arXiv
- * declares category groups today; the shape stays open because the catalog
+ * declares category groups. The shape stays open because the catalog
  * owns which providers publish what.
  */
 export const SourceProviderSetupSchemaSchema = z.object({

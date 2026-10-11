@@ -916,7 +916,8 @@ export class PgMemoryApplyRepository {
     // An Agent with no owner has no `agent` scope: a private entry with no
     // owner cannot be stored at all, and §5's table cannot be evaluated
     // without one. The Space and Project Assistants are `space_shared` and
-    // ownerless, and their writes stay in the `user` scope they use today.
+    // ownerless. Their memory writes are about the person, in `user` scope.
+    // Do not store an agent-scope entry for them.
     if (!context.ownerUserId) {
       throw new MemoryApplyError(
         "this Agent has no owner, so it has no memory of its own; record this about the person instead",

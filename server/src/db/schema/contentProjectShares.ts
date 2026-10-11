@@ -30,7 +30,7 @@ import { spaceObjects } from "./knowledge.js";
  *
  * Declared at `space_objects` granularity because that is where the read gate
  * works (see `contentAccessRegistry`) — one row shape serves every ontology
- * subtype. Only the note share action writes rows today.
+ * subtype. Only the note share action writes rows.
  */
 export const spaceObjectProjectShares = pgTable("space_object_project_shares", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

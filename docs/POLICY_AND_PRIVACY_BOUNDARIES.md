@@ -72,7 +72,7 @@ persist `PolicyDecisionRecord`. Runtime execution goes through
 All other business code performing enforcement must call `enforce()` or
 `enforceProposalApply()`; direct `computeDecision`, `engineCheck`, or
 `checkHardInvariants` usage outside that one location is a boundary violation.
-No automated check enforces this today — it is a review rule.
+No automated check enforces this. It is a review rule.
 
 #### PolicyCheckRequest field semantics
 

@@ -12,8 +12,8 @@
  *
  * **Declaration granularity is chosen by the interface, not fixed globally.**
  * `ContentAccessible` is declared once on `space_object` and inherited by every
- * subtype, because the read gate reads root-table columns; splitting it per
- * object type would fragment a registry that is correctly unified today.
+ * subtype, because the read gate reads root-table columns. Do not split it
+ * per object type.
  * `Retrievable` is declared per object type, because retrieval policy and
  * adapters genuinely differ per subtype. Inheritance walks `rootEntity`.
  */

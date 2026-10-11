@@ -45,8 +45,8 @@ export type RelationDiscoveryScanRequestInput = z.input<typeof RelationDiscovery
 
 export const RelationDiscoveryCandidateKindSchema = z.enum([
   "object_relation_candidate",
-  // Activity/Artifact anchors cannot safely create FK-backed object relations
-  // today. They stay as review-only evidence rows in the packet.
+  // Activity/Artifact anchors cannot safely create FK-backed object relations.
+  // They stay as review-only evidence rows in the packet.
   "relation_review_candidate",
   "knowledge_item_candidate",
 ]);

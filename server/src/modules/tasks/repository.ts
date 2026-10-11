@@ -159,8 +159,8 @@ async function requireTaskRuntimeProfile(
  * A Room is a visibility boundary, and `task_runs` is read through the Task.
  * Letting a dispatch name a Room's `session_id` would put a Room-scoped Run on
  * a Task that anyone with Task access can list — and would write the Run's
- * turn into a conversation the dispatcher may not even be in. Nothing writes
- * such a row today. The Room term on the Task lists is what keeps that from
+ * turn into a conversation the dispatcher may not even be in. Do not write
+ * such a row. The Room term on the Task lists is what keeps that from
  * becoming a live leak. Do not drop it.
  */
 async function assertNotRoomConversationSession(
