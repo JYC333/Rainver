@@ -110,8 +110,8 @@ function applyRetrievalMaintenancePacketProposal(
           },
         });
       }
-      // Note: retrieval maintenance intentionally omits canonical_write_performed
-      // and skipped tracking from its result/payload — match that exactly.
+      // Retrieval maintenance does not record canonical_write_performed or
+      // skipped tracking on its result. Do not add them here.
       return { children, resultExtra: { report_artifact_id: reportArtifactId } };
     },
   });

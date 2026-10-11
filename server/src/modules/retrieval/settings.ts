@@ -183,9 +183,9 @@ export async function updateSpaceRetrievalSettings(
       embeddingDimensions: patch.embedding_dimensions ?? current.value.embeddingDimensions,
       maxResultsDefault: patch.max_results_default ?? current.value.maxResultsDefault,
       // The calibration gate judges a ranking change. A patch that does not
-      // touch ranking keeps the stored config as it is, so an unrelated
-      // setting — the egress switch above all — cannot fail because a shipped
-      // mechanic's artifact is not visible to whoever is changing it.
+      // touch ranking keeps the stored config. Do not run that gate for an
+      // unrelated setting: the egress switch would then fail when the
+      // calibration artifact is not visible to the person changing it.
       rankingConfig: patch.ranking_config === undefined
         ? current.value.rankingConfig
         : await normalizeRankingConfigForUpdate(
