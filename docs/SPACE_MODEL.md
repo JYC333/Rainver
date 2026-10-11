@@ -13,7 +13,7 @@ Deployment Instance
 ```
 
 A space is **not** the only meaningful worldview for a user. A user may belong to several spaces
-simultaneously. Cross-space aggregates that exist today are the `/me/*` read models.
+simultaneously. Cross-space aggregates are the `/me/*` read models.
 See [TARGET_VIEW_MODEL.md](TARGET_VIEW_MODEL.md) for owner/scope/visibility.
 
 ## Database model

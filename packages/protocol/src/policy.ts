@@ -1158,9 +1158,9 @@ export const POLICY_ACTION_REGISTRY = [
   // Project ACL, and who did it is already on the domain row
   // (`space_objects.created_by_user_id` for a Thread,
   // `note_links.created_by_user_id` for a link), so a policy audit record
-  // would restate what the canonical row already says. Wiring them is a
-  // decision to make, not a description of today — which is what `reserved`
-  // means here and for the nine other actions that carry it.
+  // would restate what the canonical row already says. They stay `reserved`:
+  // no code path evaluates them. The same holds for the other actions that
+  // carry `reserved`.
   {
     // Raising a passage of a note as a Question. Direct-write, matching
     // the Thread create route it calls. Thread structure stays a direct write.

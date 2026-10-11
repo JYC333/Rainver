@@ -1886,7 +1886,7 @@ export interface Task {
   created_at: string
   updated_at: string
   deleted_at: string | null
-  /** Present when API expands TaskOut; optional on wire today. */
+  /** Present when the API expands TaskOut. Optional on the wire. */
   acceptance_criteria_json?: Record<string, unknown> | null
   definition_of_done?: string | null
   required_outputs_json?: unknown[] | null

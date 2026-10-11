@@ -52,9 +52,9 @@ describe('AgentFormPage default runtime provisioning', () => {
   })
 
   it('offers no risk level that has no eligible execution target', async () => {
-    // Risk requires trust and nothing reaches `high` today (ROUTING.md,
-    // "Effective trust"), so high/critical are shown with the reason rather
-    // than offered as a choice that strands every Run of the Agent.
+    // Risk requires trust and nothing reaches `high` (ROUTING.md,
+    // "Effective trust"). High and critical are shown with the reason.
+    // Do not offer them as a choice that strands every Run of the Agent.
     render(
       <MemoryRouter initialEntries={['/spaces/space-1/agents/new']}>
         <AgentFormPage />

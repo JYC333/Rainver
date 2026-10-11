@@ -196,9 +196,8 @@ export async function getProjectBoard(
 /**
  * A Project's own Board columns when it has one, the defaults otherwise.
  *
- * A Project with no Board row is the ordinary case today — Boards are created
- * explicitly — and showing nothing would make the Board look broken rather than
- * empty.
+ * A Project with no Board row is ordinary. Boards are created explicitly.
+ * Showing nothing would make the Board look broken. Do not omit the defaults.
  */
 async function boardColumns(
   db: Queryable,

@@ -67,9 +67,9 @@ describe('reader images', () => {
    * `ReaderWorkspace` renders two kinds of document: a captured article, whose
    * images are part of what the person chose to read, and a research report,
    * which a synthesis Run wrote over the same ingested third-party items. The
-   * flag therefore belongs to the page, not to the workspace — deciding it
-   * there gave both the same answer, and the report's projection emitting no
-   * image nodes today is not a property worth resting on.
+   * flag belongs to the page, not the workspace. Do not decide it in the
+   * workspace: that would give both the same answer. Do not rest on the
+   * report projection emitting no image nodes.
    */
   it('leaves the choice to the page, and defaults it closed', () => {
     const document = {

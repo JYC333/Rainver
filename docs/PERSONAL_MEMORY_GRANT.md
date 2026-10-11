@@ -37,8 +37,8 @@ No grant → no cross-space personal memory read.
 | `consume_started_at` | TIMESTAMP | Set when Delivery authorization claims the grant |
 | `used_at` | TIMESTAMP | Set when grant transitions to `used` |
 | `revoked_at` | TIMESTAMP | Set on explicit user revoke |
-| `failed_at` | TIMESTAMP | Reserved; no code path writes it today |
-| `failure_stage` | TEXT | Reserved; no code path writes it today |
+| `failed_at` | TIMESTAMP | No code path writes it |
+| `failure_stage` | TEXT | No code path writes it |
 | `created_at` | TIMESTAMP | Creation time |
 | `updated_at` | TIMESTAMP | Last status change |
 
@@ -71,9 +71,11 @@ The claim happens inside the Invocation Delivery authorization transaction
 (`runtimeContext/gateway.ts`): the grant row is locked with `SELECT … FOR UPDATE`,
 checked against the Run, viewer, and planned summary, and moved
 `active → consuming → used` in the same transaction. If no usable row is found,
-Delivery is refused. Expiry is not a written transition: a grant past
-`read_expires_at` simply stops matching. The `expired` and `failed` status values
-are allowed by the schema but no code path writes them today.
+Delivery is refused. An active grant past `read_expires_at` is marked
+`expired` on the owner's reads and writes (`expireLapsedGrants`). Do not
+leave it `active`. Consumers also require `read_expires_at > now()`.
+`failed` is allowed by the schema. No code path writes it, `failed_at`, or
+`failure_stage`.
 
 ---
 

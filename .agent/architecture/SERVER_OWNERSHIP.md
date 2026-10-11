@@ -16,7 +16,7 @@ Rules:
 
 ## Owned Contexts
 
-| Context / surface | Server owns today | Deferred / fail-closed |
+| Context / surface | Server owns | Deferred / fail-closed |
 |---|---|---|
 | Auth / spaces / identity | Session-cookie identity resolution, Google OAuth login/callback/config, `GET /auth/introspect`, `GET /me`, `GET /me/spaces`, `POST /auth/logout`, feature-gated API-key routes, `POST /spaces`, `GET /spaces/{id}`, `GET /spaces/{id}/members`, `POST /spaces/{id}/invitations`, `POST /invitations/{token}/accept`, and deterministic space-created default seeds | DB-persisted API-key storage; there is no `api_keys` table |
 | Providers/credentials | Provider reads, commands, invocation, API-key credential pools, internal provider/credential ports. No CLI credential is brokered (ADR 0016) | — |

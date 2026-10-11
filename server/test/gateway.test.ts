@@ -153,12 +153,11 @@ describe("safe header access", () => {
    * were typed somewhere; what has to hold is that the bytes pino emits for a
    * request carrying every one of these headers contain none of their values.
    *
-   * Worth knowing while reading this: what actually keeps them out today is
-   * Fastify's own `req` serializer, which reduces the request to method, url
-   * and address and never reaches `headers`. `LOG_REDACT_PATHS` is the second
-   * line — it is what would catch a custom serializer, or a handler logging a
-   * request-shaped object — and it is unreachable while the default serializer
-   * stands. This test pins the outcome either way.
+   * What keeps them out is Fastify's own `req` serializer, which reduces the
+   * request to method, url and address and never reaches `headers`.
+   * `LOG_REDACT_PATHS` is the second line. It catches a custom serializer, or
+   * a handler logging a request-shaped object, and it is unreachable while
+   * the default serializer stands. This test pins the outcome either way.
    */
   it("keeps credential-bearing request headers out of what the logger emits", async () => {
     const lines: string[] = [];

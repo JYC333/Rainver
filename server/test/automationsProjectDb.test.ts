@@ -687,8 +687,8 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
 
   /**
    * A Room is a visibility boundary and `task_runs` is read through the Task,
-   * so a Task Run may not be attached to a Room conversation. Nothing writes
-   * such a row today; this is what keeps it that way.
+   * so a Task Run may not be attached to a Room conversation. Do not write
+   * such a row.
    */
   it("refuses to dispatch a Task Run into a Room conversation", async () => {
     if (!db.available) return;

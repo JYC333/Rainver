@@ -124,4 +124,4 @@ omitted, not reported as `ok` or `error`.
 - `server/src/config.ts` — settings and diagnostics
 
 ## Related Modules
-- [product-shell.md](product-shell.md) — shell has no status bar today
+- [product-shell.md](product-shell.md) — the shell has no status bar

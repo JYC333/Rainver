@@ -207,7 +207,7 @@ edges into one table concentrates that requirement in one layer.
   **no reader**; the other seven values have no writer
 
 It is not absorbed: `memory_entries` is an independent root, not a
-`space_objects` row, so its edges cannot live in `object_relations` today.
+`space_objects` row, so its edges cannot live in `object_relations`.
 The disposition (shrink to what is written, or declare a link-type set if
 Memory joins the ontology) is not decided.
 

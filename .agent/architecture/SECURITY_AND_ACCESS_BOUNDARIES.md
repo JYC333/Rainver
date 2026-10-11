@@ -1244,9 +1244,9 @@ The flag is passed down rather than decided at the workspace, because
 `ReaderWorkspace` renders more than one kind of document too: a captured
 article, whose images are part of what the person chose to read, and a research
 report, which a synthesis Run wrote over the same ingested items. Only the
-captured-article page opts in. Deciding it one level up would have given both
-the same answer, and the report's projection emitting no image nodes today is
-not a property worth resting on.
+captured-article page opts in. Do not decide it one level up. That would
+give both the same answer. Do not rest on the report projection emitting no
+image nodes.
 
 Two differences worth stating rather than discovering. An external *link* in
 chat goes through Streamdown's confirmation modal; the link a blocked image

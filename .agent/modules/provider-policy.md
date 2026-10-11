@@ -130,15 +130,15 @@ be Provider-backed is a registry fact, not a Host fact. A Profile may choose
 `AgentRuntimeDefinition` reports `supports_model_provider`, which comes from
 the spec's `credentials.credential_mode`
 (`runtimeAdapters/runtimeDefinitions.ts`). **Only OpenCode declares
-`cli_profile_or_model_provider` today.** Claude Code and Codex CLI declare
+`cli_profile_or_model_provider`.** Claude Code and Codex CLI declare
 `cli_profile`: they run on the execution Host's own vendor login, and
 `assertBackendModeBinding` refuses a `model_provider` Profile for them with
 422. `server/test/runtimeAuthority.test.ts` pins the registry fact that refusal
 reads — `supportsRuntimeBackendMode("claude_code", "model_provider")` is
-`false` — not the route's status code. The frames that
-would render an Anthropic or Codex provider binding still exist in
-`runs/remoteProviderBinding.ts`, but no Profile can select the mode that
-reaches them.
+`false` — not the route's status code. The frame builders for an Anthropic
+or Codex provider binding are in `runs/remoteProviderBinding.ts`. No Profile
+can select the mode that reaches them. Do not treat those builders as a live
+path.
 
 For an OpenCode `model_provider` Profile the Provider row remains the source of
 truth, and its vendor protocol picks the endpoint: an `anthropic_messages`
