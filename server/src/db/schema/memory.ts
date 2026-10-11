@@ -146,10 +146,10 @@ export const memoryEntries = pgTable("memory_entries", {
 	// persona is delivered everywhere and has none, and the other two scopes
 	// have their own reach rules.
 	check("ck_memory_entries_origin_room", sql`origin_room_id IS NULL OR (scope_type = 'agent' AND memory_type <> 'persona')`),
-	// Private, and enforced here rather than only in the read gate: the
-	// content-access API updates `visibility` with a raw UPDATE, and a
-	// space-shared agent-scope row would be returned to every Space member by
-	// every pure-SQL read while the TypeScript gate hid it on the Memory page.
+	// Private, and enforced here rather than only in the read gate. The
+	// content-access API updates `visibility` with a raw UPDATE. Do not allow
+	// a space-shared agent-scope row: every pure-SQL read would return it to
+	// every Space member while the Memory page would hide it.
 	check("ck_memory_entries_agent_private", sql`scope_type <> 'agent' OR visibility = 'private'`),
 	// A persona is what the Agent has learned about itself, so it is the
 	// Agent's scope or nothing.

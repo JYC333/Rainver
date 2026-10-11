@@ -242,11 +242,11 @@ export default function HostsPanel() {
                   onRefresh={() => load()}
                 />
               )}
-              {/* Every runtime definition, not only the dispatch-eligible ones: a
+              {/* Every runtime definition, not only the dispatch-eligible ones. A
                   registry agent is installable and managed here even while
-                  `remote_eligible` is false (hosts.md, profile isolation), and
-                  filtering it out hid the copy that had just been installed.
-                  Eligibility gates dispatch, not installation visibility. */}
+                  `remote_eligible` is false (hosts.md, profile isolation).
+                  Do not filter it out. The copy would disappear right after
+                  install. Eligibility gates dispatch, not installation visibility. */}
               {host.status !== 'revoked' && (
                 <HostAgents
                   host={host}

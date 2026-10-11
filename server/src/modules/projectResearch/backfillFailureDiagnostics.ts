@@ -118,9 +118,8 @@ function stringValue(value: unknown): string | null {
 }
 
 function integerValue(value: unknown): number | null {
-  // `Number(null)` is 0, which turned every "no status at all" failure into a
-  // reported `HTTP 0` — a status that does not exist and that hid whether the
-  // provider had answered.
+  // `Number(null)` is 0. Do not treat a missing status as HTTP 0.
+  // That status does not exist, and it hides whether the provider answered.
   if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;

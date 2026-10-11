@@ -130,7 +130,8 @@ describe('HostsPanel', () => {
   it('lists an installed registry agent even though it is not dispatch-eligible', async () => {
     // A registry agent's managed copy is installable and managed on the host
     // while `remote_eligible` stays false (no login/state-root contract yet).
-    // Filtering the host list by eligibility hid the copy right after install.
+    // Do not filter the host list by eligibility. The copy would disappear
+    // right after install.
     const CURSOR_ADAPTER = { runtime_key: 'acp_cursor', display_name: 'Cursor', command: 'acp_cursor', capability_probe: 'acp_cursor', remote_eligible: false, supports_runtime_native: true, supports_model_provider: false }
     vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER, CURSOR_ADAPTER] })
     vi.mocked(hostsApi.list).mockResolvedValue({

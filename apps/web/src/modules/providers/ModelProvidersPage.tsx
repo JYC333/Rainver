@@ -32,8 +32,9 @@ export default function ModelProvidersPage() {
   // failure reports itself here and leaves the Providers list readable.
   const [runtimeDefaultError, setRuntimeDefaultError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  // "Could not read my role" is not "not permitted": downgrading a Space owner
-  // to the read-only branch on a transient failure hid the control they own.
+  // "Could not read my role" is not "not permitted". Do not downgrade a
+  // Space owner to the read-only branch on a transient failure. The control
+  // they own would disappear.
   const [spaceRolesUnknown, setSpaceRolesUnknown] = useState(false)
   const [addingMode, setAddingMode] = useState<AddProviderMode | null>(null)
   const loadRequestId = useRef(0)

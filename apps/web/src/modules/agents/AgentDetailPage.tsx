@@ -457,9 +457,9 @@ function ModelTab({
   // Runtime selection comes only from the ACP catalog. Backend support is
   // read from each runtime's definition, not inferred from its display name.
   const [cliAdapters, setCliAdapters] = useState<HostRuntimeDefinitionOption[]>([])
-  // A catalog that failed to load is not a catalog that says "unsupported":
-  // swallowing it hid every backend-mode control while the Profile still
-  // claimed provider mode, leaving no way back.
+  // A catalog that failed to load is not a catalog that says "unsupported".
+  // Do not swallow it: the backend-mode controls would disappear while the
+  // Profile still claimed provider mode, leaving no way back.
   const [catalogError, setCatalogError] = useState<string | null>(null)
   // An empty catalog and a catalog that has not answered yet are different
   // facts. Do not treat a catalog that has not answered as an empty catalog.

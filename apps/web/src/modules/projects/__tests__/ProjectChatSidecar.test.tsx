@@ -156,8 +156,8 @@ beforeEach(() => {
   vi.mocked(roomsApi.get).mockResolvedValue({
     room: { id: 'room-1', project_id: PROJECT, title: 'Project Room' }, user_members: [], agent_members: [],
   } as never)
-  // The real endpoint always returns `conversation`; omitting it here hid a
-  // render loop, because the panel's handler for it re-triggered the read.
+  // The real endpoint always returns `conversation`. Do not omit it here.
+  // The panel's handler for it re-triggers the read, and a missing one loops.
   vi.mocked(roomsApi.messages).mockResolvedValue({
     items: [], task_group_ids: [], limit: 50, offset: 0,
     conversation: { id: 'conv-2', room_id: 'room-1', title: 'Depth repair' },
