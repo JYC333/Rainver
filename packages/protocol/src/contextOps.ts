@@ -139,7 +139,7 @@ export const ContextOpsSummarySchema = z
 export type ContextOpsSummary = z.infer<typeof ContextOpsSummarySchema>;
 
 /**
- * Context Ops drill-down contracts (Slice 3).
+ * Context Ops drill-down contracts.
  *
  * Drill-downs turn an aggregate summary section into a bounded, access-safe
  * detail list. Object-level sections (`index_freshness`, `embedding_backlog`)
