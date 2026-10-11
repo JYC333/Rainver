@@ -295,8 +295,8 @@ const CARD_SOURCE_TYPES: Record<string, string | undefined> = {
  * - `run_event` is not a type. A run's internal structure is not an entity
  *   (B12C). Do not add it, and do not add `idea` as a context item type.
  *
- * Two members stay despite having no writer, for different reasons.
- * `source_snapshot` has a live *reader*: `retrieval/sourcePolicy.ts` joins
+ * Two members have no writer. Do not drop them.
+ * `source_snapshot` has a live reader: `retrieval/sourcePolicy.ts` joins
  * `source_snapshots` on it to recover a connection id. `external_source` is a
  * genuine sentinel — material from outside the system with no row to point at
  * and the memory trust gate has a covered path for an untrusted external

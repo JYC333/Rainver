@@ -87,10 +87,10 @@ export async function enqueueDueSourceRecipeScans(db: Queryable, batchLimit = 25
 const STUCK_SCAN_AFTER_SECONDS = 600;
 
 /**
- * A recipe scan left `running` by a restart mid-scan would count as in flight
- * forever and stop its channel's scheduled scans. Recipe scans have no
- * `source_handler_runs` row, so the Custom Source reclaim does not reach them;
- * this is its counterpart on the scan job itself.
+ * A recipe scan left `running` by a restart mid-scan stays in flight until
+ * it is reclaimed. Do not leave it. It stops that channel's scheduled scans.
+ * Recipe scans have no `source_handler_runs` row, so the Custom Source
+ * reclaim does not reach them. This is that reclaim on the scan job itself.
  */
 export async function reclaimStuckSourceRecipeScans(
   db: Queryable,
