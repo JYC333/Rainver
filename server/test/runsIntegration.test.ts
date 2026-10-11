@@ -13,11 +13,11 @@ import {
 // Real-PostgreSQL integration tests for the server runs repositories. The unit
 // suites use a FakeDb that does not execute SQL, so they cannot catch parameter
 // type inference, CHECK/UNIQUE constraints, varchar length, or CTE column
-// ambiguity. These run the actual SQL against the repository's shared
-// PostgreSQL Testcontainers template migrated from server/migrations/.
+// ambiguity. These run the actual SQL against a database cloned from the
+// shared migrated template.
 //
-// The whole suite skips gracefully when Docker is unavailable so `pnpm test`
-// still runs everywhere; where Docker is present (dev, CI) it always runs.
+// The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 
 const db = useTestDatabase(import.meta.filename, { max: 10 });

@@ -1502,10 +1502,9 @@ describe("Room workflow (real Postgres)", () => {
       "user-1",
       "user-2",
     ]);
-    // SpaceAssistantService's provisioning (triggered by Room creation for
-    // agent-1, a system_assistant) can reconcile a fresh agent_version and
-    // repoint agents.current_version_id once a real runtime tool is
-    // installed. Compare against the current pointer, not the fixture
+    // Reconciling the managed Assistant onto a fresh agent_version repoints
+    // agents.current_version_id once a real runtime tool is installed.
+    // Compare against the current pointer. Do not compare with the fixture
     // literal 'version-1'.
     const currentAgentVersion = await db.pool.query<{ current_version_id: string }>(
       `SELECT current_version_id FROM agents WHERE space_id='space-1' AND id='agent-1'`,

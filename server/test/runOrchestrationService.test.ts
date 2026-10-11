@@ -470,8 +470,8 @@ class FakeRuntimeContextGateway {
 /**
  * A CLI run's adapter seams. Every CLI run is dispatched to a host daemon.
  * A copy's login lives with the copy. Do not inject a server-side credential
- * broker or a runtime-tool registry. What these tests still check is the
- * command's result, plus a built-in host to dispatch to.
+ * broker or a runtime-tool registry. These tests check the command's
+ * result, plus a built-in host to dispatch to.
  */
 /**
  * A Location on the instance's own host: the realistic shape for a CLI run
@@ -1789,7 +1789,7 @@ describe("RunOrchestrationService", () => {
     // run was created at stands. The server provisions nothing for a daemon
     // run. Do not escalate `one_shot_docker` here.
     expect(workspaceManager.calls).toEqual([]);
-    // But risk still decides the level, and the level still travels. Do not
+    // Risk decides the level, and the level travels. Do not
     // skip the resolution for daemon runs. Every CLI run would stay at the
     // creation-time `none`, so a critical Folder-bound run would get a
     // read-write workspace with nothing recording that risk had stopped

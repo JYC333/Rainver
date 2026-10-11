@@ -506,8 +506,8 @@ describe("PgRunRepository SQL shape", () => {
 
   it("carries the conversation's allowance onto a delegated child, like its parent", async () => {
     // A Room's delegate acts in the same conversation it was spoken to in.
-    // Declaring nothing here (the case above) is how a delegated specialist
-    // ended up able to call no action at all, while its parent held the
+    // Do not declare an empty allowance here (the case above). The specialist
+    // would be able to call no action at all, while its parent held the
     // whole Project write surface.
     const db = new RunCreateSqlShapeDb();
     await new PgRunRepository(db).createDelegatedChildRun({

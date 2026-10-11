@@ -186,9 +186,8 @@ describe("the Run tool surface", () => {
     });
     // Whatever the action itself answers, the request is not refused by the
     // `/api/` conventions: no 403 "cross-origin request blocked", no 401 from a
-    // missing session. `not.toBe` alone would also pass on a 404 — which is
-    // what a route that had not moved would answer — so the reached route is
-    // named too.
+    // missing session. `not.toBe` alone would also pass on a 404, so the
+    // reached route is named too.
     expect(called.statusCode).not.toBe(404);
     expect([403, 401]).not.toContain(called.statusCode);
     expect(called.json()).not.toMatchObject({ detail: expect.stringMatching(/cross-origin|cross-site|Not Found/i) });

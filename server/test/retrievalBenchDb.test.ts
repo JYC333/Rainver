@@ -18,8 +18,7 @@ import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 // gate (retrievalEvalDb), these track graded quality (MRR / nDCG), entity recall
 // under distractor pressure (NamedThing), relational recall, recency/staleness,
 // per-mode precision↔recall tradeoff, and — as a hard gate — that no cross-space
-// or non-readable object ever leaks. Thresholds are conservative baselines; the
-// recall-depth workstreams (per-page max-db.pool, intent, typed-graph) tighten them.
+// or non-readable object ever leaks. Thresholds are conservative baselines.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
