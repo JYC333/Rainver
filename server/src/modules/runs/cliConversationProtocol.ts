@@ -623,7 +623,7 @@ export class AcpController implements CliStdioController {
 
   /**
    * A question can only end a prompt this session is running. Before the
-   * prompt, or for another session, the request keeps its old handling.
+   * prompt, or for another session, do not end the turn on it.
    */
   private inScopeQuestionRequest(params: Record<string, unknown>): boolean {
     if (this.phase !== "prompt" || !this.sessionId) return false;
