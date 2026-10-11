@@ -49,9 +49,9 @@ export const hostThreads = pgTable("host_threads", {
 	// session or overwrite its continuity state.
 	dispatchLockId: varchar("dispatch_lock_id", { length: 36 }),
 	// Every vendor session this thread has moved on from (reset, close, or a
-	// broken resume). Kept so ambient session import can still tell the
-	// Agent's old sessions apart from the owner's own history on the same
-	// host — `vendor_session_id` alone is cleared at exactly those moments.
+	// broken resume). Ambient import uses this list to tell the Agent's
+	// earlier sessions from the owner's own history on the same host.
+	// `vendor_session_id` is cleared at those moments. Do not drop this list.
 	retiredVendorSessionIds: jsonb("retired_vendor_session_ids").default([]).notNull(),
 	status: varchar({ length: 24 }).notNull().default('active'),
 	// sha256 of the identity block + Room execution rules this thread's vendor

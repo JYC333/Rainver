@@ -995,8 +995,8 @@ export const notes = pgTable("notes", {
 	check("ck_notes_marginalia_binding", sql`((marginalia_project_id IS NULL) = (marginalia_owner_user_id IS NULL)) AND ((marginalia_target_object_id IS NULL) OR (marginalia_owner_user_id IS NOT NULL))`),
 	check("ck_notes_version", sql`version >= 1`),
 	// B12F: the role vocabulary belongs to the registry, so the database only
-	// constrains the token's shape. What it does still enforce is the pairing —
-	// a role without the Project it is scoped to would leave the unique index
+	// constrains the token's shape. It also enforces the pairing. A role
+	// without the Project it is scoped to would leave the unique index
 	// grouping every space's roleless-project notes together.
 	check("ck_notes_project_role_format", sql`(project_role IS NULL) OR ((project_role)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text)`),
 	check("ck_notes_project_role_pairing", sql`(project_role IS NULL) = (role_project_id IS NULL)`),
