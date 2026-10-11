@@ -173,9 +173,9 @@ export class ProjectCorpusRepository {
    * How much collected material and extracted evidence this Project holds,
    * counted through the same readability predicate the corpus list uses.
    *
-   * These are Project-owned rows, so the Overview reads them here rather than
-   * through the entity summary registry, which exists to keep the Project
-   * module out of *other* domains' tables.
+   * These are Project-owned rows, so the Overview reads them here. Do not
+   * route them through the entity summary registry. That registry keeps the
+   * Project module out of other domains' tables.
    */
   async entityCounts(
     identity: SpaceUserIdentity,

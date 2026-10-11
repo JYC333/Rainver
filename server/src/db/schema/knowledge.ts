@@ -490,8 +490,8 @@ export const knowledgeItemSources = pgTable("knowledge_item_sources", {
 	knowledgeItemId: varchar("knowledge_item_id", { length: 36 }).notNull(),
 	sourceId: varchar("source_id", { length: 36 }).notNull(),
 	// Deliberately NOT `link_type`: this is citation lineage, not a semantic
-	// graph edge (B12A). Renaming it would merge two vocabularies the
-	// boundaries file exists to keep apart.
+	// graph edge (B12A). Do not rename it to `link_type`. That would merge two
+	// vocabularies the boundaries keep apart.
 	relationType: varchar("relation_type", { length: 32 }).notNull(),
 	locator: varchar({ length: 1024 }),
 	quote: text(),

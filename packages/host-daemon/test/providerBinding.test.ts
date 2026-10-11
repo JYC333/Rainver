@@ -384,8 +384,8 @@ describe("environment for a run on this machine's own login", () => {
     // toolchains a paired machine needs are all still there. Two things must
     // not survive. A variable that relocates the state root the profile just
     // established — OpenCode reads `XDG_DATA_HOME` before falling back to
-    // `HOME`. And a credential lying around on the machine: this run exists to
-    // spend the owner's subscription, linked into the profile, and a runtime
+    // `HOME`. And a credential lying around on the machine. This run spends
+    // the owner's subscription, linked into the profile, and a runtime
     // that prefers an ambient key over it bills an API account instead — B67's
     // "subscription login converted into API billing by a leftover key".
     const ambient = {

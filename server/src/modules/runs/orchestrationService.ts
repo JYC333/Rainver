@@ -1888,8 +1888,8 @@ export class RunOrchestrationService {
     // Only a server-host Run's recorded provider is the one it spends; a
     // remote Run's backend is decided at launch, where its lease is
     // authorized. The key is decided again where it is spent — each
-    // managed-API turn and each lease — so this check exists to fail the Run
-    // before any work starts, not as the only one.
+    // managed-API turn and each lease. This check fails the Run before any
+    // work starts. Do not treat it as the only check.
     const profile = recordValue(run.runtime_profile_snapshot_json);
     const selectedProviderId = profile.backend_mode === "model_provider"
       ? stringConfigValue(profile.model_provider_id)

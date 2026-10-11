@@ -107,8 +107,7 @@ describe("raise a note passage as a Question (real Postgres)", () => {
 
     // A note id that does not resolve fails the link step, which happens after
     // the Thread insert. Both writes share one transaction, so the Thread must
-    // roll back — a Question with no route back to its note is the exact
-    // disconnection this action exists to fix.
+    // roll back. Do not leave a Question with no route back to its note.
     await expect(new InquiryThreadService(db.pool).raiseNoteAsQuestion(identity(), project.id, {
       note_object_id: randomUUID(), statement: PASSAGE,
     })).rejects.toThrow();

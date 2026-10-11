@@ -71,8 +71,7 @@ export const REFERENCE_BATCH_TOKEN_BUDGET = ROOM_SUMMARY_TOKEN_BUDGET;
  * holds in the prompt, the CLI replay and any later summary of the thread
  * without each of them having to know about references.
  *
- * Two things the fence has to survive, because the content inside it is the
- * thing it exists to contain:
+ * Two things the fence has to survive. The content inside it is untrusted:
  *
  * - **A forged closing marker.** The markers carry a per-attach nonce, so a
  *   transcript cannot close the fence early by containing the literal text —

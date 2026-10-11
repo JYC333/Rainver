@@ -300,10 +300,10 @@ export async function getProjectUpdates(
 
   const rows = await db.query<UpdateRow>(
     `SELECT e.id, e.event_kind, e.subject_type, e.subject_id, e.occurred_at,
-            -- The cursor must carry the column's own precision. Round-tripping
-            -- through a JS Date truncates to milliseconds, and a writer using
-            -- SQL now() would then make every row inside the truncated window
-            -- unreachable — the same failure the composite key exists to fix.
+            -- The cursor must carry the column's own precision. Do not
+            -- round-trip it through a JS Date. That truncates to milliseconds,
+            -- and a writer using SQL now() would then make every row inside
+            -- the truncated window unreachable.
             e.occurred_at::text AS cursor_at, e.seq::text AS seq, e.data_json,
             a.user_id AS actor_user_id, a.agent_id AS actor_agent_id,
             au.display_name AS actor_user_name, ag.name AS actor_agent_name,

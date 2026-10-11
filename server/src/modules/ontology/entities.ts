@@ -23,10 +23,9 @@
  *
  * `projectColumn` is governance ownership and single-valued; this names a table
  * that widens the scope half of the read predicate with further Projects. It is
- * a declaration rather than a notes-only clause because the registry exists to
- * stop each domain writing its own access predicate (B12G) — and because the
- * read gate works at `space_objects` granularity, one declaration serves every
- * ontology subtype.
+ * a declaration rather than a notes-only clause. Do not let each domain write
+ * its own access predicate (B12G). The read gate works at `space_objects`
+ * granularity, so one declaration serves every ontology subtype.
  *
  * Only identifiers are named here. The registry composes the SQL, so no caller
  * ever passes a fragment.
