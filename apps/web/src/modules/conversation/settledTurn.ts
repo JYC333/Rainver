@@ -12,7 +12,7 @@ import type { RunTurn } from '../../types/api'
  * the server writes one at the pause as well (`chatTurnFinalizer` posts the
  * "waiting for review" notice under the Agent's name), so a turn that decides
  * for itself would collapse `blocked` to `done` and take the approval link
- * with it — the one thing a paused turn exists to show.
+ * with it. Do not collapse a paused turn. That link is what it shows.
  */
 export function settledTurn(
   streamed: RunTurn | null | undefined,

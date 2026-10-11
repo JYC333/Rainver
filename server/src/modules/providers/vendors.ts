@@ -208,10 +208,8 @@ export function providerCanRunWithoutCredential(id: string): boolean {
 }
 
 /**
- * Resolution is deliberately strict. A row whose vendor is unknown cannot have
- * its protocol guessed — that guess is what the base-URL heuristic would have
- * been, and it breaks on exactly the gateways and mirrors a configurable base
- * URL exists to support.
+ * Resolution is deliberately strict. Do not guess a protocol from the base
+ * URL. That breaks on the gateways and mirrors a configurable base URL is for.
  */
 export function requireProviderVendor(id: string): VendorDescriptor {
   const vendor = BY_ID.get(id);
