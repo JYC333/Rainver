@@ -141,8 +141,8 @@ export class PgConversationRuntimeSessionRepository {
   }): Promise<void> {
     // A Conversation owns one filesystem scope and therefore one active turn,
     // regardless of which Room member submitted it or which Agent is handling
-    // the turn. The user id is still part of the Run's audit, but must not
-    // partition this serialization authority.
+    // the turn. The user id is part of the Run's audit. Do not partition this
+    // serialization authority by user id.
     await this.lockConversation(input.space_id, input.session_id);
     if (await conversationTurnTaken(this.db, input.space_id, input.session_id)) throw new ConversationTurnInProgressError();
   }

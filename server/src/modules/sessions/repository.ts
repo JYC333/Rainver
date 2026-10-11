@@ -1374,9 +1374,9 @@ function messageMetadataParam(value: MessageMetadata | null | undefined): string
 }
 
 /**
- * Session metadata, which is a different and still open-ended thing: callers
- * stamp their own bookkeeping on a conversation (`execution_setup_started`,
- * for one) and no reader depends on a closed set.
+ * Session metadata is open-ended. Callers stamp their own bookkeeping on a
+ * conversation (`execution_setup_started`, for one) and no reader depends on
+ * a closed set.
  */
 function sessionMetadataParam(value: Record<string, unknown> | null | undefined): string | null {
   return value === null || value === undefined ? null : JSON.stringify(value);

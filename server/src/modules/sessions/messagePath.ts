@@ -87,8 +87,8 @@ export function nonSupersededMessageSql(alias: string): string {
 /**
  * The human transcript of a Room conversation: the visible path, minus
  * `room_display = internal` execution instructions and retry-superseded
- * replies. Agent replay and continuation lookups still read internal rows;
- * list/preview/summary surfaces that people see must not.
+ * replies. Agent replay and continuation lookups read internal rows.
+ * List, preview, and summary surfaces that people see must not.
  */
 export function visibleRoomTranscriptSql(input: {
   alias: string;

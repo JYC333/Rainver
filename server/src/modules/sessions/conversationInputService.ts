@@ -829,12 +829,11 @@ export class ConversationInputService {
 
   /**
    * Hydrates the persisted logical parts only at dispatch time. The returned
-   * objects are ACP v1-shaped but remain plain records so this service does
-   * not become an ACP transport owner. A normal dispatch exposes file
-   * references as authorized ResourceLinks and relative-path instructions.
-   * File references may still hydrate their stored snapshot body on
-   * manual retry; new immutable resources are always descriptors for the
-   * run-scoped input_resource tools.
+   * objects are ACP v1-shaped plain records. This service is not an ACP
+   * transport owner. A normal dispatch exposes file references as authorized
+   * ResourceLinks and relative-path instructions. A manual retry hydrates a
+   * file reference from its stored snapshot body. New immutable resources are
+   * descriptors for the run-scoped input_resource tools.
    */
   async loadPromptParts(input: {
     spaceId: string;
