@@ -123,9 +123,9 @@ function mergeBinds(binds: StrictBind[]): StrictBind[] {
  * Builds the full `bwrap` argv for one Run.
  *
  * The child is started through `sh -c` so the namespace can report readiness
- * on fd 3 before `exec`ing the runtime — the same handshake the Runner used,
- * and the only way to tell "the namespace could not be built" apart from "the
- * runtime exited immediately", which are the same exit code otherwise.
+ * on fd 3 before `exec`ing the runtime. That is how "the namespace could not
+ * be built" stays distinct from "the runtime exited immediately", which are
+ * the same exit code otherwise. Do not drop the readiness report.
  */
 export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { command: string; args: string[] } {
   const cwd = assertAbsolute("cwd", request.cwd);

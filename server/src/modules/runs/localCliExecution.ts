@@ -105,7 +105,7 @@ export interface CliStdioController {
   };
 }
 
-/** Tracks remote Runner executions without ever signalling a local application-server PID. */
+/** Tracks a daemon Run's stop callbacks. Do not register an application-server process. */
 export class LocalCliProcessRegistry implements CliProcessRegistry {
   private readonly processes = new Map<string, { terminate: () => void; forceTerminate: () => void; lastActivityAt: number }>();
   private readonly exitWaiters = new Map<string, Set<(exited: boolean) => void>>();

@@ -111,9 +111,9 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
     await this.removeExistingSandbox(sandboxCwd, folderRoot, "git_worktree");
     await mkdir(resolve(this.config.sandboxRoot, WORKTREE_ROOT_DIR, run.space_id), { recursive: true });
     // A detached standalone clone keeps the isolated workspace's Git object
-    // database inside the selected sandbox. Mounting the source repository's
-    // absolute `.git/worktrees/*` backing path into a runtime namespace would
-    // otherwise widen the Runner authority boundary.
+    // database inside the selected sandbox. Do not mount the source
+    // repository's absolute `.git/worktrees/*` path into the runtime
+    // namespace. That would widen what the runtime can read.
     await locationGitOutput(["clone", "--no-local", "--no-checkout", folderRoot, sandboxCwd], dirname(sandboxCwd), 60_000);
     await locationGitOutput(["checkout", "--detach", baseCommitSha], sandboxCwd, 60_000);
     await this.setRunSandboxPath(run.space_id, run.id, sandboxCwd);

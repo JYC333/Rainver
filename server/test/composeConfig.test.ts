@@ -252,7 +252,7 @@ describe("compose server config", () => {
       expect(runner).toContain("no-new-privileges=true");
       expect(runner).toContain("cap_drop:");
       expect(runner).toContain("read_only: true");
-      // The Runner has no env file. Do not mount `.runner.env` or
+      // This service has no env file. Do not mount `.runner.env` or
       // `.server.env`. `SANDBOX_RUNNER_TOKEN` is the control plane's internal
       // token and would unlock the internal credential and execution routes
       // from the network this container is on. The daemon holds a bearer
@@ -264,9 +264,9 @@ describe("compose server config", () => {
       expect(runner).not.toContain("docker.sock");
       expect(runner).not.toContain("../../:/repo");
       expect(runner).not.toMatch(/\/cache:\/runner\//);
-      // The Runner's six authority roots went with it; what the daemon owns is
-      // the instance's workspace root plus its own config directory, and the
-      // credential the control plane publishes, which it only reads.
+      // The daemon container mounts the instance workspace root, its own
+      // config directory, and the credential the control plane publishes,
+      // which it only reads. Do not mount run-homes or runtime-tools.
       expect(runner).toContain("workspaces:/runner/workspaces");
       expect(runner).toContain("cache/host-daemon:/runner/host");
       expect(runner).toContain("cache/builtin-host:/runner/builtin-host:ro");
