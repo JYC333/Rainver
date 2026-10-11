@@ -763,9 +763,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!hostId) return reply.code(400).send({ detail: "hostId is required" });
     const revoked = await hosts.revoke(user.id, hostId);
     if (!revoked) return reply.code(404).send({ detail: "Host not found" });
-    // A daemon that was already connected when its token was revoked would
-    // otherwise keep executing dispatched runs and heartbeating on its live
-    // socket indefinitely — only a future reconnect would be blocked.
+    // A daemon already connected when its token is revoked keeps executing
+    // dispatched runs and heartbeating on that socket. Token revocation blocks
+    // the next connect only.
     // Cutting the socket stops new work; revoking leases also stops an
     // in-flight bound runtime from spending server-held provider credentials.
     cutOffRevokedHost(hostId);

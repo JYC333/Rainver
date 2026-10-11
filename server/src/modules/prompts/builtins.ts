@@ -116,9 +116,9 @@ async function upsertBuiltinAsset(db: Queryable, manifest: PromptManifest): Prom
      ON CONFLICT (asset_key) WHERE space_id IS NULL DO UPDATE SET
        display_name = EXCLUDED.display_name,
        description = EXCLUDED.description,
-       -- Merge, don't overwrite: a future write path (M4+) may add metadata
-       -- keys sync doesn't manage (e.g. allow_user_override); re-syncing must
-       -- not silently discard them. Sync's own key (prompt_type) still wins.
+       -- Merge, don't overwrite. Keys sync does not manage (allow_user_override
+       -- is one) must survive re-sync. Do not replace metadata_json outright.
+       -- Sync's own key (prompt_type) still wins.
        metadata_json = COALESCE(evolvable_assets.metadata_json, '{}'::jsonb) || EXCLUDED.metadata_json,
        updated_at = EXCLUDED.updated_at
      WHERE evolvable_assets.asset_type = EXCLUDED.asset_type`,

@@ -60,8 +60,8 @@ export const SAFE_SANITIZE_SCHEMA = {
   tagNames: (defaultSchema.tagNames as string[]).filter(tag => tag !== 'source'),
   // Taking the tag out is what matters — with `source` gone from `tagNames` the
   // element is unwrapped before its attributes are read, so this entry never
-  // fires. It stays so that a future schema that allows `source` again for some
-  // other reason does not also hand it back its `srcSet`.
+  // fires. Keep `source` attributes empty. Do not put `srcSet` back: allowing
+  // the tag again would then hand the attribute back.
   attributes: { ...(defaultSchema.attributes as Record<string, unknown>), source: [] },
 }
 

@@ -40,8 +40,8 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	// Vendor correlation ids are opaque and must remain byte-for-byte intact;
 	// truncating them would split one lifecycle into several tool rows.
 	toolCallId: text("tool_call_id"),
-	// Normalizers redact and bound this display label, while text storage keeps
-	// a future provider title from turning event persistence into a Run failure.
+	// Normalizers redact and bound this display label. Do not length-limit this
+	// column: a long provider title would then fail the Run.
 	toolName: text("tool_name"),
 	toolInputSummary: text("tool_input_summary"),
 	// tool_call.kind (execute/edit/read/...),

@@ -63,8 +63,8 @@ describe("deployer socket boundary", () => {
 
   it("gives the server no way to reach the deployer socket (B41/B42)", () => {
     // The server pulls nothing into the deployer: no socket client, no socket
-    // path in its configuration, so there is nothing a future caller could
-    // point at `RAINVER_HOME` and submit a job through.
+    // path in its configuration. Do not add one that points at `RAINVER_HOME`
+    // and submits a job.
     const serverSources = sourceFiles(join(repoRoot, "server", "src"));
     const socketReferences = serverSources.filter((path) => /DeployerSocketClient|deployerSocketPath|DEPLOYER_SOCKET/.test(readFileSync(path, "utf8")));
     expect(socketReferences).toEqual([]);
