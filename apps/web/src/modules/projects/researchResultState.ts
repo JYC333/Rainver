@@ -84,13 +84,13 @@ function workflowIdOf(operation: ProjectOperation): string {
 /**
  * The backend allows at most one active operation per workflow. A retry (or
  * an auto-created incremental scan) creates a fresh operation for the same
- * workflow. Do not count the superseded operation as retriable: it stays
- * "failed" in history, and the panel would otherwise show "failed,
- * Retry" pointing at it while a newer operation for the same workflow was
- * actually running, and clicking Retry 409'd ("another operation is already
- * active for this workflow") with no way to see or act on the real one. Only
- * the newest operation per workflow is ever "current"; older ones for the
- * same workflow are history, not something to retry or report as running.
+ * workflow. Do not count the superseded operation as retriable. It stays
+ * "failed" in history, and the panel would show "failed, Retry" pointing at
+ * it while a newer operation for the same workflow was actually running.
+ * Retry then returns 409 ("another operation is already active for this
+ * workflow") with no way to see or act on the real one. Only the newest
+ * operation per workflow is ever "current"; older ones for the same workflow
+ * are history, not something to retry or report as running.
  */
 function currentOperations(operations: ProjectOperation[]): ProjectOperation[] {
   const byWorkflow = new Map<string, ProjectOperation>()

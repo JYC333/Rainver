@@ -65,9 +65,9 @@ export default function ImportedSessionView() {
       // the mainline and bumps its roster revision — so a fully shared
       // session, which continues there anyway, must not trigger it.
       //
-      // The same `fullyShared` test as the destination and the button. When
-      // this probed `private` alone, a narrowly-shared session left `canWrite`
-      // at its optimistic default and offered a button that 403s on the press.
+      // The same `fullyShared` test as the destination and the button. Do not
+      // probe `private` alone. A narrowly-shared session would leave `canWrite`
+      // at its optimistic default and offer a button that 403s on the press.
       if (!isFullyShared(result.session)) {
         setCanWrite(await projectsApi.mainlineRoom(projectId).then(
           page => page.viewer_can_write,
@@ -130,9 +130,9 @@ export default function ImportedSessionView() {
       // Held for the composer, which sends it with the first message so the
       // reference and the conversation are written together. No conversation
       // is created here — sending is what creates one (ADR 0018 decision 5) —
-      // so abandoning the draft leaves nothing behind.
-          // Records when some were picked, the whole session otherwise. The
-          // whole grain carries a summary; picked records carry themselves.
+      // so abandoning the draft leaves nothing behind. Picked records travel
+      // as themselves. Otherwise the whole session travels, and that grain
+      // carries a summary.
       holdReferences(roomId, [recordIds.length > 0
             ? { kind: 'imported_records', id: session.id, item_ids: recordIds }
             : { kind: 'imported_session', id: session.id }])
