@@ -571,7 +571,7 @@ Policy gates run in this order inside server run orchestration:
 
 3. **`context.inject_memory`** — resolved into the immutable execution-control snapshot before Runtime Context acquires Memory candidates. Cross-space without grant → hard DENY. DENY → Delivery preparation fails closed.
 
-4. **`context.render_for_runtime`** — evaluated in the Automation execution preflight (`automations/service.ts`), whose `policy_preflight` snapshot refuses the request (422) when the decision is not `allow`, and carried by the cross-space personal-memory invariant in `policy/decisionCore.ts`, where a cross-space read without a PersonalMemoryGrant hard denies. It is not a second live gate in front of `adapter.execute()`; no other server path enforces it today.
+4. **`context.render_for_runtime`** — evaluated in the Automation execution preflight (`automations/service.ts`), whose `policy_preflight` snapshot refuses the request (422) when the decision is not `allow`, and carried by the cross-space personal-memory invariant in `policy/decisionCore.ts`, where a cross-space read without a PersonalMemoryGrant hard denies. It is not a second live gate in front of `adapter.execute()`. No other server path enforces it.
 
 Context assembly also freezes each selected item's owner and visibility and
 updates the Run's `context_taint_json`. Materialization treats that summary as

@@ -402,12 +402,11 @@ is on a dispatched Run's only, for the reason its own paragraph below gives:
 `artifact.submit` (`projectWork/artifactDeclarations.ts`) is what lets a Task
 with declared required outputs close at all when an Agent did the work.
 Settlement matches `required_outputs_json` against the `artifact_type` of the
-Task's `role = 'output'` artifacts, and everything a dispatched CLI Run leaves
-behind arrives anonymous — so before it, such a Task parked for review after
-every successful Run however well the work went. The declaration names what a
-file *is*; the file itself is still collected afterwards, and a declaration
+Task's `role = 'output'` artifacts. A dispatched CLI Run's files arrive
+without a type. The declaration names what a file is. Do not close from the
+anonymous files alone. The file itself is collected afterwards, and a declaration
 whose file never arrived is reported into the Task's stream rather than
-dropped. It is granted only where a declaration is applied, which today is the
+dropped. It is granted only where a declaration is applied, which is the
 remote-host path (`SYSTEM_ACTIONS.md`).
 
 They are the smallest set that lets an Agent advance work at all: name a piece

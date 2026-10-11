@@ -90,8 +90,8 @@ runtime declaration raises a candidate.
 |---|---|
 | Built-in strict Server Host (`hosts.kind = 'server'`) | at least `medium` |
 | Paired trusted Host (`hosts.kind = 'remote'`), responsible user is the Host's `owner_user_id` | at least `medium` |
-| Paired trusted Host (`hosts.kind = 'remote'`), any other responsible user | the runtime's baseline (`low` today) |
-| No execution Host | the runtime's baseline (`low` today) |
+| Paired trusted Host (`hosts.kind = 'remote'`), any other responsible user | the runtime's baseline (`low`) |
+| No execution Host | the runtime's baseline (`low`) |
 
 The two `medium`s rest on different things. The Server Host's is an enforced
 control: its daemon wraps every Run in a fresh rootless bubblewrap namespace

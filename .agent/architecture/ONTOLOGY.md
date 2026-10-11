@@ -19,7 +19,7 @@ storage shapes:
   full Entities (they declare interfaces, pass the read gate, appear in
   retrieval) but they do not carry semantic edges.
 
-Registered today:
+Registered:
 
 | Shape | Entities |
 |---|---|

@@ -100,11 +100,10 @@ one other Agent tool, so an Agent can reference a denial from a tool it could
 actually call. Tool-free Runs remain tool-free. The action does not grant authority; it can only create
 a bounded `authorization_requests` row.
 
-**Delivery carries no runtime name.** A Run is given a handful of environment
+**Delivery carries no runtime name.** A dispatched Run is given environment
 variables and the files behind them — the command, reachable at `RAINVER_CLI`
-(the daemon resolves its own copy and generates a launcher; the server, whose
-sandbox mounts nothing of its own, stages the file itself), the Rainver Work
-Skill
+(the daemon resolves its own copy and writes a launcher into the Run's
+directory), the Rainver Work Skill
 (`capabilities/workSkill.ts`, rendered from `systemActions/conversationPolicy.ts`
 constants the conversational surfaces share),
 and a pointer to the Skill appended to the prompt the runtime is actually
@@ -117,21 +116,17 @@ canonical tool-call/idempotency key; a caller that sends none gets a fresh one
 per request rather than a constant, so a second call of the same action in one
 attempt is not swallowed by the event writer.
 
-There are two delivery sites, one per execution host kind, and they differ
-only in where the files land: the daemon writes them into the Run's own
-directory under its config root and removes them with the Run
-(`packages/host-daemon/src/execution.ts`); the server writes them into the
-Run's isolated HOME, which the sandbox runner mounts at `/home/sandbox`
-(`runs/runWorkSurface.ts`). Neither writes into the workspace — on the
-server host a staged directory there would be collected as an untracked change
-in the Run's own code patch, and on a paired machine the workspace is the
-user's checkout.
+The server builds that frame in `runs/runWorkSurface.ts` and the remote-host
+adapter sends it on the launch. The daemon writes the files into the Run's
+own directory under its config root and removes them with the Run
+(`packages/host-daemon/src/execution.ts`). Do not write them into the
+workspace. On a paired machine that directory is the user's checkout.
 
 `artifact.submit` is granted only on the remote-host path. It declares that a
 file the Run leaves behind is a Task's output, and only that path applies a
-declaration today (the executing host uploads its output directory and
+declaration (the executing host uploads its output directory and
 `hosts/repository.ts` gives those files the declared type and Task link, which
-is what lets settlement match `tasks.required_outputs_json`). A sandboxed
+is what lets settlement match `tasks.required_outputs_json`). A server-host
 Run's artifacts come through `materializationService` instead, which does not
 consume declarations, so the action is withheld rather than accepted and
 ignored.
