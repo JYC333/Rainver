@@ -902,8 +902,8 @@ export class ProjectResearchRepository {
   }
 
   /**
-   * V1 checks: citation existence for readable Project corpus objects, claim has evidence or
-   * an explicit gap, evidence source is visible in the project corpus, and
+   * Citation existence for readable Project corpus objects, a claim has evidence or
+   * an explicit gap, the evidence source is visible in the project corpus, and
    * experiment-backed claims reference a real Experiment Definition
    * (modules/experiments).
    */

@@ -634,14 +634,11 @@ export class ProjectResearchAreaService {
   }
 
   /**
-   * Binds starter notes that have no role marker, once, by title. Title
-   * matching is legitimate only here. It is not a general resolver.
-   *
-   * There is no data migration for unmarked starter notes. This runs on the
-   * read path — the same place that already creates a missing starter note —
-   * and stops once every role is filled. A note whose title the user already
-   * changed is not adopted: there is nothing to reconstruct, and guessing
-   * would put a role on a note the user never designated.
+   * Binds starter notes that have no role marker, once, by title, on the read
+   * path that also creates a missing starter note. Title matching is
+   * legitimate only here. It is not a general resolver. It stops once every
+   * role is filled. A note whose title the user already changed is not
+   * adopted. Do not guess a role onto a note the user never designated.
    */
   private async adoptStarterNotesByTitle(scope: NoteWriteScope, spaceId: string, projectId: string): Promise<void> {
     const byRole = await resolveNotebookNotes(this.db, spaceId, projectId);

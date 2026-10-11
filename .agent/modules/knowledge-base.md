@@ -322,11 +322,12 @@ Knowledge items must not be auto-injected into runtime context. A Knowledge writ
 
 ## Retrieval Substrate
 
-Knowledge is the first consumer of the shared retrieval engine
-(`server/src/modules/retrieval/`), registering a domain adapter
-(`knowledge/retrievalAdapter.ts`) for `KnowledgeItem`, `Note`, `Source`, and
-`Claim`. The engine is generic and domain-agnostic; the adapter owns all
-Knowledge-specific SQL and the visibility revalidation gate. A viewer whose
+The shared retrieval engine (`server/src/modules/retrieval/`) is generic.
+A domain registers an adapter. Do not fork the engine. Knowledge registers
+`knowledge/retrievalAdapter.ts` for `KnowledgeItem`, `Note`, `Source`, and
+`Claim`. Memory, Inquiry, Projects, and Sources register adapters for their
+own object types. The Knowledge adapter owns the Knowledge-specific SQL and
+the visibility revalidation gate. A viewer whose
 effective `access_level` is `summary` receives stored summaries only — detail
 bodies, list `content_preview` slices of the body, and retrieval text are
 withheld. See
@@ -345,12 +346,12 @@ object schema config only; it does not add retrieval object types or write
 canonical Knowledge, Memory, Claim, Project, relation, or retrieval projection
 rows. Follow-up retrieval/context-layer quality work and non-goals are tracked in
 [ROADMAP_AND_FUTURE_RISKS.md](../architecture/ROADMAP_AND_FUTURE_RISKS.md#retrieval-and-context-layer-stabilization).
-Canonical lifecycle ownership does not change:
-KnowledgeItem writes remain proposal-gated, Notes and Sources remain direct CRUD,
+Canonical lifecycle ownership:
+KnowledgeItem writes are proposal-gated. Notes and Sources are direct CRUD,
 and retrieval projection rows are derived indexes that can be rebuilt from the
 canonical tables.
 
-The initial projection indexes:
+The projection indexes:
 
 - `KnowledgeItem` title, slug, aliases, content/plain text, excerpt, source URL,
   item status, visibility, owner, Project Folder, accepted object relations, and

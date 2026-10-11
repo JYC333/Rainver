@@ -1,8 +1,6 @@
 asset_key: agent_template.personal_assistant.system
 display_name: Personal Assistant Template System Prompt
-description: >
-  Registry-managed system prompt for the personal_assistant agent template,
-  migrated from the legacy template manifest.
+description: Registry-managed system prompt for the personal_assistant agent template.
 content:
   schema_version: prompt_asset.v1
   prompt_type: agent_system

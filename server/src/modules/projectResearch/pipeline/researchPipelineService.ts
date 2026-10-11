@@ -5,10 +5,9 @@ import { ProjectResearchOrchestrator } from "../orchestrator.js";
 /**
  * Public command boundary for the adaptive research pipeline.
  *
- * Stage behavior belongs to the stage coordinators. This facade deliberately
- * contains no transition, persistence, or provider logic. The internal
- * composition root remains behind this stable pipeline-facing API while its
- * remaining command ownership is extracted by domain.
+ * Stage behavior belongs to the stage coordinators. This facade holds no
+ * transition, persistence, or provider logic. Each command forwards to
+ * `ProjectResearchOrchestrator`. Do not put stage logic here.
  */
 export class ProjectResearchPipelineService {
   private readonly orchestrator: ProjectResearchOrchestrator;
