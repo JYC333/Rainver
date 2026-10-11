@@ -394,7 +394,7 @@ export interface RunExecutionInput extends RunExecuteRequest {
   invocation_attempts?: RunInvocationAttemptLifecycle;
   /** Canonical server-resolved attachment mounts for a server Host launch. */
   workspace_mounts?: Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }>;
-  /** Set by `executeRun` from `preparedRuntime.execution_port`. `invokeAdapterUnbounded` reads it to route a `local_cli` run to the remote-host adapter. Do not route that run through `executeVendorCliAdapter`. */
+  /** Set by `executeRun` from `preparedRuntime.execution_port`. `invokeAdapterUnbounded` reads it to send a `local_cli` run to `executeRemoteHostCliAdapter`. Do not add a server-process CLI executor for that run. */
   execution_port?: HostExecutionPort | null;
 }
 

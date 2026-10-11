@@ -184,9 +184,8 @@ async function piModel(
     (provider.provider_type === "openai_compatible" || provider.provider_type === "ollama")
       ? {
           // Custom and older OpenAI-compatible servers commonly implement the
-          // original Chat Completions fields only. Preserve the request shape
-          // rainver used before Pi instead of auto-detecting modern OpenAI
-          // features from an arbitrary URL.
+          // original Chat Completions fields only. Keep that request shape.
+          // Do not auto-detect modern OpenAI features from an arbitrary URL.
           compat: {
             supportsStore: false,
             supportsDeveloperRole: false,
