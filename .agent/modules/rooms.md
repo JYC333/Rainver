@@ -849,20 +849,9 @@ imported records. References are attached through
 `POST /rooms/:roomId/conversations/:sessionId/references` after an explicit
 Conversation draft exists; sending is always addressed to that Conversation.
 
-Reuse / Dependency Check (recorded at close; the plan omitted it)
-- Existing repository capability found? Yes — `contentAccessSql` /
-  `projectReadAccessSql` for every audience, `readImportedSessionForViewer` for
-  the transcript gate, the `Idempotency-Key` + fingerprint table pattern from
-  Room creation, `fitTextToTokenBudget` for clipping. The Room conversation
-  summary service was evaluated and rejected for imported sessions: it compacts
-  a growing thread behind a lease, and a session's records are fixed.
-- Existing installed dependency found? `zod`, `pg`, `node:crypto` — nothing new.
-- Mature external option evaluated? n/a — domain logic.
-- Chosen approach: extend (one new message kind; the
-  `imported_history_summaries` table; the attach and
-  `/projects/:id/readers` routes).
-- Why: a reference is content already governed by the Room's own gates; the
-  only new authority is the disclosure calculus, which asks existing predicates.
+An imported session is summarized into `imported_history_summaries`. Do not
+run it through the Room conversation summary service. That service compacts a
+growing thread behind a lease, and a session's records are fixed.
 
 ### Disclosure is confirmed, and names who gains
 

@@ -266,6 +266,6 @@ export const provenanceLinks = pgTable("provenance_links", {
 	// registry, resolved through `isProvenanceSourceType`. The column keeps a
 	// format constraint only. Do not restore a closed-set CHECK here, and do
 	// not keep a private Set that drops unrecognized entries: that loses
-	// provenance with no error. `target_type` still carries no constraint.
+	// provenance with no error. `target_type` carries no constraint.
 	check("ck_provenance_links_source_type_format", sql`(source_type)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text`),
 ]);

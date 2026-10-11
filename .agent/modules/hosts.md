@@ -1047,12 +1047,11 @@ heartbeat is marked `execution_ready = false`. On socket close, the host is
 marked `offline` immediately; Host liveness remains distinct from Location
 readiness.
 A `hello` reporting a daemon older than `MIN_HOST_DAEMON_VERSION`
-(`hosts/daemonCompatibility.ts`, currently `0.4.0` — the release that merges a
-done Task's branch: the `task_merge_*` frames and a resolution Run launched
-into the Task worktree as a merge left it) is refused with
-`daemon_outdated`: the reported version is recorded and the host stays offline
-rather than accepting Runs an older daemon would fail one at a time, so a
-paired host must update before it can execute again. The refused daemon
+(`hosts/daemonCompatibility.ts`, `0.4.0`) is refused with `daemon_outdated`.
+An older daemon does not speak the `task_merge_*` frames and would launch a
+resolution Run as an ordinary Task Run. The reported version is recorded and
+the host stays offline rather than accepting Runs it would fail one at a time,
+so a paired host must update before it can execute again. The refused daemon
 recognises that close (`isOutdatedDaemonClose` in `commands/run.ts`), logs the
 update instruction once and retries on a 15-minute floor rather than the
 ordinary ≤30s backoff, so an un-updated host does not re-record its version

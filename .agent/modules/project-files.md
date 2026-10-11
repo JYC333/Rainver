@@ -99,7 +99,7 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   non-Linux server patching fails closed (503). Existing executable modes are
   preserved. These operations do not turn the external filesystem into a
   database transaction or prevent another writer from changing file content.
-  Reuse / Dependency Check: existing Folder realpath checks cannot pin a
+  Existing Folder realpath checks cannot pin a
   directory across a write; Node filesystem handles supply this Linux boundary.
   [fs-native-extensions](https://github.com/holepunchto/fs-native-extensions)
   offers advisory locks but no directory-relative open API, so no native
