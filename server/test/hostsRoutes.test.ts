@@ -746,8 +746,8 @@ describe("hosts routes", () => {
     });
     expect(probes.find((probe) => probe.runtime === "codex")?.argv).toEqual(["codex-acp"]);
 
-    // Daemon and server use the current installation/configOptions contract
-    // directly; obsolete heartbeat layouts are not projected forward.
+    // The heartbeat is stored as `runtimes`, `versions`, and `installations`.
+    // Do not project another layout into that shape.
     socket.send(JSON.stringify({
       type: "heartbeat", ...HELLO_INFO,
       capabilities_json: {

@@ -651,9 +651,9 @@ session, without assuming every advertised model is anonymously callable.
 for display only.
 The shape is the protocol's (`packages/protocol/src/hosts.ts`:
 `HostCapabilitiesSchema`), so server and web share one definition and the
-server validates what it stores and serves. Daemon and server deploy together;
-`hosts/capabilities.ts` accepts only the current installations shape and does
-not translate obsolete heartbeat layouts.
+server validates what it stores and serves. `hosts/capabilities.ts` reads
+`runtimes`, `versions`, and `installations` only. An installation entry that
+does not parse is dropped. Do not translate another layout into this shape.
 
 Install (`POST /api/v1/hosts/:hostId/installations/:runtimeKey`, host owner)
 sends `install_tool { request_id, runtime_key, version, distribution, login,
