@@ -11,8 +11,7 @@ import { assertProjectWriter } from "../projects/access.js";
  * blocked by `primary_project_id`. It is not a grant — `visibility`,
  * `access_level` and `content_access_grants` are separate conjuncts, so a
  * `private` object stays private to its owner however many Projects it reaches.
- * That is why there is no access level on a share (the open question's answer:
- * read-only by construction).
+ * A share has no access level. It is read-only by construction. Do not add one.
  *
  * Both sides are writes. Opening an object to a Project changes what that
  * Project's members can see, and it changes what the owning Project has

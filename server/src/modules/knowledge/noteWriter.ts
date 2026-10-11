@@ -21,7 +21,7 @@ import {
 } from "./noteRevisionService.js";
 
 /**
- * The one way to create or change a note. Content still goes through
+ * The one way to create or change a note. Content goes through
  * `noteRevisionService`: every version gets a revision row, which is what
  * makes rollback trustworthy.
  *
