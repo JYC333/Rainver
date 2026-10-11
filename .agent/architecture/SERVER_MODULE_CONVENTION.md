@@ -101,9 +101,9 @@ A route becomes owned only by explicit registration, never by accident.
   material in `modules/auth`.
 - `x-rainver-server: server` is trace metadata, never trust.
 
-Authorization, Cookie, request bodies, and response bodies are never logged
-(`gateway/logging.ts` redaction is defense in depth on top of Fastify's default
-serializers).
+Authorization, Cookie, request bodies, and response bodies are never logged.
+`gateway/logging.ts` serializes a request as method, path and peer. Its
+redact paths are a second check if that serializer changes.
 
 ## Error envelope convention
 

@@ -12,9 +12,9 @@ import type { FastifyRequest, FastifyServerOptions } from "fastify";
 import type { ServerConfig } from "../config.js";
 
 /**
- * Fastify's default `req` serializer logs `req.url` with its query string. An
- * OAuth callback carries its authorization code and state there, and a search
- * route carries what was searched for, so the line keeps the path only.
+ * Do not log `req.url` with its query string. An OAuth callback carries its
+ * authorization code and state there, and a search route carries what was
+ * searched for. The line keeps the path only.
  */
 export function logRequestPath(url: string): string {
   const cut = url.search(/[?#]/);

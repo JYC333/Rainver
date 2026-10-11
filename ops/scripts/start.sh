@@ -209,10 +209,9 @@ private_dir() {
 }
 
 # ── Retired directories ───────────────────────────────────────────────────────
-# Named, never deleted. A CLI runtime is installed on an execution host now and
-# no credential is brokered from here (ADR 0016), so these two are dead weight
-# — but one of them is a secrets directory, and a script that deletes those is
-# a script nobody can trust.
+# Named, never deleted. CLI runtimes install on an execution host, and no
+# credential is brokered from here (ADR 0016). One of these is a secrets
+# directory. Do not delete it from this script.
 report_retired_dirs() {
   local retired=()
   [[ -d "$MODE_ROOT/runtime-tools" ]] && retired+=("$MODE_ROOT/runtime-tools")
