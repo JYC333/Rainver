@@ -305,9 +305,9 @@ describe("the proxy as a running server", () => {
   });
 
   it("dials an IPv6 literal target rather than failing to parse it", async () => {
-    // `[::1]:443` is how a client writes one. With the brackets left on, the
-    // host was never recognised as an address at all — so every IPv6 target
-    // failed *and* skipped the block list.
+    // `[::1]:443` is how a client writes one. Do not leave the brackets on.
+    // The host is never recognised as an address, so every IPv6 target fails
+    // and the block list is skipped for it.
     const grant = proxy.grant("run-1", "install", { mode: "direct" });
     const response = await connect("[::1]:443", grant.token);
     expect(response).toContain("403");
@@ -316,8 +316,8 @@ describe("the proxy as a running server", () => {
 
   it("reads a CONNECT that arrives in pieces", async () => {
     // A client that writes its request line and headers separately is
-    // ordinary; reading one chunk turned that into a 405 or a 407 depending
-    // on where the split fell.
+    // ordinary. Do not read only one chunk. The split becomes a 405 or a 407
+    // depending on where it falls.
     const grant = proxy.grant("run-1", "default", { mode: "direct" });
     const { connect: dial } = await import("node:net");
     const [host, port] = proxy.address.split(":");

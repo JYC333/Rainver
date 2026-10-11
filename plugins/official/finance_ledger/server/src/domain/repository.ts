@@ -305,9 +305,9 @@ export const financeLedgerRepository = {
    *
    * The one resolver for every read and every mutation that names an account
    * id. `findAccount` answers about the whole book and is for the engine's own
-   * internal load; a route reaching it directly is how a member closed another
-   * member's private account and got the row back as confirmation that it
-   * existed.
+   * internal load. Do not let a route call it directly. A member would close
+   * another member's private account and get the row back as confirmation
+   * that it is there.
    *
    * `writable` narrows it further: a personal account is its owner's to close
    * or to unhide. Both refusals are the same "not found" the invisible case
