@@ -577,8 +577,8 @@ and what its subscription has left. Nothing else about either crosses an API.
 
 **B50** — `server/` is the TypeScript backend source root. The Compose/API
 entrypoint service name remains `server` for web, dev, test, and prod.
-The permanent gateway module owns routing and request context; unknown
-`/api/v1/*` routes fail closed with the local 404 catch-all. Schema authoring
+The gateway module owns routing and request context. Do not add a second
+entry layer. Unknown `/api/v1/*` routes fail closed with the local 404 catch-all. Schema authoring
 goes through Drizzle definitions under `server/src/db/schema/`; generated SQL
 artifacts live under `server/migrations/` and are applied only through the
 explicit server migration runner. Do not hand-edit migration SQL for schema

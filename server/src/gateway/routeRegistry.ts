@@ -1,6 +1,5 @@
 /**
- * Route registry — the composition pattern for server routes (the
- * permanent "gateway" entry layer).
+ * Route registry — how server routes are composed.
  *
  * Server-owned backend modules live under `../modules/<module_name>/` and each
  * exposes a {@link ServerModule}: a name plus a
