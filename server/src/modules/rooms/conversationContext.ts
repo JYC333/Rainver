@@ -95,7 +95,7 @@ export interface RoomCompactionBatch {
  *
  * `summaryUnavailable` says no summary is coming for the prefix — the Room
  * owner has no eligible provider, or summarizing stopped — so the tail widens
- * by what one summary batch would have covered instead of dropping it, up to
+ * by one summary batch's coverage instead of dropping it, up to
  * half the share at which the session rotates.
  */
 export function assembleRoomConversationContext(input: {
