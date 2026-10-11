@@ -418,9 +418,8 @@ export async function normalizeRuntimeProfileInput(
     ?? (modelProviderId || modelName ? "model_provider" : "runtime_native");
   assertBackendModeBinding(runtimeKey, backendMode, modelProviderId, modelName);
 
-  // A caller that names a Location has named the mode: 'location' was the
-  // only shape before managed workspaces existed, so it stays the default
-  // for that input. 'managed' must always be explicit.
+  // A caller that names a Location has named the mode. `location` is the
+  // default for that input. `managed` must always be explicit.
   const workspaceMode = input.workspaceMode ?? (input.workspaceLocationId != null ? "location" : null);
   const hostBound = input.executionHostId != null
     || input.workspaceLocationId != null

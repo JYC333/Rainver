@@ -256,9 +256,8 @@ const CONTEXT_ITEM_TYPES: Record<string, string | undefined> = {
   memory_entry: "memory",
   knowledge_item: "knowledge_item",
   // `note` is a first-class runtime-context source-reference type.
-  // while the chat candidate collector produced note items, so persisting such
-  // a snapshot would have failed the constraint. Registry validation surfaced
-  // it; the entity list is the correct one.
+  // Do not omit it from this list. Persisting a snapshot that names a note
+  // would fail the constraint.
   note: "note",
   source: "source",
   extracted_evidence: "extracted_evidence",

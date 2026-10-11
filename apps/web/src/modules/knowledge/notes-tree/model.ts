@@ -62,9 +62,8 @@ export function groupNotesByCollection(notes: NoteSummary[]) {
   for (const bucket of map.values()) {
     // sort_order is only meaningful once a note has been created into or
     // dragged within a folder at least once (see noteWriter's
-    // insertNotePlacement) — notes that still tie at the same value (e.g.
-    // both never moved) fall back to newest-updated-first, matching the
-    // prior behavior before manual ordering existed.
+    // insertNotePlacement). Notes that still tie at the same value fall
+    // back to newest-updated-first.
     bucket.sort((a, b) => a.sortOrder - b.sortOrder
       || (b.note.updated_at ?? '').localeCompare(a.note.updated_at ?? ''))
   }

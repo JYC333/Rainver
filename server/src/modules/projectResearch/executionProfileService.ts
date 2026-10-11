@@ -143,9 +143,9 @@ export class ProjectResearchExecutionProfileService {
   /**
    * The agent's capabilities snapshot is fixed on its current agent_versions
    * row at creation time, with no versioned-edit path for this
-   * system-managed agent. Backfill it in place when a stage adds a new
-   * required capability, so spaces provisioned before that stage existed
-   * don't fail routing forever.
+   * system-managed agent. When a stage adds a required capability, write it
+   * onto the current row. Do not leave the snapshot short of a capability
+   * the stage requires. Routing would keep failing for that agent.
    */
   private async ensureManagedAgentCapabilities(spaceId: string, agentId: string): Promise<void> {
     const current = await this.db.query<{ version_id: string; capabilities_json: unknown }>(

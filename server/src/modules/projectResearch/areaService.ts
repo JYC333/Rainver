@@ -152,8 +152,8 @@ export class ProjectResearchAreaService {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const service = new ProjectResearchAreaService(db, this.config);
       await service.ensureArea(scope, identity.spaceId, projectId);
-      // Projects with reports from before the living area existed get
-      // their notes seeded from the latest completed report once.
+      // Creating the area seeds its notes from the latest completed report,
+      // once. An area that already exists is left as it is.
       const report = existing.rows[0] ? { rows: [] } : await db.query<{ synthesis_run_id: string; content_json: unknown }>(
         `SELECT synthesis_run_id,content_json FROM project_research_reports
           WHERE space_id=$1 AND project_id=$2 AND status <> 'rejected'

@@ -48,8 +48,8 @@ export function buildResearchReportReaderProjection(report: Record<string, unkno
 
 /**
  * Label for one reference entry: the persistent `reference_id` written at
- * materialization when present, else the positional "ref-N" fallback used
- * for reports stored before two-level numbering existed. The positional
+ * materialization when present, else the positional "ref-N" fallback for a
+ * report that has no `reference_id`. The positional
  * counting must mirror the refs() render order above (findings, then
  * sources, then ideas, counting every array element) — the same order the
  * reference resolver's fallback assigns.

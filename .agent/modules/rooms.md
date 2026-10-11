@@ -585,16 +585,13 @@ Room, not because of how that Agent was configured:
 whenever the conversation has a `room_id` or a `project_id`, independent of whether the Run executes on
 the server Host or a remote trusted Host. Host kind changes how the same
 Run-scoped tool surface is delivered, not which Room-owned actions the Run may
-use. Conversations with neither receive `CONVERSATION_TOOL_ALLOWANCE`. See
-`architecture/SYSTEM_ACTIONS.md` for why the scope moved and what stayed
-fail-closed.
+use. Conversations with neither receive `CONVERSATION_TOOL_ALLOWANCE`
+(`architecture/SYSTEM_ACTIONS.md`).
 
 The allowance is decided once, by `conversationToolGrantInput()`
 (`systemActions/scenarioToolAllowance.ts`), for every way a person or a Room
 talks to an Agent: a Room message, a delegation the Room's Agent makes
 (`createDelegatedChildRun` carries it), and a direct chat opened in a Project.
-Before that, a delegated child declared nothing and could call no action, and
-direct chat kept a three-action list from before scenario allowances existed.
 The Room allowance carries both halves of delegation (`agent.delegate` and
 `agent.wait_for_results`), the Project write surface, `task.plan.propose`
 (proposal-gated), and the two Source proposals.

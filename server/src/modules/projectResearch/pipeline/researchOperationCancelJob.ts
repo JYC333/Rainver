@@ -39,9 +39,9 @@ const RUN_TERMINAL_SQL_LIST = HARD_TERMINAL_RUN_STATUSES.map((status) => `'${sta
  *   one batch, an accepted leak.)
  * - **Source backfill plans** — the acquisition itself, and the expensive
  *   phase. The segment scheduler advances only plans in `approved`/`running`,
- *   and never consults the Operation's status, so without this an Operation
- *   cancelled mid-backfill kept fetching from the provider and ingesting for
- *   as long as the plan lasted.
+ *   and never consults the Operation's status. Do not leave the plan running.
+ *   A cancelled Operation would keep fetching and ingesting until the plan
+ *   ends.
  * - **The pass Execution** — left `queued`/`running` it stays a live pass
  *   nothing will ever finish.
  *

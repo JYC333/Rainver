@@ -6248,9 +6248,8 @@ describe("Room workflow (real Postgres)", () => {
     };
     expect(await markOf()).toBe("agent_template.personal_assistant.system");
 
-    // An instance provisioned before the mark existed: same content, no mark.
-    // It is provably untouched, so it is adopted rather than treated as
-    // somebody's work and abandoned.
+    // Same content, no mark. It is provably untouched, so it is adopted
+    // rather than treated as somebody's work and abandoned.
     await db.pool.query(
       `UPDATE agent_versions SET follows_seed_key = NULL
         WHERE id = (SELECT current_version_id FROM agents WHERE id = $1)`,

@@ -735,8 +735,9 @@ function applyConversationSnapshot(
   const spec = getRuntimeAdapterSpec(candidate.runtime_key);
   // The column is a varchar the Profile's own CHECK shape is mirrored onto, so
   // an unrecognized mode is a corrupt binding, not a `runtime_native` one.
-  // Coercing it here would have spent whichever credential the Profile still
-  // named while claiming the Conversation's frozen deployment decided it.
+  // Do not coerce an unrecognized mode to `runtime_native`. That would spend
+  // whichever credential the Profile still named while claiming the
+  // Conversation's frozen deployment decided it.
   if (snapshot.backend_mode !== "model_provider" && snapshot.backend_mode !== "runtime_native") {
     throw new RouteSelectionError(
       "conversation_backend_mode_invalid",

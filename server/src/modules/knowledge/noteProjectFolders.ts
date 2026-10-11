@@ -55,8 +55,8 @@ export async function projectOwningCollection(
  *
  * Nested under the space's protected "Projects" PARA folder when one exists, so
  * it turns up where a user following that structure would look. Looked up by
- * `system_role` rather than by name, like Inbox and Archive; a space seeded
- * before that role existed degrades to a root-level folder.
+ * `system_role` rather than by name, like Inbox and Archive. A space with
+ * no Projects role gets a root-level folder.
  */
 export async function ensureProjectNotesFolder(
   db: Queryable,

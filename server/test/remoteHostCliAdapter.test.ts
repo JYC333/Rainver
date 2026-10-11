@@ -534,8 +534,8 @@ describe("executeRemoteHostCliAdapter", () => {
         db,
       },
     );
-    // A built-in host whose kind went unread would have launched with a paired
-    // machine's settings: no strict session config and direct egress (B62).
+    // Do not launch when the built-in host's kind went unread. That would use
+    // a paired machine's settings: no strict session config and direct egress (B62).
     expect(result).toMatchObject({ success: false, error_code: "host_trust_unavailable" });
     expect(sink.sent.some((f) => f.type === "launch")).toBe(false);
   });
@@ -849,7 +849,7 @@ describe("which runs get a runtime profile at all", () => {
       expect(() => buildUnboundRuntimeProfile("acp_registry_agent", scope)).toThrowError(
         expect.objectContaining({ code: "runtime_profile_isolation_unsupported" }),
       );
-      // The three the plan names all declare one and all get a profile.
+      // claude_code, codex_cli, and opencode declare isolation and get a profile.
       for (const adapter of ["claude_code", "codex_cli", "opencode"]) {
         const frame = buildUnboundRuntimeProfile(adapter, scope);
         expect(frame?.credential_source, adapter).toBe("host_login");
