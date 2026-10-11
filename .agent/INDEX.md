@@ -16,10 +16,10 @@ control plane — the server host (strictly isolated, bubblewrap sandboxed, the 
 in a single-machine deployment) or a personal machine the user owns and has paired (trusted-host mode,
 native execution, no sandbox isolation). See
 [decisions/0016-control-plane-execution-hosts.md](decisions/0016-control-plane-execution-hosts.md) for
-the two-tier trust model. The system is **not** local-first; it supports offline capture
-and draft queuing for personal convenience but active memory, proposals, credentials, and deployment
-remain server-authoritative, and Project Folder operations remain authoritative to whichever host owns
-that folder. See
+the two-tier trust model. The system is not local-first. There is no sync
+protocol and no offline queue. Active memory, proposals, credentials, and
+deployment remain server-authoritative, and Project Folder operations remain
+authoritative to whichever host owns that folder. See
 [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md) for the
 durable position on this boundary.
 
@@ -166,9 +166,9 @@ are source of truth for active nav and routes. For UI decisions, see the module 
 |---|---|
 | [architecture/FRONTEND_INFORMATION_ARCHITECTURE.md](architecture/FRONTEND_INFORMATION_ARCHITECTURE.md) | Frontend role, dogfooding loop, home direction, module visibility, empty-state policy |
 | [architecture/MANUAL_ACCEPTANCE_TASK_PLAN_WORKFLOW.md](architecture/MANUAL_ACCEPTANCE_TASK_PLAN_WORKFLOW.md) | Clickable manual acceptance paths for Task planning, Agent Plans, and fixed Workflow Automation |
-| [modules/product-shell.md](modules/product-shell.md) | Shell, NavRail, CommandPalette, PanelLayout |
-| [modules/frontend-layout.md](modules/frontend-layout.md) | Responsive layout, mobile variants |
-| [modules/client-server-protocol.md](modules/client-server-protocol.md) | REST, WebSocket, SSE, offline queue protocol |
+| [modules/product-shell.md](modules/product-shell.md) | Shell, global rail, scene sidebar, floating capture |
+| [modules/frontend-layout.md](modules/frontend-layout.md) | Rail, scene sidebar, main outlet, mobile tab bar |
+| [modules/client-server-protocol.md](modules/client-server-protocol.md) | REST, host WebSocket, turn SSE. There is no offline queue |
 | [modules/activity-inbox.md](modules/activity-inbox.md) | Activity inbox UI and quick capture |
 | [modules/graph-view.md](modules/graph-view.md) | Shared GraphProjection contract, graph renderer boundary, core Graph page, Project graph lens consumption |
 
