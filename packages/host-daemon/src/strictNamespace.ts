@@ -44,8 +44,8 @@ const SYSTEM_ROOTS = ["/usr", "/bin", "/sbin", "/lib", "/lib64"];
 
 /**
  * The minimum an ordinary process needs to resolve users, time zones, DNS and
- * TLS roots. Copied from the Runner's list unchanged — it is the outcome of
- * real runs failing without each entry, not a guess.
+ * TLS roots. Each entry is here because a run fails without it. Do not trim
+ * the list by guess.
  */
 const ETC = [
   "/etc/alternatives",

@@ -783,7 +783,7 @@ checkpoint as the stop lever. A Run
 that answers `cancelling` (kill requested, process exit unconfirmed) defers
 the job for a later retry rather than being counted as cancelled. Managed API
 Runs register their AbortController in the same process-wide execution
-registry as CLI Runner callbacks, so Stop aborts the live provider request and
+registry as ACP execution callbacks, so Stop aborts the live provider request and
 waits for the adapter to unwind instead of only changing the database row.
 Cancelled Runs are reselected because terminal finalization and delegation
 projection are idempotent; the job fails and retries until both complete.

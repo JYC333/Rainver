@@ -106,9 +106,9 @@ public cancellation cannot remove an active execution lock. The owner checks
 for it wherever it would otherwise stop or proceed: when the Run will not go
 `running` (a stop during preparation, or a revoked authorization), and once
 more just before dispatch, so a stop that reached no process yet is published
-instead of running the turn. Both local CLI
-Runner callbacks and managed-provider AbortControllers are registered in the
-same process-wide active-execution registry, so cancellation waits for real
+instead of running the turn. Both ACP execution callbacks and managed-provider
+AbortControllers are registered in the same process-wide active-execution
+registry, so cancellation waits for real
 execution exit/unwind before confirming terminal state. Crash recovery
 orphans the Attempt, rejects its proposals, and removes its stale lock in the
 same recovery statement. Consequently, neither automatic nor explicit
