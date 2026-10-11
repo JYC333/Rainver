@@ -361,7 +361,7 @@ a native execution path exists.
 - Binary asset storage is not implemented; binary/non-text assets are kept as
   package inventory metadata where GitHub exposes blob metadata.
 - No native web search service is implemented.
-- Workflow drafts set one primary `runs.capability_id` for compatibility and
+- Workflow drafts set one primary `runs.capability_id` and
   persist the full workflow capability list in `runs.capabilities_json`.
 - Native runtime skill execution is not implemented; rendering only supplies
   adapter-specific instructions or prompt blocks.

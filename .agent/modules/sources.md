@@ -370,8 +370,8 @@ Custom Source backend support is implemented for draft connection creation,
 deterministic handler generation, fixture testing, inside-envelope activation,
 manual and scheduled scan queueing, handler-run history, and trusted endpoint
 fetching into the handler input. `typescript_node` remains the generated-code
-Level 3 fallback. Existing `declarative_pipeline_v1` handler versions remain
-readable and executable for compatibility; operators can explicitly bridge one
+Level 3 fallback. `declarative_pipeline_v1` handler versions stay
+readable and executable. An operator can explicitly bridge one
 into a new paused Level 2 recipe source and draft `source_recipe_versions`
 row. New normal source creation uses Source Recipes, not pipeline-as-handler
 rows.
