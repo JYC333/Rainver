@@ -6,8 +6,8 @@ frontend rendering core, built-in Graph page, and Project graph lens support are
 in place.
 
 ## Purpose
-Graph View is the shared read-only relationship visualization surface for Agent
-Space. It gives core modules and domain surfaces one durable graph contract and
+Graph View is the shared read-only relationship visualization surface for
+Rainver. It gives core modules and domain surfaces one durable graph contract and
 one renderer-backed interaction layer without making the renderer or a specific
 domain model part of the public API.
 

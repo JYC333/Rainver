@@ -375,10 +375,10 @@ describe("Retrieval bench: recency / staleness (real Postgres)", () => {
     if (!db.available) return;
     const old = new Date(Date.now() - 400 * 86_400_000).toISOString();
     const fresh = new Date().toISOString();
-    // Adversarial ids: the FRESH page sorts alphabetically LAST, so the lexical
-    // arm's object_id tiebreak puts the STALE page first. Only the recency signal
-    // — which now reads the CANONICAL source_updated_at, not projection time — can
-    // lift the fresh page above it. This fails if recency keys off reindex time.
+    // Adversarial ids: the fresh page sorts alphabetically last, so the lexical
+    // arm's object_id tiebreak puts the stale page first. Only the recency
+    // signal, which reads the canonical source_updated_at, can lift the fresh
+    // page above it. Do not key recency off reindex time.
     await seed({ id: "aaa-stale-onboarding", title: "Onboarding guide", content: "Team onboarding checklist and links.", updatedAt: old });
     await seed({ id: "zzz-fresh-onboarding", title: "Onboarding guide", content: "Team onboarding checklist and links.", updatedAt: fresh });
     await reindex();
