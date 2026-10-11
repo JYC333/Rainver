@@ -281,8 +281,7 @@ unchanged.
 
 The allowance is also written to the Run's `capabilities_json`, because the
 declaration side of the intersection has to be satisfied too. That field is
-overloaded and the coupling is load-bearing in two directions worth knowing
-about:
+overloaded. The coupling runs in two directions:
 
 - `explicitRetrievalToolDomainsFromRun` (`runs/managedRetrievalTools.ts`)
   treats a retrieval action id in `capabilities_json` as the *enablement

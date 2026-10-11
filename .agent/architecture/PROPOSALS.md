@@ -107,11 +107,11 @@ Proposals are the product review and application boundary for durable mutations.
 - `follow_up_task` has a registered applier (`tasks/proposalApplier.ts`).
   After a Run a person asked for finalizes successfully, the proposal is
   applied for them rather than queued (ADR 0017 §2,
-  `tasks/followUpTaskReconciler.ts`); every other case waits for a person as
-  before. Whichever route reaches it, the write takes the Project lock and
+  `tasks/followUpTaskReconciler.ts`); every other case waits for a person.
+  Whichever route reaches it, the write takes the Project lock and
   re-checks Project writer authority — the space role that authorises an
   accept says nothing about whether that person may write into the Project.
-  Two consequences worth knowing: a card whose Project has since been archived
+  A card whose Project has since been archived
   can only be rejected, and a follow-up naming a Project other than the Run's
   own is never applied automatically — it waits for a person, being the same
   input `task.create` refuses outright.

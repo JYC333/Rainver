@@ -515,7 +515,7 @@ change none of them, through an Agent exactly as directly. The Board says so
 under the transaction's lock, so two people closing the same Task at once
 record one acceptance, not two. A viewer may still *talk* about a Task in the
 Project's mainline Room; the Agent they talk to is bound by the same rule
-(`modules/rooms.md`). A consequence worth knowing: a Task still bound to a
+(`modules/rooms.md`). A Task still bound to a
 soft-deleted Project cannot be edited by anyone, because writer authority is
 checked against a live Project.
 
