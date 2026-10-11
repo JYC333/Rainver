@@ -361,7 +361,7 @@ export class HostConnectionRegistry {
   }
   private readonly logins = new Map<string, PendingLogin>();
   /**
-   * Stops this process still owes a host that was offline when they were due, by
+   * Undelivered stops this process owes a host that was offline when they were due, one per
    * launch attempt: a `terminate` that could not be sent, and every dispatch
    * given up as `host_disconnected` after the reconnect grace window. The
    * daemon may still be running such an attempt — or still have it queued
