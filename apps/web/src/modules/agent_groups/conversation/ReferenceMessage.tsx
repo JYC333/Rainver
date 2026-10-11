@@ -30,8 +30,7 @@ const ORIGIN_LABEL: Record<ThreadReferenceProvenance['kind'], string> = {
  * its origin, who brought it, and whether it is trusted.
  *
  * One-shot, so the link goes to the source as it is *now* while the quoted
- * text is as it was when attached. The two can differ, which is the point of
- * saying when it was taken.
+ * text is as it was when attached. The two can differ. Say when it was taken.
  */
 export function ReferenceMessage({
   message,

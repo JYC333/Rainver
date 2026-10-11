@@ -219,9 +219,7 @@ describe('Project chat sidecar', () => {
 
   it('gives a Project reader the composer, because asking the Agent is what the panel is for', async () => {
     // Speaking is Room membership, and opening the Project enrols any reader
-    // in the mainline. Gating the composer on Project *write* authority made
-    // the panel useless to exactly the person `modules/rooms.md` says it
-    // exists for.
+    // in the mainline. Do not gate the composer on Project *write* authority.
     vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
     vi.mocked(projectsApi.mainlineRoom).mockResolvedValue({
       room: { id: 'room-1', title: 'Project Room', is_mainline: true }, joined: true, viewer_can_write: false,

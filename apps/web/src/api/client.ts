@@ -655,7 +655,7 @@ function streamHeaders(spaceId?: string): Record<string, string> {
  * Folds one stream frame into the turn so far.
  *
  * A snapshot replaces; a state change replaces the state; an appended or
- * updated part lands at its own index, which is why both are one case — a
+ * updated part lands at its own index. Both are one case: a
  * tool call finishing writes over the part it started as.
  *
  * A `streamed` text part is the exception: it is live prose the projection

@@ -35,8 +35,8 @@ Server-only: the dispatched Run is handed a lease URL, never a key, and
 `hostProviderProxyBaseUrl` resolves that address for a paired Host from its
 per-host override, the instance-wide external proxy URL, or the control-plane
 address plus the proxy port. The host daemon's bound-run environment filter
-(`filterAmbientEnv`) exists for exactly this case, so a paired machine's own
-vendor keys cannot displace the binding. What `model_provider` may not be is
+(`filterAmbientEnv`) keeps a paired machine's own
+vendor keys from displacing the binding. What `model_provider` may not be is
 *unbound*: a Profile with no execution Host, workspace mode and installation
 has nothing to hand the lease to, and admission refuses it.
 

@@ -1280,8 +1280,8 @@ server-side. Avatar images accept `http(s)` and refuse `data:`.
   allowlist (`filterAmbientEnv`, for a bound or strict Run, where the container
   contributes nothing) or the machine's environment minus the vendor
   credentials (`clearVendorCredentialEnv`, for a host-login Run on the owner's
-  own machine, which needs its PATH, git and ssh configuration — dropping those
-  would take real things away from the runs this branch exists for). Every
+  own machine, which needs its PATH, git and ssh configuration. Do not drop
+  those). Every
   helper the daemon spawns *that runs a vendor runtime* — an adapter installer,
   the `--version` and `login --help` probes, the Codex usage probe, an ACP
   `session/list` — goes through `helperProcessEnv`, the same credential-cleared

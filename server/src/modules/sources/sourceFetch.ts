@@ -41,7 +41,7 @@ export async function fetchSource(url: string, options: SourceFetchOptions): Pro
       ...options.headers,
       // Source bodies are consumed by the server. Keep the representation
       // uncompressed so an intermediary cannot return a body whose encoding
-      // metadata no longer matches what the server reads.
+      // metadata does not match what the server reads.
       "accept-encoding": "identity",
     },
     ...(options.credentialHeaders ? { credentialHeaders: options.credentialHeaders } : {}),

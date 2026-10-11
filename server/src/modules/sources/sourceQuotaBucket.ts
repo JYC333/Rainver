@@ -11,9 +11,9 @@ const WINDOW_MS: Record<string, number> = { minute: 60000, hour: 3600000, day: 8
 /**
  * Consumes one unit from a durable quota bucket scoped to the source
  * connection (not the individual backfill plan). Concurrent plans against the
- * same connection therefore share one throttle instead of each getting their
- * own budget, which is the actual protection this quota exists for (avoiding
- * remote rate-limit bans). When plans disagree on the limit for a window, the
+ * same connection share one throttle. Do not give each plan its own budget.
+ * Separate budgets miss the remote rate-limit protection. When plans disagree
+ * on the limit for a window, the
  * bucket keeps the most conservative (smallest) limit proposed in that window;
  * a new window starts from the limit its first caller proposes, so a small
  * limit from one caller does not hold every later window to it.

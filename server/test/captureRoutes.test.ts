@@ -10,7 +10,7 @@ import { __setCaptureServiceFactoryForTests } from "../src/modules/capture/route
  * The route contract for the primary capture gesture.
  *
  * A rejected body has to read as the client's error: the length limit is most
- * easily hit by pasting, which is the one action the capture box exists for,
+ * easily hit by pasting, the capture box's primary action,
  * and a 500 there would look like the server had lost the thought.
  */
 

@@ -304,7 +304,7 @@ describe('HostsPanel', () => {
 
     await screen.findByTestId('host-agent-host-server-opencode')
     expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('Managed by Rainver')
-    // The Retry only exists for a failed install, so a healthy one must not
+    // Retry is shown only for a failed install. A healthy one must not
     // point at a button that is not on the page.
     expect(screen.getByTestId('host-agent-host-server-opencode')).not.toHaveTextContent('use Retry above')
     expect(screen.queryByRole('button', { name: /Remove managed:1\.2\.3 of OpenCode/ })).toBeNull()

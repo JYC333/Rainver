@@ -92,7 +92,7 @@ function isRunning(steps: InquiryThreadStep[], stage: StageId): boolean {
 }
 
 /**
- * This round produced what the stage exists for. Only this earns a tick.
+ * This round produced the stage's product. Only this earns a tick.
  *
  * Where a stage has an observable product, that product is the test and the
  * user's attention is not. Do not tick Clarify because a step started: the

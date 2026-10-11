@@ -266,9 +266,9 @@ export default function HostAgentRow({
           </span>
         })}
         {rainverPinned && (
-          // The Retry lives in the provisioning panel and only exists for an
-          // instance admin looking at a failed install, so only that viewer is
-          // pointed at it; everyone else is just told who owns this copy.
+          // Retry lives in the provisioning panel and is shown only to an
+          // instance admin looking at a failed install. Everyone else is
+          // told who owns this copy.
           <span className="shrink-0 text-muted-foreground">
             Managed by Rainver{manageable && provisioningFailed ? ' — use Retry above' : ''}
           </span>

@@ -300,8 +300,8 @@ async function resolveConversationPick(
     const fitted = fitRoomSummaryToBudget(body, budget);
     // Trust follows provenance, and provenance is more than one hop deep. A
     // `reference` message is itself pickable, and so is an Agent's reply
-    // quoting one — which is why this asks about the whole conversation
-    // rather than only the rows that were picked. Either way the reader would
+    // quoting one. Ask about the whole conversation, not only the rows that
+    // were picked. Either way the reader would
     // otherwise be told the opposite of the truth while the content travelled
     // on unchanged.
     return {
@@ -404,8 +404,8 @@ async function resolveImportedPick(
   const fitted = fitRoomSummaryToBudget(body, budget);
   return {
     content: fenced(`From imported session “${label}”:`, fitted, "external_untrusted"),
-    // A vendor transcript is not Rainver's own record of anything. That level
-    // exists for exactly this.
+    // A vendor transcript is not Rainver's own record. Mark it
+    // `external_untrusted`.
     provenance: provenance(pick.kind, read.session.id, null, label, records.map((r) => r.id), "external_untrusted", fitted !== body.trim(), identity),
     sourceAudienceUserIds: await importedSessionAudience(db, identity.spaceId, read.session.id),
   };

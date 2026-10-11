@@ -422,7 +422,7 @@ function isInsideRoot(path: string, root: string): boolean {
  * cut mid-character. Without this, decoding a mid-sequence cut with
  * `.toString("utf8")` substitutes a 3-byte U+FFFD replacement character,
  * which can make the decoded string's byte length exceed the buffer's own
- * byte budget — defeating the point of a byte-count log cap.
+ * byte budget and break the byte-count log cap.
  */
 function trimIncompleteUtf8Tail(buf: Buffer): Buffer {
   const len = buf.length;

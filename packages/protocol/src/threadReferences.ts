@@ -68,8 +68,8 @@ export const ThreadReferenceSummaryUnavailableSchema = z.object({
 export type ThreadReferenceSummaryUnavailable = z.infer<typeof ThreadReferenceSummaryUnavailableSchema>;
 
 /**
- * The 409 a cross-audience attach is refused with. `gains_access_user_ids` is
- * the point of it: a confirmation that cannot name who is being let in is not
+ * The 409 a cross-audience attach is refused with. `gains_access_user_ids`
+ * names who is being let in. A confirmation that cannot name them is not
  * informed consent.
  */
 export const ThreadReferenceDisclosureRequiredSchema = z.object({

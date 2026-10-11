@@ -52,8 +52,8 @@ type MemoryProjectableFields = Pick<
  * read gate would happily return them to that person — and memory retrieval is
  * run *as* the instructing person from inside a turn. A note learned in a
  * limited Room would come back in a search made from any other Room and be
- * spoken there, walking straight past the audience filter the whole scope
- * exists for. The Agent's own memory reaches the Agent through one door only,
+ * spoken there, walking straight past the audience filter. The Agent's own
+ * memory reaches the Agent through one door only,
  * `memory/agentMemoryDelivery.ts`, which applies that filter in its own
  * candidate query ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §4).
  */
