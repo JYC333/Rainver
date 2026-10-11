@@ -102,7 +102,7 @@ for jobs, rules, and troubleshooting.
 - Per-user source item read state (`source_item_user_states`), used by Library
   and the reader.
 - Custom Source handler versions, handler runs, backend create/test/activate
-  flow, and first scan-job integration.
+  flow, and scan-job scheduling.
 - Source Recipe versions, deterministic planning, dry-run preview,
   activation/proposal flow, and recipe scan-job integration.
 

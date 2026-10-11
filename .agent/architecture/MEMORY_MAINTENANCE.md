@@ -1,6 +1,6 @@
 # Memory Maintenance Current State
 
-Status: backend scan, review packets, durable jobs/scheduler, and first scan UI
+Status: backend scan, review packets, durable jobs/scheduler, and the scan UI
 implemented. This document is current-state architecture and must track code
 facts.
 

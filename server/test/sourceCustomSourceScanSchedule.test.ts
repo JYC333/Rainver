@@ -22,7 +22,7 @@ import { SourceChannelService } from "../src/modules/sources/channels/sourceChan
 
 // Real-Postgres + real-child-process + real local HTTP server (not a live
 // external provider — a loopback server this test controls) integration
-// tests for the "first scan job integration" scheduler/worker pair.
+// tests for the custom-source scan scheduler and worker.
 
 
 const SPACE_A = "space-a";
