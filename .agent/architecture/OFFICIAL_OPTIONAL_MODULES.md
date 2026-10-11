@@ -73,7 +73,7 @@ migration runner for them. See Non-Goals below.
 
 ### Plugin frontend source lives with the plugin package
 Official plugin frontend pages live under `plugins/official/<plugin_id>/web/src/`.
-The shell still uses `apps/web/src/modules/registry.ts` as the route/nav source of
+The shell uses `apps/web/src/modules/registry.ts` as the route and nav source of
 truth. The registry statically imports an app-owned adapter under
 `apps/web/src/plugins/<plugin_id>/`, and that adapter injects host APIs (navigation,
 API client, and plugin-state hook) into the plugin page. Plugin web source must not

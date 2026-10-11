@@ -416,7 +416,7 @@ same page has an owner/admin operator entry point for targeted explain reports
 and a calibration-decision entry point for saving access-safety-backed
 adopt/defer/reject decisions;
 Knowledge Home exposes a domain-labeled Context Brief panel for Knowledge,
-Memory, and Project public summaries; saving a brief still uses the separate
+Memory, and Project public summaries; saving a brief uses the separate
 backend routes above and persists owner-private artifacts.
 
 `GET /api/v1/context-ops/summary` is the current Context Ops read model. It returns

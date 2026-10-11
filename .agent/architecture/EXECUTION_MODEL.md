@@ -550,7 +550,7 @@ business services must not call it directly to authorize or perform a
 sensitive action. The Automation
 execution preflight (`AutomationsService.runPreflight` in
 `server/src/modules/automations/service.ts`) may call it only for non-mutating
-dry-run simulation, which does not persist a `PolicyDecisionRecord`. Actual runtime execution still uses `enforce()`.
+dry-run simulation, which does not persist a `PolicyDecisionRecord`. Actual runtime execution uses `enforce()`.
 
 Policy gates run in this order inside server run orchestration:
 

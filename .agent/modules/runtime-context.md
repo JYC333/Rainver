@@ -47,7 +47,7 @@ cut to the remaining budget: conversation continuity keeps its end (the turns
 just before the current message), anything else its beginning, and at equal
 rank continuity is placed before a retrieved hit. The CLI enforces its actual model
 limit and any rejection is surfaced as a runtime error. A Profile bound to a
-Rainver ModelProvider still uses the shared model catalog and its numeric window
+Rainver ModelProvider uses the shared model catalog and its numeric window
 plan, including the conservative unknown-model fallback.
 
 The Delivery renderer keeps delegated instructions and reference data before

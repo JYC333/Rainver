@@ -245,7 +245,7 @@ export function substituteAcpInput(
   placeholders: Record<string, string>,
   paths: Record<string, string>,
 ): string {
-  // Plain-text stdin still uses the placeholder contract. Only parsed ACP JSON
+  // Plain-text stdin uses the placeholder contract. Only parsed ACP JSON
   // is field-scoped, so user-owned text stays opaque.
   if (!value.trim().startsWith("{")) return substitutePlaceholders(value, placeholders);
   let parsed: unknown;

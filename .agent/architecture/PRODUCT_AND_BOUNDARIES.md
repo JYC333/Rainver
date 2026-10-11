@@ -72,7 +72,7 @@ capture / trigger
 ### Sandbox and path policy boundary
 
 - The control plane's Project Folder operations use `PgProjectFolderRepository` / `PgRunSandboxManager` and `PathPolicy`; ACP subprocesses access their mounted workspace directly. The built-in strict Host limits that access with a per-Run namespace, while a trusted paired Host runs natively under the owner's OS permissions. The control plane holds no path to a remote Folder and `PathPolicy` is never invoked for that Location ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md); see [SECURITY_AND_ACCESS_BOUNDARIES.md](SECURITY_AND_ACCESS_BOUNDARIES.md) §10).
-- Server-host file access for managed/code-patch paths still uses worktree
+- Server-host file access for managed and code-patch paths uses the worktree
   helpers. CLI Runs execute on a host daemon (ADR 0016). A critical-risk vendor
   CLI run is labeled `one_shot_docker`. That label does not start a container:
   `workingDirScopeForLevel` maps it to `worktree`, and a daemon run carries the
