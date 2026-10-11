@@ -13,9 +13,9 @@ interface MarkdownReaderProps {
  * translated to Tiptap/ProseMirror JSON at the data layer (L0); this
  * component does not implement any of its own typography or block layout.
  *
- * No annotation/selection wiring yet — callers that need it should extend
- * this component rather than reimplementing `ReadOnlyTiptapReader` usage
- * elsewhere.
+ * This component does not wire annotation or selection. Callers that need
+ * it should extend this component rather than reimplementing
+ * `ReadOnlyTiptapReader` usage elsewhere.
  */
 export function MarkdownReader({ markdown, className }: MarkdownReaderProps) {
   const doc = useMemo(() => markdownToProseMirrorJson(markdown), [markdown])

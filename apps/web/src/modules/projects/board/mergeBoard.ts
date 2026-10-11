@@ -80,9 +80,9 @@ function same(left: unknown, right: unknown): boolean {
  * Moves one card between lanes locally, so a drag lands where it was dropped
  * instead of waiting out a round trip. Do not re-read the Board through the
  * loading path: that replaces the page with a skeleton and the card jumps.
- * Only the dragged card and the two lane counts it changes are touched here;
- * changes are touched here; the read that follows reconciles through
- * `mergeBoard`, so anything the server decided differently still arrives.
+ * Only the dragged card and the two lane counts it changes are touched here.
+ * The read that follows reconciles through `mergeBoard`, so anything the
+ * server decided differently still arrives.
  */
 export function applyCardMove(board: ProjectBoard, cardId: string, toStatus: string): ProjectBoard {
   const moving = board.cards.find(card => card.id === cardId)

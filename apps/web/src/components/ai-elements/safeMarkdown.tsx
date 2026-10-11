@@ -30,13 +30,13 @@ export function safeMarkdownImageSource(url: string): string {
  * keys in `html-url-attributes`, and `srcSet` is not one of them — which is
  * why {@link SAFE_SANITIZE_SCHEMA} has to take `<source>` away rather than
  * this function cleaning it. `poster` belongs to `<video>`, which sanitize
- * strips. Listing them here read as coverage of three vectors and was
- * coverage of one.
+ * strips. Do not list `srcSet` or `poster` on this transform. That lists
+ * three vectors and covers one.
  */
 export function safeMarkdownUrlTransform(url: string, key: string): string {
   if (key === 'src') return safeMarkdownImageSource(url)
-  // An in-app path is a real destination in this product, and blanking it gave
-  // `href=""`, which reloads the page on click.
+  // An in-app path is a real destination in this product. Do not blank it.
+  // An empty `href` reloads the page on click.
   if (key === 'href') return safeAppPath(url) ?? safeHttpUrl(url) ?? ''
   return safeHttpUrl(url) ?? ''
 }

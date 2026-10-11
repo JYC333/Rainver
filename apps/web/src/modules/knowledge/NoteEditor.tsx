@@ -225,11 +225,11 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   // user's in-progress edit stays on screen and the History panel shows
   // what changed underneath them.
   //
-// Saves run one after another, each on the version the one before it
-// produced. Do not send two in flight with the same `expect_version`. The
-// server would refuse the second as a change from elsewhere. What a save
-// sends is read when it is asked for, so a flush on switching notes still
-// sends the note being left.
+  // Saves run one after another, each on the version the one before it
+  // produced. Do not send two in flight with the same `expect_version`. The
+  // server would refuse the second as a change from elsewhere. What a save
+  // sends is read when it is asked for, so a flush on switching notes still
+  // sends the note being left.
   const saveChainRef = useRef<Promise<unknown>>(Promise.resolve())
   const savedVersionRef = useRef(new Map<string, number>())
   const performSaveImpl = useCallback(() => {
