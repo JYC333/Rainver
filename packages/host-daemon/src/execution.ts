@@ -708,8 +708,8 @@ function providerProfileDir(profileKey: string): string {
 /**
  * The HOME whose login state this installation uses.
  *
- * One login per host × installation, which is the whole point of linking the
- * credential rather than logging in per profile: an Agent × container profile
+ * One login per host × installation. Link the credential. Do not log in per
+ * profile: an Agent × container profile
  * per Room would otherwise multiply logins by Agents × Rooms. `own` is the
  * machine's own home directory — the CLI the user already logged into — and a
  * managed runtime has a stable private HOME so its login never mixes with the

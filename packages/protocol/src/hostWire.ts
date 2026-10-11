@@ -409,9 +409,8 @@ export const HostCommandRunFrameSchema = z.object({
  * What one copy's subscription has left.
  *
  * Asked of the host because that is where the login is: a subscription's quota
- * is readable only with the credential the copy holds, and the whole point of
- * keeping credentials with the copy (ADR 0016 §7) is that nothing brokers them
- * back here. The daemon answers with numbers — never the token, never the
+ * is readable only with the credential the copy holds. Do not broker that
+ * credential back here (ADR 0016 §7). The daemon answers with numbers — never the token, never the
  * credential file — and the control plane caches them beside the copy.
  */
 export const HostUsageProbeFrameSchema = z.object({

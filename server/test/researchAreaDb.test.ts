@@ -216,8 +216,8 @@ describe("Research Area (real Postgres)", () => {
     });
     expect(written.outcome).toBe("written");
     if (written.outcome !== "written") return;
-    // The user's formatted block survives untouched — the whole point of block
-    // ops — including its identity, so anchors into it stay valid.
+    // The user's formatted block survives untouched, including its identity,
+    // so anchors into it stay valid.
     const afterFirst = blockContent(written.note)[0]!;
     const { attrs: afterAttrs, ...afterUserContent } = afterFirst;
     expect(afterUserContent).toEqual(boldDoc.content[0]);

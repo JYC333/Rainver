@@ -323,7 +323,7 @@ describe("imported history extraction", () => {
     expect(payload.source_refs.map((ref) => ref.id)).toContain(citedRecordId);
     expect(sessionId).toBeTruthy();
 
-    // The proposal must actually be acceptable — the whole point of it.
+    // The proposal must actually be acceptable.
     const registry = new ProposalApplierRegistry();
     registerProjectDefinitionProposalAppliers(registry);
     const applied = await withQueryableTransaction(db.pool, (tx) => registry.apply({

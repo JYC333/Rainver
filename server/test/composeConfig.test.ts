@@ -282,8 +282,8 @@ describe("compose server config", () => {
       // in; `runner-control` stays internal beside it.
       expect(runner).toContain("- host-egress");
       expect(composeText(mode)).toContain("  host-egress:");
-      // Any service joining it, not just the server: the whole point of the
-      // bridge is that the built-in host is alone on it.
+      // Any service joining it, not just the server. The built-in host is alone
+      // on the bridge.
       expect(composeText(mode).split("host-egress").length - 1).toBe(2);
     }
     expect(readFileSync(join(repoRoot, "sandbox", "Dockerfile"), "utf8"))

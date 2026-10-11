@@ -827,9 +827,9 @@ describe("the boundaries around an Agent's own memory", () => {
       // Who asked, since the proposal is attributed to who decides.
       requested_by_user_id: MEMBER,
     });
-    // And the member who asked cannot decide it, whatever their Space role —
-    // which is the whole point: role is what proposal apply normally
-    // arbitrates on, and a Space admin satisfies any role this could require.
+    // And the member who asked cannot decide it, whatever their Space role.
+    // Role is what proposal apply arbitrates on, and a Space admin satisfies
+    // any role this could require.
     const proposalId = (await db.pool.query<{ id: string }>(
       `SELECT id FROM proposals WHERE space_id = $1`, [SPACE],
     )).rows[0]!.id;

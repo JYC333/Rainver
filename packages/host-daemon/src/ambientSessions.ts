@@ -205,7 +205,7 @@ function stringOrNull(value: unknown): string | null {
  * Waits for the replay to go quiet.
  *
  * Returns false when the ceiling was reached while updates were still
- * arriving. That distinction is the whole point: a replay cut off mid-stream
+ * arriving. Do not record that cutoff as `complete`. A replay cut off mid-stream
  * and recorded `complete` is a truncated transcript nothing will ever retry.
  */
 async function drainUpdates(runtime: AcpProcess): Promise<boolean> {

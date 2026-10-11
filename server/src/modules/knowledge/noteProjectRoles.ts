@@ -30,7 +30,7 @@ export type NoteProjectRole = typeof NOTE_PROJECT_ROLES[number];
 
 /**
  * The title a role's note is created with. A default at creation only — never
- * a lookup key, which is the whole point of the role existing. A user may
+ * a lookup key. A user may
  * rename any of these freely.
  */
 export const NOTE_PROJECT_ROLE_DEFAULT_TITLES: Record<NoteProjectRole, string> = {

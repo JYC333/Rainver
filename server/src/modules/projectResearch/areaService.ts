@@ -648,8 +648,8 @@ export class ProjectResearchAreaService {
     const byRole = await resolveNotebookNotes(this.db, spaceId, projectId);
     for (const role of NOTEBOOK_SECTION_KEYS) {
       if (byRole[role]) continue;
-      // Finding the candidate is this method's own business — the title match
-      // is the whole point here. Writing the role is not: that goes through
+      // Finding the candidate is this method's own business — the title match.
+      // Writing the role is not: that goes through
       // the note writer like every other role write, so the registry check and
       // the displacement rule apply here too.
       const candidate = await this.db.query<{ object_id: string }>(

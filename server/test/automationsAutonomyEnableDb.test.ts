@@ -49,9 +49,8 @@ beforeEach(async () => {
      VALUES ($1, 'Space', 'team', $2, $3, $3)`,
     [SPACE, MEMBER, NOW],
   );
-  // Deliberately 'member', not 'owner'/'admin' — the whole point of this
-  // suite is proving an ordinary member can self-service enable their own
-  // Always-on without elevated Space authority.
+  // Deliberately 'member', not 'owner'/'admin'. An ordinary member can
+  // self-service enable their own Always-on without elevated Space authority.
   await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'member', 'active', $4, $4), ($5, $2, $6, 'member', 'active', $4, $4)`,

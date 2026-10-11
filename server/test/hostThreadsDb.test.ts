@@ -456,8 +456,7 @@ describe("host_threads owner constraints", () => {
 
     // A Run whose Agent is not the thread's would write into another Agent's
     // profile and archive the wrong one. The two are the same on every path
-    // that creates a thread, so this fails loudly rather than failing open —
-    // the boundary is the whole point.
+    // that creates a thread, so this fails loudly rather than failing open.
     await expect(resolveRuntimeProfileScope(db.pool, { agent_id: otherAgent, host_task_thread_id: direct.id }, LOCATION))
       .rejects.toThrow(/belongs to Agent/);
   });

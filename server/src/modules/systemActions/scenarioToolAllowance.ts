@@ -119,9 +119,10 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
  * What an Agent may do because Rainver dispatched it to work on a Task.
  *
  * A dispatched Run is not a conversation, which is what decides the shape of
- * this list. It carries the Project write surface, because advancing a Task is
- * the whole point of dispatching one, and `artifact.submit`, without which a
- * Task with a declared required output can never be satisfied by an agent.
+ * this list. It carries the Project write surface a Task needs, and
+ * `artifact.submit`. Do not omit `artifact.submit`. A
+ * Task with a declared required output can never be satisfied by an agent
+ * without it.
  *
  * `memory.remember` / `memory.revise` are deliberately absent even though
  * `CONVERSATION_TOOL_ALLOWANCE` carries them: remembering what someone told

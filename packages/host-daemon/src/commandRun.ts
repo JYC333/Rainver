@@ -194,8 +194,7 @@ async function runHostCommandInner(
   // HOME is the request's own scratch directory, never the workspace: a probe
   // or a recipe that writes caches belongs in a directory that is removed with
   // it, not in someone's checkout. A managed copy's manifest `HOME` overrides
-  // it, because that copy's login lives there and is the whole point of naming
-  // an installation.
+  // it. A managed copy's login lives in that manifest `HOME`.
   let spawnEnv: Record<string, string> = {
     PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
     HOME: scratch,
