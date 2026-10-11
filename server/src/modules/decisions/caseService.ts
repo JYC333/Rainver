@@ -304,8 +304,8 @@ export class DecisionCaseService {
          WHERE object_id=$1 AND space_id=$2`,
         [caseId, identity.spaceId, optionId, now, identity.userId],
       );
-      // The timestamp lives on the root now, so a domain-only write would
-      // leave it stale.
+      // The timestamp is on `space_objects` (B12D). A domain-only write leaves
+      // it stale. Do not skip the root update.
       await db.query(
         `UPDATE space_objects SET updated_at=$1 WHERE id=$2 AND space_id=$3`,
         [now, caseId, identity.spaceId],
