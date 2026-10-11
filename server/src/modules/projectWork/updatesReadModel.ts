@@ -93,7 +93,7 @@ function threadUndoStillApplies(
  * The tiebreak is `seq`, the stream's own insert sequence, not the row id:
  * `project_work_events.id` is a v4 UUID with no time component, so ordering on
  * it would put same-millisecond events — two events of one advancement chain, written
- * in one transaction — in a random order, and a keyset predicate on it cuts the
+ * in one transaction — in a random order, and a keyset predicate on it would cut the
  * stream at a random point: half of the page just read comes back, and
  * everything older whose id sorts above the cursor becomes unreachable for good.
  */
