@@ -274,8 +274,8 @@ describe('HostExecutionTargetPicker', () => {
   it("says a paired Host routes only its owner's own Runs, up to medium risk", async () => {
     // ROUTING.md "Effective trust": the owner's own Run on their paired Host
     // is `medium`, another member's stays at the `low` baseline, and nothing
-    // reaches `high`. Offering the Host without saying so produced a Profile
-    // that saved and then died `route_no_candidate`.
+    // reaches `high`. Do not offer the Host without saying so. The Profile
+    // saves and then dies `route_no_candidate`.
     render(<Harness />)
     fireEvent.click(await screen.findByLabelText('Execution host'))
     fireEvent.click(screen.getByRole('option', { name: 'Workstation · online' }))

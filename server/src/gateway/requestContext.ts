@@ -1,10 +1,10 @@
 /**
- * Per-request context helpers for the server gateway entry layer.
+ * Per-request context helpers for the gateway.
  *
- * The "gateway" is the permanent entry/routing layer of the server.
- * These helpers carry the cross-cutting request metadata — request id
- * continuity, safe header access, and the server marker header — that
- * every server path shares.
+ * The gateway module owns routing and request context. Do not add a second
+ * entry layer. These helpers carry the cross-cutting request metadata —
+ * request id continuity, safe header access, and the server marker header —
+ * that every server path shares.
  *
  * This file is metadata only. Native auth resolution lives in modules/auth and
  * only publishes the resulting user/space identifiers into request context.

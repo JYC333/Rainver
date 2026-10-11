@@ -391,9 +391,9 @@ function probeCodex(home: string, manifest: ToolManifest | null, timeoutSeconds:
         const error = asRecord(message.error);
         if (!error && message.id !== 1 && message.id !== 2) continue;
         if (error) {
-          // Checked before the handshake branch: an `initialize` that fails is
-          // the real reason, and continuing past it only produced a timeout
-          // that named the wrong thing.
+          // Checked before the handshake branch. An `initialize` that fails is
+          // the real reason. Do not continue past it. The probe times out
+          // naming the wrong thing.
           finishWithFailure(typeof error.message === "string"
             ? error.message
             : message.id === 1 ? "Codex refused to start its app-server." : "Codex refused the rate-limit request.");

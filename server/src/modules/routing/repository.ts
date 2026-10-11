@@ -677,9 +677,9 @@ function candidateFromRow(
  * here: a paired Host's installations are its owner's own, installed by an
  * explicit action rather than an asynchronous provisioner.
  *
- * Exported because Automation preflight must answer readiness exactly as
- * routing does — a preflight that reported `executable: true` for a Server
- * copy still installing produced a Run that died `route_no_candidate`.
+ * Automation preflight answers readiness through this check. Do not report
+ * `executable: true` for a Server copy that is still installing. That Run
+ * dies `route_no_candidate`.
  */
 export function isRuntimeInstallationReady(target: {
   execution_host_kind: string | null;

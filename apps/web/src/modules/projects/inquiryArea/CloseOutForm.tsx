@@ -45,9 +45,9 @@ export function CloseOutForm({ projectId, detail, onRecorded }: {
   const [changeSummary, setChangeSummary] = useState('')
   const [saving, setSaving] = useState(false)
 
-  // Reset only when the form is pointed at a different Thread. Keying on the
-  // whole `detail` object threw away half-typed input every time a sibling
-  // refresh produced a new object for the same Thread.
+  // Reset only when the form is pointed at a different Thread. Do not key
+  // on the whole `detail` object. A sibling refresh builds a new object for
+  // the same Thread and throws away half-typed input.
   useEffect(() => {
     setAnswerState(storedAnswer)
     setAnswerSummary(storedSummary)

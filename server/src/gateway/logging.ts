@@ -36,8 +36,8 @@ export function serializeRequestForLog(request: FastifyRequest): Record<string, 
  *
  * pino matches a path exactly — there is no substring rule here — so every
  * spelling a vendor uses has to be listed. `proxy-authorization` is a separate
- * header from `authorization`, and Google sends its key as `x-goog-api-key`;
- * both went to the log in full.
+ * header from `authorization`, and Google sends its key as `x-goog-api-key`.
+ * Do not omit either.
  */
 export const LOG_REDACT_PATHS = [
   "req.headers.authorization",

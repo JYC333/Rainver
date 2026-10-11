@@ -155,12 +155,12 @@ export async function runBoundedProviderTask(
             if (!started) {
               // `WHERE status = 'queued'` refused the start. Already `running`
               // is the ordinary case — a job retry, or the next key in the
-              // pool taking over the same task — but anything else means the
-              // Run left `queued` under another authority (a cancel). Spending
-              // the provider anyway produced a Run that finalized its durable
-              // writes and then failed 23514 on the queued arm of the terminal
-              // update, surfacing a raw constraint name to the person. The
-              // throw rolls this attempt's transaction back before the call.
+              // pool taking over the same task. Anything else means the Run
+              // left `queued` under another authority (a cancel). Do not spend
+              // the provider then. The durable writes land and the queued arm
+              // of the terminal update fails 23514, and the person sees the
+              // constraint name. The throw rolls this attempt's transaction
+              // back before the call.
               const current = await attemptRuns.getRun(input.spaceId, input.runId);
               if (current?.status !== "running") {
                 throw new BoundedProviderTaskError(

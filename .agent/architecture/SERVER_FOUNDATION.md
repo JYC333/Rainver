@@ -10,8 +10,8 @@
 
 It has two distinct parts:
 
-- `server`: the permanent service.
-- `gateway`: the permanent entry/routing layer inside the service.
+- `server`: the Compose/API service name.
+- `gateway`: the module that owns routing and request context. Do not add a second entry layer.
 
 Unknown `/api/v1/*` traffic hits the local catch-all and returns
 `404 { "detail": "Route not found" }`.
