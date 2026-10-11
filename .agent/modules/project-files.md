@@ -90,8 +90,8 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   Project Folder; it answers the draft store's refusals as Save does (409
   `draft_version_conflict`, 413 `draft_quota_exceeded`), will not take the
   person's one new-file draft slot while an unsaved new file holds it, and
-  refuses a revision larger than a draft may be; revision rows and historical
-  status values remain readable for compatibility.
+  refuses a revision larger than a draft may be. Revision rows stay readable,
+  including their stored status values.
 - Server `code_patch` apply, snapshot restore and failure rollback open each
   directory component without following symlinks and operate relative to its
   Linux `/proc/self/fd` handle. Replacing a parent path with a link cannot
