@@ -60,7 +60,7 @@ with visited-node tracking so corrupt historical cycles cannot loop forever.
 
 #### Hoisting
 
-Borrowed from Trilium. Hoisting makes a chosen folder the temporary tree root:
+Hoisting makes a chosen folder the temporary tree root:
 its subtree is the whole surface, and — the part that matters — the **note query
 is narrowed with it**, not only what is drawn.
 

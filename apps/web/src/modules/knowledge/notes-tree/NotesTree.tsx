@@ -83,9 +83,8 @@ interface NotesTreeProps {
   onDropNotes?: (updates: NoteMove[]) => void
   /**
    * Hold Alt while dropping to add a placement instead of moving one.
-   * Trilium uses a modifier on drop for the same distinction; without one the
-   * only options are silently widening every drag or never allowing a second
-   * placement at all.
+   * Without a modifier, a drag either always adds a placement or never
+   * allows a second one.
    */
   onPlaceNote?: (noteId: string, collectionId: string) => void
   /** Take a note out of one folder, leaving its other placements alone. */

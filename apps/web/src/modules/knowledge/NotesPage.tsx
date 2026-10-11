@@ -98,17 +98,15 @@ export default function NotesPage({ scope }: NotesPageProps) {
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
 
-  // Hoisting (borrowed from Trilium): the tree, the note query and the open
-  // tabs are all scoped to one folder's subtree. It is a mode over the single
-  // tree, not a second page.
+  // The tree, the note query and the open tabs are all scoped to one folder's
+  // subtree. It is a mode over the single tree, not a second page.
   //
   // A pinned root is the floor: the user may focus deeper inside it, and
   // leaving that focus returns here rather than to the whole Space.
   const pinnedRootId = scope.pinnedRootCollectionId ?? null
   const [focusRootId, setFocusRootId] = useState<string | null>(() => readHoistRoot(scope.tabsScopeKey))
   const hoistRootId = focusRootId ?? pinnedRootId
-  // Trilium's per-workspace tab identity: tabs opened inside one hoist root do
-  // not follow the user into another.
+  // Tabs opened inside one hoist root do not follow the user into another.
   const tabsScopeKey = `${scope.tabsScopeKey}:${hoistRootId ?? 'all'}`
 
   const [openIds, setOpenIds] = useState<string[]>(() => readTabs(tabsScopeKey))
