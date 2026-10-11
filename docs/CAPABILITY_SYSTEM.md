@@ -94,11 +94,10 @@ Rainver capability candidates.
 
 ## Execution
 
-Capability execution is not active today. The registry entry is
-`runtime_key="capability"` (`runtimeAdapters/specs.ts`), still
-`implementation_status: "planned"` and not enabled by default; it is not a
-selectable ACP Agent runtime. Current server routes expose
-capability manifest metadata for catalog and UI use.
+The `capability` runtime (`runtime_key="capability"` in
+`runtimeAdapters/specs.ts`) has `implementation_status: "planned"` and is not
+enabled by default. It is not a selectable ACP Agent runtime. Server routes
+expose capability manifest metadata for catalog and UI use.
 
 Claude Code and Codex receive generated skill files; OpenCode receives a
 generated prompt block through ACP Runtime Context Delivery. These are render

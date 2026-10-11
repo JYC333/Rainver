@@ -9,8 +9,8 @@ not store a fourth. Do not conflate them.
 | **Managed subscription OAuth** | Instance-admin Claude Pro/Max and OpenAI Codex subscription credentials for in-process calls | AES-256-GCM OAuth envelope in a DB `Credential` row | this doc |
 | **Custom Source fetch credential** | Header-based credential (API key / bearer token) for an Sources Custom Source's outbound fetches | AES-256-GCM ciphertext in the same DB `credentials` table, distinct `credential_type` and `secret_ref` prefix | [modules/sources.md](../modules/sources.md), [architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md](SOURCE_CUSTOM_SOURCE_HANDLERS.md) |
 
-A vendor CLI's login is the one Rainver does **not** hold. Since ADR 0016 a CLI
-runs only on an execution host, and its login lives inside that copy's own
+A vendor CLI's login is the one Rainver does **not** hold. A CLI runs only on
+an execution host (ADR 0016), and its login lives inside that copy's own
 `HOME` on that host — never copied here, never brokered per run, never on a
 path the control plane knows (BOUNDARIES B64).
 

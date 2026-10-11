@@ -7,8 +7,8 @@ subscription** — a Claude Pro/Max or OpenAI Codex OAuth grant an instance admi
 completed here, stored as an encrypted database credential and spent through
 the in-process provider channel (ADR 0008).
 
-A vendor CLI's login is **not** one of them. Since ADR 0016 a CLI runs only on
-an execution host, and its login lives with the copy on that host — the
+A vendor CLI's login is **not** one of them. A CLI runs only on an execution
+host (ADR 0016), and its login lives with the copy on that host — the
 built-in host inside `sandbox-runner`, or a paired machine. Nothing is copied,
 brokered, or mounted from here, so there is nothing here to broker.
 

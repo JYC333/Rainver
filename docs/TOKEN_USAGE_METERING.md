@@ -38,9 +38,8 @@ fingerprint>` so re-syncing a session does not count it twice. The
 
 ## Read Path
 
-All future usage checks, summaries, budget decisions, thresholds, routing
-history, and monitoring must read `token_usage_events` through the usage
-repository. Run- or attempt-level rows are lifecycle records only; do not add
+Usage checks, summaries, budget decisions, thresholds, routing history, and
+monitoring read `token_usage_events` through the usage repository. Run- or attempt-level rows are lifecycle records only; do not add
 token accounting fields to them, read accounting from `output_json`, or issue
 feature-local queries against a snapshot. A new run-scoped projection
 belongs in `PgUsageRepository` so normalization, null handling, and ledger
@@ -84,20 +83,16 @@ remain immutable accounting facts. Anthropic's
 `cache_creation_input_tokens`; it is exposed in event and aggregate DTOs but is
 not added again when deriving total tokens. The dashboard's budget preview is read-only
 projection; usage recording remains fail-closed for managed provider calls.
-Routing and budget SQL currently aggregate `estimated_cost_usd` with `sum()` and
-therefore still swallow the known/unknown distinction. Usage recording stores
-the provenance. Routing decisions are unchanged. Funding-aware routing is
-deferred in
-[deferred-register.md](../.agent/tasks/deferred-register.md).
+Routing and budget SQL aggregate `estimated_cost_usd` with `sum()` and drop the
+known/unknown distinction. Usage recording stores the provenance. There is no
+funding-aware routing.
 
 Past CLI work reaches the ledger through ambient session import from an
-execution host. Uploaded archives,
-server-path imports, scanner
-manifests, generic/manual event imports, and cross-instance bundle ingestion are
-reserved by protocol/schema contracts but do not have active product endpoints.
-Imported event types are therefore representable without making those future
-ingestion paths available today. Aggregations currently query the append-only
-ledger directly; there is no persisted daily/monthly rollup table.
+execution host. Uploaded archives, server-path imports, scanner manifests,
+generic/manual event imports, and cross-instance bundle ingestion are reserved
+by protocol and schema and have no product endpoint. Aggregations query the
+append-only ledger directly. There is no persisted daily or monthly rollup
+table.
 
 Current user-facing routes include summary, timeseries, event, dimension,
 subject, session, and budget-preview; historical usage arrives through ambient

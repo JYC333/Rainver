@@ -438,8 +438,8 @@ API in [EXECUTION_MODEL.md](EXECUTION_MODEL.md).
 CLI cancellation is two-phase: the Run enters `cancelling`, the control plane
 asks the host daemon to terminate the process group, and the Run is marked
 `cancelled` only after the daemon confirms exit; otherwise it stays
-`cancelling` with a `cancel_confirmation_timeout` result. Since ADR 0016 the
-signals are the daemon's — no CLI process runs in the server. On worker
+`cancelling` with a `cancel_confirmation_timeout` result. The cancel signals
+are the daemon's (ADR 0016). No CLI process runs in the server. On worker
 startup, a stale `running` run whose in-flight state was lost becomes
 `orphaned`, is finalized, and passes through the same supervisor policy. A
 stale `cancelling` run settles as `cancelled` so an explicit cancel is not
@@ -447,10 +447,9 @@ undone by an automatic orphan retry. A
 daemon attempt also has a no-output/no-activity watchdog, which reports
 `runtime_stall_timeout`.
 
-`manual_review` and `model_judge` are represented as declared, skipped
-verifier types only. They are not completion evidence until their respective
-review/model boundaries land; model-judge execution must use a model distinct
-from the generator. Root/integration verification is implemented by the B2
+`manual_review` and `model_judge` return `skipped`. A skipped result cannot
+make a run pass. Do not implement `model_judge` with the same model that
+generated the output. Root and integration verification are implemented by the
 Plan graph layer.
 
 The runtime registry exposes `AgentRuntimeDefinition`s for selectable ACP

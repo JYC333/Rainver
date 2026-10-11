@@ -155,12 +155,10 @@ over-permissive security UI.
   filesystem calls.
 - The built-in Host's daemon constructs the Run namespace; the paired-Host
   trust boundary is the paired machine itself (ADR 0016).
-- Only `read_only` currently narrows a daemon Run's workspace access; higher
-  risk-specific CLI containment is not implemented. `worktree` and
-  `one_shot_docker` do not currently add a daemon isolation layer. See the
-  [deferred register](../.agent/tasks/deferred-register.md) before treating
-  these levels as stronger containment.
-- Prefer git worktree sandboxes (copy-on-write) over full repo clones.
+- Only `read_only` narrows a daemon Run's workspace access. `worktree` and
+  `one_shot_docker` do not add a daemon isolation layer. Do not treat those
+  levels as stronger containment.
+- A Task worktree is `git worktree add`, not a second clone of the repository.
 
 ---
 
@@ -204,7 +202,7 @@ over-permissive security UI.
 **Mitigations**:
 - Log tables are append-only by convention — no soft-delete columns, no update paths.
 - Agents have no tool permission to delete log records.
-- For production: ship logs to an immutable external sink (S3, CloudWatch, SIEM). *(Deferred — architecture note.)*
+- There is no export of these tables to an external immutable sink.
 
 ---
 
@@ -215,9 +213,13 @@ over-permissive security UI.
 **Impact**: PII exposure via log access.
 
 **Mitigations**:
-- `PathPolicy` prevents agents from reading `.env` files into prompts.
-- For production: apply column-level encryption or redaction before writes. *(Deferred.)*
-- There is no per-workspace `cleanup_after_days` setting. Log retention is not implemented that way.
+- `PathPolicy` keeps agents from reading `.env` files into prompts.
+- `runs.prompt` is stored as the prompt that was sent. There is no
+  column-level encryption of prompts or Run event payloads.
+  `redactEvidenceText` scans some event text for a closed prefix set. That
+  scan is not encryption, and it does not cover `runs.prompt`.
+- There is no per-workspace `cleanup_after_days` setting. Log retention does
+  not work that way.
 
 ---
 

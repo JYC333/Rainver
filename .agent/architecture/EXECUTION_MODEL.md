@@ -674,8 +674,9 @@ path emits `validation_started` and
 `ValidationRecipe`/Project Folder Execution Config command declarations plus Run contract
 checks; it executes argv without a shell and bounds command time. The result
 rows, not the runtime exit code, are the completion evidence for declared
-checks. `manual_review` and `model_judge` are declared-but-skipped types until
-their later phases implement the corresponding authority.
+checks. `manual_review` and `model_judge` return `skipped`. A skipped result
+cannot make a run pass. Do not implement `model_judge` with the same model
+that generated the output.
 
 Automation should create Runs and call `POST /runs/{id}/finalize` after the run reaches a terminal state. Do not call internal evaluation services directly.
 

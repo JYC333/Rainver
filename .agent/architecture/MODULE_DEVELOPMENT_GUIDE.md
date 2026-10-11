@@ -100,8 +100,8 @@ Keep facades narrow so tests and peer modules do not couple to internal helpers.
 - `tasks` own task-board behavior, task-run product linkage, and task evaluation.
 - `proposals` own approval/apply orchestration and the applier registry; target modules
   own proposal business mutations. Client-facing proposal review/read/apply
-  orchestration is owned by the server for registered appliers, and
-  unregistered proposal types fail closed until their owning module migrates.
+  orchestration is owned by the server for registered appliers. Unregistered
+  proposal types fail closed. Do not apply a type that has no server applier.
 
 `PgProposalApplyService` (`applyService.ts`) and the proposal repository live under
 `server/src/modules/proposals/`, matching their logical ownership.

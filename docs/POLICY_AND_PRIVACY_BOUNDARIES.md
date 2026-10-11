@@ -61,7 +61,7 @@ sensitive action.
 
 **Non-mutating simulation exception:** one location calls `computeDecision`
 directly for preflight simulation — it is not an enforcement point and must not
-persist `PolicyDecisionRecord`. Real runtime execution still goes through
+persist `PolicyDecisionRecord`. Runtime execution goes through
 `enforce()`.
 - `AutomationService.runPreflight` (`server/src/modules/automations/service.ts`) —
   read-only policy preflight simulation for a manual or scheduled Automation

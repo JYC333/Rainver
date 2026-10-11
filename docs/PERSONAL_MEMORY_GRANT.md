@@ -153,11 +153,10 @@ Current implementation:
   publishes the existing tainted resource as `space_shared` and rewrites its
   content access grants once every taint owner has approved; it creates no new
   artifact or memory.
-
-Not implemented yet:
-
-- automatic grant-derived output blocking in `RunMaterializationService`
-- semantic leakage detection for paraphrased personal-memory content
+- Materialization narrows output visibility from the Run's context taint
+  (`outputVisibilityForTaint` in `runs/contextTaint.ts`). It does not add a
+  separate grant-derived block, and it does not detect paraphrased
+  personal-memory leakage.
 
 ---
 
