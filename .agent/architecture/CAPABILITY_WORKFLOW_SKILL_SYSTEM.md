@@ -178,7 +178,7 @@ Project Research does not publish built-in workflow presets from its capability
 pack. Its internal immutable execution-per-pass definitions are created under
 `project_research.*` asset keys when a managed pass needs them; they are
 execution provenance, not user-selectable domain Templates. User or space
-workflow versions still use the existing draft → evaluation →
+workflow versions use the draft → evaluation →
 promotion-proposal → approval path; the generic evolvable asset APIs do not
 grant approval directly.
 

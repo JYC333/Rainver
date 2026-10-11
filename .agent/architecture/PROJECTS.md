@@ -1458,7 +1458,7 @@ idempotently and records `no_impact`, `candidate_created`, or
 AI-assisted extraction uses the same contract: the queue command pins an exact
 source revision/hash into an immutable Run contract, and terminal
 reconciliation creates only pending Knowledge Candidates with Run provenance.
-Canonical Knowledge still requires the existing promotion Proposal.
+Canonical Knowledge requires a promotion Proposal.
 
 ## Project navigation and review
 

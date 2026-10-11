@@ -19,9 +19,9 @@ import { spaces } from "./spaces.js";
  * location is reachable. Host liveness and workspace readiness are distinct.
  *
  * `branch`/`git_head`/`dirty` are real, nullable columns. The server-host
- * path uses the existing git helpers; a remote daemon reports the same
+ * path uses the git helpers; a remote daemon reports the same
  * observations in its hello/heartbeat payload. Workspace content sync and
- * divergence resolution remain out of scope.
+ * divergence resolution are out of scope.
  */
 export const workspaceLocations = pgTable("workspace_locations", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

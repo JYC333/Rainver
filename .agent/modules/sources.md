@@ -315,7 +315,7 @@ document), then the original URL if distinct. Snapshots store the raw content
 actually used. Created snapshots/reader artifacts record
 `content_source_format`, `content_source_url`, `arxiv_id`, and
 `fallback_from`/`fallback_reason` when PDF fallback occurred. Non-arXiv URLs
-keep the existing single-fetch behavior.
+fetch once.
 
 The main `/sources` Create Source dialog is provider-neutral. It loads the
 provider catalog, renders provider-owned setup fields (including the arXiv

@@ -20,9 +20,9 @@ export interface ResearchWorkflowRow {
 }
 
 /**
- * Canonical Workflow projection. `primary_thread_id` remains an API/read-model
- * field, but its authority is the active `about` edge rather than a duplicate
- * extension-table column.
+ * Canonical Workflow projection. `primary_thread_id` is an API/read-model
+ * field. Its authority is the active `about` edge. Do not store it as a
+ * second column on the extension table.
  */
 export function researchWorkflowProjection(options: {
   workflowAlias?: string;

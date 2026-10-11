@@ -63,9 +63,9 @@ function interpretationToOut(row: InterpretationRow): Record<string, unknown> {
 /**
  * Experiment Interpretation: a reviewed conclusion over one or more Runs,
  * convertible to an Inquiry Evidence Signal once reviewed.
- * Conversion never edits the Hypothesis Thread directly — it only creates a
- * Signal, which follows the existing material-Signal -> Candidate ->
- * reviewed-accept -> Iteration path unchanged. An Interpretation
+ * Conversion never edits the Hypothesis Thread directly. It only creates a
+ * Signal, which follows the material-Signal -> Candidate ->
+ * reviewed-accept -> Iteration path. An Interpretation
  * cannot silently change a Hypothesis; only an accepted Candidate can.
  */
 export class ExperimentInterpretationService {
