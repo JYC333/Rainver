@@ -150,7 +150,7 @@ const OUTPUT_TYPE_LABELS: Record<string, string> = {
   object_relation_delete: 'Object relation removal',
   object_profile_create: 'Object profile',
   object_profile_update: 'Object profile update',
-  // Stored versions may still carry these proposal type keys. Keep the labels.
+  // These keys appear on stored versions. Keep the labels. Do not drop them.
   memory_update_proposal: 'Memory update',
   knowledge_item_proposal: 'Knowledge item',
   knowledge_item_create_proposal: 'Knowledge item',
