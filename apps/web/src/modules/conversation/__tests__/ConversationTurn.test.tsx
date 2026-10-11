@@ -30,7 +30,7 @@ function show(node: React.ReactElement) {
   return render(<MemoryRouter>{node}</MemoryRouter>)
 }
 
-describe('ConversationTurn — the states of D3', () => {
+describe('ConversationTurn states', () => {
   it('working: hides completed tools while keeping the live text visible', () => {
     show(<ConversationTurn turn={turn('working', [
       tool(0, 'search', 'succeeded'),

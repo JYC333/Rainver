@@ -87,7 +87,7 @@ export class AgentGroupRuntimeDelegationMaterializer
     }
 
     // The same grant snapshot `SystemActionDispatcher` checks for the
-    // `agent.delegate` tool call (D8) — an Agent deliberately configured
+    // `agent.delegate` tool call. An Agent deliberately configured
     // without it is refused here exactly as it would be on that path,
     // instead of this second transport silently bypassing the grant.
     const granted = assembleRunInputEnvelope(input.run).tool_grants

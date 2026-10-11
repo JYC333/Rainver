@@ -307,10 +307,10 @@ function triggeringMessageId(value: unknown): string | null {
 /**
  * `agent.delegate` and retrieval keep an explicit custom adapter — their
  * enforcement genuinely differs (group budget/lineage; domain enablement).
- * Every other agent-visible action declares `policy_resource` (D4): the
+ * Every other agent-visible action declares `policy_resource`: the
  * generic adapter below reads it declaratively instead of a hand-written
  * `if (definition.id === ...)` branch, so adding one more declarative
- * action means adding metadata to its definition, not a fifth branch here.
+ * action means adding metadata to its definition, not another branch here.
  */
 async function enforcePolicyForAction(
   config: ServerConfig,

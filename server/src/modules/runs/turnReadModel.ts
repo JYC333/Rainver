@@ -252,8 +252,7 @@ function turnState(
       return "blocked";
     default:
       // `ck_runs_status` admits nothing else. A value that reaches here is a
-      // status the constraint gained without this switch being updated, and
-      // treating it as still running is the safe reading — a turn wrongly
+      // status this switch does not name. Treat it as still running. A turn
       // called finished sends a reader after a reply that is not there.
       return "working";
   }

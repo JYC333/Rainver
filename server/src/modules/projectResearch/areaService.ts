@@ -866,7 +866,7 @@ export function registerResearchProviderTaskRuns(): void {
       spend: { kind: "person", user_id: userId },
       // Applied before the Run goes terminal, so a terminal ad-hoc Run always
       // has its edit on the note. The reconciler's replay covers a Run that
-      // reached terminal without this finalize.
+      // reached terminal before this finalize ran.
       finalize: async (completion, runId) => {
         await service.applyAdhocNotebookUpdate({
           spaceId: run.space_id,

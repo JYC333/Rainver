@@ -89,8 +89,8 @@ vi.mock('../../../api/client', async () => {
   }
 })
 
-// The editor itself is covered by `RoomMessageComposer.test.tsx`; jsdom cannot
-// type into TipTap, and without this nothing here could exercise a send.
+// The editor itself is covered by `RoomMessageComposer.test.tsx`. jsdom cannot
+// type into TipTap. This stand-in is what lets a send be exercised here.
 vi.mock('../RoomMessageComposer', async () => {
   const { useEffect, useRef } = await import('react')
   return {

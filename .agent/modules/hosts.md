@@ -1158,13 +1158,13 @@ failure. Do not add a distinct `interrupted` status: that would touch retry
 policy, the supervisor, and finalization across the run subsystem. See the
 deferred register.
 
-## Host threads (D14, `server/src/modules/hosts/threadRepository.ts`)
+## Host threads (`server/src/modules/hosts/threadRepository.ts`)
 
 A `host_threads` row pins a vendor-CLI conversation to one registered
 `workspace_location_id`, or to a daemon-derived managed Agent × container
 workspace, for session resume via ACP's own `session/resume` (the general
 `AcpController` in `server/src/modules/runs/cliConversationProtocol.ts` drives
-this for every adapter now) — not server-side Runtime Context continuity
+this for every adapter) — not server-side Runtime Context continuity
 (remote runs get none of that; see "No server-brokered Runtime Context" below).
 `getForLocation` is scoped by `workspace_location_id` so a thread from one
 physical checkout can never be resumed against another. Managed rows have a

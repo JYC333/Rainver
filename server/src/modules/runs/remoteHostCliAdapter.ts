@@ -383,7 +383,7 @@ async function runRemoteHostCliAdapter(
       // ndjson_rpc-strategy adapter); passing it here would be a no-op at
       // best and is omitted for clarity.
       model: null,
-      // Trusted-host semantics (D1) do not fit `renderCliCommand`'s built-in
+      // Trusted-host semantics do not fit `renderCliCommand`'s built-in
       // permission-bypass gate, which requires a server-known worktree
       // sandbox_cwd and a high/critical risk_level — both server-host
       // concepts. Remote's auto-approve flag is appended manually below.

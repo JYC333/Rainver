@@ -1002,7 +1002,7 @@ export class PgMemoryApplyRepository {
     // below may do, and two restores on one chain each saw no active head
     // before the other committed. The row lock also orders an owner's archive
     // after an Agent's in-flight revision of the same entry. Do not archive
-    // without this lock. The superseded row would be archived and the new
+    // without the row lock. The superseded row would be archived and the new
     // head left active.
     const owned = await db.query<{ id: string; status: string; root_id: string }>(
       `SELECT id, status, COALESCE(root_memory_id, id) AS root_id FROM memory_entries

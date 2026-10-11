@@ -51,7 +51,7 @@ Cost uses the finalization-time sum of `token_usage_events.estimated_cost_usd`
 for the run. Duration uses the run's `started_at` to `ended_at` timestamps.
 Unknown observations do not produce threshold signals.
 
-## Evolution bundles (D3)
+## Evolution bundles
 
 The evolution module exposes `/api/v1/evolution/bundles` for grouping visible,
 pending ordinary proposals into one review context; the Inbox uses the same

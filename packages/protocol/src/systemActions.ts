@@ -168,7 +168,7 @@ export interface SystemActionDefinition {
   readonly grantable: boolean;
   /** Ontology object types this action operates on, when it operates on one. */
   readonly applies_to?: readonly string[];
-  /** Declarative resource resolution for the generic policy adapter (D4). */
+  /** Declarative resource resolution for the generic policy adapter. */
   readonly policy_resource?: SystemActionPolicyResource;
   /** Which managed Agent tool family contributes this action, if any. */
   readonly agent_tool_surface?: SystemActionAgentToolSurface;

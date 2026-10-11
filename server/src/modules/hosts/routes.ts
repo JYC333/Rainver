@@ -862,7 +862,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.code(204).send();
   });
 
-  // Upload endpoints (D7): the daemon posts its diff/output-directory
+  // Upload endpoints: the daemon posts its diff/output-directory
   // contents here after a Run completes, bearer-token authenticated. A
   // host Run's diff is stored as a read-only artifact, never a code-patch
   // proposal: on an execution host a change lands without per-change review

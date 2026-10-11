@@ -834,7 +834,7 @@ Materialization error codes → `tool` failure_layer (all via exact map):
 - Does not mutate Run, Artifact, or Proposal rows.
 - Does not auto-apply any Proposal.
 
-## Evolvable-Asset Evaluation Harness (D2)
+## Evolvable-Asset Evaluation Harness
 
 The evaluation harness applies the Verification Engine to an
 `evaluation_cases` fixture's stored baseline output and a system-produced

@@ -2397,7 +2397,7 @@ export class PgRunRepository {
       // Lock dependency rows before changing the waiter. A completion either
       // commits first (and is observed below as terminal), or waits until the
       // waiter is durable and its lifecycle projector can see it. Do not read
-      // child status and then park without this lock. The wakeup would be lost.
+      // child status and then park before taking the lock. The wakeup would be lost.
       const lockedDependencies = await db.query<{ id: string; status: string }>(
         `SELECT id, status
            FROM runs

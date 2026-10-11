@@ -128,7 +128,7 @@ Proposals are the product review and application boundary for durable mutations.
 - Evolution bundles are a review grouping with exclusive ownership of their
   pending members. Their member decisions run through `ProposalApplyService`
   in the same database transaction as the member state transition; ordinary
-  proposal accept/reject routes cannot bypass an active bundle. D3 rollback is
+  proposal accept/reject routes cannot bypass an active bundle. Bundle rollback is
   represented by an `evolution_bundle_rollback` proposal, so it receives the
   normal `proposal.apply` policy/audit gate, and its successful reverse-order
   restoration writes an activity record. Bundle rejection emits the same
