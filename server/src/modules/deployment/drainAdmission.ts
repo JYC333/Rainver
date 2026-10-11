@@ -36,7 +36,7 @@ export const INSTANCE_UPDATE_PENDING = "instance_update_pending";
  * Together with the automation scheduler these stop every unattended Agent
  * Run that would occupy the instance for any length of time. Deterministic
  * Workflow Actions own their outcome records and bounded ProviderTasks are
- * short-lived; research pipeline Agent Runs still defer at dispatch.
+ * short-lived; research pipeline Agent Runs defer at dispatch.
  */
 export const UNATTENDED_RUN_JOB_TYPES: readonly string[] = [
   "daily_capture_report",
