@@ -303,10 +303,10 @@ RunEvent records the structured phase-level evidence spine of a run:
 
 | event_type | Meaning |
 |---|---|
-| `context_compiled` | Retained event name. Current Agent Runs record accepted Runtime Context Delivery and Invocation Snapshot evidence |
+| `context_compiled` | Event name stays `context_compiled`. Current Agent Runs record accepted Runtime Context Delivery and Invocation Snapshot evidence |
 | `runtime_selected` | Runtime adapter resolved; sandbox level decided |
 | `credential_granted` | Credentials resolved for adapter |
-| `sandbox_created` | Worktree sandbox created |
+| `sandbox_created` | Server-prepared working directory recorded. A daemon Run does not write this event; its directory belongs to the daemon |
 | `policy_checked` | Runtime-reported policy check for a tool call |
 | `adapter_invoked` | Adapter.execute() called (status=running) |
 | `adapter_completed` | Adapter returned; status succeeded/failed/cancelled |
