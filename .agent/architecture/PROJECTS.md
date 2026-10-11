@@ -1501,8 +1501,8 @@ action workflow.
 The Board is the Project's Task surface: lanes are flow statuses, a card
 carries its Loop stage and who holds it, and a drag to Done is refused when the
 Task has not met what it declared unless the person acknowledges what they are
-skipping (`architecture/PROJECT_WORK.md`). The flatter Delivery Area it
-replaced is gone and its route redirects. Task Detail remains the full workflow
+skipping (`architecture/PROJECT_WORK.md`). `/projects/:projectId/delivery`
+redirects to the Board. Task Detail remains the full workflow
 surface, and its Work tab is where the Loop, the completion requirements, and
 the responsibility timeline are read. Research operations, with their
 Checkpoint controls, are the Research Area's Runs tab; Automations and Runs

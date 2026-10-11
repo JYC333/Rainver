@@ -45,8 +45,8 @@ references, and timestamps. A changed Plan definition requires a new
 PlanVersion; a changed fixed Workflow requires a new Workflow Version and a
 new WorkflowExecution. Editable product intent belongs only in `tasks`.
 
-The schema is authored under `server/src/db/schema/`; these tables were
-created by `server/migrations/0000_baseline.sql`.
+The schema is authored under `server/src/db/schema/`. The baseline migration
+`server/migrations/0000_baseline.sql` creates these tables.
 
 ## Agent planning lifecycle
 

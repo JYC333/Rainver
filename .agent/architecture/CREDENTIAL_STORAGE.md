@@ -101,8 +101,8 @@ it cannot leak into a CLI subprocess environment. The server store draws keys
 from the credential pool with rotation/cooldown state and the same master-key
 file. Exactly one side decides credential release: the server. Callers that
 need a key (the provider proxy, in-process completion) call the store in the
-same process. Internal HTTP routes must not return decrypted keys: a former
-`/internal/providers-credentials/credentials/runtime/resolve` hatch is gone.
+same process. Internal HTTP routes must not return decrypted keys. Do not
+add a route that returns a decrypted provider key.
 
 For a managed subscription provider, the same resolver verifies the invoking
 subject is the provider owner, decrypts the OAuth envelope in-process, refreshes

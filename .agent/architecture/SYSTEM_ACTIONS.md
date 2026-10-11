@@ -108,8 +108,8 @@ Skill
 (`capabilities/workSkill.ts`, rendered from `systemActions/conversationPolicy.ts`
 constants the conversational surfaces share),
 and a pointer to the Skill appended to the prompt the runtime is actually
-sent. There is no per-vendor branch anywhere in that path, which is what the
-three generated MCP configuration files it replaced each required. A newly
+sent. There is no per-vendor branch anywhere in that path. Do not add a
+generated MCP configuration file per vendor. A newly
 registered ACP agent needs nothing added.
 
 Side-effecting calls use the caller's `Idempotency-Key` header as the
