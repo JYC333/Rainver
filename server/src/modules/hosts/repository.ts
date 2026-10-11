@@ -161,9 +161,9 @@ export class PgHostRepository {
     const id = randomUUID();
     const now = new Date().toISOString();
     const inserted = await this.pool.query<{ id: string }>(
-      // `offline`, not `online`: the built-in host is a daemon connection now
-      // — the same `rainver-host` in strict mode, inside `sandbox-runner` —
-      // and it is online once it has said hello, like every other host.
+      // `offline`, not `online`. The built-in host is a daemon connection,
+      // the same `rainver-host` in strict mode inside `sandbox-runner`.
+      // It is online once it has said hello, like every other host.
       `INSERT INTO hosts (id, owner_user_id, machine_id, environment_kind, name, kind, status, created_at, updated_at)
        VALUES ($1, NULL, $2, 'server', 'server', 'server', 'offline', $3, $3)
        ON CONFLICT DO NOTHING

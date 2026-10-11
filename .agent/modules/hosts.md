@@ -1964,7 +1964,7 @@ through too), so its next send advances the baseline. Any other state there
 is someone else's move and still the person's to refresh; other conversations
 on the Location were not told and keep the gate.
 
-In strict mode the launch binds its cwd — now the Task worktree — by
+In strict mode the launch binds its cwd, the Task worktree, by
 `sandbox_mode` and the repository's git common directory as a write bind
 capped by the same mode; a `command_run` in a Task worktree binds both the
 same way.

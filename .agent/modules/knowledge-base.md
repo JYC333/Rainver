@@ -159,8 +159,8 @@ constrained by `(parent_id, space_id)` so folder trees cannot cross spaces.
 #### Placements
 
 `note_collection_items` is unique on `(collection_id, note_id, space_id)`, so
-multi-placement has always been expressible; the reads and the reorder path
-collapsed it. Both are now placement-addressed:
+a note may sit in more than one folder. Reads and reorder address a placement.
+Do not collapse those rows into one folder:
 
 - `NoteSummary.placements` is `[{ collection_id, sort_order }, …]` in placement
   order. There is no scalar `collection_id` on a note — a note is not in "the"
