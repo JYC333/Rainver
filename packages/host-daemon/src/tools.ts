@@ -119,9 +119,8 @@ export function readToolManifestSync(runtimeKey: string, installation: string): 
  * The *current* managed copy of each runtime — one per runtime key (ADR 0016 §9).
  *
  * A version kept behind the current one is a rollback target, not a second
- * installation: reporting it would put two copies of one Agent on the host
- * card, each with its own login, which is exactly the confusion one-version
- * addresses.
+ * installation. Do not report it: the host card would show two copies of one
+ * Agent, each with its own login.
  */
 export async function installedTools(): Promise<Map<string, ToolManifest[]>> {
   const result = new Map<string, ToolManifest[]>();

@@ -522,10 +522,10 @@ export function stopAllRunsForRevocation(log: (line: string) => void = () => {})
   for (const launchId of launchingRuns.keys()) stoppedLaunches.add(launchId);
   for (const { runId, active } of activeLaunches.values()) {
     log(`run ${runId}: terminating because this host was revoked`);
-    // Like every other deliberate stop: without it, a strict run killed here
-    // before its namespace reported would be blamed on the namespace. Not
-    // reachable today — a strict daemon re-adopts its credential instead of
-    // being revoked — which is exactly why it should be right before it is.
+    // Like every other deliberate stop. Do not omit this: a strict run killed
+    // here before its namespace reported would be blamed on the namespace.
+    // A strict daemon re-adopts its credential and is not revoked. Set this
+    // before a revoke path can reach a strict run.
     active.terminationRequested = true;
     terminateWithEscalation(active.child, true, log);
   }

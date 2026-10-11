@@ -3,8 +3,8 @@
  *
  * `/health` answers "is the process up and can it reach Postgres" — that is a
  * container probe and nothing more. It stays 200 while a scheduled task has
- * silently stopped turning or the jobs worker never started, which is exactly
- * the class of failure that matters for unattended work.
+ * silently stopped turning or the jobs worker never started. That is the
+ * class of failure that matters for unattended work.
  *
  * This surface reports the components the server actually owns and can observe
  * from inside this process. Components documented in
