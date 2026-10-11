@@ -274,7 +274,7 @@ rows. The explicit bridge (`SourceRecipePipelineBridgeService`,
 `POST /api/v1/sources/custom-sources/:connectionId/bridge-pipeline`) validates
 `manifest_json.pipeline`, wraps it as `source.recipe.v1`, creates a new paused
 recipe source, and writes a draft `source_recipe_versions` row. It does not
-mutate the old generated-custom connection or auto-activate the recipe; the
+mutate that custom-source connection or auto-activate the recipe; the
 normal recipe dry-run/activate path still applies.
 
 Unlike `typescript_node` (generated code executed in a sandboxed child

@@ -1375,8 +1375,8 @@ Every reader of `messages` that answers a person uses
 `visibleRoomTranscriptSql` — the page, the pick-by-id surface, the recent
 context window — and it is applied unconditionally rather than behind a flag:
 `room_display = 'internal'` is written only by `addRoomInternalInstruction`, so
-it is vacuous for an ordinary session, and a flag deciding whether to apply the
-rule was a second copy of it. Agent replay and continuation lookups still read
+it is vacuous for an ordinary session. Do not put the filter behind a flag.
+That flag would be a second copy of the same rule. Agent replay and continuation lookups still read
 the internal rows through `visibleMessagePathSql`, which is why they are stored
 in order at all.
 
