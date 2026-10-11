@@ -25,8 +25,8 @@ const SYNTHESIS_ONLY_WORKFLOW_ID = "project_research.synthesis_only";
 /**
  * Dedicated synthesis-only execution-per-pass Workflow. The general Project
  * Research pipeline uses the same WorkflowExecution authority through
- * researchPassExecution.ts; this specialized pass exists because generating
- * an on-demand immutable snapshot has a smaller two-node graph.
+ * researchPassExecution.ts. An on-demand immutable snapshot uses a smaller
+ * two-node graph.
  */
 export async function startSynthesisOnlyExecution(
   db: Queryable,

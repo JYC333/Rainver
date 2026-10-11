@@ -187,8 +187,8 @@ Dynamic tool presentation has two bounded exceptions:
 - **`agent.delegate`** does have a real static registry Zod
   (`RuntimeDelegationOutputItemSchema`, shared with Path B's structured
   output validation, D8), but its hand-written tool definition
-  (`agentDelegateToolDefinition()`, same file) exists because the
-  model-facing schema needs a `target_agent_id` enum populated from that
+  (`agentDelegateToolDefinition()`, same file) supplies the
+  model-facing `target_agent_id` enum populated from that
   Run's live room roster — a per-request enrichment
   `systemActionInputJsonSchema()` cannot express from a static definition.
   `SystemActionGateway` still validates the actual call against the shared
@@ -272,7 +272,7 @@ stopping one are all execution on an already-accepted Thread, not the
 agent-drafted structure/content write ADR 0003 gates. Cancel is in the list so
 a Room notification about running research always has a matching in-Room
 action. Do not leave a report the user can only act on by leaving for the
-web UI. It exists because a Room's roster
+web UI. A Room's roster
 is fixed at creation and no product surface edits `tool_permissions_json` at
 all, so binding Room conversation to Agent permissions means a Room built
 around a differently configured Agent silently does nothing, with nowhere for

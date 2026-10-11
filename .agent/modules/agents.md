@@ -140,7 +140,8 @@ Rules:
   and leaves anything else alone rather than overwrite work it cannot account
   for. No path authors a version for a `system_assistant`.
   `requireAgent` excludes the kind, and `publishSystemManagedPrompt` refuses it.
-  Do not add a path that leaves the mark set. The unmarked column *is* the record of divergence; nothing writes a
+  Do not add a path that leaves the mark set. The unmarked column *is* the
+  record of divergence; nothing writes a
   second copy of that fact. A left-alone instance still has its runtime profiles
   reconciled, and routing builds its candidates from `agent_runtime_profiles`
   rather than from the version, so declining to republish an instance's prompt

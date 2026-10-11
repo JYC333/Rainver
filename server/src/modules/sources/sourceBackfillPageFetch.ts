@@ -12,8 +12,8 @@ import type { SourceFetchResult } from "./sourceFetch.js";
  * run, and Research then reports a confident "no relevant material" over a
  * corpus that is missing half its inputs. A slower import is the better trade.
  *
- * Quartering rather than halving keeps a doomed segment to three attempts, and
- * the floor exists because a page small enough to need hundreds of requests is
+ * Quartering rather than halving keeps a doomed segment to three attempts.
+ * Do not go below the floor. A page small enough to need hundreds of requests is
  * its own kind of failure.
  */
 export const PAGE_SIZE_FLOOR = 10;

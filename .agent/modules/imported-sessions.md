@@ -33,7 +33,7 @@ three of them to maintain forever.
 A runtime that does not advertise both `list` and `load` is not offered.
 
 The daemon runs the ACP conversation and returns trimmed, redacted records; the
-server never sees the raw replay. That division exists because both trimming
+server never sees the raw replay. Both trimming
 and redaction must happen before anything crosses the network:
 
 | Update kind | Kept |

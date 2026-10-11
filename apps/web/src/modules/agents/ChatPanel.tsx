@@ -266,8 +266,8 @@ export default function ChatPanel({
    * A turn's request, from send until it resolves — including while it is
    * blocked, which is a stop rather than an end.
    *
-   * `sending` says the same thing and drives the spinner and the composer;
-   * this ref exists because `send` needs to read it synchronously, before a
+   * `sending` says the same thing and drives the spinner and the composer.
+   * `send` reads this ref synchronously, before a
    * state update could have landed.
    */
   const inFlight = useRef(false)
