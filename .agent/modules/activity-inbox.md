@@ -16,7 +16,7 @@ Raw-input layer (L0). Everything entering the system lands as an `ActivityRecord
 
 Canonical `source_kind` / `activity_type` values: `user_capture`,
 `chat_message`, `external_chat`, `file_import`, `web_capture`, `run_event`,
-`project_folder_event`, `system_event`, `external_source`, and `source`. Legacy input
+`project_folder_event`, `system_event`, `external_source`, and `source`. Input
 aliases such as `user_input`, `manual`, `agent_run`, `task_log`,
 `workspace_event`, `imported_chat`, `file_capture`, and `voice_capture` are
 normalized at ingest (`task_log` and `workspace_event` to `project_folder_event`).

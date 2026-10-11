@@ -163,7 +163,7 @@ Rules:
   `reconcileSeedFollowersForAllSpaces` runs once on start (and daily as a
   backstop) over every instance whose current version follows the seed,
   re-materializing it as the Project owner would by creating a Room — so a
-  prompt shipped in a release lands on every Assistant that already exists,
+  changed seed prompt lands on every Assistant that already exists,
   not only on the next Project to start a conversation. It is idempotent, and
   an instance whose Project has no eligible backend for its owner is skipped
   and logged rather than failed on.

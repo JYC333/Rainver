@@ -1179,8 +1179,7 @@ directly, or released from the queue, while the discussion's latest wave waits
 stays outside it when sent as an ordinary message (no new round or owner
 change). An Agent reply to that ordinary message may still address another
 Agent, but does not enroll them in the active discussion: a visible notice
-outside the discussion explains why that follow-up was not admitted. Legacy
-unmarked non-discussion turns and Agent-origin continuations (late delegation
+outside the discussion explains why that follow-up was not admitted. Unmarked non-discussion turns and Agent-origin continuations (late delegation
 or research result) can still add addressed Agents to the discussion's held
 Agents; in a debate they are named as not admitted instead. Those held Agents
 are checked against the discussion owner's authority when it next advances

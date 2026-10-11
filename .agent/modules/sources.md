@@ -295,7 +295,7 @@ page-size differences cannot create false incremental runs.
 
 arXiv-specific parsing lives in `connectors/arxiv.ts` (query URL building, Atom
 response parsing, and id/URL normalization for abs/pdf/html URLs, `arXiv:`
-prefixes, versioned ids, and legacy slash ids), deliberately outside the generic
+prefixes, versioned ids, and slash ids), deliberately outside the generic
 feed parser. `connectors/arxivThrottle.ts` is a best-effort process-local polite throttle
 (default 3s minimum interval, injectable clock/sleep for tests) that wraps
 only arXiv network calls.

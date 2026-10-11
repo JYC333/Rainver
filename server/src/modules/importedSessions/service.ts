@@ -480,8 +480,9 @@ export class ImportedSessionService {
   /**
    * Forwards a replay's token usage to the canonical ledger.
    *
-   * This is the person's own subscription spend on their own machine, which
-   * Rainver never saw at the time. It is attributed to the host owner and
+   * This is the person's own subscription spend on their own machine.
+   * Rainver did not record it when the session ran. It is attributed to the
+   * host owner and
    * marked `ambient_host_history` so it can never be confused with a Run this
    * control plane dispatched; the idempotency key is derived from the record
    * identity, so re-syncing the same session does not count it twice.

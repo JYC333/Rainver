@@ -408,7 +408,7 @@ message. A current Files & Code attachment instead revalidates the saved/draft
 descriptor, writes or reuses a bounded content-addressed blob, inserts its
 message-owned `conversation_input_resources` row, and appends the normalized
 `input_resource` part in that same transaction. The resource is immutable and
-later read through Run-scoped actions; it is not materialized on a Host. Legacy
+later read through Run-scoped actions; it is not materialized on a Host.
 `conversation_file_snapshots` rows remain readable for historical messages and
 compatibility retries. `conversation_turn_idempotencies` records client turn
 keys and the committed response for replay-safe sends. Expired or orphaned

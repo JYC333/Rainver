@@ -52,7 +52,7 @@ an immutable message-owned resource and gives the Run a server-issued resource
 id. The initial prompt contains the descriptor, not the body. Agents read or
 search it through the Run-scoped `input_resource.read/search` actions; no
 generic database URL, Host temporary path, or absolute browser path is exposed.
-Legacy file snapshots remain readable for older messages and retry paths.
+File snapshots already stored on older messages stay readable on retry paths.
 
 Files & Code draft routes use optimistic `draft_id`/`draft_version` mutations;
 draft content stays in the authenticated server database and is not carried in

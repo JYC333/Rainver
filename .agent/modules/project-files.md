@@ -146,7 +146,7 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   resource.
   Normal and retry Runs receive only its descriptor and read it lazily through
   the governed `input_resource.read/search` actions; no Host temporary file,
-  generic database URL, or prompt-embedded body is used. Legacy
+  generic database URL, or prompt-embedded body is used.
   `conversation_file_snapshots` remain readable and are hydrated only by their
   compatibility paths. The shared composer still searches authorized Folder
   trees through `GET /api/v1/sessions/{sessionId}/input-files` for explicit
