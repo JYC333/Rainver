@@ -85,8 +85,7 @@ export function quotaVerdict(input: {
 
 /**
  * Admit an Agent-triggered Run — enqueue its job — or hold it at the reserve
- * line. Called where the admission would have enqueued the job, inside the
- * admission's transaction.
+ * line. Call it at the enqueue site, inside the admission's transaction.
  */
 export async function admitAgentOriginRun(
   client: PoolClient,

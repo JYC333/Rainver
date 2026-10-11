@@ -166,7 +166,7 @@ describe("contradiction-scan route", () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it("rejects llm_judge_enabled until the provider adapter is wired", async () => {
+  it("rejects llm_judge_enabled on the public contradiction-scan route", async () => {
     __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     mockPool((sql) => {
       if (/FROM settings/.test(sql)) return { rows: [retrievalSettingsRow()], rowCount: 1 };
@@ -251,7 +251,7 @@ describe("relation discovery-scan route", () => {
     expect(body.canonical_write_performed).toBe(false);
   });
 
-  it("rejects llm_extraction_enabled until the provider adapter is wired", async () => {
+  it("rejects llm_extraction_enabled on the public discovery-scan route", async () => {
     __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     mockPool((sql) => {
       if (/FROM settings/.test(sql)) return { rows: [retrievalSettingsRow()], rowCount: 1 };

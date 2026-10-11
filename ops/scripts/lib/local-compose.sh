@@ -54,8 +54,9 @@ local_compose_init() {
   export RAINVER_MODE_ROOT="${RAINVER_HOST_MODE_ROOT:-$MODE_ROOT}"
 
   # Host shells and Node tooling often export DEBUG for their own purposes
-  # (for example DEBUG=release). Keep that generic variable out of compose;
-  # the server uses SERVER_DEBUG. Older env files may still set DEBUG.
+  # (for example DEBUG=release). Strip that from the compose process.
+  # The server reads SERVER_DEBUG, then DEBUG from the env file. Do not
+  # pass the shell's DEBUG through.
   COMPOSE=(env -u DEBUG docker compose --env-file "$ENV_FILE" -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE")
   COMPOSE_HINT="docker compose --env-file $ENV_FILE -p $COMPOSE_PROJECT -f $COMPOSE_FILE"
   LOCAL_COMPOSE_POSTGRES_STARTED=false
