@@ -152,9 +152,9 @@ describe('deriveStages', () => {
   })
 
   it('does not spin on a step only the user can end', () => {
-    // A primary step stays `in_progress` until the round closes, so a spinner
-    // on one could never stop: Clarify sat ticked and spinning at once for the
-    // rest of the round. Only background work spins.
+    // A primary step stays `in_progress` until the round closes. Do not spin
+    // on one. Clarify would stay ticked and spinning for the rest of the
+    // round. Only background work spins.
     const clarifying = { ...base, roundSteps: [step({ kind: 'clarify_or_decompose' })] }
     expect(deriveStages(clarifying).stages.find(stage => stage.id === 'clarify')?.running).toBe(false)
 

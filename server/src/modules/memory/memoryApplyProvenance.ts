@@ -7,8 +7,8 @@
  *
  * Pure helpers are decision/derivation logic; the DB-write helpers INSERT into
  * `provenance_links` / `memory_relations` and run inside the caller's apply
- * transaction (they never commit). Used by the memory appliers; not wired to any
- * route yet.
+ * transaction (they never commit). The memory and knowledge appliers call
+ * them. No route does.
  */
 
 import { randomUUID } from "node:crypto";

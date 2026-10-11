@@ -18,8 +18,8 @@ import { spaceObjects } from "./knowledge.js";
  * `space_objects.primary_project_id` is governance ownership and stays single —
  * the content read gate evaluates it as a hard AND before visibility and grants,
  * so a note filed in Project A is unreadable to a non-member of A no matter what
- * per-user grant exists. That is what made cross-Project placement impossible
- * rather than merely unimplemented.
+ * per-user grant exists. Do not treat that as a missing feature. A grant
+ * cannot place the note in another Project.
  *
  * This table widens the *scope* half of that predicate and nothing else. A share
  * says "members of this other Project may reach past the project barrier"; it

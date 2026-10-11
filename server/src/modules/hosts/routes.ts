@@ -431,7 +431,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     );
     // The probe for *this* machine already resolved which copy it installs —
     // the release pin for the Server Host, the registry's answer for a paired
-    // one. Deciding that again here is what made two sources of truth.
+    // one. Do not decide that again here. Two sources of truth would disagree.
     const probe = acpRuntimeProbe(runtimeKey, targetHost.rows[0]?.kind === "server" ? "server" : "remote");
     const distribution = probe?.distribution;
     const version = probe?.version;

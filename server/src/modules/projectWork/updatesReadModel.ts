@@ -218,9 +218,9 @@ function toUpdate(row: UpdateRow): Omit<ProjectWorkUpdate, "members"> {
       && (row.thread_id === null || threadUndoStillApplies(undoAction, row.thread_lifecycle))
       ? { action: undoAction, target_id: row.subject_id }
       : null,
-    // What it replaced, when the writer recorded one. Only an Agent's persona
-    // does today: deciding whether to put the previous version back needs both
-    // sides in front of the person, not one side and a link.
+    // What it replaced, when the writer recorded one. A persona revision is
+    // the row that carries it: deciding whether to put the previous version
+    // back needs both sides in front of the person, not one side and a link.
     previous_summary: str(row.data_json?.previous_summary),
     undone_by_event_id: row.undone_by_event_id,
   };

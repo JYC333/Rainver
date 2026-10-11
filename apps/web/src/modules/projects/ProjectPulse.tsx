@@ -206,8 +206,8 @@ export default function ProjectPulse({
         ) : (
           /* Grouped by why it needs a person (ADR 0017 §4). A decision, a
              spend, a suggestion and a doubt read differently and are acted on
-             differently; one undifferentiated list is what made six identical
-             cards feel like an unresolvable pile. */
+             differently. Do not flatten them into one list. Six cards of one
+             kind read as a pile with nothing to do. */
           <div className="space-y-3">
             {ATTENTION_CLASS_ORDER.filter(cls => attention.some(item => item.attention_class === cls)).map(cls => (
               <div key={cls} className="space-y-2" data-testid={`attention-${cls}`}>

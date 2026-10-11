@@ -1073,7 +1073,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
   });
 
   it("does not ask Claude for a model, whose model the environment already decides", async () => {
-    // The gap that made this worth a test: `boundAcpModelId("claude_code", m)`
+    // Do not ask Claude for a model. `boundAcpModelId("claude_code", m)`
     // returning `m` looks right at the helper, and the controller then
     // reconciles it against Claude's own alias space, where a third-party
     // provider's model name does not exist — resolving to whatever the

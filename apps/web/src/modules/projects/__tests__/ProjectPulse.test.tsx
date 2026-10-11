@@ -153,8 +153,8 @@ describe('Project Pulse', () => {
 
   it('groups what needs a person by why it needs them', async () => {
     // ADR 0017 §4: a decision, a spend and a suggestion read differently and
-    // are acted on differently. One undifferentiated list is what made six
-    // identical cards feel like a pile nobody could resolve.
+    // are acted on differently. Do not flatten them into one list. Six cards
+    // of one kind read as a pile with nothing to do.
     renderPulse({
       ...overview,
       attention: [

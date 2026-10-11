@@ -47,8 +47,8 @@ export class InformationDigestService {
       const keptSources = new Set(kept.map((item) => item.source_item_id));
       const candidates = (await repo.personalCandidates(spaceId, userId, date))
         .filter((candidate) => !keptSources.has(candidate.source_item_id));
-      // Cold still maintains deterministic profile facts, but does not use
-      // fine-grained topics as a ranking signal yet.
+      // Cold maturity keeps deterministic profile facts and does not use
+      // fine-grained topics as a ranking signal.
       const topics = maturity === "cold" ? [] : await repo.activeTopics(spaceId, userId);
       const ranked = rankPersonal(candidates, topics, date, maturity);
       const selected = diversify(ranked, profileSettings.interest_slots);

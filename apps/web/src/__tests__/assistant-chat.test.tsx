@@ -52,9 +52,8 @@ function renderPage(entry = '/agents/a1/chat') {
 /**
  * The composer stays disabled until the backend catalog resolves, and `send`
  * drops anything typed before then — as it does for a person, who cannot type
- * into a disabled box at all. Waiting for it is what a person does; not
- * waiting made these tests race the component's own guard and fail whenever
- * the catalog resolved a tick late.
+ * into a disabled box at all. Wait for it. Sending before the catalog
+ * resolves races the component's own guard.
  */
 async function enabledComposer(): Promise<HTMLElement> {
   const input = await screen.findByPlaceholderText(/ask your assistant/i)

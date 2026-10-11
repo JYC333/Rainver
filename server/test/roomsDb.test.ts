@@ -503,8 +503,8 @@ async function openSpokenRoom(
   input: { project_id: string; title: string; project_folder_id?: string | null },
 ): Promise<{
   // The service's own room shape, which is the protocol's `Room` — not the
-  // repository row. Restating it as `RoomRecord` is what made this file fail
-  // `pnpm run typecheck` when `createRoom` gained its `RoomDetail` annotation.
+  // repository row. Do not restate it as `RoomRecord`. `createRoom` returns
+  // `RoomDetail`.
   room: Awaited<ReturnType<RoomService["createRoom"]>>["room"];
   conversation: Awaited<ReturnType<typeof seedConversation>>;
   agent_members: RoomAgentMemberRecord[];

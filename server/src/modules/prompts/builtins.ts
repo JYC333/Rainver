@@ -83,17 +83,15 @@ export interface PromptSyncResult {
  * Idempotent built-in prompt sync: ensures every manifest has a matching
  * system-scope (space_id NULL) evolvable asset, and adds a new immutable
  * 'approved' 'built_in' version whenever the manifest content_hash changes.
- * Existing versions are never overwritten. Callable from a bootstrap script
- * or tests — not wired into automatic server startup, so it never changes
- * runtime behavior on its own. No prompt consumer resolves through this
- * registry.
+ * Existing versions are never overwritten. A bootstrap script or a test calls
+ * it. Startup does not, so it never changes runtime behavior on its own. No
+ * prompt consumer resolves through this registry.
  *
- * Built-in versions are written with status='approved' directly, bypassing
- * EvolvableAssetRepository's proposal-gated promotion path: that gate exists
- * for user-facing edits, whereas built-in prompt review already happened as
- * a normal source-control change to the manifest file. System baseline prompt
- * changes are code and catalog changes. This mirrors server/src/db/seeds.ts, which
- * seeds other built-in tables the same way.
+ * Built-in versions are written with status='approved' directly. Do not send
+ * them through EvolvableAssetRepository's proposal-gated promotion path. That
+ * gate is for user-facing edits. A built-in prompt changes when its manifest
+ * file changes. System baseline prompt changes are code and catalog changes.
+ * This follows the same direct write as server/src/db/seeds.ts.
  */
 export async function syncBuiltinPrompts(db: Queryable, catalogRoot: string): Promise<PromptSyncResult> {
   const manifests = await loadPromptManifests(catalogRoot);

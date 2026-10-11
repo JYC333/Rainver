@@ -258,9 +258,9 @@ export function ResearchSetupDialog({
   async function startResearch() {
     if (!ready || !canAct || busyAction !== null || draft.question_refine_skipped) return
     // Keep the setup visible while the server creates the Workflow and its
-    // first Operation. Closing first made every failed start look like a
-    // successful one-frame dialog: the user's configuration disappeared and
-    // only a detached toast remained.
+    // first Operation. Do not close first. A failed start would look like a
+    // successful one-frame dialog: the configuration disappears and only a
+    // detached toast remains.
     const started = await onStart(serializeResearchSetupDraft(draft), effectiveWorkflowId)
     if (!started) return
     clearResearchSetupSession(userId, projectId, sessionScope)

@@ -1716,7 +1716,7 @@ export class PgKnowledgeRepository {
           spaceId: identity.spaceId,
           actor: { userId: identity.userId },
           // The target's own title is the most useful default, and the user can
-          // rename it — NA made titles safe to change.
+          // rename it.
           title: `Note on ${target.title}`,
           doc: markdownToPm(text),
           contentFormat: "prosemirror_json",

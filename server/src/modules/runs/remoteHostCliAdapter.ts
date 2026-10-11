@@ -1080,9 +1080,9 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     };
     let protocolBuffer = "";
     // Last sign of life from the runtime. A run whose ACP stream has gone
-    // quiet and one that is working look identical from here otherwise, and
-    // waiting out the whole run timeout to tell them apart is what made a
-    // stalled OpenCode turn cost five silent minutes.
+    // quiet and one that is working look identical from here otherwise.
+    // Do not wait out the whole run timeout to tell them apart. A stalled
+    // turn would sit silent until that timeout.
     let lastOutputAt = Date.now();
     const onOutput = (chunk: string) => {
       lastOutputAt = Date.now();

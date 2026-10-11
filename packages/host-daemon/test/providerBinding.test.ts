@@ -147,9 +147,9 @@ describe("materializing a provider binding", () => {
       null,
     );
     // Stands in for a Claude Code session transcript: written by the runtime,
-    // not by the binding, and the thing the next turn resumes from. Wiping the
-    // profile between runs is what made every turn after the first fail with
-    // the runtime reporting no such conversation.
+    // not by the binding, and the thing the next turn resumes from. Do not
+    // wipe the profile between runs. The next turn would resume a conversation
+    // the runtime no longer has.
     await writeFile(join(root, "session.jsonl"), "turn one");
 
     await materializeProviderBinding(

@@ -452,9 +452,9 @@ export class PgMemoryApplyRepository {
       // An agent-scope entry the Agent drafted stays authored by the Agent
       // even when a person accepted it: `approved_by` records the accept, and
       // `created_by` is what `applyDirect` reads to decide whether the Agent
-      // may revise its own entry later. Writing the approver's id here made
-      // one accepted persona proposal turn the whole chain proposal-only
-      // forever — ADR 0003 §5's third row could never fire again.
+      // may revise its own entry. Do not write the approver's id here. One
+      // accepted persona proposal would make the whole chain proposal-only,
+      // and ADR 0003 §5's third row would never fire again.
       createdBy: scope === "agent" && proposal.created_by_agent_id
         ? `agent:${proposal.created_by_agent_id}`
         : String(proposal.created_by_user_id ?? userId),

@@ -473,8 +473,8 @@ export class PgRouteDecisionRepository {
               arp.runtime_policy_json,
               -- Capabilities are AgentVersion authority: a deployment Profile
               -- never declares what the Agent may be asked to do, and no
-              -- production writer fills a Profile capability bag. Reading one
-              -- made every Version-declared capability unroutable.
+              -- production writer fills a Profile capability bag. Do not read
+              -- one. Every Version-declared capability would be unroutable.
               CASE
                 WHEN jsonb_typeof(av.capabilities_json) = 'array'
                   THEN av.capabilities_json
