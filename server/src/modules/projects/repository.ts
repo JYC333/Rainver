@@ -191,8 +191,8 @@ export class PgProjectRepository {
       // (ADR 0018 decision 4). Do not wait for the first Room someone creates
       // and call that the mainline. A Project with no Room is not a state.
       //
-      // Nothing that can fail is done here. No Assistant is provisioned (that
-      // moves to the Room's first message) and no conversation is created
+      // Nothing that can fail is done here. No Assistant is provisioned — that
+      // happens on the Room's first message — and no conversation is created
       // (conversations are created through explicit draft setup, decision 5), so a Project
       // cannot fail to be created because of its Room.
       const roomRepository = new PgRoomRepository(db);

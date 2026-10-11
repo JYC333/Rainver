@@ -288,9 +288,9 @@ interface NewMemoryFields {
   /** Null for a direct write — there was no proposal (ADR 0003 §2). */
   createdFromProposalId?: string | null;
   /**
-   * Where this row sits in its chain. Every insert wrote a literal 1 before,
-   * so a three-version memory read "v1, v1, v1" wherever the chain is shown —
-   * which is most of what makes a superseded version identifiable.
+   * Where this row sits in its chain. 1 is the first row. A revision is one
+   * more than the row it supersedes. Do not write a literal 1 on every insert.
+   * A three-version chain would then read "v1, v1, v1".
    */
   version?: number;
 }
