@@ -1,9 +1,10 @@
 # Module: Capability
 
 ## Purpose
-Capabilities are installed, file-defined units of backend behavior. Product
-surfaces use the capability framework read model exposed through
-`/api/v1/capability-definitions`.
+Product capabilities are the built-in definitions in
+`server/src/modules/capabilities/registry.ts`. Product surfaces read them
+through `/api/v1/capability-definitions`. Catalog YAML under
+`catalog/capabilities/` is a diagnostic catalog. Do not install or execute it.
 
 ## Owns
 - Built-in capability definitions from `server/src/modules/capabilities/registry.ts`.
@@ -51,10 +52,10 @@ outputs:
     - research_intake.result.v1
 ```
 
-`entrypoint.type: none` is the active manifest convention for catalog-only
-capabilities. A server-native capability executor goes through the runtime
-adapter layer. Shell commands, remote code loading, package installation,
-broad filesystem access, and subprocess execution are not supported.
+`entrypoint.type: none` means the catalog entry is not executable. There is
+no server-native capability executor. Shell commands, remote code loading,
+package installation, broad filesystem access, and subprocess execution are
+not supported.
 
 ## Discovery
 
@@ -85,9 +86,9 @@ Capability execution is not active. `runtime_key="capability"` is a declared,
 `planned`, not-enabled-by-default registry entry in
 `server/src/modules/runtimeAdapters/specs.ts`, and `getAgentRuntimeDefinition`
 returns nothing for it.
-Capability manifests are catalog/UI metadata only.
-
-Returned artifacts are materialized by `materializationService` as `Artifact` rows linked to the Run and project. Returned activities are not materialized: each one records an `output_activity_materialization_error`.
+Capability manifests are catalog metadata only. Run materialization persists
+`output.artifacts` as Artifact rows. Each `output.activities` entry records
+`output_activity_materialization_error` and is not written as Activity.
 
 ## Boundaries
 

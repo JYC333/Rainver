@@ -234,8 +234,9 @@ not OS-sandboxed.
 
 Extracted from `CAPABILITY_WORKFLOW_SKILL_SYSTEM.md`.
 
-**Current fact:** file-defined registry, packs, GitHub
-`blob`/`tree` / `raw.githubusercontent.com` `SKILL.md` import preview.
+**Current fact:** built-in definitions in `capabilities/registry.ts`;
+catalog YAML is diagnostic and is not executed; packs and GitHub
+`blob`/`tree` / `raw.githubusercontent.com` `SKILL.md` import preview exist.
 Binary assets are inventory metadata only.
 
 **Extracted design**
