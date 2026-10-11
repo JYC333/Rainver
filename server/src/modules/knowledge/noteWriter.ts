@@ -370,8 +370,8 @@ async function insertNote(
  * This is the "file it here" write behind note creation and an explicit
  * `collection_id` on a note update. Adding a note to a further folder without
  * removing it from the ones it is already in is a different action with
- * different intent — {@link addNotePlacement} — and conflating the two is how
- * a multi-placement schema ends up behaving as if it were single-placement.
+ * different intent — {@link addNotePlacement}. Do not use this write to add a
+ * placement. A multi-placement note would then behave as if it had one.
  */
 export async function moveNoteToCollection(
   db: Queryable,

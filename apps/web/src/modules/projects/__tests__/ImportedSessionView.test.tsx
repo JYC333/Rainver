@@ -80,8 +80,8 @@ describe('Continuing from an imported session', () => {
 
   it('tells a reader why they cannot continue privately, instead of failing on the press', async () => {
     // Opening a personal Room needs write authority on the Project; reading
-    // the mainline does not. Without this the owner of a private session who
-    // can only read the Project would press the button and get a bare 403.
+    // the mainline does not. Do not leave the refusal until the press. The
+    // owner of a private session who can only read the Project would get a bare 403.
     vi.mocked(projectsApi.mainlineRoom).mockResolvedValue({
       room: { id: 'room-main', is_mainline: true }, joined: false, viewer_can_write: false,
     } as never)

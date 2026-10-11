@@ -7,8 +7,8 @@ import { Plugin, PluginKey } from '@tiptap/pm/state'
  *
  * Two jobs, and the first is the one that is easy to miss: Tiptap parses
  * incoming JSON through its schema and **drops attributes the schema does not
- * declare**. Without this extension, opening a note the server had stamped and
- * saving it again would silently strip every id — so declaring the attribute is
+ * declare**. Do not omit the attribute. Opening a note the server stamped and
+ * saving it again would silently strip every id. Declaring the attribute is
  * a correctness requirement, not just the price of generating ids here.
  *
  * The second job is the split guard below.

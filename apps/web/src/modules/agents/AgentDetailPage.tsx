@@ -462,9 +462,9 @@ function ModelTab({
   // claimed provider mode, leaving no way back.
   const [catalogError, setCatalogError] = useState<string | null>(null)
   // An empty catalog and a catalog that has not answered yet are different
-  // facts. Without this flag every open of a `model_provider` Profile flashed
-  // "this runtime does not support a ModelProvider binding" until the first
-  // response landed.
+  // facts. Do not treat a catalog that has not answered as an empty catalog.
+  // An open `model_provider` Profile would show "this runtime does not support
+  // a ModelProvider binding" until the first response landed.
   const [catalogLoading, setCatalogLoading] = useState(true)
   const [providerModeNotice, setProviderModeNotice] = useState<string | null>(null)
   const loadCatalog = useCallback(() => {

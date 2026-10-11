@@ -188,7 +188,7 @@ export default function ProjectFilesPage() {
       await loadFolders()
     } catch (e) {
       // The server reports the active drafts it would remove and refuses until
-      // they are acknowledged; without this second step a Folder with any live
+      // they are acknowledged. Do not skip that step. A Folder with any live
       // draft could not be unregistered from here at all.
       const drafts = confirm ? null : activeDraftConfirmation(e)
       if (drafts) {

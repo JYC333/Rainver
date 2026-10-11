@@ -60,8 +60,8 @@ export function FloatingQuickCapture() {
   const destination = chosen && available.includes(chosen) ? chosen : inferred
 
   // An abandoned capture must not set the destination for the next one either.
-  // The composer is mounted once for the whole app, so without this an explicit
-  // choice would survive closing the panel and walking into another Project.
+  // The composer is mounted once for the whole app. An explicit choice would
+  // survive closing the panel and walking into another Project.
   const reset = useCallback(() => { setPasted(false); setChosen(null) }, [])
   const close = useCallback(() => { setOpen(false); reset() }, [reset])
   useEffect(reset, [reset, projectId, target?.objectId])

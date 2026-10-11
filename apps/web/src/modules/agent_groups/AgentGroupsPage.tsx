@@ -66,9 +66,9 @@ export default function AgentGroupsPage() {
   const conversationId = search.get('conversation')
   /**
    * Deliberately composing a new conversation rather than simply having none
-   * selected. Without this the auto-select below would immediately re-open the
-   * newest one, because "nothing selected" is also what a fresh arrival looks
-   * like.
+   * selected. Do not treat that as "nothing selected". The auto-select below
+   * would immediately re-open the newest one, because "nothing selected" is
+   * also what a fresh arrival looks like.
    */
   const startingNew = search.get('new') === '1'
   // Read inside callbacks that must not depend on the current query string.
@@ -712,10 +712,9 @@ export default function AgentGroupsPage() {
                     onUseInNewThread={startConversation}
                     onSent={() => {
                       setRoomSetupTargets([])
-                      // Consumed. Without this the pick outlives the thread it
-                      // was made for: pressing "New" puts `currentConversation`
-                      // back to null and the same reference silently attaches
-                      // to a second thread nobody picked it for.
+                      // Consumed. Do not leave the pick on the draft. Pressing "New" puts
+                      // `currentConversation` back to null and the same reference
+                      // silently attaches to a second thread nobody picked it for.
                       if (referencesForThisThread) setPendingReferences(null)
                       if (referencesForThisThread) setDraftConversationId(null)
                     }}

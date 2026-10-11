@@ -589,8 +589,8 @@ export function ConversationSurface({
   useEffect(() => {
     // A terminal Run this surface never streamed — it failed, was cancelled
     // or reaped, or the page was simply opened after it finished. Its turn is
-    // read once: an Agent reply renders *as* its turn, so without this every
-    // reply on a reloaded page would be a plain bubble with its work gone,
+    // read once. An Agent reply renders *as* its turn. Do not skip that read.
+    // Every reply on a reloaded page would be a plain bubble with its work gone,
     // and a Run that failed after writing its reply would lose both its steps
     // and the fact that it failed.
     for (const run of Object.values(runs)) {

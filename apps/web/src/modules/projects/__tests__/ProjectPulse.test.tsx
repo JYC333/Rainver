@@ -113,9 +113,9 @@ describe('Project Pulse', () => {
   })
 
   it('points at Files & Code while no Folder is connected, and stops once one is', async () => {
-    // The only place a Folder is connected is Files & Code, two clicks away;
-    // without this an Agent quietly works in a managed workspace instead of
-    // the Project's code. A Folder is optional, so it is a quiet line.
+    // The only place a Folder is connected is Files & Code, two clicks away.
+    // Do not leave the missing Folder unsaid. An Agent would work in a managed
+    // workspace instead of the Project's code. A Folder is optional, so it is a quiet line.
     renderPulse({ ...overview, has_project_folder: false } as unknown as ProjectOverview)
     expect(await screen.findByTestId('pulse-needs-folder')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Connect a Folder' }))

@@ -79,9 +79,9 @@ export async function appendMarginalia(
   const target = input.targetId
     ? await deps.requireVisibleSpaceObject(db, identity, input.targetId, "Capture target not found")
     : null;
-  // Visible is not the same as in scope. Without this an object belonging to
-  // one Project could be annotated under another the caller happens to write,
-  // producing a note binding and a cross-Project link no surface can produce.
+  // Visible is not the same as in scope. Do not annotate an object under a
+  // Project it does not belong to. That would write a note binding and a
+  // cross-Project link no surface can produce.
   if (target && !(await objectIsInProject(db, identity, target.id, target.primary_project_id, input.projectId))) {
     throw new HttpError(422, "Capture target does not belong to this Project");
   }

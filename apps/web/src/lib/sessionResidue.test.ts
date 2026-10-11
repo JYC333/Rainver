@@ -56,9 +56,9 @@ describe('clearAuthenticatedBrowserState', () => {
   })
 
   it('clears a key nobody has thought of yet', () => {
-    // The point of a keep-list. A delete-list retained every new content key
-    // until somebody remembered to add its prefix, and nobody found out until
-    // the next person on that machine saw it.
+    // A keep-list. Do not switch to a delete-list. A new content key would
+    // stay until its prefix was added, and the next person on that machine
+    // would still see it.
     localStorage.setItem('rainver:some-feature-nobody-has-written-yet:p1', 'a note body')
     sessionStorage.setItem('brand.new.pane.state', 'thread-7')
     clearSessionResidue()

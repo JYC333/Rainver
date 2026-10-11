@@ -35,8 +35,8 @@ if (typeof document !== 'undefined') {
   }
 
   // jsdom has no ResizeObserver, and the conversation view's stick-to-bottom
-  // scrolling constructs one on mount — without this, every conversation
-  // surface fails to render at all.
+  // scrolling constructs one on mount. Do not leave it undefined. Every
+  // conversation surface fails to render.
   //
   // It reports once on `observe`, rather than never, so a component that
   // sizes itself from the observer sees the same first callback it would in a
