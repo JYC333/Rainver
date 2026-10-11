@@ -91,9 +91,9 @@ const SETUP_STEPS = ['Sources', 'Initial import', 'Execution'] as const
 function SemanticQueryColumns({ query }: { query: ResearchQueryAttempt['semantic_query'] }) {
   // core and qualifiers combine with different boolean operators (core is
   // OR'd into one topic clause, qualifiers are AND'd on top of it — see
-  // providers/arxiv.ts) and must stay visually separate: merging them under
-  // one "must match" label hides that dropping the one AND'd qualifier (not
-  // any of the OR'd topic terms) is what swings the hit count the most.
+  // providers/arxiv.ts). Do not merge them under one "must match" label.
+  // An AND'd qualifier and an OR'd topic term change the result in different
+  // directions.
   const columns: Array<{ key: string; title: string; concepts: ResearchSemanticConcept[] }> = [
     { key: 'topic', title: 'Topic (any of)', concepts: query.core },
     { key: 'broaden', title: 'Broadens with (any of)', concepts: query.expansions },

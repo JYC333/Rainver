@@ -376,12 +376,10 @@ export class AdaptiveQueryOrchestrator {
    * import will actually request.
    *
    * Evaluation previews 15 results; the import asks for 100. Those are
-   * different requests to the provider, and a query can pass one while failing
-   * the other — a broad boolean arXiv query answered 200 at 15 rows and 5xx at
-   * 100, so a plan validated here imported nothing, and Research went on to
-   * report "no relevant sources" over a corpus that was missing that provider
-   * entirely. Verifying the shape that will be used is the only way the gap is
-   * visible before the import runs.
+   * different requests to the provider, and a query can pass the preview
+   * while the import fails. Do not treat a passing preview as a successful
+   * import. The page size the import will request is what has to be checked
+   * before the import runs.
    *
    * A failure here is recorded, not fatal: the import narrows its page size on
    * exactly this failure and may still succeed. The warning exists so the
