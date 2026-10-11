@@ -515,8 +515,8 @@ Source credential are not implemented (API/service layer only).
 ## Schema in the baseline
 
 The declarative pipeline and Source Recipe schema live in
-`server/migrations/0000_baseline.sql`. Later schema changes are ordered
-incremental migrations after `0001`.
+`server/migrations/0000_baseline.sql`. Later schema changes are new numbered
+files after that baseline. There is no `0001`. Do not recreate one.
 
 `source_connections` has these implementation columns:
 

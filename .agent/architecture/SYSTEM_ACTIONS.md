@@ -655,8 +655,7 @@ materialization plus strategy activation in one call) →
 `ProjectResearchOrchestrator.startInitialIntake`. Providers, candidate budget,
 and execution model are server-derived defaults, not caller-supplied — the
 action's only input is `thread_id` (plus an optional `intent_note`);
-auto-selecting these per invocation is not implemented
-([backlog.md](../plans/backlog.md) R1.2). The Manager Agent chooses
+auto-selecting these per invocation is not implemented. The Manager Agent chooses
 between `agent.delegate` (an ad hoc specialist investigation) and this action
 (a tracked, monitored acquisition Workflow) from context; the two are not
 mutually exclusive and no server code intercepts a phrasing to force one.

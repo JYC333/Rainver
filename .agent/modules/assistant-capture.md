@@ -3,7 +3,10 @@
 ## Status
 **IMPLEMENTED** — capture entry and four destinations
 (`server/src/modules/capture/`, `apps/web/src/components/FloatingQuickCapture.tsx`).
-Voice, file/image, and browser-extension capture are not implemented.
+The Capture page and `POST /api/v1/activity/upload` store a file or a voice memo
+as an Activity record (`file_capture` / `voice_capture`). The floating composer
+does not accept a dropped file; that path stays text and URL. There is no
+browser-extension capture.
 
 ## Purpose
 Records thoughts and clips as they happen. Raw input becomes an
@@ -92,7 +95,9 @@ modules, not by this capture entry.
 - `server/src/modules/captureFiling/` — filing a personal capture into a Project
 - `server/src/modules/agents/` — assistant agent/template behavior
 - `server/src/modules/memory/` — memory proposal/reflection behavior
-- `apps/web/src/components/FloatingQuickCapture.tsx` — the single capture entry
+- `apps/web/src/components/FloatingQuickCapture.tsx` — the floating composer
+- `apps/web/src/modules/capture/CapturePage.tsx` — the Capture page, including file and voice upload
+- `server/src/modules/activity/routes.ts` — `POST /api/v1/activity/upload`
 - `apps/web/src/contexts/CaptureContext.tsx` — how a Project
   and an Area declare what a capture may attach to
 
