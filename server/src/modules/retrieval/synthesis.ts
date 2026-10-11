@@ -11,9 +11,9 @@ import type { RevalidatedObject, ScoredCandidate } from "./types.js";
 /**
  * Context Brief synthesis.
  *
- * Ask Space is the context layer over raw retrieval: a synthesized, CITED
- * answer plus a gap analysis ("what the compiled context does not cover"). rainver
- * mirrors that as a brief, with the same safety contracts as the reranker:
+ * Ask Space is the context layer over raw retrieval: a synthesized, cited
+ * answer plus a gap analysis ("what the compiled context does not cover").
+ * The brief uses the same safety contracts as the reranker:
  *
  *  - **revalidate-before-synthesis (invariant 1/2).** The synthesizer only ever
  *    sees candidates that already passed the adapter `revalidate` gate, and their

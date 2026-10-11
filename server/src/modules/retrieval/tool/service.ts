@@ -10,9 +10,9 @@ import type { RetrievalSearchService } from "../index.js";
  * Rainver-controlled retrieval tool surface.
  *
  * Managed runs do not expose retrieval as an external MCP server. Vendor tools
- * are adapters, never the system of record:
- * instead this in-platform service is the governed entrypoint a managed run uses
- * to call retrieval / Context Brief. Its governance contract:
+ * are adapters, never the system of record. This in-platform service is the
+ * governed entrypoint a managed run uses to call retrieval / Context Brief.
+ * Its governance contract:
  *
  *  - **Viewer is the run's instructing user, not the agent.** The agent cannot
  *    choose whose visibility it searches under — the viewer is always

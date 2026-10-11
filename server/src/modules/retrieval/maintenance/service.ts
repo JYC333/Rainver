@@ -10,12 +10,10 @@ import {
 import type { RevalidatedObject } from "../types.js";
 
 /**
- * Retrieval maintenance scan — the "context review cycle" review-candidate generator.
+ * Retrieval maintenance scan (the read-only context review cycle).
  *
- * The maintenance loop dedups pages, fixes links, flags contradictions, etc.
- * rainver implements the low-risk, derived-only half as a READ-ONLY scan
- * over the retrieval projection that emits BATCHED review candidates. Hard rules
- * (invariant 6):
+ * A read-only scan over the retrieval projection that emits batched review
+ * candidates. Hard rules (invariant 6):
  *
  *  - **Never a canonical write.** The scan reads only the derived `retrieval_*`
  *    tables and returns findings; it never touches knowledge/memory tables. Acting
