@@ -186,7 +186,7 @@ Dynamic tool presentation has two bounded exceptions:
   cannot be a static Zod at the definition at all.
 - **`agent.delegate`** does have a real static registry Zod
   (`RuntimeDelegationOutputItemSchema`, shared with Path B's structured
-  output validation, D8), but its hand-written tool definition
+  output validation), but its hand-written tool definition
   (`agentDelegateToolDefinition()`, same file) supplies the
   model-facing `target_agent_id` enum populated from that
   Run's live room roster — a per-request enrichment

@@ -352,7 +352,7 @@ describe("agentGroupsRuntimeDelegationMaterializer", () => {
       run_group_id: "group-1",
       root_run_id: "run-root",
       // Path A's own grant check (`SystemActionDispatcher`) and Path B's
-      // (this materializer, D8) read the same snapshot — a run granted
+      // (this materializer) read the same snapshot — a run granted
       // `agent.delegate` here is what most of these tests exercise; the
       // "not granted" test below overrides this to an empty grant list.
       permission_snapshot_json: { tool_grants: [{ action_id: "agent.delegate" }] },
