@@ -12,9 +12,8 @@ import type {
  * reaching Land closes a round rather than finishing the Thread and there is
  * no such thing as regression here.
  *
- * Stages are derived, never stored. A stage field would be one more thing a
- * user has to maintain, which is the class of problem this surface exists to
- * remove.
+ * Stages are derived, never stored. Do not add a stage field. It would be
+ * one more thing a user has to maintain.
  *
  * The kind→stage vocabulary (`InquiryStageId`, `INQUIRY_STAGE_ORDER`,
  * `INQUIRY_STAGE_LABELS`, `INQUIRY_STAGE_HELP`, `INQUIRY_STAGE_FOR_KIND`,
@@ -121,8 +120,6 @@ function hasStageProduct(stage: StageId, input: StageInput): boolean {
       // happening. Do not treat it as done. The Thread would move into Digest
       // with nothing to digest, and the reader would be told to read evidence
       // that has not arrived.
-      // Acquire exists to yield evidence, and a search still running has not
-      // yielded any.
       const arrivedThisRound = signals.some(
         signal => !roundStartedAt || signal.created_at > roundStartedAt,
       )

@@ -90,8 +90,8 @@ export default function ProjectAreaLayout() {
   // the shell's composer may offer as a destination; Areas that know what they
   // are currently about declare that object separately.
   // Open by default: an Area a person cannot see is one they will not
-  // remember exists, and the dropdown exists to shorten the list, not to hide
-  // it. Their choice is remembered per browser.
+  // remember exists. The dropdown shortens the list. Do not use it to hide
+  // an Area. Their choice is remembered per browser.
   const [areasOpen, setAreasOpen] = useState(() => {
     try { return localStorage.getItem('project.areas.open') !== 'false' } catch { return true }
   })
