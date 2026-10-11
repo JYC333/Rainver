@@ -214,7 +214,7 @@ capabilities. Host-bound profiles do not require a server ModelProvider or
 server runtime-tool installation: the paired host owns the CLI login and
 runtime process. For input admission, an unbound Host-owned ACP profile uses
 the installation's initialize prompt capability as the image authority; a
-Provider-bound profile still requires the conservative runtime/Provider-model
+Provider-bound profile requires the conservative runtime/Provider-model
 intersection. Room and direct chat dispatch apply the profile's owner-only
 trigger and record the real Agent id on the remote Run.
 

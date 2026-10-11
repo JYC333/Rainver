@@ -500,7 +500,7 @@ are readable/writable only through `/rooms/{roomId}/conversations/*`.
 - An unauthorized request must not return any message content.
 - Room `room_display = internal` instructions stay off the human transcript,
   the Project conversation list preview/count, and conversation summaries.
-  Agent replay still reads them.
+  Agent replay reads them.
 
 Enforcement is at the SQL query layer: `Session.space_id == space_id`,
 `Session.user_id == user_id`, and `Session.room_id IS NULL` are all applied as
@@ -981,7 +981,7 @@ helper.** A list must not answer something the detail page refuses.
 - **Room transcript** — every reader of `messages` that answers a *person*
   uses `visibleRoomTranscriptSql`, applied unconditionally rather than behind a
   flag a caller could pass `false` to. Agent replay and continuation lookups
-  still read the internal rows through `visibleMessagePathSql`, which is the
+  read the internal rows through `visibleMessagePathSql`, which is the
   point of storing them in order. A domain-event continuation is stored as a
   `user_instruction` so replay sees it in order, and is marked
   `room_display = internal`, so the Room transcript, the pick-by-id surface,

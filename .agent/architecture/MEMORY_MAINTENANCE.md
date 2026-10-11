@@ -401,8 +401,8 @@ the current applier. Admin/member review applies only to explicit shared
 
 It is enforced through the normal `proposal.apply` path. Accepting the packet
 does not bypass Memory write governance: it only acknowledges the packet and may
-create pending child Memory archive/update proposals, which still require their
-own normal proposal review/apply step before any canonical Memory mutation.
+create pending child Memory archive/update proposals, which require their
+own proposal review/apply step before any canonical Memory mutation.
 
 ## Tests
 

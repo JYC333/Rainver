@@ -82,8 +82,8 @@ Proposals are the product review and application boundary for durable mutations.
   child pending `memory_archive` proposals for supported duplicate findings and
   child pending `memory_update` proposals for supported stale, thin, lifecycle,
   archived-state, project-scope, source-policy, and contradiction findings. It
-  does not write canonical Memory directly; child proposals still require their
-  own normal review/apply step.
+  does not write canonical Memory directly; child proposals require their
+  own review/apply step.
 - Retrieval maintenance and diagnostics packet apply records creator-owned
   review of owner-private retrieval work. A space admin cannot accept another
   user's private packet through the current appliers. Retrieval maintenance

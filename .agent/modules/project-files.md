@@ -82,7 +82,7 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   and an online paired Host.
 - Frontend must not access arbitrary server paths — all file access via
   `PgProjectFolderRepository` / `PgRunSandboxManager`.
-- Agent code changes still use the `code_patch` proposal flow. A person using
+- Agent code changes use the `code_patch` proposal flow. A person using
   Files & Code edits a bounded text file in a recovery draft; Save to Folder
   stores the preimage in `project_file_revisions` and then removes only the exact
   saved draft version. There is no direct browser-content write or user-facing
