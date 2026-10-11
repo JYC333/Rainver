@@ -7,9 +7,8 @@ import { users } from "./auth.js";
  * A reader's interest profile.
  *
  * Per user and owner-private: it is a model of one person, and in a shared
- * space no other member may read it. The row itself is deliberately thin — it
- * exists to anchor topics and candidates and to carry settings, not to cache
- * anything derivable.
+ * space no other member may read it. The row anchors topics and candidates
+ * and carries settings. Do not cache anything derivable on it.
  *
  * There is no stored coverage distribution. Coverage is computed from
  * annotations joined to this user's read state, so it cannot drift out of step
