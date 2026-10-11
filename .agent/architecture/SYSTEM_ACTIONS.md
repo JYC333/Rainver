@@ -34,8 +34,7 @@ from how Rainver's own dispatched agents call back.
 
 ## Dispatch boundary
 
-Three layers, each owning exactly one concern (action authority consolidation
-plan):
+Three layers, each owning exactly one concern:
 
 - **`SystemActionGateway`** (`systemActions/gateway.ts`) is the actor-neutral
   core: registry lookup, actor and visibility checks, idempotency validation,

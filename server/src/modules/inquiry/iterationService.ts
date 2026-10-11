@@ -756,7 +756,7 @@ export class InquiryIterationService {
          WHERE object_id = $4 AND space_id = $5`,
         [nextPriority, nextAttention, nextBlockedReason, threadId, identity.spaceId],
       );
-      // Ownership is a root column now (B12D), so reassignment writes there.
+      // Ownership is a root column (B12D). Reassignment writes there.
       await db.query(
         `UPDATE space_objects SET owner_user_id = $1, updated_at = $2 WHERE id = $3 AND space_id = $4`,
         [nextOwner, now, threadId, identity.spaceId],

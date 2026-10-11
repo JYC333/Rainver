@@ -82,12 +82,11 @@ export function registerInquirySystemActionExecutors(
           `This turn already opened ${THREAD_FAN_OUT_PER_TURN} questions. Continue in the next turn, or tell the user what is left to open.`,
         );
       }
-      // Two ways the same question arrives twice, and the proposal path
-      // handled both: the same tool call delivered again (the key), and a
-      // re-planned or re-sampled turn producing the same statement under a
-      // fresh call id (the statement). A duplicate Thread is durable — the
-      // person has to archive it — so both are coalesced here rather than
-      // left to be cleaned up.
+      // The same question arrives twice in two ways: the same tool call
+      // delivered again (the key), and a re-planned turn producing the same
+      // statement under a fresh call id (the statement). A duplicate Thread
+      // is durable — the person has to archive it — so both are coalesced
+      // here. Do not leave the duplicate to be cleaned up.
       const body = input as Record<string, unknown>;
       const statement = typeof body.statement === "string" ? body.statement : "";
       const existing = statement

@@ -30,9 +30,8 @@ interface RelationEdgeRow {
  *
  * Threads are `space_objects` rows and their edges are `object_relations`
  * (ADR 0011 decision 1/3), so this reads the same substrate as every other
- * domain. It still exists as a producer because Inquiry adds domain metadata to
- * each node — lifecycle and attention state — that the generic projection has
- * no reason to know about. It never writes.
+ * domain. This producer adds lifecycle and attention state the generic
+ * projection does not know. It never writes.
  */
 export class InquiryGraphService {
   constructor(private readonly db: Queryable) {}

@@ -103,8 +103,8 @@ const threadColumns = (alias = "t", rootAlias = "so"): string => [
 export const THREAD_COLUMNS = threadColumns();
 
 /**
- * Bumps the root's `updated_at` after a domain-field write. The timestamp lives
- * on `space_objects` now, so a domain UPDATE alone would leave it stale.
+ * Bumps `space_objects.updated_at` after a domain-field write. The timestamp
+ * lives on the root. A domain UPDATE alone would leave it stale.
  */
 export const TOUCH_THREAD_ROOT_SQL = `UPDATE space_objects SET updated_at = $1 WHERE id = $2 AND space_id = $3`;
 
@@ -116,8 +116,7 @@ export const THREAD_FROM = `inquiry_threads t
  * Thread CRUD, working relations, Note links, personal Focus, and Project
  * Inquiry settings. The cognitive Iteration / Definition Revision /
  * work-management commands live in `iterationService.ts` — this file only
- * owns thread identity, structure, and non-cognitive linkage. See plan
- * section 9 and ADR 0011.
+ * owns thread identity, structure, and non-cognitive linkage. See ADR 0011.
  */
 export class InquiryThreadService {
   constructor(private readonly db: Queryable) {}
@@ -344,9 +343,9 @@ export class InquiryThreadService {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       await assertThreadReadable(db, identity, projectId, fromThreadId, "change");
       await assertThreadReadable(db, identity, projectId, toThreadId, "change");
-      // Thread structure is an `object_relations` edge now (ADR 0011 decision
-      // 3). The registry keeps it a direct write: the same words between Claims
-      // are reviewed assertions, and the endpoint-specific declaration is what
+      // Thread structure is an `object_relations` edge (ADR 0011 decision 3).
+      // The registry keeps it a direct write. The same words between Claims
+      // are reviewed assertions. The endpoint-specific declaration is what
       // lets both keep their behaviour.
       assertLinkTypeAllowed({
         linkType: relationKind,
