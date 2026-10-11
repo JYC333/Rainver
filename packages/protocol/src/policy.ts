@@ -1162,7 +1162,7 @@ export const POLICY_ACTION_REGISTRY = [
   // decision to make, not a description of today — which is what `reserved`
   // means here and for the nine other actions that carry it.
   {
-    // NE: raising a passage of a note as a Question. Direct-write, matching
+    // Raising a passage of a note as a Question. Direct-write, matching
     // the Thread create route it calls. Thread structure stays a direct write.
     // Do not move it behind a proposal.
     action: "inquiry.thread.create",

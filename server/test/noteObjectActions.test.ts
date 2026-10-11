@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { entityDefinition } from "../src/modules/ontology/entities.js";
 
 /**
- * NE: the first object-bound actions, and the mechanism `applies_to` exists
+ * Object-bound actions, and the mechanism `applies_to` exists
  * for (ADR 0012 decision 8).
  *
  * All three are user-invoked from a selection. None is `agent_tool` visible.

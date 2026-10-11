@@ -1871,13 +1871,12 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * The notes linking to a non-note object — the other half of N7's "both
-   * ways".
+   * The notes linking to a non-note object.
    *
    * {@link noteLinks} cannot answer this: it is note-keyed on both sides, so
-   * `backlinks` there means "notes linking to *this note*". Asking an evidence
-   * card what notes cite it needs the target to be anything, which is why this
-   * is a separate read rather than a flag on that one.
+   * `backlinks` there means "notes linking to *this note*". An evidence card
+   * asking which notes cite it needs a target that can be anything. This is
+   * that read.
    */
   async notesLinkingToObject(identity: SpaceUserIdentity, objectId: string): Promise<Record<string, unknown>[]> {
     await this.requireVisibleSpaceObject(identity, objectId, "Object not found");
@@ -2159,7 +2158,6 @@ export class PgKnowledgeRepository {
     return result.rows[0] ?? null;
   }
 
-  // Kept for the import path; used by profile-key uniqueness checks.
   /**
    * Ontology surfaces delegate to `PgOntologyRepository`. The public routes stay
    * at `/api/v1/knowledge/`. Moving them would be a client-visible break.

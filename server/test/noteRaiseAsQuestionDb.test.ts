@@ -7,10 +7,9 @@ import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 
-// NE: "raise as a question" turns a passage into an Inquiry Thread and keeps
-// the route back to the note it came from. Without the link the Question would
-// be a retyped sentence with no path to the reasoning behind it, which is the
-// disconnection the whole plan is about.
+// "Raise as a question" turns a passage into an Inquiry Thread and keeps
+// the route back to the note it came from. Do not omit the link. The
+// Question would be a retyped sentence with no path to the reasoning.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

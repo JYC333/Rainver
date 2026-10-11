@@ -476,10 +476,9 @@ export class InquiryThreadService {
     });
   }
 
-  // Deep writing uses the unified Note model — this only
-  // creates the link, never a copy of Note content.
+  // This creates the link only, never a copy of Note content.
   /**
-   * NE: raise a passage of a note as a Question.
+   * Raise a passage of a note as a Question.
    *
    * Composes the two writes that already exist rather than adding a third
    * path: the Thread is created exactly as the Inquiry surface creates one,

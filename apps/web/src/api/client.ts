@@ -2950,7 +2950,7 @@ export const inquiryApi = {
   createThread: (projectId: string, data: Record<string, unknown>) =>
     post<InquiryThread>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads`, data),
   /**
-   * NE: raise a note passage as a Question. Creates the Thread and the link
+   * Raise a note passage as a Question. Creates the Thread and the link
    * back to the note, so the Question keeps a route to its reasoning.
    */
   raiseFromNote: (projectId: string, data: { note_object_id: string; statement: string; kind?: 'question' | 'hypothesis' }) =>

@@ -614,7 +614,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
             className="mt-4 flex-1"
             onChange={scheduleSave}
           />
-          {/* NE: the actions the registry declares for a `note`, scoped to the
+          {/* The actions the registry declares for a `note`, scoped to the
               selection. A note usually holds several ideas, so acting on the
               whole note would promote all of them as one item. */}
           {selection && (

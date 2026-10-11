@@ -52,7 +52,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // NE: raise a passage of a note as a Question — creates the Thread and the
+  // Raise a passage of a note as a Question — creates the Thread and the
   // link back to the note in one call, so the Question keeps a route to the
   // reasoning it came from.
   app.post("/api/v1/projects/:projectId/inquiry/threads/from-note", async (request, reply) => {

@@ -702,9 +702,9 @@ function FolderRow({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          {/* NF: navigation both ways. The Notebook already links a note back
-              to its place in this tree ("Open in Notes"); this is the return
-              trip, so a project-backed folder is not a dead end. */}
+          {/* The Notebook already links a note back to its place in this
+              tree ("Open in Notes"). This is the return trip, so a
+              project-backed folder is not a dead end. */}
           {node.project_id && (
             <DropdownMenuItem asChild>
               <Link to={`/projects/${node.project_id}/research`}>
