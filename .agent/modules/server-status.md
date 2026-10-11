@@ -3,7 +3,7 @@
 ## Status
 **API ONLY** — `GET /api/v1/status` reports database, scheduler, per-task
 liveness, jobs worker, and queue depth. There is no `RuntimeStatusBar` in
-the shell and no provider/adapter/capability/sandbox probes.
+the shell and no provider, adapter, or capability probes.
 
 ## Purpose
 Operational health of the components the server can observe from its own
