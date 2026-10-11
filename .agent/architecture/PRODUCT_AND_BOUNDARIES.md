@@ -149,7 +149,7 @@ capture / trigger
 | Project Folder human File-page save | Draft-backed Save to Folder + `project_folder.apply_patch` audit + `PathPolicy` + optimistic draft/Host precondition; history is restore-as-draft only | Active |
 | Sandbox path access | Execution Project Folder boundary, worktree root validation | Active |
 | Deployment / deployer calls | Instance-admin job records + internal-token pull channel; operator-only deployer socket allowlist | Active |
-| Automatic system self-evolution | Removed; Evolution runs require an explicit Agent | Removed |
+| Automatic system self-evolution | No privileged Evolver Agent. An Evolution run names an explicit Agent | Absent |
 | Automation fire | Manual and scheduled Automations plus native targets; no external webhook marketplace | Active |
 | Connector marketplace | Not present; Sources connections/recipes are the ingestion path | Absent |
 

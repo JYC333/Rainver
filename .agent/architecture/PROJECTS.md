@@ -1435,8 +1435,9 @@ Resolution adopts the already-revised Thread without rewriting it.
 `projects.current_focus` is presentation metadata and never participates in
 this alignment or resolution path. Monitoring classifies every new comparison
 into an Evidence Signal: routine support auto-attaches; contradiction and new
-direction are material and consolidate into review Candidates. The removed
-synthetic `project_research_workflow` bridge Thread is not a second authority.
+direction are material and consolidate into review Candidates. Do not add a
+synthetic `project_research_workflow` Thread. The pinned Inquiry Thread is
+the Question authority.
 
 ## Knowledge promotion source contract
 
