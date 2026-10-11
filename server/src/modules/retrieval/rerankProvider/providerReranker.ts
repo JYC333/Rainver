@@ -40,9 +40,9 @@ interface ProviderRerankerOptions {
  * resilient: any provider failure, missing provider, or unparseable response
  * returns `null` so search degrades to the deterministic fused order.
  *
- * Egress: the same reserved `retrievalEgressAllowed` seam the embedding backfill
- * consults gates each candidate before it is sent, so a future memory-egress
- * deny excludes a row from BOTH embedding and reranking without re-architecting.
+ * Egress: `retrievalEgressAllowed` gates each candidate before it is sent, the
+ * same predicate the embedding backfill uses. Do not add a second egress
+ * check for rerank. A deny applies to both.
  */
 export class ProviderReranker implements Reranker {
   private readonly providerId: string | null;

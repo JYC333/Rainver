@@ -1572,9 +1572,9 @@ export class RetrievalSearchService {
     if (!this.reranker || visible.length === 0) return visible;
     const windowSize = rerankWindowSize(visible.length, maxResults, this.rerankConfig);
     // Build from the live-revalidated title/text only — never the projection chunk
-    // (invariant 1). `visible` should always have a cache entry (collectVisible kept
-    // exactly those); the guard is defensive so a future cache change can't leak the
-    // projection text or throw mid-search.
+    // (invariant 1). `visible` should have a cache entry (`collectVisible` kept
+    // exactly those). Do not read the projection when the cache entry is missing.
+    // That leaks projection text or throws mid-search.
     // Token budget: truncate per-candidate text and stop sending text once the
     // running total reaches the payload cap, so a few very long revalidated texts
     // cannot blow the provider payload. Truncates only already-visible text.

@@ -26,7 +26,7 @@ export interface RankingSignalConfig {
   /**
    * Floor-ratio gate: metadata boosts also require the candidate's fused
    * score to be at least this fraction of the TOP fused score of the visible set.
-   * 0 disables. The absolute `metadataBoostFloor` remains as a secondary guard.
+   * 0 disables. The absolute `metadataBoostFloor` is a secondary guard.
    * `topScore` is the max over already-revalidated/visible candidates only, so it
    * never leaks a hidden object's existence — it just makes the floor adapt to the
    * result-set scale instead of being a fixed absolute number.
