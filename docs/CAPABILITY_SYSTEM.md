@@ -7,16 +7,13 @@
 
 ## What is a capability?
 
-A capability is a versioned, self-describing unit of agent behaviour.
-It is not just a prompt — it is a folder containing:
+A product capability is a definition owned by
+`server/src/modules/capabilities/`. The YAML under `catalog/capabilities/`
+is a read-only diagnostic catalog. It is not the product capability path.
+Do not execute a catalog manifest.
 
-```
-capabilities/<capability-id>/
-├── capability.yaml     Manifest (required)
-├── README.md           Human docs (optional)
-├── prompts/            Prompt assets (optional)
-└── tests/              Capability tests (optional)
-```
+A catalog directory may hold `capability.yaml`, a README, and prompt files.
+Those files are metadata.
 
 ## capability.yaml fields
 
@@ -44,12 +41,11 @@ outputs:
     - research_intake.result.v1
 ```
 
-Capability manifests are catalog metadata today. `entrypoint.type: none` means
-the capability is discoverable but not directly executable by a capability
-runtime. A server-native capability executor goes through
-`server/src/modules/runtimeAdapters` and is guarded like any other runtime
-adapter. Shell commands, remote code loading, broad filesystem access, and
-subprocess execution are not supported.
+`entrypoint.type: none` means the catalog entry is not directly executable.
+The `capability` runtime key is `implementation_status: "planned"` and is not
+enabled. Do not route a catalog manifest through `runtimeAdapters`. Shell
+commands, remote code loading, broad filesystem access, and subprocess
+execution are not supported.
 
 ## Catalog
 
@@ -85,12 +81,12 @@ third-party server code, write active memory, or auto-enable capabilities.
 Imported skills are normalized and risk-scanned before any conversion into
 Rainver capability candidates.
 
-## Built-in capabilities
+## Catalog entries
 
-| ID | Purpose |
-|---|---|
-| `memory.reflect` | Analyze sessions, generate memory proposals |
-| `capture-memory-extraction` | Extract memory candidates from raw capture and produce proposal-first memory updates |
+`catalog/capabilities/` holds `memory.reflect` and
+`capture-memory-extraction`. They are manifest metadata. Session reflection
+(`POST /api/v1/sessions/:sessionId/reflect`) writes a `memory_create`
+proposal from the recent transcript. It does not run `memory.reflect`.
 
 ## Execution
 

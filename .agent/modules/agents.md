@@ -639,10 +639,11 @@ is resolved per conversation binding. It also anchors soft Assistant **preferenc
 (`agent.default_assistant.settings`) without allowing those preferences to change the core prompt
 or hard policy.
 
-Memory reflection (`POST /sessions/{id}/reflect`) is an explicit **internal service**
-(the memory consolidation/reflection path via the `memory.reflect` capability) — it does not run
-through a concrete built-in agent. The `memory_reflector` template is the factory for users who
-want a standalone reflection Agent instance.
+Memory reflection (`POST /api/v1/sessions/:sessionId/reflect`) writes a
+`memory_create` proposal from the recent transcript. It does not run a
+capability or a built-in Agent. The `memory_reflector` template is the factory
+for a standalone reflection Agent. Do not route that request through
+`memory.reflect`.
 
 Agent runtime tests exercise ACP or inject a narrow test execution port. The
 planned `capability` entry is not an implemented no-credential Agent runtime.

@@ -406,8 +406,8 @@ Task's `role = 'output'` artifacts. A dispatched CLI Run's files arrive
 without a type. The declaration names what a file is. Do not close from the
 anonymous files alone. The file itself is collected afterwards, and a declaration
 whose file never arrived is reported into the Task's stream rather than
-dropped. It is granted only where a declaration is applied, which is the
-remote-host path (`SYSTEM_ACTIONS.md`).
+dropped. It is granted only for `trusted_host` (`SYSTEM_ACTIONS.md`).
+Do not grant it on a `sandboxed` Run.
 
 They are the smallest set that lets an Agent advance work at all: name a piece
 of it, say what happened, give it to someone else, move it through its Loop,
