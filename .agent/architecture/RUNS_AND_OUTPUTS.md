@@ -186,12 +186,11 @@ detail to both.
 - `output_text` alone is display output and does not create an Artifact or
   Proposal.
 - Durable mutations are review-gated; run execution does not auto-apply proposals.
-- Future Knowledge generation from run output must follow Run/Artifact -> `knowledge_*`
-  proposal -> human acceptance -> active KnowledgeItem. Run output must not
-  directly create active Knowledge or Memory.
-- Knowledge source monitoring is a future evaluator. Current Knowledge proposal
-  apply relies on explicit proposal approval and the `proposal.apply` policy
-  gate, not on source-monitoring classification.
+- Run output does not directly create active Knowledge or Memory. A Knowledge
+  write from run output goes through a `knowledge_*` proposal and human
+  acceptance.
+- Knowledge proposal apply uses proposal approval and the `proposal.apply`
+  policy gate. It does not classify through source monitoring.
 
 ## Materialization
 

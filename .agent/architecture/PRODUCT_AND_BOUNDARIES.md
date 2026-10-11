@@ -94,7 +94,7 @@ capture / trigger
 
 - Memory is agent context. Knowledge is human-browsable, reviewable, relational long-term content.
 - Knowledge items must not automatically enter an accepted Runtime Context Delivery.
-- Promoting Knowledge into Memory must be a separate future proposal flow, not an implicit side effect.
+- A Knowledge write does not create Memory. Do not promote a Knowledge item into Memory as a side effect.
 - Activity, Run, and Artifact are source inputs for Knowledge proposals.
 - Project and Project Folder are contextual associations for Knowledge, not Knowledge content types.
 - Knowledge reads use the canonical content-access policy: active members may

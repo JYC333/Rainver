@@ -369,11 +369,11 @@ after `proposal.apply` allows acceptance, so malformed proposals cannot mutate
 or relate Knowledge the actor cannot read.
 
 Knowledge source monitoring is not complete. The apply service has an explicit
-Knowledge branch in source monitoring to document the boundary, but external or
-untrusted Activity/Artifact-derived Knowledge still needs a future evaluator.
+Knowledge branch in source monitoring to document the boundary. There is no
+evaluator for external or untrusted Activity/Artifact-derived Knowledge.
 
-Knowledge must not automatically enter Memory or Runtime Context. Promotion to
-Memory requires a separate future proposal flow.
+Knowledge must not automatically enter Memory or Runtime Context. A Knowledge
+write does not create Memory.
 
 Run creation, agent run preflight, standalone preflight, and automation policy
 preflight use `engineCheck` directly (non-mutating

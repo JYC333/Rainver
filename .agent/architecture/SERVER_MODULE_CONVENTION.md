@@ -6,8 +6,7 @@
 > [`SERVER_OWNERSHIP.md`](SERVER_OWNERSHIP.md) (owned surfaces and fail-closed gaps).
 
 `server` is the **client-facing backend**. This document
-defines the internal structure every server-owned module follows, so
-future server features are added consistently. DB-persisted API-key storage
+defines the internal structure every server-owned module follows. DB-persisted API-key storage
 is disabled. There is no `api_keys` table.
 
 ## Directory ownership

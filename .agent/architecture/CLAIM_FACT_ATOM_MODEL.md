@@ -4,17 +4,16 @@ Status: current-state architecture. Claims are global
 `space_objects`-backed atoms, and FK-backed `object_relations` is the canonical
 relation graph for Knowledge, Claims, Sources, and Notes.
 
-Deferred product work: frontend claim workspaces, full source monitoring /
-source-drift evaluation, richer Context Brief claim-review UX beyond the
-implemented Claim Candidate Packet, Memory-derived claim extraction, and future
-domain modules such as people/assets/events/tasks.
+There is no frontend claim workspace. Knowledge proposal apply does not run
+source-drift evaluation. Context Brief claim review is the Claim Candidate
+Packet. There is no Memory-derived claim extraction.
 
 `knowledge_items` is the canonical Wiki model, not a generic root object
 table. The implemented backend shape is:
 
 ```
 space_objects
--> knowledge_items / notes / sources / future people/assets/events/tasks...
+-> knowledge_items / notes / sources / people / organizations / and the other registered subtypes
 -> global claims
 -> claim_sources / object_relations
 ```
@@ -33,7 +32,7 @@ Current Knowledge-adjacent tables:
 
 | Table | Current role |
 |---|---|
-| `space_objects` | Common identity/visibility/provenance root for Knowledge items, Notes, Sources, and future core objects. Domain status belongs to the extension tables (B12D). |
+| `space_objects` | Common identity/visibility/provenance root. Domain status belongs to the extension tables (B12D). |
 | `knowledge_items` | Proposal-gated canonical Wiki page extension. Uses `knowledge_kind`; `claim` is not a valid kind. |
 | `knowledge_item_sources` | Wiki item-to-source evidence links. |
 | `notes` | Direct-CRUD working knowledge extension attached to `space_objects`, intentionally separate from governed Wiki items. |
@@ -114,12 +113,11 @@ schema packs.
 There is no `knowledge` table. `knowledge_items` already exists and should keep
 representing governed Wiki content.
 
-### 2. Introduce `space_objects` before broad new domains
+### 2. Durable domain objects are not KnowledgeItem subtypes
 
-Future People, Assets, Events, Tasks, Documents, and similar durable domain
-objects should not be modeled as KnowledgeItem subtypes. They should share a
-common identity/permission layer and then attach domain-specific
-extension tables, each owning its own status (ADR 0012).
+People, organizations, and the other registered `space_objects` subtypes
+attach their own extension tables. Each owns its own status (ADR 0012). Do
+not model them as KnowledgeItem subtypes.
 
 ### 3. Claims must be global, not `knowledge_claims`
 

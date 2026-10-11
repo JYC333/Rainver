@@ -20,8 +20,7 @@ const ReviewScopeSchema = z.enum(["private", "space_ops"]);
 const ConfidenceTierSchema = z.enum(["high", "medium", "low"]);
 
 // Source object types whose text the deterministic pass reads. Activity and
-// artifact rows are review-only anchors unless a future root-object model gives
-// them FK-backed relation endpoints.
+// artifact rows are review-only anchors. They are not FK-backed relation endpoints.
 export const RelationDiscoverySourceTypeSchema = z.enum(["knowledge_item", "note", "activity", "artifact"]);
 export type RelationDiscoverySourceType = z.infer<typeof RelationDiscoverySourceTypeSchema>;
 

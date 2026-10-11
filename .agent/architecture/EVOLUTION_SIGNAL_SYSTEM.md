@@ -27,7 +27,7 @@ runs and unrelated proposals do not create orphan evolution signals.
 | Summed `token_usage_events.estimated_cost_usd` reaches 80% of `contract_snapshot_json.max_cost` | `run_cost_threshold` | `PostRunFinalizationService` + `PgUsageRepository` |
 | Observed duration reaches 80% of `contract_snapshot_json.max_duration_seconds` | `run_latency_threshold` | `PostRunFinalizationService` |
 | A proposal is rejected | `proposal_rejected` | `PgProposalApplyService` post-commit callback (including Bundle reject) |
-| A future proposal status requests changes | `proposal_request_changes` | Emitter rule is ready; no such current status exists |
+| No proposal status requests changes | `proposal_request_changes` | The emitter rule exists; no such status exists |
 | A deterministic verification check fails | `verification_failed` | Emitted from finalized RunEvaluation verification facts; the verification engine owns result production |
 | A supervisor records an outcome | `supervisor_outcome` | `PgRunSupervisor` emits after its durable decision |
 | An autonomous Run exceeds its review wait bound | `supervisor_outcome` | `AutonomyRecoveryService` emits after cancellation and operational alert persistence |

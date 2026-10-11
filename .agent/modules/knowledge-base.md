@@ -316,9 +316,9 @@ this as current product scope, not as missing backend support.
 | Runtime use | Eligible only through governed Runtime Context acquisition | Must not automatically enter an accepted Delivery |
 | Shape | Scoped context entry | Typed item with versioning and relations |
 | Write path | Proposal -> approval -> active memory | Proposal -> approval -> active KnowledgeItem |
-| Promotion | N/A | Future separate proposal, e.g. `knowledge_promote_to_memory` |
+| Promotion | N/A | A Knowledge write does not create Memory. |
 
-Knowledge items must not be auto-injected into runtime context. Promoting Knowledge into Memory is a separate flow and is not a Knowledge write.
+Knowledge items must not be auto-injected into runtime context. A Knowledge write does not create Memory.
 
 ## Retrieval Substrate
 

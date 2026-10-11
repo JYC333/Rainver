@@ -916,11 +916,11 @@ create `TaskArtifact` rows as a side effect.
 
 ### RunReflection
 
-`RunReflection` is not automatically created by run or task finalization. It is populated externally (import, manual entry, or future evaluator output) and acts as the source for `ReflectionProposalBuilder`.
+The `run_reflections` table exists. Run and task finalization do not write it, and no server module inserts a row.
 
 ### Learning Loop Apply Path
 
-`ReflectionProposalBuilder` creates pending proposal candidates from a `RunReflection`. Accepted proposals are applied through `ProposalApplyService`.
+Accepted proposals are applied through `ProposalApplyService`.
 
 **Supported apply types (from reflection):**
 - `follow_up_task` — the proposal is always drafted, carrying the Run's
