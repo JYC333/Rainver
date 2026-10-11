@@ -58,7 +58,7 @@ const TEMPLATE_LOCK_KEY = 7263123498013;
 function migrationsFingerprint(dir: string): string {
   const hash = createHash("sha256");
   // The shared template models the release that is still running while an
-  // offline maintenance migration is staged. Phase-specific DB tests create
+  // offline maintenance migration is staged. Tests of that migration create
   // an empty database and apply the full chain explicitly.
   for (const file of loadMigrations(dir)) {
     if (requiresMaintenance(file.sql)) continue;

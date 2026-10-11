@@ -853,8 +853,8 @@ describe("the boundaries around an Agent's own memory", () => {
     if (!db.available) return;
     // A delegated Run carries `delegation`, but the question is whether a
     // person asked — and for a delegated Run the answer is on its root.
-    // Reading the raw column let Alice's turn apply a persona change directly
-    // by asking one Agent to ask another.
+    // Do not read the raw column. One turn could apply a persona change by
+    // asking one Agent to ask another.
     const delegated = randomUUID();
     await db.pool.query(
       `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, project_id, root_run_id, instructed_by_user_id, permission_snapshot_json, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)

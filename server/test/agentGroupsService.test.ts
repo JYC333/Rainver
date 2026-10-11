@@ -104,9 +104,9 @@ class AgentGroupServiceDb {
       // two unrelated queries also end in, so an unmodelled path still reaches
       // the fallback that throws instead of being silently allowed; and it
       // must not answer for a query that merely *embeds* the predicate. The
-      // delegation reads now carry the Room term inline, and this arm answered
-      // them with `{ allowed: true }`, which their callers read as one row of
-      // their own shape — a policy-record list of `[undefined]`.
+      // delegation reads carry the Room term inline. Do not answer them with
+      // `{ allowed: true }`. Their callers would read that as one row of their
+      // own shape — a policy-record list of `[undefined]`.
       return { rows: [{ allowed: true } as Row], rowCount: 1 };
     }
     if (sql.includes("FROM runs r")) {

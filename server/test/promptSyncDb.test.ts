@@ -15,7 +15,7 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 // be idempotent, must never overwrite an existing immutable version, and
 // must add a new version + move current_system_version_id when manifest
 // content changes. resolvePrompt must resolve a synced built-in and render
-// it; the M1 read-only facade must surface what sync wrote.
+// it, and the prompt list must surface what sync wrote.
 
 const REAL_CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
 const SPACE = "33333333-1111-4111-8111-111111111111";
@@ -444,7 +444,7 @@ describe("resolvePrompt (real Postgres)", () => {
   });
 });
 
-describe("M1 facade surfaces what M2 sync wrote (real Postgres)", () => {
+describe("prompt list surfaces a built-in synced by syncBuiltinPrompts (real Postgres)", () => {
   it("lists and reads back a built-in prompt asset synced by syncBuiltinPrompts", async () => {
     if (!db.available) return;
     await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);

@@ -411,9 +411,9 @@ describeWithPostgres("bounded periodic digest launch", () => {
     const runId = launched.launched_run_ids[0]!;
     await dispatchAutonomyRun(runId);
     // Finalization runs this reconciler after the Supervisor's decision, so it
-    // sees a failed child already held for review (or requeued). Settling then
-    // marked the candidate failed while the Run could still finish, and the
-    // next tick relaunched the same facts beside it.
+    // sees a failed child already held for review (or requeued). Do not settle
+    // the candidate failed while that Run can still finish. The next tick
+    // would relaunch the same facts beside it.
     const held = await new PgRunRepository(db.pool).markRunWaitingForReview({
       run_id: runId,
       space_id: SPACE,

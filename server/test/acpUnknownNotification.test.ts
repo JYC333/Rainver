@@ -3,10 +3,8 @@ import { createCliConversationController } from "../src/modules/runs/cliConversa
 
 /**
  * `codex-acp` announces `_auth/status_update` immediately after `initialize`.
- * The controller knew three inbound shapes and failed the whole turn on
- * anything else, so a Room turn to Codex on the built-in host died with
- * "unsupported protocol message" before it ever prompted. The underscore is
- * ACP's own marker for a vendor extension, so more of these are coming.
+ * An inbound shape this controller does not list is ignored. Do not fail the
+ * turn on it. The underscore is ACP's marker for a vendor extension.
  */
 describe("an ACP notification the controller does not recognise", () => {
   const controller = () => createCliConversationController({
