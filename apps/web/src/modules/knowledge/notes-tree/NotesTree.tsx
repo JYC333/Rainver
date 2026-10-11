@@ -40,10 +40,9 @@ const notesTreeCollisionDetection: CollisionDetection = args => {
  * Notes tree wrapper boundary.
  *
  * Keep tree-specific rendering and interactions in this module: folder rows,
- * note rows, keyboard handlers, context menus, drag/drop, and any future
- * third-party tree renderer such as Wunderbaum. The page that renders this
- * component should continue to own APIs, routing, toasts/confirms, tabs, and
- * collection dialogs, passing those behaviors in through callbacks.
+ * note rows, keyboard handlers, context menus, and drag/drop. The page that
+ * renders this component should continue to own APIs, routing, toasts/confirms,
+ * tabs, and collection dialogs, passing those behaviors in through callbacks.
  */
 interface NotesTreeProps {
   collections: NoteCollection[]

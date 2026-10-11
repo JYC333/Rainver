@@ -146,7 +146,7 @@ const streamdownPlugins = { cjk }
  *
  * Streamdown asks this at click time and shows its confirmation modal when the
  * answer is no. An in-app path does not need it — it is this instance — and
- * without the check every `[x](/projects/abc)` a model wrote put a confirmation
+ * without the check every `[x](/projects/abc)` a model wrote would put a confirmation
  * dialog in front of an ordinary piece of navigation. Everything else keeps the
  * modal, which is what an external link in a conversation should get, since the
  * URL was written by a model that may have read someone else's text.

@@ -80,10 +80,10 @@ export function LimitedRoomDialog({ open, projectId, onClose, onOpened }: {
       // Each invitation activates immediately when the Room holds no private
       // specialists, which a Room created a moment ago does not. One failing
       // does not undo the Room: the group exists, and the roster panel is
-      // where a missing person is added.
-      // Whom the server refused, and why. Someone in the Space who is not on
-      // this Project cannot be added to a Room in it — the server says
-      // "Project not found", which read alone is baffling.
+      // where a missing person is added. Record whom the server refused, and
+      // why. Someone in the Space who is not on this Project cannot be added
+      // to a Room in it. The server says "Project not found", which read
+      // alone is baffling.
       const failures: string[] = []
       for (const memberId of selected) {
         try {

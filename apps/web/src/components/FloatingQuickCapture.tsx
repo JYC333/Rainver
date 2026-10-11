@@ -68,7 +68,7 @@ export function FloatingQuickCapture() {
 
   // In a Space with one member there is no team to be divided from, so the
   // "only you / team visible" half of every line is noise. What gets stored is
-  // identical either way — a Space that later gains members needs no migration.
+  // identical either way. Do not migrate rows when the Space gains members.
   // Unknown member count reads as "not solo": the Space list arrives
   // asynchronously, and the wording that may be wrong in the gap is the one
   // that understates sharing.
