@@ -1082,18 +1082,18 @@ seconds while mounted; it does not reload the page or trigger unrelated module
 queries. This is a component-scoped read refresh, not a general browser
 real-time event layer (none exists).
 
-Job dispatch/execution frames (`RemoteHostExecutionAdapter` in
+Job dispatch/execution frames (`RemoteWsCliCommandExecutor` in
 `server/src/modules/runs/remoteHostCliAdapter.ts`): `launch` (server → daemon,
 rendered argv + timeout), `stdin` (server → daemon, one frame per ACP
 JSON-RPC message. Stdin stays open across the session), `output`/`complete`
 (daemon → server, routed through `sharedHostConnectionRegistry`
 (`server/src/modules/hosts/connectionRegistry.ts`) to whichever
 `RemoteWsCliCommandExecutor` call is awaiting that run), `terminate` (server →
-daemon, cancel closures registered the same way `SandboxRunnerCliCommandExecutor`
-registers them for the server-host path). Every adapter (`claude_code`,
-`codex_cli`, `opencode`) can run remotely — all three speak ACP, a
-bidirectional JSON-RPC protocol the duplex `stdin`/`output` frame pair
-carries natively.
+daemon). Cancel closures are registered on that daemon connection. Do not
+register an application-server process. Every `local_cli` adapter
+(`claude_code`, `codex_cli`, `opencode`) is a daemon run, on the built-in host
+or a paired machine. All three speak ACP, a bidirectional JSON-RPC protocol
+the duplex `stdin`/`output` frame pair carries natively.
 
 A `launch` the daemon queues behind another writer of its Location is
 answered with `waiting_for_workspace` (same nonce) before its `launched`; see
@@ -1323,7 +1323,7 @@ server-host semantic-event stream (`tool_call_started`, etc.) and has no
 `assistant_text` or `diagnostic` concept. A remote run does not write that
 table incrementally.
 
-`RemoteHostExecutionAdapter` (`remoteHostCliAdapter.ts`) normalizes and
+`remoteHostCliAdapter.ts` normalizes and
 persists events as stdout/stderr chunks arrive — a `thread_event_sink`
 callback, distinct from the `runtime_event_sink` / `run_events`
 callback, constructed per-run in `orchestrationService.ts` via

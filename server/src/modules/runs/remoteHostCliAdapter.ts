@@ -43,31 +43,21 @@ import {
 } from "./remoteProviderBinding.js";
 
 /**
- * The remote-host counterpart to `executeVendorCliAdapter` (ADR 0016) —
- * deliberately a separate, much smaller function rather than a branch
- * inside it. `executeVendorCliAdapter` is credential- and provider-coupled
- * throughout (grant → sandbox config → provider binding, each with its own
- * cleanup-on-failure path); a trusted remote host gets no server-brokered
- * credential for native login. The canonical Runtime Context Delivery is
- * still prepared by the control plane and sent through ACP. What the two *do* share is the tool
- * surface: both stage the same `rainver` command and Skill and issue the same
- * Run-scoped identity, by design, since a dispatched agent must report back
- * the same way wherever it runs.
- * Forking that function's internals would risk the credential-sensitive
- * server-host path for a feature that shares almost none of its logic. The
- * two functions share only genuinely pure pieces: spec lookup and argv
- * rendering. Canonical Runtime Context Delivery is projected into the one
- * ACP prompt channel; ACP protocol events are consumed by the conversation
- * controller on both paths, not parsed from vendor stdout.
+ * CLI execution for a daemon Run (`executeRemoteHostCliAdapter`). Every
+ * `local_cli` adapter is a daemon run: the built-in host or a paired
+ * machine. Do not add a second CLI executor in the server process.
  *
- * Remote-eligible adapters: the `acp` protocol (`claude_code`, `opencode`,
- * `codex_cli`) — driven via
- * `createCliConversationController` over the daemon's duplex
- * `stdin`/`stdin_close` frames, the same controller abstraction the
- * server-host path already uses. `codex_cli`'s adapter binary (`codex-acp`)
- * is a pinned dependency of `packages/host-daemon`, not something a trusted
- * host installs itself — the daemon resolves and spawns its own bundled copy
- * (see `packages/host-daemon/src/execution.ts`).
+ * The control plane prepares Runtime Context Delivery and sends it through
+ * ACP. A host that uses its own login does not receive a server-brokered
+ * credential. This path stages the `rainver` work surface and the Run-scoped
+ * identity.
+ *
+ * `claude_code`, `opencode`, and `codex_cli` speak ACP through
+ * `createCliConversationController` and the daemon's duplex `stdin` /
+ * `stdin_close` frames. `codex_cli`'s adapter binary (`codex-acp`) is a
+ * pinned dependency of `packages/host-daemon`. The daemon resolves and
+ * spawns that bundled copy (`packages/host-daemon/src/execution.ts`). Do not
+ * ask the host to install it.
  */
 /**
  * The daemon knows the real workspace path for a
@@ -90,7 +80,7 @@ interface RemoteHostCliAdapterInput {
   model: string | null;
   resume_session_id: string | null;
   timeout_seconds?: number | null;
-  /** The dispatch's adapter settings; `stall_timeout_seconds` is read from it, as on the server-host path. */
+  /** The dispatch's adapter settings; `stall_timeout_seconds` is read from it. */
   adapter_config?: Record<string, unknown>;
   runtime_event_sink?: (event: RuntimeSemanticEvent) => Promise<void> | void;
   /**
@@ -528,8 +518,8 @@ async function runRemoteHostCliAdapter(
     }
   }
   if (workSurface) {
-    // An empty prompt stays empty: a pointer on its own would start a turn
-    // nobody asked for, the same guard the server-host path makes.
+    // An empty prompt stays empty. A pointer on its own would start a turn
+    // nobody asked for.
     // The daemon substitutes the placeholder with the file's absolute path on
     // that machine (only it knows one); an unexpanded `$RAINVER_SKILL_PATH`
     // is a path a read_file tool cannot open.
@@ -720,8 +710,8 @@ async function runRemoteHostCliAdapter(
     command: argv,
     cwd: null,
     timeout_seconds: timeoutSeconds,
-    // Same rule as the server-host path. A long tool call emits nothing until
-    // it returns. Do not use a third of the run budget.
+    // A long tool call emits nothing until it returns. Do not use a third of
+    // the run budget.
     stall_timeout_seconds: stallTimeoutSeconds(input.adapter_config, timeoutSeconds),
     env: {},
     run_id: input.run.id,
@@ -1016,11 +1006,9 @@ function remoteFailure(
 }
 
 /**
- * `CliCommandExecutor` backed by a daemon's WebSocket connection instead of
- * the local sandbox-runner's TCP port. Same interface as
- * `SandboxRunnerCliCommandExecutor` on purpose: everything above this class
- * (argv rendering, vendor event parsing) stays identical regardless of
- * which one executes the command.
+ * `CliCommandExecutor` for a daemon WebSocket. Do not open a TCP port to a
+ * runner beside the server. Argv rendering and vendor event parsing stay
+ * above this class.
  */
 export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
   constructor(
@@ -1066,10 +1054,8 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
       return { returncode: 1, stdout: "", stderr: "Host is offline.", timed_out: false, failure_code: "sandbox_runner_unavailable" };
     }
     const controller = input.stdio_controller;
-    // Line-split incoming `output` frames into the controller, exactly as
-    // `SandboxRunnerCliCommandExecutor`'s `connectAndRun` does for the
-    // server-host sandbox-runner socket — same controller abstraction,
-    // different transport underneath.
+    // Line-split incoming `output` frames into the controller. This transport
+    // is the daemon socket.
     const sendToController = (message: Record<string, unknown>) => {
       this.registry.sendStdin(this.hostId, input.run_id, `${JSON.stringify(message)}\n`);
     };

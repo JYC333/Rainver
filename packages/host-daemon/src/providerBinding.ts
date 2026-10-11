@@ -210,11 +210,9 @@ export function filterAmbientEnv(ambient: NodeJS.ProcessEnv): Record<string, str
  * pointing at it. For an unbound run there is nothing to write but the login
  * link — the frame carries no files and no literal environment.
  *
- * The daemon deliberately knows nothing about Codex TOML or OpenCode JSON: it
- * creates a directory, writes the bytes it was handed, and reports the paths
- * back as environment. Every runtime-shaped decision stays on the server,
- * where the server-host path already makes it — one implementation, not two
- * that drift.
+ * The daemon writes the bytes it was handed and reports the paths as
+ * environment. It does not interpret Codex TOML or OpenCode JSON. Do not
+ * add that parsing here.
  *
  * The directory is reused across runs and is never deleted: it holds the
  * runtime's conversation state, which the next turn resumes. Only the files

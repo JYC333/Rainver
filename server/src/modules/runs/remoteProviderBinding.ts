@@ -22,11 +22,9 @@ import type { AgentRunRecord } from "./repository.js";
 import type { VendorCliRuntimeKey } from "../runtimeAdapters/specs.js";
 
 /**
- * What the executing host is told. Deliberately runtime-agnostic: the daemon
- * creates a directory, writes these bytes, and reports the paths back as
- * environment. Every Codex-TOML or OpenCode-JSON decision stays here, next to
- * the server-host path that already makes it — one implementation, not two
- * that drift.
+ * What the executing host is told. The daemon creates a directory, writes
+ * these bytes, and reports the paths back as environment. Codex TOML and
+ * OpenCode JSON stay in this module. Do not teach the daemon those formats.
  *
  * The wire contract owns the shape; this alias is what the rest of the remote
  * path calls it. Every host-bound Agent run carries one, bound or not.
@@ -408,9 +406,9 @@ export async function buildRemoteProviderBinding(input: {
     ?? stringValue(record.default_model)
     ?? availableModels[0]
     ?? null;
-  // Codex and OpenCode name a model in their config, and the server-host path
-  // refuses without one rather than letting the runtime fall back to a
-  // built-in default that the bound provider does not serve.
+  // Codex and OpenCode name a model in their config. Refuse without one.
+  // Do not let the runtime fall back to a built-in default the bound
+  // provider does not serve.
   if (!model && input.runtimeKey !== "claude_code") {
     throw new RemoteProviderBindingError(
       `${input.runtimeKey === "codex_cli" ? "codex" : "opencode"}_model_required`,

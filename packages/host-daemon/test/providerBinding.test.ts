@@ -9,9 +9,9 @@ import type { ProviderBindingFrame } from "../src/execution.js";
 // and on its disk, right next to the run. These are the assertions that keep
 // it out of a run the control plane bound to a specific backend.
 //
-// The daemon knows nothing about what a Codex or OpenCode config looks like —
-// it writes the bytes the server generated. Those shapes are asserted on the
-// server side, against the same builders the server-host path uses.
+// The daemon knows nothing about what a Codex or OpenCode config looks like.
+// It writes the bytes the server generated. Those shapes are asserted on the
+// server, against the builders in `remoteProviderBinding.ts`.
 
 const dirs: string[] = [];
 

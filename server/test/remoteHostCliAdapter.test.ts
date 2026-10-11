@@ -1215,8 +1215,8 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           model: null,
           resume_session_id: null,
           timeout_seconds: timeoutSeconds,
-          // The same dispatch setting the server-host path reads; the
-          // default is five minutes, which no test wants to wait for.
+          // Dispatch setting. The default is five minutes, which no test wants
+          // to wait for.
           adapter_config: { stall_timeout_seconds: 5 },
         },
         "host-1",
@@ -1230,10 +1230,10 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       return { execution };
     }
 
-    it("uses the same silence budget as the server-host path", () => {
+    it("uses a 300s silence budget for a 900s run", () => {
       // A third of the run budget (100s by default) would kill a legitimate
       // turn in the middle of a long tool call, which emits nothing until it
-      // returns. The budget is the server-host path's: 300s of a 900s run.
+      // returns. The default is 300s of a 900s run.
       expect(stallTimeoutSeconds(undefined, 900)).toBe(300);
       expect(stallTimeoutSeconds({ stall_timeout_seconds: 60 }, 900)).toBe(60);
       // Never larger than the deadline it lives inside.
