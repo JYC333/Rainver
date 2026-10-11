@@ -298,7 +298,7 @@ no child write action because they are evidence surfaces, not governed graph
 endpoints. Optional LLM extraction is request-gated and injectable; without a
 provider adapter the public HTTP route rejects `llm_extraction_enabled=true`
 with 422 rather than producing a misleading empty LLM pass. The service hook
-remains injectable for tests and future ADR 0008 provider wiring. Any enabled
+remains injectable for tests and internal callers. Any enabled
 extractor receives only the already-visible/source-policy-allowed source set
 plus source-policy snapshots and returns review-packet candidates, not canonical
 writes. Scan responses and packets distinguish `candidate_count` from

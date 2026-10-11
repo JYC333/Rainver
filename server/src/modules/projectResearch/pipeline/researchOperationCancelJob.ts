@@ -87,8 +87,7 @@ export function registerResearchOperationCancelHandler(registry: JobHandlerRegis
     // `projectId` (synthesis/revision/critique in `synthesisCoordinator`,
     // `monitorComparisonService`, `areaService`) and the pass root and node
     // runs from `automation.project_id`, which `findOrCreateResearchAutomation`
-    // always binds to the Project. A future creation path that leaves it null
-    // would be invisible here. Do not leave `project_id` null.
+    // always binds to the Project. Do not leave `project_id` null.
     const runs = await pool.query<{ id: string }>(
       `SELECT r.id FROM runs r
         WHERE r.space_id=$1 AND r.project_id=$3

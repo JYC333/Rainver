@@ -468,11 +468,9 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
   provenance behind `include_claim_trajectory`.
 - `scanClaimContradictions` runs a deterministic judge (negation / numeric
   opposition) over source-policy-filtered visible active claims, groups by
-  subject, and emits batched, clustered, confidence-tiered findings. It also has
-  a request-gated LLM judge hook for future provider wiring. Until the ADR 0008
-  provider adapter is connected, the public HTTP route rejects
-  `llm_judge_enabled=true` with 422; the service-level hook remains injectable
-  for tests and internal callers. Any enabled implementation receives only
+  subject, and emits batched, clustered, confidence-tiered findings. The public
+  HTTP route rejects `llm_judge_enabled=true` with 422. The service-level hook
+  stays injectable for tests and internal callers. Any enabled implementation receives only
   source-policy-allowed visible claims plus current source-policy snapshots. `POST
   /api/v1/knowledge/claims/contradiction-scan` (Context Ops scan-gated) persists an
   owner-private or `space_ops` `claim_contradiction_report` artifact. That report

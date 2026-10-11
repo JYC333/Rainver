@@ -145,10 +145,10 @@ export class PgHostThreadEventRepository {
  * committed. `serializeCalls` (`routeUtils/common.ts`) keeps this one sink
  * instance's calls in the order they were produced regardless of how many
  * arrive before the first settles; `append()`'s own advisory lock is what
- * actually guarantees `event_index` correctness against *other* concurrently
- * active sink instances for the same thread (a second Run, in a future
- * phase) — the two are complementary, not redundant: this keeps one run's
- * stdout/stderr interleaving honest, the lock keeps the table honest.
+ * actually guarantees `event_index` correctness against other concurrently
+ * active sink instances for the same thread. The two are complementary:
+ * this keeps one run's stdout/stderr interleaving honest, the lock keeps
+ * the table honest.
  *
  * The returned function's promise resolves once every write queued up to
  * and including this call has settled and never rejects — a per-chunk

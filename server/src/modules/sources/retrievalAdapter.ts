@@ -76,8 +76,8 @@ interface EvidenceEdgeRow {
  * Source domain adapter for the shared retrieval engine.
  *
  * It projects only lightweight source metadata and excerpts. Full snapshots and
- * raw extracted artifacts are intentionally not indexed by default; they remain
- * behind explicit reader/sources policies and future opt-in settings.
+ * raw extracted artifacts are not indexed. Reader and sources policies still
+ * gate them. Do not index a full snapshot by default.
  */
 export const sourceRetrievalAdapter: RetrievalDomainAdapter = {
   objectTypes: SOURCE_RETRIEVAL_OBJECT_TYPES,

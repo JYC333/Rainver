@@ -23,8 +23,7 @@ export interface ContinuationProposal {
 export interface ProposalContinuation {
   /**
    * A short machine-readable tag describing what kind of continuation this
-   * is, for a future consumer (frontend, another domain) to key off of.
-   * A directive is a hint, not a forced tool call: a registration may name an
+   * is. A directive is a hint, not a forced tool call: a registration may name an
    * activity rather than an action id when more than one tool can satisfy it.
    */
   directive: string | null;
