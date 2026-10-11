@@ -1,7 +1,7 @@
 /**
- * Compatibility helpers for the model-provider API-key secret_ref format.
+ * Helpers for the model-provider API-key `secret_ref` format.
  *
- * Keeps the at-rest representation stable so credential rows do not need a
+ * The at-rest representation stays stable. Credential rows do not need a
  * rewrite when credential-store internals change.
  */
 

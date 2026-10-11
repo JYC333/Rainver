@@ -8,13 +8,10 @@
  * since both live in that one table and the master key already protects it
  * as a whole.
  *
- * Deliberately not layered on top of `secretRefCrypto.ts`'s ModelProvider
- * functions — that module is explicitly a compatibility-pinned format for
- * one existing credential class (see its own header comment); duplicating
- * ~15 lines of AES-256-GCM here with a distinct `secret_ref` prefix keeps
- * each credential class's at-rest format independently readable and
- * independently versionable. Do not introduce a shared abstraction. The two
- * call sites do not use one.
+ * Deliberately not layered on `secretRefCrypto.ts`. That module owns the
+ * model-provider `secret_ref` format. The AES-256-GCM here uses a distinct
+ * `secret_ref` prefix, so each credential class stays independently readable
+ * and independently versionable. Do not introduce a shared abstraction.
  */
 
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
