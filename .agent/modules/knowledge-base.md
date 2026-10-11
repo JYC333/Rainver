@@ -10,9 +10,9 @@ entry that redirects to the last-used workspace (default `/knowledge/notes`);
 (`Knowledge / Notes ▼`) — there is **no** Knowledge scene sidebar or tab strip, so each
 workspace owns its own layout. Notes is a working-knowledge workspace (configurable
 collection tree + open-note tabs, create / edit + links/backlinks); Wiki is the KnowledgeItem browser under
-`/knowledge/wiki`; Sources lists evidence; Cards is a clean placeholder. The backend
-already supports source list/create/get/update/archive and item-source link CRUD;
-the current web client exposes Sources as list-only evidence browsing. There is
+`/knowledge/wiki`; Sources lists evidence; Cards does not schedule reviews. The backend
+supports source list/create/get/update/archive and item-source link CRUD;
+the web client exposes Sources as list-only evidence browsing. There is
 no automatic generation, assessment, or card-generation path.
 
 ### Frontend information architecture
