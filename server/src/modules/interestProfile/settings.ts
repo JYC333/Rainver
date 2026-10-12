@@ -53,7 +53,7 @@ export function resolveInterestProfileSettings(value: unknown): InterestProfileS
     const candidate = input[key];
     if (typeof candidate === "number" && Number.isInteger(candidate)) resolved[key] = candidate;
   }
-  // The setting once allowed up to ten; a budget saved then probes at the cap.
+  // A saved budget may exceed the cap. Probe at the cap. Do not probe above it.
   resolved.probe_domain_budget = Math.min(resolved.probe_domain_budget, MAX_PROBE_DOMAIN_BUDGET);
   validateInterestProfileSettings(resolved);
   return resolved;

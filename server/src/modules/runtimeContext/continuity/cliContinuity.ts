@@ -78,7 +78,7 @@ interface BindingFingerprint {
     runtime_key: string;
     provider_id: string | null;
     model: string | null;
-    /** Which copy on the host ran it (`own` / `managed:<version>`), the successor to the brokered credential profile. */
+    /** Which copy on the host ran it (`own` / `managed:<version>`). Do not read a brokered credential profile. */
     runtime_installation: string | null;
     sandbox_profile_ref: unknown;
     runtime_generation: unknown;

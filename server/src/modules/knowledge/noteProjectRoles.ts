@@ -45,7 +45,7 @@ export function isNoteProjectRole(value: unknown): value is NoteProjectRole {
   return typeof value === "string" && (NOTE_PROJECT_ROLES as readonly string[]).includes(value);
 }
 
-/** Registry-backed check replacing the closed-set CHECK the column does not have. */
+/** The registry is the closed set. Do not add a closed-set CHECK on the column. */
 export function assertNoteProjectRole(value: unknown): asserts value is NoteProjectRole {
   if (!isNoteProjectRole(value)) {
     throw new HttpError(422, `Unknown note project role: ${String(value)}`);

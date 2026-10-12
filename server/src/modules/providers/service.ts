@@ -132,7 +132,7 @@ export function listProviderPresets(
   return serveProviderRead(config, request, reply, async () => listProviderPresetCatalog());
 }
 
-/** The server-owned vendor registry, served so the client stops keeping a copy. */
+/** The server owns the vendor registry and serves it. Do not keep a second copy in the client. */
 export async function listProviderVendorCatalog(
   config: ServerConfig,
   request: FastifyRequest,

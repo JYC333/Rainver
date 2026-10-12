@@ -370,7 +370,7 @@ export class PgWorkspaceLocationRepository {
     return { changed: Boolean(row?.changed), headMoved: Boolean(row?.head_moved) };
   }
 
-  /** Refresh migrated server Locations during server startup as well as after a new Folder is created. */
+  /** Refresh every non-archived server Location's git status at startup. */
   async refreshServerLocations(workspaceRoot: string): Promise<void> {
     const result = await this.db.query<WorkspaceLocationRow>(
       `SELECT ${COLUMNS}
