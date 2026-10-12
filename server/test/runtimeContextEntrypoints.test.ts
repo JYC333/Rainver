@@ -406,7 +406,8 @@ describe("Runtime Context invocation entrypoint inventory", () => {
   });
 
   it("registers every concrete Agent delivery renderer", () => {
-    // `VendorCli` is gone: the CLI renderer is the daemon adapter now.
+    // The CLI renderer is the daemon adapter. Do not register a
+    // separate `VendorCli` renderer.
     const rendererDefinition = /export\s+async\s+function\s+execute(?:ManagedApiNoTool|RemoteHostCli)Adapter\b/;
     const discovered = tsFiles(modulesRoot)
       .filter((file) => rendererDefinition.test(readFileSync(file, "utf8")))

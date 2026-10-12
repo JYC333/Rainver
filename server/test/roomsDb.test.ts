@@ -6051,7 +6051,8 @@ describe("Room workflow (real Postgres)", () => {
     await seedProjectMainlineRoom(db.pool, {
       space: "space-1", project: "project-2", owner: "user-1", title: "Second Project",
     });
-    // Provisioning follows the explicit Conversation draft now.
+    // Provisioning follows the explicit Conversation draft. Do not
+    // provision the Assistant on Room create.
     const first = await service.createRoom(owner, { project_id: "project-1", title: "First" });
     const second = await service.createRoom(owner, { project_id: "project-2", title: "Second" });
     await service.createConversationDraft(owner, first.room.id);

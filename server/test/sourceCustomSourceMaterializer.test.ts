@@ -292,7 +292,8 @@ describe("CustomSourceMaterializationService (real Postgres)", () => {
       run: { runId, spaceId: SPACE_A, sourceConnectionId: connId, handlerVersionId: versionId },
       policyEnvelope: POLICY_ENVELOPE, sandboxFilesRoot: sandboxFilesRoot!, rawOutputJson: first,
     });
-    // The same article, now under an identity an older handler did not use.
+    // The same article, under an identity the previous handler did not use.
+    // Match the URL the Space already holds. Do not fail on the new id.
     const again = validOutput();
     again.items[0]!.external_id = "article-1-after-the-list-moved";
     again.items[0]!.snapshots = [];

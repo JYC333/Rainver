@@ -32,7 +32,8 @@ describe('host capability normalization', () => {
           auth_methods: [
             { id: 'browser', name: 'Browser', description: 'Web flow', type: 'agent', args: [], env: {} },
             { id: 'device', name: 'Device', description: null, type: 'terminal', args: ['login'], env: { MODE: 'device' } },
-            // Obsolete fake methods are discarded rather than executable.
+            // A method that is not `agent` or `terminal` is discarded.
+            // Do not treat it as executable.
             { id: 'rainver_cli_login', name: 'CLI login', description: null, type: 'command', args: ['login'], env: {} },
           ],
           cli_login_available: true,

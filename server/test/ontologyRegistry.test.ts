@@ -146,7 +146,7 @@ describe("ontology registry", () => {
     expect(resolveContentAccessible("space_object")?.activePredicate?.("so")).toBe("so.deleted_at IS NULL");
   });
 
-  // The demoted CHECKs are only safely demoted if something asks the registry.
+  // The registry is the closed set. Do not leave it unasked.
   it("rejects values outside the registry", () => {
     expect(() => assertContextItemType("nonsense")).toThrow();
     expect(() => assertCardSourceType("nonsense")).toThrow();
