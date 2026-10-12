@@ -51,7 +51,7 @@ export function RoomRosterPanel({
   const presetIdempotencyKeys = useRef(new Map<string, string>())
   const [restoreChoice, setRestoreChoice] = useState(false)
   const restoreChoiceRef = useRef(false)
-  /** One in-app confirmation at a time, replacing the browser's `window.confirm`. */
+  /** One in-app confirmation at a time. Do not call `window.confirm`. */
   const [confirmation, setConfirmation] = useState<{
     title: string
     description?: string
