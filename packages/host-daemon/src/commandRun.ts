@@ -134,7 +134,7 @@ async function runHostCommandInner(
     // becomes a read-write bind. The same guard the run directory already has.
     return { exit_code: 1, stdout: "", stderr: "", timed_out: false, error: `command request id is not a usable directory name: ${request.request_id}` };
   }
-  // A verification recipe or C3 probe launches the same copy a Run does, and
+  // A verification recipe launches the same copy a Run does, and
   // it is in neither run registry — so the drain cannot see it and the closed
   // door has to. Refused, not queued: the caller is waiting on an HTTP request.
   if (isRuntimeKeyBeingReplaced(request.runtime_key)) {

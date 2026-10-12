@@ -1149,10 +1149,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                 stderr: frame.stderr,
                 timed_out: frame.timed_out,
                 error: frame.error,
-                // The workspace listing, when the request asked for one. Only
-                // the host can see it, and the file-scope conformance probe is
-                // entirely about what the runtime left there — dropping it here
-                // made that check fail for every runtime on every host.
+                // The workspace listing, when the request asked for one.
+                // Do not drop `entries`. The host is the only one that can see them.
                 ...(frame.entries ? { entries: frame.entries } : {}),
               });
               return;

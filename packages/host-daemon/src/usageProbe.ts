@@ -309,17 +309,17 @@ export function managedCliEntry(manifest: ToolManifest | null): { command: strin
 }
 
 /**
- * The environment Codex's app-server reads its own login from. The whole
- * `CODEX_` prefix is dropped so the machine's shell cannot redirect the probe
- * at a different profile than the one the copy runs with, and the whole
- * `OPENAI_` prefix because an API key answers with the key's quota, not the
+ * The environment Codex's app-server reads its own login from. Drop the whole
+ * `CODEX_` prefix so the machine's shell cannot redirect the probe at a
+ * different profile than the one the copy runs with, and the whole `OPENAI_`
+ * prefix because an API key answers with the key's quota, not the
  * subscription's — a silently wrong number is worse than none. Both by prefix,
- * through the daemon's one helper rule; naming `OPENAI_API_KEY` alone left
- * every other spelling of it in place.
+ * through the daemon's one helper rule. Do not name `OPENAI_API_KEY` alone.
+ * Every other spelling of it would stay.
  */
 function codexEnv(home: string, extra: Record<string, string>): Record<string, string> {
-  // The daemon's one helper rule rather than this probe's own two-line version
-  // of it: `codex_cli` drops `OPENAI_`/`CODEX_`, which is what this listed.
+  // The daemon's one helper rule. `codex_cli` drops `OPENAI_`/`CODEX_`.
+  // Do not keep a second list here.
   const env: Record<string, string> = helperProcessEnv(process.env, "codex_cli");
   Object.assign(env, extra);
   env.HOME = home;

@@ -366,10 +366,11 @@ a native execution path exists.
 - Native runtime skill execution is not implemented; rendering only supplies
   adapter-specific instructions or prompt blocks.
 - `RuntimeAdapterSpec` entries declare the executor family consumed by runs
-  orchestration. Adapter capability and trust declarations are conservative;
-  conformance-backed route enforcement remains scoped to C3.
+  orchestration. Adapter capability and trust declarations are conservative.
+  There is no conformance-backed route gate. Do not treat a static declaration
+  as one.
 - Runtime-internal CLI subagents are not represented uniformly by the current
   capability model. Managed API delegation remains group-scoped and
   policy-gated. Claude runs render and verify a run-scoped settings file that
-  denies the `Task` tool; Codex remains `unknown` until C3 verifies an
-  equivalent control, and planned runtimes are not executable by declaration.
+  denies the `Task` tool. Codex has no equivalent verified control, so it stays
+  `unknown`. Planned runtimes are not executable by declaration.
