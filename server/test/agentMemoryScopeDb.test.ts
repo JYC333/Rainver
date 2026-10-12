@@ -937,8 +937,8 @@ describe("telling the owner what changed while nobody was asking", () => {
       decidable_by_user_id: OWNER,
     });
 
-    // Even a row written by an older build with the private preview embedded
-    // is projected from current proposal authority: owner sees it, requester
+    // Project the preview from current proposal authority. Do not trust a
+    // private preview embedded in the row. The owner sees it, the requester
     // does not. Only assistant rows receive the Run's card.
     const messageId = randomUUID();
     await db.pool.query(

@@ -96,8 +96,9 @@ describe("agents CRUD routes", () => {
   it("rejects ModelProvider Profiles without an execution Host before changing the default", async () => {
     const query = vi.fn(async () => ({ rows: [{ id: "agent-1" }], rowCount: 1 }));
     const { PgAgentRepository } = await import("../src/modules/agents/repository.js");
-    // The Profile write now validates inside the transaction that holds the
-    // Agent row lock, so the fake pool has to be connectable.
+    // The Profile write validates inside the transaction that holds the
+    // Agent row lock. Do not validate outside it. The fake pool has to be
+    // connectable.
     const repository = new PgAgentRepository({
       query,
       connect: async () => ({ query, release: () => {} }),

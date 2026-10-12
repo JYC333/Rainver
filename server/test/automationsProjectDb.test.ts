@@ -1154,8 +1154,9 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
         trigger_type: "manual",
       },
     });
-    // Routing refuses this copy, so a preflight that only checked the runtime
-    // key reported `executable: true` and the fire died `route_no_candidate`.
+    // Routing refuses this copy. Do not let preflight check only the runtime
+    // key. That would report `executable: true` and the fire would die
+    // `route_no_candidate`.
     await db.pool.query(
       `UPDATE agent_runtime_profiles SET runtime_installation = 'managed:pending'
         WHERE space_id = $1 AND agent_id = $2`,

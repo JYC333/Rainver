@@ -148,8 +148,8 @@ describe("server runner applies the migration chain", () => {
   });
 
   // B12D/B12E: domain lifecycle state belongs to the owning extension table,
-  // and the root must not carry a constraint that branches on `object_type` —
-  // that shape forced every new domain to edit a root-table constraint.
+  // and the root must not carry a constraint that branches on `object_type`.
+  // That shape would force every new domain to edit a root-table constraint.
   it("keeps the object root ignorant of domain status", () => {
     const baseline = baselineSql();
     expect(baseline).not.toContain("ck_space_objects_status_by_type");
