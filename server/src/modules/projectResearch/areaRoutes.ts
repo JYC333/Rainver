@@ -35,8 +35,8 @@ export function registerProjectResearchAreaRoutes(
   app.get(`${base}/area`, route((identity, request) => area().getArea(identity, requireParam(request, "projectId"))));
   app.post(`${base}/area`, route((identity, request) => area().initializeArea(identity, requireParam(request, "projectId")), 201));
   app.get(`${base}/reading-list`, route((identity, request) => area().readingList(identity, requireParam(request, "projectId"), query(request))));
-  // Per-note editing/revisions/rollback now go through the generic
-  // /api/v1/knowledge/notes/:noteId endpoints — see areaService.ts.
+  // Note editing, revisions, and rollback are the generic
+  // /api/v1/knowledge/notes/:noteId endpoints. Do not add them here.
   app.post(`${base}/ask-ai`, route((identity, request) => area().askAi(identity, requireParam(request, "projectId"), jsonBody(request)), 201));
   app.post(`${projectBase}/notebook-chat`, route((identity, request) => area().notebookChat(identity, requireParam(request, "projectId"), jsonBody(request)), 201));
   app.put(`${base}/reading-list/:sourceItemId/card`, route((identity, request) => area().upsertEvidenceCard(identity, requireParam(request, "projectId"), requireParam(request, "sourceItemId"), jsonBody(request))));

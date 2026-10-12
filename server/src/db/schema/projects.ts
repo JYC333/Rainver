@@ -144,8 +144,7 @@ export const projectInstructionVersions = pgTable("project_instruction_versions"
 ]);
 
 // Per-user UI state over aggregated ProjectAttentionItem rows (which are
-// computed on demand from registered domain adapters, not stored). See plan
-// section 8.
+// computed on demand from registered domain adapters, not stored).
 export const projectAttentionUserStates = pgTable("project_attention_user_states", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),

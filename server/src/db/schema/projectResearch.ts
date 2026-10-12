@@ -378,7 +378,7 @@ export const projectResearchScreeningCriteria = pgTable("project_research_screen
 	dateRangeStart: timestamp("date_range_start", { withTimezone: true, mode: 'string' }),
 	dateRangeEnd: timestamp("date_range_end", { withTimezone: true, mode: 'string' }),
 	// Journals, outlets and sites are the same concept: where material may come
-	// from. `venues` named only the academic half of it.
+	// from. Do not name this `venues`. That name covers only the academic half.
 	sourceRestrictionsJson: jsonb("source_restrictions_json").default([]).notNull(),
 	requiredEvidenceFieldsJson: jsonb("required_evidence_fields_json").default([]).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),

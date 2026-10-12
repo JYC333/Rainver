@@ -85,8 +85,8 @@ export const inquiryEvidenceSignals = pgTable("inquiry_evidence_signals", {
 	check("ck_inquiry_evidence_signals_one_source", sql`(corpus_item_id IS NOT NULL) <> (experiment_interpretation_id IS NOT NULL)`),
 ]);
 
-// Consolidated Candidate: the only thing that reaches human review (plan
-// section 10.2). Deduplicates/merges multiple Signals about the same
+// Consolidated Candidate: the only thing that reaches human review.
+// Deduplicates/merges multiple Signals about the same
 // material change into one explainable unit.
 export const inquirySignalCandidates = pgTable("inquiry_signal_candidates", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
