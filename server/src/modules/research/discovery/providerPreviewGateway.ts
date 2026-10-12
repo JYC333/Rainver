@@ -47,8 +47,8 @@ export class ProviderPreviewGateway {
       ? await this.resolveCredential(identity, input.credentialId)
       : null;
     const request = this.executor.buildScanRequest({ compiledQuery: input.compiledQuery });
-    // The credential goes in its own field, never merged into `headers` — see
-    // `sourceQueryPreviewService` for what merging it cost.
+    // The credential goes in its own field. Do not merge it into `headers`.
+    // `headers` is sent on every hop, including a redirect to another origin.
     const headers = { ...(request.headers ?? {}) };
     const credentialHeaders = credential ? { [credential.header_name]: credential.header_value } : undefined;
     let response = await this.attemptFetch(input.compiledQuery.provider_key, request.url, headers, credentialHeaders);

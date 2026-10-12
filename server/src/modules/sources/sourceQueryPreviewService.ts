@@ -87,7 +87,7 @@ export class SourceQueryPreviewService {
     // strips when a redirect leaves the first origin, and what makes it refuse
     // an https→http downgrade. Merged in, a provider key whose header is not
     // one of the three names the guard recognises by default — Semantic
-    // Scholar's `x-api-key`, Brave's `X-Subscription-Token` — travelled to
+    // Scholar's `x-api-key`, Brave's `X-Subscription-Token` — travels to
     // whatever origin the upstream redirected to.
     const headers = { ...(request.headers ?? {}) }
     const credentialHeaders = credential ? { [credential.header_name]: credential.header_value } : undefined
