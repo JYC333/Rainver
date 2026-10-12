@@ -3,9 +3,9 @@ import { renderWorkSkill, workSkillPromptPointer } from "../src/modules/capabili
 import { workSkillOptionsForRun } from "../src/modules/runs/runWorkSurface.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
 
-// One Skill text was rendered for every remote run. For a Room turn it told
-// the agent its reply reached nobody — when the reply *is* the Room message —
-// and sent it to `artifact.submit`, which a conversation is never granted.
+// Do not render one Skill text for every remote run. A Room turn's reply
+// is the Room message. Do not tell the agent it reached nobody, and do not
+// send it to `artifact.submit`. A conversation is never granted that tool.
 describe("the Skill a Run is given", () => {
   const run = (overrides: Partial<RunRecord>): RunRecord => ({
     id: "run-1",

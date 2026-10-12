@@ -165,9 +165,10 @@ describe("deterministic route selector", () => {
   });
 
   it("lets an explicitly preferred Profile outrank the default on conversational work", () => {
-    // Scoring terms are named for what they measure (B61). A shape-named term
-    // that was really a ten-fold copy of `default_profile` could outscore the
-    // Profile the caller asked for; the default's own weight must not.
+    // Scoring terms are named for what they measure (B61). Do not name a
+    // term for its shape. A ten-fold copy of `default_profile` would
+    // outscore the Profile the caller asked for. The default's own weight
+    // must not.
     const result = new DeterministicRouteSelector().select({
       required_sandbox_level: "none",
       execution_mode: "live",

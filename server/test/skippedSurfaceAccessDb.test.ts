@@ -271,8 +271,9 @@ describe("skipped-surface access (real Postgres)", () => {
   it("records a Project Folder event under the source type the table stores", async () => {
     const activity = new PgActivityRepository(db.pool);
     const created: string[] = [];
-    // The older spellings still arrive from callers and land on the same value;
-    // the table's check constraint knows only `project_folder_event`.
+    // Callers send the older spellings. They land on the same value. The
+    // table's check constraint knows only `project_folder_event`. Do not
+    // reject those spellings.
     for (const sourceType of ["project_folder_event", "task_log", "workspace_event"]) {
       const row = await activity.create(owner, { source_type: sourceType, content: "Folder changed" });
       expect(row, sourceType).toMatchObject({ source_type: "project_folder_event" });

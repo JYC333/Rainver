@@ -148,9 +148,9 @@ describe("structured output text normalization", () => {
   });
 
   it("rejects string artifact content at the run contract", () => {
-    // A string content slot let arbitrary prose (e.g. a Markdown brief) pass
-    // run-level validation and fail only at the post-materialization parse,
-    // poisoning the stored artifact. The contract now requires the object.
+    // The contract requires an object. Do not accept a string content slot.
+    // Arbitrary prose would pass run-level validation and fail only at the
+    // post-materialization parse, poisoning the stored artifact.
     const inner = JSON.stringify({
       schema_version: "research_report.v1",
       research_question: "Does X improve Y?",

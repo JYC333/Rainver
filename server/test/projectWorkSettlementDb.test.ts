@@ -296,9 +296,9 @@ describe("run settlement", () => {
 
   it("bubbles a Supervisor review hold up to the Task", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // `waiting_for_review` was absent from the terminal set, so a Run the
-    // Supervisor had stopped retrying settled nothing at all and its Task sat
-    // in `in_progress` with no sign a person was needed.
+    // Do not omit `waiting_for_review` from the terminal set. A Run the
+    // Supervisor has stopped retrying would settle nothing, and its Task
+    // would sit in `in_progress` with no sign a person was needed.
     const task = randomUUID();
     const run = randomUUID();
     await makeTask(task);

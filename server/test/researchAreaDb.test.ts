@@ -46,9 +46,9 @@ beforeEach(async () => { if (!db.available) return; await resetTables(
 ); const now = new Date().toISOString(); await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]); await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Owner','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [USER, now]); await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]); await db.pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Project','active',$4,$4)`, [PROJECT, SPACE, USER, now]);
   await db.pool.query(`INSERT INTO model_providers (id,space_id,owner_user_id,name,provider_type,base_url,default_model,enabled,capabilities_json,config_json,created_at,updated_at) VALUES ($1,$2,$3,'Test Provider','openai','https://example.invalid/v1','test-model',true,'{}'::jsonb,'{}'::jsonb,$4,$4)`, [PROVIDER, SPACE, USER, now]);
   await db.pool.query(`INSERT INTO model_provider_space_grants (id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at) VALUES ($1,$2,$3,$4,$4,true,true,$5,$5)`, [randomUUID(), PROVIDER, SPACE, USER, now]);
-  // Bounded research tasks now invoke the provider in-process, so the fixture
-  // needs a real (encrypted) key in the provider's pool rather than a row the
-  // agent-run path never resolved.
+  // Bounded research tasks invoke the provider in-process. The fixture
+  // needs a real (encrypted) key in the provider's pool. Do not seed a row
+  // the agent-run path never resolved.
   if (config) await resolveProviderCommandStore(config).addPoolCredential(SPACE, USER, PROVIDER, { api_key: "test-research-key" });
 });
 

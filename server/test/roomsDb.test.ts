@@ -5842,8 +5842,8 @@ describe("Room workflow (real Postgres)", () => {
       [conversation.id],
     )).resolves.toMatchObject({ rows: [{ requested_through_message_id: "sweep-ref" }] });
 
-    // The sweep now has to move the watermark from the reference to the head,
-    // which is deeper on the path but earlier on the clock.
+    // The sweep moves the watermark from the reference to the head, which
+    // is deeper on the path but earlier on the clock.
     expect(await summaries.reconcileMissingStates()).toBe(1);
     await expect(testPool.query<{ requested_through_message_id: string }>(
       "SELECT requested_through_message_id FROM room_conversation_summary_states WHERE session_id = $1",
