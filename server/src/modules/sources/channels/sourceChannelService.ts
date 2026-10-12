@@ -184,9 +184,9 @@ export class SourceChannelService {
     const status = body.status === "paused" ? "paused" : "active";
     const schedule = resolveChannelSchedule(body, frequency, status);
     const projectId = optionalString(body.project_id);
-    // A monitor added from a Source's own page names that Source; without it
-    // the connection was guessed from the provider, and the monitor could
-    // land on another Source of the same provider.
+    // A monitor added from a Source's own page names that Source. Do not
+    // guess the connection from the provider. The monitor could land on
+    // another Source of the same provider.
     const targetConnectionId = optionalString(body.source_connection_id);
     const targetConnection = targetConnectionId
       ? await this.requireOwnConnection(identity, targetConnectionId, provider.mapping_id)

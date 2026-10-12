@@ -106,8 +106,9 @@ export class CustomSourceCreateFlowService {
         capture_policy: optionalString(config.capture_policy) ?? settings.space.default_capture_policy,
         policy: { retention_policy: optionalString(config.retention_policy) ?? settings.space.default_retention_policy },
         status: "paused",
-        // Each Custom Source owns its connection, handler and repair state;
-        // reusing the owner's newest custom_source connection paused another.
+        // Each Custom Source owns its connection, handler and repair state.
+        // Do not reuse the owner's newest custom_source connection. That
+        // pauses another.
         _force_create: true,
         query: { config },
         config,

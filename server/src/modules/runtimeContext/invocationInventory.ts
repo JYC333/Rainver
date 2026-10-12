@@ -70,7 +70,7 @@ export const RUNTIME_INVOCATION_INVENTORY = [
   providerCall("providers/commands/routes.ts", "completeProviderRerank", 1, "bounded_provider_task", "providers", "provider_task"),
   providerCall("providers/commands/routes.ts", "completeProviderChat", 1, "bounded_provider_task", "providers", "provider_task"),
   entry("providers/index.ts", "provider_facade", "providers", "provider_task"),
-  // The CLI renderer is the remote-host adapter now: every `local_cli` run is
+  // The CLI renderer is the remote-host adapter. Every `local_cli` run is
   // dispatched to a host daemon, and the server spawns no vendor CLI of its own.
   entry("runs/remoteHostCliAdapter.ts", "agent_task_renderer", "runs", "delivery_renderer"),
   // A renderer, not a Gateway invoker: a run handed to a host daemon gets no

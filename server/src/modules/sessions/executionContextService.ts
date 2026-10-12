@@ -1065,8 +1065,8 @@ function hostInstallationAvailability(
   installationId: string | null,
 ): { usable: boolean; reason: string | null } {
   // The built-in host reports its installations like any other daemon, and a
-  // container with nothing installed reports none. Waiving the check for it
-  // offered a copy that does not exist and failed at launch instead.
+  // container with nothing installed reports none. Do not waive the check
+  // for it. That offers a copy that does not exist and fails at launch.
   const installation = normalizeHostCapabilities(host.capabilities_json).installations[runtimeKey]
     ?.find((candidate) => candidate.id === installationId);
   if (!installation) return { usable: false, reason: "The CLI installation is unavailable on the Host" };

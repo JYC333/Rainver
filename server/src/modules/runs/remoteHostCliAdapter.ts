@@ -413,8 +413,9 @@ async function runRemoteHostCliAdapter(
   const credentialLifetimeSeconds = 2 * timeoutSeconds + 300;
 
   // The control plane's choice of model backend for this run, if it made one.
-  // Read from the thread message rather than `runs.model_provider_id` — see
-  // `remoteProviderBinding.ts` for why that column is not evidence.
+  // Read the frozen Runtime Profile snapshot. Do not read
+  // `runs.model_provider_id`. That column is the router's prediction until
+  // execution records the binding.
   let providerBinding: RemoteProviderBinding | null = null;
   /** The provider this run actually executed against; null means the copy's own login. */
   let boundProviderId: string | null = null;

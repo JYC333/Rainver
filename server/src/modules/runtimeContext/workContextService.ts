@@ -529,7 +529,7 @@ export async function resolveExplicitReferences(
       } else {
         // Exhaustive over `EXPLICIT_REFERENCE_TYPES`: adding a member to that
         // list without a branch here is a compile error, which is what stops
-        // the three sites from drifting apart again.
+        // the three sites from drifting apart.
         assertNoUnhandledReferenceType(type);
       }
     }

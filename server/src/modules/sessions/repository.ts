@@ -395,9 +395,9 @@ export class PgSessionRepository {
           AND (m.metadata_json->'run_ids' ? $3::text OR m.metadata_json->'retry_run_ids' ? $3::text)
           AND ${visibleRoomTranscriptSql({ alias: "m", spaceParam: "$1", sessionParam: "$2" })}
         LIMIT 1`,
-      // Only the three this statement names: the Room and viewer are the
-      // second read's arguments, and binding them here left PostgreSQL unable
-      // to type an unreferenced parameter, which failed every retry.
+      // Only the three this statement names. The Room and viewer are the
+      // second read's arguments. Do not bind them here. PostgreSQL cannot
+      // type an unreferenced parameter, and every retry fails.
       [spaceId, sessionId, runId],
     );
     const id = result.rows[0]?.id;
