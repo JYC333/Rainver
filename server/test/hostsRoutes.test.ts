@@ -166,9 +166,10 @@ describe("hosts routes", () => {
   it("reports each runtime's backend-mode support from the registry the server enforces", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     __setAuthRepositoryForTests(stubAuth());
-    // The composer gates ModelProvider mode on this row. Derived from anything
-    // other than the AgentRuntimeDefinition, it offered a mode that Profile
-    // admission (`supportsRuntimeBackendMode`) then answered with 422.
+    // The composer gates ModelProvider mode on this row. Derive it from the
+    // AgentRuntimeDefinition. Do not derive it from anything else. That would
+    // offer a mode Profile admission (`supportsRuntimeBackendMode`) answers
+    // with 422.
     const response = await app.inject({
       method: "GET",
       url: "/api/v1/hosts/runtime-definitions",

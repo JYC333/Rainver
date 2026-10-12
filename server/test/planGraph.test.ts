@@ -127,9 +127,9 @@ describe("integration node verification", () => {
   }
 
   it("accepts a done approval checkpoint or integration dependency, which never has a Run", async () => {
-    // A -> checkpoint -> integration is a valid graph; the root verification
-    // already exempts these kinds, and an integration node failing on them
-    // failed the whole Plan after every piece of work had succeeded.
+    // A -> checkpoint -> integration is a valid graph. The root verification
+    // already exempts these kinds. Do not fail an integration node on them.
+    // That would fail the whole Plan after every piece of work had succeeded.
     const client = dependencyRows([
       { node_id: "checkpoint", node_key: "checkpoint", node_kind: "approval_checkpoint", status: "done" },
       { node_id: "merge", node_key: "merge", node_kind: "integration", status: "done" },

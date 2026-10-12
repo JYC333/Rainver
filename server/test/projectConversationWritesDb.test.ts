@@ -124,8 +124,9 @@ describe("asking for a plan in conversation", () => {
     const listed = await executors.get("task.list" as SystemActionId)!({}, { idempotency_key: "call-2" } as never) as ExecutorResult;
     const tasks = (listed.modelResult as { tasks: Array<Record<string, unknown>> }).tasks;
     expect(tasks).toHaveLength(1);
-    // An id-only read left "what should I do next?" answerable only by
-    // restating titles; the state a recommendation is grounded in comes back.
+    // Do not return ids alone. "What should I do next?" would be answerable
+    // only by restating titles. The state a recommendation is grounded in
+    // comes back.
     expect(tasks[0]).toMatchObject({
       title: "Draft the schema",
       priority: "high",

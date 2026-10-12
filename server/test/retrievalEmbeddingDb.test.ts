@@ -134,7 +134,8 @@ describe("Retrieval embedding backfill (real Postgres + pgvector)", () => {
       [SPACE],
     );
     expect(indexed.rows.map((row) => row.object_id)).toEqual(["embed-1", "embed-2"]);
-    // Nor were the paid-for embeddings dropped with the cleared rows.
+    // The paid-for embeddings stay. Do not drop them with the rows a failed
+    // rebuild clears.
     expect(await pendingCount()).toBe(0);
   });
 

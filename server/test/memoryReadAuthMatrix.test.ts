@@ -33,8 +33,8 @@ describe("memory content access adapter", () => {
 
   it("rejects invalid scopes and applies sensitivity restrictions", () => {
     const ctx = { userId: "viewer-1", spaceId: "space-1" };
-    // `agent` is a real scope now, but a private one: a space-shared row in it
-    // could only have been written around the applier.
+    // `agent` is a private scope. Do not store a space-shared row in it.
+    // That row could only have been written around the applier.
     expect(memoryAccessDecision(memory({ visibility: "space_shared", scope_type: "agent" }), ctx)).toBe("deny");
     expect(memoryAccessDecision(memory({ owner_user_id: "viewer-1", scope_type: "agent" }), ctx)).toBe("full");
     expect(memoryAccessDecision(memory({ owner_user_id: "someone-else", scope_type: "agent" }), ctx)).toBe("deny");

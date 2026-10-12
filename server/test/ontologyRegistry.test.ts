@@ -63,9 +63,8 @@ describe("ontology registry", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("preserves the governance the edges had before the registry existed", () => {
-    // Thread structure was direct-write as a domain table and must stay direct;
-    // routing it through proposals would be a behaviour change, not a refactor.
+  it("keeps Thread structure a direct write", () => {
+    // Thread structure is a direct write. Do not route it through proposals.
     const thread = ["inquiry_thread", "inquiry_thread"] as const;
     expect(linkTypeDefinition("decomposes_into", ...thread)?.governance).toBe("direct");
     expect(linkTypeDefinition("proposes", ...thread)?.governance).toBe("direct");
@@ -89,8 +88,8 @@ describe("ontology registry", () => {
   });
 
   it("keeps the SQL retrieval enum agreeing with the Retrievable interface", () => {
-    // The consistency test compared the registry with the protocol enum but not
-    // with the database's own list, leaving a third copy free to drift.
+    // Compare the registry with the database's own list as well as the
+    // protocol enum. Do not leave a third copy free to drift.
     const schema = readFileSync(join(import.meta.dirname, "..", "src", "db", "schema", "_types.ts"), "utf8");
     const declared = new RegExp('pgEnum\\("retrieval_object_type", \\[([^\\]]*)\\]').exec(schema)?.[1] ?? "";
     const sqlValues = [...declared.matchAll(/"([a-z_]+)"/g)].map((match) => match[1]!).sort();
@@ -217,8 +216,8 @@ describe("ontology registry", () => {
     const graphable = graphableEntityTypes();
     expect(graphable).toContain("space_object");
     expect(graphable).toContain("inquiry_thread");
-    // Not graphable: it has no node representation, and the graph's lens filter
-    // now refuses to widen into a type the registry never declared.
+    // Not graphable: it has no node representation. The graph's lens filter
+    // refuses to widen into a type the registry never declared.
     expect(graphable).not.toContain("run");
   });
 

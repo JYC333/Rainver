@@ -332,8 +332,8 @@ describe("memory read routes", () => {
             resulting_memory_id: memoryId,
           });
         },
-        // Not the caller's own entry, which is the case the proposal flow is
-        // still for (ADR 0003 §3).
+        // Not the caller's own entry. That is the case the proposal flow
+        // covers (ADR 0003 §3).
         async setOwnStatus() {
           return null;
         },

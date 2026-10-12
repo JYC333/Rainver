@@ -611,9 +611,6 @@ describe("Project Folder database invariants", () => {
       request.mockRestore();
     }
   });
-  /** A file that does not exist yet is how every new file starts. The local
-   *  host reports that as `FolderReadError("not_found")`, which the save path
-   *  turned into a 404 instead of "this draft creates the file". */
   it("does not restore a deleted file over the unsaved new file the person is writing elsewhere", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const folderId = "17171717-1717-4717-8717-171717171717";
@@ -649,6 +646,9 @@ describe("Project Folder database invariants", () => {
     }
   });
 
+  /** A file that does not exist yet is how every new file starts. The local
+   *  host reports that as `FolderReadError("not_found")`. Do not turn that
+   *  into a 404. This draft creates the file. */
   it("creates a file that is not on the local host yet", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const { folderRoot, repo, cleanup } = await draftFolder(db.pool, "16161616-1616-4616-8616-161616161616");
@@ -703,9 +703,9 @@ describe("Project Folder database invariants", () => {
     }
   });
 
-  /** The save result is what the editor keeps as the file's current state, so
-   *  it has to be byte-honest: reporting the body without `has_bom` made the
-   *  very next save strip the BOM off a Windows-authored file. */
+  /** The save result is what the editor keeps as the file's current state.
+   *  It has to be byte-honest. Do not report the body without `has_bom`.
+   *  The next save would strip the BOM off a Windows-authored file. */
   it("reports a saved file exactly as a fresh read would, BOM included", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const folderId = "17171717-1717-4717-8717-171717171717";
