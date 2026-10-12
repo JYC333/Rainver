@@ -1766,8 +1766,8 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       [input.spaceId, agentId, version.id, now],
     );
     // The default Profile is admitted by the same normalizer every other
-    // Profile write uses. Inlining a second copy of these rules here is what
-    // let Agent creation and the Profile API disagree about what is valid.
+    // Profile write uses. Do not inline a second copy of these rules.
+    // Agent creation and the Profile API would disagree about what is valid.
     const normalized = await normalizeRuntimeProfileInput(client, input.spaceId, {
       agentId,
       name: "Default",

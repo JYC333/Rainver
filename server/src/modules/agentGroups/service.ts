@@ -1268,8 +1268,8 @@ export class AgentGroupRunService {
       space_id: input.space_id,
       user_id: identity.userId,
       // The child acts in the same conversation its parent was spoken to in,
-      // and is allowed the same things there. Declaring nothing here meant a
-      // delegated specialist could call no action at all.
+      // and is allowed the same things there. Do not declare an empty
+      // allowance. A delegated specialist could call no action at all.
       ...conversationToolGrantInputFor({
         room_id: group.room_id,
         project_id: parentRun.project_id,
