@@ -1005,8 +1005,8 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
   });
 
   it("tells the runtime which model, in the identifier space that runtime uses", async () => {
-    // Nothing threaded a model into a remote run before, so this path is new:
-    // the model the *binding* resolved, translated, rather than the router's.
+    // The remote run is told the model the binding resolved, translated,
+    // rather than the router's. Do not send the router's identifier.
     setProviderProxyBaseUrlForProcess("http://server:8021", "http://control-plane:8021");
     const sink = new FakeSink();
     const connections = new HostConnectionRegistry();

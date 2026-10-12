@@ -527,8 +527,8 @@ describe("Research Area (real Postgres)", () => {
     const service = new ProjectResearchAreaService(db.pool, config);
     await service.initializeArea(identity, PROJECT);
 
-    // Admission succeeds whatever the provider is doing: a provider failure is
-    // the worker's problem now, not a 502 on the person's request.
+    // Admission succeeds whatever the provider is doing. A provider failure
+    // is the worker's problem, not a 502 on the person's request.
     const queued = await service.askAi(identity, PROJECT, {
       prompt: "Rewrite the current understanding.",
       section_key: "understanding",

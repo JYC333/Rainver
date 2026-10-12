@@ -320,9 +320,9 @@ describe("project board read model", () => {
 
   it("draws one Board's columns even when the Project has two", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // `boards` has no uniqueness on (space_id, project_id). Reading every
-    // matching Board's columns produced duplicate lanes with every card drawn
-    // twice, which reads as data corruption rather than as a second Board.
+    // `boards` has no uniqueness on (space_id, project_id). Do not read
+    // every matching Board's columns. That draws duplicate lanes and every
+    // card twice, which reads as data corruption rather than as a second Board.
     for (const [order, name] of [[0, "First"], [1, "Second"]] as const) {
       const boardId = randomUUID();
       await db.pool!.query(
@@ -1010,9 +1010,9 @@ describe("project updates", () => {
 
   it("appends a person's update through the writer gate, not the read gate", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The route is the only producer of `project.reported`. Every other test
-    // here stages events by calling the writer directly, so the lock, the
-    // writer check and the actor resolution have never actually run.
+    // The route is the only producer of `project.reported`. Other tests
+    // stage events by calling the writer directly, so they do not run the
+    // lock, the writer check, or the actor resolution.
     const post = async (userId: string): Promise<void> => {
       await withDbTransaction(db.pool!, async (client) => {
         await lockActiveProjectForMutation(client, SPACE, PROJECT);
@@ -1124,9 +1124,8 @@ describe("inquiry advancement in the Project's account", () => {
 
   it("says nothing about a Thread the reader cannot see", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The same rule Tasks already had: an update naming a Thread would leak
-    // its statement, which is the part worth reading. This is the most
-    // security-relevant of the new joins.
+    // The same rule as Tasks: an update naming a Thread would leak
+    // its statement, which is the part worth reading.
     await threads().createThread(owner, PROJECT, { kind: "question", statement: "Shared question" });
     const hidden = await threads().createThread(owner, PROJECT, {
       kind: "question", statement: "Private question",

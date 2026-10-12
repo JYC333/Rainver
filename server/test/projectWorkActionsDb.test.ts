@@ -164,9 +164,9 @@ beforeEach(async () => {
 });
 
 describe("origin gate", () => {
-  // The whole Project-internal write class (ADR 0017 §2), not only Tasks:
-  // removing the proposal gate from Inquiry did not widen who may act, it
-  // moved the question from who wrote it to whether anybody asked.
+  // The whole Project-internal write class (ADR 0017 §2), not only Tasks.
+  // Who may act is whether anybody asked, not who wrote it. Do not treat
+  // the absence of a proposal gate as a wider set of actors.
   const gated = [
     "task.create",
     "task.stage.advance",
@@ -854,8 +854,8 @@ describe("the executor band", () => {
   it("keys events per attempt, so a Supervisor retry is not swallowed", async (ctx) => {
     if (!db.available) return ctx.skip();
     // A retry re-executes the same run id in a fresh process whose tool-call
-    // counter restarts at 1. Keyed on the Run alone, attempt 2's first report
-    // resolved to attempt 1's event and answered ok.
+    // counter restarts at 1. Do not key the event on the Run alone. Attempt
+    // 2's first report would resolve to attempt 1's event and answer ok.
     const taskA = randomUUID();
     const taskB = randomUUID();
     await makeTask(taskA);

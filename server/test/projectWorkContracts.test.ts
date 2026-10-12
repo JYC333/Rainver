@@ -36,8 +36,8 @@ const SRC = join(import.meta.dirname, "..", "src");
 
 describe("project work event vocabulary", () => {
   // The column carries a format check only, so the registry is the whole of
-  // the closed-set enforcement. A demoted constraint with nothing asking the
-  // registry would be strictly worse than the constraint it replaced.
+  // the closed-set enforcement. Do not leave only the format check. Any
+  // token that matches the format would then be accepted.
   it("declares every kind the protocol vocabulary carries", () => {
     for (const kind of PROJECT_WORK_EVENT_KINDS) {
       expect(hasWorkEventKindDeclaration(kind), kind).toBe(true);
