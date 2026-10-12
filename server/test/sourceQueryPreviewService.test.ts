@@ -109,10 +109,10 @@ describe('SourceQueryPreviewService', () => {
    *
    * `headers` is sent on every hop; `credentialHeaders` is what the outbound
    * guard drops when a redirect leaves the first origin, and what makes it
-   * refuse an https→http downgrade. Merged in, a key whose header is not one of
-   * the three names the guard recognises by default — Semantic Scholar's
-   * `x-api-key`, Brave's `X-Subscription-Token` — travelled to whatever origin
-   * the upstream named.
+   * refuse an https→http downgrade. Do not merge a key into `headers`. A
+   * header the guard does not recognise by default — Semantic Scholar's
+   * `x-api-key`, Brave's `X-Subscription-Token` — would travel to whatever
+   * origin the upstream named.
    *
    * Asserted with a credential actually resolved. With none, the two
    * spellings produce identical arguments and the test passes while the key

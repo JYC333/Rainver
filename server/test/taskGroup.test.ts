@@ -36,10 +36,10 @@ describe("taskArtifactsRepository", () => {
 
   /**
    * `task_runs` and everything hanging off it is Run-derived: a Task is a
-   * shared object, a Run inside a Room is not. These lists carried the content
-   * predicate but no Room term, which SECURITY recorded as latent because no
-   * path wrote a Room-scoped Run into `task_runs`. Dispatch now refuses to
-   * create one, and these carry the term regardless.
+   * shared object, a Run inside a Room is not. These lists carry the content
+   * predicate and the Room term. Do not drop the Room term. Dispatch refuses
+   * a `session_id` that names a Room conversation, so no Room-scoped Run
+   * reaches `task_runs`; the Room term on the list is the second of the two.
    */
   describe("task run-derived lists carry the Room boundary", () => {
     it("applies the Room term to runs, evaluations, proposals and artifacts", async () => {

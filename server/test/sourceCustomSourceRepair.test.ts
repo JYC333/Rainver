@@ -15,7 +15,8 @@ import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/a
 import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
 
 // Real-Postgres integration tests for repair and rollback.
-// Skips gracefully when Docker is unavailable.
+// The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 const SPACE_A = "space-a";
 const IDENTITY = { spaceId: SPACE_A, userId: "user-1" };

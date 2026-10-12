@@ -11,7 +11,8 @@ import { HttpError } from "../src/modules/routeUtils/common.js";
 // constraints, the space_id + source_connection_id same-space gate, and FK
 // behavior, through `useTestDatabase`.
 //
-// Skips when that database is unavailable so `pnpm test` runs everywhere.
+// The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 const SPACE_A = "space-a";
 const SPACE_B = "space-b";

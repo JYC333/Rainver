@@ -25,7 +25,8 @@ import { PgProposalApplyService } from "../src/modules/proposals/applyService.js
 // create flow (draft -> generate -> test -> activate/approval), matching the
 // project-wide preference for real DB/process tests over fakes
 // (TESTING_STRATEGY.md).
-// Skips gracefully when Docker is unavailable.
+// The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 const SPACE_A = "space-a";
 const IDENTITY = { spaceId: SPACE_A, userId: "user-1" };

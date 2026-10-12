@@ -14,8 +14,8 @@ import { PgProposalRepository } from "../src/modules/proposals/repository.js";
 // the ck_messages_role CHECK, jsonb param binding, varchar lengths, and the
 // add-message + session-touch CTE. They run through `useTestDatabase`.
 //
-// The suite skips when that database is unavailable so `pnpm test` still runs
-// everywhere; where it is present (dev, CI) it always runs.
+// The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 let repo: PgSessionRepository | undefined;
 

@@ -125,7 +125,6 @@ export async function seedMainlineRoomsForAllProjects(pool: Pool, now = new Date
  * Every Room has exactly one active manager and it is always the system
  * Assistant; production seats it on the first message. A test that wants a
  * Room ready to speak in without going through that path seats one here.
- * Promoted once its third copy appeared.
  */
 export async function seedRoomManager(
   pool: Pool,

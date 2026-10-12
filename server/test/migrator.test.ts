@@ -6,8 +6,9 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { migrate, status, loadMigrations } from "../src/db/migrator.js";
 import { withTransaction } from "../src/db/tx.js";
 
-// Real-Postgres tests for the server migration runner. Skips gracefully when Docker
-// is unavailable so `pnpm test` still runs everywhere.
+// Real-Postgres tests for the server migration runner. The suite skips when
+// that database is unreachable. CI sets REQUIRE_TEST_POSTGRES, which fails
+// the run instead of skipping.
 
 
 const db = useTestDatabase(import.meta.filename, { max: 5, empty: true });

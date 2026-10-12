@@ -15,7 +15,9 @@ import { pruneSupersededCustomSourceHandlerArtifacts } from "../src/modules/sour
 import { HttpError } from "../src/modules/routeUtils/common.js";
 
 // Real-Postgres integration tests for rate limiting, artifact
-// retention, and observability). Skips gracefully when Docker is unavailable.
+// retention, and observability. The suite skips when that database is
+// unreachable. CI sets REQUIRE_TEST_POSTGRES, which fails the run instead
+// of skipping.
 
 const SPACE_A = "space-a";
 const IDENTITY = { spaceId: SPACE_A, userId: "user-1" };

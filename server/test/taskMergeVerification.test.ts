@@ -6,8 +6,8 @@ import type { RunRecord } from "../src/modules/runs/repository.js";
 /**
  * A merge's gate (ADR 0016 §11): the Task's declared checks, asked again of
  * its rebased worktree. Only what a workspace can answer is asked — a Run's
- * outputs are not part of the tree being merged — and a check that could not
- * run did not say yes.
+ * outputs are not part of the tree being merged. A check that could not
+ * run does not say yes. Do not treat an unrun check as a pass.
  */
 const emptyPlan: VerificationPlanReader = {
   async getPlan() {

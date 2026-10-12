@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Patterns that made this suite slow once and must not come back.
+ * Patterns that scale with the size of the system and must not come back.
  *
  * Each rule below is a cost that scales with the size of the system rather
  * than with the test: truncating cascades across the whole schema, building

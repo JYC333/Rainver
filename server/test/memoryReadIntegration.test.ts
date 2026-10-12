@@ -11,7 +11,8 @@ import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 // summary access redaction, cross-user and cross-space visibility, and the
 // project_id membership check. They run through `useTestDatabase`.
 //
-// Skips when that database is unavailable so `pnpm test` runs everywhere.
+// The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 let repo: PgMemoryReadRepository | undefined;
 

@@ -12,9 +12,10 @@ import {
 } from "../src/modules/memory/memoryApplyRepository.js";
 
 // Real-PostgreSQL integration tests for the memory appliers. These run the
-// actual INSERT/UPDATE memory_entries + provenance / relation writes against a
-// versioning, supersede, and access invariants are exercised on the real
-// stack. Skips gracefully when Docker is unavailable.
+// actual INSERT/UPDATE memory_entries + provenance / relation writes, so the
+// column set, versioning, supersede, and access invariants are exercised on
+// the real schema. The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 let repo: PgMemoryApplyRepository | undefined;
 

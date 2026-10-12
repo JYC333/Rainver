@@ -17,7 +17,8 @@ import {
 // Real-PostgreSQL integration tests for CustomSourceMaterializationService.
 // Exercises the actual INSERT statements against the real migrated schema.
 //
-// Skips gracefully when Docker is unavailable so `pnpm test` runs everywhere.
+// The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 const SPACE_A = "space-a";
 

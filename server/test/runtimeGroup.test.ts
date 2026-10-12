@@ -102,12 +102,11 @@ describe("runtimeAdapters", () => {
 });
 
 describe("runtimeEventNormalization", () => {
-  // Runtime I/O Convergence requires semantic Run Events to never persist
-  // credentials or unbounded vendor payloads (see
-  // .agent/architecture/RUNS_AND_OUTPUTS.md). Codex-style command_execution
-  // events fall back to the raw shell command string for tool_name, which can
-  // carry secrets or arbitrarily long text — this must be redacted and bounded
-  // the same way `error.message` already is.
+  // Semantic Run Events must not persist credentials or unbounded vendor
+  // payloads (see .agent/architecture/RUNS_AND_OUTPUTS.md). Codex-style
+  // command_execution events fall back to the raw shell command string for
+  // tool_name, which can carry secrets or arbitrarily long text. Redact and
+  // bound it the same way `error.message` already is.
 
   describe("normalizeVendorEvents tool_name redaction", () => {
     it("redacts a secret embedded in an ACP tool_call title", () => {
