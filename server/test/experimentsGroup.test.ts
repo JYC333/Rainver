@@ -249,8 +249,8 @@ describe("experimentsDb", () => {
       });
 
       // The Signal enters the same material-consolidation path as a
-      // literature-sourced Signal — one open Candidate, reviewable and
-      // acceptable through the existing Candidate review flow unchanged.
+      // literature-sourced Signal: one open Candidate. Do not add a second
+      // review flow for it.
       const candidates = await signalSvc.listCandidates(identity, PROJECT, "pending");
       expect(candidates).toHaveLength(1);
       const accepted = await signalSvc.decideCandidate(identity, PROJECT, (candidates[0] as Record<string, unknown>).id as string, {

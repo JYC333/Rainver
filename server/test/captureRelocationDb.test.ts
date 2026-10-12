@@ -314,8 +314,8 @@ describe("moving out of a Space (real Postgres)", () => {
     );
     expect(notifications.rows).toHaveLength(1);
     expect(notifications.rows[0]).toMatchObject({ recipient_user_id: MATE, event_type: "content_egress" });
-    // Pointer metadata only — decision 11 makes this non-negotiable, or the
-    // notification becomes a leak channel of its own.
+    // Pointer metadata only. ADR 0013 decision 11: do not put the content
+    // in the notification. It becomes a leak channel of its own.
     expect(JSON.stringify(notifications.rows[0].pointer_metadata_json)).not.toContain("Watch this leave");
   });
 });
@@ -404,7 +404,7 @@ describe("the Space boundary (real Postgres)", () => {
     const captured = await marginalia(OWNER, "Stays here.");
 
     // Copy-out is off, and that is irrelevant: the destination is the same
-    // Space, so this is decision 4's ladder, not egress.
+    // Space. This follows ADR 0013 decision 4, not egress.
     const result = await relocation().relocate({
       userId: OWNER, requestSpaceId: TEAM, activityId: captured.activity_id,
       destination: "project_raw", mode: "copy", blockIds: [captured.block_id!], projectId: PROJECT,

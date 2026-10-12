@@ -323,9 +323,9 @@ describe("executionTopologyDb", () => {
       );
       expect(task.rows[0]).toMatchObject({ status: "waiting_for_review", blocked_reason: null });
 
-      // Failure also asks a person, rather than writing `blocked`. Retry,
-      // change of approach and abandonment are all decisions, and `blocked`
-      // now means only what it says: held up by something else.
+      // Failure also asks a person. Do not write `blocked`. Retry,
+      // change of approach and abandonment are all decisions. `blocked`
+      // means held up by something else.
       await db.pool.query(`UPDATE tasks SET status = 'ready', completed_at = NULL WHERE id = $1`, [TASK]);
       await db.pool.query(`UPDATE runs SET status = 'failed' WHERE id = $1`, [RUN]);
       await settleTasksForRun(db.pool, SPACE, RUN);

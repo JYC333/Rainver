@@ -18,8 +18,9 @@ afterEach(async () => {
 
 describe("frontend-support read models", () => {
   it("counts review and active work with the statuses the protocol actually uses", () => {
-    // A status the protocol never produces counts nothing: needs_review_count
-    // stayed 0 while Tasks sat in waiting_for_review.
+    // A status the protocol never produces counts nothing. Do not omit
+    // `waiting_for_review`. needs_review_count would stay 0 while Tasks
+    // sit in that status.
     expect(REVIEW_TASK_STATUSES.length).toBeGreaterThan(0);
     for (const status of REVIEW_TASK_STATUSES) expect(TASK_STATUSES).toContain(status);
     expect(REVIEW_TASK_STATUSES).toContain("waiting_for_review");

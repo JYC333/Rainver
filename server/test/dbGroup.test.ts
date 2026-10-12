@@ -175,8 +175,9 @@ describe("advisoryLockDb", () => {
   it("survives losing the dedicated lock connection while the work runs", async () => {
     const lockKey = `test-lock:${randomUUID()}`;
     const result = await withDedicatedSessionAdvisoryLock(db.pool, lockKey, async () => {
-      // `pg_locks` is cluster-wide: unscoped, this picked whichever backend
-      // of a concurrently running file held an advisory lock and killed it.
+      // `pg_locks` is cluster-wide. Scope the query to this database.
+      // Unscoped, it would pick whichever backend of a concurrently running
+      // file held an advisory lock and kill it.
       const holder = await db.pool.query<{ pid: number }>(
         `SELECT pid FROM pg_locks
           WHERE locktype = 'advisory' AND granted AND pid <> pg_backend_pid()
