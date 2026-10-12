@@ -313,9 +313,9 @@ describe("skipped-surface access (real Postgres)", () => {
 
   it("lets a Project owner who is only a Space member reject what they could accept", async () => {
     if (!db.available) return;
-    // Accept already reads `required_approver_role: "owner"` on a Project
-    // proposal as the Project's owner; reject compared the Space role alone
-    // and answered the same person 404.
+    // Accept reads `required_approver_role: "owner"` on a Project
+    // proposal as the Project's owner. Do not compare the Space role
+    // alone on reject. That answered the same person 404.
     const theirProject = randomUUID();
     await db.pool.query(
       `INSERT INTO projects (id, space_id, name, status, owner_user_id, created_at, updated_at)

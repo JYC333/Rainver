@@ -1008,9 +1008,9 @@ describe("Room workflow (real Postgres)", () => {
     if (!db.available || !service) return ctx.skip();
     await removeManagedAssistant();
     await db.pool.query("UPDATE model_provider_space_grants SET enabled = false WHERE space_id = 'space-1'");
-    // There is no paired-Host backend or provider grant. The new Agent still
-    // receives its default Server/OpenCode Profile. Installing that Server
-    // runtime and reporting readiness is a separate step.
+    // There is no paired-Host backend or provider grant. The Agent receives
+    // its default Server/OpenCode Profile. Installing that Server runtime
+    // and reporting readiness is a separate step.
     await db.pool.query("UPDATE hosts SET capabilities_json = '{}'::jsonb WHERE id = 'host-1'");
     const owner = { spaceId: "space-1", userId: "user-1" };
     // Room and draft creation remain independent of the Server runtime's

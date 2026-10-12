@@ -15,7 +15,7 @@ import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("spaceAssistantService", () => {
   describe("managed Assistant backend setup targets", () => {
-    // Both destinations are always real work now: a Space with no backend can
+    // Both destinations are real work: a Space with no backend can
     // either add a ModelProvider or log a CLI in on an execution host. The
     // server does not have a vendor CLI of its own (ADR 0016).
     it("names both places a missing backend can be configured", () => {

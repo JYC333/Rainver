@@ -642,8 +642,8 @@ describe("runs repositories against real PostgreSQL", () => {
       status: "running",
     });
 
-    // The scalar subquery + ::varchar casts must execute; the old
-    // INSERT...SELECT shape failed real "inconsistent types deduced" inference.
+    // The scalar subquery + ::varchar casts must execute. Do not use
+    // INSERT...SELECT. That shape fails with "inconsistent types deduced".
     expect(e0.event_index).toBe(0);
     expect(e1.event_index).toBe(1);
   });

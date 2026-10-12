@@ -1139,9 +1139,9 @@ describe("RunOrchestrationService", () => {
     });
 
     expect(result).toMatchObject({ status: "succeeded" });
-    // Declared outputs still settle; they arrive as the daemon's own uploads
-    // (`recordOutputArtifacts`) rather than through a directory pair the server
-    // stages and reads back, which has no meaning on another machine.
+    // Declared outputs settle. They arrive as the daemon's own uploads
+    // (`recordOutputArtifacts`). Do not stage a directory pair the server
+    // reads back. That pair has no meaning on another machine.
     expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
   });
 
@@ -1707,8 +1707,9 @@ describe("RunOrchestrationService", () => {
 
   it("does not dispatch a turn stopped while its runtime was being prepared", async () => {
     // Stop lands after the Run went running and before the adapter registered
-    // anything to terminate: the cancel cannot reach a process and cannot
-    // publish under the lock, so dispatching anyway ran the whole turn.
+    // anything to terminate. The cancel cannot reach a process and cannot
+    // publish under the lock. Do not dispatch anyway. That would run the
+    // whole turn.
     const repo = new FakeRepo();
     let dispatched = false;
     let service: RunOrchestrationService;

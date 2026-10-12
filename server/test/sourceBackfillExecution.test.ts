@@ -13,9 +13,10 @@ describe("source backfill extraction windows",()=>{
     expect(parsed.searchParams.get("max_results")).toBe("17");
   });
 
-  // The offset is counted in items. Deriving it as `cursor * 100` regardless of
-  // the page actually requested skipped every result between the real position
-  // and the assumed one — here, 150 papers that no page would ever return.
+  // The offset is counted in items. Do not derive it as `cursor * 100`
+  // regardless of the page actually requested. That skips every result
+  // between the real position and the assumed one — here, 150 papers
+  // that no page would ever return.
   it("resumes a cursor scan at the item the previous pages reached",()=>{
     const url=sourceConnectorRegistry.get("arxiv_api").buildBackfillRequest({ endpoint_url: "https://export.arxiv.org/api/query?search_query=cat%3Acs.AI", compiled_query: { search_query: "cat:cs.AI" } }, { from: "2026-01-01T00:00:00.000Z", to: "2026-01-02T00:00:00.000Z", cursor: 2, max_items: 25 }, {} ).url;
     const parsed=new URL(url);

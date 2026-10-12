@@ -1246,8 +1246,8 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       );
     }
     // A chat or fail-fast Run the supervisor leaves orphaned stays that way
-    // after its finalization. Once a backlog of those filled the page, a
-    // newly orphaned Task Run never reached finalization at all.
+    // after its finalization. Do not let that backlog fill the page. A
+    // newly orphaned Task Run would never reach finalization.
     await db.pool.query(
       `INSERT INTO run_finalizations (id, space_id, run_id, attempt_number, status, finalized_at, created_at)
        VALUES ($1, $2, $3, 1, 'completed', now(), now())`,
