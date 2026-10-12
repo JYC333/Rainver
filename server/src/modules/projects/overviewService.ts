@@ -78,8 +78,7 @@ export class ProjectOverviewService {
       definition_status: projectDefinition,
       has_project_folder: (folders.rowCount ?? 0) > 0,
       attention: attention.slice(0, 20),
-      // Attention answers "what needs me". This answers "what is happening",
-      // which the front page could not answer at all.
+      // Attention answers "what needs me". `in_progress` answers "what is happening".
       in_progress: inProgress,
     };
   }

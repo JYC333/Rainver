@@ -2904,7 +2904,7 @@ function normalizeInitialIntakeInput(body: Record<string, unknown>, profileQuest
   const executionBody = objectValue(body.execution);
   const reportDepth = normalizeReportDepth(body.report_depth);
   const questionRefineSkipped = normalizeQuestionRefineSkipped(body.question_refine_skipped);
-  // Refinement is a hard gate for starting (revised D5): a failing question
+  // Refinement is a hard gate for starting. A failing question
   // may still be saved as a draft, but it cannot spend the intake budget.
   if (questionRefineSkipped) {
     throw new HttpError(422, "The research question has not passed refinement; adopt a suggested question or reassess with your answers before starting");
