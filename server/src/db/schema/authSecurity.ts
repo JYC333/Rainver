@@ -10,7 +10,7 @@ import {
   type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { users } from "./auth.js";
+import { userSessions, users } from "./auth.js";
 import { spaceInvitations } from "./spaces.js";
 
 /**
@@ -55,6 +55,43 @@ export const registrationIntents = pgTable("registration_intents", {
     "ck_registration_intents_invitation_authority",
     sql`(authority = 'space_invitation' AND invitation_id IS NOT NULL) OR (authority = 'bootstrap' AND invitation_id IS NULL)`,
   ),
+]);
+
+/**
+ * A recent-authentication grant: the proof that the person at this session
+ * verified their password or Google identity in the last ten minutes. The
+ * browser holds the raw token in an HttpOnly cookie; only its digest is here.
+ * One grant serves one sensitive mutation: consuming it is an atomic
+ * conditional update, so two concurrent requests cannot both spend it. It is
+ * bound to the session it was issued under and goes with that session.
+ */
+export const authReauthGrants = pgTable("auth_reauth_grants", {
+  id: varchar({ length: 36 }).primaryKey().notNull(),
+  tokenHash: varchar("token_hash", { length: 128 }).notNull(),
+  userId: varchar("user_id", { length: 36 }).notNull(),
+  sessionId: varchar("session_id", { length: 36 }).notNull(),
+  /** How the person proved themselves: `password` or `google`. */
+  method: varchar({ length: 32 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true, mode: "string" }).notNull(),
+  consumedAt: timestamp("consumed_at", { withTimezone: true, mode: "string" }),
+  /** The sensitive operation that spent the grant. */
+  consumedFor: varchar("consumed_for", { length: 64 }),
+}, (table): PgTableExtraConfigValue[] => [
+  unique("uq_auth_reauth_grants_token_hash").on(table.tokenHash),
+  index("ix_auth_reauth_grants_session").using("btree", table.sessionId.asc().nullsLast(), table.expiresAt.asc().nullsLast()),
+  foreignKey({
+    columns: [table.userId],
+    foreignColumns: [users.id],
+    name: "auth_reauth_grants_user_id_fkey",
+  }).onDelete("cascade"),
+  foreignKey({
+    columns: [table.sessionId],
+    foreignColumns: [userSessions.id],
+    name: "auth_reauth_grants_session_id_fkey",
+  }).onDelete("cascade"),
+  check("ck_auth_reauth_grants_method", sql`method IN ('password', 'google')`),
+  check("ck_auth_reauth_grants_consumed", sql`(consumed_at IS NULL) = (consumed_for IS NULL)`),
 ]);
 
 /** Append-only safe auth telemetry; never put credentials or raw tokens here. */

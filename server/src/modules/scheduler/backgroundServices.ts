@@ -417,16 +417,19 @@ export function startBackgroundServices(
   }
 
   const operationalAlerts = OperationalAlertService.fromConfig(config);
-  const scheduler = startSchedulerRegistry(tasks, log, async (taskName, error) => {
+  // The alert names the task, the kind of failure and the log reference; the
+  // exception text stays in the server log, which only the instance operator
+  // reads. An alert reaches every Space owner.
+  const scheduler = startSchedulerRegistry(tasks, log, async (failure) => {
     if (!operationalAlerts) return;
     await operationalAlerts.emitInstance({
       kind: "scheduler_task_failed",
-      title: `Scheduler task failed: ${taskName}`,
-      message: `Scheduler task ${taskName} raised an exception: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-      dedupeKey: `scheduler_task_failed:${taskName}`,
-      payload: { task_name: taskName },
+      title: `Scheduler task failed: ${failure.task_name}`,
+      message: failure.kind === "timeout"
+        ? `Scheduler task ${failure.task_name} did not complete within its time limit (log reference ${failure.reference}).`
+        : `Scheduler task ${failure.task_name} failed (log reference ${failure.reference}).`,
+      dedupeKey: `scheduler_task_failed:${failure.task_name}`,
+      payload: { task_name: failure.task_name, error_kind: failure.kind, error_reference: failure.reference },
     });
   });
 

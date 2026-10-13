@@ -7,7 +7,7 @@ import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContex
 import { HostDaemonFrameSchema, HostHelloInfoSchema, HostRunDiffUploadSchema,
   HostRunOutputsUploadSchema, type HostHelloInfo, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import { scheduleAmbientSyncs } from "../importedSessions/syncScheduler.js";
-import { authRepositoryFromConfig, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
+import { authRepositoryFromConfig, sessionRefreshSink, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
 import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow, type HostUploadRefusal } from "./repository.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
@@ -242,7 +242,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!auth || !hosts) {
       return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
     }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const payload = body<{ name: string }>(request);
     const result = await hosts.issuePairingCode(user.id, typeof payload.name === "string" ? payload.name : "");
@@ -286,7 +286,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!auth || !hosts) {
       return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
     }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const items = await hosts.listVisibleTo(user.id);
     return reply.send({
@@ -350,7 +350,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!auth) {
       return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
     }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const latestManagedVersions = new Map(acpRuntimeProbes().map((probe) => [probe.runtime_key, probe.version]));
     const items = listRuntimeAdapterSpecs()
@@ -775,7 +775,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!auth || !hosts) {
       return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
     }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const hostId = params(request).hostId;
     if (!hostId) return reply.code(400).send({ detail: "hostId is required" });

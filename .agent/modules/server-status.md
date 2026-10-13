@@ -43,8 +43,15 @@ evidence: LLM Provider reachability, per-adapter runtime tools
 ## Scheduled-task liveness
 
 `scheduler_tasks[]` reports each task's `health`, `state`, `last_started_at`,
-`last_success_at`, `last_failure_at`, `last_error`, `consecutive_failures`,
-`timeouts_total`, and `seconds_since_completion`.
+`last_success_at`, `last_failure_at`, `last_error_kind` (`timeout` or
+`exception`), `last_error_reference`, `consecutive_failures`,
+`timeouts_total`, and `seconds_since_completion`. The exception's text is
+never in the body: the status route is read by Space owners/admins, and a
+task's error can quote a URL with a credential, a path on this machine or
+another Space's content. The server log line
+`[scheduler:<task>] ref=<reference> kind=<kind> <message>` carries it under
+the reference, and the `scheduler_task_failed` operational alert names the
+task, the kind and the reference the same way.
 
 `health` is:
 

@@ -670,3 +670,182 @@ describe("registration and Better Auth facade primitives", () => {
     }
   });
 });
+
+describe("recent-authentication grants and session refresh", () => {
+  /** Cookie `name=value` pairs from a response, by name. */
+  function cookiesOf(headers: Record<string, unknown>): Record<string, string> {
+    const raw = headers["set-cookie"];
+    const list = Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : [];
+    return Object.fromEntries(list.map((cookie) => {
+      const pair = String(cookie).split(";", 1)[0]!;
+      const at = pair.indexOf("=");
+      return [pair.slice(0, at), pair.slice(at + 1)];
+    }));
+  }
+
+  async function bootstrapped(google = false) {
+    const config = authConfig("owner@example.test", google);
+    const registrations = new RegistrationService(db.pool, config);
+    const intent = await registrations.issueIntent({ email: "owner@example.test" });
+    const { raw, userId } = await signUp(config, "owner@example.test", "Owner");
+    await registrations.complete({ intentId: intent.intentId, claimSecret: intent.claimSecret, userId });
+    const app = buildModuleServer(config, [authModule]);
+    return { config, app, userId, sessionCookie: `better-auth.session_token=${encodeURIComponent(raw)}`, raw };
+  }
+
+  async function grantFor(app: ReturnType<typeof buildModuleServer>, sessionCookie: string): Promise<string> {
+    const reauth = await app.inject({
+      method: "POST", url: "/api/v1/auth/reauth",
+      headers: { cookie: sessionCookie, origin: "http://localhost:5173", "content-type": "application/json" },
+      payload: JSON.stringify({ password: "a password with at least fifteen characters" }),
+    });
+    expect(reauth.statusCode).toBe(200);
+    expect(reauth.json()).toMatchObject({ ok: true, expires_in: 600 });
+    const grant = cookiesOf(reauth.headers as Record<string, unknown>)["rainver.reauth"];
+    expect(grant).toBeTruthy();
+    return `rainver.reauth=${grant}`;
+  }
+
+  it("spends a grant once: status reads it, a mutation consumes it, a second use is refused", async () => {
+    if (!db.available) return;
+    const { app, userId, sessionCookie } = await bootstrapped();
+    try {
+      const grant = await grantFor(app, sessionCookie);
+      const stored = await db.pool.query<{ token_hash: string; consumed_at: string | null; session_id: string }>(
+        "SELECT token_hash, consumed_at, session_id FROM auth_reauth_grants WHERE user_id = $1", [userId],
+      );
+      expect(stored.rows).toHaveLength(1);
+      // Only the digest is stored, and it is the current session's grant.
+      expect(stored.rows[0]!.token_hash).toBe(hashOpaqueToken(decodeURIComponent(grant.slice("rainver.reauth=".length))));
+      expect(stored.rows[0]!.consumed_at).toBeNull();
+      const session = await db.pool.query<{ id: string }>("SELECT id FROM user_sessions WHERE user_id = $1", [userId]);
+      expect(stored.rows[0]!.session_id).toBe(session.rows[0]!.id);
+
+      // Reading the status twice spends nothing.
+      for (let index = 0; index < 2; index += 1) {
+        const status = await app.inject({ method: "GET", url: "/api/v1/auth/reauth/status", headers: { cookie: `${sessionCookie}; ${grant}` } });
+        expect(status.statusCode).toBe(200);
+        expect(new Date(status.json().expires_at).getTime()).toBeGreaterThan(Date.now());
+      }
+      await db.pool.query("DELETE FROM auth_accounts WHERE user_id = $1 AND provider_id = 'credential'", [userId]);
+      const setPassword = await app.inject({
+        method: "POST", url: "/api/v1/auth/password/set",
+        headers: { cookie: `${sessionCookie}; ${grant}`, origin: "http://localhost:5173", "content-type": "application/json" },
+        payload: JSON.stringify({ new_password: "a new password with at least fifteen characters" }),
+      });
+      expect(setPassword.statusCode).toBe(200);
+      const spent = await db.pool.query<{ consumed_for: string | null }>("SELECT consumed_for FROM auth_reauth_grants WHERE user_id = $1", [userId]);
+      expect(spent.rows[0]!.consumed_for).toBe("password_set");
+      // The same cookie on another sensitive mutation: spent, so refused, and the status agrees.
+      const again = await app.inject({
+        method: "POST", url: "/api/v1/auth/google/unlink",
+        headers: { cookie: `${sessionCookie}; ${grant}`, origin: "http://localhost:5173", "content-type": "application/json" },
+        payload: JSON.stringify({ account_id: "none" }),
+      });
+      expect(again.statusCode).toBe(403);
+      expect(again.json()).toMatchObject({ code: "reauthentication_required" });
+      const status = await app.inject({ method: "GET", url: "/api/v1/auth/reauth/status", headers: { cookie: `${sessionCookie}; ${grant}` } });
+      expect(status.json()).toEqual({ expires_at: null });
+      const accounts = await db.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth_accounts WHERE user_id = $1 AND provider_id = 'credential'", [userId]);
+      expect(accounts.rows[0]!.count).toBe("1");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("lets exactly one of two concurrent mutations spend a grant", async () => {
+    if (!db.available) return;
+    const { app, userId, sessionCookie } = await bootstrapped();
+    try {
+      const grant = await grantFor(app, sessionCookie);
+      const attempt = (password: string) => app.inject({
+        method: "POST", url: "/api/v1/auth/password/change",
+        remoteAddress: "192.0.2.90",
+        headers: { cookie: `${sessionCookie}; ${grant}`, origin: "http://localhost:5173", "content-type": "application/json" },
+        payload: JSON.stringify({ current_password: "a password with at least fifteen characters", new_password: password, revoke_other_sessions: false }),
+      });
+      const results = await Promise.all([attempt("first password with fifteen characters"), attempt("second password with fifteen characters")]);
+      // The grant is spent before Better Auth changes the password, so only
+      // the request that spent it proceeds; the other never reaches it.
+      expect(results.map((result) => result.statusCode).sort()).toEqual([200, 403]);
+      const spent = await db.pool.query<{ consumed_for: string | null }>("SELECT consumed_for FROM auth_reauth_grants WHERE user_id = $1", [userId]);
+      expect(spent.rows.map((row) => row.consumed_for)).toEqual(["password_change"]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("binds a grant to the session it was issued under and revokes it with that session", async () => {
+    if (!db.available) return;
+    const { config, app, userId, sessionCookie } = await bootstrapped();
+    try {
+      const grant = await grantFor(app, sessionCookie);
+      // A second session of the same person: the grant cookie is not theirs.
+      const signIn = await app.inject({
+        method: "POST", url: "/api/v1/auth/sign-in/email",
+        remoteAddress: "192.0.2.77",
+        headers: { origin: "http://localhost:5173", "content-type": "application/json" },
+        payload: JSON.stringify({ email: "owner@example.test", password: "a password with at least fifteen characters" }),
+      });
+      expect(signIn.statusCode).toBe(200);
+      const otherSession = `better-auth.session_token=${cookiesOf(signIn.headers as Record<string, unknown>)["better-auth.session_token"]}`;
+      const foreign = await app.inject({ method: "GET", url: "/api/v1/auth/reauth/status", headers: { cookie: `${otherSession}; ${grant}` } });
+      expect(foreign.json()).toEqual({ expires_at: null });
+      const foreignMutation = await app.inject({
+        method: "POST", url: "/api/v1/auth/google/unlink",
+        headers: { cookie: `${otherSession}; ${grant}`, origin: "http://localhost:5173", "content-type": "application/json" },
+        payload: JSON.stringify({ account_id: "none" }),
+      });
+      expect(foreignMutation.statusCode).toBe(403);
+      // Still live for the session it belongs to.
+      const own = await app.inject({ method: "GET", url: "/api/v1/auth/reauth/status", headers: { cookie: `${sessionCookie}; ${grant}` } });
+      expect(own.json().expires_at).not.toBeNull();
+
+      // Logout revokes the grant and clears its cookie.
+      const logout = await app.inject({ method: "POST", url: "/api/v1/auth/logout", headers: { cookie: sessionCookie, origin: config.frontendUrl } });
+      expect(logout.statusCode).toBeLessThan(300);
+      const cleared = cookiesOf(logout.headers as Record<string, unknown>);
+      expect(cleared["rainver.reauth"]).toBe("");
+      const remaining = await db.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth_reauth_grants WHERE user_id = $1", [userId]);
+      expect(remaining.rows[0]!.count).toBe("0");
+
+      // A grant on the second session goes when an admin disables the account.
+      const second = await grantFor(app, otherSession);
+      expect(second).toBeTruthy();
+      await db.pool.query("DELETE FROM user_sessions WHERE user_id = $1", [userId]);
+      const afterRevoke = await db.pool.query<{ count: string }>("SELECT count(*)::text AS count FROM auth_reauth_grants WHERE user_id = $1", [userId]);
+      expect(afterRevoke.rows[0]!.count).toBe("0");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("forwards the session cookie Better Auth refreshes inside its sliding window", async () => {
+    if (!db.available) return;
+    const { app, userId, sessionCookie } = await bootstrapped();
+    try {
+      const fresh = await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie: sessionCookie } });
+      expect(fresh.statusCode).toBe(200);
+      expect(cookiesOf(fresh.headers as Record<string, unknown>)["better-auth.session_token"]).toBeUndefined();
+      // Age the session past the refresh point: a day of its window has gone.
+      await db.pool.query(
+        "UPDATE user_sessions SET expires_at = now() + interval '12 hours', updated_at = now() - interval '2 days' WHERE user_id = $1",
+        [userId],
+      );
+      const aged = await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie: sessionCookie } });
+      expect(aged.statusCode).toBe(200);
+      const refreshed = cookiesOf(aged.headers as Record<string, unknown>)["better-auth.session_token"];
+      expect(refreshed).toBeTruthy();
+      const raw = String((aged.headers as Record<string, unknown>)["set-cookie"]);
+      expect(raw).toMatch(/HttpOnly/i);
+      expect(raw).toMatch(/SameSite/i);
+      const row = await db.pool.query<{ expires_at: string }>("SELECT expires_at FROM user_sessions WHERE user_id = $1", [userId]);
+      expect(new Date(row.rows[0]!.expires_at).getTime()).toBeGreaterThan(Date.now() + 24 * 3600 * 1000);
+      // The refreshed cookie is the same session, still accepted.
+      const again = await app.inject({ method: "GET", url: "/api/v1/me", headers: { cookie: `better-auth.session_token=${refreshed}` } });
+      expect(again.statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
+});

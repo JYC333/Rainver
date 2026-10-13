@@ -156,8 +156,8 @@ function workerComponent(
     status: pending > 0 ? "error" : "degraded",
     detail:
       pending > 0
-        ? `No jobs worker running while ${pending} job(s) are pending`
-        : "No jobs worker running",
+        ? `No jobs worker running while ${pending} job(s) are pending; background services did not start in this process — check the server log for the startup failure and restart the server service`
+        : "No jobs worker running; background services did not start in this process — check the server log for the startup failure and restart the server service",
   };
 }
 

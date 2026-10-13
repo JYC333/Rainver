@@ -51,7 +51,9 @@ export async function resolveIdentity(
 ): Promise<SpaceUserIdentity | null> {
   const requestId = resolveRequestId(request);
   reply.header(REQUEST_ID_HEADER, requestId);
-  const identity = await introspectIdentity(config, request);
+  // Better Auth may have refreshed the session while validating it; passing
+  // the reply puts the refreshed cookie on this response.
+  const identity = await introspectIdentity(config, request, reply);
   if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
   if (identity.reason === "denied") {
     reply.code(identity.statusCode);
@@ -89,18 +91,45 @@ export function parseBody<T>(schema: { safeParse(value: unknown): z.SafeParseRet
 export function sendRouteError(reply: FastifyReply, error: unknown): FastifyReply {
   logServerRouteError(reply, error);
   if (error instanceof HttpError) {
-    return reply.code(error.statusCode).send(error.responseBody ?? { detail: error.message });
+    if (error.responseBody !== undefined || error.statusCode < 500) {
+      return reply.code(error.statusCode).send(error.responseBody ?? { detail: error.message });
+    }
+    return reply.code(error.statusCode).send(serverFailureBody(reply, error));
   }
   if (
     error instanceof Error &&
     "statusCode" in error &&
     typeof (error as { statusCode?: unknown }).statusCode === "number"
   ) {
-    return reply
-      .code((error as { statusCode: number }).statusCode)
-      .send({ detail: error.message });
+    const statusCode = (error as { statusCode: number }).statusCode;
+    return reply.code(statusCode).send(statusCode < 500 ? { detail: error.message } : serverFailureBody(reply, error));
   }
   throw error;
+}
+
+/** A failure class a provider or transport error may announce; anything else is withheld. */
+const FAILURE_CLASSES = new Set(["transient", "rate_limit", "quota", "permanent", "auth", "timeout"]);
+
+/**
+ * The body of a 5xx that the server did not author as a structured response:
+ * a fixed explanation, the request id the log line carries, and only
+ * allowlisted structure — a stable error code and a failure class that says
+ * whether retrying is sensible. Never the exception's message: a provider's
+ * error text, a URL with a credential in it, a path on this machine, or
+ * another Space's content would otherwise reach whoever made the request.
+ */
+function serverFailureBody(reply: FastifyReply, error: Error): Record<string, unknown> {
+  const code = (error as { code?: unknown }).code;
+  const failureClass = (error as { resilience?: { failure_class?: unknown } }).resilience?.failure_class;
+  const requestId = reply.getHeader(REQUEST_ID_HEADER);
+  return {
+    detail: "The request could not be completed; the server log has the details under this request id.",
+    request_id: typeof requestId === "string" ? requestId : null,
+    ...(typeof code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(code) ? { code } : {}),
+    ...(typeof failureClass === "string" && FAILURE_CLASSES.has(failureClass)
+      ? { failure_class: failureClass, retryable: failureClass === "transient" || failureClass === "rate_limit" || failureClass === "timeout" }
+      : {}),
+  };
 }
 
 /**

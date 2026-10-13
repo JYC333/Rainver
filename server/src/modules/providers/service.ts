@@ -26,7 +26,7 @@ async function resolveIdentityOrReply(
   reply: FastifyReply,
   requestId: string,
 ): Promise<{ spaceId: string; userId: string } | FastifyReply> {
-  const identity = await introspectIdentity(config, request);
+  const identity = await introspectIdentity(config, request, reply);
   if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
   if (identity.reason === "denied") {
     // Pass the auth module's denial response through unchanged.

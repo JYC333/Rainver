@@ -30,7 +30,7 @@ Socket (operator-triggered, no request arguments):
 
 | Job Type              | Script                         | Effect                              |
 |-----------------------|--------------------------------|-------------------------------------|
-| `rebuild_rainver` | `scripts/rebuild.sh`           | docker compose pull (prod) + up -d  |
+| `rebuild_rainver` | `scripts/rebuild.sh`           | dev/test build + up -d; prod refused |
 | `restart_rainver` | `scripts/restart.sh`           | docker compose restart              |
 | `health_check`        | `scripts/health_check.sh`      | server /health, checked in-container |
 

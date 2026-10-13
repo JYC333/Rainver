@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import stat
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -146,3 +147,54 @@ class DeployerProtocolTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RebuildScriptTests(unittest.TestCase):
+    """
+    `rebuild.sh` refuses in production before any image is pulled or replaced
+    and points at the instance update; dev/test refuse without a checkout.
+    Docker is a stub on PATH that records every invocation, so the assertion
+    is that it was never reached.
+    """
+
+    def _run(self, mode: str) -> tuple[subprocess.CompletedProcess, bool]:
+        with tempfile.TemporaryDirectory() as root_dir:
+            root = Path(root_dir)
+            (root / "instance").mkdir()
+            (root / "instance" / ".env").write_text("RAINVER_ENV=%s\n" % mode)
+            (root / "ops" / "compose").mkdir(parents=True)
+            (root / "ops" / "compose" / f"docker-compose.{mode}.yml").write_text("services: {}\n")
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            marker = root / "docker-invoked"
+            docker = fake_bin / "docker"
+            docker.write_text(f"#!/usr/bin/env bash\necho \"$@\" >> '{marker}'\n")
+            docker.chmod(docker.stat().st_mode | stat.S_IXUSR)
+            env = {
+                **os.environ,
+                "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                "REPO_ROOT": str(root),
+                "RAINVER_ENV": mode,
+                "RAINVER_HOME": str(root / "instance"),
+                "RAINVER_HOST_MODE_ROOT": str(root / "instance"),
+            }
+            result = subprocess.run(
+                ["bash", str(Path(__file__).parent / "scripts" / "rebuild.sh")],
+                env=env, capture_output=True, text=True, timeout=30, check=False,
+            )
+            return result, marker.exists()
+
+    def test_prod_refuses_before_any_docker_command_and_names_the_update_path(self) -> None:
+        result, docker_invoked = self._run("prod")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not a production operation", result.stderr)
+        self.assertIn("rainver update", result.stderr)
+        self.assertIn("update.sh", result.stderr)
+        self.assertFalse(docker_invoked, "docker must not run for a prod rebuild")
+
+    def test_dev_without_a_checkout_refuses_and_names_the_host_build(self) -> None:
+        result, docker_invoked = self._run("dev")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("start.sh --dev --build", result.stderr)
+        self.assertFalse(docker_invoked)
+

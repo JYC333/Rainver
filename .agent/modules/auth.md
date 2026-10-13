@@ -23,7 +23,16 @@ linking. Sign-in and password-change responses carry the session only in the
 cookie: the facade answers `{ ok, user }` and drops Better Auth's `token` body
 field. Better Auth is the sole judge of its own cookie — one whose signature it
 rejects is not a session — and the request it receives names the client only by
-the `request.ip` Fastify resolved. Its OAuth errors return to `/login?error=...` rather than an unmounted
+the `request.ip` Fastify resolved. It is also the sole writer of a session's
+lifetime: sessions expire after `SESSION_EXPIRE_DAYS` and Better Auth refreshes
+one it validates once a day of its window has passed (`session.updateAge`).
+The facade validates every session with `getSession({ returnHeaders: true })`
+and forwards whatever `Set-Cookie` headers come back — the refreshed session
+cookie with Better Auth's own `Max-Age`, `Secure`, `HttpOnly` and `SameSite`,
+and no `Max-Age` for a sign-in that asked not to be remembered — on the
+response that resolved identity (`resolveIdentity`, `introspectIdentity(…,
+reply)`, `getCurrentUser(…, sessionRefreshSink(reply))`). Rainver never
+computes a session expiry or issues a second session cookie of its own. Its OAuth errors return to `/login?error=...` rather than an unmounted
 Better Auth error endpoint.
 
 ## Admission and registration
@@ -98,12 +107,28 @@ issues the recent-auth grant. It is issued only after Better Auth accepts the
 flow, and the pending table is bounded (oldest dropped past 2048) like the login
 limiter's.
 
+A recent-authentication grant (`auth_reauth_grants`, `auth/reauth.ts`) is
+what a sensitive mutation spends. Verifying a password or completing a Google
+reauthentication inserts one: an unpredictable token, stored only as its
+digest, bound to the user and to the session the browser holds (after a
+Google reauthentication, the newly issued session), valid for ten minutes,
+sent to the browser as the HttpOnly `rainver.reauth` cookie.
+`GET /api/v1/auth/reauth/status` only reads it. Password set/change and
+Google link/unlink *consume* it with one conditional update — unconsumed,
+unexpired, this user, this session — inside the mutation's own transaction
+where the mutation is local, and before the call where Better Auth performs
+it, so a replayed cookie, another session's cookie and two concurrent uses of
+one grant all answer 403 `reauthentication_required`. The grant goes with its
+session: logout revokes it and clears the cookie, and session revocation,
+revoke-others, reauthentication's own session replacement and account
+disabling delete session rows, which cascade to their grants.
+
 `/settings/security` wraps recent password or Google reauthentication, password setup/change,
 Google link/unlink and safe session list/revoke operations. Session responses
 contain a server-owned session id and metadata only, never a raw cookie or
 stored digest. The page fetches the authenticated, no-store
 `GET /api/v1/auth/reauth/status` result and hides login methods, password
-settings and sessions until the signed 10-minute grant is valid; it relocks at
+settings and sessions until the 10-minute grant is valid; it relocks at
 expiry or after a mutation consumes the grant. Google-only accounts can use
 Google reauthentication instead of a password. Password recovery delegates
 issuance/consumption to Better Auth's hashed, single-use verification path;

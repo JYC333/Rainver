@@ -64,7 +64,7 @@ describe("PgAuthRepository", () => {
 
     const identity = await repo.resolveIdentity({ sessionToken: "raw-token" });
 
-    expect(identity).toEqual({ ok: true, spaceId: "personal-1", userId: "user-1" });
+    expect(identity).toEqual({ ok: true, spaceId: "personal-1", userId: "user-1", sessionId: "session-1", setCookies: [] });
     const touched = await db.pool.query("SELECT updated_at FROM user_sessions WHERE id = 'session-1'");
     expect(touched.rows[0].updated_at).not.toBeNull();
   });
@@ -74,7 +74,7 @@ describe("PgAuthRepository", () => {
 
     expect(
       await repo.resolveIdentity({ sessionToken: "raw-token", requestedSpaceId: "team-1" }),
-    ).toEqual({ ok: true, spaceId: "team-1", userId: "user-1" });
+    ).toEqual({ ok: true, spaceId: "team-1", userId: "user-1", sessionId: "session-1", setCookies: [] });
 
     const denied = await repo.resolveIdentity({
       sessionToken: "raw-token",

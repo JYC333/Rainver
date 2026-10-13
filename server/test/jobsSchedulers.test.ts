@@ -459,7 +459,9 @@ describe("SchedulerRegistry", () => {
       awaitRunOnStart: true,
     });
     await registry.start();
-    expect(onTaskError).toHaveBeenCalledWith("broken-task", expect.any(Error));
+    // The hook gets the task, the kind and the log reference, never the exception text.
+    expect(onTaskError).toHaveBeenCalledWith({ task_name: "broken-task", kind: "exception", reference: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+    expect(JSON.stringify(onTaskError.mock.calls)).not.toContain("scheduler boom");
     await registry.stop();
   });
 

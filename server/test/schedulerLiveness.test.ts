@@ -81,7 +81,11 @@ describe("SchedulerRegistry liveness", () => {
     const [status] = registry.statuses();
     expect(status.health).toBe("failing");
     expect(status.consecutive_failures).toBe(1);
-    expect(status.last_error).toBe("boom");
+    // The status body names the kind of failure and a log reference; the
+    // exception text itself stays in the log.
+    expect(status.last_error_kind).toBe("exception");
+    expect(status.last_error_reference).toMatch(/^[0-9a-f-]{36}$/);
+    expect(JSON.stringify(status)).not.toContain("boom");
     expect(status.last_success_at).toBeNull();
     expect(status.last_failure_at).not.toBeNull();
     await registry.stop();
@@ -105,11 +109,12 @@ describe("SchedulerRegistry liveness", () => {
       await vi.advanceTimersByTimeAsync(5_000);
       await started;
 
-      expect(onTaskError).toHaveBeenCalledWith("hung", expect.any(Error));
+      expect(onTaskError).toHaveBeenCalledWith({ task_name: "hung", kind: "timeout", reference: expect.stringMatching(/^[0-9a-f-]{36}$/) });
       const [status] = registry.statuses();
       expect(status.timeouts_total).toBe(1);
       expect(status.consecutive_failures).toBe(1);
-      expect(status.last_error).toMatch(/did not complete within 5s/);
+      expect(status.last_error_kind).toBe("timeout");
+      expect(status.last_error_reference).toBe((onTaskError.mock.calls[0] as unknown as [{ reference: string }])[0].reference);
       // The pass is still outstanding — it could not be cancelled — so the
       // task must still read as running, not as idle-and-fine.
       expect(status.state).toBe("running");

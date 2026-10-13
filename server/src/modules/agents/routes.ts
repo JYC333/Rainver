@@ -1787,7 +1787,7 @@ async function resolveIdentity(
   }
   const requestId = resolveRequestId(request);
   reply.header(REQUEST_ID_HEADER, requestId);
-  const identity = await introspectIdentity(context.config, request);
+  const identity = await introspectIdentity(context.config, request, reply);
   if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
   if (identity.reason === "denied") {
     reply.code(identity.statusCode);

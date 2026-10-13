@@ -112,8 +112,15 @@ redact paths are a second check if that serializer changes.
 { "error": "<machine_code>", "message": "<human text>", "request_id": "<id>" }
 ```
 
-- 5xx responses use a fixed generic message (`internal_error`) — no stack
-  traces, no internal detail, in any environment.
+- 5xx responses use a fixed generic message — no stack traces, no internal
+  detail, in any environment. The global handler answers `internal_error`;
+  `sendRouteError` (`routeUtils/common.ts`) answers a thrown 5xx that carries
+  no server-authored response body with
+  `{ detail: <fixed text>, request_id, code?, failure_class?, retryable? }`,
+  where `code` is the error's stable code and `failure_class`/`retryable` come
+  from an allowlist of provider failure classes. The exception's message —
+  which may hold a provider's response text, a URL with a credential or a path
+  on this machine — goes to the server log under the request id only.
 - 4xx responses keep their intentional client-safe message.
 - Unknown `/api/v1/*` routes return the local 404 catch-all shape
   `{ "detail": "Route not found" }`.

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 /**
  * In-process scheduled-task registry.
  *
@@ -39,6 +40,14 @@ export interface SchedulerLogger {
 }
 
 export type ScheduledTaskHealth = "ok" | "pending" | "failing" | "stalled";
+export type ScheduledTaskErrorKind = "timeout" | "exception";
+
+/** What a scheduler failure says to anyone but the log: its kind and where the log holds the rest. */
+export interface ScheduledTaskFailure {
+  task_name: string;
+  kind: ScheduledTaskErrorKind;
+  reference: string;
+}
 
 export interface ScheduledTaskStatus {
   name: string;
@@ -49,7 +58,15 @@ export interface ScheduledTaskStatus {
   last_started_at: string | null;
   last_success_at: string | null;
   last_failure_at: string | null;
-  last_error: string | null;
+  /**
+   * What kind of failure the last one was, and the reference under which the
+   * server log holds its message. The message itself never enters the status
+   * body: a task's exception can quote a URL with a credential, a private
+   * path, or another Space's content, and the status route is read by Space
+   * owners/admins, not only the instance operator who reads the log.
+   */
+  last_error_kind: ScheduledTaskErrorKind | null;
+  last_error_reference: string | null;
   consecutive_failures: number;
   timeouts_total: number;
   /** Seconds since the last completed pass, either outcome. */
@@ -63,7 +80,7 @@ export interface SchedulerHandle {
   stop(): Promise<void>;
 }
 
-type SchedulerTaskErrorHandler = (taskName: string, error: unknown) => Promise<void>;
+type SchedulerTaskErrorHandler = (failure: ScheduledTaskFailure) => Promise<void>;
 
 /** Raised when a pass exceeds its reporting deadline. */
 class ScheduledTaskTimeoutError extends Error {
@@ -79,7 +96,8 @@ interface TaskLiveness {
   lastSuccessAt: number | null;
   lastFailureAt: number | null;
   lastCompletedAt: number | null;
-  lastError: string | null;
+  lastErrorKind: ScheduledTaskErrorKind | null;
+  lastErrorReference: string | null;
   consecutiveFailures: number;
   timeouts: number;
   /** Set while a pass is outstanding, including a pass that already timed out. */
@@ -131,7 +149,8 @@ export class SchedulerRegistry implements SchedulerHandle {
       lastSuccessAt: null,
       lastFailureAt: null,
       lastCompletedAt: null,
-      lastError: null,
+      lastErrorKind: null,
+      lastErrorReference: null,
       consecutiveFailures: 0,
       timeouts: 0,
       inFlight: null,
@@ -154,7 +173,8 @@ export class SchedulerRegistry implements SchedulerHandle {
         last_started_at: isoOrNull(state.lastStartedAt),
         last_success_at: isoOrNull(state.lastSuccessAt),
         last_failure_at: isoOrNull(state.lastFailureAt),
-        last_error: state.lastError,
+        last_error_kind: state.lastErrorKind,
+        last_error_reference: state.lastErrorReference,
         consecutive_failures: state.consecutiveFailures,
         timeouts_total: state.timeouts,
         seconds_since_completion:
@@ -256,24 +276,21 @@ export class SchedulerRegistry implements SchedulerHandle {
 
       if (outcome === "timeout") {
         state.timeouts += 1;
-        this.recordFailure(state, new ScheduledTaskTimeoutError(task.name, timeoutSeconds));
-        await this.reportFailure(
-          task.name,
-          new ScheduledTaskTimeoutError(task.name, timeoutSeconds),
-        );
+        const timeout = new ScheduledTaskTimeoutError(task.name, timeoutSeconds);
+        await this.reportFailure(this.recordFailure(state, task.name, timeout), timeout);
         return;
       }
 
       if (typeof outcome === "object") {
-        this.recordFailure(state, outcome.error);
-        await this.reportFailure(task.name, outcome.error);
+        await this.reportFailure(this.recordFailure(state, task.name, outcome.error), outcome.error);
         return;
       }
 
       const completedAt = Date.now();
       state.lastSuccessAt = completedAt;
       state.lastCompletedAt = completedAt;
-      state.lastError = null;
+      state.lastErrorKind = null;
+      state.lastErrorReference = null;
       state.consecutiveFailures = 0;
     } finally {
       if (timer) clearTimeout(timer);
@@ -282,23 +299,26 @@ export class SchedulerRegistry implements SchedulerHandle {
     }
   }
 
-  private recordFailure(state: TaskLiveness, error: unknown): void {
+  private recordFailure(state: TaskLiveness, taskName: string, error: unknown): ScheduledTaskFailure {
     const now = Date.now();
     state.lastFailureAt = now;
     state.lastCompletedAt = now;
     state.consecutiveFailures += 1;
-    state.lastError = error instanceof Error ? error.message : String(error);
+    state.lastErrorKind = error instanceof ScheduledTaskTimeoutError ? "timeout" : "exception";
+    state.lastErrorReference = randomUUID();
+    return { task_name: taskName, kind: state.lastErrorKind, reference: state.lastErrorReference };
   }
 
-  private async reportFailure(taskName: string, error: unknown): Promise<void> {
+  /** The log line is the operator channel: it alone carries the exception text, under the reference. */
+  private async reportFailure(failure: ScheduledTaskFailure, error: unknown): Promise<void> {
     this.log?.error(
-      `[scheduler:${taskName}] ${error instanceof Error ? error.message : String(error)}`,
+      `[scheduler:${failure.task_name}] ref=${failure.reference} kind=${failure.kind} ${error instanceof Error ? error.message : String(error)}`,
     );
     try {
-      await this.onTaskError?.(taskName, error);
+      await this.onTaskError?.(failure);
     } catch (alertError) {
       this.log?.error(
-        `[scheduler:${taskName}] alert failed: ${
+        `[scheduler:${failure.task_name}] alert failed: ${
           alertError instanceof Error ? alertError.message : String(alertError)
         }`,
       );

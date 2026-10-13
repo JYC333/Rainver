@@ -78,13 +78,18 @@ never reach it.
 
 | Job Type | Script | Effect |
 |---|---|---|
-| `rebuild_rainver` | `deployer/scripts/rebuild.sh` | pull (prod) and recreate server/frontend |
+| `rebuild_rainver` | `deployer/scripts/rebuild.sh` | dev/test: build from a checkout and recreate server/frontend; prod: refused before any image is touched |
 | `restart_rainver` | `deployer/scripts/restart.sh` | restart server/frontend |
 | `health_check` | `deployer/scripts/health_check.sh` | check server `/health` |
 
 Building dev and test images is a host operation (`ops/scripts/start.sh --build`): the
 sidecar does not mount the checkout, so `rebuild_rainver` refuses with that instruction
-outside prod rather than handing Compose an empty build context.
+outside prod rather than handing Compose an empty build context. In prod the script
+refuses before it runs any Docker command and names the instance update
+(`rainver update`, or `git pull && ./ops/scripts/start.sh --prod --detach` on a
+checkout): a production instance changes images only through the update's drain,
+backup, migrate and recreate stages (ADR 0020), never by pulling two services in
+place. `deployer/test_deployer.py` runs the script against a stub `docker` in both modes.
 
 No other job type, arbitrary command, caller-selected script, code-patch action,
 or capability action is accepted. The three jobs accept no request
