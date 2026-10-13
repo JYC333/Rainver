@@ -1484,7 +1484,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      await repository().deleteNoteCollection(identity, params(request).collectionId ?? "");
+      await withDbTransaction(dbPool(context.config), (client) =>
+        new PgKnowledgeRepository(client).deleteNoteCollection(identity, params(request).collectionId ?? ""),
+      );
       return reply.code(204).send();
     } catch (error) {
       return sendRouteError(reply, error);

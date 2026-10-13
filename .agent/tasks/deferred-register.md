@@ -457,6 +457,7 @@ evidence of a problem).
 | Item | Trigger | Owner |
 |---|---|---|
 | Drop `hosts.daemon_server_url`. Nothing has read or written it since the security remediation's item 1.1 (2026-09-11). Dropping it in the same release would break the release still running while the migration applies. | Every deployed release is one that no longer reads the column | Hosts |
+| Drop `project_public_summaries.review_status` and its CHECK. Publication moved to `project_public_summary_publications` (migration `0002`, 2026-10-14); nothing reads or writes the column, which was kept with default `'draft'` so the release still running during the migration keeps reading it (B59 expand-then-contract). The drop is a `-- rainver:maintenance` migration. | Every deployed release is one that no longer reads the column | Projects |
 
 ## Retirement
 

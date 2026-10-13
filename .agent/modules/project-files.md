@@ -92,18 +92,45 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   person's one new-file draft slot while an unsaved new file holds it, and
   refuses a revision larger than a draft may be. Revision rows stay readable,
   including their stored status values.
+- A file read (`readFolderFile` in `@rainver/folder-read`, used by the server
+  for a local Location and by the daemon for a remote one) validates the path
+  lexically with `PathPolicy` once and then never uses the name again: the
+  file is opened through `openFileBeneathRoot` (`safeOpen.ts`), which makes
+  the kernel resolve every component below the trusted, canonicalised root
+  without following links — on Linux by opening each directory
+  `O_NOFOLLOW` relative to its parent's `/proc/self/fd` handle, on macOS with
+  a single `O_NOFOLLOW_ANY` open — and the type check, the size check and
+  the bytes all come from that one handle. Any symbolic link below the root,
+  final or ancestor, inside or outside, is refused (`path_forbidden`); FIFOs,
+  devices and other non-regular files are refused without blocking; at most
+  `MAX_FILE_BYTES + 1` bytes are read so a file that grows under the read is
+  still `too_large`. Each mechanism is proved once per process with a
+  linked fixture before first use; a platform where the proof does not hold
+  (Windows, or a kernel that ignores the flag) answers every file read with
+  `unsupported_platform` (503) rather than falling back to a path-based read.
+  Windows hosts therefore cannot serve Files & Code reads until a race-free
+  open exists for them. The tree walk `lstat`s each entry so a link that
+  appeared after `readdir` is left out rather than described.
 - Server `code_patch` apply, snapshot restore and failure rollback open each
-  directory component without following symlinks and operate relative to its
+  directory component the same way and operate relative to its
   Linux `/proc/self/fd` handle. Replacing a parent path with a link cannot
   redirect the file operation. All symlink components are refused (422);
   non-Linux server patching fails closed (503). Existing executable modes are
   preserved. These operations do not turn the external filesystem into a
   database transaction or prevent another writer from changing file content.
-  Existing Folder realpath checks cannot pin a
-  directory across a write; Node filesystem handles supply this Linux boundary.
   [fs-native-extensions](https://github.com/holepunchto/fs-native-extensions)
   offers advisory locks but no directory-relative open API, so no native
-  dependency is added for this purpose-specific patch target.
+  dependency is added for either purpose-specific open.
+- A clone (`repo_url` on Folder creation) accepts only an `https://` URL and
+  runs `git clone` through a per-clone loopback CONNECT proxy
+  (`startGuardedConnectProxy` in `@rainver/outbound-guard`) that resolves
+  every host git asks for — the first and each redirect — through the
+  instance's outbound guard and dials only the pinned address, so a name that
+  resolves or redirects into the instance's own network is refused at that
+  hop. `ssh://`, `git://`, `http://`, scp-like and local sources are refused
+  with a message pointing at the two supported ways to bring in a private
+  repository: connect an existing directory, or register it through a paired
+  host. Credentials pasted into the URL are redacted from the failure text.
 - Save to Folder requires the exact draft version and Host existence/hash observed
   by the editor, is atomic, rejects traversal/symlink escapes and secret-like
   paths, and is capped at 1 MiB, matching the File-page read limit.

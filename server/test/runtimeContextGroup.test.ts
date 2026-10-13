@@ -1157,7 +1157,7 @@ describe("runtimeContextPlannerDb", () => {
            id, space_id, name, provider_type, base_url, enabled,
            capabilities_json, config_json, created_at, updated_at
          ) VALUES ($1,$2,'Shared Provider','ollama','http://localhost:11434',TRUE,
-           '{}'::jsonb,'{"openai_compatible_base_url":"http://localhost:8080/v1"}'::jsonb,now(),now())`,
+           '{}'::jsonb,'{"deployment":"trusted_local","openai_compatible_base_url":"http://localhost:8080/v1"}'::jsonb,now(),now())`,
         [PROVIDER_ID, PROVIDER_SPACE_ID],
       );
       await db.pool.query(

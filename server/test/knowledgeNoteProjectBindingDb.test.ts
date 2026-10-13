@@ -187,6 +187,29 @@ describe("note project binding by placement (real Postgres)", () => {
     expect(await roleOf(note.id)).toEqual({ project_role: "understanding", role_project_id: projectId });
   });
 
+  it("files a note created for a Project into that Project's folder when no folder is named", async () => {
+    if (!db.available) return;
+    const projectId = await makeProject("Alpha");
+    const repository = new PgKnowledgeRepository(db.pool);
+    const loose = await makeFolder("Loose");
+
+    const note = await repository.createNote(identity, { title: "Bound", primary_project_id: projectId }) as {
+      id: string; placements: Array<{ collection_id: string }>;
+    };
+    const projectRoot = await withTransaction(db.pool, (tx) => ensureProjectNotesFolder(tx, SPACE, projectId));
+    expect(note.placements).toEqual([{ collection_id: projectRoot, sort_order: 0 }]);
+
+    // Naming a folder outside the Project for a note bound to it is refused:
+    // the note would be unreachable from the Project that owns it.
+    await expect(repository.createNote(identity, { title: "Astray", primary_project_id: projectId, collection_id: loose }))
+      .rejects.toMatchObject({ statusCode: 422, responseBody: { code: "note_owning_entry_required", owning_project_id: projectId } });
+    // Rebinding an existing note to a Project it has no entry in is the same refusal.
+    const other = await makeProject("Beta");
+    await expect(repository.updateNote(identity, note.id, { primary_project_id: other }))
+      .rejects.toMatchObject({ statusCode: 422, responseBody: { code: "note_owning_entry_required", owning_project_id: other } });
+    expect(await primaryProjectOf(note.id)).toBe(projectId);
+  });
+
   it("creates the Project notes folder once, under the seeded Projects root", async () => {
     if (!db.available) return;
     const projectId = await makeProject("Study");

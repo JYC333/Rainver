@@ -244,17 +244,35 @@ export function upsertCollection(
   return collections.map(item => item.id === collection.id ? collection : item)
 }
 
-/** Mirrors the database's ON DELETE SET NULL relationship for direct child
- * folders, while removing the deleted folder itself. */
+/** Mirrors the server's folder delete: direct child folders move up to the
+ * deleted folder's parent (so they stay inside the same Project subtree),
+ * and the deleted folder itself is gone. */
 export function removeCollection(
   collections: NoteCollection[],
   collectionId: string,
 ): NoteCollection[] {
+  const parentId = collections.find(collection => collection.id === collectionId)?.parent_id ?? null
   return collections
     .filter(collection => collection.id !== collectionId)
     .map(collection => collection.parent_id === collectionId
-      ? { ...collection, parent_id: null }
+      ? { ...collection, parent_id: parentId }
       : collection)
+}
+
+/** The Project owning a folder: the nearest ancestor (itself included) that is
+ * a Project's notes folder, or null outside every Project subtree. */
+export function owningProjectOf(
+  collectionId: string,
+  collectionById: Map<string, NoteCollection>,
+): string | null {
+  const visited = new Set<string>()
+  let current = collectionById.get(collectionId)
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id)
+    if (current.project_id) return current.project_id
+    current = current.parent_id ? collectionById.get(current.parent_id) : undefined
+  }
+  return null
 }
 
 /** Applies a server-shaped reorder plan to local note summaries. Used for the

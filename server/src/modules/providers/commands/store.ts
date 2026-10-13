@@ -32,6 +32,7 @@ import { providerVendor, type VendorDescriptor } from "../vendors.js";
 import { resolveManagedSubscriptionCredential } from "../subscriptionOAuth.js";
 import { resolveNetworkProfileRepository } from "../../networkProfiles/index.js";
 import { isSpaceOwnerOrAdmin } from "../../access/roles.js";
+import { providerDeployment } from "../deployment.js";
 import {
   authorizeCredentialSpend,
   type CredentialSpendAuthorization,
@@ -59,6 +60,7 @@ import {
   rotationStrategyFromRow,
   validateBaseUrl,
   validateCreateFields,
+  validateDeployment,
   validateProviderType,
   type PoolMemberRow,
   type ProviderRow,
@@ -254,6 +256,21 @@ class PgProviderCommandStore implements ProviderCommandStore {
     return result.rows[0] ?? null;
   }
 
+  /**
+   * A trusted-local declaration is a statement about the Space's own
+   * network, so the person making it must run the Space, not merely own the
+   * Provider row.
+   */
+  private async requireSpaceOwnerOrAdmin(spaceId: string, userId: string): Promise<void> {
+    const result = await this.pool.query<{ role: string }>(
+      `SELECT role FROM space_memberships WHERE space_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+      [spaceId, userId],
+    );
+    if (!isSpaceOwnerOrAdmin(result.rows[0]?.role ?? null)) {
+      throw new ProviderCommandForbiddenError("Only a Space owner or admin can declare a Provider a trusted local deployment");
+    }
+  }
+
   private async requireOwnedProvider(userId: string, providerId: string): Promise<ProviderRow> {
     const row = await this.providerOwnedBy(userId, providerId);
     if (!row) {
@@ -415,6 +432,9 @@ class PgProviderCommandStore implements ProviderCommandStore {
     input: ModelProviderCreateInput,
   ): Promise<unknown> {
     validateCreateFields(input);
+    const deployment = input.deployment ?? "cloud";
+    validateDeployment(input.provider_type, deployment);
+    if (deployment === "trusted_local") await this.requireSpaceOwnerOrAdmin(spaceId, userId);
     const isDefault = Boolean(input.is_default);
     const networkProfileId = await this.validateNetworkProfileId(
       spaceId,
@@ -448,6 +468,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
           input.enabled ?? true,
           json({ models }),
           json({
+            ...(deployment === "trusted_local" ? { deployment } : {}),
             ...(optionalTrimmedString(input.claude_compatible_base_url)
               ? { claude_compatible_base_url: optionalTrimmedString(input.claude_compatible_base_url) }
               : {}),
@@ -548,6 +569,18 @@ class PgProviderCommandStore implements ProviderCommandStore {
       input.default_model === undefined ? current.default_model : input.default_model || null;
     const configJson = currentConfig;
     delete configJson.is_default;
+    const deployment = input.deployment ?? providerDeployment(currentConfig);
+    validateDeployment(providerType, deployment);
+    if (deployment === "trusted_local") {
+      // Declared, or kept declared under a changed vendor: either way the
+      // actor is vouching for a local service on the Space's behalf.
+      if (input.deployment !== undefined || providerType !== current.provider_type) {
+        await this.requireSpaceOwnerOrAdmin(current.space_id, userId);
+      }
+      configJson.deployment = deployment;
+    } else {
+      delete configJson.deployment;
+    }
     if (input.claude_compatible_base_url !== undefined) {
       const claudeUrl = optionalTrimmedString(input.claude_compatible_base_url);
       if (claudeUrl) configJson.claude_compatible_base_url = claudeUrl;

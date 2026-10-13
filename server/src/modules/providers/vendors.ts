@@ -47,6 +47,12 @@ export interface VendorDescriptor {
   /** Whether configuring this vendor requires a credential at all. */
   apiKeyRequired: boolean;
   /**
+   * Whether the vendor's service can run on the operator's own machine or
+   * network, and so may be declared a trusted local deployment. A hosted
+   * vendor is the cloud whatever endpoint it is reached through.
+   */
+  selfHostable: boolean;
+  /**
    * Whether the only way to reach this vendor is a managed subscription
    * credential. Such a provider is owner-scoped, so it cannot back a
    * space-wide provider task policy — see `provider-policy.md`. Anthropic is
@@ -66,6 +72,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "https://api.openai.com/v1",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
   {
@@ -78,6 +85,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "https://chatgpt.com/backend-api",
     apiKeyRequired: false,
+    selfHostable: false,
     subscriptionOnly: true,
   },
   {
@@ -90,6 +98,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "https://api.anthropic.com",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
   {
@@ -105,6 +114,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "https://api.minimaxi.com/anthropic",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
   {
@@ -117,6 +127,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "https://openrouter.ai/api/v1",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
   {
@@ -129,6 +140,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "https://api.deepseek.com",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
   {
@@ -143,6 +155,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "http://localhost:11434",
     apiKeyRequired: false,
+    selfHostable: true,
     subscriptionOnly: false,
   },
   {
@@ -157,6 +170,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: null,
     apiKeyRequired: false,
+    selfHostable: true,
     subscriptionOnly: false,
   },
   {
@@ -169,6 +183,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: true,
     defaultBaseUrl: "https://api.cohere.com",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
   {
@@ -181,6 +196,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: true,
     defaultBaseUrl: "https://api.zeroentropy.dev/v1",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
 ];

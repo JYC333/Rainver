@@ -111,6 +111,7 @@ import { knowledgeRetrievalRegistry } from "./retrievalAdapter.js";
 import { isKnowledgeRetrievalObjectType } from "./retrievalObjectTypes.js";
 import { markdownToPm } from "./noteDocument.js";
 import { ensureProjectNotesFolder, projectOwningCollection } from "./noteProjectFolders.js";
+import { assertNoteEntryInvariant, lockNotesForPlacementChange } from "./notePlacementInvariant.js";
 import { NOTE_PROJECT_ROLE_DEFAULT_TITLES } from "./noteProjectRoles.js";
 import { listNoteRevisions as listNoteRevisionRows } from "./noteRevisionService.js";
 import {
@@ -120,6 +121,7 @@ import {
 import {
   addNotePlacement,
   moveNoteToCollection,
+  requireNoteCollectionRow,
   removeNotePlacement,
   withNoteWrites,
   type NoteInsert,
@@ -1272,6 +1274,16 @@ export class PgKnowledgeRepository {
     return noteCollectionOut(row);
   }
 
+  /**
+   * Deletes a folder. Its subfolders move up to its parent, so they stay in
+   * the same Project subtree (the database's own `ON DELETE SET NULL` would
+   * push them to the root and out of the Project). Its placements go with it,
+   * and a note that would be left without its required entry refuses the
+   * whole delete — the person moves or deletes that note first.
+   *
+   * Runs inside the route's transaction: the note locks and the invariant
+   * check have to see the same rows the delete removes.
+   */
   async deleteNoteCollection(identity: SpaceUserIdentity, collectionId: string): Promise<void> {
     const current = await this.getNoteCollectionRow(identity, collectionId);
     if (!current) throw new HttpError(404, "Note collection not found");
@@ -1280,10 +1292,33 @@ export class PgKnowledgeRepository {
       await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     }
     if (current.is_system) throw new HttpError(422, "System note collections cannot be deleted");
+    // Folder rows before note rows (`notePlacementInvariant`): the folder and
+    // the subfolders this moves, so a reorder or placement holding them
+    // waits here rather than after this has taken the notes it needs.
+    await this.db.query(
+      `SELECT id FROM note_collections
+        WHERE space_id = $1 AND (id = $2 OR parent_id = $2)
+        ORDER BY id ASC
+        FOR UPDATE`,
+      [identity.spaceId, collectionId],
+    );
+    const placed = await this.db.query<{ note_id: string }>(
+      `SELECT note_id FROM note_collection_items WHERE space_id = $1 AND collection_id = $2`,
+      [identity.spaceId, collectionId],
+    );
+    const lockedNotes = await lockNotesForPlacementChange(
+      this.db, identity.spaceId, placed.rows.map((row) => row.note_id),
+    );
+    await this.db.query(
+      `UPDATE note_collections SET parent_id = $3, updated_at = $4
+        WHERE space_id = $1 AND parent_id = $2`,
+      [identity.spaceId, collectionId, current.parent_id, new Date().toISOString()],
+    );
     await this.db.query(
       `DELETE FROM note_collections WHERE id = $1 AND space_id = $2`,
       [collectionId, identity.spaceId],
     );
+    await assertNoteEntryInvariant(this.db, identity.spaceId, lockedNotes);
   }
 
   async getNote(identity: SpaceUserIdentity, noteId: string): Promise<Record<string, unknown> | null> {
@@ -1349,6 +1384,10 @@ export class PgKnowledgeRepository {
     status: string | null | undefined,
     now: string,
   ): Promise<void> {
+    // Folder before note (`notePlacementInvariant`): the root update below
+    // locks the note row, and a folder named here is pinned before that.
+    const collectionId = optionalString(body.collection_id);
+    if (collectionId) await requireNoteCollectionRow(scope.db, identity.spaceId, collectionId);
     await scope.db.query(
       `WITH obj AS (
          UPDATE space_objects
@@ -1446,9 +1485,15 @@ export class PgKnowledgeRepository {
         throw new HttpError(409, "Note changed since it was loaded; reload and retry", { current_version: result.currentVersion });
       }
     }
-    const collectionId = optionalString(body.collection_id);
     if (collectionId) {
       await moveNoteToCollection(scope.db, identity.spaceId, noteId, collectionId, { userId: identity.userId });
+    }
+    // Rebinding the Project (an explicit `primary_project_id`) or filing the
+    // note elsewhere must leave it with an entry in the Project that owns it.
+    if (Object.hasOwn(body, "primary_project_id") || collectionId) {
+      await assertNoteEntryInvariant(
+        scope.db, identity.spaceId, await lockNotesForPlacementChange(scope.db, identity.spaceId, [noteId]),
+      );
     }
     // Metadata-only edits (a rename, an archive) still change what retrieval
     // should return, so the scope is told even when no content write happened.

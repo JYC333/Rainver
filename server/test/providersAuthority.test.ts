@@ -153,8 +153,10 @@ describe("providers read authority", () => {
       default_base_url: "https://api.deepseek.com",
       api_key_required: true,
       subscription_only: false,
+      self_hostable: false,
     });
     expect(body.some((vendor) => vendor.id === "openai_codex" && vendor.subscription_only === true)).toBe(true);
+    expect(body.filter((vendor) => vendor.self_hostable).map((vendor) => vendor.id).sort()).toEqual(["ollama", "openai_compatible"]);
     expect(body.every((vendor) => !("api_key" in vendor) && !("secret_ref" in vendor))).toBe(true);
 
     // `/presets` is a static route and must stay claimed.

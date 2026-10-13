@@ -167,9 +167,35 @@ is an import/export compatibility format, not the source of truth; PostgreSQL
 rows are authoritative at runtime. A personal account with `visibility =
 private` is readable and exportable only by its owner; other Space members do
 not receive that account, its postings, or transactions that touch it.
-Finance import writes are proposal-gated through
-`finance_ledger.post_import_batch`, and direct directive proposal application
-uses `finance_ledger.post_directive`.
+Finance import never posts. `POST /api/v1/finance/books/:bookId/import/beancount`
+takes the file text and nothing else (a `post_directly` field is a 400), lands
+every dated entry as `proposed`, and the posting step is the separate
+`finance_ledger.post_import_batch` / `finance_ledger.post_directive` proposal
+application with apply-time revalidation. A file is not authority over the
+book's structure either: `open`, `close`, `commodity` and `option` directives
+are recorded as `excluded` with a diagnosis, and nothing in an import creates,
+closes or declares an account, commodity or option. An entry that names an
+account or commodity the book lacks writes nothing and waits
+(`pending_mapping`); the importer opens the account or adds the commodity
+through the ordinary management routes, then maps the file's account name onto
+an existing account id (`POST .../imports/:importSourceId/entries/:entryId/mapping`,
+re-checked for visibility and the entry date at persist time) or retries the
+batch (`POST .../imports/:importSourceId/retry`). The mapping is stored on the
+entry with a version; the original text is kept.
+
+Each parsed entry is one `finance_import_entries` row with a stable identity:
+`external:<id>` for a transaction whose `external_id` metadata names an
+upstream record, otherwise the hash of the entry's own lines plus its
+occurrence index in the file, so two identical transactions in one file stay
+two records while the same file uploaded again (`finance_import_sources` is
+unique per book and content hash) finds its existing rows and retries only the
+unfinished ones. Every transaction is written with all its postings under one
+savepoint; a failure rolls back that entry alone and the rest of the batch
+continues. Content that matches an entry of another batch of the book is held
+as `needs_review` until the importer decides (`POST .../imports/:importSourceId/review`
+with `import` or `duplicate`); a trusted external id already imported settles
+as `duplicate` on its own. A batch, its entries and their text are visible
+only to the member who uploaded it.
 
 Account close, direct posting, import validation/persistence and batch import
 approval share a transaction-held `FOR NO KEY UPDATE` book lock. Posting checks
@@ -222,7 +248,7 @@ Any other contribution type preserves the same fail-closed enablement rule.
 
 | Plugin | Scope | Frontend | Routes | Runtime contributions | Data ownership |
 |---|---|---|---|---|---|
-| `diary` | `user` | `/diary` | `/api/v1/diary*` | Routes, scheduler, reflection job | Plugin-owned diary entries/reflections; editor-owned personal documents; memory/context extraction remains opt-in and proposal/sources-gated. |
+| `diary` | `user` | `/diary` | `/api/v1/diary*` | Routes, scheduler, reflection job | Plugin-owned diary entries/reflections; editor-owned personal documents; memory/context extraction remains opt-in and proposal/sources-gated. One reflection per entry and day is a unique key (`diary_reflections (entry_id, reflection_date)`), so concurrent reflection jobs upsert one row. |
 | `finance_ledger` | `space` | `/finance` | `/api/v1/finance*` | Routes and proposal appliers | Plugin-owned finance books/accounts/directives/postings/prices/import-export records; PostgreSQL is the runtime source of truth; Beancount text is import/export compatibility. Personal `private` accounts stay off other members' reads and export. |
 
 ---

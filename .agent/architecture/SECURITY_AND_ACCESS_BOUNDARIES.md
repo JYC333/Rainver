@@ -300,7 +300,7 @@ path — those keep their current owner/role requirements. In particular,
 becomes a new, more-widely-visible artifact can opt out: project public
 summary generation (`projects/publicSummaryGenerator.ts`) passes
 `includeOversight: false` on every candidate query, because its output can
-become `review_status = 'approved'` and readable by the whole Space — an
+be published and readable by the whole Space — an
 oversight admin's own extra visibility must never leak another member's
 private content into that space-wide artifact. A **thread reference** does the same
 (`rooms/threadReferences.ts`, through `importedSessions/read.ts`): a person may
@@ -609,10 +609,12 @@ fail closed before any active memory row is created.
 
 ### Project public summaries (high-level discovery)
 
-`project_public_summaries` is a separate discovery layer, not a bypass around
-project memory ACL. Approved rows are intentionally readable within the current
-space and indexed as retrieval object type `project_public_summary` so projects
-can inspire each other at a high level.
+The project public summary is a separate discovery layer, not a bypass around
+project memory ACL. Its published snapshot
+(`project_public_summary_publications`) is intentionally readable within the
+current space and indexed as retrieval object type `project_public_summary` so
+projects can inspire each other at a high level; the draft
+(`project_public_summaries`) is read only by Project writers.
 
 Public-summary writes require project writer authority: the project
 `owner_user_id`, a space `owner`/`admin`, or an active project member role of
@@ -620,12 +622,15 @@ Public-summary writes require project writer authority: the project
 memory through the memory ACL but cannot mutate project metadata or public
 summary rows.
 
-**Publish governance.** A bare write stages `review_status = draft`. Flipping
-the row to a space-public state (`approved`) or removing it (`archived`)
-requires project-**owner**-level authority — the project `owner_user_id` or a
-space `owner`/`admin` (`assertProjectOwnerLevel`). A project `member`/writer can
-stage a draft but cannot self-approve, so the owner reviews before content
-becomes space-public. The draft generator only ever writes `draft`.
+**Publish governance.** A write saves the draft and bumps its
+`draft_version`; readers see nothing new. Publishing a named draft version as
+the space-public snapshot, or revoking it, requires project-**owner**-level
+authority — the project `owner_user_id`, a Project member with role `owner`, or
+a space `owner`/`admin` (`assertProjectOwnerLevelForMutation`, inside the
+publish transaction). The draft row is locked and its version compared there, so
+a draft edited between review and approval is refused (409) rather than going
+public unreviewed. A project `member`/writer and the draft generator only ever
+write the draft.
 
 **Database-level consistency.** `projects` has a composite candidate key
 `UNIQUE (space_id, id)`; `project_public_summaries` and `project_members` carry
@@ -646,7 +651,7 @@ used to probe Knowledge or Memory retrieval projections.
 
 The draft generator
 (`POST /api/v1/projects/{id}/public-summary/draft`) follows the same writer
-authority rule and writes only `review_status = 'draft'`. Its prompt version is
+authority rule and writes only the draft. Its prompt version is
 `project_public_summary.prompt.v1`; provider routing uses auxiliary task
 `project_public_summary` unless the request supplies a model provider. The
 generator bounds and filters the source context before the model call: no
@@ -1018,7 +1023,10 @@ helper.** A list must not answer something the detail page refuses.
   validation loads the ledger *this person* can see, and the server names the
   imported file so the filename filter over validation errors cannot be pointed
   at the stored ledger's own errors. An account this person may not change
-  answers "not found", not one of three different 403s.
+  answers "not found", not one of three different 403s. An import batch — its
+  entries, their original text, mapping, retry and review — belongs to the
+  member who uploaded it; another member's request for it, or a second upload
+  of the same file by another member, is refused without describing it.
 - **Publications** — a revoked snapshot's `snapshot_hash` is withheld with the
   body it hashes, and an import block names the imported copy only to the person
   who imported it.
@@ -1064,10 +1072,17 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   timeout of its own; a hung resolver stalls that one CONNECT, which the Run's
   own budget still bounds.
 - Provider (ModelProvider) calls are deliberately **outside** this boundary: a
-  `base_url` may name a private or loopback address, because a local Ollama is a
-  real deployment. A member can probe internal addresses
+  `base_url` may name a private or loopback address, because a self-hosted
+  model server is a real deployment. A member can probe internal addresses
   through the models list and the connection test; responses do not echo
-  upstream bodies.
+  upstream bodies. Whether such a Provider counts as a *local* egress
+  destination is a separate, declared fact (`modules/provider-policy.md`,
+  "Local deployments"), never inferred from the vendor or the URL alone.
+- A Folder clone is the one git transport the server opens on a member's
+  behalf, and it is inside the boundary: HTTPS only, through a per-clone
+  loopback CONNECT proxy that resolves every host (including each redirect)
+  through the outbound guard and dials only the pinned address
+  (`modules/project-files.md`).
 
 ### Deployment and network exposure
 

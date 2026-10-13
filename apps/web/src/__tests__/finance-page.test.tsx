@@ -6,6 +6,7 @@ import {
 } from '../../../../plugins/official/finance_ledger/web/src/FinancePage'
 import type {
   FinanceApi,
+  FinanceImportResult,
   FinanceWebHost,
 } from '../../../../plugins/official/finance_ledger/web/src/host'
 
@@ -28,6 +29,20 @@ const accounts = [
     default_commodity: 'EUR', owner_user_id: 'user-1', visibility: 'private' as const,
   },
 ]
+
+const emptySummary = { imported: 0, pending_mapping: 0, needs_review: 0, duplicate: 0, error: 0, excluded: 0 }
+
+function importResult(overrides: Partial<FinanceImportResult> = {}): FinanceImportResult {
+  return {
+    import_source: { id: 'imp-1', source_type: 'upload', source_name: null, content_hash: 'h', created_at: '' },
+    batch_existed: false,
+    created_directives: 2,
+    summary: { ...emptySummary, imported: 2 },
+    entries: [],
+    errors: [],
+    ...overrides,
+  }
+}
 
 function fakeApi(overrides: Partial<FinanceApi> = {}): FinanceApi {
   return {
@@ -60,9 +75,12 @@ function fakeApi(overrides: Partial<FinanceApi> = {}): FinanceApi {
       balances: [{ accountId: 'acc-1', accountName: 'Assets:Bank:Checking', positions: ['120.50 USD'] }],
     }),
     validateBook: vi.fn().mockResolvedValue({ errors: [] }),
-    importBeancount: vi.fn().mockResolvedValue({
-      import_source_id: 'imp-1', deduplicated: false, created_directives: 2, errors: [],
-    }),
+    importBeancount: vi.fn().mockResolvedValue(importResult()),
+    listImports: vi.fn().mockResolvedValue({ imports: [] }),
+    getImport: vi.fn().mockResolvedValue(importResult()),
+    retryImport: vi.fn().mockResolvedValue(importResult()),
+    mapImportEntry: vi.fn().mockResolvedValue(importResult()),
+    reviewImportEntries: vi.fn().mockResolvedValue(importResult()),
     exportBeancount: vi.fn().mockResolvedValue({
       export_id: 'exp-1', content: '2026-01-01 open Assets:Bank:Checking\n', content_hash: 'abc', errors: [],
     }),
@@ -169,21 +187,52 @@ describe('FinancePage', () => {
     expect(screen.getByText('Transaction does not balance for USD: 5.00 USD')).toBeInTheDocument()
   })
 
-  it('imports beancount text and reports the result', async () => {
+  it('imports beancount text as proposed and reports the result', async () => {
     const api = fakeApi()
     await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('Import'))
+    expect(screen.queryByText(/Post directly/)).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Beancount text'), {
       target: { value: '2026-01-01 open Assets:Bank:Checking USD' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Run import' }))
 
-    expect(await screen.findByText('Imported 2 directives.')).toBeInTheDocument()
+    expect(await screen.findByText(/Imported: 2 new, 2 imported as proposed\./)).toBeInTheDocument()
     expect(api.importBeancount).toHaveBeenCalledWith('book-1', {
       text: '2026-01-01 open Assets:Bank:Checking USD',
-      post_directly: false,
     })
+  })
+
+  it('maps a missing account onto an existing one and retries that entry', async () => {
+    const pending = importResult({
+      created_directives: 0,
+      summary: { ...emptySummary, pending_mapping: 1 },
+      entries: [{
+        id: 'entry-1', entry_key: 'content:abc:0', identity_kind: 'content_occurrence', external_id: null,
+        entry_type: 'transaction', entry_date: '2026-01-02', source_lineno: 1,
+        raw_text: '2026-01-02 * "Lunch"\n  Assets:Cash  -8.00 USD\n  Expenses:Food  8.00 USD',
+        status: 'pending_mapping', status_reason: 'missing_account', directive_id: null, duplicate_of_entry_id: null,
+        missing_accounts: ['Assets:Cash'], missing_commodities: [], account_mapping: {}, mapping_version: 0, errors: [],
+      }],
+    })
+    const api = fakeApi({
+      importBeancount: vi.fn().mockResolvedValue(pending),
+      mapImportEntry: vi.fn().mockResolvedValue(importResult({ batch_existed: true, created_directives: 1, summary: { ...emptySummary, imported: 1 } })),
+    })
+    await renderLoadedLedger(api)
+
+    fireEvent.click(screen.getByText('Import'))
+    fireEvent.change(screen.getByLabelText('Beancount text'), { target: { value: 'x' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Run import' }))
+    expect(await screen.findByText('Waiting for an account or commodity')).toBeInTheDocument()
+    const mapButton = screen.getByRole('button', { name: 'Map and import' })
+    expect(mapButton).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Account for Assets:Cash'), { target: { value: 'acc-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Map and import' }))
+
+    await waitFor(() => expect(api.mapImportEntry).toHaveBeenCalledWith('book-1', 'imp-1', 'entry-1', { 'Assets:Cash': 'acc-1' }))
+    expect(await screen.findByText(/Retried an earlier upload of this file: 1 new/)).toBeInTheDocument()
   })
 
   it('prompts to create the first book when none exist', async () => {

@@ -26,9 +26,17 @@ vi.mock('../../../core/spaceNav', () => ({
 }))
 
 vi.mock('../../../api/client', () => ({
+  ApiRequestError: class ApiRequestError extends Error {
+    constructor(message: string, readonly status: number, readonly code?: string) { super(message) }
+  },
   focusAreasApi: { list: vi.fn().mockResolvedValue([]), setForProject: vi.fn().mockResolvedValue(undefined) },
   projectsApi: {
     get: vi.fn(),
+    publicSummaryEditor: vi.fn(),
+    savePublicSummaryDraft: vi.fn(),
+    generatePublicSummaryDraft: vi.fn(),
+    publishPublicSummary: vi.fn(),
+    revokePublicSummary: vi.fn(),
     getOverview: vi.fn(),
     operations: vi.fn(),
     update: vi.fn(),
@@ -90,6 +98,9 @@ function setup(overrides: {
   vi.mocked(projectsApi.updates).mockResolvedValue({ items: [], next_cursor: null, viewer_can_write: true } as never)
   vi.mocked(projectsApi.listBriefVersions).mockResolvedValue([])
   vi.mocked(projectsApi.listInstructionVersions).mockResolvedValue([])
+  vi.mocked(projectsApi.publicSummaryEditor).mockResolvedValue({
+    project_id: 'project-1', draft: null, published: null, can_publish: false,
+  })
 }
 
 /** Every read parses a new response body, as `fetch` does: same content, new objects. */
@@ -150,6 +161,60 @@ describe('ProjectDetailPage (Pulse)', () => {
     expect(selector).toBeDisabled()
     expect(focusAreasApi.setForProject).not.toHaveBeenCalled()
   })
+  /**
+   * The public summary has two sides and they are shown apart: the draft a
+   * writer edits, and the snapshot other projects read. Publishing is offered
+   * only with owner-level authority, and only for the saved draft version.
+   */
+  it('shows the public summary draft beside what is published, and offers publish only to owner-level viewers', async () => {
+    setup({ project: { current_user_can_write: true } })
+    vi.mocked(projectsApi.publicSummaryEditor).mockResolvedValue({
+      project_id: 'project-1',
+      draft: {
+        id: 'draft-1', space_id: 'space-1', project_id: 'project-1', project_name: 'Project One',
+        summary_text: 'Draft text, not yet reviewed.', topics: ['Drafting'], highlights: [], source_refs: [],
+        redaction_version: 'v1', draft_version: 2, updated_by_user_id: 'user-1', generated_by_run_id: null,
+        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-02T00:00:00.000Z',
+      },
+      published: {
+        id: 'pub-1', space_id: 'space-1', project_id: 'project-1', project_name: 'Project One',
+        summary_text: 'Published text everyone sees.', topics: ['Public'], highlights: [], source_refs: [],
+        redaction_version: 'v1', source_draft_version: 1, published_by_user_id: 'owner-1', published_at: '2026-01-01T12:00:00.000Z',
+      },
+      can_publish: false,
+    })
+    renderPage()
+    expect(await screen.findByDisplayValue('Draft text, not yet reviewed.')).toBeInTheDocument()
+    expect(screen.getByText('Published text everyone sees.')).toBeInTheDocument()
+    expect(screen.getByText(/the draft has changed since/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /publish/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /unpublish/i })).not.toBeInTheDocument()
+  })
+
+  it('publishes the saved draft version and shows the reader snapshot it produced', async () => {
+    setup({ project: { current_user_can_write: true } })
+    const draft = {
+      id: 'draft-1', space_id: 'space-1', project_id: 'project-1', project_name: 'Project One',
+      summary_text: 'Reviewed draft.', topics: [], highlights: [], source_refs: [],
+      redaction_version: 'v1', draft_version: 3, updated_by_user_id: 'user-1', generated_by_run_id: null,
+      created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-02T00:00:00.000Z',
+    }
+    vi.mocked(projectsApi.publicSummaryEditor).mockResolvedValue({ project_id: 'project-1', draft, published: null, can_publish: true })
+    vi.mocked(projectsApi.publishPublicSummary).mockResolvedValue({
+      id: 'pub-1', space_id: 'space-1', project_id: 'project-1', project_name: 'Project One',
+      summary_text: 'Reviewed draft.', topics: [], highlights: [], source_refs: [],
+      redaction_version: 'v1', source_draft_version: 3, published_by_user_id: 'user-1', published_at: '2026-01-03T00:00:00.000Z',
+    })
+    renderPage()
+    expect(await screen.findByText('Nothing is published. Other projects cannot see a summary of this one yet.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Publish' }))
+
+    await waitFor(() => expect(projectsApi.publishPublicSummary).toHaveBeenCalledWith('project-1', 3))
+    expect(await screen.findByText(/Draft version 3, published/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Unpublish' })).toBeInTheDocument()
+  })
+
   it('shows the goal and the situation, and fetches nothing an Area owns', async () => {
     setup()
     renderPage()

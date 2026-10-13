@@ -1,9 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type InvocationDelivery, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent } from "@rainver/protocol";
 import type { ContentBlock } from "./cliConversationProtocol.js";
 import type { CredentialSpendDeps } from "../policy/credentialSpend.js";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { AcpRuntimeAdapter } from "../runtimeAdapters/acpRuntimeAdapter.js";
-import type { AgentRunRecord } from "./repository.js";
+import { PgRunRepository, type AgentRunRecord } from "./repository.js";
 import { buildRunWorkSurface, type RunWorkSurface, type RunWorkSurfaceFrame } from "./runWorkSurface.js";
 import { acpRuntimeContextPromptBlocks } from "./acpRuntimeContextPrompt.js";
 import { stallTimeoutSeconds } from "./stallTimeout.js";
@@ -622,6 +623,14 @@ async function runRemoteHostCliAdapter(
   const egressTransport = !deps.executor && strictHost && deps.config
     ? managedHostEgressTransport(await readInstanceOperationsPolicy(deps.config))
     : { mode: "direct" } satisfies HostEgressTransport;
+  // The launch nonce is written on the Run's attempt before the frame leaves,
+  // so the host's diff/output uploads — which name it — bind to this attempt
+  // and to no other (D45). A test with no database runs the protocol alone.
+  const launchId = randomUUID();
+  if (deps.config?.databaseUrl) {
+    await new PgRunRepository(deps.db ?? getDbPool(deps.config.databaseUrl))
+      .bindAttemptLaunch({ space_id: input.run.space_id, run_id: input.run.id, launch_id: launchId });
+  }
   const executor = deps.executor ?? new RemoteWsCliCommandExecutor(
     hostId,
     workspaceLocationId,
@@ -640,6 +649,7 @@ async function runRemoteHostCliAdapter(
     dispatchIsolation(input.run),
     egressTransport,
     input.max_concurrent_runs ?? null,
+    launchId,
   );
   let stdoutText = "";
   // Provider binding is authoritative for a bound run. User-selected generic
@@ -1046,6 +1056,8 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
      * size.
      */
     private readonly maxConcurrentRuns: number | null = null,
+    /** Recorded on the Run's attempt by the caller; uploads are accepted against it. */
+    private readonly launchId: string = randomUUID(),
   ) {}
 
   async runCommand(input: Parameters<CliCommandExecutor["runCommand"]>[0]): Promise<CliExecutionResult> {
@@ -1137,6 +1149,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
       input.on_stderr_chunk,
       onLaunched,
       this.maxConcurrentRuns,
+      this.launchId,
     );
     if (controller) void launchedPromise!.then(() => controller.start(sendToController));
     input.process_registry?.registerRemote?.(

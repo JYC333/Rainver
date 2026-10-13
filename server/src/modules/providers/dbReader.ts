@@ -1,3 +1,4 @@
+import { providerDeployment } from "./deployment.js";
 /**
  * Provider DB read port.
  *
@@ -93,6 +94,7 @@ export function mapProviderRowToDto(row: ProviderRow): Record<string, unknown> {
     name: row.name,
     provider_type: providerType,
     base_url: row.base_url ?? defaultBaseUrlFor(providerType) ?? "",
+    deployment: providerDeployment(row.config_json),
     network_profile_id: row.network_profile_id ?? null,
     claude_compatible_base_url: stringConfig(row.config_json, "claude_compatible_base_url"),
     openai_compatible_base_url: stringConfig(row.config_json, "openai_compatible_base_url"),

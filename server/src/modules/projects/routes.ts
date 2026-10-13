@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import * as protocol from "@rainver/protocol";
 import type {
   ProjectPublicSummaryDraftRequest,
+  ProjectPublicSummaryPublishRequest,
   ProjectPublicSummaryUpsertRequest,
   RetrievalBriefRequest,
   RetrievalFeedbackRequest,
@@ -490,6 +491,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  app.get("/api/v1/projects/:projectId/public-summary/editor", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await repository().getPublicSummaryEditorState(identity, params(request).projectId ?? ""));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.put("/api/v1/projects/:projectId/public-summary", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -498,24 +509,49 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         protocol.ProjectPublicSummaryUpsertRequestSchema,
         jsonBody(request),
       );
-      const summary = await repository().upsertPublicSummary(
+      return reply.send(await repository().upsertPublicSummary(identity, params(request).projectId ?? "", body));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/projects/:projectId/public-summary/publish", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const body = parseBodyWith<ProjectPublicSummaryPublishRequest>(
+        protocol.ProjectPublicSummaryPublishRequestSchema,
+        jsonBody(request),
+      );
+      const published = await repository().publishPublicSummary(
         identity,
         params(request).projectId ?? "",
-        body,
+        body.draft_version,
       );
-      // Best-effort: the upsert recreates the chunk with embedding=NULL, so enqueue
-      // a backfill to embed it for the vector arm (matches knowledge/memory).
+      // Best-effort: publishing recreates the chunk with embedding=NULL, so
+      // enqueue a backfill to embed it for the vector arm (matches knowledge/memory).
       await enqueueRetrievalEmbeddingBackfill(context.config, {
         spaceId: identity.spaceId,
         userId: identity.userId,
-        trigger: "project_public_summary_upsert",
+        trigger: "project_public_summary_publish",
       }).catch((error) => {
         process.stderr.write(
           `[projects.retrieval] embedding backfill enqueue failed: ${String((error as Error)?.message ?? error)}\n`,
         );
         return null;
       });
-      return reply.send(summary);
+      return reply.send(published);
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/projects/:projectId/public-summary/revoke", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      await repository().revokePublicSummary(identity, params(request).projectId ?? "");
+      return reply.code(204).send();
     } catch (error) {
       return sendRouteError(reply, error);
     }

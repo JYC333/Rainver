@@ -150,6 +150,7 @@ export async function listProviderVendorCatalog(
       default_base_url: vendor.defaultBaseUrl,
       api_key_required: vendor.apiKeyRequired,
       subscription_only: vendor.subscriptionOnly,
+      self_hostable: vendor.selfHostable,
     })),
   );
 }

@@ -175,9 +175,27 @@ Do not collapse those rows into one folder:
   reorder above. `noteWriter.moveNoteToCollection` replaces every placement and
   backs creation and an explicit `collection_id` on a note update;
   `addNotePlacement` adds one.
-- `DELETE /knowledge/notes/{id}/placements/{collectionId}` removes one and
-  **refuses the last** (422): losing a note is a different decision from taking
-  it out of a folder, and has its own action.
+- **Owning-entry invariant** (`notePlacementInvariant.ts`): a live note bound
+  to Project A keeps at least one placement inside A's own folder subtree,
+  from its first moment; a note outside every Project may start unfiled (a
+  jot with no context) but never loses its last placement to a removal. A
+  cross-Project share's entry in B does not count. Every writer that removes, moves or
+  rewrites placements — `DELETE /knowledge/notes/{id}/placements/{collectionId}`,
+  the tree reorder, `collection_id` / `primary_project_id` on a note update,
+  folder delete, share revoke — locks the note's `space_objects` row first
+  (ascending id order), then its placements, does its work and checks the
+  final state in the same transaction. A violation is 422
+  `code: note_owning_entry_required` with `note_id`, `owning_project_id`,
+  `affected_note_count` and the two actions that actually help:
+  `move_within_owning_project` (or `move_to_folder` for an unbound note) and
+  `delete_note`. The client turns it into a dialog offering exactly those.
+  Losing a note is a different decision from taking it out of a folder.
+- A note created with `primary_project_id` and no `collection_id` is filed in
+  that Project's notes folder (`ensureProjectNotesFolder`); one filed outside
+  its Project is refused by the same invariant.
+- `DELETE /notes/collections/{id}` moves the folder's subfolders up to its
+  parent (so they stay in the same Project subtree) and drops its placements;
+  it is refused with the same 422 when a note would be left without its entry.
 - Adding and dragging answer alike when the folder already holds the note:
   409 `This note is already in that folder`. The reorder checks before its
   `UPDATE`, because the unique `(collection_id, note_id)` row it would land on
@@ -202,7 +220,9 @@ together or neither does:
   not be able to change who can read something.
 - `GET /knowledge/notes/{id}/shares` lists the Projects a note reaches, and
   `DELETE /knowledge/notes/{id}/shares/{projectId}` withdraws one, taking the
-  note's placements inside that Project with it. Both are surfaced on the
+  note's placements inside that Project with it and nothing else — the owning
+  Project's entries stay, so A still finds the note and B no longer reads it.
+  Reorganizing A's folders never touches B's entry. Both are surfaced on the
   note itself, behind a `Shared` status-bar chip that appears only once a note
   is actually shared. The list filters target Projects through the caller's
   Project read ACL, so access to the owning Note cannot reveal a private target

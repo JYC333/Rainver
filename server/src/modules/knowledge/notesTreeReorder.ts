@@ -9,6 +9,7 @@ import {
   assertNoteCollectionProjectWriter,
   bindNoteToPlacementProject,
 } from "./noteWriter.js";
+import { assertNoteEntryInvariant, lockNotesForPlacementChange } from "./notePlacementInvariant.js";
 import { assertProjectWriter } from "../projects/access.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 
@@ -154,6 +155,13 @@ async function reorderNoteItems(
     throw new HttpError(404, "One or more note collections were not found");
   }
 
+  // Note rows before placement rows, the order every placement writer keeps
+  // (`notePlacementInvariant`), so a drag and a concurrent removal of the
+  // same note serialize instead of each seeing an entry the other is taking.
+  const lockedNotes = await lockNotesForPlacementChange(
+    db, identity.spaceId, updates.map((update) => update.noteId),
+  );
+
   // Every addressed row must exist as a placement *in the folder it is being
   // moved out of*, and the note behind it must be one this user can read.
   //
@@ -266,6 +274,9 @@ async function reorderNoteItems(
   if ((result.rowCount ?? 0) !== updates.length) {
     throw new HttpError(409, "Note ordering changed concurrently; retry the reorder");
   }
+  // A drag out of a Project's subtree is a removal of that entry; the last
+  // one is refused here exactly as the explicit placement action refuses it.
+  await assertNoteEntryInvariant(db, identity.spaceId, lockedNotes);
   return updates.length;
 }
 

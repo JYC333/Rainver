@@ -20,6 +20,7 @@ function target(providerId: string): InvocationTarget {
       name: providerId,
       provider_type: "openai_compatible",
       base_url: `https://api.${providerId}.test/v1`,
+      deployment: "cloud" as const,
       network_profile_id: null,
       default_model: "test-model",
       available_models: [],

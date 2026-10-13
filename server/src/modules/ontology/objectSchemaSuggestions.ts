@@ -368,16 +368,15 @@ async function loadMemoryEntryKindUsageObjects(db: Queryable, spaceId: string, u
 
 async function loadProjectPublicSummaryKindUsageObjects(db: Queryable, spaceId: string): Promise<UsageObjectRow[]> {
   const result = await db.query<{ object_id: string }>(
-    `SELECT ps.project_id AS object_id
-       FROM project_public_summaries ps
+    `SELECT pub.project_id AS object_id
+       FROM project_public_summary_publications pub
        JOIN projects p
-         ON p.id = ps.project_id
-        AND p.space_id = ps.space_id
-      WHERE ps.space_id = $1
-        AND ps.review_status = 'approved'
+         ON p.id = pub.project_id
+        AND p.space_id = pub.space_id
+      WHERE pub.space_id = $1
         AND p.status = 'active'
         AND p.deleted_at IS NULL
-      ORDER BY ps.project_id ASC`,
+      ORDER BY pub.project_id ASC`,
     [spaceId],
   );
   return result.rows.map((row) => ({

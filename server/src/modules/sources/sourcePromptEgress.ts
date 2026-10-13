@@ -1,7 +1,7 @@
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import {
   retrievalEgressAllowed,
-  retrievalProviderEgressDestination,
+  runtimeProviderEgressDestination,
   type RetrievalEgressDestination,
 } from "../retrieval/egress/egressPolicy.js";
 import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
@@ -64,14 +64,20 @@ async function resolveAgentPromptEgressDestination(
     runtime_key: string;
     backend_mode: "runtime_native" | "model_provider";
     model_provider_id: string | null;
+    model_name: string | null;
     provider_type: string | null;
     base_url: string | null;
+    config_json: unknown;
+    default_model: string | null;
   }>(
     `SELECT arp.runtime_key,
             arp.backend_mode,
             arp.model_provider_id,
+            arp.model_name,
             p.provider_type,
-            p.base_url
+            p.base_url,
+            p.config_json,
+            p.default_model
        FROM agent_runtime_profiles arp
        LEFT JOIN model_provider_space_grants g
          ON g.space_id = arp.space_id
@@ -96,9 +102,12 @@ async function resolveAgentPromptEgressDestination(
     if (!profile.provider_type) {
       throw new HttpError(409, "Selected agent model provider is not available in this space.");
     }
-    return retrievalProviderEgressDestination({
+    return runtimeProviderEgressDestination(profile.runtime_key, {
       provider_type: profile.provider_type,
       base_url: profile.base_url,
+      config_json: profile.config_json,
+      default_model: profile.default_model,
+      model: profile.model_name,
     });
   }
   if (profile.model_provider_id) {

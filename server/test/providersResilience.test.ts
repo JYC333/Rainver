@@ -32,6 +32,7 @@ function target(
       name: providerId,
       provider_type: "openai",
       base_url: `https://api.${providerId}.test/v1`,
+      deployment: "cloud" as const,
       network_profile_id: null,
       default_model: `default-of-${providerId}`,
       available_models: [],

@@ -218,13 +218,25 @@ user session — the daemon has no session to present):
   (never touches the daemon's disk; the daemon owns that).
 - `POST /api/v1/hosts/me/runs/:runId/diff` / `.../outputs` — daemon uploads a
   completed run's git diff and `RAINVER_OUTPUT_DIR` contents as read-only
-  artifacts (never fed into code-patch proposal apply). Scoped by
-  `runOwnedByHost` — a host can only upload for a Run bound to its own
-  Location.
+  artifacts (never fed into code-patch proposal apply). Both bodies carry the
+  `launch_id` of the attempt they belong to, and the control plane accepts an
+  upload only for a Run bound to this host **and** against the attempt whose
+  `run_attempts.launch_id` matches, while that attempt is still the Run's
+  current one and still open (`queued`/`running`/`cancelling`). The check and
+  the artifact write happen in one transaction with the attempt row locked,
+  so finalization and a late upload serialize: an upload from a superseded
+  attempt answers 409 `attempt_superseded`, one for an attempt that already
+  ended answers 409 `attempt_ended`, and neither writes anything. A repeated
+  upload of the same delivery (the daemon retrying a lost acknowledgement)
+  answers with the artifact ids it already made and rewrites nothing — unique
+  partial indexes on `(run_id, metadata_json->>'launch_id'[, title])` back
+  that for `remote_diff` and `remote_output`. The launch nonce is written on
+  the attempt by `PgRunRepository.bindAttemptLaunch` before the launch frame
+  is sent (`remoteHostCliAdapter.ts`).
   Size-capped server-side (`MAX_DIFF_BYTES`, `MAX_OUTPUT_FILE_BYTES`,
   `MAX_OUTPUT_FILES` in `repository.ts`) regardless of what the daemon sends.
-  The diff body is `HostRunDiffUploadSchema` (`@rainver/protocol`): `diff`
-  (null when none could be captured) and optional `git_before` / `git_after
+  The diff body is `HostRunDiffUploadSchema` (`@rainver/protocol`): `launch_id`,
+  `diff` (null when none could be captured) and optional `git_before` / `git_after
   { branch, head }` — where the Run's checkout stood before and after it (see
   "Location lease, Task worktrees and `git_after`" below). `recordDiffArtifact`
   writes `git_after` to the Run's `output_json.workspace_after` (kept through

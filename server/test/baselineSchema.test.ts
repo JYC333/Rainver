@@ -93,14 +93,14 @@ async function baselineTableNames(p: Pool): Promise<string[]> {
 const FROZEN_BASELINE_SHA256 = "d1303347cf8ecc2af391ddc521823d902c57e0f5fe208c21ccb597c4b24ec946";
 
 describe("server runner applies the migration chain", () => {
-  // The chain is one baseline. Later changes append numbered migrations.
-  // Do not add a migration from the preceding epoch.
+  // The chain starts at one baseline. Later changes append numbered,
+  // gap-free migrations after it. Do not add a migration from the preceding
+  // epoch, and do not fold a change back into the baseline.
   it("starts the new schema epoch from one baseline and appends numbered migrations to it", () => {
     const migrationFiles = readdirSync(MIGRATIONS_DIR)
       .filter((name) => /^\d+_.+\.sql$/.test(name))
       .sort();
     expect(migrationFiles[0]).toBe("0000_baseline.sql");
-    expect(migrationFiles.slice(1)).toEqual([]);
     migrationFiles.forEach((file, index) => {
       expect(file.startsWith(`${String(index).padStart(4, "0")}_`), `gap or duplicate before ${file}`).toBe(true);
     });
@@ -362,13 +362,13 @@ describe("server runner applies the migration chain", () => {
     const result = await migrate(db.pool, MIGRATIONS_DIR);
     expect(result.all).toEqual(expectedVersions);
     expect(result.applied).toEqual(expectedVersions);
-    expect(expectedVersions).toEqual(["0000"]);
+    expect(expectedVersions[0]).toBe("0000");
 
     const recorded = await db.pool.query(
       `SELECT version FROM public.${RUNNER_TABLE} WHERE version = ANY($1::text[])`,
-      [["0000"]],
+      [expectedVersions],
     );
-    expect(recorded.rowCount).toBe(1);
+    expect(recorded.rowCount).toBe(expectedVersions.length);
 
     const tables = await baselineTableNames(db.pool);
     for (const t of REPRESENTATIVE_TABLES) {

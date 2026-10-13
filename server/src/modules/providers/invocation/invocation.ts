@@ -41,7 +41,7 @@ import { classifyProviderFailure, type ProviderResilienceDecision } from "./resi
 import { fetchWithNetworkProfile, type ResolvedNetworkProfile } from "../../networkProfiles/index.js";
 import {
   retrievalEgressAllowed,
-  retrievalProviderEgressDestination,
+  providerEgressDestination,
   type RetrievalEgressPolicy,
 } from "../../retrieval/egress/egressPolicy.js";
 import { normalizeGatewayShapes, normalizeNullableNearMisses, validateStructuredOutput } from "../../runs/structuredOutputValidation.js";
@@ -603,6 +603,8 @@ function structuredOutputUnsupportedError(providerType: string): ProviderInvocat
 function providerTargetEgressAllowed(
   target: InvocationTarget,
   policy: RetrievalEgressPolicy | null | undefined,
+  /** The model this call will run; the Provider's default when the request names none. */
+  model: string | null = null,
 ): boolean {
   if (!policy) return true;
   return retrievalEgressAllowed(
@@ -613,7 +615,7 @@ function providerTargetEgressAllowed(
     },
     {
       ...policy,
-      destination: retrievalProviderEgressDestination(target.provider),
+      destination: providerEgressDestination({ ...target.provider, model }),
     },
   );
 }
@@ -1191,14 +1193,14 @@ async function completeAuthorizedProviderChat(
 
   let lastError: unknown = null;
   for (const [index, target] of chain.entries()) {
-    if (!providerTargetEgressAllowed(target, body.egressPolicy)) {
+    // Fallback providers serve THEIR OWN default model: an explicit model
+    // name from the request only binds to the provider it was meant for.
+    const effectiveBody = index === 0 ? body : { ...body, model: null };
+    if (!providerTargetEgressAllowed(target, body.egressPolicy, effectiveBody.model ?? null)) {
       lastError = providerEgressDeniedError(target);
       continue;
     }
     try {
-      // Fallback providers serve THEIR OWN default model: an explicit model
-      // name from the request only binds to the provider it was meant for.
-      const effectiveBody = index === 0 ? body : { ...body, model: null };
       try {
         const result = await invokeProviderWithPool(store, target, effectiveBody, attribution);
         return { ...result, provider_id: target.provider.id };

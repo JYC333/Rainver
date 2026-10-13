@@ -4484,6 +4484,23 @@ export interface Project {
   archived_at: string | null
 }
 
+/**
+ * The Project public summary's two sides — the draft writers edit and the
+ * published snapshot every Space member reads — are wire contracts the
+ * protocol package owns, so they are forwarded rather than restated.
+ */
+export type {
+  ProjectPublicSummary,
+  ProjectPublicSummaryDraft,
+  ProjectPublicSummaryEditorState,
+} from '@rainver/protocol'
+
+export interface ProjectPublicSummaryUpsertBody {
+  summary_text: string
+  topics?: string[]
+  highlights?: string[]
+}
+
 export interface ProjectCreate {
   name: string
   description?: string | null

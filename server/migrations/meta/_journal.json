@@ -8,6 +8,20 @@
       "when": 1790397729868,
       "tag": "0000_baseline",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791913885508,
+      "tag": "0001_run_attempt_launch_binding",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791914792068,
+      "tag": "0002_project_public_summary_publications",
+      "breakpoints": true
     }
   ]
 }

@@ -599,12 +599,18 @@ describe("hosts routes", () => {
        VALUES ($1, 'upload-space', 'upload-agent', 'upload-agent-version', 'agent', 'manual', 'succeeded', 'live', $2, $3, $4, $4, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = 'upload-space' AND p.agent_id = 'upload-agent' AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = 'upload-space' AND p.agent_id = 'upload-agent' AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = 'upload-space' AND p.agent_id = 'upload-agent' AND p.is_default = TRUE))`,
       [runId, locationId, OWNER, now],
     );
+    const launchId = "upload-launch-1";
+    await db.pool.query(
+      `INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, launch_id, started_at, created_at, updated_at)
+       VALUES ('upload-attempt-1', 'upload-space', $1, 1, 'running', $2, $3, $3, $3)`,
+      [runId, launchId, now],
+    );
 
     const diffFromB = await app.inject({
       method: "POST",
       url: `/api/v1/hosts/me/runs/${runId}/diff`,
       headers: { authorization: `Bearer ${hostB.token}` },
-      payload: { diff: "diff --git a/x b/x\n" },
+      payload: { launch_id: launchId, diff: "diff --git a/x b/x\n" },
     });
     expect(diffFromB.statusCode).toBe(404);
 
@@ -612,17 +618,26 @@ describe("hosts routes", () => {
       method: "POST",
       url: `/api/v1/hosts/me/runs/${runId}/diff`,
       headers: { authorization: `Bearer ${hostA.token}` },
-      payload: { diff: "diff --git a/x b/x\n+hello\n" },
+      payload: { launch_id: launchId, diff: "diff --git a/x b/x\n+hello\n" },
     });
     expect(diffFromA.statusCode).toBe(201);
     expect(diffFromA.json().artifact_id).toBeTruthy();
 
-    // A diff that could not be read still reports where the checkout stands.
+    // A later attempt of the same Run, whose diff could not be read, still
+    // reports where the checkout stands. Its own launch nonce, because one
+    // launch is one delivery: a second diff upload under the first nonce is
+    // answered as a replay of the first.
+    const launchId2 = "upload-launch-2";
+    await db.pool.query(
+      `INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, launch_id, started_at, created_at, updated_at)
+       VALUES ('upload-attempt-2', 'upload-space', $1, 2, 'running', $2, $3, $3, $3)`,
+      [runId, launchId2, now],
+    );
     const gitAfterOnly = await app.inject({
       method: "POST",
       url: `/api/v1/hosts/me/runs/${runId}/diff`,
       headers: { authorization: `Bearer ${hostA.token}` },
-      payload: { diff: null, git_after: { branch: "main", head: "abc123" } },
+      payload: { launch_id: launchId2, diff: null, git_after: { branch: "main", head: "abc123" } },
     });
     expect(gitAfterOnly.statusCode, gitAfterOnly.body).toBe(201);
     expect(gitAfterOnly.json().artifact_id).toBeNull();
@@ -635,7 +650,7 @@ describe("hosts routes", () => {
       method: "POST",
       url: `/api/v1/hosts/me/runs/${runId}/diff`,
       headers: { authorization: `Bearer ${hostA.token}` },
-      payload: { diff: null },
+      payload: { launch_id: launchId2, diff: null },
     });
     expect(empty.statusCode).toBe(422);
 
@@ -643,10 +658,27 @@ describe("hosts routes", () => {
       method: "POST",
       url: `/api/v1/hosts/me/runs/${runId}/outputs`,
       headers: { authorization: `Bearer ${hostA.token}` },
-      payload: { files: [{ name: "report.md", content: "# done" }] },
+      payload: { launch_id: launchId2, files: [{ name: "report.md", content: "# done" }] },
     });
     expect(outputsFromA.statusCode).toBe(201);
     expect(outputsFromA.json().artifact_ids).toHaveLength(1);
+
+    // An upload naming an attempt the Run has moved past is refused.
+    const staleLaunch = await app.inject({
+      method: "POST",
+      url: `/api/v1/hosts/me/runs/${runId}/diff`,
+      headers: { authorization: `Bearer ${hostA.token}` },
+      payload: { launch_id: launchId, diff: "diff --git a/x b/x\n" },
+    });
+    expect(staleLaunch.statusCode).toBe(409);
+    expect(staleLaunch.json().code).toBe("attempt_superseded");
+    const withoutLaunch = await app.inject({
+      method: "POST",
+      url: `/api/v1/hosts/me/runs/${runId}/outputs`,
+      headers: { authorization: `Bearer ${hostA.token}` },
+      payload: { files: [] },
+    });
+    expect(withoutLaunch.statusCode).toBe(422);
 
     const noAuth = await app.inject({
       method: "POST",

@@ -205,7 +205,38 @@ process environment.
 | Anthropic (Claude) | Data sent to Anthropic servers; not for private/sensitive enterprise data without a data processing agreement |
 | OpenAI (Codex) | Same; OpenAI API terms apply |
 | Any cloud LLM | Accepted Runtime Context Delivery may include Memory and Project data. Review egress policy and sensitivity ceilings before using a third-party provider |
-| Ollama / local | No external data transmission; safe for private data |
+| Trusted local deployment | No external data transmission when the declaration holds; see "Local deployments" below |
+
+## Local deployments
+
+Whether a Provider call is a *local* egress (allowed while a Space's
+`external_egress_enabled` is off, and for Sources whose class is
+`local_provider_allowed`) is decided by `providerEgressDestination`
+(`retrieval/egress/egressPolicy.ts`) from three facts that must all hold:
+
+1. The Provider is declared `deployment: "trusted_local"` (stored in
+   `model_providers.config_json`, exposed as `deployment` on the DTO). Only a
+   self-hostable vendor (`VendorDescriptor.selfHostable`: `ollama`,
+   `openai_compatible`) may carry the declaration, and only a Space owner or
+   admin may make it (`ProviderCommandStore.requireSpaceOwnerOrAdmin`); the
+   Provider owner alone cannot.
+2. The endpoint the call will reach is inside this instance's network
+   (`isInstanceNetworkUrl`): `localhost`/loopback, a private, link-local or
+   otherwise non-public address, a single-label name such as a Compose
+   service, or a `.local`/`.lan`/`.internal`/`.home.arpa` style suffix. A
+   public address or public-looking name is external however it is declared.
+   For a CLI runtime bound to the Provider, the endpoint judged is the
+   compatible bridge URL the runtime will actually use.
+3. The model the call will run is not one the vendor serves from the cloud:
+   Ollama's `-cloud`/`:cloud` models are forwarded by a local daemon to the
+   vendor's hosted service and are external.
+
+The vendor name proves nothing (the same Ollama daemon serves hosted models),
+and a loopback URL proves nothing (a local gateway may forward anywhere), so
+an undeclared Provider is external. A Run's model override or a runtime's own
+configuration cannot change the classification: the declaration and the
+endpoint are the Provider's, and a cloud model chosen at run time is judged as
+such.
 
 ## When Adding a New Provider
 

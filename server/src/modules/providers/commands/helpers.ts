@@ -1,3 +1,4 @@
+import { providerDeployment, SELF_HOSTABLE_PROVIDER_TYPES, type ProviderDeployment } from "../deployment.js";
 import type { mapProviderRowToDto } from "../dbReader.js";
 import { listProviderVendors, providerVendor } from "../vendors.js";
 import {
@@ -66,6 +67,19 @@ export function validateCreateFields(input: ModelProviderCreateInput): void {
 
 export function validateBaseUrl(providerType: string, baseUrl: string | null): void {
   normalizeBaseUrl(providerType, baseUrl);
+}
+
+/**
+ * Only a vendor that can be self-hosted may be declared a trusted local
+ * deployment. A hosted vendor's endpoint is the cloud whatever URL it is
+ * reached through, so the declaration is refused rather than recorded.
+ */
+export function validateDeployment(providerType: string, deployment: ProviderDeployment): void {
+  if (deployment === "trusted_local" && !SELF_HOSTABLE_PROVIDER_TYPES.has(providerType)) {
+    throw new ProviderCommandValidationError(
+      `provider_type '${providerType}' is a hosted service and cannot be declared a trusted local deployment`,
+    );
+  }
 }
 
 export function configuredModelsFromRow(row: ProviderRow): string[] {
@@ -147,6 +161,7 @@ export function providerInfoFromRow(row: ProviderRow): ProviderInfo {
     name: row.name,
     provider_type: providerType,
     base_url: normalizeBaseUrl(providerType, row.base_url),
+    deployment: providerDeployment(row.config_json),
     network_profile_id: row.network_profile_id ?? null,
     claude_compatible_base_url: claudeCompatibleBaseUrlFromRow(row),
     openai_compatible_base_url: openAiCompatibleBaseUrlFromRow(row),

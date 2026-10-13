@@ -457,8 +457,8 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       throw new HttpError(409, "Invocation Delivery CLI egress authority no longer matches the adapter");
     }
     if (run.model_provider_id) {
-      const providerResult = await db.query<{ provider_type: string; base_url: string | null; config_json: unknown }>(
-        `SELECT provider.provider_type,provider.base_url,provider.config_json
+      const providerResult = await db.query<{ provider_type: string; base_url: string | null; config_json: unknown; default_model: string | null }>(
+        `SELECT provider.provider_type,provider.base_url,provider.config_json,provider.default_model
            FROM model_provider_space_grants provider_grant
            JOIN model_providers provider ON provider.id=provider_grant.provider_id
           WHERE provider_grant.space_id=$1 AND provider_grant.provider_id=$2
@@ -1357,7 +1357,7 @@ async function lockRetrievalAuthority(
     source: "SELECT source.object_id FROM sources source JOIN space_objects object ON object.id=source.object_id AND object.space_id=source.space_id WHERE source.space_id=$1 AND source.object_id=$2 FOR SHARE OF source,object",
     claim: "SELECT claim.object_id FROM claims claim JOIN space_objects object ON object.id=claim.object_id AND object.space_id=claim.space_id WHERE claim.space_id=$1 AND claim.object_id=$2 FOR SHARE OF claim,object",
     memory_entry: "SELECT id FROM memory_entries WHERE space_id=$1 AND id=$2 FOR SHARE",
-    project_public_summary: "SELECT summary.project_id FROM project_public_summaries summary JOIN projects project ON project.id=summary.project_id AND project.space_id=summary.space_id WHERE summary.space_id=$1 AND summary.project_id=$2 FOR SHARE OF summary,project",
+    project_public_summary: "SELECT summary.project_id FROM project_public_summary_publications summary JOIN projects project ON project.id=summary.project_id AND project.space_id=summary.space_id WHERE summary.space_id=$1 AND summary.project_id=$2 FOR SHARE OF summary,project",
     source_item: "SELECT id FROM source_items WHERE space_id=$1 AND id=$2 FOR SHARE",
     extracted_evidence: "SELECT id FROM extracted_evidence WHERE space_id=$1 AND id=$2 FOR SHARE",
     inquiry_thread: "SELECT thread.object_id FROM inquiry_threads thread JOIN projects project ON project.id=thread.project_id AND project.space_id=thread.space_id WHERE thread.space_id=$1 AND thread.object_id=$2 FOR SHARE OF thread,project",

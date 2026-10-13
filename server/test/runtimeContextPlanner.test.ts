@@ -43,31 +43,43 @@ function currentMessage(text = "do the work") {
 
 describe("Runtime Context common planner", () => {
   it("classifies provider-bound CLI egress from the adapter-specific upstream", () => {
+    // A declared local Provider whose Claude bridge points at a public gateway
+    // is external for a runtime that will use that bridge.
     expect(runtimeContextProviderDestination("claude_code", {
       provider_type: "ollama",
       base_url: "http://127.0.0.1:11434",
-      config_json: { claude_compatible_base_url: "https://api.example.test/anthropic" },
+      config_json: { deployment: "trusted_local", claude_compatible_base_url: "https://api.example.test/anthropic" },
     })).toBe("external_provider");
     expect(runtimeContextProviderDestination("codex_cli", {
-      provider_type: "custom",
+      provider_type: "openai_compatible",
       base_url: "https://generic.example.test",
-      config_json: { openai_compatible_base_url: "http://localhost:8080/v1" },
+      config_json: { deployment: "trusted_local", openai_compatible_base_url: "http://localhost:8080/v1" },
     })).toBe("local_provider");
+    // Without the declaration a loopback Ollama is still external.
     expect(runtimeContextProviderDestination("opencode", {
       provider_type: "ollama",
       base_url: "http://localhost:11434",
       config_json: {},
     })).toBe("external_provider");
-    // OpenCode follows the vendor's protocol, so an Anthropic vendor is
-    // classified by the Claude-compatible endpoint it will actually reach.
+    // OpenCode follows the vendor's protocol, so the endpoint judged is the
+    // Claude-compatible one it will actually reach; the declaration still
+    // has to be there, and a hosted model name still counts.
     expect(runtimeContextProviderDestination("opencode", {
-      provider_type: "anthropic",
-      base_url: "https://api.anthropic.com",
+      provider_type: "openai_compatible",
+      base_url: "http://localhost:8080/v1",
       config_json: {
-        claude_compatible_base_url: "http://localhost:4000",
-        openai_compatible_base_url: "https://gateway.example.test/v1",
+        deployment: "trusted_local",
+        claude_compatible_base_url: "https://gateway.example.test/anthropic",
+        openai_compatible_base_url: "http://localhost:4000/v1",
       },
+      default_model: "qwen3:8b",
     })).toBe("local_provider");
+    expect(runtimeContextProviderDestination("opencode", {
+      provider_type: "ollama",
+      base_url: "http://localhost:11434",
+      config_json: { deployment: "trusted_local", claude_compatible_base_url: "http://localhost:11434" },
+      default_model: "gpt-oss:120b-cloud",
+    })).toBe("external_provider");
   });
 
   it("uses the same deterministic window decisions for preview and execution", () => {

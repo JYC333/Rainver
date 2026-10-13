@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile, realpath, stat } from "node:fs/promises";
+import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import type { Stats } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import {
   diffTouchesSecretLikePath,
@@ -20,9 +21,10 @@ import {
   SHOW_HIDDEN,
 } from "./limits.js";
 import { isGitRepo, parsePorcelain, runLocationGit } from "./git.js";
+import { openFileBeneathRoot, SafeOpenError } from "./safeOpen.js";
 import type { FileContent, FileNode, GitDiff, GitStatus } from "./types.js";
 
-export type FolderReadErrorCode = "not_found" | "is_directory" | "too_large" | "path_forbidden";
+export type FolderReadErrorCode = "not_found" | "is_directory" | "too_large" | "path_forbidden" | "unsupported_platform";
 
 export class FolderReadError extends Error {
   constructor(readonly code: FolderReadErrorCode, message: string) {
@@ -45,28 +47,67 @@ export async function readFolderFile(
 ): Promise<FileContent> {
   throwIfAborted(opts.signal);
   const resolved = resolveRelativePath(root, relPath, opts);
-  await assertContainedPath(root, resolved.absolute, opts);
-  const info = await stat(resolved.absolute).catch(() => null);
-  if (!info) throw new FolderReadError("not_found", "File not found");
-  if (!info.isFile()) throw new FolderReadError("is_directory", "Path is a directory");
-  if (info.size > MAX_FILE_BYTES) {
-    throw new FolderReadError("too_large", "File too large to display (max 1 MiB)");
+  if (resolved.relative === "") throw new FolderReadError("is_directory", "Path is a directory");
+  // The lexical policy decision above is the last time the name is used. From
+  // here on the kernel resolves each component without following links and
+  // every check — type, size, bytes — runs on the handle it produced.
+  const file = await openFileBeneathRoot(root, resolved.relative.split("/")).catch((error: unknown) => {
+    if (error instanceof SafeOpenError) throw folderReadErrorFromSafeOpen(error);
+    throw error;
+  });
+  try {
+    throwIfAborted(opts.signal);
+    const info = await file.stat();
+    if (info.isDirectory()) throw new FolderReadError("is_directory", "Path is a directory");
+    if (!info.isFile()) throw new FolderReadError("path_forbidden", "Path is not a regular file");
+    if (info.size > MAX_FILE_BYTES) throw new FolderReadError("too_large", "File too large to display (max 1 MiB)");
+    const bytes = await readBounded(file, opts.signal);
+    const decoded = decodeFileBytes(bytes, { includeUtf16Preview: opts.includeUtf16Preview === true });
+    return {
+      path: resolved.relative,
+      content: decoded.content,
+      size: bytes.byteLength,
+      line_count: decoded.line_count,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      encoding: decoded.encoding,
+      has_bom: decoded.has_bom,
+      line_ending_mode: decoded.line_ending_mode,
+      writable: decoded.writable,
+      conversion_available: decoded.conversion_available,
+    };
+  } finally {
+    await file.close();
   }
-  const bytes = await readFile(resolved.absolute);
-  throwIfAborted(opts.signal);
-  const decoded = decodeFileBytes(bytes, { includeUtf16Preview: opts.includeUtf16Preview === true });
-  return {
-    path: resolved.relative,
-    content: decoded.content,
-    size: bytes.byteLength,
-    line_count: decoded.line_count,
-    sha256: createHash("sha256").update(bytes).digest("hex"),
-    encoding: decoded.encoding,
-    has_bom: decoded.has_bom,
-    line_ending_mode: decoded.line_ending_mode,
-    writable: decoded.writable,
-    conversion_available: decoded.conversion_available,
-  };
+}
+
+/**
+ * Reads at most `MAX_FILE_BYTES + 1` bytes from an open handle. The stat size
+ * is a hint: a file that grows while it is read is still caught, because the
+ * extra byte proves it is now over the limit.
+ */
+async function readBounded(file: FileHandle, signal: AbortSignal | undefined): Promise<Buffer> {
+  const buffer = Buffer.allocUnsafe(MAX_FILE_BYTES + 1);
+  let length = 0;
+  while (length < buffer.length) {
+    throwIfAborted(signal);
+    const { bytesRead } = await file.read(buffer, length, buffer.length - length, length);
+    if (bytesRead === 0) break;
+    length += bytesRead;
+  }
+  if (length > MAX_FILE_BYTES) throw new FolderReadError("too_large", "File too large to display (max 1 MiB)");
+  return buffer.subarray(0, length);
+}
+
+function folderReadErrorFromSafeOpen(error: SafeOpenError): FolderReadError {
+  switch (error.code) {
+    case "symlink":
+      return new FolderReadError("path_forbidden", "Path contains a symbolic link");
+    case "not_found":
+    case "not_directory":
+      return new FolderReadError("not_found", "File not found");
+    case "unsupported_platform":
+      return new FolderReadError("unsupported_platform", error.message);
+  }
 }
 
 /**
@@ -297,11 +338,13 @@ async function buildTreeNodeFrom(info: Stats, root: string, nodePath: string, de
     // temporary file that was removed between readdir and stat, or an entry
     // the process may not look at. The walk leaves it out; it does not fail
     // the whole tree over it.
-    const childInfo = await stat(childPath).catch((error: NodeJS.ErrnoException) => {
+    // `lstat`, not `stat`: an entry that became a link after `readdir` listed
+    // it must not be described by what it now points at.
+    const childInfo = await lstat(childPath).catch((error: NodeJS.ErrnoException) => {
       if (error?.code === "ENOENT" || error?.code === "EACCES" || error?.code === "EPERM") return null;
       throw error;
     });
-    if (!childInfo) continue;
+    if (!childInfo || childInfo.isSymbolicLink()) continue;
     counter.count += 1;
     if (counter.count > MAX_FILES) break;
     children.push(await buildTreeNodeFrom(childInfo, root, childPath, depth + 1, counter, signal));

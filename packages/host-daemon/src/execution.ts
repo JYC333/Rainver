@@ -1614,6 +1614,7 @@ async function launchRun(
       try {
         if (diff !== null || gitAfter) {
           await uploadRunDiff(config.server_url, config.token, frame.run_id, {
+            launch_id: frame.launch_id,
             diff,
             truncated: false,
             ...(gitBefore ? { git_before: gitBefore } : {}),
@@ -1625,7 +1626,7 @@ async function launchRun(
       }
       try {
         const files = await collectOutputFiles(outputsDir);
-        await uploadRunOutputs(config.server_url, config.token, frame.run_id, files);
+        await uploadRunOutputs(config.server_url, config.token, frame.run_id, { launch_id: frame.launch_id, files });
       } catch (error) {
         log(`run ${frame.run_id}: output upload failed: ${error instanceof Error ? error.message : String(error)}`);
       }

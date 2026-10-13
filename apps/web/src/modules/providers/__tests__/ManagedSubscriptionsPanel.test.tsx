@@ -23,6 +23,7 @@ const codexProvider = {
   name: 'OpenAI Codex subscription',
   provider_type: 'openai_codex',
   base_url: 'https://chatgpt.com/backend-api',
+  deployment: 'cloud',
   network_profile_id: null,
   claude_compatible_base_url: null,
   openai_compatible_base_url: null,

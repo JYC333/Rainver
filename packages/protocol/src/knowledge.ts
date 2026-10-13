@@ -68,6 +68,44 @@ export const NOTE_LINK_TARGET_TYPE_VALUES = [
 export const NoteLinkTargetTypeSchema = z.enum(NOTE_LINK_TARGET_TYPE_VALUES);
 export type NoteLinkTargetType = z.infer<typeof NoteLinkTargetTypeSchema>;
 
+/**
+ * Machine-readable codes for placement refusals the client answers with a
+ * question rather than an error toast. Both ends read these names from here.
+ *
+ * - `note_cross_project_share_required`: a placement into another Project's
+ *   subtree would also make the note readable there; the client confirms and
+ *   re-issues with `share_with_project: true`.
+ * - `note_owning_entry_required`: the change would leave a note with no entry
+ *   in the Project that owns it (or, for a note outside every Project, no
+ *   folder at all). The client offers the two actions the server will accept:
+ *   move the note within its owning Project, or delete the note itself.
+ */
+export const NOTE_CROSS_PROJECT_SHARE_REQUIRED_CODE = "note_cross_project_share_required";
+export const NOTE_OWNING_ENTRY_REQUIRED_CODE = "note_owning_entry_required";
+
+export const NOTE_OWNING_ENTRY_ACTION_VALUES = [
+  "move_within_owning_project",
+  "move_to_folder",
+  "delete_note",
+] as const;
+export const NoteOwningEntryActionSchema = z.enum(NOTE_OWNING_ENTRY_ACTION_VALUES);
+export type NoteOwningEntryAction = z.infer<typeof NoteOwningEntryActionSchema>;
+
+/** The 422 body of a `note_owning_entry_required` refusal. */
+export const NoteOwningEntryRequiredErrorSchema = z
+  .object({
+    code: z.literal(NOTE_OWNING_ENTRY_REQUIRED_CODE),
+    detail: z.string(),
+    note_id: IdSchema,
+    note_title: z.string().nullable(),
+    owning_project_id: IdSchema.nullable(),
+    actions: z.array(NoteOwningEntryActionSchema),
+    /** How many notes the refused operation would have affected this way (a folder delete covers many). */
+    affected_note_count: z.number().int().positive(),
+  })
+  .strict();
+export type NoteOwningEntryRequiredError = z.infer<typeof NoteOwningEntryRequiredErrorSchema>;
+
 export const CLAIM_KIND_VALUES = [
   "fact",
   "hypothesis",

@@ -1348,6 +1348,16 @@ describe("Leaf domain repository behavior", () => {
         expect(params).toEqual(["space-1", "collection-1"]);
         return [];
       }
+      // The placement invariant locks the note, then reads where its
+      // placements land; an unbound note needs one entry anywhere.
+      if (norm.includes("FOR UPDATE OF so")) {
+        expect(params).toEqual(["space-1", ["note-1"]]);
+        return [{ note_id: "note-1", title: "Note", primary_project_id: null, status: "active" }];
+      }
+      if (norm.includes("WITH RECURSIVE placed AS")) {
+        expect(params).toEqual(["space-1", ["note-1"]]);
+        return [{ note_id: "note-1", placement_id: "placement-1", project_id: null }];
+      }
       if (sql.includes("DELETE FROM note_collection_items")) {
         expect(sql).toContain("space_id = $2");
         expect(params).toEqual(["note-1", "space-1"]);

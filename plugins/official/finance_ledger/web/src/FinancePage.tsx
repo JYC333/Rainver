@@ -7,6 +7,9 @@ import type {
   FinanceBalanceScope,
   FinanceBook,
   FinanceCommodity,
+  FinanceImportBatch,
+  FinanceImportEntry,
+  FinanceImportEntryStatus,
   FinanceImportResult,
   FinanceLedgerError,
   FinancePosting,
@@ -755,29 +758,175 @@ function ValidationPanel({
 
 // ── Import / export ──────────────────────────────────────────────────────────
 
-function ImportPanel({
-  onImport, onDone,
+const IMPORT_STATUS_LABEL: Record<FinanceImportEntryStatus, string> = {
+  imported: 'Imported as proposed',
+  pending_mapping: 'Waiting for an account or commodity',
+  needs_review: 'Matches an earlier import',
+  duplicate: 'Already imported',
+  error: 'Failed',
+  excluded: 'Not imported',
+}
+
+const IMPORT_STATUS_ORDER: FinanceImportEntryStatus[] = [
+  'pending_mapping', 'needs_review', 'error', 'excluded', 'duplicate', 'imported',
+]
+
+function importSummaryLine(result: FinanceImportResult): string {
+  const parts = [`${result.created_directives} new`]
+  for (const status of IMPORT_STATUS_ORDER) {
+    const count = result.summary[status]
+    if (count > 0) parts.push(`${count} ${IMPORT_STATUS_LABEL[status].toLowerCase()}`)
+  }
+  return `${result.batch_existed ? 'Retried an earlier upload of this file' : 'Imported'}: ${parts.join(', ')}. Imported entries wait for review before they post.`
+}
+
+function ImportEntryRow({
+  entry, accounts, onMap, onReview,
 }: {
-  onImport: (text: string, postDirectly: boolean) => Promise<FinanceImportResult>
+  entry: FinanceImportEntry
+  accounts: FinanceAccount[]
+  onMap: (entryId: string, mapping: Record<string, string>) => Promise<void>
+  onReview: (entryId: string, decision: 'import' | 'duplicate') => Promise<void>
+}) {
+  const [mapping, setMapping] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const openAccounts = accounts.filter((account) =>
+    !entry.entry_date || (account.opened_at <= entry.entry_date && (!account.closed_at || account.closed_at >= entry.entry_date)))
+  const mappingComplete = entry.missing_accounts.every((name) => mapping[name])
+
+  const run = async (work: () => Promise<void>) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await work()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Request failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <li style={{ padding: '8px 0', borderTop: '1px solid #eee', fontSize: 13 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        <span style={{ color: '#999', fontSize: 12 }}>line {entry.source_lineno}</span>
+        <span style={{ fontWeight: 600 }}>{IMPORT_STATUS_LABEL[entry.status]}</span>
+        <span style={{ color: '#777' }}>{entry.entry_type}{entry.entry_date ? ` · ${entry.entry_date}` : ''}</span>
+      </div>
+      <pre style={{ ...monoStyle, fontSize: 12, whiteSpace: 'pre-wrap', background: '#f7f7f7', borderRadius: 6, padding: '6px 8px', margin: '6px 0' }}>
+        {entry.raw_text}
+      </pre>
+      {entry.errors.length > 0 && (
+        <ul style={{ margin: '4px 0', paddingLeft: 18 }}>
+          {entry.errors.map((entryError, index) => (
+            <li key={index} style={entry.status === 'imported' || entry.status === 'excluded' ? { color: '#8a6d00' } : errorTextStyle}>
+              {entryError.code}: {entryError.message}
+            </li>
+          ))}
+        </ul>
+      )}
+      {entry.status === 'pending_mapping' && entry.missing_commodities.length > 0 && (
+        <div style={{ color: '#8a6d00' }}>
+          Add {entry.missing_commodities.join(', ')} in Commodities, then retry the import.
+        </div>
+      )}
+      {entry.status === 'pending_mapping' && entry.missing_accounts.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+          {entry.missing_accounts.map((name) => (
+            <label key={name} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span style={{ ...monoStyle, fontSize: 12 }}>{name}</span>
+              <span style={{ color: '#999' }}>→</span>
+              <select
+                aria-label={`Account for ${name}`}
+                value={mapping[name] ?? ''}
+                onChange={(e) => setMapping({ ...mapping, [name]: e.target.value })}
+                style={inputStyle}
+              >
+                <option value="">Open it in Accounts, or map to…</option>
+                {openAccounts.map((account) => (
+                  <option key={account.id} value={account.id}>{account.name}</option>
+                ))}
+              </select>
+            </label>
+          ))}
+          <div>
+            <button
+              style={primaryButtonStyle}
+              disabled={busy || !mappingComplete}
+              onClick={() => void run(() => onMap(entry.id, mapping))}
+            >
+              Map and import
+            </button>
+          </div>
+        </div>
+      )}
+      {entry.status === 'needs_review' && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+          <button style={buttonStyle} disabled={busy} onClick={() => void run(() => onReview(entry.id, 'duplicate'))}>
+            Same record, skip
+          </button>
+          <button style={primaryButtonStyle} disabled={busy} onClick={() => void run(() => onReview(entry.id, 'import'))}>
+            Import as a new record
+          </button>
+        </div>
+      )}
+      {error && <div style={{ ...errorTextStyle, marginTop: 4 }}>{error}</div>}
+    </li>
+  )
+}
+
+function ImportPanel({
+  api, bookId, accounts, onChanged, onDone,
+}: {
+  api: FinanceApi
+  bookId: string
+  accounts: FinanceAccount[]
+  onChanged: () => void
   onDone: () => void
 }) {
   const [text, setText] = useState('')
-  const [postDirectly, setPostDirectly] = useState(false)
   const [result, setResult] = useState<FinanceImportResult | null>(null)
+  const [batches, setBatches] = useState<FinanceImportBatch[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const loadBatches = useCallback(() => {
+    api.listImports(bookId)
+      .then((listed) => setBatches(listed.imports))
+      .catch(() => setBatches([]))
+  }, [api, bookId])
+
+  useEffect(() => { loadBatches() }, [loadBatches])
+
+  const apply = async (work: () => Promise<FinanceImportResult>) => {
+    setBusy(true)
+    setError(null)
+    try {
+      const next = await work()
+      setResult(next)
+      loadBatches()
+      if (next.created_directives > 0) onChanged()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Import failed')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const submit = async () => {
     if (!text.trim()) {
       setError('Paste Beancount text first')
       return
     }
-    setError(null)
-    try {
-      setResult(await onImport(text, postDirectly))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Import failed')
-    }
+    await apply(() => api.importBeancount(bookId, { text }))
   }
+
+  const unfinished = batches.filter((batch) =>
+    batch.summary.pending_mapping + batch.summary.needs_review + batch.summary.error > 0
+    && batch.id !== result?.import_source.id)
+  const needsReview = result?.entries.filter((entry) => entry.status === 'needs_review') ?? []
+  const shownEntries = result?.entries.filter((entry) => entry.status !== 'imported') ?? []
 
   return (
     <div style={{ ...panelStyle, background: '#fafcff', borderColor: '#cfe0f5' }}>
@@ -786,24 +935,40 @@ function ImportPanel({
         aria-label="Beancount text"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder={'2026-01-01 open Assets:Bank:Checking USD\n…'}
+        placeholder={'2026-01-04 * "Tesco" "Groceries"\n  Assets:Bank:Checking  -12.50 USD\n  Expenses:Food\n…'}
         style={{ ...inputStyle, ...monoStyle, width: '100%', minHeight: 140, whiteSpace: 'pre', resize: 'vertical' }}
       />
+      <div style={{ fontSize: 12, color: '#777', marginTop: 6 }}>
+        Transactions and other dated entries are imported as proposed and post after review. Accounts, commodities
+        and options are not created from a file: open them in Accounts and Commodities, then map or retry.
+      </div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
-        <label style={{ fontSize: 13, color: '#555', display: 'flex', gap: 6, alignItems: 'center' }}>
-          <input type="checkbox" checked={postDirectly} onChange={(e) => setPostDirectly(e.target.checked)} />
-          Post directly (otherwise imported as proposed)
-        </label>
         <div style={{ flex: 1 }} />
         <button style={buttonStyle} onClick={onDone}>Close</button>
-        <button style={primaryButtonStyle} onClick={() => void submit()}>Run import</button>
+        <button style={primaryButtonStyle} disabled={busy} onClick={() => void submit()}>Run import</button>
       </div>
       {error && <div style={{ ...errorTextStyle, marginTop: 8 }}>{error}</div>}
+      {unfinished.length > 0 && (
+        <div style={{ marginTop: 12, fontSize: 13 }}>
+          <div style={{ color: '#555', marginBottom: 4 }}>Earlier imports with unfinished entries</div>
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            {unfinished.map((batch) => (
+              <li key={batch.id}>
+                <button
+                  style={{ ...buttonStyle, padding: '2px 8px', fontSize: 12 }}
+                  disabled={busy}
+                  onClick={() => void apply(() => api.getImport(bookId, batch.id))}
+                >
+                  {batch.source_name ?? batch.id} · {batch.summary.pending_mapping} waiting, {batch.summary.needs_review} to review, {batch.summary.error} failed
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {result && (
-        <div style={{ marginTop: 10, fontSize: 13 }}>
-          {result.deduplicated
-            ? <span style={{ color: '#b28704' }}>Already imported (same content hash) — nothing created.</span>
-            : <span style={{ color: '#2e7d32' }}>Imported {result.created_directives} directives.</span>}
+        <div style={{ marginTop: 12, fontSize: 13 }}>
+          <div style={{ color: '#2e7d32' }}>{importSummaryLine(result)}</div>
           {result.errors.length > 0 && (
             <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
               {result.errors.map((entryError: FinanceLedgerError, index: number) => (
@@ -811,6 +976,36 @@ function ImportPanel({
                   {entryError.code}: {entryError.message}
                   {entryError.source ? ` (line ${entryError.source.lineno})` : ''}
                 </li>
+              ))}
+            </ul>
+          )}
+          <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            {(result.summary.pending_mapping > 0 || result.summary.error > 0) && (
+              <button style={buttonStyle} disabled={busy} onClick={() => void apply(() => api.retryImport(bookId, result.import_source.id))}>
+                Retry unfinished entries
+              </button>
+            )}
+            {needsReview.length > 1 && (
+              <>
+                <button style={buttonStyle} disabled={busy} onClick={() => void apply(() => api.reviewImportEntries(bookId, result.import_source.id, 'duplicate'))}>
+                  Skip all {needsReview.length} matches as the same records
+                </button>
+                <button style={buttonStyle} disabled={busy} onClick={() => void apply(() => api.reviewImportEntries(bookId, result.import_source.id, 'import'))}>
+                  Import all {needsReview.length} matches as new records
+                </button>
+              </>
+            )}
+          </div>
+          {shownEntries.length > 0 && (
+            <ul style={{ listStyle: 'none', margin: '8px 0 0', padding: 0 }}>
+              {shownEntries.map((entry) => (
+                <ImportEntryRow
+                  key={entry.id}
+                  entry={entry}
+                  accounts={accounts}
+                  onMap={(entryId, mapping) => apply(() => api.mapImportEntry(bookId, result.import_source.id, entryId, mapping))}
+                  onReview={(entryId, decision) => apply(() => api.reviewImportEntries(bookId, result.import_source.id, decision, [entryId]))}
+                />
               ))}
             </ul>
           )}
@@ -952,11 +1147,10 @@ function FinanceLedgerView({ api, book, books, onSelectBook, onCreateBook }: {
       {panel === 'import' && (
         <div style={{ marginBottom: 16 }}>
           <ImportPanel
-            onImport={async (text, postDirectly) => {
-              const result = await api.importBeancount(book.id, { text, post_directly: postDirectly })
-              reload()
-              return result
-            }}
+            api={api}
+            bookId={book.id}
+            accounts={accounts}
+            onChanged={reload}
             onDone={() => setPanel('none')}
           />
         </div>

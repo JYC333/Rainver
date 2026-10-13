@@ -9,11 +9,18 @@ import { parseBooking } from "./booking.js";
 import { parseDecimal } from "./decimal.js";
 import { financeDirectiveRepository } from "./directiveRepository.js";
 import {
+  applyImportEntryMapping,
+  decideImportEntryReview,
   exportBeancountFromDb,
+  getImportBatch,
   importBeancountToDb,
+  listImportBatches,
+  retryImportBatch,
   type ExportBeancountResult,
+  type ImportBatchResult,
   type ImportBeancountInput,
-  type ImportBeancountResult,
+  type ImportReviewDecision,
+  type ImportSourceSummary,
 } from "./importExportService.js";
 import type {
   AccountVisibility,
@@ -573,8 +580,44 @@ export class FinanceLedgerService {
     bookId: string,
     userId: string,
     input: ImportBeancountInput,
-  ): Promise<ImportBeancountResult> {
+  ): Promise<ImportBatchResult> {
     return importBeancountToDb(db, spaceId, bookId, userId, input);
+  }
+
+  listImportBatches(db: Queryable, spaceId: string, bookId: string, userId: string): Promise<ImportSourceSummary[]> {
+    return listImportBatches(db, spaceId, bookId, userId);
+  }
+
+  getImportBatch(db: Queryable, spaceId: string, bookId: string, userId: string, importSourceId: string): Promise<ImportBatchResult> {
+    return getImportBatch(db, spaceId, bookId, userId, importSourceId);
+  }
+
+  retryImportBatch(db: Queryable, spaceId: string, bookId: string, userId: string, importSourceId: string): Promise<ImportBatchResult> {
+    return retryImportBatch(db, spaceId, bookId, userId, importSourceId);
+  }
+
+  applyImportEntryMapping(
+    db: Queryable,
+    spaceId: string,
+    bookId: string,
+    userId: string,
+    importSourceId: string,
+    entryId: string,
+    accountMapping: Record<string, string>,
+  ): Promise<ImportBatchResult> {
+    return applyImportEntryMapping(db, spaceId, bookId, userId, importSourceId, entryId, accountMapping);
+  }
+
+  decideImportEntryReview(
+    db: Queryable,
+    spaceId: string,
+    bookId: string,
+    userId: string,
+    importSourceId: string,
+    decision: ImportReviewDecision,
+    entryIds: readonly string[] | null,
+  ): Promise<ImportBatchResult> {
+    return decideImportEntryReview(db, spaceId, bookId, userId, importSourceId, decision, entryIds);
   }
 
   exportBeancount(

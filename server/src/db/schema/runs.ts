@@ -332,9 +332,14 @@ export const runAttempts = pgTable("run_attempts", {
 	exitCode: integer("exit_code"),
 	errorCode: varchar("error_code", { length: 128 }),
 	errorJson: jsonb("error_json"),
+	// The nonce the host launch frame carried for this attempt. A host's
+	// diff/output upload names it, so the upload binds to this attempt and
+	// nothing an earlier or later attempt of the same Run sent.
+	launchId: varchar("launch_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
+	uniqueIndex("uq_run_attempts_launch_id").using("btree", table.launchId.asc().nullsLast()).where(sql`launch_id IS NOT NULL`),
 	index("ix_run_attempts_run_status").using("btree", table.spaceId.asc().nullsLast(), table.runId.asc().nullsLast(), table.status.asc().nullsLast()),
 	index("ix_run_attempts_activity").using("btree", table.status.asc().nullsLast(), table.lastActivityAt.asc().nullsLast()),
 	unique("uq_run_attempts_id_space").on(table.id, table.spaceId),

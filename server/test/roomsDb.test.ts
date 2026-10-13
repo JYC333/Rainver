@@ -4873,14 +4873,19 @@ describe("Room workflow (real Postgres)", () => {
     await dispatchQueuedRoomRuns(first.run_ids);
     // The host reports where the Run left the checkout, with its diff.
     const hosts = new PgHostRepository(db.pool);
-    const uploadRun = await hosts.runOwnedByHost("host-1", runId);
-    expect(uploadRun).not.toBeNull();
-    await hosts.recordDiffArtifact(uploadRun!, "user-1", {
+    const launchId = "launch-git-own-run";
+    await db.pool.query(
+      `UPDATE run_attempts SET launch_id = $2 WHERE run_id = $1 AND attempt_number = (SELECT max(attempt_number) FROM run_attempts WHERE run_id = $1)`,
+      [runId, launchId],
+    );
+    const uploaded = await hosts.recordDiffArtifact("host-1", "user-1", runId, {
+      launch_id: launchId,
       diff: "diff --git a/x b/x\n+commit\n",
       truncated: false,
       git_before: { branch: "main", head: "baseline" },
       git_after: { branch: "main", head: "agent-commit" },
     });
+    expect(uploaded.ok).toBe(true);
     await db.pool.query(
       "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
       [runId],

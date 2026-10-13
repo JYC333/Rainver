@@ -160,7 +160,7 @@ interface ToolInstallResult {
 }
 
 export type FolderReadKind = "tree" | "file" | "git_status" | "git_diff";
-export type FolderReadFailureCode = "host_offline" | "host_timeout" | "location_unknown" | "path_forbidden" | "not_found" | "is_directory" | "too_large" | "read_failed";
+export type FolderReadFailureCode = "host_offline" | "host_timeout" | "location_unknown" | "path_forbidden" | "not_found" | "is_directory" | "too_large" | "read_failed" | "unsupported_platform";
 /** What each `folder_read` kind returns, so callers keep the type the daemon produced. */
 export interface FolderReadPayload {
   tree: FileNode;
@@ -505,15 +505,17 @@ export class HostConnectionRegistry {
     onStderr?: (chunk: string) => void,
     onLaunched?: () => void,
     maxConcurrentRuns: number | null = null,
+    /** The attempt's recorded launch nonce; the registry mints one only for callers that recorded none. */
+    launchId: string = randomUUID(),
   ): Promise<HostRunCompletion> {
     if (!maxConcurrentRuns || this.inFlightFor(hostId) < maxConcurrentRuns) {
-      return this.sendLaunch(hostId, runId, frame, onOutput, onStderr, onLaunched);
+      return this.sendLaunch(hostId, runId, frame, launchId, onOutput, onStderr, onLaunched);
     }
     return new Promise((resolve) => {
       const waiters = this.launchWaiters.get(hostId) ?? [];
       waiters.push({
         runId,
-        start: () => { resolve(this.sendLaunch(hostId, runId, frame, onOutput, onStderr, onLaunched)); },
+        start: () => { resolve(this.sendLaunch(hostId, runId, frame, launchId, onOutput, onStderr, onLaunched)); },
         cancel: () => resolve({ exit_code: -1, timed_out: false, error: "run_abandoned_before_launch" }),
       });
       this.launchWaiters.set(hostId, waiters);
@@ -524,6 +526,7 @@ export class HostConnectionRegistry {
     hostId: string,
     runId: string,
     frame: HostLaunchPayload,
+    launchId: string,
     onOutput?: (chunk: string) => void,
     onStderr?: (chunk: string) => void,
     onLaunched?: () => void,
@@ -534,7 +537,6 @@ export class HostConnectionRegistry {
       return Promise.resolve({ exit_code: -1, timed_out: false, error: "host_offline" });
     }
     const sink = connection.sink;
-    const launchId = randomUUID();
     // A retry of the same Run before its earlier attempt reported (the
     // supervisor reuses the run id within seconds of a timed-out attempt's
     // kill). The earlier dispatch is settled here rather than replaced in

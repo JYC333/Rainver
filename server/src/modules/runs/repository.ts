@@ -2101,12 +2101,38 @@ export class PgRunRepository {
     });
   }
 
+  /**
+   * Records the launch nonce on the Run's current attempt before the launch
+   * frame leaves. A host's later diff/output upload names this nonce and is
+   * accepted only against the attempt it is written on, so there is no
+   * attempt to bind to means no launch: the dispatch fails here rather than
+   * sending work whose outputs could never be attributed.
+   */
+  async bindAttemptLaunch(input: { space_id: string; run_id: string; launch_id: string }): Promise<void> {
+    const result = await this.db.query<{ id: string }>(
+      `UPDATE run_attempts a
+          SET launch_id = $3, updated_at = now()
+        WHERE a.space_id = $1 AND a.run_id = $2
+          AND a.status IN ('queued', 'running')
+          AND a.attempt_number = (
+            SELECT max(candidate.attempt_number)
+              FROM run_attempts candidate
+             WHERE candidate.space_id = $1 AND candidate.run_id = $2
+          )
+        RETURNING a.id`,
+      [input.space_id, input.run_id, input.launch_id],
+    );
+    if (result.rowCount !== 1) {
+      throw new Error(`Run '${input.run_id}' has no open attempt to bind launch '${input.launch_id}' to`);
+    }
+  }
+
   async getLatestRunAttempt(spaceId: string, runId: string): Promise<RunAttemptRecord | null> {
     const result = await this.db.query<RunAttemptRecord>(
       `SELECT id, space_id, run_id, attempt_number, status,
               started_at, ended_at, last_activity_at,
               cancel_requested_at, cancel_confirmed_at, exit_code,
-              error_code, error_json, created_at, updated_at
+              error_code, error_json, launch_id, created_at, updated_at
          FROM run_attempts
         WHERE space_id = $1 AND run_id = $2
         ORDER BY attempt_number DESC

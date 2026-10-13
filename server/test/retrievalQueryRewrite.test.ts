@@ -109,6 +109,7 @@ describe("ProviderQueryRewriter", () => {
             id: "local",
             provider_type: "ollama",
             base_url: "http://localhost:11434",
+            deployment: "trusted_local",
             default_model: "llama3",
             available_models: [],
           },

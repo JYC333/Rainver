@@ -290,6 +290,7 @@ export const FolderReadDaemonErrorSchema = z.enum([
   "is_directory",
   "too_large",
   "read_failed",
+  "unsupported_platform",
 ]);
 export type FolderReadDaemonError = z.infer<typeof FolderReadDaemonErrorSchema>;
 
@@ -956,10 +957,23 @@ export type HostRunGitAfter = z.infer<typeof HostRunGitAfterSchema>;
  * fields are absent outside a git checkout and for a Run that executed in a
  * worktree of its own, whose HEAD is not the Location's.
  */
+/**
+ * Both uploads name the launch attempt they belong to. The control plane
+ * accepts them only against the Run's current, still-open attempt carrying
+ * that nonce; a late upload from a superseded or terminated attempt is refused
+ * instead of overwriting what the live attempt produced.
+ */
 export const HostRunDiffUploadSchema = z.object({
+  launch_id: IdSchema,
   diff: z.string().nullable(),
   truncated: z.boolean().optional(),
   git_before: HostRunGitAfterSchema.optional(),
   git_after: HostRunGitAfterSchema.optional(),
 });
 export type HostRunDiffUpload = z.infer<typeof HostRunDiffUploadSchema>;
+
+export const HostRunOutputsUploadSchema = z.object({
+  launch_id: IdSchema,
+  files: z.array(z.object({ name: z.string().min(1).max(512), content: z.string() })).max(1_000),
+});
+export type HostRunOutputsUpload = z.infer<typeof HostRunOutputsUploadSchema>;

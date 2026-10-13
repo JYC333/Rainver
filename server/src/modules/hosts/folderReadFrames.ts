@@ -26,7 +26,7 @@ export function parseFolderReadResultFrame(frame: Record<string, unknown>): Fold
   if (frame.ok !== true && frame.ok !== false) return null;
   if (frame.ok === false) {
     const code = frame.error;
-    const allowed: readonly FolderReadFailureCode[] = ["host_offline", "host_timeout", "location_unknown", "path_forbidden", "not_found", "is_directory", "too_large", "read_failed"];
+    const allowed: readonly FolderReadFailureCode[] = ["host_offline", "host_timeout", "location_unknown", "path_forbidden", "not_found", "is_directory", "too_large", "read_failed", "unsupported_platform"];
     if (typeof code !== "string" || !allowed.includes(code as FolderReadFailureCode)) return null;
     return {
       ok: false,

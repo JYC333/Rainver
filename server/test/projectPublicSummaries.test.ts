@@ -20,16 +20,31 @@ interface SummaryFixture {
   highlights_json: string[];
   source_refs_json: Array<Record<string, string>>;
   redaction_version: string;
-  review_status: string;
+}
+
+interface DraftFixture extends SummaryFixture {
+  draft_version: number;
   updated_by_user_id: string | null;
   generated_by_run_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
+interface PublicationFixture extends SummaryFixture {
+  source_draft_version: number;
+  published_by_user_id: string | null;
+  published_at: string;
+}
+
+/**
+ * SQL-shape fake for the authorization and validation paths that fail before
+ * any write; durable publish/revoke behavior is covered against real Postgres
+ * in `projectPublicGroup.test.ts`.
+ */
 class ProjectSummaryFakeDb implements Queryable {
   readonly writes: string[] = [];
-  private summary: SummaryFixture | null = null;
+  private draft: DraftFixture | null = null;
+  private publication: PublicationFixture | null = null;
 
   async query<Row = Record<string, unknown>>(
     sql: string,
@@ -47,23 +62,28 @@ class ProjectSummaryFakeDb implements Queryable {
     if (norm.startsWith("SELECT id FROM projects") || norm.startsWith("SELECT id, status FROM projects")) {
       return result([{ id: PROJECT, status: "active" }] as Row[]);
     }
+    if (norm.startsWith("SELECT id, space_id, owner_user_id, name, description, status, current_focus")) {
+      return result([{ id: PROJECT, space_id: SPACE, owner_user_id: OWNER, name: "Aster", status: "active" }] as Row[]);
+    }
     if (norm.startsWith("SELECT owner_user_id FROM projects")) {
       return result([{ owner_user_id: OWNER }] as Row[]);
     }
     if (norm.startsWith("SELECT role FROM space_memberships")) {
-      const [, userId] = params as [string, string];
-      return result([{ role: userId === VIEWER ? "member" : "member" }] as Row[]);
+      return result([{ role: "member" }] as Row[]);
     }
     if (norm.startsWith("SELECT role FROM project_members")) {
       const [, , userId] = params as [string, string, string];
       const role = userId === MEMBER ? "member" : userId === VIEWER ? "viewer" : null;
       return result((role ? [{ role }] : []) as Row[]);
     }
-    if (norm.startsWith("SELECT count(ps.id)::text AS total FROM project_public_summaries")) {
-      return result([{ total: this.summary?.review_status === "approved" ? "1" : "0" }] as Row[]);
+    if (norm.startsWith("SELECT count(pub.id)::text AS total FROM project_public_summary_publications")) {
+      return result([{ total: this.publication ? "1" : "0" }] as Row[]);
+    }
+    if (norm.startsWith("SELECT pub.id, pub.space_id")) {
+      return result((this.publication ? [this.publication] : []) as Row[]);
     }
     if (norm.startsWith("SELECT ps.id, ps.space_id")) {
-      return result((this.summary?.review_status === "approved" ? [this.summary] : []) as Row[]);
+      return result((this.draft ? [this.draft] : []) as Row[]);
     }
     if (norm.startsWith("WITH upserted AS")) {
       this.writes.push("upsert");
@@ -76,25 +96,33 @@ class ProjectSummaryFakeDb implements Queryable {
         highlightsJson,
         sourceRefsJson,
         redactionVersion,
-        reviewStatus,
         updatedByUserId,
         generatedByRunId,
         now,
-      ] = params as [
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string,
-        string | null,
-        string,
-      ];
-      this.summary = {
+      ] = params as [string, string, string, string, string, string, string, string, string, string | null, string];
+      this.draft = {
+        id: this.draft?.id ?? id,
+        space_id: spaceId,
+        project_id: projectId,
+        project_name: "Aster",
+        summary_text: summaryText,
+        topics_json: JSON.parse(topicsJson) as string[],
+        highlights_json: JSON.parse(highlightsJson) as string[],
+        source_refs_json: JSON.parse(sourceRefsJson) as Array<Record<string, string>>,
+        redaction_version: redactionVersion,
+        draft_version: (this.draft?.draft_version ?? 0) + 1,
+        updated_by_user_id: updatedByUserId,
+        generated_by_run_id: generatedByRunId,
+        created_at: this.draft?.created_at ?? now,
+        updated_at: now,
+      };
+      return result([this.draft] as Row[]);
+    }
+    if (norm.startsWith("WITH published AS")) {
+      this.writes.push("publish");
+      const [id, spaceId, projectId, summaryText, topicsJson, highlightsJson, sourceRefsJson, redactionVersion, sourceDraftVersion, publishedBy, now] =
+        params as [string, string, string, string, string, string, string, string, number, string, string];
+      this.publication = {
         id,
         space_id: spaceId,
         project_id: projectId,
@@ -104,26 +132,31 @@ class ProjectSummaryFakeDb implements Queryable {
         highlights_json: JSON.parse(highlightsJson) as string[],
         source_refs_json: JSON.parse(sourceRefsJson) as Array<Record<string, string>>,
         redaction_version: redactionVersion,
-        review_status: reviewStatus,
-        updated_by_user_id: updatedByUserId,
-        generated_by_run_id: generatedByRunId,
-        created_at: now,
-        updated_at: now,
+        source_draft_version: sourceDraftVersion,
+        published_by_user_id: publishedBy,
+        published_at: now,
       };
-      return result([this.summary] as Row[]);
+      return result([this.publication] as Row[]);
     }
-    if (norm.startsWith("SELECT ps.project_id")) {
-      return result((this.summary ? [{
-        project_id: this.summary.project_id,
-        name: this.summary.project_name,
+    if (norm.startsWith("DELETE FROM project_public_summary_publications")) {
+      this.writes.push("revoke");
+      const had = this.publication !== null;
+      this.publication = null;
+      return { rows: [] as Row[], rowCount: had ? 1 : 0 };
+    }
+    if (norm.startsWith("SELECT pub.project_id")) {
+      return result((this.publication ? [{
+        project_id: this.publication.project_id,
+        name: this.publication.project_name,
         description: "Public project description",
         current_focus: "Improve project-level discovery",
         owner_user_id: OWNER,
         status: "active",
-        summary_text: this.summary.summary_text,
-        topics_json: this.summary.topics_json,
-        highlights_json: this.summary.highlights_json,
-        review_status: this.summary.review_status,
+        summary_text: this.publication.summary_text,
+        topics_json: this.publication.topics_json,
+        highlights_json: this.publication.highlights_json,
+        source_refs_json: this.publication.source_refs_json,
+        published_at: this.publication.published_at,
       }] : []) as Row[]);
     }
     if (norm.startsWith("DELETE FROM retrieval_edges") || norm.startsWith("DELETE FROM retrieval_objects")) {
@@ -234,13 +267,13 @@ class ProjectSummaryFakeDb implements Queryable {
 const ownerIdentity: SpaceUserIdentity = { spaceId: SPACE, userId: OWNER };
 
 describe("Project public summaries", () => {
-  it("lets the project owner publish a sanitized high-level summary", async () => {
+  it("lets the project owner stage a sanitized draft and publish that version", async () => {
     const db = new ProjectSummaryFakeDb();
-    const out = await new PgProjectRepository(db).upsertPublicSummary(ownerIdentity, PROJECT, {
+    const repo = new PgProjectRepository(db);
+    const draft = await repo.upsertPublicSummary(ownerIdentity, PROJECT, {
       summary_text: "Builds a shared retrieval substrate for cross-project idea discovery.",
       topics: ["Retrieval", "retrieval", "ACL"],
       highlights: ["Indexes only public project summaries."],
-      review_status: "approved",
       source_refs: [
         {
           source_type: "project",
@@ -251,7 +284,7 @@ describe("Project public summaries", () => {
       ],
     });
 
-    expect(out).toMatchObject({
+    expect(draft).toMatchObject({
       project_id: PROJECT,
       project_name: "Aster",
       topics: ["Retrieval", "ACL"],
@@ -262,13 +295,22 @@ describe("Project public summaries", () => {
           label: "Owner-approved project brief",
         },
       ],
-      review_status: "approved",
+      draft_version: 1,
     });
-    expect(JSON.stringify(out)).not.toContain("must not be persisted");
+    expect(JSON.stringify(draft)).not.toContain("must not be persisted");
     expect(db.writes).toEqual(["upsert"]);
+
+    const published = await repo.publishPublicSummary(ownerIdentity, PROJECT, 1);
+    expect(published).toMatchObject({
+      project_id: PROJECT,
+      topics: ["Retrieval", "ACL"],
+      source_draft_version: 1,
+      published_by_user_id: OWNER,
+    });
+    expect(db.writes).toEqual(["upsert", "publish"]);
   });
 
-  it("stages a draft by default and blocks a member from self-approving", async () => {
+  it("stages a draft for a member and blocks them from publishing or revoking", async () => {
     const db = new ProjectSummaryFakeDb();
     const repo = new PgProjectRepository(db);
 
@@ -277,17 +319,14 @@ describe("Project public summaries", () => {
       PROJECT,
       { summary_text: "Member-staged brief." },
     );
-    expect(draft).toMatchObject({ review_status: "draft" });
+    expect(draft).toMatchObject({ draft_version: 1 });
     expect(db.writes).toEqual(["upsert"]);
 
-    await expect(
-      repo.upsertPublicSummary(
-        { spaceId: SPACE, userId: MEMBER },
-        PROJECT,
-        { summary_text: "Member tries to publish.", review_status: "approved" },
-      ),
-    ).rejects.toMatchObject({ statusCode: 403 });
-    // No second write: the publish attempt failed before the upsert statement.
+    await expect(repo.publishPublicSummary({ spaceId: SPACE, userId: MEMBER }, PROJECT, 1))
+      .rejects.toMatchObject({ statusCode: 403 });
+    await expect(repo.revokePublicSummary({ spaceId: SPACE, userId: MEMBER }, PROJECT))
+      .rejects.toMatchObject({ statusCode: 403 });
+    // No second write: both attempts failed before any statement.
     expect(db.writes).toEqual(["upsert"]);
   });
 
@@ -304,20 +343,17 @@ describe("Project public summaries", () => {
     expect(db.writes).toHaveLength(0);
   });
 
-  it("does not expose draft summaries through the public list", async () => {
+  it("does not expose drafts through the public list or read", async () => {
     const db = new ProjectSummaryFakeDb();
     const repo = new PgProjectRepository(db);
-    await repo.upsertPublicSummary(ownerIdentity, PROJECT, {
-      summary_text: "Draft brief.",
-      review_status: "draft",
-    });
+    await repo.upsertPublicSummary(ownerIdentity, PROJECT, { summary_text: "Draft brief." });
 
     const list = await repo.listPublicSummaries(
       { spaceId: SPACE, userId: MEMBER },
       { limit: 50, offset: 0 },
     );
-
     expect(list).toMatchObject({ total: 0, items: [] });
+    expect(await repo.getPublicSummary({ spaceId: SPACE, userId: MEMBER }, PROJECT)).toBeNull();
   });
 
   it("requires source_refs to identify a public source, not embed source content", async () => {
@@ -376,7 +412,7 @@ describe("Project public summaries", () => {
     expect(observedPrompt).not.toContain("SECRET_CUSTOMER_ACCOUNT");
     expect(out).toMatchObject({
       project_id: PROJECT,
-      review_status: "draft",
+      draft_version: 1,
       summary_text: "Aster explores safe, high-level project discovery across project boundaries.",
       source_refs: [
         {

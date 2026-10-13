@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { NOTE_CROSS_PROJECT_SHARE_REQUIRED_CODE } from "@rainver/protocol";
 import { HttpError, type Queryable, withQueryableTransaction } from "../routeUtils/common.js";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { assertProjectWriter } from "../projects/access.js";
@@ -6,7 +7,8 @@ import { RetrievalProjectionService } from "../retrieval/index.js";
 import { knowledgeRetrievalRegistry } from "./retrievalAdapter.js";
 import { blockIds, withBlockIds } from "./noteBlockIds.js";
 import { normalizePmText, type NoteOp } from "./noteDocument.js";
-import { projectOwningCollection } from "./noteProjectFolders.js";
+import { ensureProjectNotesFolder, projectOwningCollection } from "./noteProjectFolders.js";
+import { assertNoteEntryInvariant, lockNotesForPlacementChange } from "./notePlacementInvariant.js";
 import { shareSpaceObjectWithProject } from "./spaceObjectProjectShares.js";
 import { assertNoteProjectRole } from "./noteProjectRoles.js";
 import {
@@ -348,8 +350,20 @@ async function insertNote(
     at,
     userId: createdByUserId,
   });
-  if (input.collectionId) {
-    await moveNoteToCollection(db, input.spaceId, objectId, input.collectionId, input.actor);
+  // A Project note's first entry is in its Project: a caller that names no
+  // folder gets the Project's notes folder, and a folder it does name has to
+  // satisfy the entry invariant below — a note bound to A but filed only
+  // outside A would be unreachable from the Project that owns it.
+  const collectionId = input.collectionId
+    ?? (projectId ? await ensureProjectNotesFolder(db, input.spaceId, projectId) : null);
+  if (collectionId) {
+    await moveNoteToCollection(db, input.spaceId, objectId, collectionId, input.actor);
+  }
+  // A note outside every Project may start unfiled (a jot with no context, a
+  // link target); the entry rule only ever refuses taking its last folder
+  // away. A Project note has an owning entry from its first moment.
+  if (projectId) {
+    await assertNoteEntryInvariant(db, input.spaceId, await lockNotesForPlacementChange(db, input.spaceId, [objectId]));
   }
   if (input.projectRole) {
     await assignNoteProjectRole(db, {
@@ -381,6 +395,7 @@ export async function moveNoteToCollection(
   actor: NoteActor = { system: true },
 ): Promise<void> {
   await requireNoteCollectionRow(db, spaceId, collectionId);
+  const locked = await lockNotesForPlacementChange(db, spaceId, [noteId]);
   const currentPlacements = await db.query<{ collection_id: string }>(
     `SELECT collection_id FROM note_collection_items
       WHERE note_id = $1 AND space_id = $2
@@ -393,6 +408,10 @@ export async function moveNoteToCollection(
   await bindNoteToPlacementProject(db, { spaceId, noteId, collectionId, actor });
   await db.query(`DELETE FROM note_collection_items WHERE note_id = $1 AND space_id = $2`, [noteId, spaceId]);
   await insertNotePlacement(db, spaceId, noteId, collectionId);
+  // Replacing every placement can take a Project note out of its Project —
+  // "file it in Inbox" for a note Project A owns — and that is the refusal,
+  // not a silent move out of A.
+  await assertNoteEntryInvariant(db, spaceId, locked);
 }
 
 /**
@@ -414,6 +433,7 @@ export async function addNotePlacement(
   shareWithProject = false,
 ): Promise<void> {
   await requireNoteCollectionRow(db, spaceId, collectionId);
+  await lockNotesForPlacementChange(db, spaceId, [noteId]);
   const existing = await db.query<{ id: string }>(
     `SELECT id FROM note_collection_items WHERE space_id = $1 AND collection_id = $2 AND note_id = $3`,
     [spaceId, collectionId, noteId],
@@ -449,13 +469,6 @@ export async function addNotePlacement(
  * runs for every Project change, including a drag. Do not limit it to an
  * explicit `primary_project_id` on the note update.
  */
-/**
- * The client's cue to ask rather than to show an error: it re-issues the
- * placement with the share confirmed. A code because matching on prose is how
- * error handling rots.
- */
-const NOTE_CROSS_PROJECT_SHARE_REQUIRED = "note_cross_project_share_required";
-
 export async function bindNoteToPlacementProject(
   db: Queryable,
   input: {
@@ -491,7 +504,7 @@ export async function bindNoteToPlacementProject(
       const detail = "This note belongs to another project. Placing it here also makes it readable by this project's members.";
       throw new HttpError(409, detail, {
         detail,
-        code: NOTE_CROSS_PROJECT_SHARE_REQUIRED,
+        code: NOTE_CROSS_PROJECT_SHARE_REQUIRED_CODE,
         owner_project_id: currentProjectId,
       });
     }
@@ -536,9 +549,12 @@ export async function assertNoteCollectionProjectWriter(
 }
 
 /**
- * Removes one placement. Removing the last one is refused rather than silently
- * turning the note into something no tree can show: losing a note is a
- * different decision from taking it out of a folder, and has its own action.
+ * Removes one placement. Removing the note's last entry in the Project that
+ * owns it — or its last folder, for a note outside every Project — is refused
+ * rather than silently turning the note into something its own Project's tree
+ * cannot show: losing a note is a different decision from taking it out of a
+ * folder, and has its own action. The refusal names the two actions that are
+ * actually available (`notePlacementInvariant`).
  */
 export async function removeNotePlacement(
   db: Queryable,
@@ -548,25 +564,25 @@ export async function removeNotePlacement(
   actor: NoteActor = { system: true },
 ): Promise<void> {
   await assertNoteCollectionProjectWriter(db, spaceId, collectionId, actor);
-  const placements = await db.query<{ collection_id: string }>(
-    `SELECT collection_id FROM note_collection_items WHERE space_id = $1 AND note_id = $2 FOR UPDATE`,
-    [spaceId, noteId],
-  );
-  if (!placements.rows.some((row) => row.collection_id === collectionId)) {
-    throw new HttpError(404, "This note is not in that folder");
-  }
-  if (placements.rows.length <= 1) {
-    throw new HttpError(422, "A note must stay in at least one folder; delete the note instead");
-  }
-  await db.query(
+  const locked = await lockNotesForPlacementChange(db, spaceId, [noteId]);
+  const removed = await db.query(
     `DELETE FROM note_collection_items WHERE space_id = $1 AND collection_id = $2 AND note_id = $3`,
     [spaceId, collectionId, noteId],
   );
+  if ((removed.rowCount ?? 0) === 0) throw new HttpError(404, "This note is not in that folder");
+  await assertNoteEntryInvariant(db, spaceId, locked);
 }
 
-async function requireNoteCollectionRow(db: Queryable, spaceId: string, collectionId: string): Promise<void> {
+/**
+ * Also pins the folder row (`FOR KEY SHARE`) before any note row is locked:
+ * folder deletion takes the folder `FOR UPDATE` and then the notes in it, so a
+ * placement writer that locked the note first and then touched the folder's
+ * row through the placement's foreign key would deadlock with it. Folders
+ * before notes, everywhere (`notePlacementInvariant`).
+ */
+export async function requireNoteCollectionRow(db: Queryable, spaceId: string, collectionId: string): Promise<void> {
   const exists = await db.query<{ id: string }>(
-    `SELECT id FROM note_collections WHERE id = $1 AND space_id = $2`,
+    `SELECT id FROM note_collections WHERE id = $1 AND space_id = $2 FOR KEY SHARE`,
     [collectionId, spaceId],
   );
   if (!exists.rows[0]) throw new HttpError(404, "Note collection not found");

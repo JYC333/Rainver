@@ -160,24 +160,37 @@ changing someone's role needs standing to grant the role they hold now.
 
 ### ProjectPublicSummary
 
+Two tables, one row each per Project, because the draft a writer edits and the
+snapshot every Space member reads must not be the same row: saving a draft
+would otherwise replace what readers see before anyone reviewed it.
+
+`project_public_summaries` is the **draft**:
+
 | Field | Type | Notes |
 |---|---|---|
 | `id` | UUID string | Primary key |
 | `space_id` | FK -> spaces | Space-public discovery boundary |
-| `project_id` | FK -> projects | Unique current summary per project |
+| `project_id` | FK -> projects | Unique current draft per project |
 | `summary_text` | text | Redacted, high-level project brief only |
 | `topics_json` | JSON array | Public aliases/topics for retrieval |
 | `highlights_json` | JSON array | Public high-level highlights |
 | `source_refs_json` | JSON array | Pointer metadata only; no raw memo/doc content |
 | `redaction_version` | string | Sanitization contract version |
-| `review_status` | string | `draft` \| `approved` \| `archived` |
+| `draft_version` | integer ≥ 1 | Incremented by every save; a publish names the version it approves |
 | `updated_by_user_id` | FK -> users (nullable) | Last human updater |
 | `generated_by_run_id` | FK -> runs (nullable) | Optional generating run, same project/space |
 | `created_at` / `updated_at` | datetime | |
 
+`project_public_summary_publications` is the **published snapshot**: the same
+content columns copied from the draft at publish time, plus
+`source_draft_version` (the draft version that was approved),
+`published_by_user_id` (nullable FK -> users) and `published_at`. Publishing
+again replaces the row; revoking deletes it.
+
 Project public summaries are intentionally separate from project memory. They
-are designed for cross-project discovery and inspiration: approved summaries are
-space-public and indexed as retrieval object type `project_public_summary`.
+are designed for cross-project discovery and inspiration: the published
+snapshot is space-public and indexed as retrieval object type
+`project_public_summary`; the draft is never indexed or served to readers.
 They must be sanitized before write; source refs may identify public pointers
 but must not embed raw private memory, memo excerpts, document bodies, or other
 concrete project content.
@@ -1006,11 +1019,14 @@ Space scoping is enforced via the requested Space (`X-Rainver-Space-Id` header o
 | GET / POST | `/projects/{id}/operations` | List or create product-level Project operations |
 | GET | `/projects/{id}/operations/{operationId}` | Read operation steps, links, and projected progress |
 | POST | `/projects/{id}/operations/{operationId}/cancel` | Cancel a non-terminal grouping record |
-| GET | `/projects/public-summaries` | List approved high-level project summaries in the current space |
-| POST | `/projects/public-summaries/search` | Search only `project_public_summary` retrieval objects |
-| GET | `/projects/{id}/public-summary` | Read the approved high-level public summary for a project |
-| PUT | `/projects/{id}/public-summary` | Create/update the sanitized public summary. A bare write stages `review_status = draft` (project writer authority). Publishing (`approved`) or unpublishing (`archived`) requires project-owner-level authority |
-| POST | `/projects/{id}/public-summary/draft` | Generate and store a sanitized **draft** public summary via the `project_public_summary` provider task; records a best-effort `policy_decision_records` audit of the model call |
+| GET | `/projects/public-summaries` | List published high-level project summaries in the current space |
+| POST | `/projects/public-summaries/search` | Search only `project_public_summary` retrieval objects (published snapshots) |
+| GET | `/projects/{id}/public-summary` | Read the published snapshot for a project; 404 while nothing is published |
+| GET | `/projects/{id}/public-summary/editor` | Draft and published snapshot side by side, plus `can_publish` (project writer authority) |
+| PUT | `/projects/{id}/public-summary` | Save the sanitized draft; bumps `draft_version` and never changes the published snapshot (project writer authority) |
+| POST | `/projects/{id}/public-summary/draft` | Generate and store a sanitized **draft** via the `project_public_summary` provider task; records a best-effort `policy_decision_records` audit of the model call |
+| POST | `/projects/{id}/public-summary/publish` | Approve `{ draft_version }` as the published snapshot (project-owner-level authority); 409 `project_public_summary_draft_changed` when the draft moved on since review |
+| POST | `/projects/{id}/public-summary/revoke` | Take the published snapshot down; the draft stays (project-owner-level authority) |
 | GET | `/projects/{id}/members` | List project-level memory ACL members |
 | POST | `/projects/{id}/members` | Add/update a project memory ACL member |
 | DELETE | `/projects/{id}/members/{user_id}` | Remove a project memory ACL member |
@@ -1208,12 +1224,15 @@ space.
   source post-processing decisions. These are selected/maybe candidate items for
   review and follow-up; accepting durable Knowledge still goes through proposal
   review.
-- **Publishing a public summary** (`review_status` other than `draft`) requires
-  project-**owner**-level authority — the project `owner_user_id`, an active
-  Project member with role `owner`, or a space `owner`/`admin`. A project
-  `member` (writer) can stage drafts but cannot self-approve. The draft
-  generator only ever writes `draft`. This gives Project owners a review gate
-  before content becomes space-public.
+- **Publishing a public summary** (`POST .../public-summary/publish`) and
+  revoking it require project-**owner**-level authority — the project
+  `owner_user_id`, an active Project member with role `owner`, or a space
+  `owner`/`admin`. A project `member` (writer) and the draft generator only
+  ever write the draft; they cannot self-approve. A publish names the
+  `draft_version` the owner reviewed and is checked against the locked draft
+  row inside the transaction, so a draft saved after the review is refused
+  rather than published. Saving a draft never changes the published snapshot;
+  only a later publish replaces it and only a revoke takes it down.
 - `settings_json` is free-form per-project configuration and may carry private
   operational detail. `GET /projects` and `GET /projects/{id}` redact it to
   `null` for non-writers; only project writers see it. `name`, `description`,

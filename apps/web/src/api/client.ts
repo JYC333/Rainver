@@ -232,6 +232,10 @@ import type {
   ProjectCorpusBackfillResult,
   ProjectCorpusItem,
   ProjectCreate,
+  ProjectPublicSummary,
+  ProjectPublicSummaryDraft,
+  ProjectPublicSummaryEditorState,
+  ProjectPublicSummaryUpsertBody,
   ProjectExtractionProfile,
   ProjectFolder,
   ProjectFolderCreateBody,
@@ -2838,6 +2842,20 @@ export const projectsApi = {
   get: (id: string) => get<Project>(`/projects/${id}`),
   update: (id: string, data: ProjectUpdate) => patch<Project>(`/projects/${id}`, data),
   archive: (id: string) => post<Project>(`/projects/${id}/archive`),
+  /** Draft and published snapshot side by side, for Project writers. */
+  publicSummaryEditor: (id: string) =>
+    get<ProjectPublicSummaryEditorState>(`/projects/${encodeURIComponent(id)}/public-summary/editor`),
+  /** Saves the draft; every save bumps `draft_version`. Never changes what readers see. */
+  savePublicSummaryDraft: (id: string, body: ProjectPublicSummaryUpsertBody) =>
+    put<ProjectPublicSummaryDraft>(`/projects/${encodeURIComponent(id)}/public-summary`, body),
+  generatePublicSummaryDraft: (id: string) =>
+    post<ProjectPublicSummaryDraft>(`/projects/${encodeURIComponent(id)}/public-summary/draft`, {}),
+  /** Approves the named draft version as the space-public snapshot (owner-level). */
+  publishPublicSummary: (id: string, draftVersion: number) =>
+    post<ProjectPublicSummary>(`/projects/${encodeURIComponent(id)}/public-summary/publish`, { draft_version: draftVersion }),
+  /** Takes the snapshot down; the draft stays (owner-level). */
+  revokePublicSummary: (id: string) =>
+    post<void>(`/projects/${encodeURIComponent(id)}/public-summary/revoke`, {}),
   getOverview: (id: string) => get<ProjectOverview>(`/projects/${id}/overview`),
   hostExecutionTargets: (id: string) =>
     get<HostExecutionTargetsResponse>(`/projects/${encodeURIComponent(id)}/host-execution-targets`),
@@ -3506,6 +3524,9 @@ export type ProviderType =
   | 'cohere'
   | 'openai_compatible'
 
+/** How a Provider is deployed, as declared by its owner; see the server's provider policy. */
+export type ProviderDeployment = 'cloud' | 'trusted_local'
+
 export interface ModelProviderOut {
   id: string
   space_id: string
@@ -3515,6 +3536,7 @@ export interface ModelProviderOut {
   name: string
   provider_type: ProviderType | string
   base_url: string
+  deployment: ProviderDeployment
   network_profile_id: string | null
   claude_compatible_base_url: string | null
   openai_compatible_base_url: string | null
@@ -3604,6 +3626,7 @@ export interface ProviderVendorOut {
   default_base_url: string | null
   api_key_required: boolean
   subscription_only: boolean
+  self_hostable: boolean
 }
 
 interface TestConnectionOut {
@@ -3644,6 +3667,7 @@ export const providersApi = {
     default_model?: string
     available_models?: string[]
     base_url: string
+    deployment?: ProviderDeployment
     network_profile_id?: string | null
     claude_compatible_base_url?: string
     openai_compatible_base_url?: string
@@ -3662,6 +3686,7 @@ export const providersApi = {
     default_model: string | null
     available_models: string[]
     base_url: string
+    deployment: ProviderDeployment
     network_profile_id: string | null
     claude_compatible_base_url: string | null
     openai_compatible_base_url: string | null
@@ -3908,11 +3933,55 @@ export interface FinanceTransactionInput {
   }>
 }
 
-export interface FinanceImportResult {
-  import_source_id: string | null
-  deduplicated: boolean
-  created_directives: number
+export type FinanceImportEntryStatus =
+  | 'imported'
+  | 'pending_mapping'
+  | 'needs_review'
+  | 'duplicate'
+  | 'error'
+  | 'excluded'
+
+export interface FinanceImportSource {
+  id: string
+  source_type: string
+  source_name: string | null
+  content_hash: string | null
+  created_at: string
+}
+
+export interface FinanceImportEntry {
+  id: string
+  entry_key: string
+  identity_kind: 'external_id' | 'content_occurrence'
+  external_id: string | null
+  entry_type: string
+  entry_date: string | null
+  source_lineno: number
+  raw_text: string
+  status: FinanceImportEntryStatus
+  status_reason: string | null
+  directive_id: string | null
+  duplicate_of_entry_id: string | null
+  missing_accounts: string[]
+  missing_commodities: string[]
+  account_mapping: Record<string, string>
+  mapping_version: number
   errors: FinanceLedgerError[]
+}
+
+export type FinanceImportSummary = Record<FinanceImportEntryStatus, number>
+
+export interface FinanceImportResult {
+  import_source: FinanceImportSource
+  batch_existed: boolean
+  created_directives: number
+  summary: FinanceImportSummary
+  entries: FinanceImportEntry[]
+  errors: FinanceLedgerError[]
+}
+
+export interface FinanceImportBatch extends FinanceImportSource {
+  summary: FinanceImportSummary
 }
 
 export interface FinanceExportResult {
@@ -3958,8 +4027,24 @@ export const financeApi = {
     ),
   validateBook: (bookId: string) =>
     post<{ errors: FinanceValidationError[] }>(`/finance/books/${encodeURIComponent(bookId)}/validate`),
-  importBeancount: (bookId: string, input: { text: string; post_directly?: boolean }) =>
+  importBeancount: (bookId: string, input: { text: string }) =>
     post<FinanceImportResult>(`/finance/books/${encodeURIComponent(bookId)}/import/beancount`, input),
+  listImports: (bookId: string) =>
+    get<{ imports: FinanceImportBatch[] }>(`/finance/books/${encodeURIComponent(bookId)}/imports`),
+  getImport: (bookId: string, importSourceId: string) =>
+    get<FinanceImportResult>(`/finance/books/${encodeURIComponent(bookId)}/imports/${encodeURIComponent(importSourceId)}`),
+  retryImport: (bookId: string, importSourceId: string) =>
+    post<FinanceImportResult>(`/finance/books/${encodeURIComponent(bookId)}/imports/${encodeURIComponent(importSourceId)}/retry`),
+  mapImportEntry: (bookId: string, importSourceId: string, entryId: string, accountMapping: Record<string, string>) =>
+    post<FinanceImportResult>(
+      `/finance/books/${encodeURIComponent(bookId)}/imports/${encodeURIComponent(importSourceId)}/entries/${encodeURIComponent(entryId)}/mapping`,
+      { account_mapping: accountMapping },
+    ),
+  reviewImportEntries: (bookId: string, importSourceId: string, decision: 'import' | 'duplicate', entryIds?: string[]) =>
+    post<FinanceImportResult>(
+      `/finance/books/${encodeURIComponent(bookId)}/imports/${encodeURIComponent(importSourceId)}/review`,
+      entryIds ? { decision, entry_ids: entryIds } : { decision },
+    ),
   exportBeancount: (bookId: string) =>
     post<FinanceExportResult>(`/finance/books/${encodeURIComponent(bookId)}/export/beancount`),
 }

@@ -631,7 +631,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       `INSERT INTO model_providers (
          id,space_id,owner_user_id,name,provider_type,base_url,enabled,
          capabilities_json,config_json,created_at,updated_at
-       ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{}',now(),now())`,
+       ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{"deployment":"trusted_local"}',now(),now())`,
       [PROVIDER, SPACE, USER],
     );
     await db.pool.query(
@@ -995,7 +995,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       `INSERT INTO model_providers (
          id,space_id,owner_user_id,name,provider_type,base_url,enabled,
          capabilities_json,config_json,created_at,updated_at
-       ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{}',now(),now())`,
+       ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{"deployment":"trusted_local"}',now(),now())`,
       [PROVIDER, SPACE, USER],
     );
     await db.pool.query(
@@ -1087,10 +1087,10 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     await db.pool.query(`UPDATE project_folders SET status='active',updated_at=now() WHERE id=$1`, [FOLDER]);
     const sourceUpdatedAt = "2026-08-09T01:00:00.000Z";
     await db.pool.query(
-      `INSERT INTO project_public_summaries (
+      `INSERT INTO project_public_summary_publications (
          id,space_id,project_id,summary_text,topics_json,highlights_json,source_refs_json,
-         redaction_version,review_status,updated_by_user_id,created_at,updated_at
-       ) VALUES ($1,$2,$3,'Current summary','[]','[]','[]','v1','approved',$4,$5,$5)`,
+         redaction_version,source_draft_version,published_by_user_id,published_at
+       ) VALUES ($1,$2,$3,'Current summary','[]','[]','[]','v1',1,$4,$5)`,
       [randomUUID(), SPACE, PROJECT, USER, sourceUpdatedAt],
     );
     const retrieved = normalizeContextItem({
@@ -1135,7 +1135,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     });
     await expect(createWithSource()).resolves.toBeDefined();
     await db.pool.query(
-      `UPDATE project_public_summaries SET review_status='archived',updated_at=now() WHERE project_id=$1`,
+      `DELETE FROM project_public_summary_publications WHERE project_id=$1`,
       [PROJECT],
     );
     await expect(createWithSource()).rejects.toMatchObject({ statusCode: 409 });
@@ -1226,7 +1226,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       `INSERT INTO model_providers (
          id,space_id,owner_user_id,name,provider_type,base_url,enabled,
          capabilities_json,config_json,created_at,updated_at
-       ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{}',now(),now())`,
+       ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{"deployment":"trusted_local"}',now(),now())`,
       [PROVIDER, SPACE, USER],
     );
     await db.pool.query(
@@ -1396,7 +1396,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       `INSERT INTO model_providers (
          id,space_id,owner_user_id,name,provider_type,base_url,enabled,
          capabilities_json,config_json,created_at,updated_at
-       ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{}',now(),now())`,
+       ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{"deployment":"trusted_local"}',now(),now())`,
       [PROVIDER, SPACE, USER],
     );
     await db.pool.query(

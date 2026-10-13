@@ -24,7 +24,7 @@ const providerVendors = [{
   id: 'openai', display_name: 'OpenAI', protocol: 'openai_completions',
   supports_chat: true, supports_structured_output: true,
   supports_embedding: true, supports_rerank: false, default_base_url: 'https://api.openai.com/v1',
-  api_key_required: true, subscription_only: false,
+  api_key_required: true, subscription_only: false, self_hostable: false,
 }] satisfies ProviderVendorOut[]
 
 function result(overrides: Partial<ProjectResearchQuestionRefinementResponse> = {}): ProjectResearchQuestionRefinementResponse {

@@ -4,10 +4,11 @@ import websocketPlugin from "@fastify/websocket";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
-import { HostDaemonFrameSchema, HostHelloInfoSchema, HostRunDiffUploadSchema, type HostHelloInfo, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
+import { HostDaemonFrameSchema, HostHelloInfoSchema, HostRunDiffUploadSchema,
+  HostRunOutputsUploadSchema, type HostHelloInfo, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import { scheduleAmbientSyncs } from "../importedSessions/syncScheduler.js";
 import { authRepositoryFromConfig, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
-import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow } from "./repository.js";
+import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow, type HostUploadRefusal } from "./repository.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import { HttpError, dbPool } from "../routeUtils/common.js";
@@ -37,6 +38,23 @@ import { wakeTaskMergesForHost } from "./taskMerges.js";
 
 function isFailure(value: unknown): value is AuthFailure | HostFailure {
   return Boolean(value && typeof value === "object" && "statusCode" in value);
+}
+
+/**
+ * An upload the control plane will not take. `run_not_on_host` is the
+ * authorization answer (404, as the Run is not this host's to know about);
+ * the attempt answers are 409s the daemon logs: the attempt whose nonce the
+ * upload carries is no longer the Run's current one, or it has already ended.
+ */
+function sendUploadRefusal(reply: FastifyReply, reason: HostUploadRefusal) {
+  switch (reason) {
+    case "run_not_on_host":
+      return reply.code(404).send({ detail: "Run not found for this host", code: reason });
+    case "attempt_superseded":
+      return reply.code(409).send({ detail: "This upload belongs to an attempt the Run has moved past", code: reason });
+    case "attempt_ended":
+      return reply.code(409).send({ detail: "This Run attempt has already ended; its outputs are closed", code: reason });
+  }
 }
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
@@ -875,20 +893,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!host) return reply.code(401).send({ detail: "Invalid host token" });
     const runId = params(request).runId;
     if (!runId) return reply.code(400).send({ detail: "runId is required" });
-    const run = await hosts.runOwnedByHost(host.id, runId);
-    if (!run) return reply.code(404).send({ detail: "Run not found for this host" });
     const parsed = HostRunDiffUploadSchema.safeParse(body(request));
     if (!parsed.success) return reply.code(422).send({ detail: "diff upload is malformed" });
     // A body with neither says nothing; one with only `git_after` is a Run
     // whose diff could not be read but whose checkout could.
     if (parsed.data.diff === null && !parsed.data.git_after) return reply.code(422).send({ detail: "diff is required" });
-    const result = await hosts.recordDiffArtifact(run, host.owner_user_id ?? run.owner_user_id, {
-      diff: parsed.data.diff,
-      truncated: parsed.data.truncated === true,
-      ...(parsed.data.git_before ? { git_before: parsed.data.git_before } : {}),
-      ...(parsed.data.git_after ? { git_after: parsed.data.git_after } : {}),
-    });
-    return reply.code(201).send(result);
+    const outcome = await hosts.recordDiffArtifact(host.id, host.owner_user_id, runId, parsed.data);
+    if (!outcome.ok) return sendUploadRefusal(reply, outcome.reason);
+    return reply.code(201).send(outcome.result);
   });
 
   app.post("/api/v1/hosts/me/runs/:runId/outputs", async (request, reply) => {
@@ -902,16 +914,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!host) return reply.code(401).send({ detail: "Invalid host token" });
     const runId = params(request).runId;
     if (!runId) return reply.code(400).send({ detail: "runId is required" });
-    const run = await hosts.runOwnedByHost(host.id, runId);
-    if (!run) return reply.code(404).send({ detail: "Run not found for this host" });
-    const payload = body<{ files: Array<{ name: string; content: string }> }>(request);
-    const files = Array.isArray(payload.files)
-      ? payload.files.filter((f): f is { name: string; content: string } => typeof f?.name === "string" && typeof f?.content === "string")
-      : [];
-    const result = await hosts.recordOutputArtifacts(run, host.owner_user_id ?? run.owner_user_id, files);
-    return reply.code(201).send(result);
+    const parsed = HostRunOutputsUploadSchema.safeParse(body(request));
+    if (!parsed.success) return reply.code(422).send({ detail: "outputs upload is malformed" });
+    const outcome = await hosts.recordOutputArtifacts(host.id, host.owner_user_id, runId, parsed.data);
+    if (!outcome.ok) return sendUploadRefusal(reply, outcome.reason);
+    return reply.code(201).send(outcome.result);
   });
-
 
 
 

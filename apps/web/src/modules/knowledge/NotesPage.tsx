@@ -27,7 +27,9 @@ import {
   collectionPath,
   hoistedCollectionIds,
   nextCollectionSortOrder,
+  owningProjectOf,
   planCollectionMove,
+  planNoteMove,
   removeCollection,
   upsertCollection,
   type CollectionMove,
@@ -137,6 +139,20 @@ export default function NotesPage({ scope }: NotesPageProps) {
   const [deleteDialog, setDeleteDialog] = useState<LinkedDeleteDialogState | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [shareDialog, setShareDialog] = useState<{ noteId: string; collectionId: string } | null>(null)
+  /**
+   * The server refused to take a note out of the last folder its own Project
+   * can see it in (or its last folder altogether). The two things that help
+   * are offered here as actions: move that entry somewhere the rule allows,
+   * or delete the note itself.
+   */
+  const [entryDialog, setEntryDialog] = useState<{
+    noteId: string
+    noteTitle: string
+    collectionId: string
+    owningProjectId: string | null
+    detail: string
+  } | null>(null)
+  const [entryDestinationId, setEntryDestinationId] = useState('')
   const [shareBusy, setShareBusy] = useState(false)
   const [collectionName, setCollectionName] = useState('')
   const [collectionParentId, setCollectionParentId] = useState(ROOT_PARENT)
@@ -734,17 +750,41 @@ export default function NotesPage({ scope }: NotesPageProps) {
     }
   }, [placeNote, shareDialog])
 
-  /** Taking a note out of one folder. The server refuses the last placement —
-   * that is a deletion, and has its own action and its own confirmation. */
+  /** Taking a note out of one folder. The server refuses the last entry its
+   * owning Project has — and names the two actions that do help, which the
+   * entry dialog then offers. */
   const removePlacement = useCallback(async (targetNoteId: string, collectionId: string) => {
     try {
       const updated = await notesApi.removePlacement(targetNoteId, collectionId)
       onNoteResolved(updated)
       toast.success(`Removed from ${collectionById.get(collectionId)?.name ?? 'that folder'}`)
     } catch (e) {
+      if (e instanceof ApiRequestError && e.code === 'note_owning_entry_required') {
+        const payload = e.payload ?? {}
+        setEntryDestinationId('')
+        setEntryDialog({
+          noteId: targetNoteId,
+          noteTitle: typeof payload.note_title === 'string' ? payload.note_title : '',
+          collectionId,
+          owningProjectId: typeof payload.owning_project_id === 'string' ? payload.owning_project_id : null,
+          detail: e.message,
+        })
+        return
+      }
       toast.error(errMsg(e))
     }
   }, [collectionById, onNoteResolved])
+
+  /** Folders the refused entry may move to: inside the owning Project's
+   * subtree when the note has one, anywhere otherwise — never the folder it
+   * is leaving, and never Archive. */
+  const entryDestinationOptions = useMemo(() => {
+    if (!entryDialog) return []
+    return visibleCollections
+      .filter(c => c.id !== entryDialog.collectionId && c.system_role !== 'archive')
+      .filter(c => entryDialog.owningProjectId === null || owningProjectOf(c.id, collectionById) === entryDialog.owningProjectId)
+      .map(c => ({ value: c.id, label: collectionPath(c, collectionById) }))
+  }, [collectionById, entryDialog, visibleCollections])
 
   function dropNotes(updates: NoteMove[]) {
     const optimisticAllNotes = applyNoteMoves(allNotes, updates)
@@ -1038,6 +1078,60 @@ export default function NotesPage({ scope }: NotesPageProps) {
             </Button>
             <Button size="sm" onClick={() => void confirmCrossProjectShare()} disabled={shareBusy}>
               {shareBusy ? 'Sharing...' : 'Place and share'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={entryDialog !== null} onOpenChange={open => { if (!open) setEntryDialog(null) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {entryDialog?.owningProjectId ? 'Keep an entry in the project' : 'Keep the note in a folder'}
+            </DialogTitle>
+            <DialogDescription>{entryDialog?.detail}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">
+                {entryDialog?.owningProjectId ? 'Move this entry to another folder of the project' : 'Move this entry to another folder'}
+              </Label>
+              {entryDestinationOptions.length > 0 ? (
+                <Select
+                  value={entryDestinationId}
+                  onChange={setEntryDestinationId}
+                  options={[{ value: '', label: 'Choose a folder…' }, ...entryDestinationOptions]}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground">No other folder is available for this entry.</p>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setEntryDialog(null)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                if (!entryDialog) return
+                const target = { id: entryDialog.noteId, title: entryDialog.noteTitle }
+                setEntryDialog(null)
+                void deleteNotes([target])
+              }}
+            >
+              Delete note
+            </Button>
+            <Button
+              size="sm"
+              disabled={!entryDestinationId}
+              onClick={() => {
+                if (!entryDialog || !entryDestinationId) return
+                const updates = planNoteMove(entryDialog.noteId, entryDialog.collectionId, entryDestinationId, null, allNotes)
+                setEntryDialog(null)
+                if (updates.length > 0) dropNotes(updates)
+              }}
+            >
+              Move
             </Button>
           </DialogFooter>
         </DialogContent>

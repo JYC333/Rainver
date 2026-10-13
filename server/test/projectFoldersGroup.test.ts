@@ -9,7 +9,7 @@ import { projectFoldersModule } from "../src/modules/projectFolders/index.js";
 import { PgProjectFolderRepository } from "../src/modules/projectFolders/repository.js";
 import { projectsModule } from "../src/modules/projects/index.js";
 import { buildModuleServer } from "./support/moduleServer.js";
-import { assertRemoteRepositoryUrl } from "../src/modules/projectFolders/repositoryUrl.js";
+import { assertRemoteRepositoryUrl, redactRepositoryUrlCredentials } from "../src/modules/projectFolders/repositoryUrl.js";
 
 describe("projectFoldersRoutes", () => {
   let app: FastifyInstance | undefined;
@@ -178,17 +178,30 @@ describe("projectFoldersRoutes", () => {
 });
 
 describe("projectFoldersSecurity", () => {
-  it("clones only from a remote repository, never a path on the server", () => {
+  it("clones only over HTTPS, never a path on the server or a transport the guard cannot judge", () => {
     for (const remote of [
       "https://github.com/example/repo.git",
-      "ssh://git@example.com/repo.git",
-      "git@github.com:example/repo.git",
+      "https://user:token@gitlab.example.com/group/repo.git",
+      "https://codeberg.org/example/repo",
     ]) {
       expect(() => assertRemoteRepositoryUrl(remote)).not.toThrow();
     }
-    for (const local of ["/srv/rainver/other-space/repo", "../repo", "file:///etc", "ext::sh -c id", "C:\\repo"]) {
-      expect(() => assertRemoteRepositoryUrl(local)).toThrow(expect.objectContaining({ statusCode: 422 }));
+    for (const refused of [
+      "/srv/rainver/other-space/repo",
+      "../repo",
+      "file:///etc",
+      "ext::sh -c id",
+      "C:\\repo",
+      "http://github.com/example/repo.git",
+      "ssh://git@example.com/repo.git",
+      "git://example.com/repo.git",
+      "git@github.com:example/repo.git",
+      "https://",
+    ]) {
+      expect(() => assertRemoteRepositoryUrl(refused), refused).toThrow(expect.objectContaining({ statusCode: 422 }));
     }
+    expect(redactRepositoryUrlCredentials("fatal: unable to access 'https://alice:ghp_secret@github.com/x/y.git/'"))
+      .toBe("fatal: unable to access 'https://***@github.com/x/y.git/'");
   });
 
   type QueryResult = { rows: Record<string, unknown>[]; rowCount: number };

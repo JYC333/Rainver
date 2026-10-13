@@ -294,7 +294,8 @@ describe("executeRemoteHostCliAdapter", () => {
       async query<Row = Record<string, unknown>>(sql: string) {
         const rows: unknown[] = sql.startsWith("SELECT part.id AS part_id")
           ? [resourcePart]
-          : sql.startsWith("SELECT kind FROM hosts") ? [{ kind: "remote" }] : [];
+          : sql.startsWith("SELECT kind FROM hosts") ? [{ kind: "remote" }]
+            : sql.startsWith("UPDATE run_attempts") ? [{ id: "attempt-1" }] : [];
         return { rows: rows as Row[], rowCount: rows.length };
       },
     };

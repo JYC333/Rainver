@@ -612,8 +612,8 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       `INSERT INTO model_providers (
          id, space_id, owner_user_id, name, provider_type, base_url, enabled,
          capabilities_json, config_json, created_at, updated_at
-       ) VALUES ('provider-1',$1,$2,'Shared','openai','https://api.example.test/v1',TRUE,
-         '{}'::jsonb,'{"openai_compatible_base_url":"http://localhost:8080/v1"}'::jsonb,now(),now())`,
+       ) VALUES ('provider-1',$1,$2,'Shared','openai_compatible','https://api.example.test/v1',TRUE,
+         '{}'::jsonb,'{"deployment":"trusted_local","openai_compatible_base_url":"http://localhost:8080/v1"}'::jsonb,now(),now())`,
       [PROVIDER_HOME_SPACE, OWNER],
     );
     await db.pool.query(

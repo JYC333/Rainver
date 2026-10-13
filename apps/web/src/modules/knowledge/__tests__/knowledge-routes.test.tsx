@@ -100,6 +100,11 @@ vi.mock('../../../api/client', () => {
     objectSchemaApi: {
       listKinds: vi.fn().mockResolvedValue(emptyPage),
     },
+    ApiRequestError: class ApiRequestError extends Error {
+      constructor(message: string, readonly status: number, readonly code?: string, readonly payload?: Record<string, unknown>) {
+        super(message)
+      }
+    },
   }
 })
 
@@ -152,7 +157,7 @@ import { KNOWLEDGE_SECTIONS } from '../KnowledgeSectionHeader'
 import { readLastKnowledgeSection, rememberKnowledgeSection } from '../utils'
 import { MODULE_REGISTRY } from '../../registry'
 import { RAIL_ITEMS } from '../../../core/navigation'
-import { notesApi, notesCollectionsApi } from '../../../api/client'
+import { ApiRequestError, notesApi, notesCollectionsApi } from '../../../api/client'
 import type { EntityLink, Note } from '../../../types/api'
 
 function LocationProbe() {
@@ -649,6 +654,43 @@ describe('Knowledge routing', () => {
       vi.mocked(notesApi.get).mockResolvedValue(null as unknown as Note)
       vi.mocked(notesApi.list).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
       vi.mocked(notesApi.delete).mockReset()
+    }
+  })
+
+  /**
+   * The server refuses to take a note out of the last folder its own Project
+   * can see it in, and names the two things that help. The page turns that
+   * into a dialog offering exactly those two actions, not an error toast.
+   */
+  it('offers move-or-delete when the server refuses to remove a note\'s last owning entry', async () => {
+    const shared = makeNote({
+      id: 'note-shared',
+      title: 'Shared note',
+      placements: [{ collection_id: 'col-inbox', sort_order: 0 }, { collection_id: 'col-custom', sort_order: 0 }],
+    })
+    vi.mocked(notesApi.list).mockResolvedValue({ items: [shared], total: 1, limit: 200, offset: 0 })
+    vi.mocked(notesApi.removePlacement).mockRejectedValueOnce(new ApiRequestError(
+      '"Shared note" must stay in at least one folder; move it to another folder, or delete the note',
+      422,
+      'note_owning_entry_required',
+      { code: 'note_owning_entry_required', note_id: 'note-shared', note_title: 'Shared note', owning_project_id: null, actions: ['move_to_folder', 'delete_note'], affected_note_count: 1 },
+    ))
+
+    try {
+      renderAt('/spaces/personal-1/knowledge/notes')
+      const tree = await screen.findByLabelText('Notes organization')
+      const [row] = await within(tree).findAllByRole('button', { name: 'Shared note' })
+      fireEvent.contextMenu(row!, { clientX: 12, clientY: 24 })
+      const menu = await screen.findByRole('menu', { name: 'Shared note actions' })
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove from this folder' }))
+
+      await waitFor(() => expect(notesApi.removePlacement).toHaveBeenCalledWith('note-shared', 'col-inbox'))
+      const dialog = await screen.findByRole('dialog', { name: 'Keep the note in a folder' })
+      expect(within(dialog).getByText(/must stay in at least one folder/)).toBeInTheDocument()
+      expect(within(dialog).getByRole('button', { name: 'Delete note' })).toBeInTheDocument()
+      expect(within(dialog).getByRole('button', { name: 'Move' })).toBeDisabled()
+    } finally {
+      vi.mocked(notesApi.list).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
     }
   })
 

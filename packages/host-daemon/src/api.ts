@@ -1,4 +1,4 @@
-import type { HostHelloInfo, HostRunDiffUpload, RuntimeProbe } from "@rainver/protocol";
+import type { HostHelloInfo, HostRunDiffUpload, HostRunOutputsUpload, RuntimeProbe } from "@rainver/protocol";
 import { mkdtemp, rm } from "node:fs/promises";
 import { arch, platform, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -213,7 +213,7 @@ export async function uploadRunOutputs(
   serverUrl: string,
   token: string,
   runId: string,
-  files: Array<{ name: string; content: string }>,
+  upload: HostRunOutputsUpload,
 ): Promise<void> {
   // Sent even when empty: the control plane applies this run's artifact
   // declarations here, and a run that declared a deliverable and wrote nothing
@@ -221,7 +221,7 @@ export async function uploadRunOutputs(
   await request<void>(`${serverUrl}/api/v1/hosts/me/runs/${encodeURIComponent(runId)}/outputs`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}` },
-    body: JSON.stringify({ files }),
+    body: JSON.stringify(upload),
   });
 }
 

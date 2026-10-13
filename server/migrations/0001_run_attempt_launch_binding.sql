@@ -1,0 +1,4 @@
+ALTER TABLE "run_attempts" ADD COLUMN "launch_id" varchar(36);--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_artifacts_remote_diff_launch" ON "artifacts" USING btree ("run_id",(metadata_json->>'launch_id')) WHERE artifact_type = 'remote_diff' AND metadata_json->>'launch_id' IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_artifacts_remote_output_launch" ON "artifacts" USING btree ("run_id",(metadata_json->>'launch_id'),"title") WHERE artifact_type = 'remote_output' AND metadata_json->>'launch_id' IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "uq_run_attempts_launch_id" ON "run_attempts" USING btree ("launch_id") WHERE launch_id IS NOT NULL;

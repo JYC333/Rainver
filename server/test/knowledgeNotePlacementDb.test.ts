@@ -188,10 +188,67 @@ describe("note placements (real Postgres)", () => {
     expect(placements(afterRemove)).toEqual([{ collection_id: second, sort_order: 0 }]);
 
     // Taking a note out of its last folder is deleting it, which is a different
-    // decision with its own action.
+    // decision with its own action — and the refusal names that action.
     await expect(repository.removeNotePlacement(identity, note.id, second))
-      .rejects.toMatchObject({ statusCode: 422 });
+      .rejects.toMatchObject({
+        statusCode: 422,
+        responseBody: {
+          code: "note_owning_entry_required",
+          note_id: note.id,
+          owning_project_id: null,
+          actions: ["move_to_folder", "delete_note"],
+        },
+      });
     expect(placements(await repository.getNote(identity, note.id))).toHaveLength(1);
+  });
+
+  it("refuses to delete a folder that is some note's last entry, and keeps subfolders in place otherwise", async () => {
+    if (!db.available || !app) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const parent = await insertNoteCollection(db.pool, { space: SPACE, name: "Parent" });
+    const doomed = await repository.createNoteCollection(identity, { name: "Doomed", parent_id: parent }) as { id: string };
+    const child = await repository.createNoteCollection(identity, { name: "Child", parent_id: doomed.id }) as { id: string };
+    const elsewhere = await insertNoteCollection(db.pool, { space: SPACE, name: "Elsewhere" });
+    const only = await repository.createNote(identity, { title: "Only here", collection_id: doomed.id }) as { id: string };
+    const also = await repository.createNote(identity, { title: "Also elsewhere", collection_id: doomed.id }) as { id: string };
+    await repository.addNotePlacement(identity, also.id, elsewhere);
+
+    const deleteDoomed = () => app!.inject({ method: "DELETE", url: `/api/v1/notes/collections/${doomed.id}` });
+    const refused = await deleteDoomed();
+    expect(refused.statusCode).toBe(422);
+    expect(refused.json()).toMatchObject({ code: "note_owning_entry_required", note_id: only.id, affected_note_count: 1 });
+    // Nothing moved: the refusal is the whole answer.
+    expect(placements(await repository.getNote(identity, only.id))).toEqual([{ collection_id: doomed.id, sort_order: 0 }]);
+    const childRow = await db.pool.query<{ parent_id: string | null }>(`SELECT parent_id FROM note_collections WHERE id = $1`, [child.id]);
+    expect(childRow.rows[0]?.parent_id).toBe(doomed.id);
+
+    await repository.addNotePlacement(identity, only.id, elsewhere);
+    expect((await deleteDoomed()).statusCode).toBe(204);
+    // The folder's own placements go with it; its subfolder moves up to its
+    // parent rather than to the root.
+    expect(placements(await repository.getNote(identity, only.id))).toEqual([{ collection_id: elsewhere, sort_order: 1 }]);
+    expect(placements(await repository.getNote(identity, also.id))).toEqual([{ collection_id: elsewhere, sort_order: 0 }]);
+    const movedChild = await db.pool.query<{ parent_id: string | null }>(`SELECT parent_id FROM note_collections WHERE id = $1`, [child.id]);
+    expect(movedChild.rows[0]?.parent_id).toBe(parent);
+  });
+
+  it("refuses a batch reorder whose net effect strips a note of its last folder", async () => {
+    if (!db.available || !app) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const first = await insertNoteCollection(db.pool, { space: SPACE, name: "First" });
+    const second = await insertNoteCollection(db.pool, { space: SPACE, name: "Second" });
+    const note = await repository.createNote(identity, { title: "Note", collection_id: first }) as { id: string };
+    const other = await repository.createNote(identity, { title: "Other", collection_id: second }) as { id: string };
+
+    // A move between folders keeps the note somewhere, so the batch is fine...
+    await withTransaction(db.pool, (client) => persistNotesTreeReorder(client, identity, {
+      kind: "notes",
+      updates: [
+        { noteId: note.id, fromCollectionId: first, collectionId: second, sortOrder: 1 },
+        { noteId: other.id, fromCollectionId: second, collectionId: second, sortOrder: 0 },
+      ],
+    }));
+    expect(placements(await repository.getNote(identity, note.id))).toEqual([{ collection_id: second, sort_order: 1 }]);
   });
 
   it("carries both placement actions through the public routes", async () => {

@@ -21,23 +21,24 @@ interface ProjectPublicSummaryProjectionRow {
   topics_json: unknown;
   highlights_json: unknown;
   source_refs_json: unknown;
-  review_status: string;
-  updated_at: Date | string | null;
+  published_at: Date | string | null;
 }
 
 /**
  * Projects domain adapter for the shared zero-LLM retrieval engine.
  *
- * It indexes only the deliberately public, redacted high-level project summary.
- * Concrete project memory, artifacts, docs, and memo content are never read here
- * and remain behind their own project/member gates.
+ * It indexes only the deliberately public, redacted high-level project summary,
+ * and only its **published** snapshot (`project_public_summary_publications`).
+ * The working draft is never read here: a writer's unapproved edit must not
+ * reach the index. Concrete project memory, artifacts, docs, and memo content
+ * are never read here either and remain behind their own project/member gates.
  */
 export const projectRetrievalAdapter: RetrievalDomainAdapter = {
   objectTypes: PROJECT_PUBLIC_SUMMARY_OBJECT_TYPES,
 
   async loadCanonical(db, spaceId, _objectType, objectId): Promise<CanonicalObject | null> {
     const row = await loadSummaryRow(db, spaceId, objectId);
-    if (!row || row.status !== "active" || row.review_status !== "approved") return null;
+    if (!row || row.status !== "active") return null;
     const topics = stringArray(row.topics_json);
     const highlights = stringArray(row.highlights_json);
     return {
@@ -48,7 +49,7 @@ export const projectRetrievalAdapter: RetrievalDomainAdapter = {
       projectFolderId: null,
       ownerUserId: row.owner_user_id,
       visibility: "space_shared",
-      status: row.review_status,
+      status: "published",
       objectProfile: "project_public_summary",
       aliases: [...topics],
       text: joinText([
@@ -60,7 +61,7 @@ export const projectRetrievalAdapter: RetrievalDomainAdapter = {
         highlights.join("\n"),
       ]),
       sourceConnectionIds: sourceConnectionIdsFromSourceRefs(row.source_refs_json),
-      updatedAt: summaryIsoOrNull(row.updated_at),
+      updatedAt: summaryIsoOrNull(row.published_at),
     };
   },
 
@@ -74,13 +75,12 @@ export const projectRetrievalAdapter: RetrievalDomainAdapter = {
 
   async listObjectIds(db, spaceId): Promise<RetrievalObjectRef[]> {
     const result = await db.query<{ project_id: string }>(
-      `SELECT ps.project_id
-         FROM project_public_summaries ps
+      `SELECT pub.project_id
+         FROM project_public_summary_publications pub
          JOIN projects p
-           ON p.id = ps.project_id
-          AND p.space_id = ps.space_id
-        WHERE ps.space_id = $1
-          AND ps.review_status = 'approved'
+           ON p.id = pub.project_id
+          AND p.space_id = pub.space_id
+        WHERE pub.space_id = $1
           AND p.status = 'active'
           AND p.deleted_at IS NULL`,
       [spaceId],
@@ -103,26 +103,24 @@ async function revalidateProjectSummaries(
   const ids = uniqueIds(projectIds);
   if (ids.length === 0) return new Map();
   const result = await db.query<ProjectPublicSummaryProjectionRow>(
-    `SELECT ps.project_id,
+    `SELECT pub.project_id,
             p.name,
             p.description,
             p.current_focus,
             p.owner_user_id,
             p.status,
-            ps.summary_text,
-            ps.topics_json,
-            ps.highlights_json,
-            ps.source_refs_json,
-            ps.review_status
-       FROM project_public_summaries ps
+            pub.summary_text,
+            pub.topics_json,
+            pub.highlights_json,
+            pub.source_refs_json
+       FROM project_public_summary_publications pub
        JOIN projects p
-         ON p.id = ps.project_id
-        AND p.space_id = ps.space_id
-      WHERE ps.space_id = $1
-        AND ps.project_id = ANY($2::varchar[])
+         ON p.id = pub.project_id
+        AND p.space_id = pub.space_id
+      WHERE pub.space_id = $1
+        AND pub.project_id = ANY($2::varchar[])
         AND p.deleted_at IS NULL
-        AND p.status = 'active'
-        AND ps.review_status = 'approved'`,
+        AND p.status = 'active'`,
     [spaceId, ids],
   );
   return new Map(
@@ -147,24 +145,23 @@ async function loadSummaryRow(
   projectId: string,
 ): Promise<ProjectPublicSummaryProjectionRow | null> {
   const result = await db.query<ProjectPublicSummaryProjectionRow>(
-    `SELECT ps.project_id,
+    `SELECT pub.project_id,
             p.name,
             p.description,
             p.current_focus,
             p.owner_user_id,
             p.status,
-            ps.summary_text,
-            ps.topics_json,
-            ps.highlights_json,
-            ps.source_refs_json,
-            ps.review_status,
-            ps.updated_at
-       FROM project_public_summaries ps
+            pub.summary_text,
+            pub.topics_json,
+            pub.highlights_json,
+            pub.source_refs_json,
+            pub.published_at
+       FROM project_public_summary_publications pub
        JOIN projects p
-         ON p.id = ps.project_id
-        AND p.space_id = ps.space_id
-      WHERE ps.space_id = $1
-        AND ps.project_id = $2
+         ON p.id = pub.project_id
+        AND p.space_id = pub.space_id
+      WHERE pub.space_id = $1
+        AND pub.project_id = $2
         AND p.deleted_at IS NULL
       LIMIT 1`,
     [spaceId, projectId],

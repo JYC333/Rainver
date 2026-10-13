@@ -174,7 +174,6 @@ export class ProjectPublicSummaryGenerator {
     const summary = await new PgProjectRepository(this.db).upsertPublicSummary(identity, projectId, {
       ...generated,
       generated_by_run_id: input.generatedByRunId ?? undefined,
-      review_status: "draft",
     });
     await this.recordGenerationAudit(identity, projectId, {
       providerId,
@@ -314,8 +313,8 @@ export class ProjectPublicSummaryGenerator {
   }
 
   // loadMemories/loadActivities/loadArtifacts/loadProposals all pass
-  // includeOversight: false — their output can become a `review_status =
-  // 'approved'` project public summary, readable by the whole Space. Space
+  // includeOversight: false — their output can become a published project
+  // public summary, readable by the whole Space. Space
   // oversight is a read-only capability for the admin's own browsing; it must
   // not let another member's otherwise-private content flow into a
   // space-wide published artifact just because the triggering owner/admin

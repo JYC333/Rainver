@@ -12,9 +12,18 @@ import { financeLedgerEngine } from "../beancount/engine.js";
 import { parseBeancountText } from "../beancount/importer.js";
 import { sortEntries } from "../beancount/sort.js";
 import { interpolateEntries, transformEntries, validateEntries } from "../beancount/validation.js";
-import { rootTypeForAccountName } from "./accountName.js";
-import type { DirectiveStatus, FinanceAccountRow, FinanceCommodityRow } from "./directives.js";
-import { financeDirectiveRepository, type FinanceExportRow } from "./directiveRepository.js";
+import type { FinanceAccountRow, FinanceCommodityRow } from "./directives.js";
+import { financeDirectiveRepository, type FinanceExportRow, type FinanceImportSourceRow } from "./directiveRepository.js";
+import { FinanceRuleError } from "./errors.js";
+import {
+  emptyStatusCounts,
+  financeImportEntryRepository,
+  identifyImportEntries,
+  type FinanceImportEntryRow,
+  type ImportEntryOutcome,
+  type ImportEntryStatus,
+  type ParsedImportEntry,
+} from "./importEntries.js";
 import { Cost, CostSpec } from "./position.js";
 import { financeLedgerRepository, isSequenceConflict, type InsertPostingRecord } from "./repository.js";
 import { attempt, withLockedBook } from "./transaction.js";
@@ -23,17 +32,27 @@ export interface ImportBeancountInput {
   text: string;
   sourceType?: string;
   sourceName?: string | null;
-  /** Imports default to `proposed`; posting directly requires a clean file. */
-  status?: DirectiveStatus;
 }
 
-export interface ImportBeancountResult {
-  importSourceId: string | null;
-  deduplicated: boolean;
+export interface ImportBatchResult {
+  importSource: FinanceImportSourceRow;
+  /** The file was already a batch of this book; its unfinished entries were retried. */
+  batchExisted: boolean;
+  /** Dated directives persisted by this call. */
   createdDirectives: number;
+  summary: Record<ImportEntryStatus, number>;
+  entries: FinanceImportEntryRow[];
+  /** Parse and validation errors that belong to no entry. */
   errors: LedgerError[];
   options: Record<string, string>;
 }
+
+export interface ImportSourceSummary {
+  importSource: FinanceImportSourceRow;
+  summary: Record<ImportEntryStatus, number>;
+}
+
+export type ImportReviewDecision = "import" | "duplicate";
 
 export interface ExportBeancountResult {
   export: FinanceExportRow;
@@ -42,105 +61,182 @@ export interface ExportBeancountResult {
   errors: LedgerError[];
 }
 
+/**
+ * Directives an import records but never executes. Opening or closing an
+ * account, declaring a commodity, and setting a book option change the book's
+ * structure; the file is not authority for that, account and commodity
+ * management are. Everything else lands as `proposed` for review.
+ */
+const EXCLUDED_ENTRY_TYPES = new Set<LedgerEntry["type"]>(["open", "close", "commodity", "option"]);
+
+/** Every import lands for review; nothing in an upload posts on its own. */
+const IMPORTED_STATUS = "proposed" as const;
+
+/** Statuses an import pass tries again. */
+const RETRIED_STATUSES = new Set<ImportEntryStatus>(["error", "pending_mapping"]);
+
 export async function importBeancountToDb(
   db: Queryable,
   spaceId: string,
   bookId: string,
   userId: string,
   input: ImportBeancountInput,
-): Promise<ImportBeancountResult> {
-  // The server names the file being imported. Do not trust the client's name:
-  // a request naming `<db>` — the label this engine gives entries loaded from
-  // the ledger — turns the upload-error list into a readout of the stored
-  // ledger, including balance assertions over other members' accounts.
-  const filename = importFilename(userId);
-  const status = input.status ?? "proposed";
-  const parsed = parseBeancountText(input.text, filename);
+): Promise<ImportBatchResult> {
   const contentHash = createHash("sha256").update(input.text, "utf8").digest("hex");
-
-  return withLockedBook(db, spaceId, bookId, async (db) => {
-    const existing = await financeDirectiveRepository.findImportSourceByHash(
-      db,
-      spaceId,
-      bookId,
-      contentHash,
-    );
-    if (existing) {
-      return {
-        importSourceId: existing.id,
-        deduplicated: true,
-        createdDirectives: 0,
-        errors: [],
-        options: parsed.options,
-      };
+  return withLockedBook(db, spaceId, bookId, async (tx) => {
+    const existing = await financeDirectiveRepository.findImportSourceByHash(tx, spaceId, bookId, contentHash);
+    if (existing && existing.imported_by_user_id !== userId) {
+      // Another member already holds this file as a batch; its entries and
+      // their original text are theirs to follow up, not this person's to read.
+      throw new FinanceRuleError("This file was already imported by another member of the space");
     }
-
-    // Validate the incoming file against the existing committed ledger so
-    // references to already-open accounts do not report as unknown. Validate
-    // against the ledger this person can see. Do not load the whole
-    // book: a balance assertion would be checked against totals that include
-    // accounts they may not read, and the difference would be reported back.
-    //
-    // A `balance` assertion over a subtree that contains another member's
-    // private account is checked against the part of that subtree the importer
-    // can see, so it can fail for them where it holds for the book. A `pad`
-    // whose source account is hidden never discharges. A total they cannot see
-    // is a total they cannot assert. An import that trips it is
-    // refused only with `post_directly`; otherwise the directives land as
-    // `proposed` with the error attached.
-    const dbLoaded = await financeLedgerEngine.loadFromDb(db, spaceId, bookId, userId);
-    const combined = transformEntries([...dbLoaded.entries, ...parsed.entries]);
-    const validationErrors = validateEntries(combined).filter(
-      (error) => error.source?.filename === filename,
-    );
-    const errors: LedgerError[] = [...parsed.errors, ...validationErrors];
-
-    if (status === "posted" && errors.length > 0) {
-      throw new Error(
-        `Cannot post import with validation errors: ${errors
-          .map((error) => `${error.code}: ${error.message}`)
-          .join("; ")}`,
-      );
-    }
-
-    // One transaction: the import source is what a retry of the same file is
-    // deduplicated against, so it must not be committed by an import that then
-    // failed. An entry that cannot be persisted is still skipped and reported,
-    // but whole, under its own savepoint, rather than with half its rows.
-    const tx = db;
-    const importSource = await financeDirectiveRepository.insertImportSource(tx, {
+    const importSource = existing ?? await financeDirectiveRepository.insertImportSource(tx, {
       spaceId,
       bookId,
       sourceType: input.sourceType ?? "upload",
-      sourceName: input.sourceName ?? filename,
+      sourceName: input.sourceName ?? importFilename(userId),
       contentHash,
+      contentText: input.text,
       importedByUserId: userId,
-      metadata: { error_count: errors.length },
     });
-
-    const persister = new ImportPersister(
-      tx,
-      spaceId,
-      bookId,
-      userId,
-      status,
-      contentHash,
-      importSource.id,
-      errors,
-    );
-    await persister.preload();
-    for (const entry of sortEntries(interpolateEntries(parsed.entries))) {
-      await persister.persistEntry(entry);
-    }
-
-    return {
-      importSourceId: importSource.id,
-      deduplicated: false,
-      createdDirectives: persister.createdDirectives,
-      errors,
-      options: parsed.options,
-    };
+    const pass = await runImportPass(tx, spaceId, bookId, userId, importSource, input.text);
+    return { ...pass, importSource, batchExisted: existing !== null };
   });
+}
+
+/** Retries every entry of a batch that is not yet settled. */
+export async function retryImportBatch(
+  db: Queryable,
+  spaceId: string,
+  bookId: string,
+  userId: string,
+  importSourceId: string,
+): Promise<ImportBatchResult> {
+  return withLockedBook(db, spaceId, bookId, async (tx) => {
+    const importSource = await requireOwnImportSource(tx, spaceId, bookId, userId, importSourceId);
+    const pass = await runImportPass(tx, spaceId, bookId, userId, importSource, importSource.content_text);
+    return { ...pass, importSource, batchExisted: true };
+  });
+}
+
+/**
+ * Maps account names the file uses onto accounts this book already has, then
+ * retries the entry. The mapping is checked here and again when the entry is
+ * persisted: an account must be one this person may see, in this book, and
+ * open on the entry's date. The original record is not changed by it.
+ */
+export async function applyImportEntryMapping(
+  db: Queryable,
+  spaceId: string,
+  bookId: string,
+  userId: string,
+  importSourceId: string,
+  entryId: string,
+  accountMapping: Record<string, string>,
+): Promise<ImportBatchResult> {
+  return withLockedBook(db, spaceId, bookId, async (tx) => {
+    const importSource = await requireOwnImportSource(tx, spaceId, bookId, userId, importSourceId);
+    const entry = await requireEntry(tx, spaceId, importSource, entryId);
+    if (!RETRIED_STATUSES.has(entry.status)) {
+      throw new FinanceRuleError(`Import entry is ${entry.status.replace("_", " ")}; only an unfinished entry takes a mapping`);
+    }
+    const parsed = findParsedEntry(importSource, entry, userId);
+    const referenced = new Set(referencedAccountNames(parsed.entry));
+    for (const [name, accountId] of Object.entries(accountMapping)) {
+      if (!referenced.has(name)) throw new FinanceRuleError(`The entry does not reference account ${name}`);
+      if (typeof accountId !== "string" || !accountId.trim()) throw new FinanceRuleError(`Mapping for ${name} needs an account id`);
+      const account = await financeLedgerRepository.findAccountForViewer(tx, spaceId, bookId, accountId, userId);
+      if (!account) throw new FinanceRuleError(`Mapping for ${name}: account not found`);
+      const date = "date" in parsed.entry ? parsed.entry.date : null;
+      if (date && !accountOpenOn(account, date)) {
+        throw new FinanceRuleError(`Mapping for ${name}: ${account.name} is not open on ${date}`);
+      }
+    }
+    await financeImportEntryRepository.setAccountMapping(tx, entry.id, accountMapping);
+    const pass = await runImportPass(tx, spaceId, bookId, userId, importSource, importSource.content_text, {
+      only: new Set([entry.entry_key]),
+    });
+    return { ...pass, importSource, batchExisted: true };
+  });
+}
+
+/**
+ * Settles entries whose content matches a record another batch of this book
+ * already holds. `import` persists them as records of their own; `duplicate`
+ * records them as the same record and persists nothing.
+ */
+export async function decideImportEntryReview(
+  db: Queryable,
+  spaceId: string,
+  bookId: string,
+  userId: string,
+  importSourceId: string,
+  decision: ImportReviewDecision,
+  entryIds: readonly string[] | null,
+): Promise<ImportBatchResult> {
+  return withLockedBook(db, spaceId, bookId, async (tx) => {
+    const importSource = await requireOwnImportSource(tx, spaceId, bookId, userId, importSourceId);
+    const all = await financeImportEntryRepository.listForSource(tx, spaceId, importSource.id);
+    const wanted = entryIds === null
+      ? all.filter((entry) => entry.status === "needs_review")
+      : entryIds.map((id) => {
+          const entry = all.find((candidate) => candidate.id === id);
+          if (!entry) throw new FinanceRuleError("Import entry not found");
+          if (entry.status !== "needs_review") throw new FinanceRuleError("Import entry is not awaiting review");
+          return entry;
+        });
+    const keys = new Set<string>();
+    for (const entry of wanted) {
+      if (decision === "duplicate") {
+        await financeImportEntryRepository.setOutcome(tx, entry.id, {
+          status: "duplicate",
+          statusReason: "review_duplicate",
+          duplicateOfEntryId: entry.duplicate_of_entry_id,
+        });
+        continue;
+      }
+      // Marked as reviewed so the pass below persists it instead of asking again.
+      await financeImportEntryRepository.setOutcome(tx, entry.id, { status: "error", statusReason: "review_import" });
+      keys.add(entry.entry_key);
+    }
+    const pass = await runImportPass(tx, spaceId, bookId, userId, importSource, importSource.content_text, { only: keys });
+    return { ...pass, importSource, batchExisted: true };
+  });
+}
+
+export async function getImportBatch(
+  db: Queryable,
+  spaceId: string,
+  bookId: string,
+  userId: string,
+  importSourceId: string,
+): Promise<ImportBatchResult> {
+  const importSource = await requireOwnImportSource(db, spaceId, bookId, userId, importSourceId);
+  const entries = await financeImportEntryRepository.listForSource(db, spaceId, importSource.id);
+  const parsed = parseBeancountText(importSource.content_text ?? "", importFilename(userId));
+  return {
+    importSource,
+    batchExisted: true,
+    createdDirectives: 0,
+    summary: summarize(entries),
+    entries,
+    errors: fileLevelErrors(parsed.errors, entries),
+    options: parsed.options,
+  };
+}
+
+export async function listImportBatches(
+  db: Queryable,
+  spaceId: string,
+  bookId: string,
+  userId: string,
+): Promise<ImportSourceSummary[]> {
+  const sources = await financeDirectiveRepository.listImportSourcesForUser(db, spaceId, bookId, userId);
+  const result: ImportSourceSummary[] = [];
+  for (const importSource of sources) {
+    result.push({ importSource, summary: await financeImportEntryRepository.countByStatus(db, spaceId, importSource.id) });
+  }
+  return result;
 }
 
 export async function exportBeancountFromDb(
@@ -166,23 +262,267 @@ export async function exportBeancountFromDb(
   return { export: exportRow, content: rendered.content, contentHash, errors: rendered.errors };
 }
 
-class ImportPersister {
-  createdDirectives = 0;
+// ── One import pass over a batch ──────────────────────────────────────────────
 
+interface PassOptions {
+  /** Entry keys to attempt; every other entry is left as it is. */
+  only?: ReadonlySet<string>;
+}
+
+type PassResult = Omit<ImportBatchResult, "importSource" | "batchExisted">;
+
+async function runImportPass(
+  tx: Queryable,
+  spaceId: string,
+  bookId: string,
+  userId: string,
+  importSource: FinanceImportSourceRow,
+  text: string | null,
+  options: PassOptions = {},
+): Promise<PassResult> {
+  if (text === null) throw new FinanceRuleError("This import batch has no stored text to retry from");
+  // The server names the file being imported. Do not trust the client's name:
+  // a request naming `<db>` — the label this engine gives entries loaded from
+  // the ledger — turns the upload-error list into a readout of the stored
+  // ledger, including balance assertions over other members' accounts.
+  const filename = importFilename(userId);
+  const parsed = parseBeancountText(text, filename);
+  const identified = identifyImportEntries(text, parsed.entries, parsed.errors);
+
+  // Validate the incoming file against the ledger this person can see. Do not
+  // load the whole book: a balance assertion would be checked against totals
+  // that include accounts they may not read, and the difference would be
+  // reported back. A `balance` over a subtree that contains another member's
+  // private account is checked against the part they can see, so it can fail
+  // for them where it holds for the book; a `pad` whose source account is
+  // hidden never discharges. The entry still lands as `proposed` with the
+  // error attached; posting it is a separate, re-validated step.
+  const dbLoaded = await financeLedgerEngine.loadFromDb(tx, spaceId, bookId, userId);
+  const combined = transformEntries([...dbLoaded.entries, ...parsed.entries]);
+  const validationErrors = validateEntries(combined).filter((error) => error.source?.filename === filename);
+  const errorsByLine = new Map<number, LedgerError[]>();
+  for (const error of [...parsed.errors, ...validationErrors]) {
+    const lineno = error.source?.lineno;
+    if (lineno === undefined) continue;
+    errorsByLine.set(lineno, [...(errorsByLine.get(lineno) ?? []), error]);
+  }
+
+  // Sequence numbers are allocated in ledger order, as the engine sorts, so
+  // the pass walks entries that way while keeping each one's identity.
+  const byEntry = new Map<LedgerEntry, ParsedImportEntry>();
+  const interpolated = interpolateEntries(identified.map((item) => item.entry));
+  identified.forEach((item, index) => byEntry.set(interpolated[index]!, { ...item, entry: interpolated[index]! }));
+  const ordered = sortEntries(interpolated).map((entry) => byEntry.get(entry)!);
+
+  const persister = new ImportPersister(tx, spaceId, bookId, userId, importSource);
+  await persister.preload();
+  let createdDirectives = 0;
+  const rows = new Map<string, FinanceImportEntryRow>();
+  for (const item of ordered) {
+    const row = await financeImportEntryRepository.ensure(tx, { spaceId, bookId, importSourceId: importSource.id, parsed: item });
+    const entryErrors = errorsByLine.get(item.sourceLineno) ?? [];
+    const outcome = await settleEntry(tx, persister, spaceId, bookId, importSource.id, row, item, entryErrors, options);
+    if (outcome === null) {
+      rows.set(row.id, row);
+      continue;
+    }
+    if (outcome.status === "imported" && outcome.directiveId) createdDirectives += 1;
+    rows.set(row.id, await financeImportEntryRepository.setOutcome(tx, row.id, outcome));
+  }
+  const entries = [...rows.values()].sort((left, right) => left.source_lineno - right.source_lineno);
+  return {
+    createdDirectives,
+    summary: summarize(entries),
+    entries,
+    errors: fileLevelErrors(parsed.errors, entries),
+    options: parsed.options,
+  };
+}
+
+/** Null means the entry was left as it was. */
+async function settleEntry(
+  tx: Queryable,
+  persister: ImportPersister,
+  spaceId: string,
+  bookId: string,
+  importSourceId: string,
+  row: FinanceImportEntryRow,
+  item: ParsedImportEntry,
+  entryErrors: LedgerError[],
+  options: PassOptions,
+): Promise<ImportEntryOutcome | null> {
+  if (options.only && !options.only.has(row.entry_key)) return null;
+  if (EXCLUDED_ENTRY_TYPES.has(item.entry.type)) {
+    // Re-diagnosed on every pass: the account may have been opened since.
+    return { status: "excluded", statusReason: exclusionReason(item.entry), errors: [...entryErrors, ...(await persister.diagnoseExcluded(item.entry))] };
+  }
+  if (!RETRIED_STATUSES.has(row.status)) return null;
+  if (row.status_reason === "not_attempted") {
+    const review = await reviewAgainstOtherBatches(tx, spaceId, bookId, importSourceId, row);
+    if (review) return review;
+  }
+  const persisted = await persister.persistEntry(item, row.account_mapping_json);
+  switch (persisted.kind) {
+    case "imported":
+      return { status: "imported", directiveId: persisted.directiveId, errors: entryErrors };
+    case "pending":
+      return {
+        status: "pending_mapping",
+        statusReason: persisted.missingAccounts.length > 0 ? "missing_account" : "missing_commodity",
+        missingAccounts: persisted.missingAccounts,
+        missingCommodities: persisted.missingCommodities,
+        errors: entryErrors,
+      };
+    case "error":
+      return { status: "error", statusReason: "persist_failed", errors: [...entryErrors, persisted.error] };
+  }
+}
+
+/**
+ * The same identity in another batch of this book. A trusted external id that
+ * another batch already imported is the same record, settled as a duplicate.
+ * A content match is only probably the same record, so it waits for the
+ * importer rather than being merged or copied on a guess.
+ */
+async function reviewAgainstOtherBatches(
+  tx: Queryable,
+  spaceId: string,
+  bookId: string,
+  importSourceId: string,
+  row: FinanceImportEntryRow,
+): Promise<ImportEntryOutcome | null> {
+  const others = (await financeImportEntryRepository.findInOtherSources(tx, spaceId, bookId, importSourceId, row.entry_key))
+    .filter((other) => other.status !== "duplicate" && other.status !== "excluded");
+  if (others.length === 0) return null;
+  const imported = others.find((other) => other.status === "imported");
+  if (row.identity_kind === "external_id" && imported) {
+    return { status: "duplicate", statusReason: "external_id_imported", duplicateOfEntryId: imported.id };
+  }
+  // The same id still unfinished in another batch is the same record twice
+  // in flight; which upload carries it is the importer's call.
+  return {
+    status: "needs_review",
+    statusReason: row.identity_kind === "external_id" ? "external_id_in_other_import" : "content_matches_other_import",
+    duplicateOfEntryId: (imported ?? others[0]!).id,
+  };
+}
+
+function exclusionReason(entry: LedgerEntry): string {
+  switch (entry.type) {
+    case "open":
+    case "close":
+      return "account_lifecycle";
+    case "commodity":
+      return "commodity_declaration";
+    case "option":
+      return "book_option";
+    default:
+      throw new Error(`${entry.type} is not an excluded entry type`);
+  }
+}
+
+async function requireOwnImportSource(
+  db: Queryable,
+  spaceId: string,
+  bookId: string,
+  userId: string,
+  importSourceId: string,
+): Promise<FinanceImportSourceRow> {
+  const importSource = await financeDirectiveRepository.findImportSource(db, spaceId, bookId, importSourceId);
+  // Another member's upload is not found, not forbidden: its text names
+  // accounts they may keep private.
+  if (!importSource || importSource.imported_by_user_id !== userId) throw new FinanceRuleError("Import not found");
+  return importSource;
+}
+
+async function requireEntry(
+  db: Queryable,
+  spaceId: string,
+  importSource: FinanceImportSourceRow,
+  entryId: string,
+): Promise<FinanceImportEntryRow> {
+  const entry = await financeImportEntryRepository.find(db, spaceId, importSource.id, entryId);
+  if (!entry) throw new FinanceRuleError("Import entry not found");
+  return entry;
+}
+
+function findParsedEntry(importSource: FinanceImportSourceRow, entry: FinanceImportEntryRow, userId: string): ParsedImportEntry {
+  if (importSource.content_text === null) throw new FinanceRuleError("This import batch has no stored text to retry from");
+  const parsed = parseBeancountText(importSource.content_text, importFilename(userId));
+  const found = identifyImportEntries(importSource.content_text, parsed.entries, parsed.errors)
+    .find((candidate) => candidate.entryKey === entry.entry_key);
+  if (!found) throw new FinanceRuleError("Import entry no longer matches its batch");
+  return found;
+}
+
+function summarize(entries: readonly FinanceImportEntryRow[]): Record<ImportEntryStatus, number> {
+  const counts = emptyStatusCounts();
+  for (const entry of entries) counts[entry.status] += 1;
+  return counts;
+}
+
+function fileLevelErrors(parseErrors: readonly LedgerError[], entries: readonly FinanceImportEntryRow[]): LedgerError[] {
+  const entryLines = new Set(entries.map((entry) => entry.source_lineno));
+  return parseErrors.filter((error) => error.source === undefined || !entryLines.has(error.source.lineno));
+}
+
+function referencedAccountNames(entry: LedgerEntry): string[] {
+  switch (entry.type) {
+    case "transaction":
+      return entry.postings.map((posting) => posting.account);
+    case "balance":
+    case "note":
+    case "document":
+      return [entry.account];
+    case "pad":
+      return [entry.account, entry.sourceAccount];
+    default:
+      return [];
+  }
+}
+
+function referencedCommoditySymbols(entry: LedgerEntry): string[] {
+  switch (entry.type) {
+    case "transaction":
+      return entry.postings.flatMap((posting) => [
+        ...(posting.units ? [posting.units.currency] : []),
+        ...(posting.price ? [posting.price.currency] : []),
+      ]);
+    case "balance":
+      return [entry.amount.currency];
+    case "price":
+      return [entry.currency, entry.amount.currency];
+    default:
+      return [];
+  }
+}
+
+function accountOpenOn(account: FinanceAccountRow, date: string): boolean {
+  return account.opened_at <= date && (account.closed_at === null || account.closed_at >= date);
+}
+
+type PersistOutcome =
+  | { kind: "imported"; directiveId: string | null }
+  | { kind: "pending"; missingAccounts: string[]; missingCommodities: string[] }
+  | { kind: "error"; error: LedgerError };
+
+/**
+ * Writes one entry's rows. Accounts and commodities are resolved from what the
+ * book already has, as this person sees it; nothing is created on the way.
+ * An entry that names something the book lacks writes nothing and waits for
+ * a mapping or for the account to be opened.
+ */
+class ImportPersister {
   private readonly accounts = new Map<string, FinanceAccountRow>();
   private readonly commodities = new Map<string, FinanceCommodityRow>();
   private readonly sequenceByDate = new Map<string, number>();
-  private configSortOrder = 0;
 
   constructor(
     private readonly db: Queryable,
     private readonly spaceId: string,
     private readonly bookId: string,
     private readonly userId: string,
-    private readonly status: DirectiveStatus,
-    private readonly contentHash: string,
-    private readonly importSourceId: string,
-    private readonly errors: LedgerError[],
+    private readonly importSource: FinanceImportSourceRow,
   ) {}
 
   async preload(): Promise<void> {
@@ -193,221 +533,206 @@ class ImportPersister {
     for (const commodity of commodities) this.commodities.set(commodity.symbol, commodity);
   }
 
-  async persistEntry(entry: LedgerEntry): Promise<void> {
-    // What this entry adds to the caches is undone with its rows.
-    const saved = {
-      accounts: new Map(this.accounts),
-      commodities: new Map(this.commodities),
-      sequenceByDate: new Map(this.sequenceByDate),
-      configSortOrder: this.configSortOrder,
-      createdDirectives: this.createdDirectives,
-    };
-    try {
-      await attempt(this.db, () =>
-        isDatedEntry(entry) ? this.persistDatedEntry(entry) : this.persistConfigEntry(entry));
-    } catch (err) {
-      this.accounts.clear();
-      saved.accounts.forEach((value, key) => this.accounts.set(key, value));
-      this.commodities.clear();
-      saved.commodities.forEach((value, key) => this.commodities.set(key, value));
-      this.sequenceByDate.clear();
-      saved.sequenceByDate.forEach((value, key) => this.sequenceByDate.set(key, value));
-      this.configSortOrder = saved.configSortOrder;
-      this.createdDirectives = saved.createdDirectives;
-      this.errors.push({
-        code: "import_persist_error",
-        message: err instanceof Error ? err.message : "Failed to persist entry",
-        source: entry.source,
-      });
+  async diagnoseExcluded(entry: LedgerEntry): Promise<LedgerError[]> {
+    switch (entry.type) {
+      case "open": {
+        const exists = await financeLedgerRepository.accountNameExists(this.db, this.spaceId, this.bookId, entry.account);
+        return [{
+          code: "open_not_imported",
+          message: exists
+            ? `${entry.account} already exists in this book; the open directive is not applied`
+            : `${entry.account} is not an account of this book; open it from account management, then retry the entries that use it`,
+          source: entry.source,
+        }];
+      }
+      case "close":
+        return [{ code: "close_not_imported", message: `Closing ${entry.account} is done from account management, not by import`, source: entry.source }];
+      case "commodity":
+        return [{
+          code: "commodity_not_imported",
+          message: this.commodities.has(entry.currency)
+            ? `${entry.currency} is already a commodity of this book`
+            : `${entry.currency} is not a commodity of this book; add it from the commodities panel, then retry the entries that use it`,
+          source: entry.source,
+        }];
+      case "option":
+        return [{ code: "option_not_imported", message: `option "${entry.name}" is set from the book's settings, not by import`, source: entry.source }];
+      default:
+        return [];
     }
   }
 
-  private async persistConfigEntry(entry: Exclude<LedgerEntry, DatedEntry>): Promise<void> {
-    const sortOrder = this.configSortOrder;
-    this.configSortOrder += 1;
+  async persistEntry(item: ParsedImportEntry, accountMapping: Record<string, string>): Promise<PersistOutcome> {
+    const { entry } = item;
+    const resolved = await this.resolveReferences(entry, accountMapping);
+    if (resolved.missingAccounts.length > 0 || resolved.missingCommodities.length > 0) {
+      return { kind: "pending", missingAccounts: resolved.missingAccounts, missingCommodities: resolved.missingCommodities };
+    }
+    // Whole or not at all: a failed statement aborts the transaction, so the
+    // entry runs under its own savepoint and is undone alone.
+    const savedSequences = new Map(this.sequenceByDate);
+    try {
+      const directiveId = await attempt(this.db, () =>
+        isDatedEntry(entry)
+          ? this.persistDatedEntry(entry, item, resolved.accounts, resolved.commodities)
+          : this.persistConfigEntry(entry, item.sourceLineno));
+      return { kind: "imported", directiveId };
+    } catch (err) {
+      this.sequenceByDate.clear();
+      savedSequences.forEach((value, key) => this.sequenceByDate.set(key, value));
+      return {
+        kind: "error",
+        error: {
+          code: "import_persist_error",
+          message: err instanceof Error ? err.message : "Failed to persist entry",
+          source: entry.source,
+        },
+      };
+    }
+  }
+
+  private async resolveReferences(entry: LedgerEntry, accountMapping: Record<string, string>): Promise<{
+    accounts: Map<string, FinanceAccountRow>;
+    commodities: Map<string, FinanceCommodityRow>;
+    missingAccounts: string[];
+    missingCommodities: string[];
+  }> {
+    const date = "date" in entry ? entry.date : null;
+    const accounts = new Map<string, FinanceAccountRow>();
+    const missingAccounts: string[] = [];
+    for (const name of new Set(referencedAccountNames(entry))) {
+      const account = await this.resolveAccount(name, date, accountMapping[name]);
+      if (account) accounts.set(name, account);
+      else missingAccounts.push(name);
+    }
+    const commodities = new Map<string, FinanceCommodityRow>();
+    const missingCommodities: string[] = [];
+    for (const symbol of new Set(referencedCommoditySymbols(entry))) {
+      const commodity = this.commodities.get(symbol);
+      if (commodity) commodities.set(symbol, commodity);
+      else missingCommodities.push(symbol);
+    }
+    return { accounts, commodities, missingAccounts, missingCommodities };
+  }
+
+  /**
+   * A mapped name resolves to the mapped account, re-checked now rather than
+   * trusted from when the mapping was saved; an unmapped name resolves to the
+   * account of that name this person can see. Either must be open on the
+   * entry's date. A name that resolves to nothing usable is missing, not an
+   * error: the entry waits.
+   */
+  private async resolveAccount(name: string, date: string | null, mappedId: string | undefined): Promise<FinanceAccountRow | null> {
+    const account = mappedId
+      ? await financeLedgerRepository.findAccountForViewer(this.db, this.spaceId, this.bookId, mappedId, this.userId)
+      : this.accounts.get(name) ?? null;
+    if (!account) return null;
+    if (date !== null && !accountOpenOn(account, date)) return null;
+    return account;
+  }
+
+  private async persistConfigEntry(entry: Exclude<LedgerEntry, DatedEntry>, sortOrder: number): Promise<null> {
     switch (entry.type) {
-      case "option":
-        await financeLedgerRepository.createLedgerOption(this.db, {
-          spaceId: this.spaceId,
-          bookId: this.bookId,
-          name: entry.name,
-          value: { value: entry.value },
-          source: "import",
-        });
-        return;
       case "include":
-        await financeDirectiveRepository.insertInclude(this.db, {
-          spaceId: this.spaceId,
-          bookId: this.bookId,
-          path: entry.path,
-          sortOrder,
-        });
-        return;
+        await financeDirectiveRepository.insertInclude(this.db, { spaceId: this.spaceId, bookId: this.bookId, path: entry.path, sortOrder });
+        return null;
       case "plugin":
         await financeDirectiveRepository.insertPluginDirective(this.db, {
-          spaceId: this.spaceId,
-          bookId: this.bookId,
-          module: entry.module,
-          config: entry.config,
-          sortOrder,
+          spaceId: this.spaceId, bookId: this.bookId, module: entry.module, config: entry.config, sortOrder,
         });
-        return;
+        return null;
       case "pushtag":
       case "poptag":
         await financeDirectiveRepository.insertTagStackEvent(this.db, {
-          spaceId: this.spaceId,
-          bookId: this.bookId,
-          eventType: entry.type === "pushtag" ? "push" : "pop",
-          tag: entry.tag,
-          sortOrder,
-          sourceLineno: entry.source?.lineno,
+          spaceId: this.spaceId, bookId: this.bookId, eventType: entry.type === "pushtag" ? "push" : "pop",
+          tag: entry.tag, sortOrder, sourceLineno: entry.source?.lineno,
         });
-        return;
+        return null;
       case "pushmeta":
       case "popmeta":
         await financeDirectiveRepository.insertMetaStackEvent(this.db, {
-          spaceId: this.spaceId,
-          bookId: this.bookId,
-          eventType: entry.type === "pushmeta" ? "push" : "pop",
-          key: entry.key,
-          value: entry.value,
-          sortOrder,
-          sourceLineno: entry.source?.lineno,
+          spaceId: this.spaceId, bookId: this.bookId, eventType: entry.type === "pushmeta" ? "push" : "pop",
+          key: entry.key, value: entry.value, sortOrder, sourceLineno: entry.source?.lineno,
         });
-        return;
+        return null;
+      case "option":
+        throw new Error("option directives are excluded before persistence");
     }
   }
 
-  private async persistDatedEntry(entry: DatedEntry): Promise<void> {
+  private async persistDatedEntry(
+    entry: DatedEntry,
+    item: ParsedImportEntry,
+    accounts: Map<string, FinanceAccountRow>,
+    commodities: Map<string, FinanceCommodityRow>,
+  ): Promise<string> {
+    const account = (name: string) => accounts.get(name)!;
+    const commodity = (symbol: string) => commodities.get(symbol)!;
     switch (entry.type) {
-      case "open": {
-        if (!this.accounts.get(entry.account)) {
-          // The preload is this person's view of the book, so an account that
-          // is not in it may still exist as somebody's personal account. Opening
-          // it again trips the `(book_id, name)` uniqueness and surfaces a raw
-          // 23505 — which both crashes the import and says the name is taken.
-          // Refused the way every other unresolvable account name is.
-          if (await financeLedgerRepository.accountNameExists(this.db, this.spaceId, this.bookId, entry.account)) {
-            this.errors.push({
-              code: "unknown_account",
-              message: `Cannot persist reference to unknown account ${entry.account}`,
-              source: entry.source,
-            });
-            return;
-          }
-          const account = await financeLedgerRepository.openAccount(this.db, {
-            spaceId: this.spaceId,
-            bookId: this.bookId,
-            name: entry.account,
-            rootType: rootTypeForAccountName(entry.account),
-            commodityConstraints: entry.currencies.length > 0 ? entry.currencies : null,
-            openedAt: entry.date,
-            bookingMethod: entry.booking,
-            metadata: entry.meta,
-          });
-          this.accounts.set(account.name, account);
-        }
-        await this.insertDirective(entry);
-        return;
-      }
-      case "close": {
-        const account = this.requireAccount(entry.account, entry);
-        if (!account) return;
-        if (account.closed_at || entry.date < account.opened_at) {
-          throw new Error(`Invalid close date for ${account.name}`);
-        }
-        if (await financeLedgerRepository.hasPostedEntriesAfter(this.db, this.spaceId, this.bookId, account.id, entry.date)) {
-          throw new Error(`${account.name} has posted entries after ${entry.date}`);
-        }
-        const closed = await financeLedgerRepository.closeAccount(
-          this.db,
-          this.spaceId,
-          this.bookId,
-          account.id,
-          entry.date,
-          this.userId,
-        );
-        this.accounts.set(closed.name, closed);
-        await this.insertDirective(entry);
-        return;
-      }
-      case "commodity": {
-        await this.ensureCommodity(entry.currency, entry.date, entry.meta);
-        await this.insertDirective(entry);
-        return;
-      }
-      case "transaction": {
-        await this.persistTransaction(entry);
-        return;
-      }
+      case "open":
+      case "close":
+      case "commodity":
+        throw new Error(`${entry.type} directives are excluded before persistence`);
+      case "transaction":
+        return this.persistTransaction(entry, item, accounts, commodities);
       case "balance": {
-        const account = this.requireAccount(entry.account, entry);
-        if (!account) return;
-        const commodity = await this.ensureCommodity(entry.amount.currency, entry.date);
         const directive = await this.insertDirective(entry);
         await financeDirectiveRepository.insertBalanceAssertion(this.db, {
           directiveId: directive.id,
           spaceId: this.spaceId,
           bookId: this.bookId,
-          accountId: account.id,
-          accountName: account.name,
+          accountId: account(entry.account).id,
+          accountName: account(entry.account).name,
           amountText: entry.amount.number.decimal,
           amountScale: entry.amount.number.scale,
-          commodityId: commodity.id,
-          commoditySymbol: commodity.symbol,
+          commodityId: commodity(entry.amount.currency).id,
+          commoditySymbol: commodity(entry.amount.currency).symbol,
           toleranceText: entry.tolerance?.number.decimal,
           toleranceScale: entry.tolerance?.number.scale,
         });
-        return;
+        return directive.id;
       }
       case "pad": {
-        const account = this.requireAccount(entry.account, entry);
-        const sourceAccount = this.requireAccount(entry.sourceAccount, entry);
-        if (!account || !sourceAccount) return;
         const directive = await this.insertDirective(entry);
         await financeDirectiveRepository.insertPad(this.db, {
           directiveId: directive.id,
           spaceId: this.spaceId,
           bookId: this.bookId,
-          accountId: account.id,
-          accountName: account.name,
-          sourceAccountId: sourceAccount.id,
-          sourceAccountName: sourceAccount.name,
+          accountId: account(entry.account).id,
+          accountName: account(entry.account).name,
+          sourceAccountId: account(entry.sourceAccount).id,
+          sourceAccountName: account(entry.sourceAccount).name,
         });
-        return;
+        return directive.id;
       }
       case "price": {
-        const commodity = await this.ensureCommodity(entry.currency, entry.date);
-        const priceCommodity = await this.ensureCommodity(entry.amount.currency, entry.date);
         const directive = await this.insertDirective(entry);
         await financeDirectiveRepository.insertPrice(this.db, {
           directiveId: directive.id,
           spaceId: this.spaceId,
           bookId: this.bookId,
-          commodityId: commodity.id,
-          commoditySymbol: commodity.symbol,
+          commodityId: commodity(entry.currency).id,
+          commoditySymbol: commodity(entry.currency).symbol,
           amountText: entry.amount.number.decimal,
           amountScale: entry.amount.number.scale,
-          priceCommodityId: priceCommodity.id,
-          priceCommoditySymbol: priceCommodity.symbol,
+          priceCommodityId: commodity(entry.amount.currency).id,
+          priceCommoditySymbol: commodity(entry.amount.currency).symbol,
         });
-        return;
+        return directive.id;
       }
       case "note": {
-        const account = this.requireAccount(entry.account, entry);
-        if (!account) return;
         const directive = await this.insertDirective(entry);
         await financeDirectiveRepository.insertNote(this.db, {
           directiveId: directive.id,
           spaceId: this.spaceId,
           bookId: this.bookId,
-          accountId: account.id,
-          accountName: account.name,
+          accountId: account(entry.account).id,
+          accountName: account(entry.account).name,
           comment: entry.comment,
           tags: [...entry.tags],
           links: [...entry.links],
         });
-        return;
+        return directive.id;
       }
       case "event": {
         const directive = await this.insertDirective(entry);
@@ -418,7 +743,7 @@ class ImportPersister {
           eventType: entry.eventType,
           description: entry.description,
         });
-        return;
+        return directive.id;
       }
       case "query": {
         const directive = await this.insertDirective(entry);
@@ -429,23 +754,21 @@ class ImportPersister {
           name: entry.name,
           queryString: entry.queryString,
         });
-        return;
+        return directive.id;
       }
       case "document": {
-        const account = this.requireAccount(entry.account, entry);
-        if (!account) return;
         const directive = await this.insertDirective(entry);
         await financeDirectiveRepository.insertDocument(this.db, {
           directiveId: directive.id,
           spaceId: this.spaceId,
           bookId: this.bookId,
-          accountId: account.id,
-          accountName: account.name,
+          accountId: account(entry.account).id,
+          accountName: account(entry.account).name,
           filename: entry.filename,
           tags: [...entry.tags],
           links: [...entry.links],
         });
-        return;
+        return directive.id;
       }
       case "custom": {
         const directive = await this.insertDirective(entry);
@@ -456,19 +779,17 @@ class ImportPersister {
           customType: entry.customType,
           values: entry.values,
         });
-        return;
+        return directive.id;
       }
     }
   }
 
-  private async persistTransaction(entry: TransactionEntry): Promise<void> {
-    const resolved: Array<{ posting: PostingEntry; account: FinanceAccountRow }> = [];
-    for (const posting of entry.postings) {
-      const account = this.requireAccount(posting.account, entry);
-      if (!account) return;
-      resolved.push({ posting, account });
-    }
-
+  private async persistTransaction(
+    entry: TransactionEntry,
+    item: ParsedImportEntry,
+    accounts: Map<string, FinanceAccountRow>,
+    commodities: Map<string, FinanceCommodityRow>,
+  ): Promise<string> {
     const directive = await this.insertDirective(entry);
     await financeLedgerRepository.insertTransaction(this.db, {
       spaceId: this.spaceId,
@@ -477,27 +798,28 @@ class ImportPersister {
       flag: entry.flag,
       payee: entry.payee,
       narration: entry.narration,
-      importHash: this.contentHash,
+      externalId: item.externalId,
+      importHash: this.importSource.content_hash,
       tags: [...entry.tags],
       links: [...entry.links],
       metadata: entry.meta,
     });
-
     let sortOrder = 0;
-    for (const { posting, account } of resolved) {
-      const record = await this.buildPostingRecord(directive.id, account, posting, entry, sortOrder);
+    for (const posting of entry.postings) {
+      const record = this.buildPostingRecord(directive.id, accounts.get(posting.account)!, posting, commodities, sortOrder);
       await financeLedgerRepository.insertPosting(this.db, record);
       sortOrder += 1;
     }
+    return directive.id;
   }
 
-  private async buildPostingRecord(
+  private buildPostingRecord(
     directiveId: string,
     account: FinanceAccountRow,
     posting: PostingEntry,
-    entry: TransactionEntry,
+    commodities: Map<string, FinanceCommodityRow>,
     sortOrder: number,
-  ): Promise<InsertPostingRecord> {
+  ): InsertPostingRecord {
     const record: InsertPostingRecord = {
       spaceId: this.spaceId,
       bookId: this.bookId,
@@ -510,7 +832,7 @@ class ImportPersister {
     };
 
     if (posting.units) {
-      const commodity = await this.ensureCommodity(posting.units.currency, entry.date);
+      const commodity = commodities.get(posting.units.currency)!;
       record.amountText = posting.units.number.decimal;
       record.amountScale = posting.units.number.scale;
       record.commodityId = commodity.id;
@@ -535,7 +857,7 @@ class ImportPersister {
     }
 
     if (posting.price) {
-      const priceCommodity = await this.ensureCommodity(posting.price.currency, entry.date);
+      const priceCommodity = commodities.get(posting.price.currency)!;
       record.priceNumberText = posting.price.number.decimal;
       record.priceNumberScale = posting.price.number.scale;
       record.priceCommodityId = priceCommodity.id;
@@ -553,22 +875,20 @@ class ImportPersister {
     for (let round = 0; ; round += 1) {
       try {
         const sequence = await this.nextSequence(entry.date);
-        const directive = await attempt(this.db, () => financeLedgerRepository.insertDirective(this.db, {
+        return await attempt(this.db, () => financeLedgerRepository.insertDirective(this.db, {
           spaceId: this.spaceId,
           bookId: this.bookId,
           directiveType: entry.type,
           date: entry.date,
           sequence,
-          status: this.status,
+          status: IMPORTED_STATUS,
           createdByUserId: this.userId,
-          importSourceId: this.importSourceId,
+          importSourceId: this.importSource.id,
           sourceFilename: entry.source?.filename,
           sourceLineno: entry.source?.lineno,
-          sourceHash: this.contentHash,
+          sourceHash: this.importSource.content_hash,
           metadata: entry.meta,
         }));
-        this.createdDirectives += 1;
-        return directive;
       } catch (err) {
         if (round >= 9 || !isSequenceConflict(err)) throw err;
         this.sequenceByDate.delete(entry.date);
@@ -583,40 +903,6 @@ class ImportPersister {
     }
     this.sequenceByDate.set(date, next + 1);
     return next;
-  }
-
-  private requireAccount(name: string, entry: DatedEntry): FinanceAccountRow | null {
-    const account = this.accounts.get(name);
-    if (!account) {
-      this.errors.push({
-        code: "unknown_account",
-        message: `Cannot persist reference to unknown account ${name}`,
-        source: entry.source,
-      });
-      return null;
-    }
-    if (entry.type !== "close" && (account.opened_at > entry.date || (account.closed_at && account.closed_at < entry.date))) {
-      throw new Error(`Account is not open on ${entry.date}: ${name}`);
-    }
-    return account;
-  }
-
-  private async ensureCommodity(
-    symbol: string,
-    declaredDate: string,
-    meta?: Record<string, unknown>,
-  ): Promise<FinanceCommodityRow> {
-    const cached = this.commodities.get(symbol);
-    if (cached) return cached;
-    const commodity = await financeLedgerRepository.createCommodity(this.db, {
-      spaceId: this.spaceId,
-      bookId: this.bookId,
-      symbol,
-      commodityType: "custom",
-      metadata: { ...(meta ?? {}), declared_date: declaredDate },
-    });
-    this.commodities.set(symbol, commodity);
-    return commodity;
   }
 }
 

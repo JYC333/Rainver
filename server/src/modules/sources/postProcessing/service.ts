@@ -1585,10 +1585,9 @@ export class SourcePostProcessingService {
               ps.topics_json,
               ps.highlights_json
          FROM projects p
-         LEFT JOIN project_public_summaries ps
+         LEFT JOIN project_public_summary_publications ps
            ON ps.space_id = p.space_id
           AND ps.project_id = p.id
-          AND ps.review_status = 'approved'
         WHERE p.space_id = $1
           AND p.id = $2
           AND p.status <> 'deleted'

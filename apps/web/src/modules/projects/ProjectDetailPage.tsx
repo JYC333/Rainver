@@ -32,6 +32,7 @@ import ProjectPulse from './ProjectPulse'
 import { AmbientImportBanner } from './AmbientImportBanner'
 import EditProjectInstructionDialog from './EditProjectInstructionDialog'
 import ProjectConversationBackendCard from './ProjectConversationBackendCard'
+import ProjectPublicSummaryCard from './ProjectPublicSummaryCard'
 import { FocusAreaField } from '../focusAreas/FocusAreaField'
 
 function fmt(dt: string | null | undefined) {
@@ -138,7 +139,6 @@ function EditProjectDialog({ project, overview, open, onOpenChange, onSaved }: E
  * needs attention, what is moving, what was reported — is `ProjectPulse`.
  * Do not add Area links, a raw-material queue, an Area list with counts, or
  * a mode selector here: each of those is already on this screen.
- */
  */
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -338,6 +338,10 @@ export default function ProjectDetailPage() {
              terminal history becoming Project content is a decision, not a
              consequence of binding a folder. */}
       {projectId && <AmbientImportBanner projectId={projectId} />}
+
+      {/* What other projects may learn about this one. Rendered only for
+             Project writers; readers have no draft to edit. */}
+      {projectId && project.current_user_can_write === true && <ProjectPublicSummaryCard projectId={projectId} />}
 
       {/* The situation, before anyone opens the Board: what is waiting on this
              person, what is moving, and what has been reported lately. */}

@@ -64,6 +64,8 @@ function readErrorMessage(error: ReadError): string {
       return `This Folder is on ${host}'s machine. Only its owner can browse it here.`
     case 'location_unknown_on_host':
       return `The daemon on ${host} no longer knows this directory. Run rainver-host workspace add there.`
+    case 'unsupported_platform':
+      return `Files cannot be read safely on ${host}'s operating system. Browse this Folder from a Linux or macOS host.`
     default:
       return error.message ?? 'The Folder could not be read.'
   }

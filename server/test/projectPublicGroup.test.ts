@@ -45,7 +45,7 @@ describe("projectPublicSummariesDb", () => {
     if (!db.available) return;
     await resetTables(
       db.pool,
-      ["retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "project_public_summaries", "project_members", "projects", "space_memberships", "users", "spaces"],
+      ["retrieval_edges", "retrieval_chunks", "retrieval_aliases", "retrieval_objects", "project_public_summary_publications", "project_public_summaries", "project_members", "projects", "space_memberships", "users", "spaces"],
       { cascade: true },
     );
     await db.pool.query(
@@ -85,7 +85,7 @@ describe("projectPublicSummariesDb", () => {
   }
 
   describe("Project public summaries (real Postgres)", () => {
-    it("stages member drafts, gates publish to the owner, and rejects viewers", async () => {
+    it("stages member drafts, gates publish and revoke to the owner, and rejects viewers", async () => {
       if (!db.available) return;
 
       // A project member (writer) can only stage a draft.
@@ -103,31 +103,43 @@ describe("projectPublicSummariesDb", () => {
         project_id: PROJECT,
         project_name: "Aster",
         topics: ["Cross Project Discovery", "Project ACL"],
-        review_status: "draft",
+        draft_version: 1,
+        updated_by_user_id: WRITER,
+      });
+      expect(await repo().getPublicSummary({ spaceId: SPACE, userId: READER }, PROJECT)).toBeNull();
+
+      // The member cannot self-approve their own draft.
+      await expect(repo().publishPublicSummary({ spaceId: SPACE, userId: WRITER }, PROJECT, 1))
+        .rejects.toMatchObject({ statusCode: 403 });
+      expect(await repo().getPublicSummary({ spaceId: SPACE, userId: READER }, PROJECT)).toBeNull();
+
+      // The project owner reviews and publishes that version.
+      const published = await repo().publishPublicSummary({ spaceId: SPACE, userId: OWNER }, PROJECT, 1);
+      expect(published).toMatchObject({
+        project_id: PROJECT,
+        summary_text: "Redacted high-level brief for cross-project idea discovery.",
+        source_draft_version: 1,
+        published_by_user_id: OWNER,
+      });
+      expect(await repo().getPublicSummary({ spaceId: SPACE, userId: READER }, PROJECT)).toMatchObject({
+        summary_text: "Redacted high-level brief for cross-project idea discovery.",
+        source_draft_version: 1,
       });
 
-      // The member cannot self-approve their own summary.
-      await expect(
-        repo().upsertPublicSummary(
-          { spaceId: SPACE, userId: WRITER },
-          PROJECT,
-          { summary_text: "Member tries to publish.", review_status: "approved" },
-        ),
-      ).rejects.toMatchObject({ statusCode: 403 });
+      // A writer cannot take it down either; the owner can, and the draft stays.
+      await expect(repo().revokePublicSummary({ spaceId: SPACE, userId: WRITER }, PROJECT))
+        .rejects.toMatchObject({ statusCode: 403 });
+      await repo().revokePublicSummary({ spaceId: SPACE, userId: OWNER }, PROJECT);
+      expect(await repo().getPublicSummary({ spaceId: SPACE, userId: READER }, PROJECT)).toBeNull();
+      expect(await repo().getPublicSummaryEditorState({ spaceId: SPACE, userId: WRITER }, PROJECT)).toMatchObject({
+        draft: { draft_version: 1 },
+        published: null,
+        can_publish: false,
+      });
+      await expect(repo().revokePublicSummary({ spaceId: SPACE, userId: OWNER }, PROJECT))
+        .rejects.toMatchObject({ statusCode: 404 });
 
-      // The project owner reviews and publishes.
-      const published = await repo().upsertPublicSummary(
-        { spaceId: SPACE, userId: OWNER },
-        PROJECT,
-        {
-          summary_text: "Redacted high-level brief for cross-project idea discovery.",
-          topics: ["Cross Project Discovery", "Project ACL"],
-          review_status: "approved",
-        },
-      );
-      expect(published).toMatchObject({ review_status: "approved" });
-
-      // A viewer can never mutate the summary.
+      // A viewer can never touch any of it.
       await expect(
         repo().upsertPublicSummary(
           { spaceId: SPACE, userId: VIEWER },
@@ -135,6 +147,58 @@ describe("projectPublicSummariesDb", () => {
           { summary_text: "Viewer should not update this." },
         ),
       ).rejects.toMatchObject({ statusCode: 403 });
+      await expect(repo().getPublicSummaryEditorState({ spaceId: SPACE, userId: VIEWER }, PROJECT))
+        .rejects.toMatchObject({ statusCode: 403 });
+    });
+
+    it("keeps the published snapshot while the draft moves on, and publishes only a reviewed version", async () => {
+      if (!db.available) return;
+      await repo().upsertPublicSummary({ spaceId: SPACE, userId: WRITER }, PROJECT, {
+        summary_text: "Version one.",
+        topics: ["One"],
+      });
+      await repo().publishPublicSummary({ spaceId: SPACE, userId: OWNER }, PROJECT, 1);
+
+      // The writer keeps editing. Readers still see version one.
+      const edited = await repo().upsertPublicSummary({ spaceId: SPACE, userId: WRITER }, PROJECT, {
+        summary_text: "Version two, not yet reviewed.",
+        topics: ["Two"],
+      });
+      expect(edited).toMatchObject({ draft_version: 2 });
+      expect(await repo().getPublicSummary({ spaceId: SPACE, userId: READER }, PROJECT)).toMatchObject({
+        summary_text: "Version one.",
+        source_draft_version: 1,
+      });
+      const search = () => new RetrievalSearchService(db.pool, projectRetrievalRegistry).search({
+        spaceId: SPACE,
+        viewerUserId: READER,
+        objectTypes: ["project_public_summary"],
+        query: "Version",
+        maxResults: 5,
+      });
+      expect((await search()).items[0]).toMatchObject({ object_id: PROJECT, snippet: expect.stringContaining("Version one.") });
+      expect(JSON.stringify(await search())).not.toContain("not yet reviewed");
+
+      // The owner reviewed version 1; by the time they approve, the draft is
+      // version 2. Approving a version nobody reviewed is refused.
+      await expect(repo().publishPublicSummary({ spaceId: SPACE, userId: OWNER }, PROJECT, 1))
+        .rejects.toMatchObject({ statusCode: 409, responseBody: { code: "project_public_summary_draft_changed", current_draft_version: 2 } });
+      expect(await repo().getPublicSummary({ spaceId: SPACE, userId: READER }, PROJECT)).toMatchObject({ source_draft_version: 1 });
+
+      // Reviewing the current version and approving it replaces the snapshot,
+      // and the index follows the snapshot, never the draft.
+      await repo().publishPublicSummary({ spaceId: SPACE, userId: OWNER }, PROJECT, 2);
+      expect(await repo().getPublicSummary({ spaceId: SPACE, userId: READER }, PROJECT)).toMatchObject({
+        summary_text: "Version two, not yet reviewed.",
+        source_draft_version: 2,
+      });
+      expect((await search()).items[0]).toMatchObject({ object_id: PROJECT, snippet: expect.stringContaining("Version two") });
+
+      // Revoking clears the public projection with the snapshot.
+      await repo().revokePublicSummary({ spaceId: SPACE, userId: OWNER }, PROJECT);
+      expect((await search()).items).toEqual([]);
+      expect(await repo().listPublicSummaries({ spaceId: SPACE, userId: READER }, { limit: 10, offset: 0 }))
+        .toMatchObject({ total: 0, items: [] });
     });
 
     it("keeps approved summaries space-public and searchable through project retrieval", async () => {
@@ -146,9 +210,9 @@ describe("projectPublicSummariesDb", () => {
         {
           summary_text: "Redacted high-level brief for cross-project idea discovery.",
           topics: ["Cross Project Discovery"],
-          review_status: "approved",
         },
       );
+      await repo().publishPublicSummary({ spaceId: SPACE, userId: OWNER }, PROJECT, 1);
 
       const list = await repo().listPublicSummaries(
         { spaceId: SPACE, userId: READER },
@@ -183,9 +247,9 @@ describe("projectPublicSummariesDb", () => {
         {
           summary_text: "Redacted high-level brief for cross-project idea discovery.",
           topics: ["Cross Project Discovery"],
-          review_status: "approved",
         },
       );
+      await repo().publishPublicSummary({ spaceId: SPACE, userId: OWNER }, PROJECT, 1);
       // The upsert recreates the chunk with embedding=NULL; embed it for the vector arm.
       await new RetrievalEmbeddingBackfillService(db.pool, slotEmbedder).backfillSpace(SPACE);
 
@@ -254,7 +318,7 @@ describe("projectPublicSummaryRelational", () => {
       if (norm.includes("FROM retrieval_edges e")) {
         return result([] as Row[]);
       }
-      if (norm.includes("FROM project_public_summaries ps")) {
+      if (norm.includes("FROM project_public_summary_publications pub")) {
         return result([{
           project_id: PROJECT,
           name: "Aster",
@@ -265,7 +329,6 @@ describe("projectPublicSummaryRelational", () => {
           summary_text: "Redacted project summary for cross-project discovery.",
           topics_json: ["Cross Project Discovery"],
           highlights_json: ["Approved public summary only."],
-          review_status: "approved",
         }] as Row[]);
       }
       throw new Error(`unexpected SQL: ${norm}`);

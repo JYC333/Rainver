@@ -389,8 +389,9 @@ export class ExecutionControlSnapshotRepository {
       provider_type: string;
       base_url: string | null;
       config_json: unknown;
+      default_model: string | null;
     }>(
-      `SELECT provider.provider_type, provider.base_url, provider.config_json
+      `SELECT provider.provider_type, provider.base_url, provider.config_json, provider.default_model
          FROM model_provider_space_grants provider_grant
          JOIN model_providers provider
            ON provider.id = provider_grant.provider_id

@@ -1,7 +1,8 @@
 import { useState } from 'react'
+import ProviderDeploymentSelect from './ProviderDeploymentSelect'
 import { AlertCircle, CheckCircle, Loader2, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
-import { providersApi, type ModelProviderOut, type ProviderVendorOut } from '../../../api/client'
+import { providersApi, type ModelProviderOut, type ProviderVendorOut, type ProviderDeployment } from '../../../api/client'
 import type { SpaceWithMembership } from '../../../types/api'
 import { Badge } from '../../../components/ui/badge'
 import { Button } from '../../../components/ui/button'
@@ -40,6 +41,7 @@ export default function ProviderCard({
   const [editBaseUrl, setEditBaseUrl] = useState(config.base_url ?? '')
   const [editClaudeCompatibleBaseUrl, setEditClaudeCompatibleBaseUrl] = useState(config.claude_compatible_base_url ?? '')
   const [editOpenAiCompatibleBaseUrl, setEditOpenAiCompatibleBaseUrl] = useState(config.openai_compatible_base_url ?? '')
+  const [editDeployment, setEditDeployment] = useState<ProviderDeployment>(config.deployment)
   const [editNetworkProfileId, setEditNetworkProfileId] = useState<string | null>(config.network_profile_id ?? null)
   const [editApiKey, setEditApiKey] = useState('')
   const [editEnabled, setEditEnabled] = useState(config.enabled)
@@ -63,6 +65,7 @@ export default function ProviderCard({
         default_model: editDefaultModel.trim() || null,
         available_models: editModels.split(',').map(model => model.trim()).filter(Boolean),
         base_url: editBaseUrl.trim(),
+        deployment: editDeployment,
         network_profile_id: editNetworkProfileId,
         claude_compatible_base_url: showBridgeUrls ? editClaudeCompatibleBaseUrl.trim() || null : null,
         openai_compatible_base_url: showBridgeUrls ? editOpenAiCompatibleBaseUrl.trim() || null : null,
@@ -106,6 +109,7 @@ export default function ProviderCard({
               <Input value={editOpenAiCompatibleBaseUrl} onChange={event => setEditOpenAiCompatibleBaseUrl(event.target.value)} placeholder="OpenAI-compatible URL" className="font-mono text-sm" />
             </>
           )}
+          <ProviderDeploymentSelect providerType={config.provider_type} vendors={vendors} value={editDeployment} onChange={setEditDeployment} />
           <div className="space-y-1.5">
             <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Network</label>
             <NetworkProfileSelector value={editNetworkProfileId} onChange={setEditNetworkProfileId} />
@@ -165,6 +169,7 @@ export default function ProviderCard({
       )}
       <p className="text-xs mb-2">
         Network: <span className="font-mono">{config.network_profile_id ? `profile:${config.network_profile_id.slice(0, 8)}` : 'direct'}</span>
+        {config.deployment === 'trusted_local' && <span className="ml-2 font-mono">· trusted local</span>}
       </p>
       {config.default_model && (
         <p className="text-xs mb-2">{modelCopy.defaultLabel}: <span className="font-mono">{config.default_model}</span></p>

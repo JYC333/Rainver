@@ -114,7 +114,7 @@ describe("finance ledger routes", () => {
       await holder.query(`SELECT id FROM finance_books WHERE id=$1 FOR NO KEY UPDATE`, [bookId]);
       const importing = app!.inject({
         method: "POST", url: `/api/v1/finance/books/${bookId}/import/beancount`,
-        payload: { post_directly: true, text: `2026-07-02 * "Import"
+        payload: { text: `2026-07-02 * "Import"
   Assets:Bank:Checking -1 USD
   Expenses:Food 1 USD
 ` },
@@ -142,7 +142,7 @@ describe("finance ledger routes", () => {
       expect(response.json().directive.status).toBe("posted");
       const persisted = await db.pool.query(`SELECT sequence,status FROM finance_directives
         WHERE book_id=$1 ORDER BY sequence`, [bookId]);
-      expect(persisted.rows).toEqual([{ sequence: 0, status: "posted" }, { sequence: 1, status: "posted" }]);
+      expect(persisted.rows).toEqual([{ sequence: 0, status: "proposed" }, { sequence: 1, status: "posted" }]);
     } finally {
       await holder.query("ROLLBACK");
       holder.release();
@@ -737,8 +737,9 @@ describe("finance ledger routes", () => {
     expect(all.json().balances).toHaveLength(3);
   });
 
-  it("imports and exports Beancount text", async () => {
+  it("imports Beancount text as proposed drafts and exports what is posted", async () => {
     const bookId = await createBookViaApi();
+    const { checkingId } = await seedLedger(bookId);
 
     const imported = await app!.inject({
       method: "POST",
@@ -746,26 +747,102 @@ describe("finance ledger routes", () => {
       payload: {
         text: [
           "2026-01-01 open Assets:Cash USD",
-          "2026-01-01 open Expenses:Misc USD",
           '2026-01-02 * "Coffee"',
-          "  Assets:Cash  -3.00 USD",
-          "  Expenses:Misc  3.00 USD",
+          "  Assets:Bank:Checking  -3.00 USD",
+          "  Expenses:Food  3.00 USD",
+          '2026-01-03 * "Lunch"',
+          "  Assets:Cash  -8.00 USD",
+          "  Expenses:Food  8.00 USD",
           "",
         ].join("\n"),
-        post_directly: true,
       },
     });
     expect(imported.statusCode).toBe(200);
-    expect(imported.json().created_directives).toBe(3);
-    expect(imported.json().errors).toEqual([]);
+    expect(imported.json()).toMatchObject({
+      batch_existed: false,
+      created_directives: 1,
+      summary: { imported: 1, pending_mapping: 1, excluded: 1, error: 0, needs_review: 0, duplicate: 0 },
+      errors: [],
+    });
+    const importSourceId = imported.json().import_source.id as string;
+    const lunch = imported.json().entries.find((entry: { status: string }) => entry.status === "pending_mapping");
+    expect(lunch).toMatchObject({ entry_type: "transaction", missing_accounts: ["Assets:Cash"], raw_text: expect.stringContaining("Lunch") });
+    // Nothing posted, no account opened.
+    const statuses = await db.pool.query(`SELECT status FROM finance_directives WHERE book_id=$1`, [bookId]);
+    expect(statuses.rows).toEqual([{ status: "proposed" }]);
+    const accounts = await app!.inject({ method: "GET", url: `/api/v1/finance/books/${bookId}/accounts` });
+    expect(accounts.json().accounts.map((account: { name: string }) => account.name)).toEqual(["Assets:Bank:Checking", "Expenses:Food"]);
+
+    // The batch is listed for its importer, and the pending entry takes a mapping.
+    const listed = await app!.inject({ method: "GET", url: `/api/v1/finance/books/${bookId}/imports` });
+    expect(listed.json().imports).toEqual([expect.objectContaining({ id: importSourceId, summary: expect.objectContaining({ pending_mapping: 1 }) })]);
+    const badMapping = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/imports/${importSourceId}/entries/${lunch.id}/mapping`,
+      payload: { account_mapping: { "Assets:Cash": "no-such-account" } },
+    });
+    expect(badMapping.statusCode).toBe(404);
+    const mapped = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/imports/${importSourceId}/entries/${lunch.id}/mapping`,
+      payload: { account_mapping: { "Assets:Cash": checkingId } },
+    });
+    expect(mapped.statusCode).toBe(200);
+    expect(mapped.json().summary).toMatchObject({ imported: 2, pending_mapping: 0 });
+
+    // Another member cannot see or retry the batch.
+    guardState.userId = USER_2;
+    const foreign = await app!.inject({ method: "GET", url: `/api/v1/finance/books/${bookId}/imports/${importSourceId}` });
+    expect(foreign.statusCode).toBe(404);
+    const foreignRetry = await app!.inject({ method: "POST", url: `/api/v1/finance/books/${bookId}/imports/${importSourceId}/retry` });
+    expect(foreignRetry.statusCode).toBe(404);
+    guardState.userId = USER_1;
 
     const exported = await app!.inject({
       method: "POST",
       url: `/api/v1/finance/books/${bookId}/export/beancount`,
     });
     expect(exported.statusCode).toBe(200);
-    expect(exported.json().content).toContain('2026-01-02 * "Coffee"');
+    expect(exported.json().content).not.toContain('"Coffee"');
     expect(exported.json().export_id).toBeTruthy();
     expect(exported.json().content_hash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("refuses an import request that tries to post directly", async () => {
+    const bookId = await createBookViaApi();
+    await seedLedger(bookId);
+    const response = await app!.inject({
+      method: "POST",
+      url: `/api/v1/finance/books/${bookId}/import/beancount`,
+      payload: { text: '2026-01-02 * "Coffee"\n  Assets:Bank:Checking -3.00 USD\n  Expenses:Food 3.00 USD\n', post_directly: true },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ detail: "unknown field: post_directly" });
+    const directives = await db.pool.query(`SELECT count(*)::int AS n FROM finance_directives WHERE book_id=$1`, [bookId]);
+    expect(directives.rows[0].n).toBe(0);
+  });
+
+  it("settles reviewed duplicates through the review route", async () => {
+    const bookId = await createBookViaApi();
+    await seedLedger(bookId);
+    const coffee = '2026-01-02 * "Coffee"\n  Assets:Bank:Checking -3.00 USD\n  Expenses:Food 3.00 USD\n';
+    const first = await app!.inject({ method: "POST", url: `/api/v1/finance/books/${bookId}/import/beancount`, payload: { text: coffee } });
+    expect(first.json().summary.imported).toBe(1);
+    const second = await app!.inject({
+      method: "POST", url: `/api/v1/finance/books/${bookId}/import/beancount`, payload: { text: `${coffee}; statement export\n` },
+    });
+    expect(second.json().summary).toMatchObject({ needs_review: 1 });
+    const importSourceId = second.json().import_source.id as string;
+    const invalid = await app!.inject({
+      method: "POST", url: `/api/v1/finance/books/${bookId}/imports/${importSourceId}/review`, payload: { decision: "merge" },
+    });
+    expect(invalid.statusCode).toBe(400);
+    const decided = await app!.inject({
+      method: "POST", url: `/api/v1/finance/books/${bookId}/imports/${importSourceId}/review`, payload: { decision: "duplicate" },
+    });
+    expect(decided.statusCode).toBe(200);
+    expect(decided.json().summary).toMatchObject({ duplicate: 1, imported: 0 });
+    const directives = await db.pool.query(`SELECT count(*)::int AS n FROM finance_directives WHERE book_id=$1`, [bookId]);
+    expect(directives.rows[0].n).toBe(1);
   });
 });

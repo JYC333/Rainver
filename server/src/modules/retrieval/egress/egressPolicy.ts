@@ -4,7 +4,9 @@
  * Sending a retrieval object's text to a model provider (for embedding, rerank,
  * or synthesis) is egress. A per-space switch (`external_egress_enabled`) lets a space mark
  * its content "do not send to external providers". Local providers and internal
- * processing can still be allowed without enabling external API egress.
+ * processing can still be allowed without enabling external API egress. What
+ * makes a Provider local is its declared deployment, its endpoint, and the
+ * model it runs — see `providerEgressDestination`.
  *
  * The seam is a single, domain-neutral, per-row predicate. Source-derived rows
  * carry source connection ids from the retrieval projection; provider calls also
@@ -14,8 +16,10 @@
  * Query rewriting does NOT consult this seam: it sends only the query string,
  * never candidate content.
  */
-import { isLoopbackAddress } from "@rainver/outbound-guard";
+import { isIP } from "node:net";
+import { isBlockedAddress, isLoopbackAddress, isSyntheticDnsAddress } from "@rainver/outbound-guard";
 import { adapterProviderApi, adapterProviderRequirement } from "../../runs/adapterProviderRequirement.js";
+import { providerDeployment, type ProviderDeployment } from "../../providers/deployment.js";
 
 interface RetrievalEgressRef {
   object_type: string;
@@ -79,23 +83,48 @@ export function retrievalEgressAllowed(
   return sourceIds.every((sourceId) => sourceEgressAllowed(sourceId, destination, sourcePolicies));
 }
 
-export function retrievalProviderEgressDestination(provider: {
+/** The Provider facts the destination is judged on; `model` is the one the call will actually use. */
+export interface ProviderEgressSubject {
   provider_type: string;
   base_url?: string | null;
-}): RetrievalEgressDestination {
-  if (provider.provider_type === "ollama") return "local_provider";
-  if (isLocalProviderUrl(provider.base_url)) return "local_provider";
-  return "external_provider";
+  /** The declaration, when the caller has it resolved; otherwise read from `config_json`. */
+  deployment?: ProviderDeployment;
+  config_json?: unknown;
+  default_model?: string | null;
+  model?: string | null;
+}
+
+/**
+ * Whether sending content to this Provider is a local or an external egress.
+ *
+ * Local needs all three: the Provider is declared a trusted local deployment,
+ * the endpoint it will be reached at is inside this instance's own network
+ * (loopback, a private range, a single-label container name, or a
+ * non-public suffix), and the model it will run is not one its vendor serves
+ * from the cloud. A vendor name (`ollama`) proves nothing: the same server
+ * forwards `-cloud` models to the vendor's hosted service. A loopback URL
+ * proves nothing: a local gateway may forward anywhere. Unknown is external.
+ */
+export function providerEgressDestination(subject: ProviderEgressSubject): RetrievalEgressDestination {
+  const deployment = subject.deployment ?? providerDeployment(subject.config_json);
+  if (deployment !== "trusted_local") return "external_provider";
+  if (!isInstanceNetworkUrl(subject.base_url)) return "external_provider";
+  const model = subject.model ?? subject.default_model ?? null;
+  if (isCloudServedModel(subject.provider_type, model)) return "external_provider";
+  return "local_provider";
 }
 
 /** Classify the actual upstream used by a provider-bound runtime adapter. */
 export function runtimeProviderEgressDestination(
   runtimeKey: string | null | undefined,
-  provider: { provider_type: string; base_url?: string | null; config_json?: unknown },
+  provider: ProviderEgressSubject,
 ): RetrievalEgressDestination {
-  if (!adapterProviderApi(runtimeKey)) return retrievalProviderEgressDestination(provider);
+  if (!adapterProviderApi(runtimeKey)) return providerEgressDestination(provider);
   // The same resolution the binding uses, so a runtime that follows its
   // vendor's protocol (OpenCode) is classified by the endpoint it will reach.
+  // The deployment declaration and the model are the Provider's own: a
+  // runtime cannot be configured into a "local" classification the Provider
+  // was never declared to have.
   const compatibleUrlKey = adapterProviderRequirement(runtimeKey, provider.provider_type)?.base_url_field ?? null;
   const config = provider.config_json !== null
     && typeof provider.config_json === "object"
@@ -108,23 +137,46 @@ export function runtimeProviderEgressDestination(
   // Missing or malformed compatible endpoints, and a vendor protocol the
   // runtime cannot bind, fail conservatively as external;
   // the runtime binding will independently reject them before invocation.
-  return retrievalProviderEgressDestination({
-    provider_type: "compatible_upstream",
-    base_url: compatibleUrl || null,
-  });
+  return providerEgressDestination({ ...provider, base_url: compatibleUrl || null });
 }
 
-function isLocalProviderUrl(value: string | null | undefined): boolean {
+/**
+ * Models a self-hosted server hands to its vendor's cloud. Ollama names them
+ * with a `-cloud` suffix or a `:cloud` tag (`gpt-oss:120b-cloud`,
+ * `deepseek-v3.1:671b-cloud`); running one through a local daemon is still
+ * an external egress.
+ */
+export function isCloudServedModel(providerType: string, model: string | null | undefined): boolean {
+  if (!model) return false;
+  if (providerType !== "ollama") return false;
+  const name = model.trim().toLowerCase();
+  return name.endsWith("-cloud") || name.endsWith(":cloud") || name.includes("-cloud:");
+}
+
+const NON_PUBLIC_SUFFIXES = [".local", ".localhost", ".localdomain", ".lan", ".internal", ".home", ".home.arpa", ".intranet"];
+
+/**
+ * Whether a URL names something inside this instance's own network: the
+ * machine (`localhost`, loopback), a private or link-local address, a
+ * single-label name (a Compose service), or a non-public DNS suffix. A public
+ * address or a public-looking name is not local even when declared so.
+ */
+export function isInstanceNetworkUrl(value: string | null | undefined): boolean {
   if (!value) return false;
+  let host: string;
   try {
     // `hostname` keeps an IPv6 literal's brackets; strip them before judging
     // it as an address. Judged as an address, never as a name prefix:
     // `127.evil.com` is a hostname somebody else controls.
-    const host = new URL(value).hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
-    return host === "localhost" || host === "0.0.0.0" || isLoopbackAddress(host);
+    host = new URL(value).hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/\.$/, "");
   } catch {
     return false;
   }
+  if (!host) return false;
+  if (host === "localhost" || isLoopbackAddress(host)) return true;
+  if (isIP(host) !== 0) return isBlockedAddress(host) && !isSyntheticDnsAddress(host);
+  if (!host.includes(".")) return true;
+  return NON_PUBLIC_SUFFIXES.some((suffix) => host.endsWith(suffix));
 }
 
 function sourceEgressAllowed(

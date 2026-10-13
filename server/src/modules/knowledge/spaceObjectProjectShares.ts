@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { assertProjectWriter } from "../projects/access.js";
+import { assertNoteEntryInvariant, lockNotesForPlacementChange } from "./notePlacementInvariant.js";
 
 /**
  * Additional Project scopes for a `space_objects` row — the write side of the
@@ -84,7 +85,8 @@ export async function shareSpaceObjectWithProject(
 
 /**
  * Withdraws a share, and with it every placement the object holds inside that
- * Project's folder subtree.
+ * Project's folder subtree — and nothing else: the owning Project's entries
+ * are not touched, so the note stays where its own Project can find it.
  *
  * Do not leave the placements. A placement
  * inside a Project's tree is what puts the object in that Project's view, so
@@ -102,6 +104,12 @@ export async function revokeSpaceObjectProjectShare(
     userId: string;
   },
 ): Promise<void> {
+  // Note row first, then the share row, then placements — the order every
+  // placement writer keeps (`notePlacementInvariant`): a confirmed cross-Project
+  // placement locks the note and then upserts this same share row, so taking
+  // the share row first here would deadlock with it. Empty for an object that
+  // is not a note.
+  const lockedNotes = await lockNotesForPlacementChange(db, input.spaceId, [input.objectId]);
   const existing = await db.query<{ id: string }>(
     `SELECT id FROM space_object_project_shares
       WHERE space_id = $1 AND object_id = $2 AND project_id = $3 AND revoked_at IS NULL
@@ -139,4 +147,5 @@ export async function revokeSpaceObjectProjectShare(
         )`,
     [input.spaceId, input.objectId, input.projectId],
   );
+  await assertNoteEntryInvariant(db, input.spaceId, lockedNotes);
 }

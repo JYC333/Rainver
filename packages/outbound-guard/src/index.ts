@@ -17,6 +17,7 @@ export {
   type PinnedAddress,
 } from "./guard.js";
 export { pinnedAddressLookup } from "./pinnedLookup.js";
+export { startGuardedConnectProxy, type GuardedConnectProxy } from "./connectProxy.js";
 export { decodeTruncatedUtf8 } from "./body.js";
 export {
   DEFAULT_MAX_REDIRECTS,

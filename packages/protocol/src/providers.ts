@@ -37,6 +37,15 @@ export function isCredentialChannel(value: string): value is CredentialChannelVa
 }
 
 /** Model provider response DTO; response-only and secret-free. */
+/**
+ * How the Provider is deployed, as its owner declared it. `trusted_local`
+ * is a Space owner/admin's statement that a self-hosted service performs
+ * inference where it runs; together with an instance-network endpoint and a
+ * non-cloud model it makes the Provider a local egress destination.
+ */
+export const ProviderDeploymentSchema = z.enum(["cloud", "trusted_local"]);
+export type ProviderDeployment = z.infer<typeof ProviderDeploymentSchema>;
+
 export const ModelProviderDTOSchema = z
   .object({
     id: IdSchema,
@@ -49,6 +58,7 @@ export const ModelProviderDTOSchema = z
     name: z.string(),
     provider_type: z.string(),
     base_url: z.string(),
+    deployment: ProviderDeploymentSchema,
     network_profile_id: IdSchema.nullish(),
     claude_compatible_base_url: z.string().nullish(),
     openai_compatible_base_url: z.string().nullish(),
@@ -85,6 +95,7 @@ export const ModelProviderCreateRequestSchema = z.object({
   name: z.string().min(1),
   provider_type: z.string().min(1),
   base_url: z.string().min(1),
+  deployment: ProviderDeploymentSchema.optional(),
   network_profile_id: IdSchema.nullish(),
   claude_compatible_base_url: z.string().nullish(),
   openai_compatible_base_url: z.string().nullish(),
@@ -100,6 +111,7 @@ export const ModelProviderUpdateRequestSchema = z.object({
   name: z.string().min(1).optional(),
   provider_type: z.string().min(1).optional(),
   base_url: z.string().min(1).optional(),
+  deployment: ProviderDeploymentSchema.optional(),
   network_profile_id: IdSchema.nullish(),
   claude_compatible_base_url: z.string().nullish(),
   openai_compatible_base_url: z.string().nullish(),
@@ -158,6 +170,7 @@ export const ProviderVendorDTOSchema = z
     default_base_url: z.string().nullable(),
     api_key_required: z.boolean(),
     subscription_only: z.boolean(),
+    self_hostable: z.boolean(),
     ...SecretResponseGuards,
   })
   .strict();

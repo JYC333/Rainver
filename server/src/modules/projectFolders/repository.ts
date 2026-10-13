@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, realpath, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath, rm, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
   buildTree,
@@ -47,7 +47,9 @@ import {
   type ProjectFileDraftMutation,
   type ProjectFileDraftRow,
 } from "./draftRepository.js";
-import { assertRemoteRepositoryUrl, CLONE_GIT_ALLOW_PROTOCOL } from "./repositoryUrl.js";
+import { assertRemoteRepositoryUrl, CLONE_GIT_ALLOW_PROTOCOL, redactRepositoryUrlCredentials } from "./repositoryUrl.js";
+import { startGuardedConnectProxy } from "@rainver/outbound-guard";
+import { outboundGuard } from "../sources/outboundUrlSafety.js";
 
 const FOLDER_KINDS = new Set(["code", "data", "docs"]);
 
@@ -1097,14 +1099,47 @@ export class PgProjectFolderRepository {
     return candidate;
   }
 
+  /**
+   * git opens its own connections, so the outbound guard cannot pin them the
+   * way it pins the server's fetches. The clone is instead pointed at a
+   * loopback CONNECT proxy that lives for this one clone: every host git asks
+   * for — the first, and each redirect it follows — is resolved through the
+   * guard and dialled only at the address the guard approved, so a public
+   * name that resolves or redirects into the instance's own network is
+   * refused at that hop. HTTPS only, through the proxy only (`http.proxy`
+   * set here beats any `~/.gitconfig` or environment proxy), and no prompt:
+   * a private repository authenticates with what its URL carries.
+   */
   private async cloneRepository(spaceId: string, name: string, repoUrl: string): Promise<string> {
     assertRemoteRepositoryUrl(repoUrl);
     const target = await this.createManagedDir(spaceId, name);
-    const result = await runLocationGit(["clone", "--", repoUrl, target], resolve(this.config.workspaceRoot, spaceId), 120_000, {
-      env: { GIT_ALLOW_PROTOCOL: CLONE_GIT_ALLOW_PROTOCOL },
-    });
+    const proxy = await startGuardedConnectProxy(outboundGuard);
+    let result;
+    try {
+      result = await runLocationGit([
+        "-c", `http.proxy=${proxy.url}`,
+        "-c", "http.proxyAuthMethod=basic",
+        "-c", "http.followRedirects=initial",
+        "clone", "--", repoUrl, target,
+      ], resolve(this.config.workspaceRoot, spaceId), 120_000, {
+        env: {
+          GIT_ALLOW_PROTOCOL: CLONE_GIT_ALLOW_PROTOCOL,
+          GIT_TERMINAL_PROMPT: "0",
+          // The proxy above is the route; an environment proxy must not be.
+          NO_PROXY: "",
+          no_proxy: "",
+        },
+      });
+    } finally {
+      await proxy.close();
+    }
     if (result.code !== 0) {
-      throw new HttpError(422, `Failed to clone repository: ${result.stderr.slice(0, 400)}`);
+      const refused = proxy.refusals[0];
+      const detail = refused
+        ? `${refused.host}:${refused.port} was refused: ${refused.reason}`
+        : redactRepositoryUrlCredentials(result.stderr.slice(0, 400));
+      await rm(target, { recursive: true, force: true }).catch(() => undefined);
+      throw new HttpError(422, `Failed to clone repository: ${detail}`);
     }
     return target;
   }
@@ -1380,6 +1415,8 @@ function folderReadHttpError(error: FolderReadError): HttpError {
       return new HttpError(413, error.message);
     case "path_forbidden":
       return new HttpError(403, error.message);
+    case "unsupported_platform":
+      return new HttpError(503, error.message, { detail: error.message, code: "unsupported_platform" });
   }
   return new HttpError(500, "Unknown Folder read failure");
 }
@@ -1407,6 +1444,8 @@ function mapRemoteFolderReadError(result: FolderReadFailure, hostName: string): 
       return new HttpError(409, `The host ${hostName} is offline.`, { detail: `The host ${hostName} is offline.`, code: "host_offline", host_name: hostName });
     case "read_failed":
       return new HttpError(502, message, { detail: message, code: "read_failed", host_name: hostName });
+    case "unsupported_platform":
+      return new HttpError(503, message, { detail: message, code: "unsupported_platform", host_name: hostName });
   }
   return new HttpError(502, message, { detail: message, code: "read_failed", host_name: hostName });
 }

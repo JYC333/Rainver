@@ -293,14 +293,21 @@ describe('collection CRUD projections', () => {
     expect(upsertCollection(upsertCollection([], optimistic), persisted)).toEqual([persisted])
   })
 
-  it('removes a folder and projects direct children to root like the database', () => {
-    const parent = makeCollection({ id: 'parent' })
+  it('removes a folder and moves its direct children up to its parent, like the server', () => {
+    const root = makeCollection({ id: 'root' })
+    const parent = makeCollection({ id: 'parent', parent_id: 'root' })
     const child = makeCollection({ id: 'child', parent_id: 'parent' })
     const grandchild = makeCollection({ id: 'grandchild', parent_id: 'child' })
 
-    expect(removeCollection([parent, child, grandchild], 'parent')).toEqual([
-      expect.objectContaining({ id: 'child', parent_id: null }),
+    expect(removeCollection([root, parent, child, grandchild], 'parent')).toEqual([
+      root,
+      expect.objectContaining({ id: 'child', parent_id: 'root' }),
       grandchild,
+    ])
+    const top = makeCollection({ id: 'top' })
+    const under = makeCollection({ id: 'under', parent_id: 'top' })
+    expect(removeCollection([top, under], 'top')).toEqual([
+      expect.objectContaining({ id: 'under', parent_id: null }),
     ])
   })
 })

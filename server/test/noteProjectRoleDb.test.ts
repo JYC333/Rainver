@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { withTransaction } from "../src/db/tx.js";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { ensureProjectNotesFolder } from "../src/modules/knowledge/noteProjectFolders.js";
 import { resolveNotebookNote } from "../src/modules/projectResearch/notebookNotes.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
@@ -123,7 +125,10 @@ describe("note project role (real Postgres)", () => {
     const note = await repository.createNote(identity, { title: "Questions", primary_project_id: PROJECT }) as { id: string };
     await repository.updateNote(identity, note.id, { project_role: "questions" });
 
-    await repository.updateNote(identity, note.id, { primary_project_id: OTHER_PROJECT });
+    // A rebind lands the note in the new Project's own folder: a Project note
+    // always keeps an entry in the Project that owns it.
+    const otherRoot = await withTransaction(db.pool, (tx) => ensureProjectNotesFolder(tx, SPACE, OTHER_PROJECT));
+    await repository.updateNote(identity, note.id, { primary_project_id: OTHER_PROJECT, collection_id: otherRoot });
 
     expect((await resolveNotebookNote(db.pool, SPACE, PROJECT, "questions", USER)).present).toBe(false);
     expect((await resolveNotebookNote(db.pool, SPACE, OTHER_PROJECT, "questions", USER)).present).toBe(false);

@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   retrievalEgressAllowed,
   ALLOW_ALL_EGRESS,
-  retrievalProviderEgressDestination,
+  providerEgressDestination,
+  runtimeProviderEgressDestination,
 } from "../src/modules/retrieval/egress/egressPolicy.js";
 import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
 import {
@@ -81,23 +82,39 @@ describe("retrievalEgressAllowed", () => {
     ).toBe(true);
   });
 
-  it("classifies local provider destinations by provider type or localhost URL", () => {
-    expect(retrievalProviderEgressDestination({ provider_type: "ollama", base_url: null })).toBe("local_provider");
-    expect(
-      retrievalProviderEgressDestination({
-        provider_type: "openai_compatible",
-        base_url: "http://127.0.0.1:8080/v1",
-      }),
-    ).toBe("local_provider");
-    expect(retrievalProviderEgressDestination({ provider_type: "openai", base_url: null })).toBe("external_provider");
+  it("classifies a Provider as local only when declared trusted, reached inside the network, and running a non-cloud model", () => {
+    const declared = { deployment: "trusted_local" };
+    // A vendor name proves nothing: Ollama forwards `-cloud` models to its hosted service.
+    expect(providerEgressDestination({ provider_type: "ollama", base_url: "http://localhost:11434" })).toBe("external_provider");
+    expect(providerEgressDestination({ provider_type: "ollama", base_url: "http://localhost:11434", config_json: declared })).toBe("local_provider");
+    expect(providerEgressDestination({ provider_type: "ollama", base_url: "http://localhost:11434", config_json: declared, default_model: "gpt-oss:120b-cloud" })).toBe("external_provider");
+    expect(providerEgressDestination({ provider_type: "ollama", base_url: "http://localhost:11434", config_json: declared, default_model: "llama3", model: "qwen3-coder:480b-cloud" })).toBe("external_provider");
+    // A loopback URL proves nothing without the declaration.
+    expect(providerEgressDestination({ provider_type: "openai_compatible", base_url: "http://127.0.0.1:8080/v1" })).toBe("external_provider");
+    expect(providerEgressDestination({ provider_type: "openai_compatible", base_url: "http://127.0.0.1:8080/v1", config_json: declared })).toBe("local_provider");
+    // Trusted LAN and Compose-sibling services.
+    expect(providerEgressDestination({ provider_type: "openai_compatible", base_url: "http://192.168.1.20:8000/v1", config_json: declared })).toBe("local_provider");
+    expect(providerEgressDestination({ provider_type: "openai_compatible", base_url: "http://ollama:11434/v1", config_json: declared })).toBe("local_provider");
+    expect(providerEgressDestination({ provider_type: "openai_compatible", base_url: "http://gpu-box.lan:8000/v1", config_json: declared })).toBe("local_provider");
+    // A public remote stays external however it is declared.
+    expect(providerEgressDestination({ provider_type: "ollama", base_url: "https://ollama.example.com", config_json: declared })).toBe("external_provider");
+    expect(providerEgressDestination({ provider_type: "openai_compatible", base_url: "http://93.184.216.34:8000/v1", config_json: declared })).toBe("external_provider");
+    // A hosted vendor cannot be recorded as trusted local (the command store
+    // refuses it); an undeclared one is external like any other.
+    expect(providerEgressDestination({ provider_type: "openai", base_url: null })).toBe("external_provider");
     // Loopback is judged as an address: a hostname that merely starts with
     // "127." is somebody else's machine, and an IPv6 literal keeps its brackets.
-    expect(
-      retrievalProviderEgressDestination({ provider_type: "openai_compatible", base_url: "https://127.evil.com/v1" }),
-    ).toBe("external_provider");
-    expect(
-      retrievalProviderEgressDestination({ provider_type: "openai_compatible", base_url: "http://[::1]:8080/v1" }),
-    ).toBe("local_provider");
+    expect(providerEgressDestination({ provider_type: "openai_compatible", base_url: "http://127.evil.com/v1", config_json: declared })).toBe("external_provider");
+    expect(providerEgressDestination({ provider_type: "openai_compatible", base_url: "http://[::1]:8080/v1", config_json: declared })).toBe("local_provider");
+    expect(providerEgressDestination({ provider_type: "openai_compatible", base_url: "not a url", config_json: declared })).toBe("external_provider");
+  });
+
+  it("classifies a CLI runtime by the compatible endpoint it will reach, under the same declaration", () => {
+    const declared = { deployment: "trusted_local", claude_compatible_base_url: "http://localhost:4000/anthropic" };
+    expect(runtimeProviderEgressDestination("claude_code", { provider_type: "openai_compatible", base_url: "http://localhost:8080/v1", config_json: declared })).toBe("local_provider");
+    expect(runtimeProviderEgressDestination("claude_code", { provider_type: "openai_compatible", base_url: "http://localhost:8080/v1", config_json: { ...declared, claude_compatible_base_url: "https://gateway.example.com/anthropic" } })).toBe("external_provider");
+    expect(runtimeProviderEgressDestination("claude_code", { provider_type: "openai_compatible", base_url: "http://localhost:8080/v1", config_json: { claude_compatible_base_url: "http://localhost:4000/anthropic" } })).toBe("external_provider");
+    expect(runtimeProviderEgressDestination("claude_code", { provider_type: "openai_compatible", base_url: "http://localhost:8080/v1", config_json: { deployment: "trusted_local" } })).toBe("external_provider");
   });
 
   it("fails closed when source-derived content lacks a source policy snapshot", () => {
@@ -174,6 +191,7 @@ describe("egress-disabled provider stages", () => {
         provider_type: "ollama",
         base_url: "http://localhost:11434",
         api_key: null,
+        deployment: "trusted_local",
       },
     });
     __setProviderHttpClientForTests({
@@ -212,7 +230,7 @@ describe("egress-disabled provider stages", () => {
 });
 
 function providerStoreFor(
-  providers: Record<string, { id: string; provider_type: string; base_url: string | null; api_key: string | null }>,
+  providers: Record<string, { id: string; provider_type: string; base_url: string | null; api_key: string | null; deployment?: "cloud" | "trusted_local" }>,
 ): ProviderCommandStore {
   return {
     async getTaskChain() {
@@ -231,6 +249,7 @@ function providerStoreFor(
           name: provider.id,
           provider_type: provider.provider_type,
           base_url: provider.base_url,
+          deployment: provider.deployment ?? "cloud",
           network_profile_id: null,
           default_model: provider.provider_type === "ollama" ? "llama3" : "gpt-4o-mini",
           available_models: [],

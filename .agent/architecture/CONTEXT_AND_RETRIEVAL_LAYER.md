@@ -517,9 +517,11 @@ proposal authoring UI.
   (default true) is enforced through the `retrievalEgressAllowed(ref, policy)`
   seam at every content-egress point. The policy distinguishes
   `external_provider`, `local_provider`, and `internal_process`: external
-  providers are blocked when the switch is off, while local providers (Ollama or
-  loopback/localhost URLs) can still serve query embedding, query rewrite,
-  rerank, and synthesis.
+  providers are blocked when the switch is off, while local providers — a
+  Provider a Space owner/admin declared a trusted local deployment, reached at
+  an instance-network endpoint, running a non-cloud model
+  (`modules/provider-policy.md`, "Local deployments") — can still serve query
+  embedding, query rewrite, rerank, and synthesis.
   Source-derived retrieval payloads add source policy snapshots and payload
   source ids to the same egress policy before rerank/synthesis provider calls;
   provider invocation evaluates them against the actual provider destination.

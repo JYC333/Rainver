@@ -288,6 +288,7 @@ describe("providerVendorCapabilities", () => {
           "displayName",
           "id",
           "protocol",
+          "selfHostable",
           "subscriptionOnly",
           "supportsChat",
           "supportsEmbedding",
