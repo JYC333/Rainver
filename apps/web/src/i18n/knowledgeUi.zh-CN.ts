@@ -70,6 +70,7 @@ export const knowledgeUiZhCN = {
       required_hint: '这条发现需要改写条目才能解决。原样接受会被拒绝。',
       content_label: '修改后的记忆内容',
       save: '保存修改',
+      revise_link: '修改',
     },
     entry_dialog: {
       title_project: '在项目中保留一个入口',

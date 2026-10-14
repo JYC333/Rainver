@@ -23,6 +23,7 @@ import {
   proposalMatchesTypeFilter,
   type ProposalTypeFilter,
 } from './proposalFilters'
+import { useAppTranslation } from '../../i18n'
 
 function fmt(dt: string | null | undefined) { return dt ? new Date(dt).toLocaleString() : '—' }
 
@@ -50,6 +51,7 @@ function SourceActionReviewDetails({ proposal }: { proposal: Proposal }) {
 }
 
 export default function ProposalsPage() {
+  const { t } = useAppTranslation()
   const { activeSpaceId, activeSpaceName, userId } = useSpace()
   const [searchParams, setSearchParams] = useSearchParams()
   const projectFilter = searchParams.get('project_id') ?? ''
@@ -278,7 +280,7 @@ export default function ProposalsPage() {
               {canDecide(p) && (
                 <div className="flex gap-1.5 shrink-0">
                   {awaitingRevision(p)
-                    ? <Button size="sm" variant="outline" asChild><Link to={`/proposals/${p.id}`}>Revise</Link></Button>
+                    ? <Button size="sm" variant="outline" asChild><Link to={`/proposals/${p.id}`}>{t('knowledge_ui.memory_revision.revise_link')}</Link></Button>
                     : <Button size="sm" variant="success" onClick={() => decide(p.id, 'accept')}>Accept</Button>}
                   <Button size="sm" variant="destructive" onClick={() => decide(p.id, 'reject')}>Reject</Button>
                 </div>

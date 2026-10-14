@@ -617,7 +617,8 @@ function providerTargetEgressAllowed(
     },
     {
       ...policy,
-      destination: providerEgressDestination({ ...target.provider, model }, spaceId),
+      // Local only where it was declared: the Provider's home Space.
+      destination: providerEgressDestination({ ...target.provider, space_id: target.provider.home_space_id, model }, spaceId),
     },
   );
 }

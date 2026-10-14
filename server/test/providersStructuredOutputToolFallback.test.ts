@@ -17,6 +17,7 @@ function target(providerId: string): InvocationTarget {
     provider: {
       id: providerId,
       space_id: "space-1",
+      home_space_id: "space-1",
       name: providerId,
       provider_type: "openai_compatible",
       base_url: `https://api.${providerId}.test/v1`,

@@ -103,7 +103,9 @@ const identity = (userId: string) => ({ spaceId: SPACE, userId });
 
 async function seedItem(options: { domain?: string; firstSeenAt?: string } = {}): Promise<string> {
   const itemId = randomUUID();
-  const seen = options.firstSeenAt ?? new Date().toISOString();
+  // A moment ago by default: a window is half-open, so an item stamped in the
+  // same instant a reader leaves would fall outside it.
+  const seen = options.firstSeenAt ?? new Date(Date.now() - 1_000).toISOString();
   await db.pool.query(
     `INSERT INTO source_items (
        id, space_id, owner_user_id, visibility, connection_id, item_type, title, source_uri,
@@ -189,7 +191,9 @@ describe("leaving a source", () => {
 
   it("ends historical access when the source itself is withdrawn", async (ctx) => {
     if (!db.available) return ctx.skip();
-    const delivered = await seedItem();
+    // Delivered before leaving: the window is half-open, so an item stamped in
+    // the very instant of leaving would not be inside it.
+    const delivered = await seedItem({ firstSeenAt: new Date(Date.now() - 60_000).toISOString() });
     await new SourceChannelService(db.pool, config).setSubscription(identity(READER), CONNECTION, "muted");
     expect(await readable(READER, delivered)).toBe(true);
     await db.pool.query(`UPDATE source_connections SET visibility = 'private' WHERE id = $1`, [CONNECTION]);
@@ -280,6 +284,20 @@ describe("reading eligibility across every reading path", () => {
     await db.pool.query(`UPDATE source_channels SET status = 'archived' WHERE id = $1`, [CONNECTION]);
     expect(await readable(READER, item)).toBe(false);
     expect(await readerServes(READER, item)).toBe(false);
+  });
+
+  it("keeps the connection's owner reading its items directly after archiving its only monitor", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const item = await seedItem();
+    await db.pool.query(`UPDATE source_channels SET status = 'archived' WHERE id = $1`, [CONNECTION]);
+    const direct = await db.pool.query(
+      `SELECT 1 FROM source_items si WHERE si.space_id = $1 AND si.id = $2 AND ${sourceItemReadableClause("si", "$3", false)}`,
+      [SPACE, item, OWNER],
+    );
+    // Reader and direct reads agree; only the Library listing follows the monitor.
+    expect(direct.rowCount).toBe(1);
+    expect(await readerServes(OWNER, item)).toBe(true);
+    expect(await readable(OWNER, item)).toBe(false);
   });
 
   it("serves a Source-derived artifact only while its item is readable", async (ctx) => {

@@ -12,6 +12,7 @@ import { piCatalogForVendor, piCatalogVendorIds, piStructuredToolChoice } from "
 import { providerSupportsStructuredOutput } from "../src/modules/providers/structuredOutputCapabilities.js";
 import { listProviderVendors, providerVendor } from "../src/modules/providers/vendors.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { providerEgressDestination } from "../src/modules/retrieval/egress/egressPolicy.js";
 
 describe("providerEligibility", () => {
   const base = {
@@ -212,6 +213,29 @@ describe("providerCommandStoreDb", () => {
     } finally {
       await db.pool.query(`UPDATE space_memberships SET role = 'owner' WHERE space_id = $1 AND user_id = $2`, [SPACE, USER]);
     }
+  });
+
+  it("treats a trusted-local provider as local only in its home Space, through a real grant", async () => {
+    if (!db.available) return;
+    const id = await createdProviderId({
+      provider_type: "ollama", name: "Home box", base_url: "http://localhost:11434", deployment: "trusted_local", api_key: undefined,
+    });
+    const other = randomUUID();
+    await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Other','team',now(),now())`, [other]);
+    await db.pool.query(
+      `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',now(),now())`,
+      [randomUUID(), other, USER],
+    );
+    await store().grantProviderToSpace(SPACE, USER, id, { space_id: other, enabled: true });
+
+    const home = await store().getInvocationTarget(SPACE, id);
+    const granted = await store().getInvocationTarget(other, id);
+    expect(granted.provider).toMatchObject({ space_id: other, home_space_id: SPACE });
+    // The same composition the invocation gate uses.
+    const destination = (target: typeof home, spaceId: string) =>
+      providerEgressDestination({ ...target.provider, space_id: target.provider.home_space_id, model: null }, spaceId);
+    expect(destination(home, SPACE)).toBe("local_provider");
+    expect(destination(granted, other)).toBe("external_provider");
   });
 
   it("keeps a disabled provider listed for its owner, who can enable it again, and for nobody else", async () => {

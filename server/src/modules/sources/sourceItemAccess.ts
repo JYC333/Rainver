@@ -48,7 +48,8 @@ export function sourceItemFullContentReadClause(itemAlias: string, userParam: st
  * unsubscribing stops new items and automatic profile facts, never the right
  * to re-read what was delivered, while losing the connection itself
  * (archived, deleted, visibility or grants narrowed, membership gone, its
- * channel archived) ends both.
+ * channel archived) ends both. The connection's owner reads its items
+ * directly while it exists; only their Library listing follows subscriptions.
  */
 export function sourceItemConnectionGateClause(itemAlias: string, userParam: string, libraryOnly: boolean): string {
   return `(
@@ -60,9 +61,20 @@ export function sourceItemConnectionGateClause(itemAlias: string, userParam: str
          AND (
            ${sourceConnectionLiveSubscriberClause("gate_connection", userParam, libraryOnly)}
            OR ${sourceConnectionDeliveredToReaderClause("gate_connection", userParam, `${itemAlias}.first_seen_at`)}
+           ${libraryOnly ? "" : `OR ${sourceConnectionOwnerClause("gate_connection", userParam)}`}
          )
     )
   )`;
+}
+
+/**
+ * The connection's owner reads its items directly (Reader, artifacts,
+ * evidence) for as long as the connection exists, whatever happens to its
+ * monitors — the same rule the Reader's consent check applies. What the
+ * owner's Library lists still follows their own subscriptions.
+ */
+function sourceConnectionOwnerClause(connectionAlias: string, userParam: string): string {
+  return `(${connectionAlias}.owner_user_id = ${userParam} AND ${connectionAlias}.deleted_at IS NULL)`;
 }
 
 /** The historical half of the gate above, on its own for callers that reason about it. */

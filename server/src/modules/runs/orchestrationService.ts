@@ -113,6 +113,7 @@ import { mergeRunQuota } from "../hosts/usageService.js";
 import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 import { redactEvidenceText } from "./evidenceRedaction.js";
 import { resolveExecutionHost } from "./executionHostResolution.js";
+import { finalizedForPostRun } from "./finalizationOutcome.js";
 
 export interface RunExecutionRepositoryPort {
   getRun(spaceId: string, runId: string): Promise<RunRecord | null>;
@@ -851,7 +852,7 @@ export class RunOrchestrationService {
         const current = this.adapters.materializer
           ? await this.repository.getRun(run.space_id, run.id)
           : rejected;
-        if (finalization?.status === "failed") {
+        if (finalization && !finalizedForPostRun(finalization)) {
           return {
             run_id: run.id,
             status: protocolRunStatus(current?.status ?? "failed"),
@@ -1463,7 +1464,7 @@ export class RunOrchestrationService {
         const finalization = await this.adapters.materializer.finalizeRun(
           finalTerminalRun,
         );
-        if (finalization.status !== "succeeded") {
+        if (!finalizedForPostRun(finalization)) {
           finalizationFailure = finalization;
           await this.appendFinalizationEvent(running, finalization);
         }
@@ -1593,7 +1594,7 @@ export class RunOrchestrationService {
       const current = this.adapters.materializer
         ? await this.repository.getRun(run.space_id, run.id)
         : failedRun;
-      if (finalization?.status === "failed") {
+      if (finalization && !finalizedForPostRun(finalization)) {
         return {
           run_id: run.id,
           status: protocolRunStatus(current?.status ?? "failed"),
@@ -1655,7 +1656,7 @@ export class RunOrchestrationService {
     if (isHardTerminalRunStatus(run.status)) {
       if (run.status === "cancelled") {
         const finalization = await this.finalizeTerminalRunBestEffort(run);
-        if (finalization?.status === "failed") {
+        if (finalization && !finalizedForPostRun(finalization)) {
           return {
             run_id: run.id,
             status: "cancelled",
@@ -1767,7 +1768,7 @@ export class RunOrchestrationService {
     const finalization = await this.finalizeTerminalRunBestEffort(
       updated ?? { ...run, status: "cancelled", ended_at: new Date().toISOString() },
     );
-    if (finalization?.status === "failed") {
+    if (finalization && !finalizedForPostRun(finalization)) {
       return {
         run_id: run.id,
         status: "cancelled",

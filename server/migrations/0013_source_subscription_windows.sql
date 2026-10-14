@@ -15,7 +15,12 @@ CREATE INDEX "ix_source_channel_subscription_windows_reader" ON "source_channel_
 CREATE UNIQUE INDEX "uq_source_channel_subscription_windows_open" ON "source_channel_subscription_windows" USING btree ("space_id","source_channel_id","user_id") WHERE unsubscribed_at IS NULL;--> statement-breakpoint
 -- Every subscription that is live now has an open period, starting when the
 -- subscription row was created (the moment it was first recorded); a period
--- the previous columns already closed keeps its bounds.
+-- the previous columns already closed keeps its bounds. A row that began as
+-- a pending recommendation and was followed later cannot say when: its period
+-- starts at the recommendation, so after leaving, its reader may still open
+-- items of that space-shared channel first seen while it was only
+-- recommended. Starting at `updated_at` instead would cut real history after
+-- any later settings change, which is worse.
 INSERT INTO "source_channel_subscription_windows" ("id", "space_id", "source_channel_id", "user_id", "subscribed_at", "unsubscribed_at")
 SELECT gen_random_uuid()::varchar, "space_id", "source_channel_id", "user_id",
        COALESCE("subscribed_at", "created_at"),

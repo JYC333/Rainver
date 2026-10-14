@@ -157,6 +157,7 @@ export function providerInfoFromRow(row: ProviderRow): ProviderInfo {
   return {
     id: row.id,
     space_id: row.space_id,
+    home_space_id: String(row.home_space_id),
     owner_user_id: row.owner_user_id ?? null,
     name: row.name,
     provider_type: providerType,

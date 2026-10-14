@@ -65,7 +65,10 @@ export interface ModelProviderUpdateInput {
 
 export interface ProviderInfo {
   id: string;
+  /** The Space this invocation uses the Provider in (its grant). */
   space_id: string;
+  /** The Space that owns the Provider, where its `trusted_local` declaration was vouched. */
+  home_space_id: string;
   owner_user_id?: string | null;
   name: string;
   provider_type: string;

@@ -1932,6 +1932,24 @@ describe("RunOrchestrationService", () => {
     expect(projector.terminal).toHaveLength(1);
   });
 
+  it("closes a cancelled delegated Run whose settlement is only owed, without reporting a failed finalization", async () => {
+    const repo = new FakeRepo();
+    repo.run = run({ status: "cancelled", run_group_id: "group-1" });
+    const projector = new FakeDelegationProjector();
+    const materializer = {
+      async finalizeRun() {
+        return { kind: "activity", status: "failed", error_code: "settlement_pending", error_message: "settlement owed" };
+      },
+    } as unknown as RunMaterializationService;
+    const service = orchestration(repo, { materializer, delegationProjector: projector });
+
+    const result = await service.cancelRun({ run_id: "run-1", space_id: "space-1" });
+    expect(result).toMatchObject({ status: "cancelled" });
+    expect(result).not.toMatchObject({ error_code: "finalization_failed" });
+    // The sweep settles the rest; the delegation is closed now, once.
+    expect(projector.terminal).toHaveLength(1);
+  });
+
   it("stops a turn's session handoff together with the turn", async () => {
     const repo = new FakeRepo();
     repo.run = run({

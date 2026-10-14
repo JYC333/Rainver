@@ -256,6 +256,8 @@ function providerStoreFor(
         provider: {
           id: provider.id,
           space_id: "space-1",
+          // Owned by the Space it is used in, where a trusted-local declaration counts.
+          home_space_id: "space-1",
           name: provider.id,
           provider_type: provider.provider_type,
           base_url: provider.base_url,

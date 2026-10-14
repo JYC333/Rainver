@@ -29,6 +29,7 @@ import { owedSettleSql } from "../hosts/taskBranchRequests.js";
 import { UNDER_WAY_MERGE_STATUSES } from "../hosts/taskMerges.js";
 import type { RunRecord } from "./runRepositoryTypes.js";
 import type { Queryable } from "../routeUtils/common.js";
+import { finalizedForPostRun } from "./finalizationOutcome.js";
 
 export function registerAgentRunHandler(
   registry: JobHandlerRegistry,
@@ -307,17 +308,6 @@ async function handleAgentRun(
   return result;
 }
 
-/**
- * Whether the post-run steps below may run. A finalization that recorded its
- * evaluation but still owes settlement is final for them: the thread outcome,
- * the chat turn and the domain reconcilers do not depend on settlement, which
- * the worker sweep finishes on its own (resumeUnsettledRuns). Throwing for it
- * would fail a succeeded Run's job and skip those steps for good. Any other
- * failure stops before them, and the job's retry runs them once it passes.
- */
-export function finalizedForPostRun(finalization: { status: string; error_code?: string | null }): boolean {
-  return finalization.status === "succeeded" || finalization.error_code === "settlement_pending";
-}
 
 const TASK_RUN_AHEAD = "Another execution Run of this Task is still in progress";
 

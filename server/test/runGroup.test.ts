@@ -25,7 +25,7 @@ import { resetTables } from "./support/resetTables.js";
 import { ensureDefaultRuntimeProfile, seedServerHost } from "./support/domainSeeds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resolveExecutionHost } from "../src/modules/runs/executionHostResolution.js";
-import { finalizedForPostRun } from "../src/modules/runs/agentRunHandler.js";
+import { finalizedForPostRun } from "../src/modules/runs/finalizationOutcome.js";
 
 describe("runContractSnapshot", () => {
   it("keeps the dispatch-time Git snapshot immutable in the Run contract", () => {

@@ -70,6 +70,7 @@ export const knowledgeUiEn = {
       required_hint: 'This finding is fixed by rewriting the entry. Accepting it unchanged is refused.',
       content_label: 'Revised memory content',
       save: 'Save revision',
+      revise_link: 'Revise',
     },
     entry_dialog: {
       title_project: 'Keep an entry in the project',
