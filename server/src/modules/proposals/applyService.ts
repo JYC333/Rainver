@@ -734,7 +734,7 @@ export class PgProposalApplyService {
     proposal: ApplyProposalRow,
     userId: string,
   ): Promise<void> {
-    assertRequiredOwnerMayDecide(proposal, userId);
+    await assertRequiredOwnerMayDecide(client, proposal, userId);
     const role = await effectiveApproverRole(client, proposal, userId);
     const result = await enforceProposalApply(
       this.config,
@@ -1039,17 +1039,42 @@ function recordValue(value: unknown): Record<string, unknown> {
  * no role elevation substitutes, and the Project-owner promotion below does
  * not apply either.
  */
-function requiredOwnerUserId(proposal: { payload_json: Record<string, unknown> | null }): string | null {
-  const value = (proposal.payload_json ?? {}).required_owner_user_id;
-  return typeof value === "string" && value.length > 0 ? value : null;
+/**
+ * Derived from the Agent the proposal is about, never read off the payload:
+ * a payload that omits or forges `required_owner_user_id` must not widen who
+ * may decide. An Agent-scope Memory proposal names its Agent (`agent_id`, or
+ * the Memory it revises); the Agent's `owner_user_id` is the decider. An
+ * Agent that nobody owns has no persona to decide (ADR 0003 §5), so nobody
+ * decides such a proposal by role either.
+ */
+async function requiredOwnerUserId(
+  client: PoolClient,
+  proposal: { space_id: string; proposal_type: string; payload_json: Record<string, unknown> | null },
+): Promise<{ required: true; userId: string | null } | { required: false }> {
+  const payload = proposal.payload_json ?? {};
+  if (!proposal.proposal_type.startsWith("memory_") || payload.target_scope !== "agent") return { required: false };
+  const agentId = typeof payload.agent_id === "string" && payload.agent_id ? payload.agent_id : null;
+  const memoryId = typeof payload.target_memory_id === "string" && payload.target_memory_id ? payload.target_memory_id : null;
+  const owner = await client.query<{ owner_user_id: string | null }>(
+    agentId
+      ? `SELECT owner_user_id FROM agents WHERE space_id = $1 AND id = $2 LIMIT 1`
+      : `SELECT a.owner_user_id
+           FROM memory_entries me
+           JOIN agents a ON a.id = me.agent_id AND a.space_id = me.space_id
+          WHERE me.space_id = $1 AND me.id = $2
+          LIMIT 1`,
+    [proposal.space_id, agentId ?? memoryId ?? ""],
+  );
+  return { required: true, userId: owner.rows[0]?.owner_user_id ?? null };
 }
 
-function assertRequiredOwnerMayDecide(
-  proposal: { payload_json: Record<string, unknown> | null },
+async function assertRequiredOwnerMayDecide(
+  client: PoolClient,
+  proposal: { space_id: string; proposal_type: string; payload_json: Record<string, unknown> | null },
   userId: string,
-): void {
-  const required = requiredOwnerUserId(proposal);
-  if (required && required !== userId) {
+): Promise<void> {
+  const required = await requiredOwnerUserId(client, proposal);
+  if (required.required && required.userId !== userId) {
     throw new HttpError(403, "Only this Agent's owner can decide what it has become");
   }
 }
@@ -1064,12 +1089,13 @@ export function canRejectProposalWithRole(
   },
   userId: string,
   role: string | null,
+  /** The Agent-derived decider for an Agent-scope Memory proposal; see `requiredOwnerUserId`. */
+  requiredOwner: { required: true; userId: string | null } | { required: false } = { required: false },
 ): boolean {
   // A proposal that names one person by identity is that person's alone, to
   // decline as much as to accept: leaving reject on role would let a Space
   // admin throw away a persona change the Agent's owner has not seen.
-  const requiredOwner = requiredOwnerUserId({ payload_json: proposal.payload_json ?? null });
-  if (requiredOwner) return requiredOwner === userId;
+  if (requiredOwner.required) return requiredOwner.userId === userId;
   if (proposal.created_by_user_id === userId) return true;
   // Agent-authored proposals retain Agent attribution, while owner_user_id is
   // the trusted server-populated identity of the instructing human. Give that
@@ -1084,7 +1110,12 @@ async function canRejectProposal(
   proposal: ApplyProposalRow,
   userId: string,
 ): Promise<boolean> {
-  return canRejectProposalWithRole(proposal, userId, await effectiveApproverRole(client, proposal, userId));
+  return canRejectProposalWithRole(
+    proposal,
+    userId,
+    await effectiveApproverRole(client, proposal, userId),
+    await requiredOwnerUserId(client, proposal),
+  );
 }
 
 /**

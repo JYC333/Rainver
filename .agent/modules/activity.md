@@ -44,7 +44,10 @@ proposal generation becomes `proposals_generated`, and worker errors become
 - Activity-derived proposals inherit the source Activity's visibility because
   the proposed content is the Activity's own text.
 - `access_level=summary` withholds `content` and `metadata_json` from
-  non-owners on list/detail. Consolidation requires effective `full`.
+  non-owners on list/detail. Consolidation requires effective `full` and is
+  the record owner's alone (`owner_user_id`, else `user_id`): a reader of a
+  shared capture, a Space owner/admin included, is refused with 403 rather
+  than turning someone else's record into their own Memory.
 - The Inbox holds pointers, never content (BOUNDARIES B24A) — see
   `modules/activity-inbox.md` for the full rule
 - Pointer/aggregate Activity rows set `aggregate_key` and are not eligible for

@@ -1,11 +1,38 @@
 import { Client, type Pool, type PoolClient } from "pg";
 import type { Queryable } from "../modules/routeUtils/common.js";
 
+/**
+ * Run `fn` holding a session advisory lock on `lockKey`, on a connection of
+ * its own so the lock lasts across `fn`'s transactions and is released by
+ * PostgreSQL if this process dies. Waits until the lock is free.
+ */
 export async function withDedicatedSessionAdvisoryLock<T>(
   db: Queryable,
   lockKey: string,
   fn: (db: Queryable) => Promise<T>,
 ): Promise<T> {
+  const result = await sessionAdvisoryLock(db, lockKey, fn, true);
+  return (result as { value: T }).value;
+}
+
+/**
+ * The same lock without waiting: `{ acquired: false }` when another session
+ * holds it, so a caller can skip or refuse work that is already in hand.
+ */
+export async function tryWithDedicatedSessionAdvisoryLock<T>(
+  db: Queryable,
+  lockKey: string,
+  fn: (db: Queryable) => Promise<T>,
+): Promise<{ acquired: true; value: T } | { acquired: false }> {
+  return sessionAdvisoryLock(db, lockKey, fn, false);
+}
+
+async function sessionAdvisoryLock<T>(
+  db: Queryable,
+  lockKey: string,
+  fn: (db: Queryable) => Promise<T>,
+  wait: boolean,
+): Promise<{ acquired: true; value: T } | { acquired: false }> {
   const connectable = db as Queryable & {
     connect?: () => Promise<PoolClient>;
     release?: () => void;
@@ -15,7 +42,7 @@ export async function withDedicatedSessionAdvisoryLock<T>(
   const isPool = !alreadyClient
     && typeof connectable.connect === "function"
     && connectable.options !== undefined;
-  if (!alreadyClient && !isPool) return fn(db);
+  if (!alreadyClient && !isPool) return { acquired: true, value: await fn(db) };
 
   let client: PoolClient | Client;
   // The dedicated connection sits idle while `fn` runs on the pool. If the
@@ -44,11 +71,12 @@ export async function withDedicatedSessionAdvisoryLock<T>(
     }
     if (acquired.rows[0]?.acquired) break;
     if (!alreadyClient) await (client as Client).end();
+    if (!wait) return { acquired: false };
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
   try {
-    return await fn(alreadyClient ? client : db);
+    return { acquired: true, value: await fn(alreadyClient ? client : db) };
   } finally {
     if (lockConnectionLost) {
       await (client as Client).end().catch(() => {});
@@ -70,7 +98,7 @@ async function unlock(client: PoolClient | Client, alreadyClient: boolean, lockK
     if (!alreadyClient) await (client as Client).end().catch(() => {});
     else if (!unlocked) {
       (client as PoolClient).release(
-        new Error("Run finalization advisory unlock failed"),
+        new Error(`Session advisory unlock failed for ${lockKey}`),
       );
     }
   }

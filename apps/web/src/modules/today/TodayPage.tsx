@@ -158,7 +158,7 @@ function ProposalStatusCard({ proposals, onDecide }: { proposals: HomePendingPro
 }
 
 function SourceAttentionCard({ source }: { source: HomeSourceSummarySection }) {
-  const needs = source.open_items > 0 || source.candidate_evidence > 0 || source.pending_extraction_jobs > 0 || source.failed_extraction_jobs > 0 || source.due_connections > 0
+  const needs = source.pending_reading_items > 0 || source.candidate_evidence > 0 || source.pending_extraction_jobs > 0 || source.failed_extraction_jobs > 0 || source.due_connections > 0
   if (!needs) return null
   return (
     <div className="bg-card border border-border rounded-lg p-4 flex flex-col gap-2">
@@ -168,7 +168,7 @@ function SourceAttentionCard({ source }: { source: HomeSourceSummarySection }) {
       </div>
       <div className="flex flex-col gap-1 text-[12px]">
         {source.due_connections > 0 && <span style={{ color: 'var(--warning)' }}>{source.due_connections} connection{source.due_connections !== 1 ? 's' : ''} due for scan</span>}
-        {source.open_items > 0 && <span className="text-muted-foreground">{source.open_items} open item{source.open_items !== 1 ? 's' : ''}</span>}
+        {source.pending_reading_items > 0 && <span className="text-muted-foreground">{source.pending_reading_items} item{source.pending_reading_items !== 1 ? 's' : ''} to read</span>}
         {source.candidate_evidence > 0 && <span className="text-muted-foreground">{source.candidate_evidence} evidence candidate{source.candidate_evidence !== 1 ? 's' : ''}</span>}
         {source.failed_extraction_jobs > 0 && <span style={{ color: 'var(--destructive)' }}>{source.failed_extraction_jobs} failed extraction{source.failed_extraction_jobs !== 1 ? 's' : ''}</span>}
       </div>
@@ -299,7 +299,7 @@ function emptyHomeSummary(): HomeSummaryOut {
     model_provider_status: { model_providers_count: 0, enabled_model_providers_count: 0, missing_model_provider_config: true, message: '' },
     suggested_actions: [],
     operations_in_progress: [],
-    source_summary: { open_items: 0, new_items_today: 0, pending_extraction_jobs: 0, failed_extraction_jobs: 0, candidate_evidence: 0, active_evidence: 0, due_connections: 0 },
+    source_summary: { pending_reading_items: 0, new_items_today: 0, pending_extraction_jobs: 0, failed_extraction_jobs: 0, candidate_evidence: 0, active_evidence: 0, due_connections: 0 },
   }
 }
 
@@ -369,7 +369,7 @@ export default function TodayPage() {
     { value: s.task_summary.total_open, label: 'open tasks', warn: s.task_summary.blocked_count > 0 },
     { value: s.run_stats_today.created, label: 'runs today', warn: s.run_stats_today.failed > 0 },
     { value: s.activity_summary.raw_count, label: 'raw activities', warn: s.activity_summary.raw_count > 0 },
-    { value: s.source_summary.open_items, label: 'source items', warn: s.source_summary.failed_extraction_jobs > 0 },
+    { value: s.source_summary.pending_reading_items, label: 'items to read', warn: s.source_summary.failed_extraction_jobs > 0 },
     { value: s.source_summary.candidate_evidence, label: 'evidence candidates' },
   ]
 

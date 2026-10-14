@@ -29,6 +29,34 @@
       "when": 1791915457038,
       "tag": "0003_auth_reauth_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791929875373,
+      "tag": "0004_report_day_and_annotation_retry",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791970954617,
+      "tag": "0005_source_reading_eligibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791983686994,
+      "tag": "0006_assistant_target_scope_and_workflow_principal",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1791986023959,
+      "tag": "0007_lease_fencing_embedding_block_research_intent",
+      "breakpoints": true
     }
   ]
 }

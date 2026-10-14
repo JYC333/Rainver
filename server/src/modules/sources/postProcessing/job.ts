@@ -108,6 +108,7 @@ async function handleSourcePostProcessingJob(
     const rule = await repo.getRule(job.space_id, ruleId);
     if (!rule) throw new Error("source_post_processing_event schedule payload references missing rule");
     const run = await service.fireScheduledRule(rule);
+    if (!run) return { source_post_processing_run_id: null, status: "skipped", rule_id: rule.id, reason: "run_in_flight" };
     if (run.status === "succeeded") {
       await new ProjectResearchPipelineService(db, config).onPostProcessingSucceeded({
         spaceId: job.space_id,

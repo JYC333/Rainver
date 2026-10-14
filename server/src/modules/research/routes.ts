@@ -64,6 +64,20 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       return reply.send(protocol.RetryResearchQueryProviderResponseSchema.parse({ strategy }));
     } catch (error) { return sendRouteError(reply, error); }
   });
+  app.get<{ Params: { strategyId: string; providerKey: string } }>("/api/v1/research/query-strategies/:strategyId/providers/:providerKey/attempts", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
+    try {
+      const query = protocol.ListResearchQueryAttemptsQuerySchema.parse(request.query ?? {});
+      const providerKey = protocol.ResearchProviderKeySchema.parse(request.params.providerKey);
+      const db = dbPool(context.config);
+      await assertProjectReadable(db, identity.spaceId, query.project_id, identity.userId);
+      const page = await new ResearchQueryRepository(db).listAttempts(identity.spaceId, query.project_id, request.params.strategyId, providerKey, {
+        limit: query.limit,
+        offset: query.offset,
+      });
+      return reply.send(protocol.ListResearchQueryAttemptsResponseSchema.parse({ ...page, limit: query.limit, offset: query.offset }));
+    } catch (error) { return sendRouteError(reply, error); }
+  });
   app.post<{ Params: { strategyId: string } }>("/api/v1/research/query-strategies/:strategyId/materialize", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try {

@@ -1,10 +1,17 @@
 import type { FastifyInstance } from "fastify";
+import { InformationDigestBackfillRequestSchema, SourceAnnotationRetryRequestSchema } from "@rainver/protocol";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { InterestProfileService } from "../interestProfile/service.js";
-import { domainDefinitions, isKnownDomain, PgSourceAnnotationRepository, SOURCE_ANNOTATION_JOB_TYPE } from "../sourceAnnotation/index.js";
+import {
+  domainDefinitions,
+  isKnownDomain,
+  PgSourceAnnotationRepository,
+  SOURCE_ANNOTATION_JOB_TYPE,
+  SourceAnnotationService,
+} from "../sourceAnnotation/index.js";
 import type { InterestProfileSettings } from "../interestProfile/settings.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
-import { assertProjectReadable } from "../projects/access.js";
+import { assertProjectReadable, assertProjectWriter } from "../projects/access.js";
 import {
   dbPool,
   HttpError,
@@ -12,23 +19,43 @@ import {
   numberValue,
   optionalString,
   params,
+  parseBody,
   query,
   resolveIdentity,
   sendRouteError,
 } from "../routeUtils/common.js";
-import { assertDate, InformationDigestService } from "./service.js";
+import { assertDate, InformationDigestBackfillError, InformationDigestService } from "./service.js";
 import { SerendipityFeedbackService, type SerendipityFeedback } from "./feedbackService.js";
 import { INTEREST_STARTER_PACKS, InterestStarterPackService } from "./starterPacks.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
+  // History reads are read-only: a day with no snapshot answers `missing`,
+  // and nothing is generated, written or taken from the standby pool by
+  // looking. Generation is the scheduled fire's, or an explicit backfill's.
   app.get("/api/v1/spaces/:spaceId/information-digests/personal", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     const spaceId = params(request).spaceId ?? identity.spaceId;
     if (spaceId !== identity.spaceId) return reply.code(403).send({ detail: "Access denied" });
     try {
-      const date = digestDate(optionalString(query(request).date) ?? undefined);
-      return reply.send(await new InformationDigestService(dbPool(context.config)).personal(spaceId, identity.userId, date));
+      const date = requestedDigestDate(optionalString(query(request).date));
+      return reply.send(await new InformationDigestService(dbPool(context.config)).lookup(
+        spaceId, { type: "personal", userId: identity.userId }, date,
+      ));
+    } catch (error) {
+      return sendDigestError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/spaces/:spaceId/information-digests/personal/backfill", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    const spaceId = params(request).spaceId ?? identity.spaceId;
+    if (spaceId !== identity.spaceId) return reply.code(403).send({ detail: "Access denied" });
+    try {
+      const date = requiredDigestDate(parseBody(InformationDigestBackfillRequestSchema, jsonBody(request)).date);
+      const result = await new InformationDigestService(dbPool(context.config)).backfillPersonal(spaceId, identity.userId, date);
+      return reply.code(result.created ? 201 : 200).send(result);
     } catch (error) {
       return sendDigestError(reply, error);
     }
@@ -43,10 +70,75 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const projectId = params(request).projectId ?? "";
       const db = dbPool(context.config);
       await assertProjectReadable(db, spaceId, projectId, identity.userId);
-      const date = digestDate(optionalString(query(request).date) ?? undefined);
-      return reply.send(await new InformationDigestService(db).project(spaceId, projectId, identity.userId, date));
+      const date = requestedDigestDate(optionalString(query(request).date));
+      return reply.send(await new InformationDigestService(db).lookup(
+        spaceId, { type: "project", projectId, readerUserId: identity.userId }, date,
+      ));
     } catch (error) {
       return sendDigestError(reply, error);
+    }
+  });
+
+  // Building a shared snapshot is a write to the Project: writer authority.
+  app.post("/api/v1/spaces/:spaceId/projects/:projectId/information-digests/backfill", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    const spaceId = params(request).spaceId ?? identity.spaceId;
+    if (spaceId !== identity.spaceId) return reply.code(403).send({ detail: "Access denied" });
+    try {
+      const projectId = params(request).projectId ?? "";
+      const db = dbPool(context.config);
+      await assertProjectReadable(db, spaceId, projectId, identity.userId);
+      await assertProjectWriter(db, spaceId, projectId, identity.userId);
+      const date = requiredDigestDate(parseBody(InformationDigestBackfillRequestSchema, jsonBody(request)).date);
+      const result = await new InformationDigestService(db).backfillProject(spaceId, projectId, identity.userId, date);
+      return reply.code(result.created ? 201 : 200).send(result);
+    } catch (error) {
+      return sendDigestError(reply, error);
+    }
+  });
+
+  // The caller's own annotation failure episodes and their manual retry. A
+  // member sees and reopens only the items they are responsible for: their
+  // connections' items and their own saved URLs.
+  app.get("/api/v1/spaces/:spaceId/source-annotation/episodes", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    const spaceId = params(request).spaceId ?? identity.spaceId;
+    if (spaceId !== identity.spaceId) return reply.code(403).send({ detail: "Access denied" });
+    try {
+      const episodes = await new PgSourceAnnotationRepository(dbPool(context.config)).episodeSummaries(spaceId, {
+        responsibleUserId: identity.userId,
+      });
+      return reply.send({ episodes: episodes.map(({ responsible_user_id: _owner, ...episode }) => episode) });
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/spaces/:spaceId/source-annotation/retry", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    const spaceId = params(request).spaceId ?? identity.spaceId;
+    if (spaceId !== identity.spaceId) return reply.code(403).send({ detail: "Access denied" });
+    try {
+      const body = parseBody(SourceAnnotationRetryRequestSchema, jsonBody(request));
+      const db = dbPool(context.config);
+      const result = await new SourceAnnotationService(db, context.config).manualRetry(spaceId, identity.userId, {
+        episodeId: body.episode_id ?? null,
+        connectionId: body.connection_id ?? null,
+      });
+      if (result.reopened > 0) {
+        await new PgJobQueueRepository(db).enqueue({
+          job_type: SOURCE_ANNOTATION_JOB_TYPE,
+          payload: { trigger: "manual_retry", reopened: result.reopened },
+          space_id: spaceId,
+          user_id: identity.userId,
+        });
+      }
+      return reply.send(result);
+    } catch (error) {
+      return sendRouteError(reply, error);
     }
   });
 
@@ -245,24 +337,28 @@ function profileInputError(error: unknown): unknown {
   return error instanceof HttpError ? error : new HttpError(422, error instanceof Error ? error.message : "Invalid interest profile input");
 }
 
-function digestDate(value?: string): string {
-  const today = new Date().toISOString().slice(0, 10);
-  const next = value ?? today;
+/** A named day, or null for the latest complete day of the digest's timezone. */
+function requestedDigestDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return requiredDigestDate(value);
+}
+
+function requiredDigestDate(value: unknown): string {
+  if (typeof value !== "string") throw new HttpError(422, "date must be a valid YYYY-MM-DD calendar date");
   try {
-    assertDate(next);
+    assertDate(value);
   } catch {
     throw new HttpError(422, "date must be a valid YYYY-MM-DD calendar date");
   }
-  // A read materializes the day's snapshot and consumes standby items for
-  // it; a day that has not come would spend them on a snapshot the
-  // scheduled delivery later replaces.
-  if (next > today) throw new HttpError(422, "date must not be later than today (UTC)");
-  return next;
+  return value;
 }
 
 function sendDigestError(reply: Parameters<typeof sendRouteError>[0], error: unknown) {
   if (error instanceof Error && error.message.startsWith("Invalid digest date")) {
     return sendRouteError(reply, new HttpError(422, error.message));
+  }
+  if (error instanceof InformationDigestBackfillError) {
+    return sendRouteError(reply, new HttpError(422, error.message, { detail: error.message, code: "digest_day_not_complete" }));
   }
   return sendRouteError(reply, error);
 }

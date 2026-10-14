@@ -172,9 +172,21 @@ write pointer-only audit.
 
 - **Reranker** — post-fusion relevance judge over the visible top-N; space-setting
   gated; native rerank endpoint with a chat-prompt fallback. The payload is bounded
-  by a **token (char-proxy) budget** — per-candidate text is truncated and the
-  running total is capped — so a few long revalidated texts cannot blow the
-  payload; `trace.rerank.moved` / `.truncated` record the aggregate outcome.
+  by a **token (char-proxy) budget** shared across the whole window
+  (`boundRerankTexts`): titles count first, and the rest is divided shortest-text
+  first, each text getting at most an equal share of what remains and at most the
+  per-candidate cap. A cut text becomes an excerpt around the query. A window of
+  24 or more long texts therefore sends every candidate a comparable excerpt
+  instead of spending the budget on the first few and leaving the rest
+  title-only. The chat-prompt fallback cuts each excerpt further to its own
+  snippet cap. `trace.rerank.moved` / `.truncated` record the aggregate outcome.
+- **Embedding backfill** — a claimed chunk whose sources' egress policy does not
+  let it reach the embedding provider is set aside under the current policy
+  generation (`retrieval_chunks.embedding_blocked_generation`). The claim passes
+  over it, so blocked chunks never hold the head of the queue, and spends no
+  attempt on it. The generation names the space switch and every source
+  connection's policy, consent, owner, and liveness; when any of those changes,
+  the set-aside chunks are claimed again.
 - **Query rewriter** — pre-recall, query-string-only. Rewrite results are returned
   in a **separate** `rewrite_items` list, never blended into or co-ranked with the
   primary (original-query) list, so the primary list is never biased by how many
@@ -217,6 +229,13 @@ retrieval candidates through `RetrievalCoordinator`, but it reauthorizes them
 for the instructing user and exact work scope before an accepted Delivery is
 persisted. The planner alone decides precedence, deduplication, and window
 budgeting. Adapters never call retrieval directly.
+
+A conversation retrieves only when its person turned knowledge retrieval on
+(`modules/runtime-context.md`, "Knowledge retrieval switch"); a new conversation
+starts with it off. That switch controls real retrieval, and retrieval is not
+ingestion (B24): a retrieved candidate is read for one Delivery and creates no
+Memory, no KnowledgeItem, and no accepted Delivery of its own. Material a person
+attaches or pins reaches the turn whatever the switch says.
 
 Retrieval artifacts remain reviewable
 product outputs and proposal inputs; their existence does not make them

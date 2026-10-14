@@ -35,11 +35,21 @@ export {
 export {
   PgSourceAnnotationRepository,
   SOURCE_ANNOTATION_JOB_TYPE,
+  type AnnotationEpisodeSummary,
   type SourceAnnotationRow,
   type SourceAnnotationStatus,
 } from "./repository.js";
 
 export { enqueueItemsForAnnotation } from "./eventEmitter.js";
+export {
+  ANNOTATION_CONDITION_REASONS,
+  ANNOTATION_INITIAL_ATTEMPTS,
+  ANNOTATION_MAX_ATTEMPTS_PER_EPISODE,
+  ANNOTATION_RECOVERY_ATTEMPTS,
+  ANNOTATION_RETRY_DELAYS_MS,
+  type AnnotationWaitReason,
+} from "./retryPolicy.js";
+export { SourceAnnotationRecoveryNotifier } from "./notifier.js";
 export { registerSourceAnnotationHandler } from "./job.js";
 export { enqueuePendingSourceAnnotationWork } from "./scheduler.js";
 export { SourceAnnotationService, type AnnotationSweepResult } from "./service.js";

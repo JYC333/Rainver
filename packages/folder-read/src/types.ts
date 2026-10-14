@@ -30,6 +30,13 @@ export interface GitStatus {
   is_repo: boolean;
   branch: string | null;
   files: GitChangedFile[];
+  /**
+   * `files` is a prefix of the real change list: git was stopped at the
+   * output limit or the timeout, or more entries changed than are shown. A
+   * truncated status is not a clean tree and not a complete list; nothing
+   * destructive may be decided from it.
+   */
+  truncated: boolean;
 }
 
 export interface GitDiff {

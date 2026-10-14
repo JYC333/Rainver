@@ -68,8 +68,11 @@ export {
 } from "./continuity/service.js";
 export { ManagedSemanticCheckpointProvider } from "./continuity/semanticExtractor.js";
 export {
+  CliExecutionLeaseUnavailableError,
+  EXECUTION_LEASE_HEARTBEAT_MS,
   RuntimeContextCliContinuityService,
   renderCliEventDelta,
+  type CliExecutionLease,
   type CliRotationReason,
   type PreparedCliBinding,
   type PreparedCliDeliveryState,

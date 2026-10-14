@@ -134,6 +134,25 @@ API:
   archives the local overlay. It does not mutate `normalized_json` and does not
   create/enable capabilities.
 
+Overlay authority follows the scope it configures
+(`PgCapabilitiesRepository.assertOverlayScopeAuthority`). Reading needs read
+access to the scope's object, and an unreadable one is answered 404. Writing a
+`space` overlay needs a Space owner/admin; a `project` or `project_folder`
+overlay a Project writer who also reads the Project; a `user` overlay is that
+person's; an ordinary `agent` overlay its manager's (`canChangeAgent`); a
+managed Assistant's overlay its configurer's (`canConfigureAssistant`), so a
+Space admin's general overlay authority does not reach a creator's or Project
+owner's Assistant. An overlay grants no capability trust, egress or credential
+use.
+
+Capability proposal approval follows the scope its effect lands in. A Skill
+import review, an installation, a shared version update and a shared runtime
+binding change the Space and are refused at apply when filed under a Project
+(a Project owner could otherwise approve them); a capability enablement's
+payload `project_id` must equal the proposal's own `project_id`, so a
+Space-wide enablement cannot be approved under a Project's authority nor a
+Project enablement at Space level.
+
 ### CapabilityDefinition
 
 `CapabilityDefinition` is the current Rainver ability object. It defines

@@ -23,7 +23,7 @@ describe("HostConnectionRegistry folder reads", () => {
     expect(frames).toHaveLength(2);
     const firstId = String(frames[0]!.request_id);
     const secondId = String(frames[1]!.request_id);
-    registry.receiveFolderReadResult("host-1", secondId, { ok: true, kind: "git_status", result: { is_repo: false, branch: null, files: [] } });
+    registry.receiveFolderReadResult("host-1", secondId, { ok: true, kind: "git_status", result: { is_repo: false, branch: null, files: [], truncated: false } });
     registry.receiveFolderReadResult("host-1", firstId, { ok: false, error: "path_forbidden", message: "blocked" });
     await expect(first).resolves.toMatchObject({ ok: false, error: "path_forbidden" });
     await expect(second).resolves.toMatchObject({ ok: true, kind: "git_status" });

@@ -6,6 +6,7 @@ import { sourceConnectorRegistry } from "./catalog/sourceConnectorRegistry.js";
 import { nextBackfillRetryAt } from "./sourceBackfillRetry.js";
 
 interface PlanRow {
+  id: string;
   status: string;
   source_channel_id: string;
   quota_policy_json: { window?: unknown; limit_count?: unknown };
@@ -211,42 +212,93 @@ export class SourceBackfillExecutionService {
   }
 
   /**
-   * Project Research owns the total budget on the operation row. Locking that
-   * row serializes reservations across sibling monitor plans while the source
-   * plan counters provide the settled usage and running segment windows provide
-   * the in-flight reservation. Standalone Source plans keep their own budget
-   * in strategy_json.
-   */
-  /**
    * `remaining` is what may be dispatched now; `unsettled` is the part of the
    * budget held only by in-flight reservations, which may yet come back.
    */
   private async remainingBudgetLocked(spaceId: string, plan: PlanRow, segment: SegmentRow): Promise<{ remaining: number; unsettled: number }> {
-    if (plan.project_operation_kind !== "research") {
-      const configuredMax = integerValue(objectValue(plan.strategy_json).max_items) ?? integerValue(objectValue(segment.window_json).max_items) ?? 100;
-      return { remaining: configuredMax - Number(plan.items_ingested ?? 0), unsettled: 0 };
-    }
-    const total = integerValue(plan.operation_max_items);
-    if (!total || total < 1) throw new HttpError(409, "Project Research operation has no valid item budget");
-    const settled = await this.db.query<{ settled: string | null }>(
-      `SELECT COALESCE(SUM(items_ingested),0)::int AS settled
-         FROM source_backfill_plans
-        WHERE project_operation_id=$1 AND space_id=$2`,
-      [plan.project_operation_id, spaceId],
-    );
-    const reserved = await this.db.query<{ reserved: string | null }>(
-      `SELECT COALESCE(SUM(COALESCE(NULLIF(s.window_json->>'page_size','0')::int,0)),0) AS reserved
-         FROM source_backfill_segments s
-         JOIN source_backfill_plans p ON p.id=s.plan_id AND p.space_id=s.space_id
-        WHERE p.project_operation_id=$1 AND p.space_id=$2 AND s.status='running'`,
-      [plan.project_operation_id, spaceId],
-    );
-    const settledRemaining = total - Number(settled.rows[0]?.settled ?? 0);
-    const reservedItems = Number(reserved.rows[0]?.reserved ?? 0);
+    const usage = await this.budgetUsageLocked(spaceId, plan, segment.id);
+    const settledRemaining = usage.total - usage.settled;
     return {
-      remaining: settledRemaining - reservedItems,
-      unsettled: Math.max(0, Math.min(settledRemaining, reservedItems)),
+      remaining: settledRemaining - usage.reserved,
+      unsettled: Math.max(0, Math.min(settledRemaining, usage.reserved)),
     };
+  }
+
+  /**
+   * How many items a running segment's next history page may take, decided
+   * under the same lock as dispatch: what is left of the shared budget after
+   * every segment's imported items and every other in-flight page. Called by
+   * the extraction worker, inside its transaction, after it wrote the page's
+   * consumed items onto the segment window and before it queues the page.
+   */
+  async continuationAllowanceLocked(spaceId: string, planId: string, segmentId: string): Promise<number> {
+    const plan = await this.db.query<PlanRow>(
+      `SELECT p.*, o.kind AS project_operation_kind,
+              (o.progress_json->'history'->>'max_items')::int AS operation_max_items
+         FROM source_backfill_plans p
+         LEFT JOIN project_operations o ON o.id=p.project_operation_id AND o.space_id=p.space_id
+        WHERE p.id=$1 AND p.space_id=$2
+        FOR UPDATE OF p`,
+      [planId, spaceId],
+    );
+    if (!plan.rows[0]) return 0;
+    const usage = await this.budgetUsageLocked(spaceId, plan.rows[0], segmentId);
+    return Math.max(0, usage.total - usage.settled - usage.reserved);
+  }
+
+  /**
+   * Budget accounting for dispatch and for each continuation page. Project
+   * Research owns one total on the operation row, shared by sibling monitor
+   * plans; a standalone Source plan owns its own in strategy_json. Settled
+   * usage counts every segment's imported items, including the pages a
+   * still-running segment has already read (`consumed_items`), and never less
+   * than the plan's recorded counter. Each other running segment reserves its
+   * current page, at most what its window still allows. The caller holds the
+   * operation lock (Project Research) or the plan row lock (standalone), so
+   * reservations are serialized.
+   */
+  private async budgetUsageLocked(
+    spaceId: string,
+    plan: PlanRow,
+    excludeSegmentId: string,
+  ): Promise<{ total: number; settled: number; reserved: number }> {
+    const research = plan.project_operation_kind === "research";
+    let total: number;
+    if (research) {
+      const operationTotal = integerValue(plan.operation_max_items);
+      if (!operationTotal || operationTotal < 1) throw new HttpError(409, "Project Research operation has no valid item budget");
+      total = operationTotal;
+    } else {
+      const segment = await this.db.query<{ window_json: unknown }>(
+        `SELECT window_json FROM source_backfill_segments WHERE id=$1 AND space_id=$2`,
+        [excludeSegmentId, spaceId],
+      );
+      total = integerValue(objectValue(plan.strategy_json).max_items)
+        ?? integerValue(objectValue(segment.rows[0]?.window_json).max_items)
+        ?? 100;
+    }
+    const usage = await this.db.query<{ settled: number; reserved: number }>(
+      `SELECT COALESCE(SUM(GREATEST(COALESCE(p.items_ingested,0), COALESCE(seg.consumed,0))),0)::int AS settled,
+              COALESCE(SUM(seg.reserved),0)::int AS reserved
+         FROM source_backfill_plans p
+         LEFT JOIN LATERAL (
+           SELECT SUM(GREATEST(s.items_ingested, COALESCE((s.window_json->>'consumed_items')::int,0))) AS consumed,
+                  SUM(CASE
+                        WHEN s.status='running' AND s.id<>$3
+                         AND COALESCE(s.window_json->>'partial','false')<>'true'
+                         AND COALESCE(s.window_json->>'exhausted','false')<>'true'
+                        THEN LEAST(
+                          COALESCE(NULLIF(s.window_json->>'page_size','0')::int,0),
+                          COALESCE((s.window_json->>'remaining_items')::int, NULLIF(s.window_json->>'page_size','0')::int, 0))
+                        ELSE 0
+                      END) AS reserved
+             FROM source_backfill_segments s
+            WHERE s.plan_id=p.id AND s.space_id=p.space_id
+         ) seg ON true
+        WHERE p.space_id=$1 AND ${research ? "p.project_operation_id=$2" : "p.id=$2"}`,
+      [spaceId, research ? plan.project_operation_id : plan.id, excludeSegmentId],
+    );
+    return { total, settled: Number(usage.rows[0]?.settled ?? 0), reserved: Number(usage.rows[0]?.reserved ?? 0) };
   }
 
   private async reconcileLocked(spaceId: string, planId: string) {
@@ -500,6 +552,11 @@ export class SourceBackfillExecutionService {
           AND NOT EXISTS(SELECT 1 FROM source_backfill_segments WHERE plan_id=$1 AND space_id=$2 AND status IN ('pending','running'))`,
       [planId, spaceId],
     );
+  }
+
+  /** The lock dispatch takes; a continuation takes it first, inside its own transaction. */
+  async lockBudgetForPlan(spaceId: string, planId: string): Promise<void> {
+    await this.lockResearchOperationForPlan(spaceId, planId);
   }
 
   private async lockResearchOperationForPlan(spaceId: string, planId: string): Promise<void> {

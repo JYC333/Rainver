@@ -378,7 +378,7 @@ describe("ConversationInputService image storage", () => {
     expect(hydrated.blocks[1]?.text).toContain(`"selection":{"start_line":1`);
     expect(hydrated.blocks[1]?.text).toContain("source_state=draft is the user's latest acknowledged unsaved content");
     expect(hydrated.blocks[1]?.text).toContain("read that resource's complete draft with input_resource.read");
-    expect(hydrated.blocks[1]?.text).toContain("continue from next_line while truncated=true");
+    expect(hydrated.blocks[1]?.text).toContain("while truncated=true, continue with start_line=next_line and start_byte_offset=next_byte_offset");
     expect(hydrated.blocks[1]?.text).toContain("do not base the change on the same-path workspace file");
     // Runtime Context already placed this descriptor in the immutable current
     // user block. ACP still receives the resource link, but not a second copy.

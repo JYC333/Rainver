@@ -407,8 +407,11 @@ executor rather than returned as an error.
 `lesson` are the Agent's own and carry the Room they were learned in;
 `persona` is the one entry per Agent delivered everywhere, and its gate is the
 Run's trigger rather than its reach — the owner's own turn proposes it, anyone
-else's turn leaves a proposal only the owner may decide
-(`required_owner_user_id`, by identity and not by role), and an unattended
+else's turn leaves a proposal only the owner may decide (by identity and not
+by role: proposal apply derives the decider from the Agent the proposal names
+— its `agent_id`, or the Memory it revises — so a payload that omits or forges
+`required_owner_user_id` changes nothing, and an Agent nobody owns has nobody
+to decide its persona), and an unattended
 origin applies it. That last case is the one exemption from
 `ORIGIN_GATED_PROJECT_WRITES`, resolved server-side by `memoryPolicyContext`
 and scoped to a persona write on an `agent`-scope entry; every other memory
@@ -614,7 +617,10 @@ read that returned it in the same turn. Every such action is paired with one:
 | `research.list_operations` | `{operation_id, title, status}` (`include_terminal` opt-in) | `research.cancel_acquisition` |
 
 All four are `none`-side-effect reads scoped to the Run's own Project (and, for
-proposals, its own conversation, matching `proposal.decide`'s reach), carry
+proposals, its own conversation filtered by `proposalReadSql` for the
+instructing person — the same predicate `proposal.decide` resolves its id
+with, so a proposal that person cannot read is neither listed, suggested in a
+404, nor decided), carry
 low-risk allow policy actions (`inquiry.thread.list`, `task.list`,
 `proposal.list`, `research.operation.list`), and read under the instructing
 person's identity — so a helpful failure can never name an object that person

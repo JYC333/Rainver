@@ -52,6 +52,13 @@ an immutable message-owned resource and gives the Run a server-issued resource
 id. The initial prompt contains the descriptor, not the body. Agents read or
 search it through the Run-scoped `input_resource.read/search` actions; no
 generic database URL, Host temporary path, or absolute browser path is exposed.
+`input_resource.read` is addressed by line and continued by byte: a line longer
+than one read returns a bounded piece ending on a UTF-8 character boundary, and
+the cursor `next_line` + `next_byte_offset` continues it on the same line
+number. `eof` marks the end; `truncated` means more remains. An offset inside a
+multi-byte character, past the line's end, or a `sha256` that does not match the
+frozen resource is refused. Reads joined in cursor order reproduce the
+resource.
 File snapshots already stored on older messages stay readable on retry paths.
 
 Files & Code draft routes use optimistic `draft_id`/`draft_version` mutations;

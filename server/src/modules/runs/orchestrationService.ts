@@ -53,6 +53,7 @@ import {
 import type { RunMaterializationService } from "./materializationService.js";
 import {
   createProductionRuntimeContextInvocationGateway,
+  EXECUTION_LEASE_HEARTBEAT_MS,
   RuntimeContextCliContinuityService,
   WorkContextService,
   type RuntimeContextGatewayPort,
@@ -513,7 +514,12 @@ interface PreparedRuntimeContext {
   exchange: RunExchangeHandle | null;
   invocation_delivery: InvocationDelivery | null;
   invocation_attempts: RunInvocationAttemptLifecycle | null;
-  cli_execution_lease: { binding_id: string; lease_id: string } | null;
+  cli_execution_lease: {
+    binding_id: string;
+    lease_id: string;
+    /** Renews the lease while the Run executes; cleared on release. */
+    heartbeat: ReturnType<typeof setInterval> | null;
+  } | null;
   /** Resolved once per run by `resolveExecutionPort`; null until then. */
   execution_port: HostExecutionPort | null;
 }
@@ -1083,6 +1089,7 @@ export class RunOrchestrationService {
         && this.cliContinuity) {
         const replacement = await this.cliContinuity.rotateMissingVendorState(
           preparedRuntime.cli_execution_lease.binding_id,
+          preparedRuntime.cli_execution_lease.lease_id,
         );
         preparedRuntime.cli_execution_lease.binding_id = replacement.id;
       }
@@ -2238,11 +2245,22 @@ export class RunOrchestrationService {
           agentVersionId: run.agent_version_id,
           runtimeInstallation: stringConfigValue(prepared.adapter_config.runtime_installation),
           control,
+          runId: run.id,
           ...(daemonRun ? { expectedVendorSessionId: hostThreadSessionId } : {}),
         });
-        const cliLeaseId = await this.cliContinuity.acquireExecutionLease(cliBinding.id);
-        prepared.cli_execution_lease = { binding_id: cliBinding.id, lease_id: cliLeaseId };
-        cliBinding = await this.cliContinuity.bindingForExecutionLease(cliBinding.id, cliLeaseId);
+        const cliLease = await this.cliContinuity.acquireExecutionLease(cliBinding.id, { runId: run.id });
+        const continuity = this.cliContinuity;
+        prepared.cli_execution_lease = {
+          binding_id: cliBinding.id,
+          lease_id: cliLease.leaseId,
+          // A lease that is not renewed lapses, so a crashed worker cannot
+          // hold the conversation; one that is, holds it for the whole turn.
+          heartbeat: setInterval(() => {
+            void continuity.heartbeatExecutionLease(cliLease.leaseId).catch(() => false);
+          }, EXECUTION_LEASE_HEARTBEAT_MS),
+        };
+        prepared.cli_execution_lease.heartbeat?.unref?.();
+        cliBinding = await this.cliContinuity.bindingForExecutionLease(cliBinding.id, cliLease.leaseId);
         if (daemonRun) {
           // HostThread and Runtime Context must resume the same opaque ACP
           // session. Any binding rotation (policy, AgentVersion, runtime, or
@@ -2262,7 +2280,7 @@ export class RunOrchestrationService {
               : null,
           });
           if (cliBinding.vendor_session_id && !state.resume) {
-            cliBinding = await this.cliContinuity.rotateMissingVendorState(cliBinding.id);
+            cliBinding = await this.cliContinuity.rotateMissingVendorState(cliBinding.id, prepared.cli_execution_lease.lease_id);
             prepared.cli_execution_lease.binding_id = cliBinding.id;
             state = await prepareConversationRuntimeState({
               rainver_home: this.config.rainverHome,
@@ -2405,6 +2423,7 @@ export class RunOrchestrationService {
     if (prepared?.cli_execution_lease && this.cliContinuity) {
       const lease = prepared.cli_execution_lease;
       prepared.cli_execution_lease = null;
+      if (lease.heartbeat) clearInterval(lease.heartbeat);
       await this.cliContinuity.releaseExecutionLease(lease.lease_id).catch(() => {});
     }
     const executionPort = prepared?.execution_port ?? this.serverExecutionPort;
@@ -3125,6 +3144,7 @@ export class RunOrchestrationService {
         bindingId: delivery.cli_session.binding_ref.id,
         runtimeStateKey: delivery.cli_session.runtime_state_key,
         vendorSessionId: externalSessionId,
+        leaseGeneration: delivery.cli_session.lease_generation,
       });
     } catch {
       // The accepted Delivery and canonical Context Event ledger remain the

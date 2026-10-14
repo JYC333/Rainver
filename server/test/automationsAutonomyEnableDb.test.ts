@@ -166,20 +166,21 @@ describe("self-service Always-on activation (autonomous_tick)", () => {
     expect(otherRead.statusCode).toBe(404);
 
     // A plain member (not admin/owner, not the tick's own owner) must not be
-    // able to reconfigure or manually fire someone else's tick.
+    // able to reconfigure or manually fire someone else's tick — it is absent
+    // to them.
     const otherUpdate = await app!.inject({
       method: "PATCH",
       url: `/api/v1/spaces/${SPACE}/automations/${automationId}`,
       payload: { status: "paused" },
     });
-    expect(otherUpdate.statusCode).toBe(403);
+    expect(otherUpdate.statusCode).toBe(404);
 
     const otherFire = await app!.inject({
       method: "POST",
       url: `/api/v1/spaces/${SPACE}/automations/${automationId}/fire`,
       payload: {},
     });
-    expect(otherFire.statusCode).toBe(403);
+    expect(otherFire.statusCode).toBe(404);
   });
 
   it("reaches the autonomy dispatch end to end when the owner fires their own tick", async (ctx) => {

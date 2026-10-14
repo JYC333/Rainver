@@ -45,7 +45,7 @@ import {
 } from "./acquisitionComposition.js";
 import { RuntimeContextPlanningService, type RuntimeContextPlanningRequest } from "./planningService.js";
 import { RetrievalCoordinator, type RetrievalContextAuthorizationPort } from "./retrievalCoordinator.js";
-import { resolveExplicitReferences, roomScopedAgentReadSql } from "./workContextService.js";
+import { resolveExplicitReferences, roomScopedAgentReadSql, workContextRetrievalSwitchedOn } from "./workContextService.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import {
   buildChatConversationWindow,
@@ -685,14 +685,14 @@ function renderSemanticCheckpoint(checkpoint: SemanticCheckpoint): string {
   })}`;
 }
 
-class PgRetrievalIntentProvider implements RuntimeContextRetrievalIntentPort {
+export class PgRetrievalIntentProvider implements RuntimeContextRetrievalIntentPort {
   constructor(private readonly db: Pool) {}
 
   async resolve(request: RuntimeContextPlanningRequest, authority: RuntimeContextAuthoritySnapshot) {
     const setup = await loadSetup(this.db, request);
     const preferences = record(setup.retrieval_preferences_json);
     const scope = authority.controlSnapshot.readable_scope;
-    if (preferences.enabled === false || !scope.retrieval_enabled) return null;
+    if (!workContextRetrievalSwitchedOn(setup.scope_kind, preferences) || !scope.retrieval_enabled) return null;
     const query = request.turn.retrieval_intent?.trim();
     if (!query) return null;
     const preferredDomains = Array.isArray(preferences.preferred_domains)

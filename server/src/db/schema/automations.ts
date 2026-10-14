@@ -122,11 +122,22 @@ export const workflowExecutions = pgTable("workflow_executions", {
 	// to avoid a schema import cycle with projectOperations.ts (ADR 0011's
 	// loose cross-domain identifier pattern, e.g. retrieval_edges).
 	researchOperationId: varchar("research_operation_id", { length: 36 }),
+	// Whose work this execution is, decided once when it started
+	// (`fireResponsibility`): every node Run it schedules later — after a
+	// checkpoint approval, a recovery pass, a Run's finalization — names this
+	// person, never whoever happened to trigger the pass. The approver of a
+	// checkpoint is recorded on the checkpoint's proposal and node as audit.
+	// Nullable for one release (B59 expand-then-contract: the build still
+	// running while 0006 applies inserts without it); every row this build
+	// writes carries it, and reconciliation refuses a row without one. The
+	// NOT NULL contract is recorded under "Schema follow-ups".
+	responsibleUserId: varchar("responsible_user_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	startedAt: timestamp("started_at", { withTimezone: true, mode: 'string' }),
 	endedAt: timestamp("ended_at", { withTimezone: true, mode: 'string' }),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
+	foreignKey({ columns: [table.responsibleUserId], foreignColumns: [users.id], name: "workflow_executions_responsible_user_id_fkey" }),
 	index("ix_workflow_executions_automation_created").using("btree", table.spaceId.asc().nullsLast(), table.automationId.asc().nullsLast(), table.createdAt.desc().nullsLast()),
 	index("ix_workflow_executions_status").using("btree", table.spaceId.asc().nullsLast(), table.status.asc().nullsLast()),
 	index("ix_workflow_executions_root_run").using("btree", table.spaceId.asc().nullsLast(), table.rootRunId.asc().nullsLast()),

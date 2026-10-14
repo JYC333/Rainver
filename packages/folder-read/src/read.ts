@@ -18,6 +18,7 @@ import {
   MAX_DIFF_OUTPUT_BYTES,
   MAX_FILE_BYTES,
   MAX_FILES,
+  MAX_STATUS_OUTPUT_BYTES,
   SHOW_HIDDEN,
 } from "./limits.js";
 import { isGitRepo, parsePorcelain, runLocationGit } from "./git.js";
@@ -215,10 +216,15 @@ function hasNul(bytes: Uint8Array): boolean {
 }
 
 export async function folderGitStatus(root: string): Promise<GitStatus> {
-  if (!await isGitRepo(root)) return { is_repo: false, branch: null, files: [] };
+  if (!await isGitRepo(root)) return { is_repo: false, branch: null, files: [], truncated: false };
   const branch = (await runLocationGit(["rev-parse", "--abbrev-ref", "HEAD"], root, 10_000)).stdout.trim() || null;
-  const raw = await runLocationGit(["status", "--porcelain=v1", "-z"], root, 10_000);
-  return { is_repo: true, branch, files: parsePorcelain(raw.stdout) };
+  // Bounded while it is read, and bounded again in entries: a status git did
+  // not finish, or one with more changes than the list holds, is shown as the
+  // prefix it is, never as the whole tree.
+  const raw = await runLocationGit(["status", "--porcelain=v1", "-z"], root, 10_000, { maxOutputBytes: MAX_STATUS_OUTPUT_BYTES });
+  const parsed = parsePorcelain(raw.incomplete ? raw.stdout.slice(0, raw.stdout.lastIndexOf("\0") + 1) : raw.stdout);
+  const files = parsed.slice(0, MAX_FILES);
+  return { is_repo: true, branch, files, truncated: raw.incomplete === true || parsed.length > MAX_FILES };
 }
 
 export async function folderGitDiff(

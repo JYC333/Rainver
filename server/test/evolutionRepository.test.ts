@@ -250,8 +250,9 @@ describe("EvolutionRepository core", () => {
     await seedMainlineRoomsForAllProjects(db.pool);
     const repository = new EvolutionRepository(db.pool);
 
+    // A Project the member cannot read is absent to them, not forbidden.
     await expect(repository.recordRunSetup(member, targetId, agentId, { project_id: projectId }))
-      .rejects.toMatchObject({ statusCode: 403 });
+      .rejects.toMatchObject({ statusCode: 404 });
     const runs = await db.pool.query(`SELECT id FROM runs WHERE space_id = $1 AND project_id = $2`, [owner.spaceId, projectId]);
     expect(runs.rowCount).toBe(0);
   });

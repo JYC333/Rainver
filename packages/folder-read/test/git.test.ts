@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ensureGitRepository, folderGitDiff, folderGitStatus, isGitRepo, parsePorcelain, runGit, runLocationGit } from "../src/index.js";
+import { MAX_FILES } from "../src/limits.js";
 
 const roots: string[] = [];
 
@@ -118,6 +119,17 @@ describe("folder-read git operations", () => {
     await writeFile(join(root, "new.txt"), "new\n", "utf8");
     expect(await isGitRepo(root)).toBe(true);
     await expect(folderGitStatus(root)).resolves.toMatchObject({ is_repo: true, files: [{ path: "new.txt", status: "untracked" }] });
+  });
+
+  it("marks a status with more changes than the list holds as truncated, never as the whole tree", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rainver-folder-read-status-cap-"));
+    roots.push(root);
+    expect((await runGit(["init"], root)).code).toBe(0);
+    await expect(folderGitStatus(root)).resolves.toMatchObject({ is_repo: true, files: [], truncated: false });
+    await Promise.all(Array.from({ length: MAX_FILES + 1 }, (_, index) => writeFile(join(root, `f${index}.txt`), "x\n", "utf8")));
+    const status = await folderGitStatus(root);
+    expect(status.files).toHaveLength(MAX_FILES);
+    expect(status.truncated).toBe(true);
   });
 
   it("initializes a managed directory without changing an existing repository", async () => {

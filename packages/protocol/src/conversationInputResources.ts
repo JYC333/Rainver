@@ -165,22 +165,45 @@ export const ConversationInputResourceDescriptorSchema = z.object({
 }).strict();
 export type ConversationInputResourceDescriptor = z.infer<typeof ConversationInputResourceDescriptorSchema>;
 
+/**
+ * A read is addressed by line, and continued by byte. `start_line` names the
+ * first line; `start_byte_offset` is how many UTF-8 bytes of that line an
+ * earlier read already returned — the `next_byte_offset` it answered with —
+ * so a line longer than one read holds is read in bounded pieces that join
+ * back into the original. Byte offsets are not character columns: a
+ * multi-byte character is never split, and an offset inside one is refused.
+ * `sha256`, when given, must match the frozen resource; a different value
+ * means the caller is continuing a read of something else.
+ */
 export const InputResourceReadInputSchema = z.object({
   resource_id: IdSchema,
   start_line: z.number().int().min(1).default(1),
   line_count: z.number().int().min(1).max(INPUT_RESOURCE_MAX_READ_LINES).default(INPUT_RESOURCE_MAX_READ_LINES),
+  start_byte_offset: z.number().int().nonnegative().max(INPUT_RESOURCE_MAX_BYTES).default(0),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
 }).strict();
-export type InputResourceReadInput = z.infer<typeof InputResourceReadInputSchema>;
+/** The caller's shape: every field with a default may be left out. */
+export type InputResourceReadInput = z.input<typeof InputResourceReadInputSchema>;
 
+/**
+ * `next_line`/`next_byte_offset` together are the cursor for the rest: both
+ * null at the end of the resource (`eof`). A non-zero `next_byte_offset`
+ * means `next_line` was cut mid-line and continues from that byte. Line
+ * numbers are the resource's own and never shift between reads.
+ */
 export const InputResourceReadOutputSchema = z.object({
   resource_id: IdSchema,
   start_line: z.number().int().min(1),
+  start_byte_offset: z.number().int().nonnegative(),
   end_line: z.number().int().min(1),
   next_line: z.number().int().min(1).nullable(),
+  next_byte_offset: z.number().int().nonnegative().nullable(),
   total_lines: z.number().int().nonnegative(),
   sha256: z.string().regex(/^[a-f0-9]{64}$/u),
   content: z.string().max(INPUT_RESOURCE_MAX_READ_BYTES),
+  /** More of the resource remains past this read. */
   truncated: z.boolean(),
+  eof: z.boolean(),
 }).strict();
 export type InputResourceReadOutput = z.infer<typeof InputResourceReadOutputSchema>;
 

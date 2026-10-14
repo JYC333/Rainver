@@ -33,6 +33,45 @@ export async function canChangeAgent(
   return isSpaceOwnerOrAdmin(membership.rows[0]?.role);
 }
 
+/**
+ * Who configures a managed Assistant — its soft settings and its Skill
+ * overlays. There are three Assistants and three answers (plan decision 2):
+ * the personal Space's Assistant is its person's; a shared Space's Assistant
+ * is the Space creator's, by `spaces.created_by_user_id` and not by role, so
+ * another owner/admin does not reconfigure what the creator set; a Project's
+ * Assistant is the Project owner's, by `projects.owner_user_id`. Nothing
+ * transfers or takes over this authority.
+ */
+export async function canConfigureAssistant(
+  db: Queryable,
+  identity: SpaceUserIdentity,
+  target: { projectId: string | null },
+): Promise<boolean> {
+  if (target.projectId) {
+    const project = await db.query<{ owner_user_id: string | null }>(
+      `SELECT owner_user_id FROM projects
+        WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL AND status = 'active'
+        LIMIT 1`,
+      [target.projectId, identity.spaceId],
+    );
+    const owner = project.rows[0]?.owner_user_id ?? null;
+    return owner !== null && owner === identity.userId;
+  }
+  const space = await db.query<{ type: string; created_by_user_id: string | null; role: string | null }>(
+    `SELECT s.type, s.created_by_user_id, m.role
+       FROM spaces s
+       LEFT JOIN space_memberships m
+         ON m.space_id = s.id AND m.user_id = $2 AND m.status = 'active'
+      WHERE s.id = $1
+      LIMIT 1`,
+    [identity.spaceId, identity.userId],
+  );
+  const row = space.rows[0];
+  if (!row) return false;
+  if (row.type === "personal") return row.role === "owner";
+  return row.created_by_user_id !== null && row.created_by_user_id === identity.userId;
+}
+
 /** The one gate on every Agent mutation; refuses as "not found". */
 export async function assertAgentOwner(
   db: Queryable,

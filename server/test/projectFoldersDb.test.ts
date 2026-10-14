@@ -424,6 +424,7 @@ describe("Project Folder database invariants", () => {
       expect(await repo.getGitStatus(identity, PROJECT, created.id)).toMatchObject({
         is_repo: true,
         files: [],
+        truncated: false,
       });
 
       await writeFile(join(row.rows[0]!.root_path, "created.txt"), "created\n", "utf8");
@@ -559,7 +560,7 @@ describe("Project Folder database invariants", () => {
     const remoteResults: Record<string, unknown> = {
       tree: { name: "repo", path: ".", type: "dir", children: [] },
       file: { path: "README.md", content: "hello\n", size: 6, line_count: 2 },
-      git_status: { is_repo: true, branch: "main", files: [] },
+      git_status: { is_repo: true, branch: "main", files: [], truncated: false },
       git_diff: { diff: "", path: null, truncated: false, redacted: false },
     };
     const request = vi.spyOn(sharedHostConnectionRegistry, "requestFolderRead").mockImplementation(async (_hostId, frame) => ({

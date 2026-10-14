@@ -17,6 +17,9 @@ import {
 import { proposalToOut } from "../proposals/repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { getBuiltInCapabilityDefinition } from "./registry.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { canReadProject, canWriteProject } from "../projects/access.js";
+import { canChangeAgent, canConfigureAssistant, canReadAgent } from "../agents/agentAccess.js";
 import type {
   CapabilityDefinition,
   CapabilityRuntimeBinding,
@@ -255,7 +258,7 @@ export class PgCapabilitiesRepository {
     await this.requireSkillPackage(identity, skillPackageId);
     const scopeType = ensureOverlayScope(input.scope_type ?? "space");
     const scopeId = normalizeOverlayScopeId(scopeType, input.scope_id ?? null, identity.userId);
-    await this.ensureOverlayScopeExists(identity, scopeType, scopeId);
+    await this.assertOverlayScopeAuthority(identity, scopeType, scopeId, "read");
     const row = await this.db.query<SkillLocalOverlayRow>(
       `SELECT ${SKILL_LOCAL_OVERLAY_COLUMNS}
          FROM skill_local_overlays
@@ -283,7 +286,7 @@ export class PgCapabilitiesRepository {
     await this.requireSkillPackage(identity, skillPackageId);
     const scopeType = ensureOverlayScope(body.scope_type);
     const scopeId = normalizeOverlayScopeId(scopeType, body.scope_id ?? null, identity.userId);
-    await this.ensureOverlayScopeExists(identity, scopeType, scopeId);
+    await this.assertOverlayScopeAuthority(identity, scopeType, scopeId, "write");
     const status = ensureOverlayStatus(body.status);
     const now = new Date().toISOString();
     if (status === "archived") {
@@ -620,33 +623,75 @@ export class PgCapabilitiesRepository {
     if (!rows.rows[0]) throw new HttpError(404, "Skill package not found");
   }
 
-  private async ensureOverlayScopeExists(
+  /**
+   * Who may read and who may write an overlay, by the scope it configures.
+   * Reading the object the scope names comes first, and an unreadable one is
+   * answered as absent rather than as forbidden, so the overlay surface never
+   * confirms an id its caller cannot see. Then the write authority of that
+   * object: a Space overlay is the Space owner's or admin's; a Project or
+   * Folder overlay is a Project writer's (read + write); a user overlay is
+   * that person's; an ordinary Agent overlay is its manager's
+   * (`canChangeAgent`); a managed Assistant's overlay follows the Assistant's
+   * own configuration rule (`canConfigureAssistant`) — a Space admin's
+   * general overlay authority does not reach the creator's Assistant.
+   *
+   * An overlay is configuration only: it grants no capability trust, no
+   * egress, and no credential use; those are decided where they are spent.
+   */
+  private async assertOverlayScopeAuthority(
     identity: SpaceUserIdentity,
     scopeType: SkillLocalOverlayScope,
     scopeId: string | null,
+    mode: "read" | "write",
   ): Promise<void> {
-    if (scopeType === "space") return;
+    if (scopeType === "space") {
+      if (mode === "read") return;
+      const role = await this.membershipRole(identity);
+      if (!isSpaceOwnerOrAdmin(role)) throw new HttpError(403, "Space skill overlays are set by a Space owner or admin");
+      return;
+    }
     if (!scopeId) throw new HttpError(422, "scope_id is required for this scope_type");
     if (scopeType === "user") {
       if (scopeId !== identity.userId) throw new HttpError(403, "skill overlay user scope must be the current user");
       return;
     }
-    const table =
-      scopeType === "project_folder"
-        ? "project_folders"
-        : scopeType === "project"
-          ? "projects"
-          : scopeType === "agent"
-            ? "agents"
-            : null;
-    if (!table) throw new HttpError(422, "unsupported scope_type");
-    const found = await this.db.query<{ id: string }>(
-      `SELECT id FROM ${table}
-        WHERE id = $1 AND space_id = $2
-        LIMIT 1`,
+    if (scopeType === "project" || scopeType === "project_folder") {
+      const projectId = scopeType === "project" ? scopeId : await this.folderProjectId(identity.spaceId, scopeId);
+      if (!projectId || !(await canReadProject(this.db, identity.spaceId, projectId, identity.userId))) {
+        throw new HttpError(404, `${scopeType} not found`);
+      }
+      if (mode === "write" && !(await canWriteProject(this.db, identity.spaceId, projectId, identity.userId))) {
+        throw new HttpError(403, `${scopeType} skill overlays are set by a Project writer`);
+      }
+      return;
+    }
+    const agent = await this.db.query<{ agent_kind: string; project_id: string | null }>(
+      `SELECT agent_kind, project_id FROM agents WHERE id = $1 AND space_id = $2 LIMIT 1`,
       [scopeId, identity.spaceId],
     );
-    if (!found.rows[0]) throw new HttpError(404, `${scopeType} not found`);
+    const row = agent.rows[0];
+    if (!row || !(await canReadAgent(this.db, identity, scopeId))) throw new HttpError(404, "agent not found");
+    if (mode === "read") return;
+    const allowed = row.agent_kind === "system_assistant"
+      ? await canConfigureAssistant(this.db, identity, { projectId: row.project_id })
+      : await canChangeAgent(this.db, identity, scopeId);
+    if (!allowed) throw new HttpError(403, "agent skill overlays are set by the Agent's manager");
+  }
+
+  private async membershipRole(identity: SpaceUserIdentity): Promise<string | null> {
+    const result = await this.db.query<{ role: string }>(
+      `SELECT role FROM space_memberships WHERE space_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+      [identity.spaceId, identity.userId],
+    );
+    return result.rows[0]?.role ?? null;
+  }
+
+  private async folderProjectId(spaceId: string, folderId: string): Promise<string | null> {
+    const result = await this.db.query<{ project_id: string }>(
+      `SELECT project_id FROM project_folders WHERE id = $1 AND space_id = $2 LIMIT 1`,
+      [folderId, spaceId],
+    );
+    return result.rows[0]?.project_id ?? null;
   }
 }
 

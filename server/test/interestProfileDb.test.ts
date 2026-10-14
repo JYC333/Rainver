@@ -27,7 +27,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["interest_topic_observations", "interest_topic_candidates", "interest_topics", "interest_profiles", "source_item_annotations", "source_item_user_states", "source_items", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "space_memberships", "users", "spaces"],
+    ["interest_topic_observations", "interest_topic_candidates", "interest_topics", "interest_profiles", "source_item_annotations", "source_item_user_states", "source_items", "source_channel_user_subscriptions", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -63,6 +63,23 @@ beforeEach(async () => {
      ) VALUES ($1,$2,$3,$4,'Feed','active','reference_only','normal','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,$5,$5)`,
     [CONNECTION, SPACE, mappingId, OWNER, now],
   );
+  // Both readers subscribe to the connection's channel: reading counts as
+  // interest evidence only for a source the reader subscribes to (or owns).
+  await db.pool.query(
+    `INSERT INTO source_channels (
+       id, space_id, source_connection_id, created_by_user_id, name, channel_type, endpoint_url,
+       query_json, provider_query_json, query_fingerprint, status, fetch_frequency, schedule_rule_json, created_at, updated_at
+     ) VALUES ($1,$2,$1,$3,'Feed Channel','feed','https://example.com/rss','{}'::jsonb,'{}'::jsonb,$1,'active','daily','{"frequency":"daily","hour":0,"minute":0}'::jsonb,$4,$4)`,
+    [CONNECTION, SPACE, OWNER, now],
+  );
+  for (const user of [OWNER, OTHER]) {
+    await db.pool.query(
+      `INSERT INTO source_channel_user_subscriptions (
+         id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, subscribed_at, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5,$5)`,
+      [randomUUID(), SPACE, CONNECTION, user, now],
+    );
+  }
 });
 
 const annotations = () => new PgSourceAnnotationRepository(db.pool);

@@ -12,7 +12,7 @@ import { Select } from '../../components/ui/select'
 import { errMsg } from '../../lib/utils'
 import { SourceMonitorDialog } from './SourceMonitorDialog'
 import { sourceQueryText } from './sourceQueryText'
-import type { SourceChannel, SourceProvider, SourceProviderCategoryGroup, SourceRecommendation } from '../../types/api'
+import type { FollowedSourceChannel, SourceChannel, SourceProvider, SourceProviderCategoryGroup, SourceRecommendation } from '../../types/api'
 
 interface SourceGroup {
   id: string
@@ -88,6 +88,7 @@ export default function SourceChannelsPage() {
   const [arxivCategoryGroups, setArxivCategoryGroups] = useState<readonly SourceProviderCategoryGroup[]>([])
   const [channels, setChannels] = useState<SourceChannel[]>([])
   const [recommendations, setRecommendations] = useState<SourceRecommendation[]>([])
+  const [followed, setFollowed] = useState<FollowedSourceChannel[]>([])
   const [providerFilter, setProviderFilter] = useState('')
   const [search, setSearch] = useState('')
   const [setupOpen, setSetupOpen] = useState(false)
@@ -98,14 +99,16 @@ export default function SourceChannelsPage() {
     if (!activeSpaceId) return
     setLoading(true)
     try {
-      const [providerRows, channelRows, recommendationRows] = await Promise.all([
+      const [providerRows, channelRows, recommendationRows, followedRows] = await Promise.all([
         sourcesApi.providers(),
         sourcesApi.channels(),
         sourcesApi.recommendations(),
+        sourcesApi.followed(),
       ])
       setProviders(providerRows)
       setChannels(channelRows)
       setRecommendations(recommendationRows)
+      setFollowed(followedRows)
       setArxivCategoryGroups(providerRows.find(provider => provider.provider_key === 'arxiv')?.setup_schema?.category_groups ?? [])
     } catch (error) {
       toast.error(errMsg(error))
@@ -153,6 +156,21 @@ export default function SourceChannelsPage() {
     }
   }
 
+  async function setFollowing(channel: FollowedSourceChannel, status: 'subscribed' | 'muted') {
+    setBusyMonitorId(channel.id)
+    try {
+      await sourcesApi.setChannelSubscription(channel.id, status)
+      setFollowed(current => current.map(item => item.id === channel.id ? { ...item, subscription_status: status } : item))
+      toast.success(status === 'muted'
+        ? 'Left the source. What it already delivered stays readable in your Library.'
+        : 'Following the source again')
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setBusyMonitorId(null)
+    }
+  }
+
   async function decideRecommendation(recommendation: SourceRecommendation, decision: 'subscribed' | 'dismissed' | 'muted') {
     setBusyMonitorId(recommendation.id)
     try {
@@ -180,6 +198,32 @@ export default function SourceChannelsPage() {
           <Button onClick={() => setSetupOpen(true)}><Plus className="size-4 mr-2" />Add source</Button>
         </div>
       </div>
+
+      {followed.length > 0 && (
+        <section className="space-y-3 rounded-lg border p-4" aria-label="Followed sources">
+          <div>
+            <h2 className="font-medium">Sources you follow</h2>
+            <p className="text-xs text-muted-foreground">Leaving stops new items and keeps what was already delivered readable. It also stops these items from shaping your interests.</p>
+          </div>
+          <div className="space-y-2">
+            {followed.map(channel => {
+              const busy = busyMonitorId === channel.id
+              const following = channel.subscription_status === 'subscribed'
+              return (
+                <div key={channel.id} className="flex flex-col gap-3 rounded-md border bg-card p-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="font-medium">{channel.source_name} · {channel.name}</p>
+                    <p className="text-xs text-muted-foreground">{following ? 'Following' : 'Left — earlier items stay readable'}</p>
+                  </div>
+                  <Button variant="outline" size="sm" disabled={busy} onClick={() => void setFollowing(channel, following ? 'muted' : 'subscribed')}>
+                    {following ? 'Leave' : 'Follow again'}
+                  </Button>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      )}
 
       {recommendations.length > 0 && (
         <section className="space-y-3 rounded-lg border border-accent bg-accent/20 p-4" aria-label="Source recommendations">

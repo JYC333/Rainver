@@ -21,6 +21,8 @@ vi.mock('../../../api/client', () => ({
     providers: vi.fn(),
     channels: vi.fn(),
     recommendations: vi.fn(),
+    followed: vi.fn(),
+    setChannelSubscription: vi.fn(),
     decideRecommendation: vi.fn(),
     createChannel: vi.fn(),
     previewQuery: vi.fn(),
@@ -101,6 +103,7 @@ describe('Sources page', () => {
     vi.mocked(sourcesApi.providers).mockResolvedValue(providers)
     vi.mocked(sourcesApi.channels).mockResolvedValue([source()])
     vi.mocked(sourcesApi.recommendations).mockResolvedValue([])
+    vi.mocked(sourcesApi.followed).mockResolvedValue([])
     vi.mocked(sourcesApi.createChannel).mockResolvedValue(source())
     vi.mocked(sourcesApi.previewQuery).mockResolvedValue({
       provider_key: 'arxiv', compiled_query: 'all:"agent memory"', approximate_hit_count: 42,
@@ -279,5 +282,16 @@ describe('Sources page', () => {
     await user.click(screen.getByRole('button', { name: 'Search scope' }))
     await user.click(screen.getByRole('option', { name: 'All arXiv papers' }))
     expect(screen.queryByText('Approximately 42 matches')).not.toBeInTheDocument()
+  })
+
+  it('lets a follower leave another member\'s source and follow it again', async () => {
+    const followedChannel = { ...source({ id: 'channel-shared', name: 'Team feed' }), subscription_status: 'subscribed' as const }
+    vi.mocked(sourcesApi.followed).mockResolvedValue([followedChannel])
+    vi.mocked(sourcesApi.setChannelSubscription).mockResolvedValue({ source_channel_id: 'channel-shared', status: 'muted', updated_at: '2026-10-14T00:00:00Z' })
+    renderPage()
+    const leave = await screen.findByRole('button', { name: 'Leave' })
+    fireEvent.click(leave)
+    await waitFor(() => expect(sourcesApi.setChannelSubscription).toHaveBeenCalledWith('channel-shared', 'muted'))
+    expect(await screen.findByRole('button', { name: 'Follow again' })).toBeInTheDocument()
   })
 })

@@ -293,9 +293,12 @@ export class PgSourcesRepository {
           AND si.deleted_at IS NULL
           AND si.project_id IS NOT DISTINCT FROM $4
           AND (si.canonical_uri = $2 OR si.source_uri = $2)
+          -- A personal save is unique per owner: a URL another member saved
+          -- privately is not this person's item.
+          AND ($4::varchar IS NOT NULL OR si.owner_user_id = $5)
           AND ${sourceItemReadableClause("si", "$3", false)}
         LIMIT 1`,
-      [identity.spaceId, canonical, identity.userId, projectId],
+      [identity.spaceId, canonical, identity.userId, projectId, connection?.owner_user_id ?? identity.userId],
     )).rows[0];
     const now = new Date().toISOString();
     let row = await readableExisting();
@@ -335,11 +338,12 @@ export class PgSourcesRepository {
       );
       const created = inserted.rows[0];
       if (!created) {
-        // The URL's slot is unique per Space (and Project), whoever owns the
-        // row. A concurrent save of our own lands on a row we can read; one
-        // we cannot read is a conflict, not a server error.
+        // The URL's slot is unique per owner (personal) or per Project. A
+        // concurrent save of our own lands on a row we can read; a Project
+        // row we cannot read is a conflict, not a server error, and says
+        // nothing about who saved it.
         const raced = await readableExisting();
-        if (!raced) throw new HttpError(409, "This URL is already saved here as an item you cannot open");
+        if (!raced) throw new HttpError(409, "This URL is already saved in this Project as an item you cannot open");
         row = raced;
       } else {
         row = created;
@@ -402,6 +406,9 @@ export class PgSourcesRepository {
         firstOpenedAt: null,
         lastOpenedAt: null,
         progress: null,
+        // Selecting, discussing or saving for later is the reader's own
+        // reach, whatever section first showed them the item.
+        readOrigin: action === "mark_ignored" ? null : "library",
       });
       return this.getItem(identity, itemId);
     }
@@ -1350,22 +1357,24 @@ export class PgSourcesRepository {
       firstOpenedAt: string | null;
       lastOpenedAt: string | null;
       progress: Record<string, unknown> | null;
+      readOrigin: "library" | null;
     },
   ): Promise<void> {
     const now = new Date().toISOString();
     await this.db.query(
       `INSERT INTO source_item_user_states (
          id, space_id, source_item_id, user_id, library_status, read_status,
-         first_opened_at, last_opened_at, progress_json, created_at, updated_at
+         first_opened_at, last_opened_at, read_origin, progress_json, created_at, updated_at
        ) VALUES (
          $1, $2, $3, $4, COALESCE($5::varchar(32), 'new'), COALESCE($6::varchar(32), 'unread'),
-         $7::timestamptz, $8::timestamptz, COALESCE($9::jsonb, '{}'::jsonb), $10, $10
+         $7::timestamptz, $8::timestamptz, $11::varchar(32), COALESCE($9::jsonb, '{}'::jsonb), $10, $10
        )
        ON CONFLICT (space_id, source_item_id, user_id) DO UPDATE SET
          library_status = COALESCE($5::varchar(32), source_item_user_states.library_status),
          read_status = COALESCE($6::varchar(32), source_item_user_states.read_status),
          first_opened_at = COALESCE(source_item_user_states.first_opened_at, $7::timestamptz),
          last_opened_at = COALESCE($8::timestamptz, source_item_user_states.last_opened_at),
+         read_origin = COALESCE($11::varchar(32), source_item_user_states.read_origin),
          progress_json = COALESCE($9::jsonb, source_item_user_states.progress_json),
          updated_at = $10`,
       [
@@ -1379,6 +1388,7 @@ export class PgSourcesRepository {
         input.lastOpenedAt,
         input.progress ? JSON.stringify(input.progress) : null,
         now,
+        input.readOrigin,
       ],
     );
   }

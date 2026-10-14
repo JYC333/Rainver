@@ -33,7 +33,7 @@ export function InformationDigestView({ digest, project = false, onSerendipityFe
         <Card key={item.id} className="p-4 space-y-2">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <Link className="font-medium hover:underline" to={`/library/items/${item.source_item_id}`}>
+              <Link className="font-medium hover:underline" to={`/library/items/${item.source_item_id}${item.section === 'serendipity' ? '?from=serendipity' : ''}`}>
                 {item.title}
               </Link>
               <div className="mt-1 flex flex-wrap gap-1.5">

@@ -22,6 +22,9 @@ export const researchQueryStrategies = pgTable("research_query_strategies", {
   version: integer().notNull(),
   parentStrategyId: varchar("parent_strategy_id", { length: 36 }),
   adaptationDirection: varchar("adaptation_direction", { length: 16 }),
+  // The planner's untrimmed semantic intent; adaptation and retries take
+  // their vocabulary from it rather than from a trimmed attempt query.
+  semanticIntentJson: jsonb("semantic_intent_json"),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
   selectedAt: timestamp("selected_at", { withTimezone: true, mode: "string" }),
   materializedAt: timestamp("materialized_at", { withTimezone: true, mode: "string" }),

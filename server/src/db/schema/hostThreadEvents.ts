@@ -29,6 +29,11 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	// so no Project — its events belong to the Room or direct chat instead.
 	projectId: varchar("project_id", { length: 36 }),
 	runId: varchar("run_id", { length: 36 }).notNull(),
+	// The Run attempt that wrote the event, the Run's latest at write time,
+	// as `run_events.attempt_number` is. A retried Run's turn is read from
+	// its latest attempt, so an earlier attempt's unfinished tool calls are
+	// not shown as still running.
+	attemptNumber: integer("attempt_number"),
 	eventIndex: integer("event_index").notNull(),
 	eventType: varchar("event_type", { length: 32 }).notNull(),
 	// assistant_text: the coalesced text segment. assistant_thought: the same,

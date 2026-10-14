@@ -15,7 +15,10 @@ filesystem directly.
 
 ## Owns
 - Project Folder file tree browser UI (`/projects/{projectId}/files`)
-- Git status and diff viewer UI
+- Git status and diff viewer UI. A status whose file list was cut
+  (`GitStatus.truncated`, from the bounded `git status` read in
+  `@rainver/folder-read`) is shown as the first files of an incomplete list,
+  never as a clean or complete working tree.
 - Project Folder settings UI (`/projects/{projectId}/folders/{folderId}`), including
   per-Folder snapshot retention overrides
 - Files & Code backend read APIs (tree, file content, git status, git diff)

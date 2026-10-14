@@ -751,10 +751,15 @@ export default function ProjectFilesPage() {
                 <ReadErrorState error={readError} onRetry={retryReads} />
               ) : !gitStatus?.is_repo ? (
                 <p className="text-xs text-muted-foreground p-3">Not a git repository</p>
-              ) : gitStatus.files.length === 0 ? (
+              ) : gitStatus.files.length === 0 && !gitStatus.truncated ? (
                 <p className="text-xs text-muted-foreground p-3">Working tree clean</p>
               ) : (
                 <div className="space-y-3">
+                  {gitStatus.truncated && (
+                    <p role="status" className="text-xs text-warning px-2 py-1">
+                      Showing the first {gitStatus.files.length} changed files; the list is incomplete.
+                    </p>
+                  )}
                   {gitGroupOrder.map(grp => {
                     const files = gitGroups[grp]
                     if (!files?.length) return null

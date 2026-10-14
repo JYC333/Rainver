@@ -2,6 +2,7 @@ import type { ServerConfig } from "../../../config.js";
 import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import { loadViewerSpaceRole } from "../../retrieval/sourcePolicy.js";
 import { getDbPool, type Pool } from "../../../db/pool.js";
+import { tryWithDedicatedSessionAdvisoryLock } from "../../../db/advisoryLock.js";
 import type {
   RetrievalObjectType,
   RetrievalSearchResult,
@@ -127,6 +128,16 @@ const SOURCE_POST_PROCESSING_EXTRACTED_TEXT_SNIPPET_RESERVE_CHARS = 2_400;
  * `last_24h`) hands every run the same batch, so draining one would repeat
  * that batch until the batch limit.
  */
+/**
+ * One claim per rule, held as a PostgreSQL session advisory lock on its own
+ * connection for the whole run, so a manual run, a scheduled fire, and a
+ * source-event drain never read the same cursor window twice, and a crashed
+ * process releases its claim with its connection.
+ */
+function ruleClaimKey(spaceId: string, ruleId: string): string {
+  return `source_post_processing_rule:${spaceId}:${ruleId}`;
+}
+
 function windowMovesWithCursor(rule: SourcePostProcessingRuleRow): boolean {
   return normalizeInputConfig(rule.input_config_json).window === "new_since_last_success";
 }
@@ -234,10 +245,15 @@ export class SourcePostProcessingService {
       throw new HttpError(404, "Post-processing rule not found");
     }
     await this.requireManagedConnection(identity, connectionId);
-    return this.executeRule(rule, {
-      triggerType: "manual",
-      actorUserId: identity.userId,
-      force: true,
+    return this.claimForManualRun(identity.spaceId, ruleId, async () => {
+      // Re-read under the claim: a run that just finished moved the cursor.
+      const current = await repo.getRule(identity.spaceId, ruleId);
+      if (!current || current.source_channel_id !== connectionId) throw new HttpError(404, "Post-processing rule not found");
+      return this.executeRule(current, {
+        triggerType: "manual",
+        actorUserId: identity.userId,
+        force: true,
+      });
     });
   }
 
@@ -361,37 +377,41 @@ export class SourcePostProcessingService {
       throw new HttpError(404, "Post-processing rule not found");
     }
     const maxBatches = normalizeInputConfig(firstRule.input_config_json).max_batches_per_event;
-    const runs: SourcePostProcessingRunOut[] = [];
-    let stoppedReason = "max_batches_reached";
-    for (let index = 0; index < maxBatches; index += 1) {
-      const rule = await repo.getRule(identity.spaceId, ruleId);
-      if (!rule || rule.source_channel_id !== connectionId) {
-        stoppedReason = "rule_missing";
-        break;
+    const { runs, stoppedReason: drainedReason } = await this.claimForManualRun(identity.spaceId, ruleId, async () => {
+      const runs: SourcePostProcessingRunOut[] = [];
+      let stoppedReason = "max_batches_reached";
+      for (let index = 0; index < maxBatches; index += 1) {
+        const rule = await repo.getRule(identity.spaceId, ruleId);
+        if (!rule || rule.source_channel_id !== connectionId) {
+          stoppedReason = "rule_missing";
+          break;
+        }
+        const run = await this.executeRule(rule, {
+          triggerType: "manual",
+          actorUserId: identity.userId,
+          force: true,
+        });
+        runs.push(run);
+        if (run.status === "skipped") {
+          stoppedReason = "no_inputs";
+          break;
+        }
+        if (run.status !== "succeeded") {
+          stoppedReason = "run_failed";
+          break;
+        }
+        if (run.input_item_ids.length === 0) {
+          stoppedReason = "no_inputs";
+          break;
+        }
+        if (!windowMovesWithCursor(rule)) {
+          stoppedReason = "window_processed";
+          break;
+        }
       }
-      const run = await this.executeRule(rule, {
-        triggerType: "manual",
-        actorUserId: identity.userId,
-        force: true,
-      });
-      runs.push(run);
-      if (run.status === "skipped") {
-        stoppedReason = "no_inputs";
-        break;
-      }
-      if (run.status !== "succeeded") {
-        stoppedReason = "run_failed";
-        break;
-      }
-      if (run.input_item_ids.length === 0) {
-        stoppedReason = "no_inputs";
-        break;
-      }
-      if (!windowMovesWithCursor(rule)) {
-        stoppedReason = "window_processed";
-        break;
-      }
-    }
+      return { runs, stoppedReason };
+    });
+    let stoppedReason = drainedReason;
     const backlog = await repo.backlog(identity.spaceId, connectionId);
     const ruleBacklog = backlog.rules.find((item) => item.rule_id === ruleId);
     if ((ruleBacklog?.pending_item_count ?? 0) === 0 && stoppedReason === "max_batches_reached") {
@@ -781,12 +801,17 @@ export class SourcePostProcessingService {
         skipped.push({ rule_id: rule.id, reason: "cooldown" });
         continue;
       }
-      if (await repo.hasInFlightRun(rule.space_id, rule.id)) {
-        skipped.push({ rule_id: rule.id, reason: "run_in_flight" });
-        continue;
-      }
       try {
-        const result = await this.drainActiveRuleFromEvent(rule);
+        const claimed = await tryWithDedicatedSessionAdvisoryLock(this.db, ruleClaimKey(rule.space_id, rule.id), async () => {
+          // Re-read under the claim: a run that just finished moved the cursor.
+          const current = await repo.getRule(rule.space_id, rule.id);
+          return current && current.status === "active" ? this.drainActiveRuleFromEvent(current) : null;
+        });
+        if (!claimed.acquired) {
+          skipped.push({ rule_id: rule.id, reason: "run_in_flight" });
+          continue;
+        }
+        const result = claimed.value ?? { runs: [], stopped_reason: "rule_inactive" };
         if (result.runs.length === 0 || result.runs.every((run) => run.status === "skipped")) {
           skipped.push({ rule_id: rule.id, reason: "no_inputs" });
         } else {
@@ -809,11 +834,32 @@ export class SourcePostProcessingService {
     return { matched: rules.length, fired, skipped, successful_runs: successfulRuns };
   }
 
-  async fireScheduledRule(rule: SourcePostProcessingRuleRow): Promise<SourcePostProcessingRunOut> {
-    return this.executeRule(rule, {
-      triggerType: "schedule",
-      actorUserId: rule.created_by_user_id,
+  /**
+   * A scheduled fire of `rule`, or null when a run of the same rule is
+   * already in hand (another fire, an event drain, or a person's manual run):
+   * that run reads the same cursor, so a second pass would only repeat it.
+   */
+  async fireScheduledRule(rule: SourcePostProcessingRuleRow): Promise<SourcePostProcessingRunOut | null> {
+    const claimed = await tryWithDedicatedSessionAdvisoryLock(this.db, ruleClaimKey(rule.space_id, rule.id), async () => {
+      const current = await new PgSourcePostProcessingRepository(this.db).getRule(rule.space_id, rule.id);
+      if (!current) return null;
+      return this.executeRule(current, {
+        triggerType: "schedule",
+        actorUserId: current.created_by_user_id,
+      });
     });
+    return claimed.acquired ? claimed.value : null;
+  }
+
+  /**
+   * A person's run of a rule holds the rule's claim for its whole length. A
+   * rule already being run (by anyone, or by the scheduler or a source event)
+   * is refused rather than run twice over the same cursor window.
+   */
+  private async claimForManualRun<T>(spaceId: string, ruleId: string, fn: () => Promise<T>): Promise<T> {
+    const claimed = await tryWithDedicatedSessionAdvisoryLock(this.db, ruleClaimKey(spaceId, ruleId), fn);
+    if (!claimed.acquired) throw new HttpError(409, "This post-processing rule is already running; wait for that run to finish.");
+    return claimed.value;
   }
 
   private async drainActiveRuleFromEvent(

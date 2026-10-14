@@ -130,12 +130,13 @@ describe("filing a personal capture into a Project (real Postgres)", () => {
 
   it("refuses a target Project the caller cannot write", async () => {
     if (!db.available) return;
+    // Out of the Space, the Project is not theirs to see either: absent.
     await db.pool.query(`DELETE FROM space_memberships WHERE space_id = $1 AND user_id = $2`, [TEAM, OWNER]);
     await expect(filing().file({
       userId: OWNER,
       activityId: CAPTURE,
       targetProjectId: PROJECT,
-    })).rejects.toMatchObject({ statusCode: 403 });
+    })).rejects.toMatchObject({ statusCode: 404 });
   });
 
   it("refuses to file the same capture twice", async () => {

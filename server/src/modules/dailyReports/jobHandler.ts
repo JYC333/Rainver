@@ -33,7 +33,6 @@ export function registerDailyCaptureReportHandler(
       setting,
       localDate,
       triggerOrigin: stringValue(job.payload.trigger_origin) ?? "automation",
-      force: Boolean(job.payload.force),
     });
     return {
       run_id: result.run_id,

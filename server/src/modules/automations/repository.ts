@@ -15,7 +15,13 @@ export interface AutomationRow {
   agent_id: string;
   project_folder_id: string | null;
   project_id: string | null;
-  name: string;
+  /**
+   * `full`: the caller may read the Automation. `ops`: a Space owner/admin
+   * who may only pause or archive it; the content fields are withheld
+   * (`automationOpsView`).
+   */
+  access?: "full" | "ops";
+  name: string | null;
   description: string | null;
   trigger_type: string;
   status: string;
@@ -102,33 +108,58 @@ const AUTOMATION_SCHEDULER_TASK_TYPE = "automation";
 export interface AutomationReadOptions {
   /** Only Automations this person may read; absent for internal callers. */
   readableBy?: string;
+  /**
+   * Also return, as an operations view, the Automations this Space
+   * owner/admin may stop but not read: status and schedule only, no prompt,
+   * configuration or results (`access: "ops"`). Nothing for anyone else.
+   */
+  includeOpsView?: boolean;
 }
 
 /**
  * Who may read an Automation through the public routes.
  *
- * A Project-bound one is read only by a reader of its Project: `project_id`
- * is not a read grant, and its prompt, config and executions are that
- * Project's content. An `autonomous_tick` is its owner's, and a Space
- * owner/admin's, who may manage it (`ruleAutomation`); no other member reaches
- * another member's tick.
+ * A personal (non-Project) Automation is its owner's content: its prompt,
+ * configuration and results are read by the owner alone. A Project-bound one
+ * is read by a reader of its Project — `project_id` is not a read grant. An
+ * `autonomous_tick` is likewise its owner's. A Space owner/admin reads none
+ * of another member's personal Automations; what they get is the separate
+ * operations view (`automationOpsSql`), enough to pause or archive one.
  */
 function automationReadableSql(alias: string, userParam: string): string {
   return `(
-    (${alias}.project_id IS NULL
-      OR ${projectReadAccessSql(`${alias}.space_id`, `${alias}.project_id`, userParam)})
-    AND (
-      COALESCE(${alias}.config_json->>'target_type', '') <> 'autonomous_tick'
-      OR ${alias}.owner_user_id = ${userParam}
-      OR EXISTS (
-        SELECT 1 FROM space_memberships automation_admin
-         WHERE automation_admin.space_id = ${alias}.space_id
-           AND automation_admin.user_id = ${userParam}
-           AND automation_admin.status = 'active'
-           AND automation_admin.role IN ('owner', 'admin')
-      )
-    )
+    CASE WHEN ${alias}.project_id IS NULL
+         THEN ${alias}.owner_user_id = ${userParam}
+         ELSE ${projectReadAccessSql(`${alias}.space_id`, `${alias}.project_id`, userParam)}
+    END
   )`;
+}
+
+/** A Space owner's or admin's stop-loss reach: every Automation of the Space. */
+function automationOpsSql(alias: string, userParam: string): string {
+  return `EXISTS (
+    SELECT 1 FROM space_memberships automation_admin
+     WHERE automation_admin.space_id = ${alias}.space_id
+       AND automation_admin.user_id = ${userParam}
+       AND automation_admin.status = 'active'
+       AND automation_admin.role IN ('owner', 'admin')
+  )`;
+}
+
+/**
+ * The operations view of an Automation someone may stop but not read: its
+ * identity, owner, target, status and schedule, and none of its content —
+ * no name, description, prompt, configuration, preflight or results.
+ */
+export function automationOpsView(row: AutomationRow): AutomationRow {
+  return {
+    ...row,
+    access: "ops",
+    name: null,
+    description: null,
+    preflight_snapshot_json: null,
+    config_json: { target_type: row.config_json?.target_type ?? null },
+  };
 }
 
 export class PgAutomationRepository implements AutomationRepositoryPort {
@@ -148,29 +179,45 @@ export class PgAutomationRepository implements AutomationRepositoryPort {
       params.push(filters.projectId);
       where.push(`project_id IS NOT DISTINCT FROM $${params.length}`);
     }
+    let readableParam: string | null = null;
     if (filters.readableBy !== undefined) {
       params.push(filters.readableBy);
-      where.push(automationReadableSql("automations", `$${params.length}`));
+      readableParam = `$${params.length}`;
+      where.push(filters.includeOpsView
+        ? `(${automationReadableSql("automations", readableParam)} OR ${automationOpsSql("automations", readableParam)})`
+        : automationReadableSql("automations", readableParam));
     }
-    const result = await this.db.query<AutomationRow>(
-      `SELECT ${AUTOMATION_COLUMNS}
+    const result = await this.db.query<AutomationRow & { readable?: boolean }>(
+      `SELECT ${AUTOMATION_COLUMNS}${readableParam ? `, ${automationReadableSql("automations", readableParam)} AS readable` : ""}
          FROM automations
         WHERE ${where.join(" AND ")}
         ORDER BY created_at DESC`,
       params,
     );
-    return Promise.all(result.rows.map((row) => this.withScheduleState(row)));
+    return Promise.all(result.rows.map(async ({ readable, ...row }) => {
+      const withState = await this.withScheduleState(row);
+      if (readableParam === null) return withState;
+      return readable === false ? automationOpsView(withState) : { ...withState, access: "full" as const };
+    }));
   }
 
   async get(spaceId: string, automationId: string, options: AutomationReadOptions = {}): Promise<AutomationRow | null> {
-    const readable = options.readableBy === undefined ? "" : `AND ${automationReadableSql("automations", "$3")}`;
-    const result = await this.db.query<AutomationRow>(
-      `SELECT ${AUTOMATION_COLUMNS}
+    const readable = options.readableBy === undefined
+      ? ""
+      : options.includeOpsView
+        ? `AND (${automationReadableSql("automations", "$3")} OR ${automationOpsSql("automations", "$3")})`
+        : `AND ${automationReadableSql("automations", "$3")}`;
+    const result = await this.db.query<AutomationRow & { readable?: boolean }>(
+      `SELECT ${AUTOMATION_COLUMNS}${options.readableBy === undefined ? "" : `, ${automationReadableSql("automations", "$3")} AS readable`}
          FROM automations
         WHERE space_id = $1 AND id = $2 ${readable}`,
       options.readableBy === undefined ? [spaceId, automationId] : [spaceId, automationId, options.readableBy],
     );
-    return result.rows[0] ? this.withScheduleState(result.rows[0]) : null;
+    const { readable: isReadable, ...row } = result.rows[0] ?? {};
+    if (!row.id) return null;
+    const withState = await this.withScheduleState(row as AutomationRow);
+    if (options.readableBy === undefined) return withState;
+    return isReadable === false ? automationOpsView(withState) : { ...withState, access: "full" as const };
   }
 
   async getMembershipRole(spaceId: string, userId: string): Promise<string | null> {
@@ -767,6 +814,7 @@ export function automationToOut(row: AutomationRow): Record<string, unknown> {
   return {
     id: row.id,
     space_id: row.space_id,
+    access: row.access ?? "full",
     owner_user_id: row.owner_user_id,
     agent_id: row.agent_id,
     project_folder_id: row.project_folder_id,

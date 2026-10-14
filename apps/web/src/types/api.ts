@@ -732,6 +732,11 @@ export interface SourceCatalog {
   mappings: SourceCatalogMapping[]
 }
 
+/** Another member's channel this person follows (`subscribed`) or has left (`muted`). */
+export interface FollowedSourceChannel extends SourceChannel {
+  subscription_status: 'subscribed' | 'muted'
+}
+
 export interface SourceRecommendation extends SourceChannel {
   subscription_status: 'pending'
   recommendation_message: string | null
@@ -2874,6 +2879,11 @@ export type AssistantProposalStyle = 'proactive' | 'balanced' | 'conservative'
 export interface SpaceAssistantSettingsOut {
   id: string
   space_id: string
+  /** The Assistant these settings belong to: the Space's own, or a Project's. */
+  scope: 'space' | 'project'
+  project_id: string | null
+  /** Whether the caller may change them: the Space creator, the personal Space's owner, or the Project owner. */
+  can_configure: boolean
   assistant_agent_id: string | null
   response_style: AssistantResponseStyle | null
   verbosity: AssistantVerbosity | null
@@ -3677,6 +3687,8 @@ export interface GitStatus {
   is_repo: boolean
   branch: string | null
   files: GitChangedFile[]
+  /** `files` is a prefix of the real change list: git was cut short or more files changed than are listed. */
+  truncated: boolean
 }
 
 // ── Home summary (`GET /api/v1/home/summary`) ──────────────────────────────
@@ -3795,7 +3807,8 @@ export interface HomeSuggestedActionItem {
 }
 
 export interface HomeSourceSummarySection {
-  open_items: number
+  /** Items the viewer may read and has not opened or set aside — theirs, not the Space's. */
+  pending_reading_items: number
   new_items_today: number
   pending_extraction_jobs: number
   failed_extraction_jobs: number
@@ -3858,7 +3871,6 @@ export interface DailyCaptureReportSettingUpdate {
 
 export interface DailyReportRunRequest {
   local_date?: string | null
-  force?: boolean
   create_experience_proposals?: boolean | null
   create_memory_proposals?: boolean | null
 }
@@ -4166,12 +4178,16 @@ export interface SerendipityFeedbackResult {
   created_at: string
 }
 
-export interface InformationDigest {
+/**
+ * One persisted snapshot. Its day fields — the local date, the timezone it is
+ * a day of, the half-open UTC interval, and whether it was scheduled or a
+ * backfill — are the protocol's.
+ */
+export interface InformationDigest extends InformationDigestDayFields {
   id: string
   digest_type: 'personal' | 'project'
   owner_user_id: string | null
   project_id: string | null
-  digest_date: string
   profile_maturity: 'cold' | 'warming' | 'warm' | null
   status: 'ready' | 'empty' | 'failed'
   settings: Record<string, unknown>
@@ -4181,6 +4197,26 @@ export interface InformationDigest {
   team_aggregates_available: boolean
   team_blind_spot_domains: string[]
 }
+
+/** A history read: the day's snapshot, or why there is none. Reading never generates. */
+export type InformationDigestLookup =
+  | { status: 'available'; digest: InformationDigest }
+  | InformationDigestMissing
+
+/** A backfill answers with the snapshot and whether this request made it (`false`: it already existed). */
+export interface InformationDigestBackfillResult {
+  digest: InformationDigest
+  created: boolean
+}
+
+export type {
+  InformationDigestDayFields,
+  InformationDigestMissing,
+  SourceAnnotationEpisode,
+  SourceAnnotationRetryResult,
+  SourceAnnotationWaitReason,
+} from '@rainver/protocol'
+import type { InformationDigestDayFields, InformationDigestMissing } from '@rainver/protocol'
 
 export interface InterestProfileSnapshot {
   profile_id: string
@@ -4525,11 +4561,13 @@ export type AutomationTriggerType = 'manual' | 'schedule'
 export interface AutomationOut {
   id: string
   space_id: string
+  /** `ops`: a Space owner/admin who may only pause or archive it; content fields are withheld. */
+  access: 'full' | 'ops'
   owner_user_id: string
   agent_id: string
   project_folder_id: string | null
   project_id: string | null
-  name: string
+  name: string | null
   description: string | null
   trigger_type: string
   status: string

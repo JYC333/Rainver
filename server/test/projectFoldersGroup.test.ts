@@ -57,7 +57,7 @@ describe("projectFoldersRoutes", () => {
         id: "revision-1", path: "README.md", status: "available",
       }]);
       await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/git/status", {
-        is_repo: false, branch: null, files: [],
+        is_repo: false, branch: null, files: [], truncated: false,
       });
       await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/git/diff", {
         diff: "", path: null, truncated: false, redacted: false,
@@ -150,7 +150,7 @@ describe("projectFoldersRoutes", () => {
         return { used_bytes: 0, limit_bytes: 50 * 1024 * 1024 };
       },
       async getGitStatus() {
-        return { is_repo: false, branch: null, files: [] };
+        return { is_repo: false, branch: null, files: [], truncated: false };
       },
       async getGitDiff() {
         return { diff: "", path: null, truncated: false, redacted: false };

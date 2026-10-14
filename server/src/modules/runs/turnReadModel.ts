@@ -54,6 +54,11 @@ export async function loadRunTurn(
   // are appended unconditionally, and a tool call whose start fell before the
   // cursor would arrive a second time. A reconnecting client asks for the
   // turn again; a turn is small.
+  //
+  // A retried Run is read from its latest attempt only. An earlier attempt
+  // stopped part-way: its tool calls never finished and its failure is not
+  // this turn's, so folding it in would show work as still running that no
+  // process is doing.
   const projection = row.host_task_thread_id
     ? projectHostThreadTurn(await loadHostThreadRows(db, row.host_task_thread_id, input.runId))
     : projectRunEventTurn(
@@ -138,6 +143,15 @@ export async function loadRunTurn(
   };
 }
 
+/**
+ * Rows of the Run's latest attempt only. A row without an attempt was
+ * written before the Run had one, so it counts as the first.
+ */
+const LATEST_ATTEMPT_SQL = (table: string, runParam: string) =>
+  `COALESCE(${table}.attempt_number, 1) = (
+     SELECT COALESCE(MAX(latest.attempt_number), 1) FROM ${table} latest WHERE latest.run_id = ${runParam}
+   )`;
+
 async function loadHostThreadRows(
   db: Queryable,
   threadId: string,
@@ -150,6 +164,7 @@ async function loadHostThreadRows(
             tool_input_summary, tool_kind, tool_result_summary, status
        FROM host_thread_events
       WHERE host_task_thread_id = $1 AND run_id = $2
+        AND ${LATEST_ATTEMPT_SQL("host_thread_events", "$2")}
       ORDER BY event_index ASC
       LIMIT 2000`,
     [threadId, runId],
@@ -166,6 +181,7 @@ async function loadRunEventRows(
     `SELECT event_index, event_type, status, summary, error_code, error_message, metadata_json
        FROM run_events
       WHERE space_id = $1 AND run_id = $2
+        AND ${LATEST_ATTEMPT_SQL("run_events", "$2")}
       ORDER BY event_index ASC
       LIMIT 2000`,
     [spaceId, runId],

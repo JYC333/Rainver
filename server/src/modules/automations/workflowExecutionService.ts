@@ -66,13 +66,13 @@ export class WorkflowExecutionService {
       `INSERT INTO workflow_executions (
          id, space_id, automation_id, workflow_version_id, status, trigger_type,
          input_json, definition_json, resolution_trace_json, contract_snapshot_json,
-         budget_snapshot_json, research_operation_id, created_at, updated_at
+         budget_snapshot_json, research_operation_id, responsible_user_id, created_at, updated_at
        ) VALUES ($1, $2, $3, $4, 'queued', $5, $6::jsonb, $7::jsonb, $8::jsonb,
-                 $9::jsonb, $10::jsonb, $11, $12, $12)`,
+                 $9::jsonb, $10::jsonb, $11, $12, $13, $13)`,
       [executionId, input.identity.spaceId, input.automation.id, input.target.versionId, input.triggerType,
         JSON.stringify(input.inputJson), JSON.stringify(input.target.contentJson), JSON.stringify(input.target.resolutionTrace),
         JSON.stringify(automationContractSnapshot(input.automation)), JSON.stringify({ sources: input.budgetSources }),
-        input.researchOperationId ?? null, now],
+        input.researchOperationId ?? null, input.identity.userId, now],
     );
     const root = await new PgRunRepository(input.db).createCoordinatorRun({
       execution_kind: "agent",
@@ -143,12 +143,19 @@ export class WorkflowExecutionService {
     }
   }
 
-  async reconcile(client: Queryable, spaceId: string, executionId: string, userId: string): Promise<Record<string, unknown>> {
+  /**
+   * Advances an execution. Whoever triggers the pass — a checkpoint approver,
+   * a Run's finalization, the recovery scan — does not become the principal
+   * of what it schedules next: every node Run names the person recorded on
+   * the execution when it started (`responsible_user_id`), and the credential
+   * authority walks up to that same person.
+   */
+  async reconcile(client: Queryable, spaceId: string, executionId: string): Promise<Record<string, unknown>> {
     return withQueryableTransaction(client, (transaction) =>
-      this.reconcileLocked(transaction, spaceId, executionId, userId));
+      this.reconcileLocked(transaction, spaceId, executionId));
   }
 
-  private async reconcileLocked(client: Queryable, spaceId: string, executionId: string, userId: string): Promise<Record<string, unknown>> {
+  private async reconcileLocked(client: Queryable, spaceId: string, executionId: string): Promise<Record<string, unknown>> {
     const scope = await client.query<{ project_id: string | null }>(
       `SELECT a.project_id
          FROM workflow_executions e
@@ -166,13 +173,13 @@ export class WorkflowExecutionService {
       id: string; automation_id: string; workflow_version_id: string; root_run_id: string | null;
       status: string; input_json: Record<string, unknown>; definition_json: unknown; resolution_trace_json: string[];
       budget_snapshot_json: unknown; project_id: string | null; project_folder_id: string | null; agent_id: string;
-      research_operation_id: string | null;
+      research_operation_id: string | null; responsible_user_id: string | null;
       name: string; description: string | null; config_json: Record<string, unknown> | null;
       automation_status: string;
     }>(
       `SELECT e.id, e.automation_id, e.workflow_version_id, e.root_run_id, e.status,
               e.input_json, e.definition_json, e.resolution_trace_json, e.budget_snapshot_json,
-              e.research_operation_id,
+              e.research_operation_id, e.responsible_user_id,
               a.project_id, a.project_folder_id, a.agent_id, a.name, a.description, a.config_json,
               a.status AS automation_status
          FROM workflow_executions e JOIN automations a ON a.id = e.automation_id AND a.space_id = e.space_id
@@ -224,6 +231,11 @@ export class WorkflowExecutionService {
       return { workflow_execution_id: executionId, status: "completed", scheduled_node_ids: [] };
     }
     if (!execution.root_run_id) throw new HttpError(409, "Workflow Execution coordinator run is missing");
+    // An execution with no recorded principal schedules nothing: guessing one
+    // from whoever triggered this pass is exactly the substitution this column
+    // exists to prevent.
+    if (!execution.responsible_user_id) throw new HttpError(409, "Workflow Execution has no recorded responsible person");
+    const userId = execution.responsible_user_id;
     const automation: AutomationRow = {
       id: execution.automation_id,
       space_id: spaceId,
@@ -259,7 +271,7 @@ export class WorkflowExecutionService {
     return { workflow_execution_id: executionId, status: "running", scheduled_node_ids: scheduledNodeIds };
   }
 
-  async reconcileForRun(client: Queryable, spaceId: string, runId: string, userId: string): Promise<void> {
+  async reconcileForRun(client: Queryable, spaceId: string, runId: string): Promise<void> {
     const rows = await client.query<{ execution_id: string }>(
       `SELECT DISTINCT node.execution_id
          FROM workflow_execution_node_runs link
@@ -267,7 +279,7 @@ export class WorkflowExecutionService {
         WHERE link.space_id = $1 AND link.run_id = $2`,
       [spaceId, runId],
     );
-    for (const row of rows.rows) await this.reconcile(client, spaceId, row.execution_id, userId);
+    for (const row of rows.rows) await this.reconcile(client, spaceId, row.execution_id);
   }
 
   private async scheduleReadyNodes(

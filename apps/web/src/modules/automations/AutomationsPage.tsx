@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { automationsApi, agentsApi, evolutionApi, projectsApi } from '../../api/client'
 import type { AutomationOut, AutomationTargetType, AutomationTriggerType, AgentOut, EvolvableAsset, EvolvableAssetVersion, Project, WorkflowExecutionSummary } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
+import { useAuth } from '../../contexts/AuthContext'
 import { SpaceLink } from '../../core/spaceNav'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
@@ -328,17 +329,23 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
   const isSchedule = auto.trigger_type === 'schedule'
   const archived = auto.status === 'archived'
   const target = automationTarget(auto)
+  const { currentUser } = useAuth()
+  // Only the owner changes an Automation's content, Project or enablement.
+  // A Space owner/admin who cannot read it gets the operations view: they may
+  // pause or archive it, and see nothing of what it runs.
+  const isOwner = currentUser?.id === auto.owner_user_id
+  const opsOnly = auto.access === 'ops'
 
   useEffect(() => {
     setProjectDraft(auto.project_id ?? '')
   }, [auto.project_id])
 
   useEffect(() => {
-    if (target !== 'workflow') { setExecutions([]); return }
+    if (target !== 'workflow' || opsOnly) { setExecutions([]); return }
     let active = true
     void automationsApi.workflowExecutions(auto.id).then(rows => { if (active) setExecutions(rows.slice(0, 5)) }).catch(() => { if (active) setExecutions([]) })
     return () => { active = false }
-  }, [auto.id, target])
+  }, [auto.id, target, opsOnly])
 
   async function act(fn: () => Promise<unknown>, ok: string) {
     setBusy(true)
@@ -368,7 +375,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
     <Card>
       <div className="flex items-start justify-between mb-2">
         <div className="flex items-center gap-2 flex-wrap">
-          <CardTitle>{auto.name}</CardTitle>
+          <CardTitle>{opsOnly ? "Another member's automation" : auto.name}</CardTitle>
           <Badge variant="muted" className="text-[10px]">
             {shortTargetLabel(target)}
           </Badge>
@@ -391,7 +398,12 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
       {cfgString(auto.config_json, 'prompt') && (
         <p className="text-xs mb-3 line-clamp-2"><span className="text-muted-foreground">Prompt: </span>{cfgString(auto.config_json, 'prompt')}</p>
       )}
-      {target === 'agent_run' && !archived && (
+      {opsOnly && (
+        <p className="text-xs mb-3 text-muted-foreground">
+          You can pause or archive this automation. Its prompt, configuration and results belong to its owner.
+        </p>
+      )}
+      {target === 'agent_run' && !archived && isOwner && (
         <div className="flex flex-wrap items-end gap-2 mb-3">
           <label className="min-w-48 flex-1 space-y-1">
             <span className={fieldLabel}>Project binding</span>
@@ -410,7 +422,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
           </Button>
         </div>
       )}
-      {target !== 'agent_run' && (
+      {target !== 'agent_run' && !opsOnly && (
         <p className="text-xs mb-3 flex items-center gap-1.5 text-muted-foreground">
           <ShieldCheck className="size-3.5" />
           {target === 'workflow'
@@ -430,7 +442,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
 
       {!archived && (
         <div className="flex gap-2">
-          <Button size="sm" variant="outline" disabled={busy}
+          {!opsOnly && <Button size="sm" variant="outline" disabled={busy}
             onClick={async () => {
               setBusy(true)
               try {
@@ -450,13 +462,13 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
               }
             }}>
             <Play className="size-3.5 mr-1" /> {target === 'agent_run' || target === 'workflow' ? 'Run now' : 'Scan now'}
-          </Button>
+          </Button>}
           {auto.status === 'active' ? (
             <Button size="sm" variant="outline" disabled={busy}
               onClick={() => act(() => automationsApi.update(auto.id, { status: 'paused' }), 'Paused')}>
               <Pause className="size-3.5 mr-1" /> Pause
             </Button>
-          ) : (
+          ) : isOwner && (
             <Button size="sm" variant="outline" disabled={busy}
               onClick={() => act(() => automationsApi.update(auto.id, { status: 'active' }), 'Resumed')}>
               <Play className="size-3.5 mr-1" /> Resume

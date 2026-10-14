@@ -123,13 +123,23 @@ export const ResearchQueryAttemptSchema = z.object({
 }).strict();
 export type ResearchQueryAttempt = z.infer<typeof ResearchQueryAttemptSchema>;
 
+/**
+ * A provider plan carries its most recent attempts, not its whole history: a
+ * plan gathers up to 4 attempts per round across any number of manual
+ * retries. The recent window is joined by the selected attempt and the latest
+ * observed attempt when either is older. `attempt_count` is the full history,
+ * read page by page from the plan's attempts route.
+ */
+export const RESEARCH_QUERY_RECENT_ATTEMPTS = 20;
+export const RESEARCH_QUERY_ATTEMPT_PAGE_MAX = 100;
+
 export const ResearchQueryProviderPlanSchema = z.object({
   id: z.string().uuid(),
   provider_key: ResearchProviderKeySchema,
   status: z.enum(["pending", "evaluating", "selected", "unavailable", "failed"]),
-  // Bounded at 4 attempts per round (see ResearchQueryAttemptSchema.round),
-  // but a provider plan can accumulate attempts across many manual retries.
-  attempts: z.array(ResearchQueryAttemptSchema).max(200),
+  /** Oldest first: the most recent attempts plus the selected and latest observed ones. */
+  attempts: z.array(ResearchQueryAttemptSchema).max(RESEARCH_QUERY_RECENT_ATTEMPTS + 2),
+  attempt_count: z.number().int().nonnegative(),
   selected_attempt_id: z.string().uuid().nullable(),
   terminal_decision: ResearchQueryDecisionSchema.nullable(),
   decision_reason: z.string().max(1_000).nullable(),
@@ -149,12 +159,34 @@ export const ResearchQueryStrategySchema = z.object({
   version: z.number().int().min(1),
   parent_strategy_id: z.string().uuid().nullable(),
   adaptation_direction: z.enum(["broaden", "narrow", "rollback"]).nullable(),
+  /**
+   * The planner's full semantic intent for the question, before any ladder
+   * step trimmed it. Adapted versions and provider retries step from their
+   * stored query using this vocabulary. Null for a strategy whose planning
+   * has not finished.
+   */
+  semantic_intent: ResearchSemanticQuerySchema.nullable(),
   provider_plans: z.array(ResearchQueryProviderPlanSchema).max(4),
   created_at: z.string(),
   selected_at: z.string().nullable(),
   materialized_at: z.string().nullable(),
 }).strict();
 export type ResearchQueryStrategy = z.infer<typeof ResearchQueryStrategySchema>;
+
+export const ListResearchQueryAttemptsQuerySchema = z.object({
+  project_id: z.string().uuid(),
+  limit: z.coerce.number().int().min(1).max(RESEARCH_QUERY_ATTEMPT_PAGE_MAX).default(RESEARCH_QUERY_RECENT_ATTEMPTS),
+  offset: z.coerce.number().int().min(0).default(0),
+}).strict();
+
+/** One page of a provider plan's attempts, newest first. */
+export const ListResearchQueryAttemptsResponseSchema = z.object({
+  items: z.array(ResearchQueryAttemptSchema).max(RESEARCH_QUERY_ATTEMPT_PAGE_MAX),
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().min(1),
+  offset: z.number().int().nonnegative(),
+}).strict();
+export type ListResearchQueryAttemptsResponse = z.infer<typeof ListResearchQueryAttemptsResponseSchema>;
 
 export const ListResearchQueryStrategiesResponseSchema = z.object({
   active_strategy_ids: z.array(z.string().uuid()),

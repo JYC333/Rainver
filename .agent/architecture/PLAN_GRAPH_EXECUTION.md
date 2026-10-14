@@ -126,7 +126,13 @@ Version, snapshots the definition and resolution trace, then creates a
 `WorkflowExecution`. Scheduled Workflow Automation must be pinned. Materialized
 nodes and dependencies live only in the Workflow Execution tables. Workflow
 checkpoint approval uses `workflow_execution_checkpoint`; it never uses
-`plan_checkpoint` and never creates a Plan.
+`plan_checkpoint` and never creates a Plan. The execution records its
+responsible person once, at start (`workflow_executions.responsible_user_id`,
+from `fireResponsibility`); every later reconciliation — after a checkpoint
+approval, a Run's finalization, or a recovery pass — schedules node Runs as
+that person. The checkpoint's approver is audit only: `reviewed_by` on the
+proposal and `approved_by_user_id`/`approved_at` in the node's
+`metadata_json`. An execution without a recorded person schedules nothing.
 
 The shared execution behavior is exposed through `PlanExecutionService` and
 `WorkflowExecutionService`; both use durable node-run

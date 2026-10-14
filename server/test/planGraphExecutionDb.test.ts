@@ -932,8 +932,8 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: work!.run_id, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: new Date().toISOString() });
     await Promise.all([
-      service.reconcileForRun(db.pool, SPACE, work!.run_id, USER),
-      service.reconcileForRun(db.pool, SPACE, work!.run_id, USER),
+      service.reconcileForRun(db.pool, SPACE, work!.run_id),
+      service.reconcileForRun(db.pool, SPACE, work!.run_id),
     ]);
 
     const consume = (await db.pool.query<{
@@ -966,7 +966,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     await dispatchAgentRun(consume!.run_id, new Date().toISOString());
     await runs.markRunTerminal({ run_id: consume!.run_id, space_id: SPACE, status: "succeeded", output_json: { result: "consumed" }, completed_at: new Date().toISOString() });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: consume!.run_id, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: new Date().toISOString() });
-    await service.reconcileForRun(db.pool, SPACE, consume!.run_id, USER);
+    await service.reconcileForRun(db.pool, SPACE, consume!.run_id);
 
     const checkpoint = (await db.pool.query<{ proposal_id: string }>(
       `SELECT approval_proposal_id AS proposal_id FROM workflow_execution_nodes WHERE space_id = $1 AND execution_id = $2 AND node_key = 'checkpoint'`,
@@ -1046,7 +1046,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       completed_at: now,
     });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: sourceRun, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: now });
-    await service.reconcileForRun(db.pool, SPACE, sourceRun, USER);
+    await service.reconcileForRun(db.pool, SPACE, sourceRun);
 
     const states = (await db.pool.query<{
       node_key: string; status: string; blocked_reason: string | null;
@@ -1147,7 +1147,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     await dispatchAgentRun(sourceRun, now);
     await runs.markRunTerminal({ run_id: sourceRun, space_id: SPACE, status: "succeeded", output_json: canonicalRunOutput({ success: true, outputText: "", outputJson: { value: "world" } }), completed_at: now });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: sourceRun, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: now });
-    await service.reconcileForRun(db.pool, SPACE, sourceRun, USER);
+    await service.reconcileForRun(db.pool, SPACE, sourceRun);
 
     const nodes = (await db.pool.query<{ node_key: string; status: string; blocked_reason: string | null }>(
       `SELECT node_key, status, blocked_reason FROM workflow_execution_nodes
@@ -1313,7 +1313,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       trajectory_status: "incomplete",
       evaluated_at: now,
     });
-    await service.reconcileForRun(db.pool, SPACE, firstDelegated!.run_id, USER);
+    await service.reconcileForRun(db.pool, SPACE, firstDelegated!.run_id);
 
     const retryLinks = await db.pool.query<{ run_id: string; role: string }>(
       `SELECT link.run_id, link.role
@@ -1348,7 +1348,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       trajectory_status: "acceptable",
       evaluated_at: now,
     });
-    await service.reconcileForRun(db.pool, SPACE, delegated!.run_id, USER);
+    await service.reconcileForRun(db.pool, SPACE, delegated!.run_id);
 
     const consumer = (await db.pool.query<{ status: string; output_json: unknown }>(
       `SELECT node.status, attempt.output_json
@@ -1439,7 +1439,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     await dispatchAgentRun(delegatedRun, now);
     await runs.markRunTerminal({ run_id: delegatedRun, space_id: SPACE, status: "failed", error_json: { error_code: "test_failure" }, completed_at: now });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: delegatedRun, outcome_status: "failed", trajectory_status: "incomplete", evaluated_at: now });
-    await service.reconcileForRun(db.pool, SPACE, delegatedRun, USER);
+    await service.reconcileForRun(db.pool, SPACE, delegatedRun);
     const nodeStatus = async () => (await db.pool.query<{ status: string }>(
       `SELECT status FROM workflow_execution_nodes WHERE execution_id=$1 AND node_key='work'`, [execution.workflowExecutionId],
     )).rows[0]?.status;
@@ -1449,7 +1449,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     // The failed delegation is superseded and kept for audit only. A later
     // reconcile must not select it as the node's latest result and fail a
     // node — and with it the execution — that has already succeeded.
-    await service.reconcileForRun(db.pool, SPACE, delegatedRun, USER);
+    await service.reconcileForRun(db.pool, SPACE, delegatedRun);
     expect(await nodeStatus()).toBe("done");
     expect(attempts).toBe(2);
     await expect(db.pool.query<{ status: string }>(
@@ -1512,7 +1512,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     // node (attempt 1 of 2 remaining -> back to 'ready', not 'failed') and
     // immediately re-dispatches the ready node into attempt 2 — retry is not
     // a separate step the caller has to remember to trigger.
-    await service.reconcileForRun(db.pool, SPACE, firstFlakyRun, USER);
+    await service.reconcileForRun(db.pool, SPACE, firstFlakyRun);
 
     const afterFirstFailure = (await db.pool.query<{ status: string; blocked_reason: string | null }>(
       `SELECT status, blocked_reason FROM workflow_execution_nodes WHERE execution_id = $1 AND node_key = 'flaky'`,
@@ -1533,7 +1533,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     await dispatchAgentRun(secondFlakyRun, now);
     await runs.markRunTerminal({ run_id: secondFlakyRun, space_id: SPACE, status: "succeeded", output_json: {}, completed_at: now });
     await runs.insertRunEvaluation({ space_id: SPACE, run_id: secondFlakyRun, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: now });
-    await service.reconcileForRun(db.pool, SPACE, secondFlakyRun, USER);
+    await service.reconcileForRun(db.pool, SPACE, secondFlakyRun);
     expect((await db.pool.query<{ status: string }>(
       `SELECT status FROM workflow_execution_nodes WHERE execution_id = $1 AND node_key = 'flaky'`,
       [execution.workflowExecutionId],
@@ -1548,7 +1548,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     )).rows[0]!.run_id;
     await dispatchAgentRun(alwaysFailsRun1, now);
     await runs.markRunTerminal({ run_id: alwaysFailsRun1, space_id: SPACE, status: "failed", error_json: { error_code: "persistent" }, completed_at: now });
-    await service.reconcileForRun(db.pool, SPACE, alwaysFailsRun1, USER);
+    await service.reconcileForRun(db.pool, SPACE, alwaysFailsRun1);
     expect((await db.pool.query<{ status: string }>(
       `SELECT status FROM workflow_execution_nodes WHERE execution_id = $1 AND node_key = 'always_fails'`,
       [execution.workflowExecutionId],
@@ -1562,7 +1562,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect(alwaysFailsRun2).not.toBe(alwaysFailsRun1);
     await dispatchAgentRun(alwaysFailsRun2, now);
     await runs.markRunTerminal({ run_id: alwaysFailsRun2, space_id: SPACE, status: "failed", error_json: { error_code: "persistent" }, completed_at: now });
-    await service.reconcileForRun(db.pool, SPACE, alwaysFailsRun2, USER);
+    await service.reconcileForRun(db.pool, SPACE, alwaysFailsRun2);
     const finalAlwaysFails = (await db.pool.query<{ status: string; count: number }>(
       `SELECT node.status,
               (SELECT count(*)::int FROM workflow_execution_node_runs wr WHERE wr.node_id = node.id) AS count

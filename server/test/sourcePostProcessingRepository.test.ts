@@ -711,6 +711,58 @@ describe("source post-processing repository (real Postgres)", () => {
     }
   });
 
+  it("runs a rule once at a time: a manual run holds the rule's claim against schedule, source events, and a second manual run", async () => {
+    if (!db.available) return;
+    const item = await seedItem("Contested paper", "2026-07-01T00:00:00.000Z");
+    const rule = await repo().createRule({
+      spaceId: SPACE,
+      sourceChannelId: CONNECTION,
+      agentId: AGENT,
+      projectId: null,
+      name: "Contested rule",
+      triggerType: "items_materialized",
+      triggerConfig: normalizeTriggerConfig({ min_new_items: 1, cooldown_seconds: 0 }, "items_materialized"),
+      inputConfig: normalizeInputConfig({ max_batches_per_event: 1 }),
+      actions: normalizeActions(null),
+      createdByUserId: OWNER,
+    });
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let entered!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
+    const executeRule = vi.spyOn(
+      SourcePostProcessingService.prototype as unknown as { executeRule: () => Promise<SourcePostProcessingRunOut> },
+      "executeRule",
+    ).mockImplementation(async () => {
+      if (executeRule.mock.calls.length === 1) {
+        entered();
+        await firstHeld;
+      }
+      return { id: randomUUID(), status: "succeeded", input_item_ids: [item] } as unknown as SourcePostProcessingRunOut;
+    });
+    try {
+      const service = new SourcePostProcessingService(db.pool, loadConfig({}));
+      const manual = service.runRuleNow({ spaceId: SPACE, userId: OWNER }, CONNECTION, rule.id);
+      await firstEntered;
+
+      await expect(service.fireScheduledRule((await repo().getRule(SPACE, rule.id))!)).resolves.toBeNull();
+      const event = await service.fireSourceEvent({ spaceId: SPACE, sourceChannelId: CONNECTION, newItemCount: 1 });
+      expect(event.skipped).toContainEqual({ rule_id: rule.id, reason: "run_in_flight" });
+      await expect(service.runRuleNow({ spaceId: SPACE, userId: OWNER }, CONNECTION, rule.id))
+        .rejects.toMatchObject({ statusCode: 409 });
+      expect(executeRule).toHaveBeenCalledTimes(1);
+
+      releaseFirst();
+      await expect(manual).resolves.toMatchObject({ status: "succeeded" });
+      // The claim went with the run: the next fire proceeds.
+      await expect(service.fireScheduledRule((await repo().getRule(SPACE, rule.id))!)).resolves.toMatchObject({ status: "succeeded" });
+      expect(executeRule).toHaveBeenCalledTimes(2);
+    } finally {
+      releaseFirst();
+      executeRule.mockRestore();
+    }
+  });
+
   it("persists item decisions as a review read model", async () => {
     if (!db.available) return;
     const itemId = await seedItem("Relevant paper", "2026-07-01T00:00:00.000Z");
@@ -1074,8 +1126,10 @@ describe("source post-processing repository (real Postgres)", () => {
       processed_at: Date | null;
       project_id: string | null;
       aggregate_key: string;
+      visibility: string;
+      owner_user_id: string | null;
     }>(
-      `SELECT id, title, content, payload_json, status, processed_at, project_id, aggregate_key
+      `SELECT id, title, content, payload_json, status, processed_at, project_id, aggregate_key, visibility, owner_user_id
          FROM activity_records
         WHERE space_id = $1 AND aggregate_key = $2`,
       [SPACE, aggregateKey],
@@ -1086,10 +1140,16 @@ describe("source post-processing repository (real Postgres)", () => {
       aggregate_key: aggregateKey,
       project_id: PROJECT,
       status: "raw",
+      // The fixture connection is private: its briefing reaches its owner only.
+      visibility: "private",
+      owner_user_id: OWNER,
     });
     expect(firstRow.title).toContain("arXiv - 2026-07-08 briefing");
     expect(firstRow.content).toContain("2 items screened: 1 relevant, 1 maybe, 0 not relevant.");
-    expect(firstRow.content).toContain("First digest");
+    // A pointer, never the digest text (B24A): the body stays in Library.
+    expect(firstRow.content).not.toContain("First digest");
+    expect(firstRow.content).not.toContain("Full body");
+    expect(firstRow.content).toContain("Open the briefing in Library");
     expect(firstRow.payload_json).toMatchObject({
       briefing_date: "2026-07-08",
       source_channel_id: CONNECTION,

@@ -564,12 +564,7 @@ async function settleSynchronousNodes(
   // leaves no newly scheduled node and exits the loop until Run finalization
   // calls WorkflowExecution reconciliation again.
   for (let index = 0; index < 4; index += 1) {
-    const result = await service.reconcile(
-      db,
-      identity.spaceId,
-      executionId,
-      identity.userId,
-    );
+    const result = await service.reconcile(db, identity.spaceId, executionId);
     const status = optionalString(result.status);
     if (status === "completed" || status === "failed") return;
     const scheduled = Array.isArray(result.scheduled_node_ids)

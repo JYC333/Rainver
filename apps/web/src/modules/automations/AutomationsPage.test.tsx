@@ -12,6 +12,7 @@ const { automationsApiMock, agentsApiMock, evolutionApiMock, projectsApiMock } =
 
 vi.mock('../../api/client', () => ({ automationsApi: automationsApiMock, agentsApi: agentsApiMock, evolutionApi: evolutionApiMock, projectsApi: projectsApiMock }))
 vi.mock('../../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpaceId: 'space-1', activeSpaceName: 'Test Space' }) }))
+vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ currentUser: { id: 'user-1' } }) }))
 
 import AutomationsPage from './AutomationsPage'
 
@@ -179,5 +180,24 @@ describe('AutomationsPage', () => {
 
     await user.click(await screen.findByRole('button', { name: /Run now/ }))
     await waitFor(() => expect(automationsApiMock.fire).toHaveBeenCalledWith('automation-1'))
+  })
+
+  it("shows another member's automation as stop-only, without its content", async () => {
+    automationsApiMock.list.mockResolvedValue([{
+      id: 'automation-ops', space_id: 'space-1', access: 'ops', owner_user_id: 'user-2', agent_id: 'agent-1',
+      project_folder_id: null, project_id: null, name: null, description: null, trigger_type: 'manual',
+      status: 'active', preflight_snapshot_json: null, config_json: { target_type: 'agent_run' },
+      next_run_at: null, last_fired_at: null, created_at: '2026-10-14T00:00:00.000Z', updated_at: '2026-10-14T00:00:00.000Z',
+    }])
+    automationsApiMock.workflowExecutions.mockResolvedValue([])
+    agentsApiMock.list.mockResolvedValue([{ id: 'agent-1', name: 'Agent One' }])
+    projectsApiMock.list.mockResolvedValue({ items: [] })
+    evolutionApiMock.assets.mockResolvedValue([])
+    render(<MemoryRouter><AutomationsPage /></MemoryRouter>)
+
+    expect(await screen.findByText("Another member's automation")).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Run now/ })).toBeNull()
+    expect(screen.queryByText('Project binding')).toBeNull()
+    expect(screen.getByRole('button', { name: /Pause/ })).toBeTruthy()
   })
 })

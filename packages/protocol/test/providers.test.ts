@@ -23,6 +23,7 @@ describe("provider contracts", () => {
       name: "Main",
       provider_type: "anthropic",
       base_url: "https://api.anthropic.com",
+      deployment: "cloud",
       claude_compatible_base_url: "https://api.example.test/anthropic",
       openai_compatible_base_url: null,
       default_model: "claude-sonnet-4-6",
@@ -134,6 +135,7 @@ describe("provider contracts", () => {
       default_base_url: "https://api.deepseek.com",
       api_key_required: true,
       subscription_only: false,
+      self_hostable: false,
     };
     expect(ProviderVendorDTOSchema.parse(vendor).id).toBe("deepseek");
     expect(ProviderVendorDTOSchema.safeParse({ ...vendor, api_key: "sk-leak" }).success).toBe(false);
@@ -184,6 +186,7 @@ describe("provider contracts", () => {
       name: "Future",
       provider_type: "future_provider",
       base_url: "https://api.future.test/v1",
+      deployment: "cloud",
       claude_compatible_base_url: null,
       openai_compatible_base_url: null,
       default_model: null,

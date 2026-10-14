@@ -13,10 +13,10 @@ import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql.js";
 import { loadViewerSpaceRole } from "../retrieval/sourcePolicy.js";
 import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
+import { localDayUtcBounds } from "../scheduler/localDay.js";
 import {
   assertValidLocalDate,
   assertValidTimezone,
-  localDayUtcBounds,
   PgDailyReportSettingsRepository,
 } from "./repository.js";
 
@@ -151,13 +151,14 @@ export class DailyCaptureReportService {
     setting: SettingRow;
     localDate: string;
     triggerOrigin: string;
-    force?: boolean;
     createExperienceProposalsOverride?: boolean | null;
     createMemoryProposalsOverride?: boolean | null;
   }): Promise<DailyReportResult> {
     assertValidLocalDate(input.localDate);
     assertValidTimezone(input.setting.timezone || "UTC");
-    if (!input.force) {
+    {
+      // One report per person and day, never rewritten: a second request for
+      // a day that has one answers with it.
       const existing = await this.findExistingArtifact(input.spaceId, input.userId, input.localDate);
       if (existing) {
         return {
@@ -318,7 +319,6 @@ export class DailyCaptureReportService {
       userId: string;
       setting: SettingRow;
       localDate: string;
-      force?: boolean;
       createExperienceProposalsOverride?: boolean | null;
       createMemoryProposalsOverride?: boolean | null;
     };
@@ -346,7 +346,6 @@ export class DailyCaptureReportService {
         userId: string;
         setting: SettingRow;
         localDate: string;
-        force?: boolean;
         createExperienceProposalsOverride?: boolean | null;
         createMemoryProposalsOverride?: boolean | null;
       };
@@ -371,10 +370,8 @@ export class DailyCaptureReportService {
     await db.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
       `daily_capture_report:${input.spaceId}:${input.userId}:${input.localDate}`,
     ]);
-    if (!input.force) {
-      const existing = await this.findExistingArtifact(input.spaceId, input.userId, input.localDate, db);
-      if (existing) throw new DailyReportAlreadyExistsError(existing);
-    }
+    const existing = await this.findExistingArtifact(input.spaceId, input.userId, input.localDate, db);
+    if (existing) throw new DailyReportAlreadyExistsError(existing);
     const markdown = renderMarkdown(report, input.localDate);
     const artifactId = randomUUID();
     const endedAt = new Date().toISOString();

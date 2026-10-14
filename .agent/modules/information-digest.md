@@ -9,12 +9,23 @@ interest-profile fact model remain separate support packages.
 
 ## Ownership and routes
 
-- `GET /api/v1/spaces/:spaceId/information-digests/personal` returns one
-  owner-private snapshot per UTC day. Generation is lazy-safe and also runs
-  from the hidden daily Automation.
-- `GET /api/v1/spaces/:spaceId/projects/:projectId/information-digests` returns
-  one shared Project snapshot per UTC day, hydrated with only the current
-  reader's private state.
+- `GET /api/v1/spaces/:spaceId/information-digests/personal[?date=]` reads the
+  owner-private snapshot of one day. It never generates: a day without a
+  snapshot answers `{status: "missing", …}` with the day's timezone, interval,
+  whether a backfill is possible, and an explanation. Without `date` it reads
+  the latest complete day of the digest's timezone.
+- `GET /api/v1/spaces/:spaceId/projects/:projectId/information-digests[?date=]`
+  reads the shared Project snapshot of one day the same way, hydrated with only
+  the current reader's private state.
+- `POST /api/v1/spaces/:spaceId/information-digests/personal/backfill` and
+  `POST /api/v1/spaces/:spaceId/projects/:projectId/information-digests/backfill`
+  (`{date}`, protocol `InformationDigestBackfillRequestSchema`) build a missing
+  complete day explicitly. Personal backfill is the owner's own; Project
+  backfill requires Project read and write. `201` answers a new snapshot, `200`
+  an existing one; a day still in progress answers `422
+  digest_day_not_complete`.
+- Snapshots are made by the hidden daily `information_digest` Automation of
+  each scope, or by an explicit backfill. Nothing else writes them.
 - `/api/v1/spaces/:spaceId/interest-profile*` is the authenticated owner-only
   surface for the profile snapshot, settings, topic candidate decisions,
   direct topic create/edit/archive, optional starter packs, and explicit
@@ -26,14 +37,18 @@ interest-profile fact model remain separate support packages.
 
 ## Personal pipeline
 
-The daily transaction takes a scope/day advisory lock, rechecks the snapshot,
-and runs the deterministic interest-profile fact layer before selecting. The
+The daily transaction takes a scope/day advisory lock, returns the day's
+snapshot when one exists, and otherwise runs the deterministic interest-profile fact layer before selecting. The
 fact layer consumes successful shared annotations of the items this reader
 may read (the Source item content gate; another member's private item never
 counts toward this reader's candidates) joined to this reader's private state.
 Read material contributes recency-weighted domain coverage and
-recurring topic phrases; items explicitly marked `ignored` contribute neither
-coverage nor topic candidates. An observation ledger makes repeated passes
+recurring topic phrases only when the read is interest evidence: the reader
+reached it themselves (not through the serendipity section,
+`source_item_user_states.read_origin`) and still follows or owns its source
+(`modules/library.md`, "Interest evidence"); items explicitly marked
+`ignored` contribute neither coverage nor topic candidates. Leaving a source
+resets the derived facts so the next pass rebuilds them from current sources. An observation ledger makes repeated passes
 idempotent.
 
 Fine-grained topics are owner data. Recurring normalized phrases become
@@ -54,8 +69,37 @@ feed existing shared-source suggestions through the normal pending
 subscription decision state machine. They never rewrite an existing topic or
 require a matching source. Historical annotation is also opt-in; the route
 queues at most the requested bounded number of subscribed items without an
-annotation row, then wakes the existing annotation job. Failed/skipped rows use
-the existing explicit annotation retry path instead of being silently reset.
+annotation row, then wakes the existing annotation job. Failed rows follow the
+annotation retry policy in [sources](sources.md#annotation-failure-and-recovery)
+instead of being silently reset.
+
+## Days, history and backfill
+
+A digest covers one complete calendar day of its scope's configured timezone:
+the `timezone` of the scope's daily `information_digest` Automation
+(`config_json.timezone`, an IANA name; `UTC` when absent). The day is the
+half-open UTC interval `[period_start_utc, period_end_utc)` computed with
+`Intl` (`digestPeriod`), so a DST day is 23 or 25 hours and every instant
+belongs to exactly one day. Candidates are chosen by that interval.
+
+A scheduled pass reports the local day before its schedule slot, decided from
+the slot the Automation was due at (`next_run_at`), not from when a worker gets
+to it: a fire delayed past midnight, or replayed after a restart, still names
+the slot's day and finds the same snapshot. The reader's UI language and
+timezone never change which day a snapshot is; the UI labels the stored date
+with the stored timezone.
+
+Every snapshot persists `digest_date`, `timezone`, `period_start_utc`,
+`period_end_utc`, `generation_kind` (`scheduled` or `backfill`) and
+`generated_at`, and is write-once: one row per scope, owner and day, never
+rewritten. Concurrent passes for the same day serialize on the scope/day lock;
+one creates and the others return it.
+
+A backfill is only for a complete day and is idempotent per scope, owner and
+day. It uses only the material retained now, reports that in
+`settings.history_note` and the `backfill` kind with its real `generated_at`,
+and never spends the serendipity standby pool, so its serendipity section is
+empty. A failed backfill writes nothing and can be requested again.
 
 ## Serendipity
 
@@ -74,8 +118,8 @@ recommendations. This state never changes interest-profile facts or topics
 
 ## Project pipeline and privacy
 
-Project selection reads annotated Source items entering the Project Corpus on
-the UTC day and ranks by Project triage/confidence, not personal interests. It
+Project selection reads annotated Source items entering the Project Corpus
+during the digest day's interval and ranks by Project triage/confidence, not personal interests. It
 has no serendipity quota. Raw member reading state never enters the shared
 snapshot. Item read counts require at least three readers, and zero-reader
 domain blind spots require at least three active Project members (B56).

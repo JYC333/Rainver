@@ -14,7 +14,7 @@ export class ExecutionGraphRecoveryService {
     private readonly reconcilePlan: (spaceId: string, userId: string, planId: string) => Promise<unknown> =
       (spaceId, userId, planId) => new PlanExecutionService(db).reconcile({ spaceId, userId }, planId),
     private readonly reconcileWorkflow: (spaceId: string, userId: string, executionId: string) => Promise<unknown> =
-      (spaceId, userId, executionId) => new WorkflowExecutionService(config).reconcile(db, spaceId, executionId, userId),
+      (spaceId, _userId, executionId) => new WorkflowExecutionService(config).reconcile(db, spaceId, executionId),
   ) {}
 
   // Where the previous scan stopped. Reconciling a graph that is simply still

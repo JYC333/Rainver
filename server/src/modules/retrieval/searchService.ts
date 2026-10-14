@@ -19,7 +19,7 @@ import { parseRelationalIntent, type RelationalIntent } from "./relationalIntent
 import {
   applyAdaptiveReturn,
   armFetchLimit,
-  boundRerankText,
+  boundRerankTexts,
   buildItems,
   candidateKey,
   clamp,
@@ -1575,28 +1575,27 @@ export class RetrievalSearchService {
     // (invariant 1). `visible` should have a cache entry (`collectVisible` kept
     // exactly those). Do not read the projection when the cache entry is missing.
     // That leaks projection text or throws mid-search.
-    // Token budget: truncate per-candidate text and stop sending text once the
-    // running total reaches the payload cap, so a few very long revalidated texts
-    // cannot blow the provider payload. Truncates only already-visible text.
-    const perItemCap = this.rerankConfig.maxCandidateTextChars;
-    const payloadCap = this.rerankConfig.maxPayloadChars;
-    let payloadChars = 0;
-    let truncated = 0;
-    const rerankCandidates: RerankCandidate[] = [];
-    for (const candidate of visible.slice(0, windowSize)) {
+    // Token budget: the window shares one payload budget (`boundRerankTexts`),
+    // so every candidate is judged on some of its text and the whole payload
+    // stays bounded however long the revalidated texts are.
+    const windowed = visible.slice(0, windowSize).flatMap((candidate) => {
       const revalidated = cache.get(candidateKey(candidate));
-      if (!revalidated) continue;
-      const boundedText = boundRerankText(revalidated.text, perItemCap, payloadCap, payloadChars);
-      if (boundedText.truncated) truncated += 1;
-      payloadChars += boundedText.text?.length ?? 0;
-      rerankCandidates.push({
-        objectType: candidate.objectType,
-        objectId: candidate.objectId,
-        title: revalidated.title,
-        text: boundedText.text,
-        sourceConnectionIds: candidate.sourceConnectionIds,
-      });
-    }
+      return revalidated ? [{ candidate, revalidated }] : [];
+    });
+    const bounded = boundRerankTexts(
+      windowed.map(({ revalidated }) => ({ title: revalidated.title, text: revalidated.text })),
+      query,
+      this.rerankConfig.maxCandidateTextChars,
+      this.rerankConfig.maxPayloadChars,
+    );
+    const truncated = bounded.truncated;
+    const rerankCandidates: RerankCandidate[] = windowed.map(({ candidate, revalidated }, index) => ({
+      objectType: candidate.objectType,
+      objectId: candidate.objectId,
+      title: revalidated.title,
+      text: bounded.texts[index]!,
+      sourceConnectionIds: candidate.sourceConnectionIds,
+    }));
     let scores: RerankScore[] | null = null;
     try {
       scores = await this.reranker.rerank(

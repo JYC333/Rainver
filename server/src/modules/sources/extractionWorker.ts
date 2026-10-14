@@ -3,7 +3,8 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { ServerConfig } from "../../config.js";
 import type { Queryable } from "../routeUtils/common.js";
-import { HttpError } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
+import { SourceBackfillExecutionService } from "./sourceBackfillExecutionService.js";
 import { type SourceConnectionRow } from "./sourceRepositoryRows.js";
 import {
   extractStructuredReaderContent,
@@ -524,36 +525,60 @@ export class SourceExtractionWorker {
     const segmentId = stringValue(metadata.source_backfill_segment_id);
     const planId = stringValue(metadata.source_backfill_plan_id);
     if (!segmentId || !planId) return;
-    const segment = await this.db.query<{ window_json: unknown; status: string }>(
-      `SELECT window_json,status FROM source_backfill_segments WHERE id=$1 AND space_id=$2 LIMIT 1`,
-      [segmentId, job.space_id],
-    );
-    const current = segment.rows[0];
-    if (!current || current.status !== "running") return;
-    const next = nextBackfillWindow(record(current.window_json), {
-      seen: result.seen,
-      pageSize: result.page_size,
-      narrowable: result.narrowable,
-    });
-    if (next.outcome !== "continue") {
-      await this.db.query(
+    await withQueryableTransaction(this.db, async (db) => {
+      const backfill = new SourceBackfillExecutionService(db);
+      // Take the budget lock before the segment row, in dispatch's order.
+      await backfill.lockBudgetForPlan(job.space_id, planId);
+      const segment = await db.query<{ window_json: unknown; status: string }>(
+        `SELECT window_json,status FROM source_backfill_segments WHERE id=$1 AND space_id=$2 FOR UPDATE`,
+        [segmentId, job.space_id],
+      );
+      const current = segment.rows[0];
+      if (!current || current.status !== "running") return;
+      const next = nextBackfillWindow(record(current.window_json), {
+        seen: result.seen,
+        pageSize: result.page_size,
+        narrowable: result.narrowable,
+      });
+      // The page's items are settled on the segment first, so the allowance
+      // below counts them.
+      await db.query(
         `UPDATE source_backfill_segments SET window_json=$3::jsonb WHERE id=$1 AND space_id=$2 AND status='running'`,
         [segmentId, job.space_id, JSON.stringify(next.window)],
       );
-      return;
-    }
-    const nextWindow = next.window;
-    const nextJobId = randomUUID();
-    const now = new Date().toISOString();
-    await this.db.query(
-      `INSERT INTO extraction_jobs (id,space_id,connection_id,job_type,status,metadata_json,created_at)
-       VALUES ($1,$2,$3,'connection_scan','pending',$4::jsonb,$5)`,
-      [nextJobId, job.space_id, job.connection_id, JSON.stringify({ ...metadata, source_backfill_plan_id: planId, source_backfill_segment_id: segmentId, window: nextWindow }), now],
-    );
-    await this.db.query(
-      `UPDATE source_backfill_segments SET extraction_job_id=$3, window_json=$4::jsonb, next_eligible_at=NULL WHERE id=$1 AND space_id=$2 AND status='running'`,
-      [segmentId, job.space_id, nextJobId, JSON.stringify({ ...nextWindow, next_cursor: nextWindow.cursor, has_more: true, exhausted: false })],
-    );
+      if (next.outcome !== "continue") return;
+      // The next page is reserved against the budget it shares with sibling
+      // segments and plans, not only against this segment's own window: a
+      // sibling may have taken what this window was promised.
+      const allowance = await backfill.continuationAllowanceLocked(job.space_id, planId, segmentId);
+      const requested = Number(next.window.remaining_items);
+      if (allowance <= 0) {
+        // Nothing left to take: the segment stops partial at the next page,
+        // which a continuation of the plan resumes from.
+        await db.query(
+          `UPDATE source_backfill_segments SET window_json=$3::jsonb WHERE id=$1 AND space_id=$2 AND status='running'`,
+          [segmentId, job.space_id, JSON.stringify({ ...next.window, next_cursor: next.window.cursor, has_more: true, exhausted: false, partial: true })],
+        );
+        return;
+      }
+      const remaining = Math.min(requested, allowance);
+      const nextWindow: Record<string, unknown> = {
+        ...next.window,
+        remaining_items: remaining,
+        page_size: result.narrowable ? Math.min(Number(next.window.page_size), remaining) : next.window.page_size,
+      };
+      const nextJobId = randomUUID();
+      const now = new Date().toISOString();
+      await db.query(
+        `INSERT INTO extraction_jobs (id,space_id,connection_id,job_type,status,metadata_json,created_at)
+         VALUES ($1,$2,$3,'connection_scan','pending',$4::jsonb,$5)`,
+        [nextJobId, job.space_id, job.connection_id, JSON.stringify({ ...metadata, source_backfill_plan_id: planId, source_backfill_segment_id: segmentId, window: nextWindow }), now],
+      );
+      await db.query(
+        `UPDATE source_backfill_segments SET extraction_job_id=$3, window_json=$4::jsonb, next_eligible_at=NULL WHERE id=$1 AND space_id=$2 AND status='running'`,
+        [segmentId, job.space_id, nextJobId, JSON.stringify({ ...nextWindow, next_cursor: nextWindow.cursor, has_more: true, exhausted: false, partial: false })],
+      );
+    });
   }
 
   private async scanWithConnector(

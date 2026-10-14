@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { InterestProfileService } from "../../interestProfile/index.js";
 import type { ServerConfig } from "../../../config.js";
 import { HttpError, objectValue, optionalString, requiredString, type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../../routeUtils/common.js";
 import { normalizeSourceConnectionCreateGovernance } from "../sourceConsent.js";
@@ -82,6 +83,30 @@ export class SourceChannelService {
     return result.rows.map((row) => this.channelOut(row));
   }
 
+  /**
+   * Channels other members created that this person follows or has left —
+   * the ones they can leave or rejoin. Their own channels are paused or
+   * archived instead, from the channel itself.
+   */
+  async listFollowed(identity: SpaceUserIdentity) {
+    const result = await this.db.query<SourceChannelRow>(
+      `SELECT channel_row.*, sub.status AS subscription_status
+         FROM (${this.selectSql()}) channel_row
+         JOIN source_channel_user_subscriptions sub
+           ON sub.space_id=channel_row.space_id AND sub.source_channel_id=channel_row.id
+        WHERE sub.space_id=$1 AND sub.user_id=$2 AND sub.status IN ('subscribed','muted')
+          AND channel_row.created_by_user_id <> $2
+          AND channel_row.status <> 'archived'
+          AND channel_row.connection_visibility='space_shared'
+        ORDER BY sub.updated_at DESC, channel_row.id DESC`,
+      [identity.spaceId, identity.userId],
+    );
+    return result.rows.map((row) => ({
+      ...this.channelOut(row),
+      subscription_status: row.subscription_status as "subscribed" | "muted",
+    }));
+  }
+
   async listRecommendations(identity: SpaceUserIdentity) {
     const result = await this.db.query<SourceChannelRow>(
       `SELECT channel_row.*, sub.status AS subscription_status,
@@ -111,7 +136,8 @@ export class SourceChannelService {
     const now = new Date().toISOString();
     const result = await this.db.query<{ status: string }>(
       `UPDATE source_channel_user_subscriptions sub
-          SET status=$4, updated_at=$5
+          SET status=$4::varchar(32), updated_at=$5::timestamptz,
+              subscribed_at = CASE WHEN $4::varchar(32) = 'subscribed' THEN $5::timestamptz ELSE sub.subscribed_at END
          FROM source_channels ch, source_connections sc
         WHERE sub.space_id=$1 AND sub.user_id=$2 AND sub.source_channel_id=$3
           AND sub.status='pending' AND ch.id=sub.source_channel_id AND ch.space_id=sub.space_id
@@ -123,6 +149,46 @@ export class SourceChannelService {
     );
     if (!result.rows[0]) throw new HttpError(404, "Pending source recommendation not found");
     return { source_channel_id: channelId, status: result.rows[0].status, updated_at: now };
+  }
+
+  /**
+   * Leaves or rejoins a channel the person already has a subscription row
+   * for. Unsubscribing (`muted`) stops new items and digest delivery and
+   * ends this person's automatic interest facts from the channel — the
+   * profile's derived facts are rebuilt on the next pass from what they still
+   * subscribe to — while everything delivered inside the subscription window
+   * stays readable (historical eligibility). Resubscribing opens a new
+   * window; it grants nothing the connection would not grant today.
+   */
+  async setSubscription(
+    identity: SpaceUserIdentity,
+    channelId: string,
+    status: "subscribed" | "muted",
+  ): Promise<{ source_channel_id: string; status: string; updated_at: string }> {
+    const now = new Date().toISOString();
+    const result = await this.db.query<{ status: string; previous: string }>(
+      `UPDATE source_channel_user_subscriptions sub
+          SET status = $4::varchar(32), updated_at = $5::timestamptz,
+              subscribed_at = CASE WHEN $4::varchar(32) = 'subscribed' AND sub.status <> 'subscribed' THEN $5::timestamptz ELSE sub.subscribed_at END,
+              unsubscribed_at = CASE WHEN $4::varchar(32) = 'subscribed' THEN NULL
+                                     WHEN sub.status = 'subscribed' THEN $5::timestamptz
+                                     ELSE sub.unsubscribed_at END
+         FROM (SELECT status AS previous FROM source_channel_user_subscriptions
+                WHERE space_id = $1 AND user_id = $2 AND source_channel_id = $3) prior,
+              source_channels ch
+        WHERE sub.space_id = $1 AND sub.user_id = $2 AND sub.source_channel_id = $3
+          AND sub.status IN ('subscribed', 'muted')
+          AND ch.id = sub.source_channel_id AND ch.space_id = sub.space_id
+          AND ch.status <> 'archived'
+      RETURNING sub.status, prior.previous`,
+      [identity.spaceId, identity.userId, channelId, status, now],
+    );
+    const row = result.rows[0];
+    if (!row) throw new HttpError(404, "Source channel subscription not found");
+    if (row.previous === "subscribed" && status === "muted") {
+      await new InterestProfileService(this.db).forgetAutomaticFacts(identity.spaceId, identity.userId);
+    }
+    return { source_channel_id: channelId, status: row.status, updated_at: now };
   }
 
   /**
@@ -238,9 +304,9 @@ export class SourceChannelService {
     }
     await this.db.query(
       `INSERT INTO source_channel_user_subscriptions (
-         id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)
-       ON CONFLICT (space_id, source_channel_id, user_id) DO UPDATE SET status='subscribed', updated_at=EXCLUDED.updated_at`,
+         id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, subscribed_at, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5,$5)
+       ON CONFLICT (space_id, source_channel_id, user_id) DO UPDATE SET status='subscribed', subscribed_at=EXCLUDED.subscribed_at, unsubscribed_at=NULL, updated_at=EXCLUDED.updated_at`,
       [randomUUID(), identity.spaceId, channel.id, identity.userId, now],
     );
     await upsertSourceChannelScanTask(this.db, {
@@ -314,9 +380,9 @@ export class SourceChannelService {
     );
     await this.db.query(
       `INSERT INTO source_channel_user_subscriptions (
-         id,space_id,source_channel_id,user_id,status,library_enabled,digest_enabled,created_at,updated_at
-       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)
-       ON CONFLICT (space_id,source_channel_id,user_id) DO UPDATE SET status='subscribed',updated_at=EXCLUDED.updated_at`,
+         id,space_id,source_channel_id,user_id,status,library_enabled,digest_enabled,subscribed_at,created_at,updated_at
+       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5,$5)
+       ON CONFLICT (space_id,source_channel_id,user_id) DO UPDATE SET status='subscribed',subscribed_at=EXCLUDED.subscribed_at,unsubscribed_at=NULL,updated_at=EXCLUDED.updated_at`,
       [randomUUID(), identity.spaceId, channelId, identity.userId, now],
     );
     await upsertSourceChannelScanTask(this.db, {

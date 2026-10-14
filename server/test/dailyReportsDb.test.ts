@@ -12,6 +12,8 @@ import { resolveProviderCommandStore } from "../src/modules/providers/commands/s
 import { dailyReportsModule } from "../src/modules/dailyReports/index.js";
 import { DailyCaptureReportService } from "../src/modules/dailyReports/service.js";
 import { PgDailyReportSettingsRepository } from "../src/modules/dailyReports/repository.js";
+import { buildDailyReportJobPayload } from "../src/modules/dailyReports/scheduler.js";
+import { localDateNow } from "../src/modules/scheduler/localDay.js";
 
 const SPACE = "da11da11-0000-4000-8000-000000000001";
 const OWNER = "da11da11-0000-4000-8000-000000000002";
@@ -41,7 +43,7 @@ afterEach(() => {
   __setAuthIdentityForTests(null);
 });
 
-async function report(localDate: string, force = false) {
+async function report(localDate: string) {
   const setting = await new PgDailyReportSettingsRepository(db.pool).getOrCreate(SPACE, OWNER);
   return new DailyCaptureReportService(db.pool, config()).generateForDate({
     spaceId: SPACE,
@@ -49,7 +51,6 @@ async function report(localDate: string, force = false) {
     setting,
     localDate,
     triggerOrigin: "manual",
-    force,
   });
 }
 
@@ -201,6 +202,33 @@ describe("daily capture report routes", () => {
     } finally {
       await app.close();
     }
+  });
+});
+
+describe("daily capture report days", () => {
+  it("reports only a complete day, defaulting to the last one in the configured timezone", async () => {
+    if (!db.available) return;
+    await new PgDailyReportSettingsRepository(db.pool).update(SPACE, OWNER, { timezone: "Asia/Shanghai" });
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
+    const app = buildModuleServer(config(), [dailyReportsModule]);
+    try {
+      const today = localDateNow("Asia/Shanghai");
+      const early = await app.inject({ method: "POST", url: "/api/v1/daily-capture-report/run", payload: { local_date: today } });
+      expect(early.statusCode).toBe(422);
+      expect(early.json()).toMatchObject({ code: "report_day_not_complete" });
+      // No captures on the default day: the run settles to "skipped" for the last complete day.
+      const defaulted = await app.inject({ method: "POST", url: "/api/v1/daily-capture-report/run", payload: {} });
+      expect(defaulted.statusCode).toBe(201);
+      expect(defaulted.json()).toMatchObject({ status: "skipped", capture_count: 0 });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("schedules the report on the slot's previous local day", () => {
+    const setting = { id: "s", space_id: SPACE, user_id: OWNER, timezone: "Asia/Shanghai" } as Parameters<typeof buildDailyReportJobPayload>[0];
+    // 09:00 in Shanghai on 2026-09-11 is 01:00 UTC.
+    expect(buildDailyReportJobPayload(setting, "2026-09-11T01:00:00.000Z")).toMatchObject({ local_date: "2026-09-10", timezone: "Asia/Shanghai" });
   });
 });
 

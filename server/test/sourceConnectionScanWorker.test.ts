@@ -86,6 +86,11 @@ class ScanDb implements Queryable {
     if (sql.includes("SELECT window_json,status FROM source_backfill_segments")) {
       return { rows: [] as Row[], rowCount: 0 };
     }
+    // The continuation takes the plan's budget lock before the segment row;
+    // a plan outside a research operation has no operation row to lock.
+    if (sql.includes("SELECT p.project_operation_id") && sql.includes("FROM source_backfill_plans")) {
+      return { rows: [] as Row[], rowCount: 0 };
+    }
     if (sql.includes("FROM settings")) {
       return { rows: [] as Row[], rowCount: 0 };
     }

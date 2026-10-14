@@ -10,6 +10,46 @@ import { estimateModelTokens } from "../../usage/modelCatalog.js";
 
 const MAX_CLI_DELTA_TOKENS = 6_000;
 
+/**
+ * An execution lease lives this long without a heartbeat. The holder renews
+ * it while it runs; a holder that stops renewing (a crashed worker) loses it
+ * after this, and a holder Run that is no longer live loses it at once.
+ */
+const EXECUTION_LEASE_TTL_SECONDS = 300;
+export const EXECUTION_LEASE_HEARTBEAT_MS = 60_000;
+/** How long a Run waits for another Run's lease before giving up, retryably. */
+const EXECUTION_LEASE_MAX_WAIT_MS = 10 * 60_000;
+const LIVE_LEASE_HOLDER_STATUSES = "('queued','running','cancelling')";
+
+/**
+ * A lease is held while it has not expired and its holder Run is still live.
+ * The acquiring Run's own earlier attempt (a crashed worker of the same Run)
+ * does not hold it against that Run.
+ */
+function leaseHeldSql(binding: string, acquiringRunParam: string | null): string {
+  return `(${binding}.execution_lease_id IS NOT NULL
+           AND ${binding}.execution_lease_expires_at > now()
+           ${acquiringRunParam ? `AND ${binding}.execution_lease_run_id IS DISTINCT FROM ${acquiringRunParam}` : ""}
+           AND (${binding}.execution_lease_run_id IS NULL OR EXISTS (
+             SELECT 1 FROM runs holder
+              WHERE holder.id = ${binding}.execution_lease_run_id
+                AND holder.status IN ${LIVE_LEASE_HOLDER_STATUSES})))`;
+}
+
+export interface CliExecutionLease {
+  leaseId: string;
+  /** The fencing token deliveries carry; see `execution_lease_generation`. */
+  generation: number;
+}
+
+/** A wait for another Run's lease that ran out of time, or whose own Run stopped. */
+export class CliExecutionLeaseUnavailableError extends HttpError {
+  constructor(message: string) {
+    super(409, message, { code: "cli_execution_lease_unavailable", retryable: true });
+    this.name = "CliExecutionLeaseUnavailableError";
+  }
+}
+
 export type CliRotationReason =
   | "new_scope"
   | "user_reset"
@@ -33,6 +73,8 @@ export interface PreparedCliBinding {
   acknowledged_item_ids: string[];
   generation: number;
   rotation_reason: CliRotationReason | null;
+  /** The lease fencing token the binding carries now. */
+  lease_generation: number;
 }
 
 export interface PreparedCliDeliveryState extends PreparedCliBinding {
@@ -54,9 +96,15 @@ interface BindingRow {
   rotation_reason: CliRotationReason | null;
   execution_lease_id?: string | null;
   execution_lease_expires_at?: Date | string | null;
+  execution_lease_run_id?: string | null;
+  execution_lease_generation?: number | null;
   /** Whether a live execution lease is held on the binding. */
   leased?: boolean;
 }
+
+const BINDING_COLUMNS = `id,runtime_state_key,vendor_session_id,authority_fingerprint,
+                   runtime_fingerprint,fingerprint_json,cli_known_cursor,
+                   acknowledged_item_ids_json,generation,rotation_reason,execution_lease_generation`;
 
 interface BindingFingerprint {
   authority: {
@@ -105,14 +153,37 @@ export class RuntimeContextCliContinuityService {
     control: ExecutionControlSnapshot;
     /** Present for HostThread dispatches; the context cursor must follow this exact ACP session. */
     expectedVendorSessionId?: string | null;
+    /** The Run preparing the binding; its own earlier attempt's lease does not hold it off. */
+    runId: string;
+    maxWaitMs?: number;
   }): Promise<PreparedCliBinding> {
     // A binding another Run still executes on is not rotated under it: that
     // Run's acknowledgements need it active, and the lease serializes the
     // scope. The rotation waits for the lease like an acquisition does.
+    return this.waitForLease(input.runId, input.maxWaitMs, () => this.prepareUnleasedBinding(input));
+  }
+
+  /**
+   * Retries `attempt` until it succeeds, backing off, for at most `maxWaitMs`.
+   * The wait ends early, with the same retryable error, once the waiting Run
+   * itself is no longer live: a cancelled Run does not sit on a queue slot.
+   */
+  private async waitForLease<T>(runId: string, maxWaitMs: number | undefined, attempt: () => Promise<T | null>): Promise<T> {
+    const deadline = Date.now() + (maxWaitMs ?? EXECUTION_LEASE_MAX_WAIT_MS);
+    let delay = 25;
     for (;;) {
-      const prepared = await this.prepareUnleasedBinding(input);
-      if (prepared) return prepared;
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      const result = await attempt();
+      if (result !== null) return result;
+      const waiting = await this.db.query<{ status: string }>(`SELECT status FROM runs WHERE id=$1`, [runId]);
+      const status = waiting.rows[0]?.status;
+      if (status !== undefined && !["queued", "running"].includes(status)) {
+        throw new CliExecutionLeaseUnavailableError("The Run stopped while waiting for its conversation's CLI execution lease.");
+      }
+      if (Date.now() >= deadline) {
+        throw new CliExecutionLeaseUnavailableError("Another Run is still executing in this conversation's CLI session; try again when it finishes.");
+      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay = Math.min(1_000, delay * 2);
     }
   }
 
@@ -136,7 +207,7 @@ export class RuntimeContextCliContinuityService {
       const fingerprint = bindingFingerprint(input, await loadBindingGenerations(db, input));
       const authorityFingerprint = hash(fingerprint.authority);
       const runtimeFingerprint = hash(fingerprint.runtime);
-      const existing = await this.activeBinding(db, input);
+      const existing = await this.activeBinding(db, input, input.runId);
       const vendorSessionMismatch = existing !== null
         && input.expectedVendorSessionId !== undefined
         && existing.vendor_session_id !== input.expectedVendorSessionId;
@@ -169,9 +240,7 @@ export class RuntimeContextCliContinuityService {
            status,rotation_reason,created_at,updated_at
          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,$12,$13,$14::jsonb,
                    0,'[]'::jsonb,$15,'active',$16,now(),now())
-         RETURNING id,runtime_state_key,vendor_session_id,authority_fingerprint,
-                   runtime_fingerprint,fingerprint_json,cli_known_cursor,
-                   acknowledged_item_ids_json,generation,rotation_reason`,
+         RETURNING ${BINDING_COLUMNS}`,
         [randomUUID(), input.spaceId, input.workContextScopeId, scopeKind,
           input.userId, input.agentId, input.runtimeProfileId,
           input.runtimeKey, input.providerId, input.model,
@@ -183,17 +252,35 @@ export class RuntimeContextCliContinuityService {
     });
   }
 
-  async rotateMissingVendorState(bindingId: string): Promise<PreparedCliBinding> {
+  /**
+   * The vendor session the binding names is gone: start a fresh one on a
+   * replacement binding that takes over the caller's lease. Idempotent for
+   * that lease: when the binding was already replaced under it (an overflow
+   * rotation, or this same call made once before), the binding the lease now
+   * holds is the answer, not a second rotation.
+   */
+  async rotateMissingVendorState(bindingId: string, leaseId: string): Promise<PreparedCliBinding> {
     return withQueryableTransaction(this.db, async (db) => {
-      const current = await db.query<{ id: string }>(
-        `SELECT * FROM runtime_context_cli_bindings WHERE id=$1 AND status='active' FOR UPDATE`,
+      const current = await db.query<{ id: string; status: string; execution_lease_id: string | null }>(
+        `SELECT id,status,execution_lease_id FROM runtime_context_cli_bindings WHERE id=$1 FOR UPDATE`,
         [bindingId],
       );
       const row = current.rows[0];
       if (!row) throw new HttpError(409, "CLI continuity binding is no longer active");
+      if (row.status !== "active" || row.execution_lease_id !== leaseId) {
+        const held = await db.query<BindingRow>(
+          `SELECT ${BINDING_COLUMNS} FROM runtime_context_cli_bindings
+            WHERE execution_lease_id=$1 AND status='active'`,
+          [leaseId],
+        );
+        if (held.rows[0] && held.rows[0].id !== bindingId) return bindingOut(held.rows[0]);
+        throw new HttpError(409, "CLI execution lease is no longer authoritative");
+      }
       await db.query(
         `UPDATE runtime_context_cli_bindings
-            SET status='rotated',rotation_reason='vendor_state_missing',updated_at=now()
+            SET status='rotated',rotation_reason='vendor_state_missing',
+                execution_lease_id=NULL,execution_lease_expires_at=NULL,execution_lease_run_id=NULL,
+                updated_at=now()
           WHERE id=$1`,
         [bindingId],
       );
@@ -203,50 +290,75 @@ export class RuntimeContextCliContinuityService {
            runtime_profile_id,runtime_key,provider_id,model,
            runtime_state_key,vendor_session_id,authority_fingerprint,runtime_fingerprint,
            fingerprint_json,cli_known_cursor,acknowledged_item_ids_json,generation,
-           status,rotation_reason,execution_lease_id,execution_lease_expires_at,created_at,updated_at
+           status,rotation_reason,execution_lease_id,execution_lease_expires_at,
+           execution_lease_run_id,execution_lease_generation,created_at,updated_at
          ) SELECT $2,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
                   runtime_profile_id,runtime_key,provider_id,model,
                   $3,NULL,authority_fingerprint,runtime_fingerprint,fingerprint_json,
                   0,'[]'::jsonb,generation+1,'active','vendor_state_missing',
-                  execution_lease_id,execution_lease_expires_at,now(),now()
+                  $4,now() + make_interval(secs => ${EXECUTION_LEASE_TTL_SECONDS}),
+                  execution_lease_run_id,execution_lease_generation,now(),now()
              FROM runtime_context_cli_bindings WHERE id=$1
-         RETURNING id,runtime_state_key,vendor_session_id,authority_fingerprint,
-                   runtime_fingerprint,fingerprint_json,cli_known_cursor,
-                   acknowledged_item_ids_json,generation,rotation_reason`,
-        [bindingId, randomUUID(), randomUUID()],
+         RETURNING ${BINDING_COLUMNS}`,
+        [bindingId, randomUUID(), randomUUID(), leaseId],
       );
       if (!created.rows[0]) throw new Error("Replacement CLI continuity binding was not persisted");
       return bindingOut(created.rows[0]);
     });
   }
 
-  async acquireExecutionLease(bindingId: string): Promise<string> {
+  /**
+   * Takes the binding's execution lease for `runId`, waiting (bounded, and
+   * only while that Run is live) for another holder. A lease is free when
+   * nobody holds it, when it expired without a heartbeat, or when its holder
+   * Run is no longer live — or is this same Run, whose earlier attempt died.
+   */
+  async acquireExecutionLease(
+    bindingId: string,
+    holder: { runId: string; maxWaitMs?: number },
+  ): Promise<CliExecutionLease> {
     const leaseId = randomUUID();
-    for (;;) {
-      const result = await this.db.query(
-        `UPDATE runtime_context_cli_bindings
+    return this.waitForLease(holder.runId, holder.maxWaitMs, async () => {
+      const result = await this.db.query<{ execution_lease_generation: number }>(
+        `UPDATE runtime_context_cli_bindings binding
             SET execution_lease_id=$2,
-                execution_lease_expires_at=now() + interval '2 hours',updated_at=now()
-          WHERE id=$1 AND status='active'
-            AND (execution_lease_id IS NULL OR execution_lease_expires_at<=now())
-          RETURNING id`,
-        [bindingId, leaseId],
+                execution_lease_run_id=$3,
+                execution_lease_generation=binding.execution_lease_generation + 1,
+                execution_lease_expires_at=now() + make_interval(secs => ${EXECUTION_LEASE_TTL_SECONDS}),
+                updated_at=now()
+          WHERE binding.id=$1 AND binding.status='active'
+            AND NOT ${leaseHeldSql("binding", "$3")}
+          RETURNING binding.execution_lease_generation`,
+        [bindingId, leaseId, holder.runId],
       );
-      if (result.rows[0]) return leaseId;
+      if (result.rows[0]) return { leaseId, generation: Number(result.rows[0].execution_lease_generation) };
       const active = await this.db.query(
         `SELECT 1 FROM runtime_context_cli_bindings WHERE id=$1 AND status='active'`,
         [bindingId],
       );
       if (!active.rows[0]) throw new HttpError(409, "CLI continuity binding is no longer active");
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
+      return null;
+    });
+  }
+
+  /**
+   * Renews the lease while its holder runs. False once the lease is gone —
+   * released, or taken over after it lapsed — and the holder's later
+   * acknowledgements will be refused by its fencing generation.
+   */
+  async heartbeatExecutionLease(leaseId: string): Promise<boolean> {
+    const result = await this.db.query(
+      `UPDATE runtime_context_cli_bindings
+          SET execution_lease_expires_at=now() + make_interval(secs => ${EXECUTION_LEASE_TTL_SECONDS})
+        WHERE execution_lease_id=$1 AND status='active'`,
+      [leaseId],
+    );
+    return (result.rowCount ?? 0) === 1;
   }
 
   async bindingForExecutionLease(bindingId: string, leaseId: string): Promise<PreparedCliBinding> {
     const result = await this.db.query<BindingRow>(
-      `SELECT id,runtime_state_key,vendor_session_id,authority_fingerprint,
-              runtime_fingerprint,fingerprint_json,cli_known_cursor,
-              acknowledged_item_ids_json,generation,rotation_reason
+      `SELECT ${BINDING_COLUMNS}
          FROM runtime_context_cli_bindings
         WHERE id=$1 AND execution_lease_id=$2 AND status='active'`,
       [bindingId, leaseId],
@@ -263,7 +375,7 @@ export class RuntimeContextCliContinuityService {
   async releaseExecutionLease(leaseId: string): Promise<void> {
     await this.db.query(
       `UPDATE runtime_context_cli_bindings
-          SET execution_lease_id=NULL,execution_lease_expires_at=NULL,updated_at=now()
+          SET execution_lease_id=NULL,execution_lease_expires_at=NULL,execution_lease_run_id=NULL,updated_at=now()
         WHERE execution_lease_id=$1`,
       [leaseId],
     );
@@ -283,7 +395,7 @@ export class RuntimeContextCliContinuityService {
         `SELECT id,space_id,work_context_scope_id,status,runtime_state_key,vendor_session_id,
                 authority_fingerprint,runtime_fingerprint,fingerprint_json,cli_known_cursor,
                 acknowledged_item_ids_json,generation,rotation_reason,
-                execution_lease_id,execution_lease_expires_at
+                execution_lease_id,execution_lease_expires_at,execution_lease_run_id,execution_lease_generation
            FROM runtime_context_cli_bindings WHERE id=$1 FOR UPDATE`,
         [input.bindingId],
       );
@@ -336,7 +448,8 @@ export class RuntimeContextCliContinuityService {
         await db.query(
           `UPDATE runtime_context_cli_bindings
               SET status='rotated',rotation_reason='overflow_reconstruction',
-                  execution_lease_id=NULL,execution_lease_expires_at=NULL,updated_at=now()
+                  execution_lease_id=NULL,execution_lease_expires_at=NULL,execution_lease_run_id=NULL,
+                  updated_at=now()
             WHERE id=$1 AND status='active'`,
           [binding.id],
         );
@@ -346,18 +459,20 @@ export class RuntimeContextCliContinuityService {
              runtime_profile_id,runtime_key,provider_id,model,
              runtime_state_key,vendor_session_id,authority_fingerprint,runtime_fingerprint,
              fingerprint_json,cli_known_cursor,acknowledged_item_ids_json,generation,
-             status,rotation_reason,execution_lease_id,execution_lease_expires_at,created_at,updated_at
+             status,rotation_reason,execution_lease_id,execution_lease_expires_at,
+             execution_lease_run_id,execution_lease_generation,created_at,updated_at
            ) SELECT $2,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
                     runtime_profile_id,runtime_key,provider_id,model,
                     $3,NULL,authority_fingerprint,runtime_fingerprint,fingerprint_json,
-                    0,'[]'::jsonb,generation+1,'active','overflow_reconstruction',$4,$5,now(),now()
+                    0,'[]'::jsonb,generation+1,'active','overflow_reconstruction',$4,$5,$6,$7,now(),now()
                FROM runtime_context_cli_bindings
               WHERE id=$1
            RETURNING id,space_id,work_context_scope_id,status,runtime_state_key,vendor_session_id,
                      authority_fingerprint,runtime_fingerprint,fingerprint_json,cli_known_cursor,
-                     acknowledged_item_ids_json,generation,rotation_reason`,
+                     acknowledged_item_ids_json,generation,rotation_reason,execution_lease_generation`,
           [binding.id, randomUUID(), randomUUID(),
-            binding.execution_lease_id ?? null, binding.execution_lease_expires_at ?? null],
+            binding.execution_lease_id ?? null, binding.execution_lease_expires_at ?? null,
+            binding.execution_lease_run_id ?? null, Number(binding.execution_lease_generation ?? 0)],
         );
         if (!replacement.rows[0]) throw new HttpError(409, "CLI continuity overflow rotation failed");
         effectiveBinding = replacement.rows[0];
@@ -432,9 +547,11 @@ export class RuntimeContextCliContinuityService {
     fromCursor: number;
     throughCursor: number;
     itemIds: string[];
+    /** The fencing token the Delivery was planned under. */
+    leaseGeneration: number;
   }): Promise<void> {
-    const result = await db.query<{ cli_known_cursor: number; acknowledged_item_ids_json: unknown }>(
-      `SELECT cli_known_cursor,acknowledged_item_ids_json
+    const result = await db.query<{ cli_known_cursor: number; acknowledged_item_ids_json: unknown; execution_lease_generation: number }>(
+      `SELECT cli_known_cursor,acknowledged_item_ids_json,execution_lease_generation
          FROM runtime_context_cli_bindings
         WHERE id=$1 AND space_id=$2 AND work_context_scope_id=$3 AND status='active'
         FOR UPDATE`,
@@ -442,6 +559,9 @@ export class RuntimeContextCliContinuityService {
     );
     const row = result.rows[0];
     if (!row) throw new HttpError(409, "CLI Delivery binding is no longer active");
+    if (Number(row.execution_lease_generation) !== input.leaseGeneration) {
+      throw new HttpError(409, "CLI Delivery was planned under an execution lease another Run has since taken over");
+    }
     const current = Number(row.cli_known_cursor);
     if (current !== input.fromCursor && current !== input.throughCursor) {
       throw new HttpError(409, "CLI Delivery acknowledgement cursor is stale");
@@ -461,12 +581,14 @@ export class RuntimeContextCliContinuityService {
     bindingId: string;
     runtimeStateKey: string;
     vendorSessionId: string;
+    /** The fencing token the Delivery was planned under; a late holder records nothing. */
+    leaseGeneration: number;
   }): Promise<boolean> {
     const result = await this.db.query(
       `UPDATE runtime_context_cli_bindings
           SET vendor_session_id=$3,updated_at=now()
-        WHERE id=$1 AND runtime_state_key=$2 AND status='active'`,
-      [input.bindingId, input.runtimeStateKey, input.vendorSessionId],
+        WHERE id=$1 AND runtime_state_key=$2 AND status='active' AND execution_lease_generation=$4`,
+      [input.bindingId, input.runtimeStateKey, input.vendorSessionId, input.leaseGeneration],
     );
     return (result.rowCount ?? 0) === 1;
   }
@@ -476,16 +598,14 @@ export class RuntimeContextCliContinuityService {
     workContextScopeId: string;
     userId: string;
     agentId: string;
-  }): Promise<BindingRow | null> {
+  }, runId: string): Promise<BindingRow | null> {
     const result = await db.query<BindingRow>(
-      `SELECT id,runtime_state_key,vendor_session_id,authority_fingerprint,
-              runtime_fingerprint,fingerprint_json,cli_known_cursor,
-              acknowledged_item_ids_json,generation,rotation_reason,
-              (execution_lease_id IS NOT NULL AND execution_lease_expires_at > now()) AS leased
-         FROM runtime_context_cli_bindings
+      `SELECT ${BINDING_COLUMNS},
+              ${leaseHeldSql("binding", "$5")} AS leased
+         FROM runtime_context_cli_bindings binding
         WHERE space_id=$1 AND work_context_scope_id=$2 AND user_id=$3 AND agent_id=$4
-          AND status='active' FOR UPDATE`,
-      [input.spaceId, input.workContextScopeId, input.userId, input.agentId],
+          AND status='active' FOR UPDATE OF binding`,
+      [input.spaceId, input.workContextScopeId, input.userId, input.agentId, runId],
     );
     return result.rows[0] ?? null;
   }
@@ -753,6 +873,7 @@ function bindingOut(row: BindingRow): PreparedCliBinding {
     acknowledged_item_ids: stringArray(row.acknowledged_item_ids_json),
     generation: Number(row.generation),
     rotation_reason: row.rotation_reason,
+    lease_generation: Number(row.execution_lease_generation ?? 0),
   };
 }
 

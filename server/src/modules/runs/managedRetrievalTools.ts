@@ -25,6 +25,7 @@ import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynt
 import { RetrievalToolService } from "../retrieval/tool/service.js";
 import type { RetrievalToolPolicyAction } from "../retrieval/tool/policy.js";
 import type { RunRecord } from "./repository.js";
+import { runRetrievalSwitchedOn } from "../runtimeContext/workContextService.js";
 
 export interface RetrievalToolDeps {
   retrievalToolService?: RetrievalToolService | null;
@@ -156,6 +157,9 @@ export async function resolveRetrievalToolBinding(
   const settings = await readSpaceRetrievalSettings(pool, run.space_id);
   const effectiveMode = runMode ?? (settings.retrievalToolMode === "off" ? null : settings.retrievalToolMode);
   if (!effectiveMode) return null;
+  // A conversation whose person left knowledge retrieval off gets no search
+  // tools either: the switch governs real retrieval, not only the planner's.
+  if (!(await runRetrievalSwitchedOn(pool, run))) return null;
   const enabledSpecs = enabledToolSpecs(run);
   const store = resolveProviderCommandStore(config);
   const egressPolicy = { externalEgressEnabled: settings.externalEgressEnabled };

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
-import { HttpError } from "../routeUtils/common.js";
+import { HttpError, type SpaceUserIdentity } from "../routeUtils/common.js";
 import {
   ScopedSettingsStore,
   SETTINGS_KEYS,
@@ -28,7 +28,7 @@ import {
 } from "../access/contentAccessTypes.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
-import { assertAgentOwner, canChangeAgent } from "./agentAccess.js";
+import { assertAgentOwner, canChangeAgent, canConfigureAssistant } from "./agentAccess.js";
 import { canReadProject, canWriteProject } from "../projects/access.js";
 import {
   DEFAULT_MEMORY_POLICY,
@@ -155,6 +155,9 @@ export interface AgentOut {
 interface AssistantSettingsRecord {
   id: string;
   space_id: string;
+  /** The Assistant these settings belong to: the Space's own, or a Project's. */
+  scope: "space" | "project";
+  project_id: string | null;
   assistant_agent_id: string | null;
   response_style: string | null;
   verbosity: string | null;
@@ -305,6 +308,34 @@ const ASSISTANT_SETTINGS_DEFINITION = defineScopedSetting<AssistantSettingsValue
   serialize: assistantSettingsJson,
 });
 
+/** A Project's Assistant keeps its own settings row, scoped to the Project. */
+const PROJECT_ASSISTANT_SETTINGS_DEFINITION = defineScopedSetting<AssistantSettingsValue>({
+  key: ASSISTANT_SETTINGS_KEY,
+  scopeType: "project",
+  defaults: ASSISTANT_SETTINGS_DEFAULTS,
+  parse: parseAssistantSettings,
+  serialize: assistantSettingsJson,
+});
+
+/**
+ * Which managed Assistant a settings read or write is about: the Space's own
+ * (personal or shared, `projectId: null`) or a Project's. Named explicitly at
+ * the route so the read, the write and the authority check all address the
+ * same Assistant.
+ */
+export interface AssistantSettingsTarget {
+  spaceId: string;
+  projectId: string | null;
+}
+
+function assistantSettingsDefinition(target: AssistantSettingsTarget) {
+  return target.projectId ? PROJECT_ASSISTANT_SETTINGS_DEFINITION : ASSISTANT_SETTINGS_DEFINITION;
+}
+
+function assistantSettingsScopeId(target: AssistantSettingsTarget): string {
+  return target.projectId ?? target.spaceId;
+}
+
 function enumStringOrNull(value: unknown, allowed: ReadonlySet<string>, field: string): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") return null;
@@ -347,13 +378,15 @@ function booleanRecord(value: unknown): Record<string, boolean> {
 }
 
 function assistantSettingsRecordFromRead(
-  spaceId: string,
+  target: AssistantSettingsTarget,
   read: ScopedSettingsRead<AssistantSettingsValue>,
 ): AssistantSettingsRecord {
   if (!read.row) throw new Error("assistant settings row was not created");
   return {
     id: read.row.id,
-    space_id: spaceId,
+    space_id: target.spaceId,
+    scope: target.projectId ? "project" : "space",
+    project_id: target.projectId,
     assistant_agent_id: read.value.assistant_agent_id,
     response_style: read.value.response_style,
     verbosity: read.value.verbosity,
@@ -1512,25 +1545,77 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     return result.rows[0]?.id ?? null;
   }
 
-  async getAssistantSettings(spaceId: string): Promise<AssistantSettingsRecord> {
-    const store = new ScopedSettingsStore(this.pool);
-    const existing = await store.get(ASSISTANT_SETTINGS_DEFINITION, spaceId);
-    if (existing.row) return assistantSettingsRecordFromRead(spaceId, existing);
-    const created = await store.createIfMissing(ASSISTANT_SETTINGS_DEFINITION, spaceId, {
-      ...ASSISTANT_SETTINGS_DEFAULTS,
-      assistant_agent_id: await this.defaultAssistantId(spaceId),
-    });
-    return assistantSettingsRecordFromRead(spaceId, created);
+  /** The managed Assistant of one Project, if its Room has minted it. */
+  async projectAssistantId(spaceId: string, projectId: string): Promise<string | null> {
+    const result = await this.pool.query<{ id: string }>(
+      `SELECT a.id
+         FROM agents a
+        WHERE a.space_id = $1
+          AND a.project_id = $2
+          AND a.agent_kind = 'system_assistant'
+          AND a.status = 'active'
+        LIMIT 1`,
+      [spaceId, projectId],
+    );
+    return result.rows[0]?.id ?? null;
   }
 
+  private async targetAssistantId(target: AssistantSettingsTarget): Promise<string | null> {
+    return target.projectId
+      ? this.projectAssistantId(target.spaceId, target.projectId)
+      : this.defaultAssistantId(target.spaceId);
+  }
+
+  /**
+   * Who may read an Assistant's settings: a member of its Space for the
+   * Space's own, a reader of the Project for a Project's. A Project the
+   * person cannot read is answered as absent.
+   */
+  async assertAssistantSettingsReadable(identity: SpaceUserIdentity, target: AssistantSettingsTarget): Promise<void> {
+    if (target.projectId && !(await canReadProject(this.pool, target.spaceId, target.projectId, identity.userId))) {
+      throw new HttpError(404, "Project not found");
+    }
+  }
+
+  /** Whether this person configures the Assistant (`canConfigureAssistant`). */
+  async canConfigureAssistantSettings(identity: SpaceUserIdentity, target: AssistantSettingsTarget): Promise<boolean> {
+    return canConfigureAssistant(this.pool, identity, { projectId: target.projectId });
+  }
+
+  async getAssistantSettings(target: AssistantSettingsTarget): Promise<AssistantSettingsRecord> {
+    const store = new ScopedSettingsStore(this.pool);
+    const definition = assistantSettingsDefinition(target);
+    const scopeId = assistantSettingsScopeId(target);
+    const existing = await store.get(definition, scopeId);
+    if (existing.row) return assistantSettingsRecordFromRead(target, existing);
+    const created = await store.createIfMissing(definition, scopeId, {
+      ...ASSISTANT_SETTINGS_DEFAULTS,
+      assistant_agent_id: await this.targetAssistantId(target),
+    });
+    return assistantSettingsRecordFromRead(target, created);
+  }
+
+  /**
+   * Writes the Assistant's soft preferences. The caller has established that
+   * the actor configures this Assistant. A `default_project_id` must name an
+   * active Project of the same Space that the actor can read — and, for a
+   * Project's Assistant, that Project itself — or the write is refused rather
+   * than pointing the Assistant at something its configurer cannot see.
+   */
   async updateAssistantSettings(
-    spaceId: string,
+    target: AssistantSettingsTarget,
     patch: Record<string, unknown>,
-    options: { actorUserId?: string | null } = {},
+    options: { actorUserId: string },
   ): Promise<AssistantSettingsRecord> {
-    const existing = await this.getAssistantSettings(spaceId);
+    const existing = await this.getAssistantSettings(target);
+    const defaultProjectId = Object.hasOwn(patch, "default_project_id")
+      ? stringOrNull(patch.default_project_id)
+      : existing.default_project_id;
+    if (Object.hasOwn(patch, "default_project_id") && defaultProjectId) {
+      await this.assertAssistantDefaultProject(target, defaultProjectId, options.actorUserId);
+    }
     const next: AssistantSettingsValue = {
-      assistant_agent_id: existing.assistant_agent_id ?? await this.defaultAssistantId(spaceId),
+      assistant_agent_id: existing.assistant_agent_id ?? await this.targetAssistantId(target),
       response_style: Object.hasOwn(patch, "response_style")
         ? enumStringOrNull(patch.response_style, ASSISTANT_RESPONSE_STYLES, "response_style")
         : existing.response_style,
@@ -1540,9 +1625,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       default_context_toggles_json: Object.hasOwn(patch, "default_context_toggles_json")
         ? booleanRecord(patch.default_context_toggles_json)
         : booleanRecord(existing.default_context_toggles_json),
-      default_project_id: Object.hasOwn(patch, "default_project_id")
-        ? stringOrNull(patch.default_project_id)
-        : existing.default_project_id,
+      default_project_id: defaultProjectId,
       proposal_style: Object.hasOwn(patch, "proposal_style")
         ? enumStringOrNull(patch.proposal_style, ASSISTANT_PROPOSAL_STYLES, "proposal_style")
         : existing.proposal_style,
@@ -1551,12 +1634,31 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         : recordValue(existing.model_preferences_json) ?? {},
     };
     const result = await new ScopedSettingsStore(this.pool).upsert(
-      ASSISTANT_SETTINGS_DEFINITION,
-      spaceId,
+      assistantSettingsDefinition(target),
+      assistantSettingsScopeId(target),
       next,
-      { updatedByUserId: options.actorUserId ?? null },
+      { updatedByUserId: options.actorUserId },
     );
-    return assistantSettingsRecordFromRead(spaceId, result);
+    return assistantSettingsRecordFromRead(target, result);
+  }
+
+  private async assertAssistantDefaultProject(
+    target: AssistantSettingsTarget,
+    projectId: string,
+    actorUserId: string,
+  ): Promise<void> {
+    if (target.projectId && projectId !== target.projectId) {
+      throw new HttpError(422, "A Project Assistant's default Project is its own Project");
+    }
+    const project = await this.pool.query<{ id: string }>(
+      `SELECT id FROM projects
+        WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL AND status = 'active'
+        LIMIT 1`,
+      [projectId, target.spaceId],
+    );
+    if (!project.rows[0] || !(await canReadProject(this.pool, target.spaceId, projectId, actorUserId))) {
+      throw new HttpError(422, "default_project_id must name an active Project of this Space that you can read");
+    }
   }
 
   /**

@@ -13,6 +13,7 @@ import {
 import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql.js";
 import { DailyCaptureReportService } from "./service.js";
 import { PgDailyReportSettingsRepository } from "./repository.js";
+import { isLocalDayComplete, isValidTimezone, localDateNow, previousLocalDate } from "../scheduler/localDay.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const settingsRepo = () => new PgDailyReportSettingsRepository(dbPool(context.config));
@@ -52,17 +53,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const body = jsonBody(request);
       const setting = await settingsRepo().getOrCreate(identity.spaceId, identity.userId);
-      const localDate = parseLocalDate(
-        body.local_date,
-        setting.timezone || "UTC",
-      );
+      const timezone = setting.timezone || "UTC";
+      const localDate = parseLocalDate(body.local_date, timezone);
       const result = await service().generateForDate({
         spaceId: identity.spaceId,
         userId: identity.userId,
         setting,
         localDate,
         triggerOrigin: "manual",
-        force: optionalBodyBoolean(body.force, "force") ?? false,
         createExperienceProposalsOverride: optionalBodyBoolean(
           body.create_experience_proposals,
           "create_experience_proposals",
@@ -114,21 +112,26 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 }
 
+/**
+ * The day a requested report covers: a named local date, or by default the
+ * most recent complete day of the configured timezone. Only a complete day:
+ * a report on a day still in progress would be a report on part of it, and
+ * one report per day is never rewritten.
+ */
 function parseLocalDate(value: unknown, timezone: string): string {
-  const explicit = optionalString(value);
-  if (value !== undefined && !explicit) {
+  if (!isValidTimezone(timezone)) {
+    throw new HttpError(422, `timezone ${JSON.stringify(timezone)} is not a valid IANA timezone`);
+  }
+  if (value === undefined || value === null) return previousLocalDate(localDateNow(timezone));
+  const localDate = optionalString(value);
+  if (!localDate || !/^\d{4}-\d{2}-\d{2}$/.test(localDate)) {
     throw new HttpError(422, "local_date must be YYYY-MM-DD");
   }
-  let localDate = explicit;
-  if (!localDate) {
-    try {
-      localDate = new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date());
-    } catch {
-      throw new HttpError(422, `timezone ${JSON.stringify(timezone)} is not a valid IANA timezone`);
-    }
-  }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(localDate)) {
-    throw new HttpError(422, "local_date must be YYYY-MM-DD");
+  if (!isLocalDayComplete(localDate, timezone)) {
+    throw new HttpError(422, `${localDate} has not ended in ${timezone}; only a complete day can be reported`, {
+      detail: `${localDate} has not ended in ${timezone}; only a complete day can be reported`,
+      code: "report_day_not_complete",
+    });
   }
   return localDate;
 }

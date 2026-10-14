@@ -34,6 +34,20 @@ export const informationDigests = pgTable("information_digests", {
   status: varchar({ length: 16 }).default("ready").notNull(),
   generatedByAutomationRunId: varchar("generated_by_automation_run_id", { length: 36 }),
   settingsJson: jsonb("settings_json").default({}).notNull(),
+  /**
+   * The day `digest_date` names is a calendar day in this IANA timezone — the
+   * scope's configured digest timezone when the snapshot was made — and
+   * `[period_start_utc, period_end_utc)` is that day's half-open UTC interval.
+   * The snapshot is pinned to the timezone of its own generation; a later
+   * timezone change moves future days, never this one. A UI locale never
+   * takes part in which day material belongs to.
+   */
+  timezone: varchar({ length: 64 }).default("UTC").notNull(),
+  periodStartUtc: timestamp("period_start_utc", { withTimezone: true, mode: "string" }).notNull(),
+  periodEndUtc: timestamp("period_end_utc", { withTimezone: true, mode: "string" }).notNull(),
+  /** `scheduled`: the day's automation fire; `backfill`: an explicit later request, from what is retained now. */
+  generationKind: varchar("generation_kind", { length: 16 }).default("scheduled").notNull(),
+  generatedAt: timestamp("generated_at", { withTimezone: true, mode: "string" }).defaultNow().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (t): PgTableExtraConfigValue[] => [
@@ -54,6 +68,8 @@ export const informationDigests = pgTable("information_digests", {
   check("ck_information_digests_date", sql`digest_date ~ '^\\d{4}-\\d{2}-\\d{2}$'`),
   check("ck_information_digests_maturity", sql`profile_maturity IS NULL OR profile_maturity IN ('cold','warming','warm')`),
   check("ck_information_digests_status", sql`status IN ('ready','empty','failed')`),
+  check("ck_information_digests_generation_kind", sql`generation_kind IN ('scheduled','backfill')`),
+  check("ck_information_digests_period", sql`period_start_utc < period_end_utc`),
   check("ck_information_digests_settings", sql`jsonb_typeof(settings_json) = 'object'`),
 ]);
 

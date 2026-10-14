@@ -10,10 +10,12 @@ import { PgRunRepository, type RunRecord } from "../runs/repository.js";
 import { PgVerificationEngine } from "../runs/verification/index.js";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { CONNECTION_COLUMNS, type SourceConnectionRow } from "../sources/sourceRepositoryRows.js";
-import { assertSourcePromptEgressAllowed } from "../sources/sourcePromptEgress.js";
+import { assertSourcePromptEgressAllowed, SOURCE_EGRESS_NOT_CONSENTED } from "../sources/sourcePromptEgress.js";
 import { ensureSourceAnnotatorAgent, resolveSystemActorUserId } from "./agent.js";
 import { renderAnnotationInstruction, type AnnotationPromptItem } from "./instruction.js";
+import { SourceAnnotationRecoveryNotifier } from "./notifier.js";
 import { PgSourceAnnotationRepository, type PendingAnnotationRow } from "./repository.js";
+import { ANNOTATION_MANUAL_RETRY_LIMIT, type AnnotationWaitReason } from "./retryPolicy.js";
 import {
   SOURCE_ANNOTATION_SCHEMA_ID,
   SourceAnnotationParseError,
@@ -29,9 +31,6 @@ import {
  * tail silently.
  */
 const ANNOTATION_BATCH_SIZE = 10;
-
-/** Attempts before an item is parked as `failed` rather than retried forever. */
-const ANNOTATION_MAX_ATTEMPTS = 3;
 
 export interface AnnotationSweepResult {
   space_id: string;
@@ -73,9 +72,10 @@ export class SourceAnnotationService {
     } catch {
       // Not the items' fault, so it must not spend their retry budget. A space
       // with no model provider yet is the ordinary cold-start state; these rows
-      // wait, and get annotated once one is configured. Charging an attempt
-      // here would park a new space's first three sweeps' worth of material as
-      // permanently failed before the user finished setting up.
+      // wait on the condition — no countdown, no attempt — and the sweep
+      // reopens them once a Provider is configured.
+      await repo.markWaiting(spaceId, itemIds, "provider_unavailable", { detail: "annotator_agent_unavailable" });
+      await this.notify(spaceId);
       return {
         space_id: spaceId,
         requested: itemIds.length,
@@ -101,15 +101,17 @@ export class SourceAnnotationService {
       // agent, that is the space's setup, not the items, so they keep waiting
       // with their retry budget intact.
       if (error instanceof HttpError && error.statusCode === 409) {
+        await repo.markWaiting(spaceId, itemIds, "provider_unavailable", { detail: "annotator_profile_unavailable" });
+        await this.notify(spaceId);
         return { space_id: spaceId, requested: itemIds.length, annotated: 0, skipped: 0, failed: 0, run_id: null, status: "blocked", reason: "annotator_profile_unavailable" };
       }
       throw error;
     }
     if (allowedItemIds.length === 0) {
-      // Every item was parked as skipped, so the queue moved on: this is a
-      // batch that made progress, not a space that cannot proceed. Reporting it
-      // as blocked ended the job here and left the next batch — items from
-      // sources that do allow egress — to the next sweep.
+      await this.notify(spaceId);
+      // Every item now waits on its Source's condition and left the runnable
+      // queue, so this batch made progress: the job goes on to the next batch
+      // — items from sources that do allow egress — instead of ending here.
       return { space_id: spaceId, requested: itemIds.length, annotated: 0, skipped: itemIds.length, failed: 0, run_id: null, status: "ok", reason: "source_egress_denied" };
     }
     const allowed = new Set(allowedItemIds);
@@ -125,9 +127,9 @@ export class SourceAnnotationService {
         spaceId,
         allowedItemIds,
         { error_code: "annotation_run_failed", message: errorMessage(error) },
-        ANNOTATION_MAX_ATTEMPTS,
         null,
       );
+      await this.notify(spaceId);
       return { space_id: spaceId, requested: itemIds.length, annotated: 0, skipped: 0, failed: allowedItemIds.length, run_id: null, status: "blocked", reason: "annotation_run_failed" };
     }
 
@@ -136,9 +138,9 @@ export class SourceAnnotationService {
         spaceId,
         allowedItemIds,
         { error_code: "agent_run_failed", agent_run_status: run.status, agent_run_id: run.id },
-        ANNOTATION_MAX_ATTEMPTS,
         run.id,
       );
+      await this.notify(spaceId);
       return { space_id: spaceId, requested: itemIds.length, annotated: 0, skipped: 0, failed: allowedItemIds.length, run_id: run.id, status: "blocked", reason: "agent_run_failed" };
     }
 
@@ -151,9 +153,9 @@ export class SourceAnnotationService {
         spaceId,
         allowedItemIds,
         { error_code: code, message: errorMessage(error) },
-        ANNOTATION_MAX_ATTEMPTS,
         run.id,
       );
+      await this.notify(spaceId);
       return { space_id: spaceId, requested: itemIds.length, annotated: 0, skipped: 0, failed: allowedItemIds.length, run_id: run.id, status: "blocked", reason: code };
     }
 
@@ -166,6 +168,8 @@ export class SourceAnnotationService {
     const annotatedIds = new Set(parsed.annotations.map((entry) => entry.source_item_id));
     const unanswered = allowedItemIds.filter((id) => !annotatedIds.has(id));
     await repo.markSkipped(spaceId, unanswered, "no_usable_annotation", run.id);
+    // Items that succeeded leave their episode; the notice shrinks or clears.
+    await this.notify(spaceId);
 
     return {
       space_id: spaceId,
@@ -188,30 +192,119 @@ export class SourceAnnotationService {
     // An item with no connection is a manually saved URL the user entered
     // themselves; there is no source consent record to consult and no third
     // party whose policy could be violated.
-    const denied = new Set<string>();
+    const egressDenied: string[] = [];
+    const consentMissing: string[] = [];
     if (byConnection.size > 0) {
       const connections = await this.loadConnections(spaceId, [...byConnection.keys()]);
       for (const [connectionId, connectionItemIds] of byConnection) {
         const connection = connections.get(connectionId);
         if (!connection) {
-          for (const id of connectionItemIds) denied.add(id);
+          // No readable connection, so no consent to ship its content.
+          consentMissing.push(...connectionItemIds);
           continue;
         }
         try {
           await assertSourcePromptEgressAllowed(this.db, connection, agentId);
         } catch (error) {
-          // Only the gate's refusal parks items. Anything else — a profile
-          // that cannot be resolved, a failed query — is not a decision about
-          // this source and must not turn its items terminal.
+          // Only the gate's refusal makes items wait. Anything else — a
+          // profile that cannot be resolved, a failed query — is not a
+          // decision about this source and must not park its items.
           if (!(error instanceof HttpError && error.statusCode === 403)) throw error;
-          for (const id of connectionItemIds) denied.add(id);
+          const code = (error.responseBody as { code?: unknown } | undefined)?.code;
+          (code === SOURCE_EGRESS_NOT_CONSENTED ? consentMissing : egressDenied).push(...connectionItemIds);
         }
       }
     }
-    if (denied.size > 0) {
-      await repo.markSkipped(spaceId, [...denied], "source_egress_denied", null);
-    }
+    // Refused for now, not forever: the Space egress setting or the Source's
+    // consent that refused is the owner's to change, and the sweep and a
+    // manual retry re-check it before any model call.
+    await repo.markWaiting(spaceId, egressDenied, "egress_denied");
+    await repo.markWaiting(spaceId, consentMissing, "consent_missing");
+    const denied = new Set([...egressDenied, ...consentMissing]);
     return itemIds.filter((id) => !denied.has(id));
+  }
+
+  /**
+   * Re-checks the conditions parked rows wait on and reopens the rows whose
+   * condition now holds. No model call and no attempt spent: an annotator
+   * that still cannot be resolved, or a Source whose egress is still refused,
+   * leaves its rows exactly where they were. Returns how many rows reopened.
+   */
+  async recoverWaiting(
+    spaceId: string,
+    filter: { connectionId?: string | null; responsibleUserId?: string | null; limit?: number } = {},
+  ): Promise<number> {
+    const repo = new PgSourceAnnotationRepository(this.db);
+    const limit = filter.limit ?? ANNOTATION_MANUAL_RETRY_LIMIT;
+    let reopened = 0;
+    let agentId: string | null = null;
+    try {
+      agentId = (await ensureSourceAnnotatorAgent(this.requirePool(), spaceId)).id;
+    } catch {
+      agentId = null;
+    }
+    if (agentId) {
+      reopened += await repo.requeueParked(spaceId, {
+        reasons: ["provider_unavailable"],
+        connectionId: filter.connectionId,
+        responsibleUserId: filter.responsibleUserId,
+        limit: limit - reopened,
+      });
+      const waiting = await repo.waitingConnectionIds(spaceId, ["egress_denied", "consent_missing"]);
+      const candidates = filter.connectionId ? waiting.filter((id) => id === filter.connectionId) : waiting;
+      const connections = await this.loadConnections(spaceId, candidates);
+      for (const [connectionId, connection] of connections) {
+        if (reopened >= limit) break;
+        let allowed = false;
+        try {
+          await assertSourcePromptEgressAllowed(this.db, connection, agentId);
+          allowed = true;
+        } catch (error) {
+          // Still refused, or the profile is unresolved: the wait holds.
+          if (!(error instanceof HttpError)) throw error;
+        }
+        if (allowed) {
+          reopened += await repo.requeueParked(spaceId, {
+            reasons: ["egress_denied", "consent_missing"],
+            connectionId,
+            responsibleUserId: filter.responsibleUserId,
+            limit: limit - reopened,
+          });
+        }
+      }
+    }
+    await this.notify(spaceId);
+    return reopened;
+  }
+
+  /**
+   * A person's retry of their own items: re-checks the conditions, reopens
+   * paused rows with a fresh episode (the one way the attempt count starts
+   * over) and scheduled ones now, at most `ANNOTATION_MANUAL_RETRY_LIMIT`
+   * rows. The work itself is left to the queued job, which runs one space at
+   * a time, so a retry beside a background pass does not annotate twice.
+   */
+  async manualRetry(
+    spaceId: string,
+    responsibleUserId: string,
+    filter: { episodeId?: string | null; connectionId?: string | null } = {},
+  ): Promise<{ reopened: number }> {
+    const repo = new PgSourceAnnotationRepository(this.db);
+    let reopened = await this.recoverWaiting(spaceId, { connectionId: filter.connectionId, responsibleUserId });
+    const reasons: AnnotationWaitReason[] = ["budget_exhausted", "retry_scheduled"];
+    reopened += await repo.requeueParked(spaceId, {
+      reasons,
+      episodeId: filter.episodeId,
+      connectionId: filter.connectionId,
+      responsibleUserId,
+      limit: Math.max(0, ANNOTATION_MANUAL_RETRY_LIMIT - reopened),
+    });
+    await this.notify(spaceId);
+    return { reopened };
+  }
+
+  private async notify(spaceId: string): Promise<void> {
+    await new SourceAnnotationRecoveryNotifier(this.db).sync(spaceId);
   }
 
   private async loadConnections(spaceId: string, connectionIds: string[]): Promise<Map<string, SourceConnectionRow>> {

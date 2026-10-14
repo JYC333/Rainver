@@ -647,6 +647,59 @@ describe("researchQueryRepositoryDb", () => {
       expect(versions.strategies.map((item) => item.version)).toEqual([2, 1]);
     });
 
+    it("keeps a plan with more than 200 attempts readable: bounded recent attempts, the full count, and pages of history", async () => {
+      if (!db.available) return;
+      const context = await new ResearchContextRepository(db.pool).create({ spaceId: SPACE, userId: USER }, PROJECT, validContext());
+      const queries = new ResearchQueryRepository(db.pool);
+      const strategy = await queries.createStrategy({ spaceId: SPACE, userId: USER }, {
+        projectId: PROJECT,
+        researchContextVersionId: context.id,
+        providers: ["openalex"],
+        policyVersion: "adaptive-recall.v1",
+        policy: {},
+        executionBudget: { candidate_budget: 50 },
+      });
+      await queries.recordSemanticIntent(SPACE, strategy.id, semanticQuery());
+      const plan = strategy.provider_plans[0]!;
+      const selected = await queries.createAttempt(SPACE, {
+        providerPlanId: plan.id, round: 0, sequence: 1, direction: "initial",
+        semanticQuery: semanticQuery(), compiledQuery: compiledQuery("openalex"),
+      });
+      await queries.completeAttempt(SPACE, selected.id, { observation: previewObservation(), score: 0.8, decision: "accept" });
+      await queries.selectAttempt(SPACE, plan.id, selected.id, { terminalDecision: "accept" });
+      // 220 later attempts across many retry rounds, none observed.
+      await db.pool.query(
+        `INSERT INTO research_query_attempts
+           (id,space_id,provider_plan_id,round,sequence,direction,semantic_query_json,compiled_query_json,query_fingerprint,created_at)
+         SELECT gen_random_uuid()::text,$1,$2,1 + (g - 1) / 4,1 + (g - 1) % 4,
+                CASE WHEN (g - 1) % 4 = 0 THEN 'initial' ELSE 'broaden' END,
+                $3::jsonb,$4::jsonb,'bulk-' || g,now()
+           FROM generate_series(1,220) g`,
+        [SPACE, plan.id, JSON.stringify(semanticQuery()), JSON.stringify(compiledQuery("openalex"))],
+      );
+
+      const stored = await queries.getStrategy(SPACE, PROJECT, strategy.id);
+      expect(() => protocol.ResearchQueryStrategySchema.parse(stored)).not.toThrow();
+      expect(stored?.semantic_intent).toEqual(semanticQuery());
+      const storedPlan = stored!.provider_plans[0]!;
+      expect(storedPlan.attempt_count).toBe(221);
+      expect(storedPlan.attempts.length).toBe(protocol.RESEARCH_QUERY_RECENT_ATTEMPTS + 1);
+      // The selected attempt, far older than the recent window, is still there.
+      expect(storedPlan.attempts[0]!.id).toBe(selected.id);
+      expect(storedPlan.attempts.at(-1)).toMatchObject({ round: 55, sequence: 4 });
+
+      const seen = new Set<string>();
+      for (let offset = 0; offset < 221; offset += protocol.RESEARCH_QUERY_ATTEMPT_PAGE_MAX) {
+        const page = await queries.listAttempts(SPACE, PROJECT, strategy.id, "openalex", { limit: protocol.RESEARCH_QUERY_ATTEMPT_PAGE_MAX, offset });
+        expect(page.total).toBe(221);
+        expect(() => protocol.ListResearchQueryAttemptsResponseSchema.parse({ ...page, limit: protocol.RESEARCH_QUERY_ATTEMPT_PAGE_MAX, offset })).not.toThrow();
+        for (const item of page.items) seen.add(item.id);
+      }
+      expect(seen.size).toBe(221);
+      await expect(queries.listAttempts(SPACE, OTHER_PROJECT, strategy.id, "openalex", { limit: 10, offset: 0 }))
+        .rejects.toMatchObject({ statusCode: 404 });
+    });
+
     it("enforces sequential attempts, the attempt ceiling, and immutable selection", async () => {
       if (!db.available) return;
       const context = await new ResearchContextRepository(db.pool).create({ spaceId: SPACE, userId: USER }, PROJECT, validContext());

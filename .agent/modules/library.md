@@ -24,10 +24,35 @@ source pipeline, subscription model, data model, and API.
 - Library shell (`/library`): Shell scene sidebar navigation for reading
   sections; defaults to `/library/items`.
 - Per-user item stream (`/library/items`): source-scanned items from sources
-  the current user follows, plus manually saved unconnected URLs created by the
-  current user. Library uses `source_item_user_states.library_status` and
-  `source_item_user_states.read_status`; absent state rows render as
-  `new/unread`.
+  the current user follows, items those sources delivered while the user
+  followed them (historical eligibility, below), plus manually saved
+  unconnected URLs created by the current user. A personal URL save is
+  deduplicated per owner (`uq_source_items_active_*_personal` include
+  `owner_user_id`): saving the same URL again returns the saver's own item,
+  and another member's private save never blocks or reveals anything; a
+  Project save is unique per Project and answers a conflict on an item the
+  saver cannot read with 409 and no detail. Library uses
+  `source_item_user_states.library_status`, `read_status` and `read_origin`;
+  absent state rows render as `new/unread`.
+- Reading eligibility after leaving a source. Each
+  `source_channel_user_subscriptions` row records the window in which the
+  person received the channel (`subscribed_at`, closed by `unsubscribed_at`).
+  Leaving (`POST /api/v1/sources/channels/:channelId/subscription
+  {status:"muted"}`, the Sources page "Sources you follow" list) stops new
+  items and digest delivery; items first seen inside a closed window stay
+  readable in Library, Reader, export and every path that uses
+  `sourceItemReadableClause`. That historical access ends when the source
+  itself no longer admits the reader — the connection is archived or deleted,
+  its channel archived, or its visibility/grants narrowed past them — because
+  the clause re-checks the connection's current read decision. Following again
+  opens a new window. Already-downloaded offline copies are outside this.
+- Interest evidence. A read counts toward the private interest profile only
+  when the reader reached it themselves (`read_origin = 'library'`; an open
+  from the digest's serendipity section is recorded `serendipity` and never
+  counts, per B54) and the source is one they currently follow or own
+  (`sourceItemProfileEvidenceClause`). Leaving a source rebuilds the profile's
+  automatic facts (observations and candidate counts) on the next pass;
+  topics the owner accepted or created, and dismissed candidates, stay.
 - Item type views under All Items:
   - `/library/items/articles`
   - `/library/items/emails`
@@ -38,7 +63,9 @@ source pipeline, subscription model, data model, and API.
   MIME/content-type hints. They are not source import requirements and do not
   create hard schema categories.
 - Library daily digest (`/library/digests`): one deterministic cross-source
-  selection per reader and UTC day from subscribed channels with
+  selection per reader and complete day of the digest's configured timezone
+  (see [information digest](information-digest.md#days-history-and-backfill))
+  from subscribed channels with
   `digest_enabled=true`. Before selection, the automatic deterministic fact
   layer accounts for newly annotated items using this reader's private state;
   explicitly ignored items do not affect coverage or topic candidates. The
@@ -84,6 +111,15 @@ source pipeline, subscription model, data model, and API.
   Project Corpus domains with zero active-member reads as anonymous team blind
   spots. Below that cohort threshold neither counts nor blind spots are
   returned.
+- Both digest pages show the stored day as that calendar date beside its
+  timezone (`Intl`, the reader's UI language only formats it), step to the
+  previous or next day up to the latest complete one, and say whether the
+  snapshot was scheduled or a backfill. A missing day shows the server's
+  explanation and, for a complete day the reader may write, a "Backfill this
+  day" action; viewing never generates. `/library/digests` also shows the
+  reader's own Source annotation failure episodes (`AnnotationRecoveryNotice`):
+  a relative and absolute next-retry time only while an automatic retry is
+  scheduled, the waiting condition otherwise, and "Retry now".
 - Single-item reader routes:
   - `/library/items/:itemId`
   - `/library/digests/:connectionId/:date/items/:itemId`
@@ -107,7 +143,7 @@ source_channel_user_subscriptions (subscribed + digest_enabled)
   + source_channel_item_links + source_item_annotations
   + owner-private interest profile when maturity != cold
   -> information_digests + information_digest_items
-  -> GET /api/v1/spaces/:spaceId/information-digests/personal
+  -> GET /api/v1/spaces/:spaceId/information-digests/personal  (read-only; missing day → explicit backfill)
   -> /library/digests
 
 weekly information_digest probe
@@ -160,7 +196,7 @@ its summary withheld too: that model narrative is not a public status message.
 
 Source recommendation inbox rows point back to Sources Pending. Reviewing or
 archiving the Activity row only clears the notification pointer; Follow,
-Dismiss, Mute, and Unsubscribe are stored in
+Dismiss, Mute, Leave and Follow again are stored in
 `source_channel_user_subscriptions`.
 
 Project source collection inbox rows point to `/projects/:projectId/sources`.

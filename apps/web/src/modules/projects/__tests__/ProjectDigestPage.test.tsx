@@ -1,17 +1,31 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { toast } from 'sonner'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { informationDigestsApi } from '../../../api/client'
 import ProjectDigestPage from '../ProjectDigestPage'
+import type { InformationDigest } from '../../../types/api'
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpaceId: 'space-1' }) }))
 vi.mock('../../../core/spaceNav', () => ({ SpaceLink: ({ to, children, ...props }: any) => <a href={to} {...props}>{children}</a> }))
-vi.mock('../../../api/client', () => ({ informationDigestsApi: { project: vi.fn() } }))
+vi.mock('../../../api/client', () => ({ informationDigestsApi: { project: vi.fn(), backfillProject: vi.fn() } }))
+
+/** A history read that found the day's scheduled snapshot. */
+function available(digest: Omit<InformationDigest, 'timezone' | 'period_start_utc' | 'period_end_utc' | 'generation_kind' | 'generated_at'>) {
+  return {
+    status: 'available' as const,
+    digest: {
+      ...digest,
+      timezone: 'UTC', period_start_utc: `${digest.digest_date}T00:00:00.000Z`, period_end_utc: `${digest.digest_date}T23:59:59.999Z`,
+      generation_kind: 'scheduled' as const, generated_at: digest.created_at,
+    },
+  }
+}
 
 describe('ProjectDigestPage', () => {
   beforeEach(() => {
-    vi.mocked(informationDigestsApi.project).mockResolvedValue({
+    vi.mocked(informationDigestsApi.project).mockResolvedValue(available({
       id: 'digest-1', digest_type: 'project', owner_user_id: null, project_id: 'project-1',
       digest_date: '2026-08-06', profile_maturity: null, status: 'ready', settings: {},
       created_at: '2026-08-06T07:00:00Z', updated_at: '2026-08-06T07:00:00Z',
@@ -26,7 +40,7 @@ describe('ProjectDigestPage', () => {
         stance_target: null, stance_target_key: null, stance_polarity: 'neutral', stance_confidence: 0,
         read_status: 'unread', serendipity_feedback: null, anonymous_read_count: 3,
       }],
-    })
+    }))
   })
 
   it('renders only server-thresholded anonymous team signals', async () => {
@@ -40,5 +54,24 @@ describe('ProjectDigestPage', () => {
     expect(screen.getByText('biology')).toBeInTheDocument()
     expect(screen.getByText('3 people read this')).toBeInTheDocument()
     expect(screen.queryByText(/user-1|user-2/i)).not.toBeInTheDocument()
+  })
+
+  it('offers a Project backfill for a missing day and shows the refusal when the reader cannot write', async () => {
+    vi.mocked(informationDigestsApi.project).mockResolvedValue({
+      status: 'missing', digest_date: '2026-08-06', timezone: 'UTC',
+      period_start_utc: '2026-08-06T00:00:00.000Z', period_end_utc: '2026-08-07T00:00:00.000Z',
+      backfill_available: true, explanation: 'No digest was made for this day.',
+    })
+    vi.mocked(informationDigestsApi.backfillProject).mockRejectedValue(new Error('Project write access is required'))
+    render(
+      <MemoryRouter initialEntries={['/projects/project-1/digest']}>
+        <Routes><Route path="/projects/:projectId/digest" element={<ProjectDigestPage />} /></Routes>
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Backfill this day' }))
+    await waitFor(() => expect(informationDigestsApi.backfillProject).toHaveBeenCalledWith('space-1', 'project-1', '2026-08-06'))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Project write access is required'))
+    expect(screen.getByText('No digest for Aug 6, 2026')).toBeInTheDocument()
   })
 })

@@ -48,6 +48,11 @@ class FakeEmbeddingDb implements Queryable {
   }
 }
 
+/** The chunk-table statements, without the policy-generation read that precedes the claim. */
+function chunkCalls(db: FakeEmbeddingDb) {
+  return db.calls.filter((call) => !call.sql.includes("FROM source_connections"));
+}
+
 function fakeEmbedder(): RetrievalEmbedder & { texts: string[] } {
   return {
     texts: [],
@@ -141,10 +146,13 @@ describe("retrieval embedding backfill", () => {
       model: "embed-model",
     });
     expect(embedder.texts).toEqual(["embed me"]);
-    expect(db.calls[0]!.sql).toContain("FOR UPDATE SKIP LOCKED");
-    expect(db.calls[0]!.params[0]).toBe("space-1");
-    expect(db.calls[0]!.params[1]).toBe(4);
-    expect(db.calls[1]!.params[5]).toBe(db.calls[0]!.params[2]);
+    expect(chunkCalls(db)[0]!.sql).toContain("FOR UPDATE SKIP LOCKED");
+    expect(chunkCalls(db)[0]!.params[0]).toBe("space-1");
+    expect(chunkCalls(db)[0]!.params[1]).toBe(4);
+    // The claim passes over chunks set aside under the current policy generation.
+    expect(chunkCalls(db)[0]!.sql).toContain("embedding_blocked_generation IS DISTINCT FROM $6");
+    expect(chunkCalls(db)[0]!.params[5]).toMatch(/^[a-f0-9]{64}$/);
+    expect(chunkCalls(db)[1]!.params[5]).toBe(chunkCalls(db)[0]!.params[2]);
     expect(auditEvents).toEqual([
       {
         spaceId: "space-1",
@@ -170,10 +178,10 @@ describe("retrieval embedding backfill", () => {
       "provider down",
     );
 
-    expect(db.calls[0]!.sql).toContain("FOR UPDATE SKIP LOCKED");
-    expect(db.calls[1]!.sql).toContain("SET embedding_claim_id = NULL");
-    expect(db.calls[1]!.params[0]).toBe("space-1");
-    expect(db.calls[1]!.params[1]).toBe(db.calls[0]!.params[2]);
+    expect(chunkCalls(db)[0]!.sql).toContain("FOR UPDATE SKIP LOCKED");
+    expect(chunkCalls(db)[1]!.sql).toContain("SET embedding_claim_id = NULL");
+    expect(chunkCalls(db)[1]!.params[0]).toBe("space-1");
+    expect(chunkCalls(db)[1]!.params[1]).toBe(chunkCalls(db)[0]!.params[2]);
   });
 });
 

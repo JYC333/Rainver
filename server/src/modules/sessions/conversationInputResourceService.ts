@@ -63,43 +63,74 @@ export class ConversationInputResourceService {
   }): Promise<InputResourceReadOutput> {
     const request = InputResourceReadInputSchema.parse(input.request);
     const resource = await this.loadResource(input, request.resource_id);
+    if (request.sha256 !== undefined && request.sha256 !== resource.sha256) {
+      throw new ConversationInputResourceToolError("invalid_resource_request", "sha256 does not match the frozen resource this Run was given");
+    }
     const lines = splitLines(resource.content);
     const startLine = request.start_line;
     if (lines.length > 0 && startLine > lines.length) {
       throw new ConversationInputResourceToolError("invalid_resource_request", `start_line ${startLine} is past the end of the resource`);
     }
-    const selected: string[] = [];
+    const firstLine = Buffer.from(lines[startLine - 1] ?? "", "utf8");
+    const startOffset = request.start_byte_offset;
+    if (startOffset > firstLine.byteLength) {
+      throw new ConversationInputResourceToolError("invalid_resource_request", `start_byte_offset ${startOffset} is past the end of line ${startLine} (${firstLine.byteLength} bytes)`);
+    }
+    if (!isUtf8Boundary(firstLine, startOffset)) {
+      throw new ConversationInputResourceToolError("invalid_resource_request", `start_byte_offset ${startOffset} falls inside a multi-byte character; byte offsets are not character columns`);
+    }
+    const pieces: Buffer[] = [];
     let byteSize = 0;
-    let endLine = startLine - 1;
-    let truncated = false;
-    for (let index = startLine - 1; index < lines.length && selected.length < Math.min(request.line_count, INPUT_RESOURCE_MAX_READ_LINES); index += 1) {
-      const candidate = lines[index]!;
-      const separatorBytes = selected.length > 0 ? 1 : 0;
-      const candidateBytes = Buffer.byteLength(candidate, "utf8") + separatorBytes;
-      if (selected.length > 0 && byteSize + candidateBytes > INPUT_RESOURCE_MAX_READ_BYTES) {
-        truncated = true;
+    let endLine = startLine;
+    let nextLine: number | null = null;
+    let nextByteOffset: number | null = null;
+    const lineLimit = Math.min(request.line_count, INPUT_RESOURCE_MAX_READ_LINES);
+    let consumed = 0;
+    for (let index = startLine - 1; index < lines.length; index += 1) {
+      if (consumed >= lineLimit) {
+        nextLine = index + 1;
+        nextByteOffset = 0;
         break;
       }
-      if (selected.length === 0 && candidateBytes > INPUT_RESOURCE_MAX_READ_BYTES) {
-        selected.push(truncateUtf8(candidate, INPUT_RESOURCE_MAX_READ_BYTES));
-        byteSize = INPUT_RESOURCE_MAX_READ_BYTES;
-        truncated = true;
-      } else {
-        selected.push(candidate);
-        byteSize += candidateBytes;
+      const whole = index === startLine - 1 ? firstLine.subarray(startOffset) : Buffer.from(lines[index]!, "utf8");
+      const separatorBytes = pieces.length > 0 ? 1 : 0;
+      const room = INPUT_RESOURCE_MAX_READ_BYTES - byteSize - separatorBytes;
+      if (whole.byteLength <= room) {
+        pieces.push(whole);
+        byteSize += whole.byteLength + separatorBytes;
+        endLine = index + 1;
+        consumed += 1;
+        continue;
       }
-      endLine = index + 1;
+      if (pieces.length === 0) {
+        // The line is longer than one read holds: return as much of it as
+        // fits, ending on a character boundary, and point the cursor at the
+        // byte after it. The line number does not move.
+        const cut = utf8BoundaryAtOrBefore(whole, room);
+        pieces.push(whole.subarray(0, cut));
+        byteSize += cut;
+        endLine = index + 1;
+        nextLine = index + 1;
+        nextByteOffset = (index === startLine - 1 ? startOffset : 0) + cut;
+      } else {
+        nextLine = index + 1;
+        nextByteOffset = 0;
+      }
+      break;
     }
-    truncated = truncated || endLine < lines.length;
+    const eof = nextLine === null;
     const output = {
       resource_id: resource.id,
       start_line: startLine,
-      end_line: Math.max(startLine, endLine),
-      next_line: truncated ? Math.max(startLine, endLine) + 1 : null,
+      start_byte_offset: startOffset,
+      end_line: endLine,
+      next_line: nextLine,
+      next_byte_offset: eof ? null : nextByteOffset,
       total_lines: lines.length,
       sha256: resource.sha256,
-      content: selected.join("\n"),
-      truncated,
+      content: Buffer.concat(pieces.flatMap((piece, index) => (index === 0 ? [piece] : [NEWLINE, piece]))).toString("utf8"),
+      truncated: !eof,
+      eof,
     } satisfies InputResourceReadOutput;
     return InputResourceReadOutputSchema.parse(output);
   }
@@ -318,8 +349,16 @@ function splitLines(content: string): string[] {
   return content.length === 0 ? [] : content.split(/\r\n|\r|\n/u);
 }
 
-function truncateUtf8(value: string, maxBytes: number): string {
-  let end = Math.min(value.length, maxBytes);
-  while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes) end -= 1;
-  return value.slice(0, end);
+const NEWLINE = Buffer.from("\n", "utf8");
+
+/** Whether `offset` begins a character: the end of the buffer, or a byte that is not a UTF-8 continuation byte. */
+function isUtf8Boundary(bytes: Buffer, offset: number): boolean {
+  return offset === bytes.byteLength || (bytes[offset]! & 0xc0) !== 0x80;
+}
+
+/** The largest offset ≤ `limit` that begins a character, so a cut never splits one. */
+function utf8BoundaryAtOrBefore(bytes: Buffer, limit: number): number {
+  let cut = Math.min(limit, bytes.byteLength);
+  while (cut > 0 && !isUtf8Boundary(bytes, cut)) cut -= 1;
+  return cut;
 }

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import { isKnownDomain } from "../sourceAnnotation/index.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
+import { sourceItemProfileEvidenceClause } from "../sources/sourceItemAccess.js";
 import { topicKeyFor } from "./topicKey.js";
 import { DEFAULT_INTEREST_PROFILE_SETTINGS, type InterestProfileSettings } from "./settings.js";
 
@@ -60,6 +61,14 @@ export const NEW_TOPIC_OCCURRENCE_THRESHOLD = DEFAULT_INTEREST_PROFILE_SETTINGS.
 
 /** Of those occurrences, how many must be on material the reader actually read. */
 export const NEW_TOPIC_READ_THRESHOLD = DEFAULT_INTEREST_PROFILE_SETTINGS.new_topic_read_threshold;
+
+/**
+ * A read that counts: the reader opened it themselves (not through the
+ * serendipity section) and the source is still one they subscribe to.
+ */
+const PROFILE_READ_EVIDENCE_SQL = `s.read_status <> 'unread'
+          AND COALESCE(s.read_origin, 'library') <> 'serendipity'
+          AND ${sourceItemProfileEvidenceClause("si", "$2")}`;
 
 export class PgInterestProfileRepository {
   constructor(private readonly db: Queryable) {}
@@ -218,11 +227,13 @@ export class PgInterestProfileRepository {
          FROM source_item_annotations a
          JOIN source_item_user_states s
            ON s.space_id = a.space_id AND s.source_item_id = a.source_item_id
+         JOIN source_items si
+           ON si.id = a.source_item_id AND si.space_id = a.space_id
         WHERE a.space_id = $1
           AND s.user_id = $2
           AND a.status = 'succeeded'
           AND a.domain_key IS NOT NULL
-          AND s.read_status <> 'unread'
+          AND ${PROFILE_READ_EVIDENCE_SQL}
         GROUP BY a.domain_key
         ORDER BY weighted_count DESC`,
       [spaceId, userId, halfLifeDays],
@@ -242,11 +253,13 @@ export class PgInterestProfileRepository {
          FROM source_item_annotations a
          JOIN source_item_user_states s
            ON s.space_id = a.space_id AND s.source_item_id = a.source_item_id
+         JOIN source_items si
+           ON si.id = a.source_item_id AND si.space_id = a.space_id
         WHERE a.space_id = $1
           AND s.user_id = $2
           AND a.status = 'succeeded'
           AND a.domain_key IS NOT NULL
-          AND s.read_status <> 'unread'`,
+          AND ${PROFILE_READ_EVIDENCE_SQL}`,
       [spaceId, userId],
     );
     const row = result.rows[0];
@@ -293,7 +306,7 @@ export class PgInterestProfileRepository {
       `SELECT a.source_item_id,
               a.domain_key,
               a.topic_candidates_json,
-              COALESCE(s.read_status, 'unread') <> 'unread' AS was_read,
+              (COALESCE(s.read_status, 'unread') <> 'unread' AND COALESCE(s.read_origin, 'library') <> 'serendipity') AS was_read,
               COALESCE(s.library_status, 'new') = 'ignored' AS was_ignored,
               o.id IS NOT NULL AS already_observed
          FROM source_item_annotations a
@@ -311,9 +324,13 @@ export class PgInterestProfileRepository {
           -- and must not raise their candidates or name a phrase.
           AND si.deleted_at IS NULL
           AND ${contentReadSql("source_item", "si", "$2")}
+          -- Only material this reader currently subscribes to (or saved
+          -- themselves) is evidence; an unsubscribed source's items stay
+          -- readable but stop feeding the profile.
+          AND ${sourceItemProfileEvidenceClause("si", "$2")}
           AND (
             o.id IS NULL
-            OR (o.counted_as_read = FALSE AND COALESCE(s.read_status, 'unread') <> 'unread')
+            OR (o.counted_as_read = FALSE AND COALESCE(s.read_status, 'unread') <> 'unread' AND COALESCE(s.read_origin, 'library') <> 'serendipity')
           )
         ORDER BY a.annotated_at ASC NULLS LAST, a.id ASC
         LIMIT $4`,
@@ -417,6 +434,23 @@ export class PgInterestProfileRepository {
         ],
       );
     }
+  }
+
+  /**
+   * Drops every automatically derived fact so the next fact-layer pass
+   * rebuilds it from what the reader is currently entitled to. Called when a
+   * subscription ends: the observations and phrase counts that an
+   * unsubscribed source contributed cannot be subtracted item by item, so
+   * they are recomputed from scratch. Topics the owner accepted or created,
+   * and candidates they dismissed, are theirs and stay.
+   */
+  async resetAutomaticFacts(profileId: string): Promise<void> {
+    await this.db.query(`DELETE FROM interest_topic_observations WHERE profile_id = $1`, [profileId]);
+    await this.db.query(`DELETE FROM interest_topic_candidates WHERE profile_id = $1 AND status <> 'dismissed'`, [profileId]);
+    await this.db.query(
+      `UPDATE interest_topic_candidates SET occurrence_count = 0, read_count = 0, updated_at = $2 WHERE profile_id = $1 AND status = 'dismissed'`,
+      [profileId, new Date().toISOString()],
+    );
   }
 
   /** Candidates that crossed the threshold and await the owner's decision. */

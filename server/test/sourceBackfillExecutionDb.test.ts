@@ -419,4 +419,44 @@ describe("history page completion against a concurrent reconcile (real Postgres)
     expect(segment.rows[0]).toMatchObject({ status: "running", window_json: { cursor: 1, offset: 2, consumed_items: 2 } });
     expect(segment.rows[0]!.extraction_job_id).not.toBe(jobId);
   });
+
+  it("reserves each continuation page against the budget siblings share, so concurrent segments never pass max_items", async () => {
+    if (!db.available) return;
+    // Operation total is 10. A's first page read 5; B has a 4-item page in flight.
+    await seedPlan(PLAN_A, CHANNEL_A, 100, 0, "running");
+    await seedPlan(PLAN_B, CHANNEL_B, 100, 0, "running");
+    const segmentA = randomUUID();
+    const segmentB = randomUUID();
+    const windowA = { max_items: 10, remaining_items: 10, page_size: 5, cursor: 0 };
+    await seedSegment(segmentA, PLAN_A, "running", windowA);
+    await seedSegment(segmentB, PLAN_B, "running", { max_items: 4, remaining_items: 4, page_size: 4, cursor: 0 });
+    const worker = new SourceExtractionWorker(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), publicAddressGuard);
+    const continuePage = (window: Record<string, unknown>, seen: number) =>
+      (worker as unknown as { queueBackfillContinuationIfNeeded(job: unknown, result: unknown): Promise<void> }).queueBackfillContinuationIfNeeded(
+        { id: randomUUID(), space_id: SPACE, connection_id: CONNECTION, metadata_json: { source_channel_id: CHANNEL_A, source_backfill_plan_id: PLAN_A, source_backfill_segment_id: segmentA, window } },
+        { seen, page_size: 5, narrowable: true },
+      );
+
+    await continuePage(windowA, 5);
+    const afterFirst = await db.pool.query<{ window_json: Record<string, unknown> }>(`SELECT window_json FROM source_backfill_segments WHERE id=$1`, [segmentA]);
+    // A's own window would allow 5 more; the shared budget leaves 10 - 5 - 4 = 1.
+    expect(afterFirst.rows[0]!.window_json).toMatchObject({ consumed_items: 5, remaining_items: 1, page_size: 1, partial: false });
+
+    // That page reads its one item; B's page is still in flight, so nothing is left.
+    await continuePage(afterFirst.rows[0]!.window_json, 1);
+    const afterSecond = await db.pool.query<{ window_json: Record<string, unknown> }>(`SELECT window_json FROM source_backfill_segments WHERE id=$1`, [segmentA]);
+    expect(afterSecond.rows[0]!.window_json).toMatchObject({ consumed_items: 6, partial: true, has_more: true });
+    expect(afterSecond.rows[0]!.window_json.next_cursor).toBe(afterSecond.rows[0]!.window_json.cursor);
+    const queued = await db.pool.query(`SELECT id FROM extraction_jobs WHERE metadata_json->>'source_backfill_segment_id'=$1`, [segmentA]);
+    expect(queued.rows).toHaveLength(1);
+
+    // Imported plus reserved never passes the operation total.
+    const pending = await db.pool.query<{ total: number }>(
+      `SELECT SUM(COALESCE((window_json->>'consumed_items')::int,0) + CASE WHEN id=$1 THEN 4 ELSE 0 END)::int AS total
+         FROM source_backfill_segments`,
+      [segmentB],
+    );
+    expect(pending.rows[0]!.total).toBeLessThanOrEqual(10);
+  });
+
 });

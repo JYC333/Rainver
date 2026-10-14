@@ -15,8 +15,8 @@ import { AutomationService } from "../src/modules/automations/service.js";
 import type { AutomationRow } from "../src/modules/automations/repository.js";
 import { registerRetrievalMaintenanceAutomationTarget } from "../src/modules/retrieval/automationTarget.js";
 import { registerContextOpsReviewCycleAutomationTarget } from "../src/modules/contextOps/automationTarget.js";
+import { isValidTimezone } from "../src/modules/scheduler/localDay.js";
 import {
-  isValidTimezone,
   PgDailyReportSettingsRepository,
   type DailyReportSettingRow,
 } from "../src/modules/dailyReports/repository.js";

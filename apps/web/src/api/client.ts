@@ -157,7 +157,10 @@ import type {
   HostExecutionTargetsResponse,
   WorkspaceLocation,
   HomeSummaryOut,
-  InformationDigest,
+  InformationDigestBackfillResult,
+  InformationDigestLookup,
+  SourceAnnotationEpisode,
+  SourceAnnotationRetryResult,
   InquiryCandidate,
   InquiryDeltaBriefContent,
   InquiryEvidenceSignal,
@@ -400,6 +403,7 @@ import type {
   SourceRecipePlanResponse,
   SourceRecipeVersion,
   SourceRecommendation,
+  FollowedSourceChannel,
   SourceScheduleRule,
   SpaceAssistantSettingsOut,
   SpaceAssistantSettingsUpdate,
@@ -447,6 +451,9 @@ import type {
   ConversationInputPart,
   ConversationInputFileSearchResponse,
   OfficialPluginEffectiveResponse,
+  ListResearchQueryAttemptsResponse,
+  WorkRetrievalSwitch,
+  WorkRetrievalSwitchRequest,
 } from '@rainver/protocol'
 import { ConversationInputMediaOutSchema } from '@rainver/protocol'
 
@@ -2447,14 +2454,25 @@ export const activityApi = {
 
 // ── Source / Evidence ────────────────────────────────────────────────────
 export const informationDigestsApi = {
+  /** Read-only: the day's snapshot, or `missing`. Without a date, the latest complete day of the digest's timezone. */
   personal: (spaceId: string, date?: string) => {
     const q = date ? `?date=${encodeURIComponent(date)}` : ''
-    return get<InformationDigest>(`/spaces/${encodeURIComponent(spaceId)}/information-digests/personal${q}`)
+    return get<InformationDigestLookup>(`/spaces/${encodeURIComponent(spaceId)}/information-digests/personal${q}`)
   },
   project: (spaceId: string, projectId: string, date?: string) => {
     const q = date ? `?date=${encodeURIComponent(date)}` : ''
-    return get<InformationDigest>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-digests${q}`)
+    return get<InformationDigestLookup>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-digests${q}`)
   },
+  /** Builds a missing complete day once; never rewrites an existing snapshot. */
+  backfillPersonal: (spaceId: string, date: string) =>
+    post<InformationDigestBackfillResult>(`/spaces/${encodeURIComponent(spaceId)}/information-digests/personal/backfill`, { date }),
+  backfillProject: (spaceId: string, projectId: string, date: string) =>
+    post<InformationDigestBackfillResult>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-digests/backfill`, { date }),
+  /** The caller's own Source annotation failure episodes. */
+  annotationEpisodes: (spaceId: string) =>
+    get<{ episodes: SourceAnnotationEpisode[] }>(`/spaces/${encodeURIComponent(spaceId)}/source-annotation/episodes`),
+  retryAnnotation: (spaceId: string, body: { episode_id?: string; connection_id?: string } = {}) =>
+    post<SourceAnnotationRetryResult>(`/spaces/${encodeURIComponent(spaceId)}/source-annotation/retry`, body),
   profile: (spaceId: string) =>
     get<InterestProfileSnapshot>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile`),
   acceptCandidate: (spaceId: string, phraseKey: string, body: { label?: string; domain_key?: string }) =>
@@ -2494,8 +2512,12 @@ export const sourcesApi = {
     return get<SourceChannel[]>(`/sources/channels${suffix}`)
   },
   recommendations: () => get<SourceRecommendation[]>('/sources/recommendations'),
+  followed: () => get<FollowedSourceChannel[]>('/sources/followed'),
   decideRecommendation: (channelId: string, decision: 'subscribed' | 'dismissed' | 'muted') =>
     post<{ source_channel_id: string; status: string; updated_at: string }>(`/sources/recommendations/${encodeURIComponent(channelId)}/decision`, { decision }),
+  /** Leave (`muted`) or rejoin (`subscribed`) a channel; what was delivered while subscribed stays readable. */
+  setChannelSubscription: (channelId: string, status: 'subscribed' | 'muted') =>
+    post<{ source_channel_id: string; status: string; updated_at: string }>(`/sources/channels/${encodeURIComponent(channelId)}/subscription`, { status }),
   customSourceCredentials: () => get<CustomSourceCredentialDTO[]>('/sources/custom-source-credentials'),
   getChannel: (id: string) => get<SourceChannel>(`/sources/channels/${id}`),
   createChannel: (body: {
@@ -2790,8 +2812,9 @@ export const sourcesApi = {
 
 // ── Reader ────────────────────────────────────────────────────────────────
 export const readerApi = {
-  getDocument: (documentType: string, documentId: string) =>
-    get<ReaderDocumentPayload>(`/reader/documents/${documentType}/${documentId}`),
+  /** `origin: 'serendipity'` marks an open that came from the digest's serendipity section; it is not interest evidence. */
+  getDocument: (documentType: string, documentId: string, options: { origin?: 'serendipity' } = {}) =>
+    get<ReaderDocumentPayload>(`/reader/documents/${documentType}/${documentId}${options.origin ? `?origin=${options.origin}` : ''}`),
 
   listAnnotations: (documentType: string, documentId: string) =>
     get<ReaderAnnotationsResponse>(`/reader/documents/${documentType}/${documentId}/annotations`),
@@ -3438,6 +3461,17 @@ export const researchDiscoveryApi = {
     post<MaterializedResearchStrategy>(`/research/query-strategies/${encodeURIComponent(strategyId)}/materialize`, body),
   retryProvider: (strategyId: string, providerKey: ResearchProviderKey, body: { project_id: string; execution?: { model_provider_id?: string; model_name?: string }; credentials?: Record<string, string> }) =>
     post<{ strategy: ResearchQueryStrategy }>(`/research/query-strategies/${encodeURIComponent(strategyId)}/providers/${encodeURIComponent(providerKey)}/retry`, body),
+  /** One page of a provider plan's attempts, newest first. */
+  listAttempts: (strategyId: string, providerKey: ResearchProviderKey, query: { project_id: string; limit: number; offset: number }) =>
+    get<ListResearchQueryAttemptsResponse>(`/research/query-strategies/${encodeURIComponent(strategyId)}/providers/${encodeURIComponent(providerKey)}/attempts?${new URLSearchParams({ project_id: query.project_id, limit: String(query.limit), offset: String(query.offset) })}`),
+}
+
+/** A conversation's knowledge-retrieval switch, kept per person and conversation. */
+export const runtimeContextApi = {
+  retrievalSwitch: (scopeId: string) =>
+    get<WorkRetrievalSwitch>(`/runtime-context/work-contexts/${encodeURIComponent(scopeId)}/retrieval`),
+  setRetrievalSwitch: (scopeId: string, body: WorkRetrievalSwitchRequest) =>
+    put<WorkRetrievalSwitch>(`/runtime-context/work-contexts/${encodeURIComponent(scopeId)}/retrieval`, body),
 }
 
 export const instanceOperationsApi = {

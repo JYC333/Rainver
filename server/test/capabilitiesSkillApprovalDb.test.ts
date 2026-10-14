@@ -13,12 +13,19 @@ const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
   if (!db.available) return;
-  await resetTables(db.pool, ["skill_local_overlays", "skill_packages", "skill_sources", "users", "spaces"], { cascade: true });
+  await resetTables(db.pool, ["skill_local_overlays", "skill_packages", "skill_sources", "space_memberships", "users", "spaces"], { cascade: true });
   await db.pool.query(`INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Main', 'personal', now(), now())`, [SPACE]);
   await db.pool.query(
     `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
      VALUES ($1, 'Owner', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
     [USER],
+  );
+  // A Space overlay is its owner's or admin's to set; the person here owns
+  // the personal Space they save into.
+  await db.pool.query(
+    `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+     VALUES (gen_random_uuid()::varchar, $1, $2, 'owner', 'active', now(), now())`,
+    [SPACE, USER],
   );
 });
 

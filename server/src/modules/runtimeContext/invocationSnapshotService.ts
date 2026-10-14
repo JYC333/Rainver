@@ -232,10 +232,12 @@ export class InvocationSnapshotService {
       const cliBindingRef = record(cliSession.binding_ref);
       const cursorFrom = nonnegativeInteger(cliSession.cursor_from);
       const cursorThrough = nonnegativeInteger(cliSession.cursor_through);
+      const leaseGeneration = nonnegativeInteger(cliSession.lease_generation);
       if (input.status === "accepted" && this.cliContinuity
         && typeof cliBindingRef.id === "string"
         && current.work_context_scope_id
         && cursorFrom !== null && cursorThrough !== null) {
+        if (leaseGeneration === null) throw new HttpError(409, "CLI Delivery has no execution lease generation");
         await this.cliContinuity.acknowledgeDeliveryInTransaction(db, {
           bindingId: cliBindingRef.id,
           spaceId: input.spaceId,
@@ -243,6 +245,7 @@ export class InvocationSnapshotService {
           fromCursor: cursorFrom,
           throughCursor: cursorThrough,
           itemIds: plannedItemIds(deliveryMetadata),
+          leaseGeneration,
         });
       }
       const next = protocol.InvocationSnapshotSafeSchema.parse({
@@ -297,20 +300,23 @@ export class InvocationSnapshotService {
       const bindingRef = record(cliSession.binding_ref);
       const cursorFrom = nonnegativeInteger(cliSession.cursor_from);
       const cursorThrough = nonnegativeInteger(cliSession.cursor_through);
+      const leaseGeneration = nonnegativeInteger(cliSession.lease_generation);
       if (typeof bindingRef.id !== "string" || !snapshot.work_context_scope_id
-        || cursorFrom === null || cursorThrough === null) {
+        || cursorFrom === null || cursorThrough === null || leaseGeneration === null) {
         throw new HttpError(409, "Invocation Delivery has no CLI context phase");
       }
       const vendor = input.vendorSessionId.trim();
       if (!vendor) throw new HttpError(422, "CLI context phase requires a vendor session id");
+      // Fenced like the acknowledgement below: a Run whose lease another Run
+      // has since taken over records nothing.
       const recorded = await db.query(
         `UPDATE runtime_context_cli_bindings
             SET vendor_session_id=$3,updated_at=now()
-          WHERE id=$1 AND runtime_state_key=$2 AND status='active'`,
-        [bindingRef.id, cliSession.runtime_state_key, vendor],
+          WHERE id=$1 AND runtime_state_key=$2 AND status='active' AND execution_lease_generation=$4`,
+        [bindingRef.id, cliSession.runtime_state_key, vendor, leaseGeneration],
       );
       if ((recorded.rowCount ?? 0) !== 1) {
-        throw new HttpError(409, "CLI Delivery binding is no longer active");
+        throw new HttpError(409, "CLI Delivery binding is no longer active under this execution lease");
       }
       await this.cliContinuity!.acknowledgeDeliveryInTransaction(db, {
         bindingId: bindingRef.id,
@@ -319,6 +325,7 @@ export class InvocationSnapshotService {
         fromCursor: cursorFrom,
         throughCursor: cursorThrough,
         itemIds: plannedItemIds(metadata),
+        leaseGeneration,
       });
     });
   }

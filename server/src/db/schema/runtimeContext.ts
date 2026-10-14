@@ -258,6 +258,13 @@ export const runtimeContextCliBindings = pgTable("runtime_context_cli_bindings",
   rotationReason: varchar("rotation_reason", { length: 64 }),
   executionLeaseId: varchar("execution_lease_id", { length: 36 }),
   executionLeaseExpiresAt: timestamp("execution_lease_expires_at", { withTimezone: true, mode: "string" }),
+  // The Run holding the lease: a holder that is no longer live (crashed,
+  // reaped, finished without releasing) gives the lease up at once.
+  executionLeaseRunId: varchar("execution_lease_run_id", { length: 36 }),
+  // Fencing token: raised by every acquisition and carried across rotations,
+  // so a holder whose lease was taken over cannot acknowledge or record a
+  // vendor session afterwards.
+  executionLeaseGeneration: integer("execution_lease_generation").default(0).notNull(),
   lastAcknowledgedAt: timestamp("last_acknowledged_at", { withTimezone: true, mode: "string" }),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),

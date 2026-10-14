@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { dailyReportApi } from '../../api/client'
+import { useAppTranslation } from '../../i18n'
 import type {
   DailyCaptureReportSettingOut,
   DailyReportRunResponse,
@@ -14,6 +15,7 @@ function errMsg(e: unknown): string {
 }
 
 export default function DailyReportSettingsPage() {
+  const { t } = useAppTranslation()
   const [setting, setSetting] = useState<DailyCaptureReportSettingOut | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -110,7 +112,8 @@ export default function DailyReportSettingsPage() {
     setRunning(true)
     setError(null)
     try {
-      const result = await dailyReportApi.run({ force: false })
+      // No date: the server reports the last complete day of the configured timezone.
+      const result = await dailyReportApi.run({})
       setLastRun(result)
       showToast(`Report ${result.status}: ${result.capture_count} captures.`)
       const updated = await dailyReportApi.listReports(5)
@@ -222,7 +225,8 @@ export default function DailyReportSettingsPage() {
 
       {/* Manual run */}
       <div className="border-t pt-4 space-y-3">
-        <div className="text-sm font-medium">Generate today's report</div>
+        <div className="text-sm font-medium">{t('digest_reports.daily_run_title')}</div>
+        <p className="text-xs text-gray-500">{t('digest_reports.daily_run_hint', { timezone: setting.timezone || 'UTC' })}</p>
         <button
           onClick={runNow}
           disabled={running}

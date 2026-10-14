@@ -3,7 +3,14 @@ import { withQueryableTransaction } from "../routeUtils/common.js";
 import { profileMaturity, type ProfileMaturity } from "../interestProfile/maturity.js";
 import { InterestProfileService } from "../interestProfile/service.js";
 import { topicKeyFor } from "../interestProfile/topicKey.js";
-import { PgInformationDigestRepository, type DigestCandidate, type PersistedDigest } from "./repository.js";
+import {
+  PgInformationDigestRepository,
+  type DigestCandidate,
+  type DigestGenerationKind,
+  type DigestPeriod,
+  type PersistedDigest,
+} from "./repository.js";
+import { digestPeriod, digestTimezone, isCompleteDigestDay, latestCompleteDigestDate } from "./digestPeriod.js";
 import { PgSerendipityRepository } from "./serendipityRepository.js";
 import { selectSerendipity } from "./serendipitySelection.js";
 
@@ -17,54 +24,152 @@ interface RankedCandidate {
   components: Record<string, number>;
 }
 
+/** What the history read answers for a day: the snapshot, or why there is none. */
+export type DigestLookup =
+  | { status: "available"; digest: PersistedDigest }
+  | {
+      status: "missing";
+      digest_date: string;
+      timezone: string;
+      period_start_utc: string;
+      period_end_utc: string;
+      /** Whether a backfill may be requested for this day now. */
+      backfill_available: boolean;
+      explanation: string;
+    };
+
+const BACKFILL_HISTORY_NOTE =
+  "Rebuilt later from the material retained now. It has no outside-your-usual-view section, and it cannot reproduce a ranking that was never saved for this day.";
+
+export class InformationDigestBackfillError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InformationDigestBackfillError";
+  }
+}
+
 export class InformationDigestService {
   constructor(private readonly db: Queryable) {}
 
-  async personal(spaceId: string, userId: string, date: string, automationRunId?: string | null): Promise<PersistedDigest> {
+  /**
+   * The snapshot for one day, read-only: no generation, no write, no
+   * standby-pool movement. A day with no snapshot is answered as missing, with
+   * whether a backfill may be requested for it.
+   */
+  async lookup(
+    spaceId: string,
+    scope: { type: "personal"; userId: string } | { type: "project"; projectId: string; readerUserId: string },
+    requestedDate: string | null,
+  ): Promise<DigestLookup> {
+    const timezone = await digestTimezone(this.db, spaceId, scope.type === "personal"
+      ? { type: "personal", userId: scope.userId }
+      : { type: "project", projectId: scope.projectId });
+    const date = requestedDate ?? latestCompleteDigestDate(timezone);
     assertDate(date);
-    const existing = await new PgInformationDigestRepository(this.db).findByScope(spaceId, "personal", userId, date);
-    // A read may materialize an early snapshot. The scheduled Automation fire
-    // is the authoritative once-daily pass and replaces that snapshot.
-    if (existing && (!automationRunId || existing.generated_by_automation_run_id)) {
-      return (await new PgInformationDigestRepository(this.db).get(spaceId, existing.id, userId))!;
+    const repo = new PgInformationDigestRepository(this.db);
+    const scopeKey = scope.type === "personal" ? scope.userId : scope.projectId;
+    const readerUserId = scope.type === "personal" ? scope.userId : scope.readerUserId;
+    const existing = await repo.findByScope(spaceId, scope.type, scopeKey, date);
+    if (existing) return { status: "available", digest: (await repo.get(spaceId, existing.id, readerUserId))! };
+    const period = digestPeriod(date, timezone);
+    const complete = isCompleteDigestDay(date, timezone);
+    return {
+      status: "missing",
+      digest_date: date,
+      timezone,
+      period_start_utc: period.startUtc,
+      period_end_utc: period.endUtc,
+      backfill_available: complete,
+      explanation: complete
+        ? "No digest was generated for this day. You can backfill it from the material retained now."
+        : "This day has not ended yet in the digest's timezone; its digest is generated after it ends.",
+    };
+  }
+
+  /**
+   * The scheduled pass for one day. Write-once and idempotent: a fire that
+   * finds the day's snapshot — an earlier fire of the same slot after a
+   * restart, or a backfill — returns it and changes nothing.
+   */
+  async scheduledPersonal(spaceId: string, userId: string, period: DigestPeriod, automationRunId: string | null): Promise<{ digest: PersistedDigest; created: boolean }> {
+    return this.generatePersonal(spaceId, userId, period, "scheduled", automationRunId);
+  }
+
+  async scheduledProject(spaceId: string, projectId: string, readerUserId: string, period: DigestPeriod, automationRunId: string | null): Promise<{ digest: PersistedDigest; created: boolean }> {
+    return this.generateProject(spaceId, projectId, readerUserId, period, "scheduled", automationRunId);
+  }
+
+  /**
+   * An explicit request to build a missing day after the fact. Only a
+   * complete day of the scope's timezone; never over an existing snapshot;
+   * from the material retained now; without the serendipity section, which
+   * would spend today's standby pool on a day that is over.
+   */
+  async backfillPersonal(spaceId: string, userId: string, date: string): Promise<{ digest: PersistedDigest; created: boolean }> {
+    const period = await this.backfillPeriod(spaceId, { type: "personal", userId }, date);
+    return this.generatePersonal(spaceId, userId, period, "backfill", null);
+  }
+
+  async backfillProject(spaceId: string, projectId: string, readerUserId: string, date: string): Promise<{ digest: PersistedDigest; created: boolean }> {
+    const period = await this.backfillPeriod(spaceId, { type: "project", projectId }, date);
+    return this.generateProject(spaceId, projectId, readerUserId, period, "backfill", null);
+  }
+
+  private async backfillPeriod(
+    spaceId: string,
+    scope: { type: "personal"; userId: string } | { type: "project"; projectId: string },
+    date: string,
+  ): Promise<DigestPeriod> {
+    assertDate(date);
+    const timezone = await digestTimezone(this.db, spaceId, scope);
+    if (!isCompleteDigestDay(date, timezone)) {
+      throw new InformationDigestBackfillError(`${date} has not ended in ${timezone}; only a complete day can be backfilled`);
     }
+    return digestPeriod(date, timezone);
+  }
+
+  private async generatePersonal(
+    spaceId: string,
+    userId: string,
+    period: DigestPeriod,
+    kind: DigestGenerationKind,
+    automationRunId: string | null,
+  ): Promise<{ digest: PersistedDigest; created: boolean }> {
+    assertDate(period.date);
     return withQueryableTransaction(this.db, async (tx) => {
       const repo = new PgInformationDigestRepository(tx);
-      await repo.lockScope(spaceId, "personal", userId, date);
-      const lockedExisting = await repo.findByScope(spaceId, "personal", userId, date);
-      if (lockedExisting && (!automationRunId || lockedExisting.generated_by_automation_run_id)) {
-        return (await repo.get(spaceId, lockedExisting.id, userId))!;
-      }
+      await repo.lockScope(spaceId, "personal", userId, period.date);
+      const existing = await repo.findByScope(spaceId, "personal", userId, period.date);
+      if (existing) return { digest: (await repo.get(spaceId, existing.id, userId))!, created: false };
       const profileService = new InterestProfileService(tx);
       await profileService.runFactLayer(spaceId, userId);
       const profileSettings = await profileService.settings(spaceId, userId);
       const inputs = await repo.maturityInputs(spaceId, userId);
       const maturity = profileMaturity(inputs, profileSettings);
-      // Replacing a read-created snapshot keeps its serendipity rows: their
-      // pool items are already consumed and the reader may have answered
-      // them, so selecting again would drop both and consume a second batch.
-      const kept = lockedExisting ? await repo.serendipityItems(spaceId, lockedExisting.id) : [];
-      const keptSources = new Set(kept.map((item) => item.source_item_id));
-      const candidates = (await repo.personalCandidates(spaceId, userId, date))
-        .filter((candidate) => !keptSources.has(candidate.source_item_id));
+      const candidates = await repo.personalCandidates(spaceId, userId, period);
       // Cold maturity keeps deterministic profile facts and does not use
       // fine-grained topics as a ranking signal.
       const topics = maturity === "cold" ? [] : await repo.activeTopics(spaceId, userId);
-      const ranked = rankPersonal(candidates, topics, date, maturity);
+      const ranked = rankPersonal(candidates, topics, period, maturity);
       const selected = diversify(ranked, profileSettings.interest_slots);
       const serendipityRepo = new PgSerendipityRepository(tx);
-      const digestCutoff = new Date(`${date}T23:59:59.999Z`);
-      const serendipity = kept.length > 0 ? [] : selectSerendipity(
-        await serendipityRepo.listStandby(spaceId, userId, digestCutoff.toISOString()),
+      // A backfill never touches the standby pool: those items are today's to
+      // deliver, and the day being rebuilt is over.
+      const serendipity = kind === "backfill" ? [] : selectSerendipity(
+        await serendipityRepo.listStandby(spaceId, userId, period.endUtc),
         await serendipityRepo.readingShape(spaceId, userId),
         maturity,
         profileSettings.serendipity_slots,
-        digestCutoff,
+        new Date(period.endUtc),
       );
-      const digestId = await repo.replace({
-        spaceId, type: "personal", ownerUserId: userId, date, maturity, automationRunId,
-        keepItemIds: kept.map((item) => item.id),
-        settings: { interest_slots: profileSettings.interest_slots, serendipity_slots: profileSettings.serendipity_slots, ranking: maturity === "cold" ? "recency_source_diversity" : "topic_recency_source_diversity" },
+      const digestId = await repo.create({
+        spaceId, type: "personal", ownerUserId: userId, period, generationKind: kind, maturity, automationRunId,
+        settings: {
+          interest_slots: profileSettings.interest_slots,
+          serendipity_slots: kind === "backfill" ? 0 : profileSettings.serendipity_slots,
+          ranking: maturity === "cold" ? "recency_source_diversity" : "topic_recency_source_diversity",
+          ...(kind === "backfill" ? { history_note: BACKFILL_HISTORY_NOTE } : {}),
+        },
         items: [
           ...selected.map((item, position) => ({
           candidate: item.candidate,
@@ -91,29 +196,35 @@ export class InformationDigestService {
           })),
         ],
       });
-      await serendipityRepo.markConsumed(serendipity.map((item) => item.candidate.pool_id), digestCutoff.toISOString());
-      return (await repo.get(spaceId, digestId, userId))!;
+      await serendipityRepo.markConsumed(serendipity.map((item) => item.candidate.pool_id), period.endUtc);
+      return { digest: (await repo.get(spaceId, digestId, userId))!, created: true };
     });
   }
 
-  async project(spaceId: string, projectId: string, readerUserId: string, date: string, automationRunId?: string | null): Promise<PersistedDigest> {
-    assertDate(date);
-    const existing = await new PgInformationDigestRepository(this.db).findByScope(spaceId, "project", projectId, date);
-    if (existing && (!automationRunId || existing.generated_by_automation_run_id)) {
-      return (await new PgInformationDigestRepository(this.db).get(spaceId, existing.id, readerUserId))!;
-    }
+  private async generateProject(
+    spaceId: string,
+    projectId: string,
+    readerUserId: string,
+    period: DigestPeriod,
+    kind: DigestGenerationKind,
+    automationRunId: string | null,
+  ): Promise<{ digest: PersistedDigest; created: boolean }> {
+    assertDate(period.date);
     return withQueryableTransaction(this.db, async (tx) => {
       const repo = new PgInformationDigestRepository(tx);
-      await repo.lockScope(spaceId, "project", projectId, date);
-      const lockedExisting = await repo.findByScope(spaceId, "project", projectId, date);
-      if (lockedExisting && (!automationRunId || lockedExisting.generated_by_automation_run_id)) {
-        return (await repo.get(spaceId, lockedExisting.id, readerUserId))!;
-      }
-      const candidates = await repo.projectCandidates(spaceId, projectId, date);
-      const selected = diversify(rankProject(candidates, date), DEFAULT_PROJECT_SLOTS);
-      const digestId = await repo.replace({
-        spaceId, type: "project", projectId, date, maturity: null, automationRunId,
-        settings: { interest_slots: DEFAULT_PROJECT_SLOTS, ranking: "project_triage_recency_source_diversity", serendipity: false },
+      await repo.lockScope(spaceId, "project", projectId, period.date);
+      const existing = await repo.findByScope(spaceId, "project", projectId, period.date);
+      if (existing) return { digest: (await repo.get(spaceId, existing.id, readerUserId))!, created: false };
+      const candidates = await repo.projectCandidates(spaceId, projectId, period);
+      const selected = diversify(rankProject(candidates, period), DEFAULT_PROJECT_SLOTS);
+      const digestId = await repo.create({
+        spaceId, type: "project", projectId, period, generationKind: kind, maturity: null, automationRunId,
+        settings: {
+          interest_slots: DEFAULT_PROJECT_SLOTS,
+          ranking: "project_triage_recency_source_diversity",
+          serendipity: false,
+          ...(kind === "backfill" ? { history_note: BACKFILL_HISTORY_NOTE } : {}),
+        },
         items: selected.map((item, position) => ({
           candidate: item.candidate,
           section: "interest",
@@ -122,10 +233,10 @@ export class InformationDigestService {
           matchedTopicId: null,
           score: item.score,
           componentScores: item.components,
-          rationale: "Selected from today's Project Corpus using triage, confidence, recency, and source diversity.",
+          rationale: "Selected from the day's Project Corpus using triage, confidence, recency, and source diversity.",
         })),
       });
-      return (await repo.get(spaceId, digestId, readerUserId))!;
+      return { digest: (await repo.get(spaceId, digestId, readerUserId))!, created: true };
     });
   }
 }
@@ -133,7 +244,7 @@ export class InformationDigestService {
 function rankPersonal(
   candidates: DigestCandidate[],
   topics: Array<{ id: string; topic_key: string; aliases: string[]; weight: number }>,
-  date: string,
+  period: DigestPeriod,
   maturity: ProfileMaturity,
 ): RankedCandidate[] {
   const topicLookup = new Map<string, { id: string; label: string; weight: number }>();
@@ -147,7 +258,7 @@ function rankPersonal(
       .filter((topic): topic is { id: string; label: string; weight: number } => Boolean(topic))
       .sort((a, b) => b.weight - a.weight);
     const matched = matches[0] ?? null;
-    const recency = recencyScore(candidate, date);
+    const recency = recencyScore(candidate, period);
     const topic = maturity === "cold" ? 0 : Math.min(1, (matched?.weight ?? 0) / 2);
     return {
       candidate,
@@ -159,9 +270,9 @@ function rankPersonal(
   }).sort(compareRanked);
 }
 
-function rankProject(candidates: DigestCandidate[], date: string): RankedCandidate[] {
+function rankProject(candidates: DigestCandidate[], period: DigestPeriod): RankedCandidate[] {
   return candidates.map((candidate) => {
-    const recency = recencyScore(candidate, date);
+    const recency = recencyScore(candidate, period);
     const triage = candidate.project_relevance === "relevant" ? 1 : candidate.project_relevance === "maybe" ? 0.6 : 0.35;
     const confidence = candidate.project_confidence ?? 0.5;
     return {
@@ -193,9 +304,9 @@ function diversify(ranked: RankedCandidate[], limit: number): RankedCandidate[] 
   return selected;
 }
 
-function recencyScore(candidate: DigestCandidate, date: string): number {
+function recencyScore(candidate: DigestCandidate, period: DigestPeriod): number {
   const at = Date.parse(candidate.occurred_at ?? candidate.first_seen_at);
-  const end = Date.parse(`${date}T23:59:59.999Z`);
+  const end = Date.parse(period.endUtc);
   if (!Number.isFinite(at)) return 0;
   return round(Math.max(0, Math.min(1, 1 - (end - at) / 86_400_000)));
 }

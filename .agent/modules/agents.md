@@ -182,10 +182,19 @@ Project visibility, or non-Room Run authorization. A grant is revocable and is
 always rechecked at dispatch and Room runtime-context setup; Run snapshots
 preserve history after a specialist or human member is removed.
 - **Assistant preferences are a soft layer, never policy.** The
-  `agent.default_assistant.settings` space-scoped setting
-  (`GET`/`PATCH /api/v1/agents/default-assistant/settings`) holds
+  `agent.default_assistant.settings` setting
+  (`GET`/`PATCH /api/v1/agents/default-assistant/settings`, with
+  `?project_id=` naming a Project's Assistant, otherwise the Space's own) holds
   response style, verbosity, default context toggles, default project, and
-  proposal style. These shape default UI/context behavior only — they are never merged into the
+  proposal style, in one row per Assistant (`settings.scope_type` `space` or
+  `project`). Reading needs Space membership, or reading the Project; the
+  response carries `scope`, `project_id` and `can_configure`. Writing is
+  `canConfigureAssistant` (`agents/agentAccess.ts`): the personal Space's
+  Assistant is its person's, a shared Space's is its creator's by
+  `spaces.created_by_user_id` (another owner/admin is refused), a Project's is
+  its owner's by `projects.owner_user_id`. Nothing transfers this authority.
+  `default_project_id` must name an active Project of the same Space the
+  configurer can read, and for a Project's Assistant that Project itself. These shape default UI/context behavior only — they are never merged into the
   immutable `AgentVersion` and can never loosen the hard tool/runtime/output/memory/safety policy
   or edit the core system prompt. Per-invocation selection stays dynamic through
   Runtime Context typed acquisition, Delivery, and safe Invocation Snapshot and

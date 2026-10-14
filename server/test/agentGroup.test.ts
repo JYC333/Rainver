@@ -93,7 +93,7 @@ describe("agentAssistantSettingsRepository", () => {
       const db = new FakeAgentSettingsDb();
       const repo = new PgAgentRepository(db as never);
 
-      const created = await repo.getAssistantSettings("space-1");
+      const created = await repo.getAssistantSettings({ spaceId: "space-1", projectId: null });
       expect(created.assistant_agent_id).toBe("assistant-1");
       expect(db.settingsJson).toMatchObject({
         assistant_agent_id: "assistant-1",
@@ -101,13 +101,13 @@ describe("agentAssistantSettingsRepository", () => {
         model_preferences_json: {},
       });
 
-      const updated = await repo.updateAssistantSettings("space-1", {
+      const updated = await repo.updateAssistantSettings({ spaceId: "space-1", projectId: null }, {
         response_style: "direct",
         verbosity: "concise",
         default_context_toggles_json: { memory: true },
         proposal_style: "balanced",
         model_preferences_json: { model: "system-default" },
-      });
+      }, { actorUserId: "user-1" });
 
       expect(updated).toMatchObject({
         assistant_agent_id: "assistant-1",
@@ -124,10 +124,10 @@ describe("agentAssistantSettingsRepository", () => {
       const db = new FakeAgentSettingsDb();
       const repo = new PgAgentRepository(db as never);
 
-      await repo.getAssistantSettings("space-1");
-      await expect(repo.updateAssistantSettings("space-1", {
+      await repo.getAssistantSettings({ spaceId: "space-1", projectId: null });
+      await expect(repo.updateAssistantSettings({ spaceId: "space-1", projectId: null }, {
         response_style: "casual",
-      })).rejects.toMatchObject({ statusCode: 422 });
+      }, { actorUserId: "user-1" })).rejects.toMatchObject({ statusCode: 422 });
     });
   });
 });

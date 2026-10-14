@@ -27,6 +27,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const rows = await new PgAutomationRepository(dbPool(context.config)).list(spaceId, {
         projectId: optionalString(q.project_id),
         readableBy: identity.userId,
+        includeOpsView: true,
       });
       return reply.send(rows.map(automationToOut));
     } catch (error) {
@@ -96,7 +97,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const row = await new PgAutomationRepository(dbPool(context.config)).get(
         spaceId,
         params(request).automationId ?? "",
-        { readableBy: identity.userId },
+        { readableBy: identity.userId, includeOpsView: true },
       );
       if (!row) return reply.code(404).send({ detail: "Automation not found" });
       return reply.send(automationToOut(row));

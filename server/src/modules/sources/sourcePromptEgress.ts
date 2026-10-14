@@ -9,6 +9,14 @@ import { normalizeSourceConnectionReadGovernance } from "./sourceConsent.js";
 import type { SourceConnectionRow } from "./sourceRepositoryRows.js";
 
 /**
+ * Why the gate refused, as the stable `code` of its 403 body: the Space
+ * turned external model egress off, or the Source has not consented to the
+ * destination. Callers that wait on the refusal name the right condition.
+ */
+export const SOURCE_EGRESS_SPACE_DISABLED = "space_external_egress_disabled";
+export const SOURCE_EGRESS_NOT_CONSENTED = "source_model_egress_not_consented";
+
+/**
  * The consent/egress gate every path that ships source content to a model must
  * pass through. One gate. Do not keep a second copy: the copies stop matching
  * and one of them fails open. Sources owns the gate; callers own what they do
@@ -23,10 +31,8 @@ export async function assertSourcePromptEgressAllowed(
   const governance = normalizeSourceConnectionReadGovernance(connection);
   const retrievalSettings = await readSpaceRetrievalSettings(db, connection.space_id);
   if (destination === "external_provider" && !retrievalSettings.externalEgressEnabled) {
-    throw new HttpError(
-      403,
-      "Space settings disable external model egress. Enable external egress in Space Settings or use a local model provider.",
-    );
+    const detail = "Space settings disable external model egress. Enable external egress in Space Settings or use a local model provider.";
+    throw new HttpError(403, detail, { detail, code: SOURCE_EGRESS_SPACE_DISABLED });
   }
   const allowed = retrievalEgressAllowed(
     {
@@ -48,10 +54,8 @@ export async function assertSourcePromptEgressAllowed(
   );
   if (!allowed) {
     const label = destination === "local_provider" ? "local provider" : "external model";
-    throw new HttpError(
-      403,
-      `This source has not allowed ${label} processing. Enable model egress for the source or choose an allowed provider.`,
-    );
+    const detail = `This source has not allowed ${label} processing. Enable model egress for the source or choose an allowed provider.`;
+    throw new HttpError(403, detail, { detail, code: SOURCE_EGRESS_NOT_CONSENTED });
   }
 }
 

@@ -433,8 +433,9 @@ describe("AdaptiveQueryOrchestrator", () => {
       })).rejects.toMatchObject({ statusCode: 409 });
     });
 
-    it("falls back to the intent planner when the unavailable plan has no prior attempt to reuse", async () => {
+    it("plans and records the intent when the strategy has none stored yet", async () => {
       const store = new FakeStore(["arxiv"]);
+      store.setSemanticIntent(null);
       const plan = store.provider_plans()[0]!;
       plan.status = "unavailable";
       let planned = false;
@@ -451,7 +452,35 @@ describe("AdaptiveQueryOrchestrator", () => {
       });
 
       expect(planned).toBe(true);
+      expect(store.recordedIntents).toEqual([semanticIntent()]);
     });
+  });
+
+  it("broadens a monitored query with terms from the original intent, not only from its own trimmed terms", async () => {
+    const store = new FakeStore(["arxiv"]);
+    store.seedMaterialized();
+    // The monitored query is a trimmed step: one expansion and the qualifier.
+    const plan = store.provider_plans()[0]!;
+    const trimmed = { ...semanticIntent(), expansions: semanticIntent().expansions.slice(0, 1) };
+    plan.attempts[0] = { ...plan.attempts[0]!, semantic_query: trimmed };
+    const orchestrator = new AdaptiveQueryOrchestrator({} as Queryable, {} as ServerConfig, {
+      repository: store,
+      contextRepository: { get: async () => contextVersion() },
+      intentPlanner: { plan: async () => { throw new Error("must not reinterpret the question"); } },
+      previewGateway: { preview: async () => ({ providerHitCount: 50, accessibleHitCount: 50, candidates: [] }) },
+      assessor: { assess: () => observation(50) },
+    });
+    await orchestrator.evaluateVersion({ spaceId: "space", userId: "user" }, {
+      projectId: "project", sourceStrategyId: "strategy", direction: "broaden", candidateBudget: 100,
+    });
+    // Broadening adds the next expansion from the stored intent and keeps the
+    // qualifier; with only the trimmed query as vocabulary it could only have
+    // dropped the qualifier.
+    expect(store.attempts[0]?.semanticQuery).toMatchObject({
+      expansions: semanticIntent().expansions.slice(0, 2),
+      qualifiers: semanticIntent().qualifiers,
+    });
+    expect(store.createdStrategyInput?.semanticIntent).toEqual(semanticIntent());
   });
 });
 
@@ -467,11 +496,11 @@ class FakeStore {
     this.strategy = {
       id: "strategy", project_id: "project", research_context_version_id: "11111111-1111-4111-8111-111111111111",
       question_snapshot: "question", status: "planning", policy_version: "adaptive-recall.v1", policy: {}, execution_budget: {},
-      version: 1, parent_strategy_id: null, adaptation_direction: null,
+      version: 1, parent_strategy_id: null, adaptation_direction: null, semantic_intent: semanticIntent(),
       created_at: new Date().toISOString(), selected_at: null, materialized_at: null,
       provider_plans: providers.map((provider, index) => ({
         id: `plan-${index}`, provider_key: provider, status: "pending", selected_attempt_id: null,
-        terminal_decision: null, decision_reason: null, coverage_warning: null, attempts: [],
+        terminal_decision: null, decision_reason: null, coverage_warning: null, attempts: [], attempt_count: 0,
       })),
     };
   }
@@ -537,6 +566,12 @@ class FakeStore {
     return this.strategy;
   }
   async markStrategyEvaluating() { this.strategy.status = "evaluating"; }
+  recordedIntents: ResearchSemanticQuery[] = [];
+  async recordSemanticIntent(_spaceId: string, _strategyId: string, intent: ResearchSemanticQuery) {
+    this.recordedIntents.push(intent);
+    this.strategy.semantic_intent ??= intent;
+  }
+  setSemanticIntent(intent: ResearchSemanticQuery | null) { this.strategy.semantic_intent = intent; }
   async createAttempt(_spaceId: string, attempt: CreateResearchQueryAttemptInput) {
     const plan = this.strategy.provider_plans.find((item) => item.id === attempt.providerPlanId)!;
     const stored = { ...attempt, id: `attempt-${this.attempts.length + 1}`, providerKey: plan.provider_key };

@@ -92,7 +92,12 @@ for jobs, rules, and troubleshooting.
   creates only `pending` recommendations for active space-shared channels;
   `GET /api/v1/sources/recommendations` and the Sources page let the reader
   explicitly Follow, Dismiss, or Mute them. Pending is never treated as a
-  subscription. An explicit Information Digest "Never this direction again"
+  subscription. `GET /api/v1/sources/followed` lists other members' channels
+  the person follows or has left, and
+  `POST /api/v1/sources/channels/:channelId/subscription` leaves (`muted`) or
+  follows again (`subscribed`); every transition maintains the subscription
+  window (`subscribed_at`/`unsubscribed_at`) that historical reading
+  eligibility reads (`modules/library.md`). An explicit Information Digest "Never this direction again"
   block may dismiss only still-pending system recommendations linked to that
   blocked domain; it never changes an accepted subscription.
 - Materialization of bounded external-discovery samples as owner-private,
@@ -137,6 +142,18 @@ plan whose reconcile fails is moved to the back of the `updated_at` order and
 the rest of the pass continues, then the pass reports the failure.
 Project-initiated plans
 may link to a ProjectOperation for product-level progress.
+
+The item budget is reserved page by page. A Project Research operation owns one
+total shared by its sibling monitor plans; a standalone plan owns its own.
+Under the operation (or plan) lock, used budget is every segment's imported
+items, including the pages a still-running segment has read
+(`window.consumed_items`), and each other running segment reserves its current
+page. Dispatch sizes a segment from what is left, and the extraction worker
+reserves each continuation page the same way, inside one transaction, before
+queuing it. A page the shared budget no longer covers is not fetched: the
+segment stops partial at that page, and a continuation resumes from it.
+Concurrent segments therefore never import more than the operation's
+`max_items`.
 
 History-import fetches retry a transient network failure or upstream 5xx once
 inside the same extraction job, with the connector's normal request preparation
@@ -577,6 +594,13 @@ owns that job, the rule cursor, and the run audit rows:
   an active post-processing rule. This is the sanctioned cross-domain
   notification write under BOUNDARIES B24A.
 - Supported triggers are `items_materialized`, `schedule`, and `manual`.
+- A rule runs once at a time. A run holds the rule's claim, a PostgreSQL
+  session advisory lock on its own connection, for its whole length, so a
+  person's manual run, a scheduled fire, and a source-event drain never read
+  the same cursor window into two LLM passes. Each re-reads the rule under the
+  claim. A manual run of a rule already running is refused with 409; a
+  scheduled fire or an event drain skips it as `run_in_flight`. A crashed
+  process releases its claim with its connection.
 - Supported actions are `batch_digest`, `per_item_summary`, `extract_evidence`,
   `create_proposals`, and `mark_items`; the default is artifact-only
   `batch_digest`. `mark_items` means the run must produce item relevance
@@ -685,6 +709,50 @@ Post-processing may reuse the same `agent_id` across many sources. It is not an
 Automations `event` trigger and does not use Automations cursors. `DailyCaptureReport`
 remains separate: it summarizes a user's daily captured activity, not one
 source connection's post-source processing.
+
+### Annotation failure and recovery
+
+`sourceAnnotation` annotates pending items in batches, one job per Space at a
+time (a per-Space session advisory lock; a second job answers
+`already_running`). A row that is not running says why in `wait_reason`:
+
+| `wait_reason` | Status | Meaning | `next_retry_at` |
+| --- | --- | --- | --- |
+| `retry_scheduled` | pending | a temporary failure; the next automatic attempt is due | set |
+| `provider_unavailable` | pending | the Space has no usable annotator Provider or runtime profile | none |
+| `egress_denied` | pending | the Space turned external model egress off | none |
+| `consent_missing` | pending | the item's Source has not consented to the destination | none |
+| `budget_exhausted` | failed | the episode's attempts are spent; paused until a person retries | none |
+
+The retry schedule lives in `sourceAnnotation/retryPolicy.ts`: three initial
+attempts (the second one minute and the third five minutes after a failure),
+then one automatic recovery round of three more at thirty minutes, two hours
+and six hours, so at most six attempts per failure episode. Rows failing
+together share an `episode_id`; `attempt_count` is cumulative within it. A
+condition wait spends no attempt and has no countdown. The egress gate
+(`assertSourcePromptEgressAllowed`) names its refusal with a stable `code`, so
+a Space-wide egress refusal and a missing Source consent wait separately.
+
+Consent and egress are rechecked on every execution. The annotation sweep calls
+`recoverWaiting` for Spaces with condition waits: it resolves the annotator and
+re-runs the egress gate per waiting connection without a model call, and
+`requeueParked` reopens only the rows whose condition now holds, filtered by
+reason, item, connection, episode and responsible person, and bounded by a
+count limit. A person's retry (`POST
+/api/v1/spaces/:spaceId/source-annotation/retry`, optional `episode_id` and
+`connection_id`) runs the same recheck for their own items, reopens their
+scheduled and paused rows (a paused row starts a fresh episode, the only way
+the count restarts), at most `ANNOTATION_MANUAL_RETRY_LIMIT` rows, and queues
+one annotation job.
+
+`SourceAnnotationRecoveryNotifier` keeps one updatable private operational
+alert (`source_annotation_recovery`) per episode and responsible person, the
+connection owner or else the item owner. It carries the reason, the count of
+that person's affected items, the next absolute retry time only while one is
+scheduled, and the manual retry pointer; it is archived once the episode has
+no waiting rows. `GET /api/v1/spaces/:spaceId/source-annotation/episodes`
+returns the caller's own episodes in the same shape. Neither ever counts or
+names another person's items.
 
 ### Retrieval projection
 

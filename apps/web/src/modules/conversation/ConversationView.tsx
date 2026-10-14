@@ -9,6 +9,7 @@ import { Textarea } from '../../components/ui/textarea'
 import { EmptyState } from '../../components/ui/empty-state'
 import { ConversationTurn } from './ConversationTurn'
 import { ConversationComposer } from './ConversationComposer'
+import { KnowledgeRetrievalToggle } from './KnowledgeRetrievalToggle'
 import type { ConversationInputPart, RuntimePromptCapabilities } from '@rainver/protocol'
 import { ConversationInputPartsView, useConversationInputSendGuard, type ConversationInputFileSource } from './ConversationInputComposer'
 
@@ -142,7 +143,12 @@ export function ConversationView({
             placeholder={placeholder}
             disabled={composerDisabled}
           />}
-          controls={composerControls}
+          controls={sessionId !== undefined ? (
+            <>
+              <KnowledgeRetrievalToggle scopeId={sessionId} disabled={sending} />
+              {composerControls}
+            </>
+          ) : composerControls}
           note={composerNote}
           sending={sending}
           sendDisabled={composerDisabled || sending || loadingHistory || (!input.trim() && inputParts.length === 0)}

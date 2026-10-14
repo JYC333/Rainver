@@ -21,5 +21,5 @@ export const settings = pgTable("settings", {
 		}),
 	unique("uq_settings_scope_key").on(table.scopeId, table.scopeType, table.settingsKey),
 	check("ck_settings_json_object", sql`jsonb_typeof(settings_json) = 'object'::text`),
-	check("ck_settings_scope_type", sql`(scope_type)::text = ANY (ARRAY[('instance'::character varying)::text, ('space'::character varying)::text, ('user'::character varying)::text, ('space_user'::character varying)::text])`),
+	check("ck_settings_scope_type", sql`(scope_type)::text = ANY (ARRAY[('instance'::character varying)::text, ('space'::character varying)::text, ('project'::character varying)::text, ('user'::character varying)::text, ('space_user'::character varying)::text])`),
 ]);

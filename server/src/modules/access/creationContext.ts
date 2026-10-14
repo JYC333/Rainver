@@ -1,5 +1,6 @@
 import type { Queryable } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
+import { canReadProject, canWriteProject } from "../projects/access.js";
 import type { ContentVisibility } from "./contentAccessTypes.js";
 
 interface ContentCreationContext {
@@ -52,6 +53,10 @@ async function resolveContentCreationContextImpl(
     throw new HttpError(422, "Creation context cannot be both Project-scoped and whole-Space");
   }
   if (projectId) {
+    // Creating content in a Project is a read *and* a write: the canonical
+    // Project read gate first — a Project the person cannot read is absent to
+    // them, and a Space owner/admin role grants no implicit reading — then
+    // the canonical write gate. Neither predicate is restated here.
     const project = await db.query<{ id: string; space_id: string }>(
       `SELECT p.id, p.space_id
          FROM projects p
@@ -63,24 +68,16 @@ async function resolveContentCreationContextImpl(
           AND p.space_id = $2
           AND p.deleted_at IS NULL
           AND p.status = 'active'
-          AND (
-            p.owner_user_id = $3
-            OR membership.role IN ('owner', 'admin')
-            OR EXISTS (
-              SELECT 1
-                FROM project_members project_member
-               WHERE project_member.space_id = p.space_id
-                 AND project_member.project_id = p.id
-                 AND project_member.user_id = $3
-                 AND project_member.status = 'active'
-                 AND project_member.role IN ('owner', 'member')
-            )
-          )
         LIMIT 1`,
       [projectId, input.requestSpaceId, input.userId],
     );
     const row = project.rows[0];
-    if (!row) throw new HttpError(403, "Project creation requires an active writer role");
+    if (!row || !(await canReadProject(db, row.space_id, row.id, input.userId))) {
+      throw new HttpError(404, "Project not found");
+    }
+    if (!(await canWriteProject(db, row.space_id, row.id, input.userId))) {
+      throw new HttpError(403, "Project creation requires an active writer role");
+    }
     return { spaceId: row.space_id, projectId: row.id, visibility: "space_shared" };
   }
 

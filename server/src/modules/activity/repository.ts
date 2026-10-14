@@ -308,6 +308,11 @@ export class PgActivityRepository {
       [activityId, identity.spaceId]);
     const activity = await this.get(identity, activityId, { forChange: true });
     if (!activity || isSummaryOnly(activity)) throw new HttpError(404, "Activity record not found");
+    // What a record becomes in Memory is its owner's decision: a reader of a
+    // shared capture may read it, never turn it into their own Memory.
+    if ((activity.owner_user_id ?? activity.user_id) !== identity.userId) {
+      throw new HttpError(403, "Only the owner of this Activity record can consolidate it");
+    }
     if (activity.aggregate_key) {
       throw new HttpError(422, "Activity pointer records cannot be consolidated");
     }

@@ -61,10 +61,10 @@ export interface RerankConfig {
   /** Hard cap on the window regardless of the requested page size. */
   maxWindow: number;
   /**
-   * Token (char-proxy) budget on the rerank payload: per-candidate text is
-   * truncated to `maxCandidateTextChars`, and once the running total reaches
-   * `maxPayloadChars` no further candidate text is sent (those candidates keep
-   * their fused order). Bounds the payload in tokens, not just rows. 0 disables.
+   * Token (char-proxy) budget on the rerank payload: titles plus texts stay
+   * within `maxPayloadChars`, shared fairly across the window, and no one text
+   * exceeds `maxCandidateTextChars` (`boundRerankTexts`). Bounds the payload in
+   * tokens, not just rows. 0 disables that bound.
    */
   maxCandidateTextChars: number;
   maxPayloadChars: number;

@@ -114,7 +114,7 @@ async function settleDelegatedRun(runId: string): Promise<void> {
   // nodes then advance one at a time, so drain one graph-length here just as
   // production finalization/reconciliation does.
   for (let index = 0; index < 6; index += 1) {
-    await executions.reconcileForRun(db.pool, SPACE, runId, OWNER);
+    await executions.reconcileForRun(db.pool, SPACE, runId);
   }
   const stillActive = await db.pool.query<{ id: string }>(
     `SELECT execution.id

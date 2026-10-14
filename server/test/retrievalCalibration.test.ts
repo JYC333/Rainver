@@ -8,7 +8,7 @@ import {
 } from "../src/modules/retrieval/ranking.js";
 import {
   applyAdaptiveReturn,
-  boundRerankText,
+  boundRerankTexts,
   fuseCandidates,
   scoreBucket,
 } from "../src/modules/retrieval/searchInternals.js";
@@ -163,12 +163,39 @@ describe("adaptive return (trim-only)", () => {
 });
 
 describe("rerank payload token budget", () => {
-  it("truncates per-item and stops at the remaining payload budget", () => {
-    expect(boundRerankText("x".repeat(5000), 2000, 24000, 0)).toEqual({ text: "x".repeat(2000), truncated: true });
-    expect(boundRerankText("short", 2000, 24000, 0)).toEqual({ text: "short", truncated: false });
-    // Per-item cap 5000 (no cut), but only 1000 of payload budget remains.
-    expect(boundRerankText("x".repeat(3000), 5000, 1000, 0)).toEqual({ text: "x".repeat(1000), truncated: true });
-    // A redacted (null) text stays null.
-    expect(boundRerankText(null, 2000, 24000, 0)).toEqual({ text: null, truncated: false });
+  it("caps each text and keeps a null (redacted) text null", () => {
+    const out = boundRerankTexts([{ title: "a", text: "x".repeat(5000) }, { title: "b", text: "short" }, { title: "c", text: null }], "q", 2000, 24000);
+    expect(out.texts[0]!.length).toBeLessThanOrEqual(2000);
+    expect(out.texts[1]).toBe("short");
+    expect(out.texts[2]).toBeNull();
+    expect(out.truncated).toBe(1);
+  });
+
+  it("shares the payload across a window of 24+ long candidates so none is sent title-only", () => {
+    const entries = Array.from({ length: 30 }, (_, index) => ({
+      title: `Document ${index}`,
+      text: `${"filler ".repeat(300)}needle ${index} ${"tail ".repeat(300)}`,
+    }));
+    const out = boundRerankTexts(entries, "needle", 2000, 24000);
+    expect(out.payloadChars).toBeLessThanOrEqual(24000);
+    const sent = entries.reduce((sum, entry, index) => sum + entry.title.length + out.texts[index]!.length, 0);
+    expect(sent).toBe(out.payloadChars);
+    expect(out.truncated).toBe(30);
+    const lengths = out.texts.map((text) => text!.length);
+    // Every candidate, the last included, keeps a comparable share and the
+    // excerpt is taken around the query rather than from the head.
+    expect(Math.min(...lengths)).toBeGreaterThan(600);
+    expect(Math.max(...lengths) - Math.min(...lengths)).toBeLessThanOrEqual(1);
+    out.texts.forEach((text, index) => expect(text).toContain(`needle ${index}`));
+  });
+
+  it("gives what short texts leave unused to the long ones", () => {
+    const out = boundRerankTexts([
+      { title: "", text: "a".repeat(100) },
+      { title: "", text: "b".repeat(5000) },
+    ], "q", 0, 1000);
+    expect(out.texts[0]).toBe("a".repeat(100));
+    expect(out.texts[1]!.length).toBeLessThanOrEqual(900);
+    expect(out.texts[1]!.length).toBeGreaterThan(890);
   });
 });

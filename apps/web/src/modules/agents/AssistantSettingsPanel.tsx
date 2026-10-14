@@ -101,6 +101,13 @@ export default function AssistantSettingsPanel() {
         Preferences shape default behavior only. The assistant's core prompt and safety
         policy are system-managed and cannot be edited here.
       </p>
+      {!settings.can_configure && (
+        <p className="text-xs text-muted-foreground" role="note">
+          {settings.scope === 'project'
+            ? "Only this Project's owner can change its Assistant's preferences."
+            : "Only the person who created this Space can change its Assistant's preferences."}
+        </p>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-3">
         <label className="space-y-1.5">
@@ -137,7 +144,7 @@ export default function AssistantSettingsPanel() {
       </div>
 
       <div className="pt-2 border-t border-border">
-        <Button size="sm" onClick={save} disabled={saving}>
+        <Button size="sm" onClick={save} disabled={saving || !settings.can_configure}>
           {saving ? <Loader2 className="size-4 animate-spin" /> : 'Save preferences'}
         </Button>
       </div>

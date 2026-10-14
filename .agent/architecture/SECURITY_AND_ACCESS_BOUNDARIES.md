@@ -87,8 +87,11 @@ cross-Space reads fail closed.
 
 User-initiated content creation has one access-owned authority:
 `resolveContentCreationContext`. It resolves Space, Project scope, and initial
-visibility as one decision. A creation inside an active Project requires a
-Project writer and produces `(project.space_id, project.id, space_shared)`.
+visibility as one decision. A creation inside an active Project requires
+reading the Project (`canReadProject`; a Project the person cannot read is
+answered 404, and a Space owner/admin role grants no implicit reading) and
+writing it (`canWriteProject`, else 403), and produces
+`(project.space_id, project.id, space_shared)`.
 A creation with no Project context ignores the browsed Space and produces
 `(the user's unique Personal Space, null, private)`. Request-supplied
 `space_id` and `visibility` never override this result.

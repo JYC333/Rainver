@@ -300,15 +300,17 @@ describe("skipped-surface access (real Postgres)", () => {
     });
   });
 
-  it("answers a manual URL already held by an item the caller cannot read with a conflict", async () => {
+  it("gives each member their own personal save of a URL another member saved privately", async () => {
     const sources = new PgSourcesRepository(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
-    await sources.createManualUrl(owner, { url: "https://example.com/shared-slot", visibility: "private" });
+    const first = await sources.createManualUrl(owner, { url: "https://example.com/shared-slot", visibility: "private" }) as { id: string };
 
-    await expect(sources.createManualUrl(other, { url: "https://example.com/shared-slot" }))
-      .rejects.toMatchObject({ statusCode: 409 });
-    // The caller's own repeat still lands on the row it can read.
-    const again = await sources.createManualUrl(owner, { url: "https://example.com/shared-slot" });
-    expect(again).toMatchObject({ source_uri: "https://example.com/shared-slot" });
+    // Another member's private save neither blocks nor reveals anything.
+    const theirs = await sources.createManualUrl(other, { url: "https://example.com/shared-slot" }) as { id: string; created_by_user_id: string };
+    expect(theirs.id).not.toBe(first.id);
+    expect(theirs.created_by_user_id).toBe(OTHER);
+    // The caller's own repeat still lands on its own row.
+    const again = await sources.createManualUrl(owner, { url: "https://example.com/shared-slot" }) as { id: string };
+    expect(again.id).toBe(first.id);
   });
 
   it("lets a Project owner who is only a Space member reject what they could accept", async () => {

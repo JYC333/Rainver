@@ -305,32 +305,59 @@ function evidencePriority(evidence: EvidenceContract): number {
 }
 
 /**
- * Bound one rerank candidate's text by the per-item and remaining payload budget.
- * Returns the (possibly truncated/empty) text plus whether it was cut.
- * Null in → null out (a redacted object keeps its null text). Truncates only
+ * Share the rerank payload budget across the whole window. Titles are always
+ * sent and count first; the rest of `payloadCap` is divided among the texts
+ * by water-filling — shortest first, each gets at most an equal share of what
+ * is left and at most `perItemCap` — so a few long texts early in the window
+ * cannot use up the budget and leave later candidates judged on their title
+ * alone. A cut text becomes an excerpt around the query, not just its head.
+ * Null in → null out (a redacted object keeps its null text). Bounds only
  * already-visible, already-revalidated text that was going to be sent anyway.
+ * A cap of 0 disables that bound.
  */
-export function boundRerankText(
-  text: string | null,
+export function boundRerankTexts(
+  entries: ReadonlyArray<{ title: string; text: string | null }>,
+  query: string,
   perItemCap: number,
   payloadCap: number,
-  used: number,
-): { text: string | null; truncated: boolean } {
-  if (text === null) return { text: null, truncated: false };
-  let bounded = text;
-  let truncated = false;
-  if (perItemCap > 0 && bounded.length > perItemCap) {
-    bounded = bounded.slice(0, perItemCap);
-    truncated = true;
-  }
-  if (payloadCap > 0) {
-    const remaining = Math.max(0, payloadCap - used);
-    if (bounded.length > remaining) {
-      bounded = bounded.slice(0, remaining);
-      truncated = true;
+): { texts: Array<string | null>; truncated: number; payloadChars: number } {
+  const itemCap = perItemCap > 0 ? perItemCap : Number.POSITIVE_INFINITY;
+  const titleChars = entries.reduce((sum, entry) => sum + entry.title.length, 0);
+  let remaining = payloadCap > 0 ? Math.max(0, payloadCap - titleChars) : Number.POSITIVE_INFINITY;
+  const order = entries
+    .map((entry, index) => ({ index, length: entry.text?.length ?? 0 }))
+    .filter((entry) => entries[entry.index]!.text !== null)
+    .sort((a, b) => a.length - b.length || a.index - b.index);
+  const allowance = new Map<number, number>();
+  order.forEach((entry, position) => {
+    const share = Math.floor(remaining / (order.length - position));
+    const allot = Math.min(entry.length, itemCap, share);
+    allowance.set(entry.index, allot);
+    remaining -= allot;
+  });
+  let truncated = 0;
+  let payloadChars = titleChars;
+  const texts = entries.map((entry, index) => {
+    if (entry.text === null) return null;
+    const allot = allowance.get(index)!;
+    if (entry.text.length <= allot) {
+      payloadChars += entry.text.length;
+      return entry.text;
     }
-  }
-  return { text: bounded, truncated };
+    truncated += 1;
+    const excerpt = excerptToLength(entry.text, query, allot);
+    payloadChars += excerpt.length;
+    return excerpt;
+  });
+  return { texts, truncated, payloadChars };
+}
+
+/** An excerpt around the query no longer than `length` (ellipses included). */
+function excerptToLength(text: string, query: string, length: number): string {
+  if (length <= 0) return "";
+  if (length <= 6) return text.slice(0, length);
+  const excerpt = excerptAroundQuery(text, query, length - 6);
+  return excerpt.length <= length ? excerpt : excerpt.slice(0, length);
 }
 
 /**

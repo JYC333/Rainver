@@ -103,6 +103,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  app.get("/api/v1/sources/followed", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await channels().listFollowed(identity));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.get("/api/v1/sources/recommendations", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -499,6 +509,20 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   app.post("/api/v1/sources/connections/:connectionId/subscription", async (request, reply) => {
     return reply.code(410).send({ detail: "Subscriptions are managed at Source Channel level" });
+  });
+
+  app.post("/api/v1/sources/channels/:channelId/subscription", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const status = optionalString(jsonBody(request).status);
+      if (status !== "subscribed" && status !== "muted") {
+        return reply.code(422).send({ detail: "status must be 'subscribed' or 'muted'" });
+      }
+      return reply.send(await channels().setSubscription(identity, params(request).channelId ?? "", status));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
   });
 
   app.get("/api/v1/sources/channels/:channelId/source-runs", async (request, reply) => {

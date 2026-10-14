@@ -9,6 +9,8 @@ import {
   type ScopedSettingsRead,
 } from "../settings/index.js";
 import { PgSchedulerTaskStore, type SchedulerTaskRow } from "../scheduler/taskStore.js";
+import { addLocalDays, isValidTimezone, zonedLocalToUtc, zonedParts } from "../scheduler/localDay.js";
+
 
 export interface DailyReportSettingRow {
   id: string;
@@ -541,15 +543,6 @@ export function assertValidTimezone(timezone: string): void {
   throw new HttpError(422, `timezone ${JSON.stringify(timezone)} is not a valid IANA timezone`);
 }
 
-export function isValidTimezone(timezone: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date());
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function assertValidLocalDate(localDate: string): void {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(localDate)) {
     throw new HttpError(422, "local_date must be YYYY-MM-DD");
@@ -584,104 +577,8 @@ function computeInitialNextRunAt(
   }
 }
 
-export function localDateFromSlot(slotUtcIso: string, timezone: string): string {
-  try {
-    const parts = zonedParts(new Date(slotUtcIso), timezone || "UTC");
-    return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`;
-  } catch {
-    return new Date(slotUtcIso).toISOString().slice(0, 10);
-  }
-}
-
-export function localDayUtcBounds(
-  localDate: string,
-  timezone: string,
-): { startUtcIso: string; endUtcIso: string } {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(localDate);
-  if (!match) throw new Error(`Invalid local_date ${JSON.stringify(localDate)}`);
-  const startLocal = {
-    year: Number(match[1]),
-    month: Number(match[2]),
-    day: Number(match[3]),
-    hour: 0,
-    minute: 0,
-  };
-  const endLocal = addLocalDays(startLocal, 1);
-  return {
-    startUtcIso: zonedLocalToUtc(startLocal, timezone || "UTC").toISOString(),
-    endUtcIso: zonedLocalToUtc(endLocal, timezone || "UTC").toISOString(),
-  };
-}
-
-interface LocalDateTimeParts {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-}
-
 function parseLocalTime(value: string): { hour: number; minute: number } | null {
   const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
   if (!match) return null;
   return { hour: Number(match[1]), minute: Number(match[2]) };
-}
-
-function zonedParts(date: Date, timeZone: string): LocalDateTimeParts {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(date);
-  const part = (type: Intl.DateTimeFormatPartTypes) =>
-    Number(parts.find((item) => item.type === type)?.value ?? 0);
-  return {
-    year: part("year"),
-    month: part("month"),
-    day: part("day"),
-    hour: part("hour"),
-    minute: part("minute"),
-  };
-}
-
-function zonedLocalToUtc(parts: LocalDateTimeParts, timeZone: string): Date {
-  const target = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0, 0);
-  let guess = target;
-  for (let i = 0; i < 4; i += 1) {
-    const actual = zonedParts(new Date(guess), timeZone);
-    const actualAsUtc = Date.UTC(
-      actual.year,
-      actual.month - 1,
-      actual.day,
-      actual.hour,
-      actual.minute,
-      0,
-      0,
-    );
-    const delta = actualAsUtc - target;
-    if (delta === 0) break;
-    guess -= delta;
-  }
-  return new Date(guess);
-}
-
-function addLocalDays(parts: LocalDateTimeParts, days: number): LocalDateTimeParts {
-  const date = new Date(
-    Date.UTC(parts.year, parts.month - 1, parts.day + days, parts.hour, parts.minute),
-  );
-  return {
-    year: date.getUTCFullYear(),
-    month: date.getUTCMonth() + 1,
-    day: date.getUTCDate(),
-    hour: date.getUTCHours(),
-    minute: date.getUTCMinutes(),
-  };
-}
-
-function pad(value: number): string {
-  return String(value).padStart(2, "0");
 }

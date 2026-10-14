@@ -267,19 +267,23 @@ async function enforceSourceItemReadConsent({ db, identity, item }: ConsentCheck
   if (item.created_by_user_id !== identity.userId) throw new HttpError(404, "Not found");
 }
 
+/** Where a reader reached an item from; decides whether the read is interest evidence (B54). */
+export type ReadOrigin = "library" | "serendipity";
+
 async function markSourceItemOpened(
   db: Queryable,
   identity: SpaceUserIdentity,
   itemId: string,
+  origin: ReadOrigin,
 ): Promise<void> {
   const now = new Date().toISOString();
   await db.query(
     `INSERT INTO source_item_user_states (
        id, space_id, source_item_id, user_id, library_status, read_status,
-       first_opened_at, last_opened_at, progress_json, created_at, updated_at
+       first_opened_at, last_opened_at, read_origin, progress_json, created_at, updated_at
      ) VALUES (
        $1, $2, $3, $4, 'new', 'skimmed',
-       $5, $5, '{}'::jsonb, $5, $5
+       $5, $5, $6, '{}'::jsonb, $5, $5
      )
      ON CONFLICT (space_id, source_item_id, user_id) DO UPDATE SET
        first_opened_at = COALESCE(source_item_user_states.first_opened_at, $5::timestamptz),
@@ -288,8 +292,14 @@ async function markSourceItemOpened(
          WHEN source_item_user_states.read_status = 'unread' THEN 'skimmed'
          ELSE source_item_user_states.read_status
        END,
+       -- An open from the serendipity section never becomes evidence by
+       -- itself; a later open the reader reached on their own does.
+       read_origin = CASE
+         WHEN $6 = 'serendipity' THEN COALESCE(source_item_user_states.read_origin, 'serendipity')
+         ELSE 'library'
+       END,
        updated_at = $5`,
-    [randomUUID(), identity.spaceId, itemId, identity.userId, now],
+    [randomUUID(), identity.spaceId, itemId, identity.userId, now, origin],
   );
 }
 
@@ -305,9 +315,10 @@ export class PgReaderRepository {
     identity: SpaceUserIdentity,
     documentType: string,
     documentId: string,
+    options: { origin?: ReadOrigin } = {},
   ): Promise<ReaderDocumentOut | null> {
     if (documentType === "source_item") {
-      return this.resolveSourceItem(identity, documentId);
+      return this.resolveSourceItem(identity, documentId, options.origin ?? "library");
     }
     if (documentType === "source_snapshot") {
       return this.resolveSourceSnapshot(identity, documentId);
@@ -326,6 +337,7 @@ export class PgReaderRepository {
   private async resolveSourceItem(
     identity: SpaceUserIdentity,
     itemId: string,
+    origin: ReadOrigin,
   ): Promise<ReaderDocumentOut | null> {
     if ((await contentDecisionFromDb(this.db, identity, "source_item", itemId)) !== "full") return null;
     const result = await this.db.query<SourceItemRow>(
@@ -336,7 +348,7 @@ export class PgReaderRepository {
     if (!item) return null;
 
     await enforceSourceItemReadConsent({ db: this.db, identity, item });
-    await markSourceItemOpened(this.db, identity, itemId);
+    await markSourceItemOpened(this.db, identity, itemId, origin);
 
     // Priority 1: extracted_artifact_id
     if (item.extracted_artifact_id) {

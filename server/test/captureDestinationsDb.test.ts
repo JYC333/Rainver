@@ -457,7 +457,7 @@ describe("capture destinations (real Postgres)", () => {
     await expect(capture().capture({
       userId: MATE, requestSpaceId: TEAM, destination: "project_marginalia",
       text: "Should not land.", projectId: PROJECT,
-    })).rejects.toMatchObject({ statusCode: 403 });
+    })).rejects.toMatchObject({ statusCode: 404 });
 
     expect((await db.pool.query(`SELECT id FROM activity_records`)).rows).toHaveLength(0);
     expect((await db.pool.query(`SELECT object_id FROM notes WHERE marginalia_owner_user_id IS NOT NULL`)).rows)

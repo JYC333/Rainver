@@ -27,6 +27,11 @@ vi.mock('../api/client', () => ({
   hostsApi: { list: hostsMock },
   runsApi: { get: runGetMock, turn: turnMock },
   proposalsApi: { get: proposalGetMock },
+  // The composer's knowledge-retrieval switch: off, as for a new conversation.
+  runtimeContextApi: {
+    retrievalSwitch: vi.fn(async (scopeId: string) => ({ work_context_scope_id: scopeId, enabled: false, preferred_domains: [], setup_version: null })),
+    setRetrievalSwitch: vi.fn(),
+  },
 }))
 
 vi.mock('../contexts/SpaceContext', () => ({

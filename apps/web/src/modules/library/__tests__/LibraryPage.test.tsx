@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import LibraryModule from '../LibraryModule'
 import { informationDigestsApi, projectsApi, sourcesApi } from '../../../api/client'
-import type { ExtractionJob, InterestProfileSnapshot, SourceChannel, SourceItem } from '../../../types/api'
+import type { ExtractionJob, InformationDigest, InterestProfileSnapshot, SourceChannel, SourceItem } from '../../../types/api'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
@@ -37,6 +37,9 @@ vi.mock('../../../api/client', () => ({
     applyStarterPack: vi.fn(),
     backfillProfileHistory: vi.fn(),
     serendipityFeedback: vi.fn(),
+    backfillPersonal: vi.fn(),
+    annotationEpisodes: vi.fn(),
+    retryAnnotation: vi.fn(),
   },
   sourcesApi: {
     channels: vi.fn(),
@@ -50,6 +53,18 @@ vi.mock('../../../api/client', () => ({
 
 function page<T>(items: T[], limit = 20) {
   return { items, total: items.length, limit, offset: 0 }
+}
+
+/** A history read that found the day's scheduled snapshot. */
+function available(digest: Omit<InformationDigest, 'timezone' | 'period_start_utc' | 'period_end_utc' | 'generation_kind' | 'generated_at'>) {
+  return {
+    status: 'available' as const,
+    digest: {
+      ...digest,
+      timezone: 'UTC', period_start_utc: `${digest.digest_date}T00:00:00.000Z`, period_end_utc: `${digest.digest_date}T23:59:59.999Z`,
+      generation_kind: 'scheduled' as const, generated_at: digest.created_at,
+    },
+  }
 }
 
 function interestProfile(overrides: Partial<InterestProfileSnapshot> = {}): InterestProfileSnapshot {
@@ -170,14 +185,72 @@ describe('LibraryPage', () => {
     vi.mocked(sourcesApi.channels).mockResolvedValue([channel()])
     vi.mocked(sourcesApi.items).mockResolvedValue(page([sourceItem()], 30))
     vi.mocked(sourcesApi.briefings).mockResolvedValue({ items: [], total: 0, limit: 10, offset: 0 })
-    vi.mocked(informationDigestsApi.personal).mockResolvedValue({
+    vi.mocked(informationDigestsApi.personal).mockResolvedValue(available({
       id: 'digest-1', digest_type: 'personal', owner_user_id: 'user-1', project_id: null,
       digest_date: '2026-08-06', profile_maturity: 'cold', status: 'empty', settings: {},
       created_at: '2026-08-06T07:00:00Z', updated_at: '2026-08-06T07:00:00Z', items: [],
       team_aggregates_available: false, team_blind_spot_domains: [],
-    })
+    }))
     vi.mocked(informationDigestsApi.profile).mockResolvedValue(interestProfile())
+    vi.mocked(informationDigestsApi.annotationEpisodes).mockResolvedValue({ episodes: [] })
     vi.mocked(projectsApi.list).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
+  })
+
+  it('shows a missing day without generating it, and backfills only when asked', async () => {
+    vi.mocked(informationDigestsApi.personal).mockResolvedValue({
+      status: 'missing', digest_date: '2026-08-06', timezone: 'Asia/Shanghai',
+      period_start_utc: '2026-08-05T16:00:00.000Z', period_end_utc: '2026-08-06T16:00:00.000Z',
+      backfill_available: true, explanation: 'No digest was made for this day.',
+    })
+    vi.mocked(informationDigestsApi.backfillPersonal).mockImplementation(async () => {
+      const made = available({
+        id: 'digest-9', digest_type: 'personal', owner_user_id: 'user-1', project_id: null,
+        digest_date: '2026-08-06', profile_maturity: 'cold', status: 'empty', settings: {},
+        created_at: '2026-08-10T09:00:00Z', updated_at: '2026-08-10T09:00:00Z', items: [],
+        team_aggregates_available: false, team_blind_spot_domains: [],
+      }).digest
+      return { created: true, digest: { ...made, timezone: 'Asia/Shanghai', generation_kind: 'backfill' } }
+    })
+
+    renderLibrary('/library/digests')
+
+    // The day is the digest's own calendar date, labelled with its timezone.
+    expect(await screen.findByText('Aug 6, 2026 · Asia/Shanghai')).toBeInTheDocument()
+    expect(screen.getByText('No digest for Aug 6, 2026')).toBeInTheDocument()
+    expect(screen.getByText('No digest was made for this day.')).toBeInTheDocument()
+    expect(informationDigestsApi.backfillPersonal).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Next day' })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Backfill this day' }))
+    await waitFor(() => expect(informationDigestsApi.backfillPersonal).toHaveBeenCalledWith('space-1', '2026-08-06'))
+    expect(await screen.findByText(/^Backfilled /)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Backfill this day' })).not.toBeInTheDocument()
+  })
+
+  it('reads an earlier day when stepping back', async () => {
+    renderLibrary('/library/digests')
+    fireEvent.click(await screen.findByRole('button', { name: 'Previous day' }))
+    await waitFor(() => expect(informationDigestsApi.personal).toHaveBeenLastCalledWith('space-1', '2026-08-05'))
+  })
+
+  it('shows a countdown only for a scheduled retry, names a waiting condition, and retries on request', async () => {
+    const inTwoMinutes = new Date(Date.now() + 2 * 60_000).toISOString()
+    vi.mocked(informationDigestsApi.annotationEpisodes).mockResolvedValue({
+      episodes: [
+        { episode_id: 'episode-1', wait_reason: 'retry_scheduled', affected_count: 2, next_retry_at: inTwoMinutes, connection_ids: [] },
+        { episode_id: 'episode-2', wait_reason: 'egress_denied', affected_count: 1, next_retry_at: null, connection_ids: ['connection-1'] },
+      ],
+    })
+    vi.mocked(informationDigestsApi.retryAnnotation).mockResolvedValue({ reopened: 3 })
+
+    renderLibrary('/library/digests')
+
+    expect(await screen.findByText(/2 of your items failed to annotate\. Next automatic retry in 2 minutes/)).toBeInTheDocument()
+    const waiting = screen.getByText('1 of your items is waiting until its Source may be sent to the annotation Provider.')
+    expect(waiting.textContent).not.toMatch(/retry|minute/i)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry now' }))
+    await waitFor(() => expect(informationDigestsApi.retryAnnotation).toHaveBeenCalledWith('space-1'))
+    expect(informationDigestsApi.annotationEpisodes).toHaveBeenCalledTimes(2)
   })
 
   it('defaults the Library shell to the all items route', async () => {
@@ -281,7 +354,7 @@ describe('LibraryPage', () => {
   })
 
   it('records explicit serendipity feedback and replaces controls with the saved state', async () => {
-    vi.mocked(informationDigestsApi.personal).mockResolvedValue({
+    vi.mocked(informationDigestsApi.personal).mockResolvedValue(available({
       id: 'digest-1', digest_type: 'personal', owner_user_id: 'user-1', project_id: null,
       digest_date: '2026-08-06', profile_maturity: 'cold', status: 'ready', settings: {},
       created_at: '2026-08-06T07:00:00Z', updated_at: '2026-08-06T07:00:00Z',
@@ -297,7 +370,7 @@ describe('LibraryPage', () => {
         anonymous_read_count: null,
       }],
       team_aggregates_available: false, team_blind_spot_domains: [],
-    })
+    }))
     vi.mocked(informationDigestsApi.serendipityFeedback).mockResolvedValue({
       digest_item_id: 'digest-item-1', domain_key: 'history', feedback: 'never', cooldown_until: null,
       blocked: true, created_at: '2026-08-06T12:00:00Z',
@@ -315,7 +388,7 @@ describe('LibraryPage', () => {
     vi.mocked(projectsApi.list).mockResolvedValue({
       items: [{ id: 'project-1', name: 'Research Project' } as never], total: 1, limit: 200, offset: 0,
     })
-    vi.mocked(informationDigestsApi.personal).mockResolvedValue({
+    vi.mocked(informationDigestsApi.personal).mockResolvedValue(available({
       id: 'digest-1', digest_type: 'personal', owner_user_id: 'user-1', project_id: null,
       digest_date: '2026-08-06', profile_maturity: 'cold', status: 'ready', settings: {},
       created_at: '2026-08-06T07:00:00Z', updated_at: '2026-08-06T07:00:00Z',
@@ -329,7 +402,7 @@ describe('LibraryPage', () => {
         summary: null, stance_target: null, stance_target_key: null, stance_polarity: 'neutral', stance_confidence: 0,
         read_status: 'unread', serendipity_feedback: null, anonymous_read_count: null,
       }],
-    })
+    }))
     vi.mocked(projectsApi.addCorpusItem).mockResolvedValue({} as never)
 
     renderLibrary('/library/digests')

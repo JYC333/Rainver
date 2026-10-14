@@ -27,6 +27,8 @@ export interface CreateResearchQueryStrategyInput {
   operationId?: string | null;
   parentStrategyId?: string | null;
   adaptationDirection?: "broaden" | "narrow" | "rollback" | null;
+  /** An adapted version inherits its source's intent; a fresh strategy records it once planned. */
+  semanticIntent?: ResearchSemanticQuery | null;
 }
 
 export interface CreateResearchQueryAttemptInput {
@@ -58,6 +60,7 @@ export interface StoredResearchQueryStrategy {
   version: number;
   parent_strategy_id: string | null;
   adaptation_direction: "broaden" | "narrow" | "rollback" | null;
+  semantic_intent: ResearchSemanticQuery | null;
   created_at: string;
   selected_at: string | null;
   materialized_at: string | null;
@@ -72,7 +75,9 @@ export interface StoredResearchQueryProviderPlan {
   terminal_decision: ResearchQueryDecision | null;
   decision_reason: string | null;
   coverage_warning: string | null;
+  /** The recent window, plus the selected and latest observed attempts; oldest first. */
   attempts: StoredResearchQueryAttempt[];
+  attempt_count: number;
 }
 
 export interface StoredResearchQueryAttempt {
@@ -104,6 +109,7 @@ interface StrategyRow {
   version: number;
   parent_strategy_id: string | null;
   adaptation_direction: string | null;
+  semantic_intent_json: unknown;
   created_at: string;
   selected_at: string | null;
   materialized_at: string | null;
@@ -139,6 +145,10 @@ interface AttemptRow {
   created_at: string;
   completed_at: string | null;
 }
+
+const ATTEMPT_COLUMNS = `id,provider_plan_id,round,sequence,direction,semantic_query_json,compiled_query_json,
+                provider_hit_count,accessible_hit_count,sample_summary_json,relevance_metrics_json,
+                score,decision,decision_reason,error_class,created_at,completed_at`;
 
 export class ResearchQueryRepository {
   constructor(private readonly db: Queryable) {}
@@ -180,9 +190,9 @@ export class ResearchQueryRepository {
 
       await db.query(
         `INSERT INTO research_query_strategies
-          (id,space_id,project_id,operation_id,research_context_version_id,created_by_user_id,question_snapshot,status,policy_version,policy_json,execution_budget_json,version,parent_strategy_id,adaptation_direction,created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'planning',$8,$9::jsonb,$10::jsonb,$11,$12,$13,$14)`,
-        [strategyId, identity.spaceId, input.projectId, input.operationId ?? null, input.researchContextVersionId, identity.userId, context.rows[0].objective, input.policyVersion, JSON.stringify(input.policy), JSON.stringify(input.executionBudget), version, input.parentStrategyId ?? null, input.adaptationDirection ?? null, createdAt],
+          (id,space_id,project_id,operation_id,research_context_version_id,created_by_user_id,question_snapshot,status,policy_version,policy_json,execution_budget_json,version,parent_strategy_id,adaptation_direction,semantic_intent_json,created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'planning',$8,$9::jsonb,$10::jsonb,$11,$12,$13,$14::jsonb,$15)`,
+        [strategyId, identity.spaceId, input.projectId, input.operationId ?? null, input.researchContextVersionId, identity.userId, context.rows[0].objective, input.policyVersion, JSON.stringify(input.policy), JSON.stringify(input.executionBudget), version, input.parentStrategyId ?? null, input.adaptationDirection ?? null, input.semanticIntent ? JSON.stringify(protocol.ResearchSemanticQuerySchema.parse(input.semanticIntent)) : null, createdAt],
       );
       for (const provider of providers) {
         await db.query(
@@ -248,6 +258,52 @@ export class ResearchQueryRepository {
       error_class: null,
       created_at: createdAt,
       completed_at: null,
+    };
+  }
+
+  /** Records the planner's intent once, before any provider steps from it. */
+  async recordSemanticIntent(spaceId: string, strategyId: string, intent: ResearchSemanticQuery): Promise<void> {
+    await this.db.query(
+      `UPDATE research_query_strategies SET semantic_intent_json=$3::jsonb
+        WHERE id=$1 AND space_id=$2 AND semantic_intent_json IS NULL`,
+      [strategyId, spaceId, JSON.stringify(protocol.ResearchSemanticQuerySchema.parse(intent))],
+    );
+  }
+
+  /** One page of a provider plan's attempts, newest first, and how many there are. */
+  async listAttempts(
+    spaceId: string,
+    projectId: string,
+    strategyId: string,
+    providerKey: ResearchProviderKey,
+    page: { limit: number; offset: number },
+  ): Promise<{ items: StoredResearchQueryAttempt[]; total: number }> {
+    const plan = await this.db.query<{ id: string }>(
+      `SELECT p.id
+         FROM research_query_provider_plans p
+         JOIN research_query_strategies s ON s.id=p.strategy_id AND s.space_id=p.space_id
+        WHERE s.id=$1 AND s.space_id=$2 AND s.project_id=$3 AND p.provider_key=$4`,
+      [strategyId, spaceId, projectId, providerKey],
+    );
+    const planId = plan.rows[0]?.id;
+    if (!planId) throw new HttpError(404, "Research provider plan not found");
+    const [items, total] = await Promise.all([
+      this.db.query<AttemptRow>(
+        `SELECT ${ATTEMPT_COLUMNS}
+           FROM research_query_attempts
+          WHERE space_id=$1 AND provider_plan_id=$2
+          ORDER BY round DESC, sequence DESC
+          LIMIT $3 OFFSET $4`,
+        [spaceId, planId, page.limit, page.offset],
+      ),
+      this.db.query<{ total: number }>(
+        `SELECT count(*)::int AS total FROM research_query_attempts WHERE space_id=$1 AND provider_plan_id=$2`,
+        [spaceId, planId],
+      ),
+    ]);
+    return {
+      items: items.rows.map((row) => mapAttempt(row, protocol)),
+      total: Number(total.rows[0]?.total ?? 0),
     };
   }
 
@@ -426,7 +482,8 @@ export class ResearchQueryRepository {
   async getStrategy(spaceId: string, projectId: string, strategyId: string): Promise<StoredResearchQueryStrategy | null> {
     const strategyResult = await this.db.query<StrategyRow>(
       `SELECT id,project_id,research_context_version_id,question_snapshot,status,policy_version,
-              policy_json,execution_budget_json,version,parent_strategy_id,adaptation_direction,created_at,selected_at,materialized_at
+              policy_json,execution_budget_json,version,parent_strategy_id,adaptation_direction,semantic_intent_json,
+              created_at,selected_at,materialized_at
          FROM research_query_strategies
         WHERE id=$1 AND space_id=$2 AND project_id=$3
         LIMIT 1`,
@@ -444,17 +501,31 @@ export class ResearchQueryRepository {
       [strategyId, spaceId],
     );
     const planIds = planResult.rows.map((row) => row.id);
+    // Bounded per plan: the most recent attempts, plus the selected one and
+    // the latest observed one wherever they fall, with the full count.
     const attempts = planIds.length
-      ? await this.db.query<AttemptRow>(
-        `SELECT id,provider_plan_id,round,sequence,direction,semantic_query_json,compiled_query_json,
-                provider_hit_count,accessible_hit_count,sample_summary_json,relevance_metrics_json,
-                score,decision,decision_reason,error_class,created_at,completed_at
-           FROM research_query_attempts
-          WHERE space_id=$1 AND provider_plan_id=ANY($2::text[])
-          ORDER BY provider_plan_id,round,sequence`,
-        [spaceId, planIds],
+      ? await this.db.query<AttemptRow & { plan_attempt_count: number }>(
+        `SELECT ${ATTEMPT_COLUMNS}, plan_attempt_count
+           FROM (
+             SELECT a.*,
+                    count(*) OVER (PARTITION BY a.provider_plan_id)::int AS plan_attempt_count,
+                    row_number() OVER (PARTITION BY a.provider_plan_id ORDER BY a.round DESC, a.sequence DESC) AS recency,
+                    row_number() OVER (
+                      PARTITION BY a.provider_plan_id, (a.provider_hit_count IS NOT NULL)
+                      ORDER BY a.round DESC, a.sequence DESC
+                    ) AS observed_recency,
+                    sel.attempt_id AS selected_attempt_id
+               FROM research_query_attempts a
+               LEFT JOIN research_query_provider_selections sel ON sel.provider_plan_id=a.provider_plan_id
+              WHERE a.space_id=$1 AND a.provider_plan_id=ANY($2::text[])
+           ) ranked
+          WHERE recency <= $3
+             OR id = selected_attempt_id
+             OR (provider_hit_count IS NOT NULL AND observed_recency = 1)
+          ORDER BY provider_plan_id, round, sequence`,
+        [spaceId, planIds, protocol.RESEARCH_QUERY_RECENT_ATTEMPTS],
       )
-      : { rows: [] as AttemptRow[] };
+      : { rows: [] as Array<AttemptRow & { plan_attempt_count: number }> };
 
     return {
       id: strategy.id,
@@ -470,6 +541,9 @@ export class ResearchQueryRepository {
       adaptation_direction: strategy.adaptation_direction === "broaden" || strategy.adaptation_direction === "narrow" || strategy.adaptation_direction === "rollback"
         ? strategy.adaptation_direction
         : null,
+      semantic_intent: strategy.semantic_intent_json === null || strategy.semantic_intent_json === undefined
+        ? null
+        : protocol.ResearchSemanticQuerySchema.parse(strategy.semantic_intent_json),
       created_at: dateIso(strategy.created_at) ?? new Date(0).toISOString(),
       selected_at: dateIso(strategy.selected_at),
       materialized_at: dateIso(strategy.materialized_at),
@@ -482,6 +556,7 @@ export class ResearchQueryRepository {
         decision_reason: plan.decision_reason,
         coverage_warning: plan.coverage_warning,
         attempts: attempts.rows.filter((attempt) => attempt.provider_plan_id === plan.id).map((attempt) => mapAttempt(attempt, protocol)),
+        attempt_count: Number(attempts.rows.find((attempt) => attempt.provider_plan_id === plan.id)?.plan_attempt_count ?? 0),
       })),
     };
   }

@@ -24,6 +24,34 @@ async function handleSourceAnnotationJob(
   job: JobEnvelopeForHandler,
   config: ServerConfig,
 ): Promise<JobHandlerResult> {
+  const pool = getDbPool(config.databaseUrl!);
+  // One pass per space at a time, across workers: a manual retry's job beside
+  // a sweep's, or two scans' jobs, would otherwise load the same pending batch
+  // and pay for it twice. Held on a dedicated session for the whole drain.
+  const lock = await pool.connect();
+  const key = `source_annotation:${job.space_id}`;
+  try {
+    const acquired = await lock.query<{ locked: boolean }>(
+      "SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked",
+      [key],
+    );
+    if (!acquired.rows[0]?.locked) {
+      return { space_id: job.space_id, passes: 0, annotated: 0, skipped: 0, failed: 0, last_status: "already_running" };
+    }
+    try {
+      return await drainSpace(job, config);
+    } finally {
+      await lock.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [key]).catch(() => undefined);
+    }
+  } finally {
+    lock.release();
+  }
+}
+
+async function drainSpace(
+  job: JobEnvelopeForHandler,
+  config: ServerConfig,
+): Promise<JobHandlerResult> {
   const db = getDbPool(config.databaseUrl!);
   const service = new SourceAnnotationService(db, config);
   const results: AnnotationSweepResult[] = [];

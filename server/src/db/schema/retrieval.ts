@@ -84,6 +84,10 @@ export const retrievalChunks = pgTable("retrieval_chunks", {
 	embeddingClaimId: varchar("embedding_claim_id", { length: 64 }),
 	embeddingClaimedAt: timestamp("embedding_claimed_at", { withTimezone: true, mode: 'string' }),
 	embeddingAttempts: integer("embedding_attempts").default(0).notNull(),
+	// The egress-policy generation under which this chunk was found not
+	// sendable to the embedding provider. The claim skips it while that
+	// generation holds, and takes it again once the policy changes.
+	embeddingBlockedGeneration: varchar("embedding_blocked_generation", { length: 64 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [

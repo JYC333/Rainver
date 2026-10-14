@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { RetrievalEmbeddingStore } from "../index.js";
 import type { Queryable } from "../../routeUtils/common.js";
 import {
@@ -76,12 +76,14 @@ export class RetrievalEmbeddingBackfillService {
     const store = new RetrievalEmbeddingStore(this.db);
     const claimId = randomUUID();
     const staleBefore = new Date(Date.now() - EMBED_CLAIM_TTL_MS);
+    const policyGeneration = await embeddingPolicyGeneration(this.db, spaceId, egressPolicy);
     const pending = await store.claimPendingChunks(
       spaceId,
       opts.batchLimit ?? DEFAULT_EMBED_BATCH,
       claimId,
       staleBefore,
       EMBED_MAX_ATTEMPTS,
+      policyGeneration,
     );
     const egressPolicyWithSources = await this.egressPolicyForPendingChunks(spaceId, pending, egressPolicy);
     const eligible = pending.filter((chunk) =>
@@ -90,6 +92,13 @@ export class RetrievalEmbeddingBackfillService {
         object_id: chunk.object_id,
         source_connection_ids: sourceConnectionIdsFromJson(chunk.source_connection_ids_json),
       }, egressPolicyWithSources),
+    );
+    const eligibleIds = new Set(eligible.map((chunk) => chunk.id));
+    await store.markEmbeddingBlocked(
+      pending.filter((chunk) => !eligibleIds.has(chunk.id)).map((chunk) => chunk.id),
+      spaceId,
+      claimId,
+      policyGeneration,
     );
     if (eligible.length === 0) {
       return { scanned: pending.length, embedded: 0, skipped: pending.length, model: null };
@@ -197,6 +206,29 @@ export class RetrievalEmbeddingBackfillService {
       );
     }
   }
+}
+
+/**
+ * Names everything the per-chunk egress decision reads: the space switch and
+ * every source connection's policy, consent, owner, and liveness. A chunk set
+ * aside as not sendable is looked at again only when this changes.
+ */
+async function embeddingPolicyGeneration(db: Queryable, spaceId: string, policy: RetrievalEgressPolicy): Promise<string> {
+  const sources = await db.query<{ digest: string | null }>(
+    `SELECT md5(string_agg(
+              concat_ws(':', id, owner_user_id, status, deleted_at::text, consent_json::text, policy_json::text),
+              '|' ORDER BY id)) AS digest
+       FROM source_connections
+      WHERE space_id = $1`,
+    [spaceId],
+  );
+  return createHash("sha256")
+    .update(JSON.stringify({
+      external: policy.externalEgressEnabled,
+      destination: policy.destination ?? "external_provider",
+      sources: sources.rows[0]?.digest ?? null,
+    }))
+    .digest("hex");
 }
 
 function uniqueSourceConnectionIds(pending: readonly { source_connection_ids_json: unknown }[]): string[] {

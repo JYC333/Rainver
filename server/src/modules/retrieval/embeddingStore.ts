@@ -36,6 +36,8 @@ export class RetrievalEmbeddingStore {
     claimId: string,
     staleBefore: Date,
     maxAttempts: number,
+    /** Chunks found not sendable under this egress-policy generation are passed over. */
+    policyGeneration: string,
   ): Promise<PendingChunk[]> {
     const result = await this.db.query<PendingChunk>(
       `WITH candidate AS (
@@ -44,6 +46,7 @@ export class RetrievalEmbeddingStore {
           WHERE space_id = $1
             AND embedding IS NULL
             AND embedding_attempts < $5
+            AND embedding_blocked_generation IS DISTINCT FROM $6
             AND (
               embedding_claim_id IS NULL
               OR embedding_claimed_at IS NULL
@@ -66,9 +69,31 @@ export class RetrievalEmbeddingStore {
                   retrieval_chunks.plain_text,
                   retrieval_chunks.embedding_claim_id,
                   ro.source_connection_ids_json`,
-      [spaceId, clampLimit(limit), claimId, staleBefore.toISOString(), Math.max(1, Math.floor(maxAttempts))],
+      [spaceId, clampLimit(limit), claimId, staleBefore.toISOString(), Math.max(1, Math.floor(maxAttempts)), policyGeneration],
     );
     return result.rows;
+  }
+
+  /**
+   * Set aside claimed chunks the egress policy does not let reach the
+   * provider: the claim is released and the chunk is passed over until the
+   * policy generation changes, so a run of blocked chunks at the head of the
+   * queue never holds back the sendable ones behind it. No attempt is spent.
+   */
+  async markEmbeddingBlocked(chunkIds: readonly string[], spaceId: string, claimId: string, policyGeneration: string): Promise<number> {
+    if (chunkIds.length === 0) return 0;
+    const result = await this.db.query(
+      `UPDATE retrieval_chunks
+          SET embedding_blocked_generation = $4,
+              embedding_claim_id = NULL,
+              embedding_claimed_at = NULL
+        WHERE id = ANY($1::varchar[])
+          AND space_id = $2
+          AND embedding_claim_id = $3
+          AND embedding IS NULL`,
+      [chunkIds, spaceId, claimId, policyGeneration],
+    );
+    return result.rowCount ?? 0;
   }
 
   /** Re-queue chunks embedded by a superseded model for re-embedding. */
@@ -174,7 +199,8 @@ export class RetrievalEmbeddingStore {
               embedding_dimensions = $5,
               embedding_generated_at = now(),
               embedding_claim_id = NULL,
-              embedding_claimed_at = NULL
+              embedding_claimed_at = NULL,
+              embedding_blocked_generation = NULL
         WHERE id = $1
           AND space_id = $2
           AND ($6::varchar IS NULL OR embedding_claim_id = $6)`,

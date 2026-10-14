@@ -126,9 +126,13 @@ export const sourceItems = pgTable("source_items", {
 	index("ix_source_items_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_source_items_summary_artifact_id").using("btree", table.summaryArtifactId.asc().nullsLast()),
 	index("ix_source_items_visibility").using("btree", table.visibility.asc().nullsLast()),
-	uniqueIndex("uq_source_items_active_canonical_uri_personal").using("btree", table.spaceId.asc().nullsLast(), table.canonicalUri.asc().nullsLast()).where(sql`canonical_uri IS NOT NULL AND deleted_at IS NULL AND project_id IS NULL`),
+	// A personal item is unique per owner: another member's private save of
+	// the same URL is not this person's item and must not block theirs. An
+	// ownerless personal row (none today) shares one slot per Space, which the
+	// COALESCE keeps unique rather than letting NULLs multiply it.
+	uniqueIndex("uq_source_items_active_canonical_uri_personal").using("btree", table.spaceId.asc().nullsLast(), sql`COALESCE(owner_user_id, '')`, table.canonicalUri.asc().nullsLast()).where(sql`canonical_uri IS NOT NULL AND deleted_at IS NULL AND project_id IS NULL`),
 	uniqueIndex("uq_source_items_active_canonical_uri_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.canonicalUri.asc().nullsLast()).where(sql`canonical_uri IS NOT NULL AND deleted_at IS NULL AND project_id IS NOT NULL`),
-	uniqueIndex("uq_source_items_active_source_uri_personal").using("btree", table.spaceId.asc().nullsLast(), table.sourceUri.asc().nullsLast()).where(sql`source_uri IS NOT NULL AND deleted_at IS NULL AND project_id IS NULL`),
+	uniqueIndex("uq_source_items_active_source_uri_personal").using("btree", table.spaceId.asc().nullsLast(), sql`COALESCE(owner_user_id, '')`, table.sourceUri.asc().nullsLast()).where(sql`source_uri IS NOT NULL AND deleted_at IS NULL AND project_id IS NULL`),
 	uniqueIndex("uq_source_items_active_source_uri_project").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.sourceUri.asc().nullsLast()).where(sql`source_uri IS NOT NULL AND deleted_at IS NULL AND project_id IS NOT NULL`),
 	unique("uq_source_items_id_space").on(table.id, table.spaceId),
 	foreignKey({
@@ -348,6 +352,11 @@ export const sourceItemUserStates = pgTable("source_item_user_states", {
 	readStatus: varchar("read_status", { length: 32 }).default('unread').notNull(),
 	firstOpenedAt: timestamp("first_opened_at", { withTimezone: true, mode: 'string' }),
 	lastOpenedAt: timestamp("last_opened_at", { withTimezone: true, mode: 'string' }),
+	// Where the reading came from. `serendipity` is an open from the digest's
+	// "outside your usual view" section and is not interest evidence (B54);
+	// `library` is the reader's own reach and is. A later library open
+	// upgrades a serendipity origin; nothing downgrades it.
+	readOrigin: varchar("read_origin", { length: 32 }),
 	progressJson: jsonb("progress_json").default({}).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
@@ -373,6 +382,7 @@ export const sourceItemUserStates = pgTable("source_item_user_states", {
 	check("ck_source_item_user_states_library_status", sql`(library_status)::text = ANY (ARRAY[('new'::character varying)::text, ('triaged'::character varying)::text, ('selected'::character varying)::text, ('ignored'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_source_item_user_states_read_status", sql`(read_status)::text = ANY (ARRAY[('unread'::character varying)::text, ('skimmed'::character varying)::text, ('read'::character varying)::text, ('discussed'::character varying)::text])`),
 	check("ck_source_item_user_states_progress_json", sql`jsonb_typeof(progress_json) = 'object'::text`),
+	check("ck_source_item_user_states_read_origin", sql`read_origin IS NULL OR read_origin IN ('library', 'serendipity')`),
 ]);
 
 export const sourcePostProcessingRules = pgTable("source_post_processing_rules", {

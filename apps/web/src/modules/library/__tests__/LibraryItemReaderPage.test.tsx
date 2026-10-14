@@ -250,7 +250,7 @@ describe('LibraryItemReaderPage', () => {
   it('loads the reader document and active annotations', async () => {
     await renderPage()
 
-    expect(mockedApi.getDocument).toHaveBeenCalledWith('source_item', 'item-1')
+    expect(mockedApi.getDocument).toHaveBeenCalledWith('source_item', 'item-1', { origin: undefined })
     expect(mockedApi.listAnnotations).toHaveBeenCalledWith('source_item', 'item-1')
     expect(screen.getByText('Signals in Long-Form Reading')).toBeInTheDocument()
     expect(screen.getByTestId('reader-content')).toHaveTextContent('First paragraph.')
@@ -556,7 +556,7 @@ describe('LibraryItemReaderPage', () => {
     await userEvent.click(screen.getByRole('link', { name: 'Next item' }))
 
     await waitFor(() => {
-      expect(mockedApi.getDocument).toHaveBeenLastCalledWith('source_item', 'item-2')
+      expect(mockedApi.getDocument).toHaveBeenLastCalledWith('source_item', 'item-2', { origin: undefined })
     })
     expect(await screen.findByText('Second item')).toBeInTheDocument()
     expect(screen.getByTestId('reader-content')).toHaveTextContent('Next item text.')

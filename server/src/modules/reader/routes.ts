@@ -14,7 +14,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply); if (!identity) return reply;
     try {
       const p = params(request);
-      const doc = await readerRepo().getDocument(identity, p.documentType ?? "", p.documentId ?? "");
+      // `origin=serendipity` says the reader came from the digest's serendipity
+      // section, so this open is not interest evidence (B54).
+      const origin = query(request).origin === "serendipity" ? "serendipity" as const : "library" as const;
+      const doc = await readerRepo().getDocument(identity, p.documentType ?? "", p.documentId ?? "", { origin });
       return doc ? reply.send(doc) : reply.code(404).send({ detail: "Document not found or not accessible" });
     } catch (error) { return sendRouteError(reply, error); }
   });

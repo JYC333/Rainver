@@ -57,6 +57,15 @@ describe("proposal apply service guards", () => {
     expect(canRejectProposalWithRole(ownerRequired, "admin-1", "admin")).toBe(false);
     expect(canRejectProposalWithRole(ownerRequired, "member-1", "member")).toBe(true);
 
+    // An Agent-scope Memory proposal is decided by the Agent's owner alone,
+    // as the server derived it from the Agent — a role never substitutes, and
+    // an Agent nobody owns has nobody to decide for it.
+    const agentOwned = { required: true as const, userId: "agent-owner-1" };
+    expect(canRejectProposalWithRole(ownerRequired, "agent-owner-1", "member", agentOwned)).toBe(true);
+    expect(canRejectProposalWithRole(ownerRequired, "owner-1", "owner", agentOwned)).toBe(false);
+    expect(canRejectProposalWithRole(ownerRequired, "member-1", "member", agentOwned)).toBe(false);
+    expect(canRejectProposalWithRole(ownerRequired, "owner-1", "owner", { required: true, userId: null })).toBe(false);
+
     const noRequiredRole = {
       created_by_user_id: "member-1",
       owner_user_id: "member-1",

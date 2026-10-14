@@ -133,7 +133,7 @@ export function renderConversationInputResourceDescriptors(
     "Use input_resource.read or input_resource.search with resource_id to inspect a resource.",
     ...(hasDraft ? [
       "IMPORTANT: every descriptor with source_state=draft is the user's latest acknowledged unsaved content.",
-      "Before reading or modifying its relative_path, read that resource's complete draft with input_resource.read (continue from next_line while truncated=true) and use it as the baseline; do not base the change on the same-path workspace file.",
+      "Before reading or modifying its relative_path, read that resource's complete draft with input_resource.read (while truncated=true, continue with start_line=next_line and start_byte_offset=next_byte_offset) and use it as the baseline; do not base the change on the same-path workspace file.",
       "Preserve the draft's content unless the user's instruction explicitly replaces it.",
     ] : []),
     ...descriptors.map((descriptor) => JSON.stringify(descriptor)),

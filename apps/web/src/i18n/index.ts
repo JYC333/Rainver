@@ -10,6 +10,10 @@ import { mixedSurfacesEn } from './mixedSurfaces.en'
 import { mixedSurfacesZhCN } from './mixedSurfaces.zh-CN'
 import { publicAuthEn } from './publicAuth.en'
 import { publicAuthZhCN } from './publicAuth.zh-CN'
+import { digestReportsEn } from './digestReports.en'
+import { digestReportsZhCN } from './digestReports.zh-CN'
+import { conversationRetrievalEn } from './conversationRetrieval.en'
+import { conversationRetrievalZhCN } from './conversationRetrieval.zh-CN'
 
 export type Locale = 'en' | 'zh-CN'
 const LOCALE_STORAGE_KEY = 'rainver:locale'
@@ -32,8 +36,8 @@ void i18n.use(initReactI18next).init({
   fallbackLng: 'en',
   supportedLngs: ['en', 'zh-CN'],
   resources: {
-    en: { translation: { ...en, home: homeEn, evolution: evolutionEn, ...mixedSurfacesEn, ...publicAuthEn } },
-    'zh-CN': { translation: { ...zhCN, home: homeZhCN, evolution: evolutionZhCN, ...mixedSurfacesZhCN, ...publicAuthZhCN } },
+    en: { translation: { ...en, home: homeEn, evolution: evolutionEn, digest_reports: digestReportsEn, ...mixedSurfacesEn, ...publicAuthEn, ...conversationRetrievalEn } },
+    'zh-CN': { translation: { ...zhCN, home: homeZhCN, evolution: evolutionZhCN, digest_reports: digestReportsZhCN, ...mixedSurfacesZhCN, ...publicAuthZhCN, ...conversationRetrievalZhCN } },
   },
   interpolation: { escapeValue: false }, // React escapes text when it renders.
   initAsync: false,

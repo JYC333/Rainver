@@ -51,10 +51,22 @@ member's tick.
 
 The generic reads (`GET .../automations`, `GET .../automations/:automationId`,
 `GET .../automations/:automationId/workflow-executions`) apply a read rule: a
-Project-bound Automation is visible only to a reader of its Project (its
-`project_id` is not a read grant), and an `autonomous_tick` only to its owner
-and Space owners/admins, who may manage it. Space-level Automations of other
-targets stay visible to every active member.
+personal (non-Project) Automation, an `autonomous_tick` included, is read by
+its owner alone; a Project-bound one by a reader of its Project (its
+`project_id` is not a read grant). A Space owner/admin reads none of another
+member's personal Automations by role: the list and detail answer them the
+**operations view** instead (`access: "ops"`, `automationOpsView`) — identity,
+owner, target type, status and schedule, with `name`, `description`, the
+prompt and the rest of `config_json`, the preflight snapshot and executions
+withheld.
+
+Only the owner changes an Automation's prompt, target, configuration, Project
+binding, name or enablement (`PATCH`), because it runs as their work. Anyone
+else is refused (404 when they cannot read it, 403 when they can), except
+that a Space owner/admin may set `status` to `paused` or `archived` as a
+stop-loss — never back to `active`, which is the owner's decision. Firing runs
+the Automation's content, so it needs reading it: a personal Automation is
+fired by its owner, a Project one by a Project reader who also writes there.
 
 ## Purpose
 

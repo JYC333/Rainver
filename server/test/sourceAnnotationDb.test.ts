@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { updateSpaceRetrievalSettings } from "../src/modules/retrieval/settings.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository.js";
 import { ANNOTATION_ENQUEUE_WINDOW_MS } from "../src/modules/sourceAnnotation/eventEmitter.js";
@@ -8,6 +9,10 @@ import { ensureSourceAnnotatorAgent } from "../src/modules/sourceAnnotation/agen
 import { SOURCE_ANNOTATION_SCHEMA_ID } from "../src/modules/sourceAnnotation/resultParser.js";
 import { SourceAnnotationService } from "../src/modules/sourceAnnotation/service.js";
 import { loadConfig } from "../src/config.js";
+import { registerSourceAnnotationHandler } from "../src/modules/sourceAnnotation/job.js";
+import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
+import { SOURCE_ANNOTATION_JOB_TYPE } from "../src/modules/sourceAnnotation/repository.js";
+import { ANNOTATION_MAX_ATTEMPTS_PER_EPISODE, ANNOTATION_RETRY_DELAYS_MS } from "../src/modules/sourceAnnotation/retryPolicy.js";
 
 // Real-Postgres coverage for the system annotation queue: what gets enqueued,
 // what the queue guarantees about not paying twice, how failures terminate, and
@@ -28,7 +33,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["source_item_annotations", "source_item_user_states", "source_channel_item_links", "source_channels", "source_items", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "space_memberships", "users", "spaces"],
+    ["settings", "activity_records", "source_item_annotations", "source_item_user_states", "source_channel_item_links", "source_channels", "source_items", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -91,7 +96,7 @@ beforeEach(async () => {
   );
 });
 
-async function seedItem(options: { title?: string; firstSeenAt?: string; linkToChannel?: boolean; spaceId?: string } = {}): Promise<string> {
+async function seedItem(options: { title?: string; firstSeenAt?: string; linkToChannel?: boolean; spaceId?: string; owner?: string; viaConnection?: boolean } = {}): Promise<string> {
   const itemId = randomUUID();
   const now = new Date().toISOString();
   const firstSeen = options.firstSeenAt ?? now;
@@ -104,8 +109,8 @@ async function seedItem(options: { title?: string; firstSeenAt?: string; linkToC
     [
       itemId,
       spaceId,
-      OWNER,
-      spaceId === SPACE ? CONNECTION : null,
+      options.owner ?? OWNER,
+      spaceId === SPACE && options.viaConnection !== false ? CONNECTION : null,
       options.title ?? `Item ${itemId.slice(0, 8)}`,
       `https://example.com/${itemId}`,
       firstSeen,
@@ -123,6 +128,15 @@ async function seedItem(options: { title?: string; firstSeenAt?: string; linkToC
 }
 
 const repo = () => new PgSourceAnnotationRepository(db.pool);
+
+/** Moves a scheduled retry's time to now, as if its delay had passed. */
+async function makeRunnable(itemId: string): Promise<void> {
+  await db.pool.query(
+    `UPDATE source_item_annotations SET next_retry_at = now() - interval '1 second'
+      WHERE space_id = $1 AND source_item_id = $2 AND wait_reason = 'retry_scheduled'`,
+    [SPACE, itemId],
+  );
+}
 
 describe("source annotation queue", () => {
   it("enqueues a channel's recent items exactly once", async () => {
@@ -235,24 +249,46 @@ describe("annotation outcomes", () => {
     expect(await repo().loadPendingBatch(SPACE, 10)).toEqual([]);
   });
 
-  it("retries a failed attempt until the budget is spent, then parks it", async () => {
+  it("schedules bounded retries on the documented delays, then pauses the episode", async () => {
     if (!db.available) return;
     const itemId = await seedItem();
     await repo().enqueueItems(SPACE, [itemId], CHANNEL);
 
-    await repo().markAttemptFailed(SPACE, [itemId], { error_code: "provider_timeout" }, 3, null);
-    expect((await repo().getByItemId(SPACE, itemId))?.status).toBe("pending");
-    expect(await repo().loadPendingBatch(SPACE, 10)).toHaveLength(1);
-
-    await repo().markAttemptFailed(SPACE, [itemId], { error_code: "provider_timeout" }, 3, null);
-    await repo().markAttemptFailed(SPACE, [itemId], { error_code: "provider_timeout" }, 3, null);
-
-    const row = await repo().getByItemId(SPACE, itemId);
-    expect(row?.status).toBe("failed");
-    expect(row?.attempt_count).toBe(3);
-    // A permanently failed row is what makes "this never reached the digest"
-    // answerable; the queue must not keep growing instead.
+    const delays: number[] = [];
+    for (let attempt = 1; attempt <= ANNOTATION_MAX_ATTEMPTS_PER_EPISODE; attempt += 1) {
+      await makeRunnable(itemId);
+      const before = Date.now();
+      await repo().markAttemptFailed(SPACE, [itemId], { error_code: "provider_timeout" }, null);
+      const row = await repo().getByItemId(SPACE, itemId);
+      expect(row?.attempt_count).toBe(attempt);
+      if (attempt < ANNOTATION_MAX_ATTEMPTS_PER_EPISODE) {
+        expect(row).toMatchObject({ status: "pending", wait_reason: "retry_scheduled" });
+        delays.push(Math.round((Date.parse(row!.next_retry_at!) - before) / 60_000));
+        // Not runnable before its time.
+        expect(await repo().loadPendingBatch(SPACE, 10)).toEqual([]);
+      } else {
+        expect(row).toMatchObject({ status: "failed", wait_reason: "budget_exhausted", next_retry_at: null });
+      }
+    }
+    // 1 min, 5 min, then the recovery round at 30 min, 2 h, 6 h.
+    expect(delays).toEqual(ANNOTATION_RETRY_DELAYS_MS.map((ms) => ms / 60_000));
+    expect(ANNOTATION_MAX_ATTEMPTS_PER_EPISODE).toBe(6);
+    await makeRunnable(itemId);
     expect(await repo().loadPendingBatch(SPACE, 10)).toEqual([]);
+    expect(await repo().spacesWithPendingWork(10)).toEqual([]);
+  });
+
+  it("puts every failure of an episode under one episode id", async () => {
+    if (!db.available) return;
+    const first = await seedItem();
+    const second = await seedItem();
+    await repo().enqueueItems(SPACE, [first, second], CHANNEL);
+    await repo().markAttemptFailed(SPACE, [first], { error_code: "provider_timeout" }, null);
+    await repo().markAttemptFailed(SPACE, [second], { error_code: "provider_timeout" }, null);
+    const a = await repo().getByItemId(SPACE, first);
+    const b = await repo().getByItemId(SPACE, second);
+    expect(a?.episode_id).toBeTruthy();
+    expect(b?.episode_id).toBe(a?.episode_id);
   });
 
   it("parks an unanswered item without retrying it", async () => {
@@ -279,33 +315,47 @@ describe("annotation outcomes", () => {
     )).rejects.toThrow(/ck_source_item_annotations_succeeded_complete/);
   });
 
-  it("returns parked rows to the queue when the blocking condition changes", async () => {
+  it("reopens only rows waiting on the recovered condition, bounded, keeping the episode budget", async () => {
     if (!db.available) return;
     const denied = await seedItem();
     const brokeDown = await seedItem();
     const unanswerable = await seedItem();
     await repo().enqueueItems(SPACE, [denied, brokeDown, unanswerable], CHANNEL);
 
-    await repo().markSkipped(SPACE, [denied], "source_egress_denied", null);
+    await repo().markWaiting(SPACE, [denied], "egress_denied");
     await repo().markSkipped(SPACE, [unanswerable], "no_usable_annotation", null);
-    for (let i = 0; i < 3; i += 1) {
-      await repo().markAttemptFailed(SPACE, [brokeDown], { error_code: "provider_timeout" }, 3, null);
-    }
+    await repo().markAttemptFailed(SPACE, [brokeDown], { error_code: "provider_timeout" }, null);
     expect(await repo().loadPendingBatch(SPACE, 10)).toEqual([]);
+    // A condition wait spends nothing and schedules nothing.
+    expect(await repo().getByItemId(SPACE, denied)).toMatchObject({ wait_reason: "egress_denied", next_retry_at: null, attempt_count: 0 });
 
-    // Relaxing the consent setting must reach the material that arrived while
-    // it was denied, and only that material.
-    const requeued = await repo().requeueParked(SPACE, { reason: "source_egress_denied" });
-    expect(requeued).toBe(1);
-    const pending = await repo().loadPendingBatch(SPACE, 10);
-    expect(pending.map((row) => row.id)).toEqual([denied]);
-    expect((await repo().getByItemId(SPACE, denied))?.attempt_count).toBe(0);
+    expect(await repo().requeueParked(SPACE, { reasons: ["egress_denied"], limit: 10 })).toBe(1);
+    expect((await repo().loadPendingBatch(SPACE, 10)).map((row) => row.id)).toEqual([denied]);
 
-    // Everything parked, when the operator wants a blanket retry.
-    const all = await repo().requeueParked(SPACE);
-    expect(all).toBe(2);
-    expect((await repo().loadPendingBatch(SPACE, 10)).map((row) => row.id).sort())
-      .toEqual([denied, brokeDown, unanswerable].sort());
+    // The retry-scheduled row keeps its attempt count through a recovery reopen.
+    expect(await repo().requeueParked(SPACE, { reasons: ["retry_scheduled"], limit: 10 })).toBe(1);
+    expect(await repo().getByItemId(SPACE, brokeDown)).toMatchObject({ status: "pending", wait_reason: null, attempt_count: 1 });
+
+    // A skipped item is not a wait; it is never reopened by a recovery.
+    expect(await repo().getByItemId(SPACE, unanswerable)).toMatchObject({ status: "skipped" });
+  });
+
+  it("restarts the count only for a paused episode a person retries, and respects the limit", async () => {
+    if (!db.available) return;
+    const items = [await seedItem(), await seedItem(), await seedItem()];
+    await repo().enqueueItems(SPACE, items, CHANNEL);
+    for (let i = 0; i < ANNOTATION_MAX_ATTEMPTS_PER_EPISODE; i += 1) {
+      for (const item of items) await makeRunnable(item);
+      await repo().markAttemptFailed(SPACE, items, { error_code: "provider_timeout" }, null);
+    }
+    const paused = await repo().getByItemId(SPACE, items[0]!);
+    expect(paused).toMatchObject({ status: "failed", wait_reason: "budget_exhausted" });
+
+    expect(await repo().requeueParked(SPACE, { reasons: ["budget_exhausted"], limit: 2 })).toBe(2);
+    const reopened = (await Promise.all(items.map((item) => repo().getByItemId(SPACE, item))))
+      .filter((row) => row?.status === "pending");
+    expect(reopened).toHaveLength(2);
+    for (const row of reopened) expect(row).toMatchObject({ attempt_count: 0, episode_id: null, wait_reason: null });
   });
 
   it("leaves succeeded annotations alone when requeueing", async () => {
@@ -325,8 +375,27 @@ describe("annotation outcomes", () => {
       stance_confidence: 0,
     }, null);
 
-    expect(await repo().requeueParked(SPACE)).toBe(0);
+    expect(await repo().requeueParked(SPACE, {
+      reasons: ["retry_scheduled", "budget_exhausted", "provider_unavailable", "egress_denied", "consent_missing"],
+      limit: 10,
+    })).toBe(0);
     expect((await repo().getByItemId(SPACE, done))?.status).toBe("succeeded");
+  });
+
+  it("summarizes an episode per responsible person, never counting another member's items", async () => {
+    if (!db.available) return;
+    const mine = await seedItem();
+    const theirs = await seedItem({ owner: READER, viaConnection: false });
+    await repo().enqueueItems(SPACE, [mine, theirs], CHANNEL);
+    await repo().markAttemptFailed(SPACE, [mine, theirs], { error_code: "provider_timeout" }, null);
+
+    const ownerView = await repo().episodeSummaries(SPACE, { responsibleUserId: OWNER });
+    expect(ownerView).toEqual([expect.objectContaining({ wait_reason: "retry_scheduled", affected_count: 1, responsible_user_id: OWNER })]);
+    const readerView = await repo().episodeSummaries(SPACE, { responsibleUserId: READER });
+    expect(readerView).toEqual([expect.objectContaining({ affected_count: 1, responsible_user_id: READER, connection_ids: [] })]);
+    // The countdown the notice shows is the persisted schedule.
+    const row = await repo().getByItemId(SPACE, mine);
+    expect(ownerView[0]!.next_retry_at).toBe(new Date(row!.next_retry_at!).toISOString());
   });
 
   it("rejects an unknown status", async () => {
@@ -370,10 +439,108 @@ describe("annotation service", () => {
 
     const result = await service().annotatePendingBatch(SPACE);
 
-    // The refused items left the queue as skipped, so this batch made progress
-    // and the job may take the next one; `blocked` is for a space that cannot.
+    // The refused items left the runnable queue to wait on the condition, so
+    // this batch made progress and the job may take the next one; `blocked` is
+    // for a space that cannot.
     expect(result).toMatchObject({ status: "ok", skipped: 1, annotated: 0, failed: 0, reason: "source_egress_denied" });
-    expect(await repo().getByItemId(SPACE, itemId)).toMatchObject({ status: "skipped" });
+    expect(await repo().getByItemId(SPACE, itemId)).toMatchObject({ status: "pending", wait_reason: "consent_missing", attempt_count: 0, next_retry_at: null });
+    // No loop: a second pass finds nothing runnable and spends nothing.
+    expect(await service().annotatePendingBatch(SPACE)).toMatchObject({ status: "no_work" });
+
+    // Still refused: a recovery check reopens nothing.
+    expect(await service().recoverWaiting(SPACE)).toBe(0);
+    // Consent granted again: the sweep's recovery reopens exactly that Source's items.
+    await db.pool.query(
+      `UPDATE source_connections
+          SET consent_json = consent_json || '{"allow_local_provider_egress": true, "allow_external_model_egress": true}'::jsonb
+        WHERE id = $1`,
+      [CONNECTION],
+    );
+    expect(await service().recoverWaiting(SPACE)).toBe(1);
+    expect(await repo().getByItemId(SPACE, itemId)).toMatchObject({ status: "pending", wait_reason: null, attempt_count: 0 });
+  });
+
+  it("tells a Space that turned external egress off apart from a Source without consent, and rechecks it before any model call", async () => {
+    if (!db.available) return;
+    const itemId = await seedItem();
+    await repo().enqueueItems(SPACE, [itemId], CHANNEL);
+    await ensureSourceAnnotatorAgent(db.pool, SPACE);
+    await updateSpaceRetrievalSettings(db.pool, SPACE, { external_egress_enabled: false });
+
+    await service().annotatePendingBatch(SPACE);
+
+    expect(await repo().getByItemId(SPACE, itemId)).toMatchObject({ status: "pending", wait_reason: "egress_denied", attempt_count: 0, next_retry_at: null });
+    expect(await service().recoverWaiting(SPACE)).toBe(0);
+    await updateSpaceRetrievalSettings(db.pool, SPACE, { external_egress_enabled: true });
+    expect(await service().recoverWaiting(SPACE)).toBe(1);
+    expect(await repo().getByItemId(SPACE, itemId)).toMatchObject({ status: "pending", wait_reason: null, attempt_count: 0 });
+  });
+
+  it("notifies the responsible person once per episode with the waiting condition and no countdown, and clears it on recovery", async () => {
+    if (!db.available) return;
+    const itemId = await seedItem();
+    await repo().enqueueItems(SPACE, [itemId], CHANNEL);
+    await ensureSourceAnnotatorAgent(db.pool, SPACE);
+    await db.pool.query(
+      `UPDATE source_connections
+          SET consent_json = consent_json || '{"allow_local_provider_egress": false, "allow_external_model_egress": false}'::jsonb
+        WHERE id = $1`,
+      [CONNECTION],
+    );
+    await service().annotatePendingBatch(SPACE);
+    await service().annotatePendingBatch(SPACE);
+    const alerts = await db.pool.query<{ user_id: string; status: string; payload_json: Record<string, unknown>; visibility: string }>(
+      `SELECT user_id, status, payload_json, visibility FROM activity_records
+        WHERE space_id = $1 AND activity_type = 'operational_alert' AND payload_json->>'alert_kind' = 'source_annotation_recovery'`,
+      [SPACE],
+    );
+    expect(alerts.rows).toHaveLength(1);
+    expect(alerts.rows[0]).toMatchObject({ user_id: OWNER, visibility: "private", status: "raw" });
+    expect(alerts.rows[0]!.payload_json).toMatchObject({ reason: "consent_missing", affected_count: 1, next_retry_at: null, retry_available: true });
+
+    await db.pool.query(
+      `UPDATE source_connections
+          SET consent_json = consent_json || '{"allow_local_provider_egress": true, "allow_external_model_egress": true}'::jsonb
+        WHERE id = $1`,
+      [CONNECTION],
+    );
+    await service().manualRetry(SPACE, OWNER);
+    const after = await db.pool.query<{ status: string }>(
+      `SELECT status FROM activity_records
+        WHERE space_id = $1 AND activity_type = 'operational_alert' AND payload_json->>'alert_kind' = 'source_annotation_recovery'`,
+      [SPACE],
+    );
+    expect(after.rows.map((row) => row.status)).toEqual(["archived"]);
+  });
+
+  it("waits without spending or a countdown while the space has no usable annotator", async () => {
+    if (!db.available) return;
+    const itemId = await seedItem();
+    await repo().enqueueItems(SPACE, [itemId], CHANNEL);
+    const agent = await ensureSourceAnnotatorAgent(db.pool, SPACE);
+    await db.pool.query(`UPDATE agent_runtime_profiles SET enabled = FALSE, is_default = FALSE WHERE space_id = $1 AND agent_id = $2`, [SPACE, agent.id]);
+
+    expect(await service().annotatePendingBatch(SPACE)).toMatchObject({ status: "blocked", failed: 0 });
+    expect(await repo().getByItemId(SPACE, itemId)).toMatchObject({ status: "pending", wait_reason: "provider_unavailable", attempt_count: 0, next_retry_at: null });
+    expect(await service().annotatePendingBatch(SPACE)).toMatchObject({ status: "no_work" });
+  });
+
+  it("runs one annotation pass per space at a time, whoever queued the job", async () => {
+    if (!db.available) return;
+    const handlers = new JobHandlerRegistry();
+    registerSourceAnnotationHandler(handlers, { ...loadConfig({}), databaseUrl: db.connectionUri });
+    const holder = await db.pool.connect();
+    try {
+      await holder.query("SELECT pg_advisory_lock(hashtextextended($1, 0))", [`source_annotation:${SPACE}`]);
+      const result = await handlers.dispatch({
+        id: randomUUID(), space_id: SPACE, user_id: OWNER, job_type: SOURCE_ANNOTATION_JOB_TYPE,
+        payload: { trigger: "manual_retry" }, attempts: 1, max_attempts: 1,
+      } as never);
+      expect(result).toMatchObject({ last_status: "already_running", passes: 0 });
+    } finally {
+      await holder.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [`source_annotation:${SPACE}`]);
+      holder.release();
+    }
   });
 
   it("keeps items queued when the egress check fails for a reason other than a denial", async () => {
@@ -389,6 +556,6 @@ describe("annotation service", () => {
 
     expect(result).toMatchObject({ status: "blocked", skipped: 0, failed: 0 });
     const row = await repo().getByItemId(SPACE, itemId);
-    expect(row).toMatchObject({ status: "pending", attempt_count: 0 });
+    expect(row).toMatchObject({ status: "pending", attempt_count: 0, wait_reason: "provider_unavailable" });
   });
 });

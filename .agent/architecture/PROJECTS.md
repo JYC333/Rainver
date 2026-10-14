@@ -491,7 +491,7 @@ Question into `projects.current_focus`.
 Source discovery is owned by the `research` module. `POST
 /api/v1/research/query-strategies/evaluate` plans and evaluates provider-specific
 queries from a persisted context version. The planner stores a bounded semantic
-intent, builds at most four provider-specific attempts, and uses observed hit
+intent on the strategy (`semantic_intent`), builds at most four provider-specific attempts, and uses observed hit
 count, sampled relevance, diversity, and duplicate rate to accept, broaden, or
 narrow the next attempt. Provider compilation is centralized in
 `ResearchProviderCompiler`; source connectors execute compiled queries and do
@@ -503,7 +503,11 @@ still be materialized. Secrets remain in the trusted fetch channel. The
 project-owned strategy id follows initial intake for reproducibility. The setup
 surface exposes the assessment, selected provider queries, attempt observations,
 and coverage warnings; raw model reasoning remains an internal implementation
-detail.
+detail. A provider plan carries only its most recent attempts (plus its
+selected and latest observed ones) and its full `attempt_count`; manual retries
+can accumulate any number of rounds. The full history is read page by page,
+newest first, from `GET
+/api/v1/research/query-strategies/{id}/providers/{providerKey}/attempts?project_id&limit&offset`.
 
 Monitoring records immutable performance observations against the active query
 version. A rolling window may propose one broader or narrower successor only
@@ -800,7 +804,9 @@ conservative acceptance or sustained queue pressure may propose narrowing.
 A feedback decision evaluates a fresh, maximum-four-attempt strategy from the
 active strategy's stored semantic intent. Each provider steps in the decided
 direction from its selected query exactly as stored, not from a re-truncated
-baseline; when no provider's query can move that way, no replacement is
+baseline, and takes new terms from the original intent, which the replacement
+inherits; a provider retry does the same from its base attempt. When no
+provider's query can move that way within the intent, no replacement is
 evaluated or proposed. It never recompiles the long research
 question as a provider query and never edits an active Source Channel in place.
 The evaluated replacement is presented as a

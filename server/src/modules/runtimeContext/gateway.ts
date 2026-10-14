@@ -153,6 +153,7 @@ export class RuntimeContextInvocationGateway implements RuntimeContextInvocation
           cursor_through: cliState.target_cursor,
           generation: cliState.generation,
           rotation_reason: cliState.rotation_reason,
+          lease_generation: cliState.lease_generation,
         }
       : null;
     const attempt = await this.snapshots.createAttempt({

@@ -93,6 +93,13 @@ export const sourceChannelUserSubscriptions = pgTable("source_channel_user_subsc
 	recommendedByUserId: varchar("recommended_by_user_id", { length: 36 }),
 	recommendationMessage: text("recommendation_message"),
 	lastNotifiedAt: timestamp("last_notified_at", { withTimezone: true, mode: "string" }),
+	// The window in which this person received the channel's items: set when
+	// the status becomes `subscribed`, closed when it leaves it. Items first
+	// seen inside the window stay readable after unsubscribing (historical
+	// reading eligibility) for as long as the connection itself still admits
+	// the reader; a new subscription opens a new window.
+	subscribedAt: timestamp("subscribed_at", { withTimezone: true, mode: "string" }),
+	unsubscribedAt: timestamp("unsubscribed_at", { withTimezone: true, mode: "string" }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
@@ -104,4 +111,6 @@ export const sourceChannelUserSubscriptions = pgTable("source_channel_user_subsc
 	foreignKey({ columns: [table.userId], foreignColumns: [users.id], name: "source_channel_user_subscriptions_user_id_fkey" }),
 	foreignKey({ columns: [table.recommendedByUserId], foreignColumns: [users.id], name: "source_channel_user_subscriptions_recommended_by_user_id_fkey" }).onDelete("set null"),
 	check("ck_source_channel_user_subscriptions_status", sql`status IN ('subscribed','pending','dismissed','muted')`),
+	// A live subscription has no closing time; a closed window names its opening.
+	check("ck_source_channel_user_subscriptions_window", sql`(status <> 'subscribed' OR unsubscribed_at IS NULL) AND (unsubscribed_at IS NULL OR subscribed_at IS NOT NULL)`),
 ]);

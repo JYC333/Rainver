@@ -35,7 +35,7 @@ function summaryWithSourceItems(openItems: number): HomeSummaryOut {
     model_provider_status: { model_providers_count: 0, enabled_model_providers_count: 0, missing_model_provider_config: true, message: '' },
     suggested_actions: [],
     operations_in_progress: [],
-    source_summary: { open_items: openItems, new_items_today: 0, pending_extraction_jobs: 0, failed_extraction_jobs: 0, candidate_evidence: 0, active_evidence: 0, due_connections: 0 },
+    source_summary: { pending_reading_items: openItems, new_items_today: 0, pending_extraction_jobs: 0, failed_extraction_jobs: 0, candidate_evidence: 0, active_evidence: 0, due_connections: 0 },
   } as HomeSummaryOut
 }
 

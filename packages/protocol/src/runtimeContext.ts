@@ -299,6 +299,32 @@ export const WorkRetrievalPreferencesSchema = z.object({
   preferred_domains: z.array(z.string().trim().min(1).max(64)).optional(),
 }).strict();
 
+/** The retrieval domains a person can pick for a conversation's knowledge search. */
+export const WORK_RETRIEVAL_DOMAINS = ["knowledge", "sources", "memory", "projects", "inquiry"] as const;
+export const WorkRetrievalDomainSchema = z.enum(WORK_RETRIEVAL_DOMAINS);
+export type WorkRetrievalDomain = z.infer<typeof WorkRetrievalDomainSchema>;
+
+/**
+ * The conversation knowledge-retrieval switch. Off by default for a new
+ * conversation; kept per person and conversation as the next version of its
+ * Work Context Setup. `preferred_domains`, when given, narrows what is
+ * searched; omitted, the current choice is kept.
+ */
+export const WorkRetrievalSwitchRequestSchema = z.object({
+  enabled: z.boolean(),
+  preferred_domains: z.array(WorkRetrievalDomainSchema).min(1).max(WORK_RETRIEVAL_DOMAINS.length).optional(),
+}).strict();
+export type WorkRetrievalSwitchRequest = z.infer<typeof WorkRetrievalSwitchRequestSchema>;
+
+/** What the conversation's switch says now. */
+export const WorkRetrievalSwitchSchema = z.object({
+  work_context_scope_id: IdSchema,
+  enabled: z.boolean(),
+  preferred_domains: z.array(WorkRetrievalDomainSchema),
+  setup_version: z.number().int().positive().nullable(),
+}).strict();
+export type WorkRetrievalSwitch = z.infer<typeof WorkRetrievalSwitchSchema>;
+
 export const WorkContinuityPreferencesSchema = z.object({
   strategy: z.enum(["none", "recent", "checkpoint", "stateful_cli"]).optional(),
   continue_vendor_session: z.boolean().optional(),
@@ -636,6 +662,8 @@ export const InvocationDeliverySchema = z.object({
     cursor_through: z.number().int().nonnegative(),
     generation: z.number().int().positive(),
     rotation_reason: z.string().trim().min(1).max(64).nullable(),
+    /** The binding's execution-lease fencing token this Delivery was planned under. */
+    lease_generation: z.number().int().nonnegative(),
   }).strict().nullable().optional(),
   control_ref: RefSchema,
   sandbox_ref: RefSchema.nullable(),

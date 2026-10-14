@@ -5,7 +5,7 @@ import type { Queryable } from "../routeUtils/common.js";
 import { redactEvidenceText, sanitizeEvidenceJson } from "../runs/evidenceRedaction.js";
 
 export interface OperationalAlertInput {
-  kind: "job_exhausted" | "automation_fire_failed" | "scheduler_task_failed" | "autonomous_review_timeout";
+  kind: "job_exhausted" | "automation_fire_failed" | "scheduler_task_failed" | "autonomous_review_timeout" | "source_annotation_recovery";
   title: string;
   message: string;
   dedupeKey: string;
@@ -73,6 +73,30 @@ export class OperationalAlertService implements OperationalAlertPort {
         aggregateKey,
       ],
     );
+  }
+
+  /**
+   * Retires an alert whose condition has cleared. The row stays as history
+   * (archived, discarded), so the Inbox no longer shows it and a later alert
+   * under the same key starts fresh through the upsert above.
+   */
+  async clear(spaceId: string, dedupeKey: string): Promise<void> {
+    await this.db.query(
+      `UPDATE activity_records
+          SET status = 'archived', discarded_at = $3, updated_at = $3
+        WHERE space_id = $1 AND aggregate_key = $2 AND status <> 'archived'`,
+      [spaceId, `operational_alert:${dedupeKey}`.slice(0, 128), new Date().toISOString()],
+    );
+  }
+
+  /** Dedupe keys of the live alerts whose key starts with `prefix`, for a sync that retires the stale ones. */
+  async liveDedupeKeys(spaceId: string, prefix: string): Promise<string[]> {
+    const result = await this.db.query<{ aggregate_key: string }>(
+      `SELECT aggregate_key FROM activity_records
+        WHERE space_id = $1 AND status <> 'archived' AND aggregate_key LIKE $2`,
+      [spaceId, `operational_alert:${prefix}%`],
+    );
+    return result.rows.map((row) => row.aggregate_key.slice("operational_alert:".length));
   }
 
   async emitInstance(input: Omit<OperationalAlertInput, "spaceId" | "userId">): Promise<void> {

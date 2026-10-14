@@ -75,6 +75,33 @@ semantic state without rewriting history. CLI bindings keep an acknowledged
 cursor and rotate fail closed when scope, generation, session state, or replay
 authority is invalid.
 
+A Run executes on a CLI binding under its execution lease. The lease names its
+holder Run and a fencing generation that every acquisition raises and every
+rotation carries over. It lasts five minutes without renewal; the holder renews
+it once a minute while it runs. A lease whose holder Run is no longer live is
+free at once, and the same Run's next attempt is not held off by its own dead
+attempt. A Run waiting for another holder waits at most ten minutes, and stops
+waiting when it is itself no longer live; either way it fails with the
+retryable `cli_execution_lease_unavailable`. A Delivery carries the fencing
+generation it was planned under, and acknowledgements and vendor-session
+records are refused once another Run has taken the lease over. An overflow
+reconstruction moves the lease onto the replacement binding. A missing vendor
+state rotates once per lease: asking again answers with the binding the lease
+already holds.
+
+## Knowledge retrieval switch
+
+Whether a conversation searches the knowledge base on its own is the person's
+choice. A direct chat or Room recipient retrieves only when its Work Context
+Setup's `retrieval_preferences.enabled` is true, so a new conversation starts
+with retrieval off. Root tasks and workflows keep retrieving unless their setup
+turns it off. `GET`/`PUT /api/v1/runtime-context/work-contexts/:scopeId/retrieval`
+read and set the switch and its `preferred_domains` as the next Setup version
+for that person and conversation. Governing policy can still forbid retrieval.
+The switch also withholds the managed retrieval tools from a Run planned under
+an off setup. It never affects material the person attaches or pins: explicit
+references and `input_resource` descriptors reach the turn either way.
+
 ## Security boundaries
 
 - All acquisition is Space- and instructing-user-scoped and revalidated in the

@@ -22,11 +22,34 @@ export function registerCapabilityProposalAppliers(registry: ProposalApplierRegi
   registry.register("runtime_skill_binding_update", applyRuntimeSkillBindingUpdateProposal);
 }
 
+/**
+ * The scope a proposal's effect lands in must be the scope its approval was
+ * judged on. Approval is role-by-scope: a proposal with a `project_id` is
+ * decidable by that Project's owner, one without only by a Space owner. An
+ * installation, a shared version, a shared runtime binding and a Space-wide
+ * enablement all change the Space, so a `project_id` on such a proposal would
+ * let a Project owner approve a Space-wide change; a Project-scoped
+ * enablement's payload must name the same Project the proposal was filed
+ * under, or a Space-wide one could be approved under a Project's authority.
+ */
+function assertSpaceEffectScope(context: ProposalApplyContext): void {
+  if (context.proposal.project_id) {
+    throw new HttpError(422, "This proposal changes the Space and cannot be scoped to a Project");
+  }
+}
+
+function assertEnablementEffectScope(context: ProposalApplyContext, scope: EnablementScope): void {
+  if ((scope.projectId ?? null) !== (context.proposal.project_id ?? null)) {
+    throw new HttpError(422, "capability enablement project scope does not match the proposal's Project");
+  }
+}
+
 async function applySkillImportApproveProposal(
   context: ProposalApplyContext,
 ): Promise<ProposalApplyResult> {
   const payload = objectValue(context.proposal.payload_json);
   ensureOperation(payload, "skill_import_approve");
+  assertSpaceEffectScope(context);
   const skillPackageId = requiredPayloadString(payload, "skill_package_id");
   const skillPackage = await approveSkillImportInTransaction({
     db: context.db,
@@ -54,6 +77,7 @@ async function applyCapabilityInstallProposal(
 ): Promise<ProposalApplyResult> {
   const payload = objectValue(context.proposal.payload_json);
   ensureOperation(payload, "install_from_skill_package");
+  assertSpaceEffectScope(context);
   const skillPackageId = requiredPayloadString(payload, "skill_package_id");
   const capabilityId = optionalString(payload.capability_id);
   if (capabilityId && getBuiltInCapabilityDefinition(capabilityId)) {
@@ -98,6 +122,7 @@ async function applyCapabilityUpdateProposal(
 ): Promise<ProposalApplyResult> {
   const payload = objectValue(context.proposal.payload_json);
   ensureOperation(payload, "capability_update");
+  assertSpaceEffectScope(context);
   const versionId = requiredPayloadString(payload, "capability_version_id");
   const status = optionalString(payload.status);
   const metadataPatch = optionalObject(payload.metadata_json) ?? {};
@@ -150,6 +175,7 @@ async function applyCapabilityEnableProposal(
   const capabilityKey = requiredPayloadString(payload, "capability_key");
   const capabilityVersionId = optionalString(payload.capability_version_id);
   const scope = parseEnablementScope(payload);
+  assertEnablementEffectScope(context, scope);
   const config = optionalObject(payload.config_json) ?? {};
   await requireCapabilityTarget(context, capabilityKey, capabilityVersionId);
   const now = new Date().toISOString();
@@ -193,6 +219,7 @@ async function applyCapabilityDisableProposal(
   const capabilityVersionId = optionalString(payload.capability_version_id);
   await requireCapabilityTarget(context, capabilityKey, capabilityVersionId);
   const scope = parseEnablementScope(payload);
+  assertEnablementEffectScope(context, scope);
   const now = new Date().toISOString();
   const updated = await updateEnablement(context, {
     capabilityKey,
@@ -219,6 +246,7 @@ async function applyRuntimeSkillBindingUpdateProposal(
 ): Promise<ProposalApplyResult> {
   const payload = objectValue(context.proposal.payload_json);
   ensureOperation(payload, "runtime_skill_binding_update");
+  assertSpaceEffectScope(context);
   const bindingId = requiredPayloadString(payload, "binding_id");
   const enabled = typeof payload.enabled === "boolean" ? payload.enabled : null;
   const bindingJson = optionalObject(payload.binding_json);

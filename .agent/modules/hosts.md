@@ -1140,7 +1140,10 @@ Files & Code uses a separate bounded pull on the same socket: `folder_read`
 `folder_read_result` (daemon → server, one `tree`, `file`, `git_status`, or
 `git_diff` result). The daemon resolves the registered root, applies
 `@rainver/folder-read` PathPolicy and size limits, and never sends an absolute
-path. The server authorizes the requested active Location for its registered owner,
+path. A `git_status` result always says whether its file list is complete
+(`truncated`): git's output is read up to a byte cap and the list up to the
+file cap, and a status cut by either is marked rather than passed off as the
+whole tree. The server refuses a `git_status` frame without it. The server authorizes the requested active Location for its registered owner,
 records `force_record` audit metadata including `host_id`, and maps offline,
 timeout, forbidden, and missing-location outcomes to structured HTTP errors.
 
@@ -2288,7 +2291,12 @@ direct-chat container id. Conversation workspaces are shared at
 `managed_workspace_archive` renames a live directory to a timestamped
 `.removed-…` sibling, `managed_workspace_restore` brings back the newest
 archive when no live directory exists, and heartbeat sweeps archives older
-than 30 days. Heartbeats report only Agent/container ids and the boolean
+than 30 days. A direct chat turn sent with `restore_workspace` asks for the
+restore as the last step of its transaction, after everything that can refuse
+the turn and after its job is queued in the same transaction: a refused turn
+restores nothing, a failed restore rolls the turn back so it can be sent again,
+and the Run cannot start on a still-archived workspace. With nothing archived
+the restore is a no-op, not an error. Heartbeats report only Agent/container ids and the boolean
 `archived_available` flag.
 
 Capability discovery (`src/capabilities.ts`) probes PATH via `--version` for

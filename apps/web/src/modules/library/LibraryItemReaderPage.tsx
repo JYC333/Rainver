@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { AlertTriangle, ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, FileText, PanelRight, RefreshCw } from 'lucide-react'
 import { readerApi, sourcesApi } from '../../api/client'
@@ -27,6 +27,9 @@ function orderedItemIds(briefing: SourcePostProcessingBriefingDetail): string[] 
 
 export default function LibraryItemReaderPage() {
   const { itemId = '', connectionId, date } = useParams<{ itemId: string; connectionId?: string; date?: string }>()
+  const [searchParams] = useSearchParams()
+  // Reached from the digest's serendipity section: the open is reading, not interest evidence.
+  const readOrigin = searchParams.get('from') === 'serendipity' ? 'serendipity' as const : undefined
   const { activeSpaceId } = useSpace()
   const [briefing, setBriefing] = useState<SourcePostProcessingBriefingDetail | null>(null)
   const [document, setDocument] = useState<ReaderDocumentPayload | null>(null)
@@ -51,13 +54,13 @@ export default function LibraryItemReaderPage() {
     if (!itemId || !activeSpaceId) { setDocument(null); setAnnotations([]); setLoading(false); return }
     let cancelled = false; setLoading(true); setDocument(null); setAnnotations([]); setFailedJob(null)
     Promise.all([
-      readerApi.getDocument('source_item', itemId), readerApi.listAnnotations('source_item', itemId),
+      readerApi.getDocument('source_item', itemId, { origin: readOrigin }), readerApi.listAnnotations('source_item', itemId),
       sourcesApi.jobs({ source_item_id: itemId, job_type: 'extract_text', limit: 1 }).catch(() => ({ items: [] as ExtractionJob[] })),
     ]).then(([doc, result, jobs]) => { if (!cancelled) { setDocument(doc); setAnnotations(result.items); setFailedJob(jobs.items[0]?.status === 'failed' ? jobs.items[0] : null) } })
       .catch(error => { if (!cancelled) { if (!isNotFoundError(error)) toast.error(errMsg(error)); setDocument(null) } })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [activeSpaceId, itemId])
+  }, [activeSpaceId, itemId, readOrigin])
 
   const ids = useMemo(() => briefing ? orderedItemIds(briefing) : [], [briefing]); const index = ids.indexOf(itemId)
   const previous = index > 0 ? ids[index - 1] : null; const next = index >= 0 && index < ids.length - 1 ? ids[index + 1] : null

@@ -442,6 +442,8 @@ interface DailyBriefingActivityRunRow {
   run_id: string;
   source_channel_id: string;
   connection_name: string;
+  connection_id: string;
+  connection_visibility: string;
   owner_user_id: string;
   triggered_by_user_id: string | null;
   project_id: string | null;
@@ -1234,7 +1236,7 @@ export class PgSourcePostProcessingRepository {
   }): Promise<void> {
     const runResult = await this.db.query<DailyBriefingActivityRunRow>(
       `SELECT pr.id AS run_id, pr.source_channel_id, sc.name AS connection_name,
-              sc.owner_user_id, pr.triggered_by_user_id,
+              sc.id AS connection_id, sc.owner_user_id, sc.visibility AS connection_visibility, pr.triggered_by_user_id,
               pr.project_id, pr.output_artifact_ids_json, pr.summary, pr.created_at,
               (pr.created_at AT TIME ZONE COALESCE(r.input_config_json->>'timezone', 'UTC'))::date::text AS local_date,
               sc.config_json
@@ -1312,10 +1314,11 @@ export class PgSourcePostProcessingRepository {
     }
     const digestById = new Map(digestArtifacts.rows.map((row) => [row.id, row]));
     const digest = artifactIds.map((id) => digestById.get(id)).find((row): row is BriefingArtifactRow => Boolean(row));
-    const digestPreview = digest?.content ? digestPreviewFromMarkdown(digest.content, 260) : null;
-    const summaryPreview = dayRuns.map((row) => row.summary).find((summary): summary is string => Boolean(summary?.trim()));
+    // A pointer, not a copy (B24A): the counts and where to read, never the
+    // digest text. The briefing is read in Library under the connection's
+    // own gate, which is re-checked on every open.
     const content = truncateText(
-      [decisionCountsSummary(counts), digestPreview ?? summaryPreview ?? ""].filter(Boolean).join(" "),
+      `${decisionCountsSummary(counts)} ${digest ? "A digest was written for this day." : ""} Open the briefing in Library to read it.`.replace(/\s+/g, " ").trim(),
       500,
     );
     const projectId = dayRuns.map((row) => row.project_id).find((id): id is string => Boolean(id)) ?? run.project_id;
@@ -1340,7 +1343,7 @@ export class PgSourcePostProcessingRepository {
        ) VALUES (
          $1, $2, $3, $4, NULL, 'source', $5, $6,
          $7::jsonb, $8::timestamptz, $9::timestamptz, 'raw', $9::timestamptz, 'source',
-         'internal_system', 'space_shared', $10, $11
+         'internal_system', $13, $10, $11
        )
        ON CONFLICT (space_id, aggregate_key) WHERE aggregate_key IS NOT NULL
        DO UPDATE SET title = EXCLUDED.title,
@@ -1351,6 +1354,7 @@ export class PgSourcePostProcessingRepository {
                      updated_at = EXCLUDED.updated_at,
                      user_id = COALESCE(EXCLUDED.user_id, activity_records.user_id),
                      owner_user_id = COALESCE(EXCLUDED.owner_user_id, activity_records.owner_user_id),
+                     visibility = EXCLUDED.visibility,
                      status = CASE
                        WHEN ((activity_records.payload_json -> 'post_processing_run_ids') ? $12)
                          THEN activity_records.status
@@ -1379,8 +1383,30 @@ export class PgSourcePostProcessingRepository {
         run.owner_user_id,
         aggregateKey,
         input.runId,
+        // The pointer's audience is the connection's: a private connection's
+        // briefing reaches its owner alone, a shared one its readers; a
+        // selected-readers connection carries its grants over below.
+        run.connection_visibility === "private" ? "private" : run.connection_visibility === "selected_users" ? "selected_users" : "space_shared",
       ],
     );
+    if (run.connection_visibility === "selected_users") {
+      await inheritContentAccessGrants(this.db, {
+        spaceId: input.spaceId,
+        sourceResourceType: "source_connection",
+        sourceResourceId: run.connection_id,
+        targetResourceType: "activity_record",
+        targetResourceId: await this.dailyBriefingActivityId(input.spaceId, aggregateKey),
+        inheritedAt: now,
+      });
+    }
+  }
+
+  private async dailyBriefingActivityId(spaceId: string, aggregateKey: string): Promise<string> {
+    const result = await this.db.query<{ id: string }>(
+      `SELECT id FROM activity_records WHERE space_id = $1 AND aggregate_key = $2 LIMIT 1`,
+      [spaceId, aggregateKey],
+    );
+    return result.rows[0]!.id;
   }
 
   async updateRunAgentRunId(spaceId: string, postProcessingRunId: string, agentRunId: string): Promise<void> {
@@ -1521,19 +1547,6 @@ export class PgSourcePostProcessingRepository {
     if (!rule) return;
     const now = new Date().toISOString();
     await this.upsertRuleSchedule(rule, now, true);
-  }
-
-  async hasInFlightRun(spaceId: string, ruleId: string): Promise<boolean> {
-    const result = await this.db.query<{ id: string }>(
-      `SELECT id
-         FROM source_post_processing_runs
-        WHERE space_id = $1
-          AND rule_id = $2
-          AND status IN ('queued', 'running')
-        LIMIT 1`,
-      [spaceId, ruleId],
-    );
-    return Boolean(result.rows[0]);
   }
 
   async collectInputBatch(input: {

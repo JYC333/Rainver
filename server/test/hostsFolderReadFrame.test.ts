@@ -9,7 +9,7 @@ describe("folder_read_result host frame validation", () => {
       .toMatchObject({ ok: true, kind: "tree" });
     expect(parseFolderReadResultFrame({ ok: true, kind: "file", result: { path: "README.md", content: "hello", size: 5, line_count: 1 } }))
       .toMatchObject({ ok: true, kind: "file" });
-    expect(parseFolderReadResultFrame({ ok: true, kind: "git_status", result: { is_repo: false, branch: null, files: [] } }))
+    expect(parseFolderReadResultFrame({ ok: true, kind: "git_status", result: { is_repo: false, branch: null, files: [], truncated: false } }))
       .toMatchObject({ ok: true, kind: "git_status" });
     expect(parseFolderReadResultFrame({ ok: true, kind: "git_diff", result: { diff: "", path: null, truncated: false, redacted: false } }))
       .toMatchObject({ ok: true, kind: "git_diff" });
@@ -99,7 +99,7 @@ describe("folder_read_result host frame validation", () => {
     expect(parseFolderReadResultFrame({
       ok: true,
       kind: "git_status",
-      result: { is_repo: true, branch: "main", files: [{ path: "/Users/alice/secret", status: "modified" }] },
+      result: { is_repo: true, branch: "main", files: [{ path: "/Users/alice/secret", status: "modified" }], truncated: false },
     })).toBeNull();
     expect(parseFolderReadResultFrame({
       ok: true,
@@ -108,11 +108,20 @@ describe("folder_read_result host frame validation", () => {
     })).toBeNull();
   });
 
+  it("requires git status to say whether its file list is complete", () => {
+    expect(parseFolderReadResultFrame({ ok: true, kind: "git_status", result: { is_repo: true, branch: "main", files: [] } })).toBeNull();
+    expect(parseFolderReadResultFrame({
+      ok: true,
+      kind: "git_status",
+      result: { is_repo: true, branch: "main", files: [{ path: "a.ts", status: "modified" }], truncated: true },
+    })).toMatchObject({ ok: true, result: { truncated: true } });
+  });
+
   it("keeps git's trailing slash on an untracked directory entry", () => {
     expect(parseFolderReadResultFrame({
       ok: true,
       kind: "git_status",
-      result: { is_repo: true, branch: "main", files: [{ path: "backend/prisma/backups/", status: "untracked" }] },
+      result: { is_repo: true, branch: "main", files: [{ path: "backend/prisma/backups/", status: "untracked" }], truncated: false },
     })).toMatchObject({ ok: true, result: { files: [{ path: "backend/prisma/backups/" }] } });
   });
 

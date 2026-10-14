@@ -23,6 +23,7 @@ import { WorkflowExecutionService } from "./workflowExecutionService.js";
 import { computeNextRunAt, InvalidScheduleError } from "./schedule.js";
 import {
   PgAutomationRepository,
+  automationOpsView,
   automationToOut,
   type AutomationRepositoryPort,
   type AutomationRow,
@@ -215,11 +216,22 @@ export class AutomationService {
     body: Record<string, unknown>;
   }): Promise<AutomationRow> {
     rejectExtraKeys(input.body, UPDATE_KEYS);
-    const existing = await this.repo.get(input.spaceId, input.automationId);
+    const existing = await this.repo.get(input.spaceId, input.automationId, {
+      readableBy: input.actorUserId,
+      includeOpsView: true,
+    });
     if (!existing) throw new HttpError(404, `Automation '${input.automationId}' not found`);
     const status = optionalString(input.body.status, "status");
     if (status && !VALID_STATUSES.has(status)) {
       throw new HttpError(422, `Invalid status ${JSON.stringify(status)}`);
+    }
+    // An Automation's prompt, target, configuration, Project and enablement
+    // are its owner's to change: it runs as their work (`fireResponsibility`).
+    // Anyone else — a Space owner/admin included — may only stop it, by
+    // pausing or archiving; re-enabling is the owner's decision, not an
+    // admin's on their behalf.
+    if (input.actorUserId !== existing.owner_user_id) {
+      return this.stopAsAdministrator(input, existing, status);
     }
     let configJson =
       Object.prototype.hasOwnProperty.call(input.body, "config_json") && input.body.config_json !== null
@@ -268,15 +280,10 @@ export class AutomationService {
       hasProjectWriterAuthority = true;
     }
     // Moving an Automation takes authority over where it comes from, not only
-    // where it goes: its current Project's write access, or, for a personal
-    // one, being its owner or a Space owner/admin.
-    if (hasProjectKey && nextProjectId !== existing.project_id) {
-      if (existing.project_id) {
-        await this.repo.assertProjectWriter(input.spaceId, existing.project_id, input.actorUserId);
-      } else if (input.actorUserId !== existing.owner_user_id
-        && !isSpaceOwnerOrAdmin(await this.repo.getMembershipRole(input.spaceId, input.actorUserId))) {
-        throw new HttpError(403, "Only its owner can move a personal Automation into a Project");
-      }
+    // where it goes: the owner still needs write access to the Project it
+    // leaves.
+    if (hasProjectKey && nextProjectId !== existing.project_id && existing.project_id) {
+      await this.repo.assertProjectWriter(input.spaceId, existing.project_id, input.actorUserId);
     }
     await this.enforceAction("automation.update", input.spaceId, input.actorUserId, {
       agent_id: existing.agent_id,
@@ -319,6 +326,33 @@ export class AutomationService {
       config_json: configJson,
       project_id: hasProjectKey ? nextProjectId : undefined,
     });
+  }
+
+  /**
+   * A Space owner's or admin's stop-loss on someone else's Automation: pause
+   * or archive, nothing else. It never reads or rewrites the content and
+   * never preflights, so an Automation that stopped being runnable can always
+   * be stopped. Anyone else who is not the owner is refused.
+   */
+  private async stopAsAdministrator(
+    input: { spaceId: string; automationId: string; actorUserId: string; body: Record<string, unknown> },
+    existing: AutomationRow,
+    status: string | null,
+  ): Promise<AutomationRow> {
+    const role = await this.repo.getMembershipRole(input.spaceId, input.actorUserId);
+    const onlyStatus = Object.keys(input.body).every((key) => key === "status");
+    if (!isSpaceOwnerOrAdmin(role) || !onlyStatus || (status !== "paused" && status !== "archived")) {
+      throw new HttpError(403, "Only its owner can change this Automation; a Space owner or admin may pause or archive it");
+    }
+    await this.enforceAction("automation.update", input.spaceId, input.actorUserId, {
+      agent_id: existing.agent_id,
+      target_type: await automationTargetType(existing.config_json),
+      project_id: existing.project_id ?? null,
+      project_writer: false,
+      actor_is_owner: false,
+    }, input.automationId);
+    const stopped = await this.repo.update(input.spaceId, input.automationId, { status });
+    return existing.access === "ops" ? automationOpsView(stopped) : stopped;
   }
 
   /**
@@ -410,7 +444,11 @@ export class AutomationService {
     triggerType?: string;
     triggerContext?: Record<string, unknown> | null;
   }): Promise<Record<string, unknown>> {
-    const auto = await this.repo.get(input.spaceId, input.automationId);
+    // Firing runs the Automation's content, so it takes reading it: a
+    // personal Automation is fired by its owner, a Project one by a Project
+    // reader who also writes there (below). A Space owner/admin's operations
+    // view is a way to stop one, not to run it.
+    const auto = await this.repo.get(input.spaceId, input.automationId, { readableBy: input.actorUserId });
     if (!auto) throw new HttpError(404, `Automation '${input.automationId}' not found`);
     if (auto.status !== "active") {
       throw new HttpError(409, `Automation is not active (status=${auto.status})`);

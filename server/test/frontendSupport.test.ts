@@ -162,7 +162,7 @@ function emptyHomeSummary() {
     },
     suggested_actions: [],
     source_summary: {
-      open_items: 0,
+      pending_reading_items: 0,
       new_items_today: 0,
       pending_extraction_jobs: 0,
       failed_extraction_jobs: 0,

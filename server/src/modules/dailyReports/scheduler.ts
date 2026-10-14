@@ -3,12 +3,8 @@ import { getDbPool } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { wakeJobWorkers } from "../jobs/wakeSignal.js";
-import {
-  isValidTimezone,
-  localDateFromSlot,
-  PgDailyReportSettingsRepository,
-  type DailyReportSettingRow,
-} from "./repository.js";
+import { isValidTimezone, reportDateForSlot } from "../scheduler/localDay.js";
+import { PgDailyReportSettingsRepository, type DailyReportSettingRow } from "./repository.js";
 
 export async function scanDailyReportsAndEnqueue(config: ServerConfig): Promise<number> {
   if (!config.databaseUrl) return 0;
@@ -53,9 +49,10 @@ export function buildDailyReportJobPayload(
     space_id: setting.space_id,
     user_id: setting.user_id,
     setting_id: setting.id,
-    local_date: localDateFromSlot(slotUtc, setting.timezone),
+    // The slot reports on the day before its own: the last complete local
+    // day. A slot that fires late still names the day it was scheduled for.
+    local_date: reportDateForSlot(slotUtc, setting.timezone),
     timezone: setting.timezone,
     trigger_origin: "automation",
-    force: false,
   };
 }

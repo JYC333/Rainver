@@ -193,6 +193,17 @@ export class InterestProfileService {
    * create a topic. The candidate is removed rather than left behind, so the
    * same phrase does not keep being offered after it became a real topic.
    */
+  /**
+   * Drops the derived facts of this reader's profile so the next fact-layer
+   * pass rebuilds them from the sources they currently subscribe to. Their
+   * accepted and created topics, and their dismissed candidates, stay.
+   */
+  async forgetAutomaticFacts(spaceId: string, userId: string): Promise<void> {
+    const profile = await this.repo.getProfile(spaceId, userId);
+    if (!profile) return;
+    await this.repo.resetAutomaticFacts(profile.id);
+  }
+
   async acceptCandidate(
     spaceId: string,
     userId: string,

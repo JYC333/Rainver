@@ -153,8 +153,28 @@ export function ResearchSetupDialog({
   // Workflow row. When `workflowId` is supplied, it always wins.
   const [sessionWorkflowId, setSessionWorkflowId] = useState<string | null>(null)
   const effectiveWorkflowId = workflowId ?? sessionWorkflowId
+  const loadAttemptHistory = async (strategyId: string, providerKey: ResearchProviderKey, total: number) => {
+    setLoadingHistory(providerKey)
+    try {
+      const attempts: ResearchQueryAttempt[] = []
+      for (let offset = 0; offset < total; offset += 100) {
+        const page = await researchDiscoveryApi.listAttempts(strategyId, providerKey, { project_id: projectId, limit: 100, offset })
+        attempts.push(...page.items)
+        if (page.items.length < 100) break
+      }
+      setAttemptHistory(current => ({ ...current, [providerKey]: attempts.reverse() }))
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setLoadingHistory(null)
+    }
+  }
   const sessionScope = workflowId ?? 'new'
   const [engineResult, setEngineResult] = useState<ResearchQueryStrategy | null>(null)
+  // A plan's full attempt history, read page by page when asked for; the
+  // strategy itself carries only the recent attempts.
+  const [attemptHistory, setAttemptHistory] = useState<Partial<Record<ResearchProviderKey, ResearchQueryAttempt[]>>>({})
+  const [loadingHistory, setLoadingHistory] = useState<ResearchProviderKey | null>(null)
   const [materializedResult, setMaterializedResult] = useState<MaterializedResearchStrategy | null>(null)
   const [selectedProviders, setSelectedProviders] = useState<ResearchProviderKey[]>([])
   const [evaluationProviders, setEvaluationProviders] = useState<ResearchProviderKey[]>(['arxiv', 'openalex'])
@@ -301,6 +321,7 @@ export function ResearchSetupDialog({
         ...(webCredentialId ? { credentials: { web_search: webCredentialId } } : {}),
       })
       setEngineResult(result.strategy)
+      setAttemptHistory({})
       setMaterializedResult(null)
       setSelectedProviders(result.strategy.provider_plans.filter(plan => plan.status === 'selected').map(plan => plan.provider_key))
       setDraft(current => ({ ...current, query_strategy_id: '' }))
@@ -317,6 +338,7 @@ export function ResearchSetupDialog({
         ...(webCredentialId ? { credentials: { web_search: webCredentialId } } : {}),
       })
       setEngineResult(result.strategy)
+      setAttemptHistory({})
       setSelectedProviders(current => {
         const stillSelected = result.strategy.provider_plans.find(plan => plan.provider_key === providerKey)?.status === 'selected'
         return stillSelected ? [...new Set([...current, providerKey])] : current.filter(key => key !== providerKey)
@@ -410,6 +432,7 @@ export function ResearchSetupDialog({
                     const selectable = plan.status === 'selected' && Boolean(plan.selected_attempt_id)
                     const selected = selectedProviders.includes(plan.provider_key)
                     const selectedAttempt = plan.attempts.find(attempt => attempt.id === plan.selected_attempt_id)
+                    const shownAttempts = attemptHistory[plan.provider_key] ?? plan.attempts
                     return <div key={plan.provider_key} className={`rounded-md border px-3 py-3 ${selected ? 'border-primary bg-primary/5' : 'border-border'}`}>
                       <div className="flex w-full items-center justify-between gap-3">
                         <label className={`flex flex-1 items-center justify-between gap-3 text-left ${selectable && !draft.query_strategy_id ? 'cursor-pointer' : 'cursor-default'}`}>
@@ -428,9 +451,15 @@ export function ResearchSetupDialog({
                         <SemanticQueryColumns query={selectedAttempt.semantic_query} />
                       </div>}
                       <details className="mt-2 text-xs">
-                        <summary className="cursor-pointer text-muted-foreground">View {plan.attempts.length} evaluation attempt{plan.attempts.length === 1 ? '' : 's'}</summary>
+                        <summary className="cursor-pointer text-muted-foreground">View {plan.attempt_count} evaluation attempt{plan.attempt_count === 1 ? '' : 's'}</summary>
                         <div className="mt-2 space-y-1.5">
-                        {plan.attempts.map(attempt => <div key={attempt.id} className={`rounded border px-2 py-1.5 text-xs ${attempt.id === plan.selected_attempt_id ? 'border-success/50 bg-success/5' : 'border-border bg-background/40'}`}>
+                        {shownAttempts.length < plan.attempt_count && <div className="flex items-center justify-between gap-2 text-muted-foreground">
+                          <span>Showing the {shownAttempts.length} most recent and selected attempts.</span>
+                          <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={loadingHistory !== null} onClick={() => void loadAttemptHistory(engineResult.id, plan.provider_key, plan.attempt_count)}>
+                            {loadingHistory === plan.provider_key ? 'Loading…' : `Show all ${plan.attempt_count}`}
+                          </Button>
+                        </div>}
+                        {shownAttempts.map(attempt => <div key={attempt.id} className={`rounded border px-2 py-1.5 text-xs ${attempt.id === plan.selected_attempt_id ? 'border-success/50 bg-success/5' : 'border-border bg-background/40'}`}>
                           <div className="flex items-center gap-1.5">
                             <Badge variant={attempt.id === plan.selected_attempt_id ? 'success' : 'outline'}>{attempt.round > 0 ? `Retry ${attempt.round} · ` : ''}L{attempt.sequence} · {attempt.direction}</Badge>
                             {attempt.id === plan.selected_attempt_id && <span className="inline-flex items-center gap-1 text-[11px] font-medium text-success"><Check className="size-3" />Selected</span>}

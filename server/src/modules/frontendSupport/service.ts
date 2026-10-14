@@ -1,6 +1,7 @@
 import type { ServerConfig } from "../../config.js";
 import { dbPool, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { artifactReadSql, proposalReadSql, runReadSql } from "../access/contentAccessSql.js";
+import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
 import {
   ACTIVE_RUN_STATUSES,
   DONE_TASK_STATUSES,
@@ -79,7 +80,7 @@ export class PgFrontendSupportService {
       this.jobQueueStatus(identity),
       this.runtimeStatus(identity.spaceId),
       this.modelProviderStatus(identity.spaceId),
-      this.sourceSummary(identity.spaceId),
+      this.sourceSummary(identity),
       this.operationsInProgress(identity),
     ]);
 
@@ -587,9 +588,9 @@ export class PgFrontendSupportService {
     };
   }
 
-  private async sourceSummary(spaceId: string): Promise<HomeSummaryOut["source_summary"]> {
+  private async sourceSummary(identity: SpaceUserIdentity): Promise<HomeSummaryOut["source_summary"]> {
     const result = await this.db.query<{
-      open_items: string | number;
+      pending_reading_items: string | number;
       new_items_today: string | number;
       pending_extraction_jobs: string | number;
       failed_extraction_jobs: string | number;
@@ -598,16 +599,19 @@ export class PgFrontendSupportService {
       due_connections: string | number;
     }>(
       `SELECT
-         -- Open is not an item-level status. Home stays space-scoped: an item
-         -- is open while nobody in the space has dismissed it.
+         -- This person's reading, not the Space's: items they may read in the
+         -- Library that they have neither opened nor set aside. Another
+         -- member's read, ignore or archive changes nothing here (B56).
          (SELECT count(*)::text FROM source_items si
+           LEFT JOIN source_item_user_states suis
+             ON suis.space_id = si.space_id AND suis.source_item_id = si.id AND suis.user_id = $2
            WHERE si.space_id = $1 AND si.deleted_at IS NULL
-             AND NOT EXISTS (
-               SELECT 1 FROM source_item_user_states suis
-                WHERE suis.space_id = si.space_id AND suis.source_item_id = si.id
-                  AND suis.library_status IN ('ignored', 'archived'))) AS open_items,
-         (SELECT count(*)::text FROM source_items
-           WHERE space_id = $1 AND deleted_at IS NULL AND created_at >= date_trunc('day', now())) AS new_items_today,
+             AND COALESCE(suis.read_status, 'unread') = 'unread'
+             AND COALESCE(suis.library_status, 'new') NOT IN ('ignored', 'archived')
+             AND ${sourceItemReadableClause("si", "$2", true)}) AS pending_reading_items,
+         (SELECT count(*)::text FROM source_items si
+           WHERE si.space_id = $1 AND si.deleted_at IS NULL AND si.created_at >= date_trunc('day', now())
+             AND ${sourceItemReadableClause("si", "$2", true)}) AS new_items_today,
          (SELECT count(*)::text FROM extraction_jobs
            WHERE space_id = $1 AND status = 'pending') AS pending_extraction_jobs,
          (SELECT count(*)::text FROM extraction_jobs
@@ -618,11 +622,11 @@ export class PgFrontendSupportService {
            WHERE space_id = $1 AND deleted_at IS NULL AND status = 'active') AS active_evidence,
          (SELECT count(*)::text FROM source_connections
            WHERE space_id = $1 AND deleted_at IS NULL AND status = 'active') AS due_connections`,
-      [spaceId],
+      [identity.spaceId, identity.userId],
     );
     const row = result.rows[0];
     return {
-      open_items: numeric(row?.open_items),
+      pending_reading_items: numeric(row?.pending_reading_items),
       new_items_today: numeric(row?.new_items_today),
       pending_extraction_jobs: numeric(row?.pending_extraction_jobs),
       failed_extraction_jobs: numeric(row?.failed_extraction_jobs),

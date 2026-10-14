@@ -169,6 +169,7 @@ function reconstructRawBytes(value: Record<string, unknown>): Buffer | null {
 
 function validateRemoteGitStatus(value: Record<string, unknown>): GitStatus | null {
   if (typeof value.is_repo !== "boolean" || (value.branch !== null && typeof value.branch !== "string") || !Array.isArray(value.files) || value.files.length > MAX_FILES) return null;
+  if (typeof value.truncated !== "boolean") return null;
   const files: GitChangedFile[] = [];
   for (const file of value.files) {
     if (!file || typeof file !== "object" || Array.isArray(file)) return null;
@@ -179,7 +180,7 @@ function validateRemoteGitStatus(value: Record<string, unknown>): GitStatus | nu
     if (typeof record.status !== "string" || record.status.length > 64) return null;
     files.push({ path: record.path, status: record.status });
   }
-  return { is_repo: value.is_repo, branch: value.branch as string | null, files };
+  return { is_repo: value.is_repo, branch: value.branch as string | null, files, truncated: value.truncated };
 }
 
 function validateRemoteGitDiff(value: Record<string, unknown>): GitDiff | null {

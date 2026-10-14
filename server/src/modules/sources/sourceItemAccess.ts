@@ -40,6 +40,15 @@ export function sourceItemFullContentReadClause(itemAlias: string, userParam: st
   )`;
 }
 
+/**
+ * Whether this reader is entitled to a connection's item: a live subscription
+ * (with Library enabled, when the read is a Library read), or historical
+ * eligibility — the item was first seen inside a window in which the reader
+ * was subscribed, and the connection still admits them. Unsubscribing stops
+ * new items and automatic profile facts, never the right to re-read what was
+ * delivered; losing the connection itself (archived, deleted, visibility
+ * narrowed, membership gone) ends both.
+ */
 export function sourceItemConnectionGateClause(itemAlias: string, userParam: string, libraryOnly: boolean): string {
   return `(
     ${itemAlias}.connection_id IS NULL
@@ -52,6 +61,57 @@ export function sourceItemConnectionGateClause(itemAlias: string, userParam: str
          AND scus_read.user_id = ${userParam}
          AND scus_read.status = 'subscribed'
          ${libraryOnly ? "AND scus_read.library_enabled = true" : ""}
+    )
+    OR ${sourceItemHistoricalEligibilityClause(itemAlias, userParam)}
+  )`;
+}
+
+/** The historical half of the gate above, on its own for callers that reason about it. */
+export function sourceItemHistoricalEligibilityClause(itemAlias: string, userParam: string): string {
+  return `EXISTS (
+    SELECT 1
+      FROM source_channel_user_subscriptions scus_hist
+      JOIN source_channels sch_hist
+        ON sch_hist.id = scus_hist.source_channel_id AND sch_hist.space_id = scus_hist.space_id
+      JOIN source_connections sc_hist
+        ON sc_hist.id = sch_hist.source_connection_id AND sc_hist.space_id = sch_hist.space_id
+     WHERE scus_hist.space_id = ${itemAlias}.space_id
+       AND sch_hist.source_connection_id = ${itemAlias}.connection_id
+       AND scus_hist.user_id = ${userParam}
+       AND scus_hist.status <> 'subscribed'
+       AND scus_hist.subscribed_at IS NOT NULL
+       AND scus_hist.unsubscribed_at IS NOT NULL
+       AND ${itemAlias}.first_seen_at >= scus_hist.subscribed_at
+       AND ${itemAlias}.first_seen_at < scus_hist.unsubscribed_at
+       AND sc_hist.deleted_at IS NULL
+       AND sc_hist.status <> 'archived'
+       AND sch_hist.status <> 'archived'
+       AND ${contentReadSql("source_connection", "sc_hist", userParam, { includeOversight: false })}
+  )`;
+}
+
+/**
+ * Whether an item may count as this reader's *interest evidence*: their own
+ * saved URL, or a connection they are subscribed to right now. Historical
+ * eligibility keeps the text readable; it does not keep feeding the profile.
+ */
+export function sourceItemProfileEvidenceClause(itemAlias: string, userParam: string): string {
+  return `(
+    ${itemAlias}.connection_id IS NULL
+    OR EXISTS (
+      SELECT 1 FROM source_connections sc_own
+       WHERE sc_own.space_id = ${itemAlias}.space_id AND sc_own.id = ${itemAlias}.connection_id
+         AND sc_own.owner_user_id = ${userParam}
+         AND sc_own.deleted_at IS NULL AND sc_own.status <> 'archived'
+    )
+    OR EXISTS (
+      SELECT 1
+        FROM source_channel_user_subscriptions scus_fact
+        JOIN source_channels sch_fact ON sch_fact.id = scus_fact.source_channel_id
+       WHERE scus_fact.space_id = ${itemAlias}.space_id
+         AND sch_fact.source_connection_id = ${itemAlias}.connection_id
+         AND scus_fact.user_id = ${userParam}
+         AND scus_fact.status = 'subscribed'
     )
   )`;
 }
