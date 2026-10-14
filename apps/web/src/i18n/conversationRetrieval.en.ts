@@ -7,6 +7,11 @@ export const conversationRetrievalEn = {
     hint: 'Search the knowledge base for each turn of this conversation. Attached material is used either way.',
     unavailable_until_started: 'Available once the conversation has started.',
     failed: 'The knowledge retrieval setting could not be saved.',
+    load_failed: 'The knowledge retrieval setting could not be loaded.',
+    retry: 'Retry',
+    room_hint: 'Search the knowledge base for {{agent}}\'s turns in this Room. Attached material is used either way.',
+    agent_on: '{{agent}} · Knowledge: on',
+    agent_off: '{{agent}} · Knowledge: off',
     domains: 'Search in',
     domain: {
       knowledge: 'Knowledge',

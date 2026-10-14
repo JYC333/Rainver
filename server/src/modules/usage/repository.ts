@@ -607,11 +607,10 @@ export class PgUsageRepository {
     const group = groupExpression(filters.groupBy ?? "provider", effectiveAccessLevelSql(filters));
     const where = buildWhere(filters);
     const params = where.params;
-    const rows = await this.db.query<AggregateRow & { group_total?: string | number }>(
+    const rows = await this.db.query<AggregateRow>(
       `SELECT
         ${group.keySql} AS group_key,
         ${group.labelSql} AS group_label,
-        count(*) OVER () AS group_total,
         ${aggregateSelectSql()}
        FROM token_usage_events e
        ${where.sql}
@@ -629,11 +628,20 @@ export class PgUsageRepository {
        ${where.sql}`,
       params,
     );
+    // The number of groups matched, counted apart from the page: a page past
+    // the end still knows how many there are.
+    const groupCount = await this.db.query<{ total: string | number }>(
+      `SELECT count(*) AS total
+         FROM (SELECT ${group.keySql}, ${group.labelSql}
+                 FROM token_usage_events e
+                 ${where.sql}
+                GROUP BY 1, 2) matched`,
+      params,
+    );
     return {
       totals: aggregateRowToBreakdown(totalRows.rows[0]).totals,
       items: rows.rows.map(aggregateRowToBreakdown),
-      // The number of groups matched, not of groups on this page.
-      total: intValue(rows.rows[0]?.group_total ?? 0),
+      total: intValue(groupCount.rows[0]?.total ?? 0),
     };
   }
 
@@ -808,12 +816,10 @@ export class PgUsageRepository {
       session_path: string | null;
       session_name: string | null;
       run_ids: string[] | null;
-      group_total: string | number;
     }>(
       `SELECT
         COALESCE(session_id, external_session_id, 'unknown') AS group_key,
         COALESCE(session_name, session_path, session_id, external_session_id, 'Unknown session') AS group_label,
-        count(*) OVER () AS group_total,
         session_id,
         external_session_id,
         session_path,
@@ -837,7 +843,14 @@ export class PgUsageRepository {
         totals: aggregateRowToBreakdown(row).totals,
         last_seen_at: dateIsoOrNull(row.last_seen_at),
       })),
-      total: intValue(rows.rows[0]?.group_total ?? 0),
+      total: intValue((await this.db.query<{ total: string | number }>(
+        `SELECT count(*) AS total
+           FROM (SELECT 1
+                   FROM token_usage_events e
+                   ${where.sql}
+                  GROUP BY session_id, external_session_id, session_path, session_name) matched`,
+        where.params,
+      )).rows[0]?.total ?? 0),
       // Same rows and access level as the sessions themselves.
       totals: aggregateRowToBreakdown((await this.db.query<AggregateRow>(
         `SELECT 'all' AS group_key, 'All sessions' AS group_label, ${aggregateSelectSql()}

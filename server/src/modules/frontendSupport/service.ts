@@ -299,6 +299,7 @@ export class PgFrontendSupportService {
           preview: boolean;
           created_by_run_id: string | null;
           visibility: string;
+          awaiting_revision: boolean;
         }> }
       : await this.db.query<{
           id: string;
@@ -312,10 +313,16 @@ export class PgFrontendSupportService {
           preview: boolean;
           created_by_run_id: string | null;
           visibility: string;
+          awaiting_revision: boolean;
         }>(
           `SELECT p.id, p.title, p.proposal_type, p.status, p.risk_level,
                   p.urgency, p.review_deadline, p.expires_at, p.preview,
-                  p.created_by_run_id, p.visibility
+                  p.created_by_run_id, p.visibility,
+                  -- A maintenance update the person has not revised yet: its
+                  -- accept is refused until they do (operator_revision).
+                  (p.proposal_type = 'memory_update'
+                    AND p.payload_json->>'requires_operator_edit' = 'true'
+                    AND p.payload_json->'operator_edit'->>'edited_by_user_id' IS NULL) AS awaiting_revision
              FROM proposals p
              LEFT JOIN runs run_for_instructed
                ON run_for_instructed.id = p.created_by_run_id
@@ -345,6 +352,7 @@ export class PgFrontendSupportService {
           preview: Boolean(row.preview),
           created_by_run_id: row.created_by_run_id,
           visibility: row.visibility,
+          awaiting_revision: Boolean(row.awaiting_revision),
         };
       }),
     };
@@ -608,10 +616,12 @@ export class PgFrontendSupportService {
            WHERE si.space_id = $1 AND si.deleted_at IS NULL
              AND COALESCE(suis.read_status, 'unread') = 'unread'
              AND COALESCE(suis.library_status, 'new') NOT IN ('ignored', 'archived')
-             AND ${sourceItemReadableClause("si", "$2", true)}) AS pending_reading_items,
+             -- Personal reading: a Space admin's oversight of other members'
+             -- private items is not their reading list.
+             AND ${sourceItemReadableClause("si", "$2", true, { includeOversight: false })}) AS pending_reading_items,
          (SELECT count(*)::text FROM source_items si
            WHERE si.space_id = $1 AND si.deleted_at IS NULL AND si.created_at >= date_trunc('day', now())
-             AND ${sourceItemReadableClause("si", "$2", true)}) AS new_items_today,
+             AND ${sourceItemReadableClause("si", "$2", true, { includeOversight: false })}) AS new_items_today,
          (SELECT count(*)::text FROM extraction_jobs
            WHERE space_id = $1 AND status = 'pending') AS pending_extraction_jobs,
          (SELECT count(*)::text FROM extraction_jobs

@@ -664,6 +664,9 @@ export class SourceExtractionWorker {
         WHERE space_id = $1
           AND deleted_at IS NULL
           AND project_id IS NOT DISTINCT FROM $12
+          -- A personal item is unique per owner: another member's private
+          -- copy of the same URL is theirs, never this connection's.
+          AND ($12::varchar IS NOT NULL OR owner_user_id IS NOT DISTINCT FROM $13::varchar)
           AND (
             ($2::text IS NOT NULL AND canonical_uri = $3::text)
             OR ($4::text IS NOT NULL AND metadata_json->>'arxiv_id' = $4::text)
@@ -685,6 +688,7 @@ export class SourceExtractionWorker {
         input.connection.id,
         input.contentHash,
         input.connection.project_id,
+        input.connection.owner_user_id,
       ],
     );
     const policy = capturePolicyScanState(input.connection.capture_policy);

@@ -95,9 +95,12 @@ for jobs, rules, and troubleshooting.
   subscription. `GET /api/v1/sources/followed` lists other members' channels
   the person follows or has left, and
   `POST /api/v1/sources/channels/:channelId/subscription` leaves (`muted`) or
-  follows again (`subscribed`); every transition maintains the subscription
-  window (`subscribed_at`/`unsubscribed_at`) that historical reading
-  eligibility reads (`modules/library.md`). An explicit Information Digest "Never this direction again"
+  follows again (`subscribed`); every transition opens or closes a
+  `source_channel_subscription_windows` period, which historical reading
+  eligibility reads (`modules/library.md`). A personal item is unique per
+  owner: extraction, custom-source and external-discovery materialization
+  reuse only the writer's own personal copy of a URL (or the Project's copy),
+  never another member's. An explicit Information Digest "Never this direction again"
   block may dismiss only still-pending system recommendations linked to that
   blocked domain; it never changes an accepted subscription.
 - Materialization of bounded external-discovery samples as owner-private,
@@ -145,6 +148,9 @@ may link to a ProjectOperation for product-level progress.
 
 The item budget is reserved page by page. A Project Research operation owns one
 total shared by its sibling monitor plans; a standalone plan owns its own.
+Every plan mutation (dispatch, reconcile, start, retry, continuation) takes the
+operation row first, then segment rows, then the plan row, so a reconcile and
+a page continuation finishing together never deadlock.
 Under the operation (or plan) lock, used budget is every segment's imported
 items, including the pages a still-running segment has read
 (`window.consumed_items`), and each other running segment reserves its current
@@ -729,12 +735,17 @@ attempts (the second one minute and the third five minutes after a failure),
 then one automatic recovery round of three more at thirty minutes, two hours
 and six hours, so at most six attempts per failure episode. Rows failing
 together share an `episode_id`; `attempt_count` is cumulative within it. A
-condition wait spends no attempt and has no countdown. The egress gate
+success or a skip ends the wait: the row leaves its retry schedule and episode
+(`wait_reason`, `next_retry_at` and `episode_id` cleared), so a retry that
+succeeds is saved once and never offered again. A condition wait spends no
+attempt and has no countdown. The egress gate
 (`assertSourcePromptEgressAllowed`) names its refusal with a stable `code`, so
 a Space-wide egress refusal and a missing Source consent wait separately.
 
 Consent and egress are rechecked on every execution. The annotation sweep calls
-`recoverWaiting` for Spaces with condition waits: it resolves the annotator and
+`recoverWaiting` for Spaces with condition waits, a bounded batch per sweep
+taken in Space-id order after the previous batch (wrapping round), so every
+waiting Space is visited in turn however many are stuck: it resolves the annotator and
 re-runs the egress gate per waiting connection without a model call, and
 `requeueParked` reopens only the rows whose condition now holds, filtered by
 reason, item, connection, episode and responsible person, and bounded by a
@@ -746,8 +757,11 @@ the count restarts), at most `ANNOTATION_MANUAL_RETRY_LIMIT` rows, and queues
 one annotation job.
 
 `SourceAnnotationRecoveryNotifier` keeps one updatable private operational
-alert (`source_annotation_recovery`) per episode and responsible person, the
-connection owner or else the item owner. It carries the reason, the count of
+alert (`source_annotation_recovery`) per episode, wait reason and responsible
+person, the connection owner or else the item owner. Every sweep re-syncs it,
+but it returns to unread only when what it says changed (count, reason, next
+retry); a notice the person read or dismissed stays so while the episode is
+unchanged. It carries the reason, the count of
 that person's affected items, the next absolute retry time only while one is
 scheduled, and the manual retry pointer; it is archived once the episode has
 no waiting rows. `GET /api/v1/spaces/:spaceId/source-annotation/episodes`

@@ -1,6 +1,6 @@
 import type { digestReportsEn } from './digestReports.en'
 
-type Shape<T> = { [K in keyof T]: string }
+type Shape<T> = { [K in keyof T]: T[K] extends string ? string : Shape<T[K]> }
 
 /** 摘要日期、补生成与标注恢复的中文文案。 */
 export const digestReportsZhCN = {
@@ -8,6 +8,10 @@ export const digestReportsZhCN = {
   scheduled: '计划生成的摘要',
   backfilled: '补生成于 {{when}}',
   backfill_note: '依据当前保留的材料补生成，不含"常规视野之外"部分。',
+  missing_reason: {
+    not_generated: '这一天没有生成摘要。可以用现在保留的材料补生成。',
+    day_not_complete: '按摘要的时区，这一天还没有结束；摘要会在这一天结束后生成。',
+  },
   missing_title: '{{date}} 没有摘要',
   backfill: '补生成这一天',
   backfilling: '正在补生成…',

@@ -608,11 +608,21 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
        VALUES ($1, 'Provider Home', 'personal', now(), now())`,
       [PROVIDER_HOME_SPACE],
     );
+    // Declared local in this Space, where it is used.
     await db.pool.query(
       `INSERT INTO model_providers (
          id, space_id, owner_user_id, name, provider_type, base_url, enabled,
          capabilities_json, config_json, created_at, updated_at
-       ) VALUES ('provider-1',$1,$2,'Shared','openai_compatible','https://api.example.test/v1',TRUE,
+       ) VALUES ('provider-1',$1,$2,'Local','openai_compatible','https://api.example.test/v1',TRUE,
+         '{}'::jsonb,'{"deployment":"trusted_local","openai_compatible_base_url":"http://localhost:8080/v1"}'::jsonb,now(),now())`,
+      [SPACE, OWNER],
+    );
+    // The same declaration made in another Space and granted in here.
+    await db.pool.query(
+      `INSERT INTO model_providers (
+         id, space_id, owner_user_id, name, provider_type, base_url, enabled,
+         capabilities_json, config_json, created_at, updated_at
+       ) VALUES ('provider-2',$1,$2,'Elsewhere','openai_compatible','https://api.example.test/v1',TRUE,
          '{}'::jsonb,'{"deployment":"trusted_local","openai_compatible_base_url":"http://localhost:8080/v1"}'::jsonb,now(),now())`,
       [PROVIDER_HOME_SPACE, OWNER],
     );
@@ -620,7 +630,8 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       `INSERT INTO model_provider_space_grants (
          id, provider_id, space_id, owner_user_id, granted_by_user_id,
          enabled, is_default, created_at, updated_at
-       ) VALUES ('provider-grant-1','provider-1',$1,$2,$2,TRUE,FALSE,now(),now())`,
+       ) VALUES ('provider-grant-1','provider-1',$1,$2,$2,TRUE,FALSE,now(),now()),
+                ('provider-grant-2','provider-2',$1,$2,$2,TRUE,FALSE,now(),now())`,
       [SPACE, OWNER],
     );
     await updateSpaceRetrievalSettings(db.pool, SPACE, { external_egress_enabled: false }, {
@@ -665,6 +676,12 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       type: "provider_credential_channel",
       id: "provider-1",
     });
+    // Nobody in this Space vouched for the granted one: with external egress
+    // off, running on it is refused.
+    await expect(new ExecutionControlSnapshotRepository(db.pool).createForRun({
+      ...run,
+      runtime_profile_snapshot_json: { ...run.runtime_profile_snapshot_json as Record<string, unknown>, model_provider_id: "provider-2" },
+    } as RunRecord, resolved)).rejects.toThrow(/external model egress/);
   });
 
   it("fails subscription CLI preflight when Space external egress is disabled", async () => {

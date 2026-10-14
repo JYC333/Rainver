@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { ExecutionControlSnapshot } from "@rainver/protocol";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
-import { WorkContextService, runRetrievalSwitchedOn, workContextRetrievalSwitchedOn } from "../src/modules/runtimeContext/workContextService.js";
+import { WorkContextService, runRetrievalChoice, workContextRetrievalSwitchedOn } from "../src/modules/runtimeContext/workContextService.js";
 import { PgRetrievalIntentProvider } from "../src/modules/runtimeContext/productionAcquisition.js";
 import type { RuntimeContextAuthoritySnapshot } from "../src/modules/runtimeContext/acquisitionComposition.js";
 import type { RuntimeContextPlanningRequest } from "../src/modules/runtimeContext/planningService.js";
@@ -125,8 +125,8 @@ describe("conversation knowledge-retrieval switch (real Postgres)", () => {
     if (!db.available) return;
     const session = await directSession(USER);
     // No execution control snapshot names a setup for these Runs.
-    await expect(runRetrievalSwitchedOn(db.pool, { id: randomUUID(), space_id: SPACE, session_id: session })).resolves.toBe(false);
-    await expect(runRetrievalSwitchedOn(db.pool, { id: randomUUID(), space_id: SPACE, session_id: null })).resolves.toBe(true);
+    await expect(runRetrievalChoice(db.pool, { id: randomUUID(), space_id: SPACE, session_id: session })).resolves.toEqual({ switchedOn: false, domains: [] });
+    await expect(runRetrievalChoice(db.pool, { id: randomUUID(), space_id: SPACE, session_id: null })).resolves.toEqual({ switchedOn: true, domains: [] });
   });
 
   it("keeps the opt-out default for non-conversation scopes", () => {

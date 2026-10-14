@@ -88,6 +88,17 @@ describe('Source detail', () => {
     expect(await screen.findByRole('heading', { name: 'arXiv Research' })).toBeInTheDocument()
   })
 
+  it('keeps the source on screen and says so when a later refresh fails', async () => {
+    renderPage()
+    expect(await screen.findByRole('heading', { name: 'arXiv Research' })).toBeInTheDocument()
+    vi.mocked(sourcesApi.channels).mockRejectedValueOnce(new Error('Network unavailable'))
+    vi.mocked(sourcesApi.scanChannel).mockResolvedValue({ id: 'job-1' } as never)
+    vi.mocked(sourcesApi.runJob).mockResolvedValue({} as never)
+    await userEvent.click(screen.getAllByRole('button', { name: /Scan/ })[0]!)
+    expect(await screen.findByText(/This source could not be refreshed/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'arXiv Research' })).toBeInTheDocument()
+  })
+
   it('still says a source is missing when it loads and is not there', async () => {
     vi.mocked(sourcesApi.channels).mockResolvedValue([])
     renderPage()

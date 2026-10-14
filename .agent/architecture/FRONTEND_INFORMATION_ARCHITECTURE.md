@@ -63,16 +63,35 @@ a successful preview for the current Run and input.
 The frontend owns presentation locale. `apps/web/src/i18n/` uses `react-i18next`
 with bundled English and Simplified Chinese resources, English as the default
 and fallback, and a browser-local `rainver:locale` choice that survives logout.
-Settings and public authentication pages expose the switch. The Shell,
-navigation, Space switcher, Home, quick capture, Settings, public authentication,
-account security, Conversation action previews, and Evolution pages use it.
+Settings and public authentication pages expose the switch. Translated today:
+the Shell, navigation, Space switcher, Home, quick capture, Settings, public
+authentication, account security, Evolution, conversations (preflight,
+composer, turns, discussions, run controls, session config, retrieval switch),
+the Agent chat panel, Sessions, Publications, Prompts, Capabilities, Plugins,
+Project Files and Folder settings, Network Profiles, the Job Queue, Activity
+(queue, detail, inbox), the Knowledge notes tree and overview, focus areas,
+digests and daily reports, the error boundary, role gates, and the shared
+dialog, date picker, pagination, graph, editor and one-time link components.
 Other module copy is migrated by its owning page. Add page dictionaries under
 `apps/web/src/i18n/` with matching English and Chinese keys, then register them
-in `index.ts` and render through `useAppTranslation`. The catalog test checks
-registered keys and interpolation placeholders across both languages. Locale
-changes do not alter route identifiers, API contracts, server-authored data,
-or authorization.
-User-authored and server-authored text is displayed in its original language.
+in `index.ts` and render through `useAppTranslation`; code outside components
+(utilities, class components' helpers, async callbacks) uses the same `i18n`
+instance's `t`, never a second translation state. Plurals use i18next's
+`_one`/`_other` keys with `count`; English plurals are never concatenated. The
+catalog test checks registered keys and interpolation placeholders across both
+languages.
+Dates, numbers, sizes and relative times go through `apps/web/src/i18n/format.ts`
+(`formatDateTime`, `formatDate`, `formatTime`, `formatDateParts`,
+`formatCalendarDay`, `formatNumber`, `formatRelativeTime`, `formatBytes`), which
+read the current locale from the one instance. A value that belongs to a business
+day passes that day's time zone (or, for a stored calendar day, uses
+`formatCalendarDay`), so a locale change rewords a date but never moves a digest
+or capture to another day. The official diary plugin receives the locale through
+its host's `DiaryWebHost.useLocale()` and keeps its own message table.
+Locale changes do not alter route identifiers, API contracts, server-authored
+data, or authorization. User-authored and server-authored text, and protocol
+codes shown as values, are displayed as they are; the UI words a server reason
+from its code.
 
 The frontend should guide users through the product loop rather than act as an app gallery.
 The goal is a working system the user interacts with daily — not a navigation menu of features.
@@ -327,7 +346,7 @@ Managed host workspaces are surfaced consistently across the Agents and Rooms ro
 | **Knowledge** | Enabled | First-level unified module (rail label "Knowledge"; route `/knowledge`). `/knowledge` redirects to the last-used section (default `/knowledge/notes`); `/knowledge/home` is an optional overview hub, never the forced landing. Sub-areas switch via an in-header breadcrumb (no scene sidebar): **Notes** (working-knowledge Area — configurable collection tree + open-note tabs), **Wiki** (canonical, KnowledgeItem-backed, `/knowledge/wiki`), **Sources** (backend source CRUD exists; current frontend is list-only evidence browsing), **Cards**. The note editor's link picker offers every object type that is both linkable and searchable — Note, Wiki, Source, Claim, Question — built from `NOTE_LINK_TARGET_TYPE_VALUES` rather than a hand-maintained array, and guarded by `server/test/noteLinkTargetsGuard.test.ts`. Candidates for the search-backed kinds come from `POST /api/v1/knowledge/search`. `note_links` stays navigational and carries no graph authority. The reverse direction is a "jot a note" action on Research Area reading-list cards: `POST /api/v1/knowledge/notes/jot` creates (or appends to) a note and records the link in one call, and `GET /api/v1/knowledge/objects/:objectId/note-links` answers what notes cite a given object. Jotting is offered only on rows with an `object_id` — a corpus row's `source_item_id` / `evidence_id` targets have no `space_objects` row and cannot be a link endpoint. |
 | **Graph** | Enabled | Space-scoped relationship projection at `/graph`; renders the shared `GraphProjection` contract through `apps/web/src/components/graph/`, reads core `/api/v1/graph/*`, persists per-user view state under `scope_key='core:graph'`, `core:graph:<lens_id>`, `project:graph:<project_id>`, or `project:graph:<project_id>:<lens_id>`, and remains read-only over visible `space_objects` / `object_relations`. `?project_id=` narrows the graph to active object-backed Project corpus rows; `?lens_id=academic_citation_v1` applies the academic citation/authorship lens. |
 | **Cards** | `enabled: false, visible: false` | Standalone `/cards` hidden. Knowledge › Cards is an empty-state placeholder. Schema exists; no review API. |
-| Time | `planned: true` | Stub page only, labelled **Planned** (`modules/time/TimePage.tsx`); no backend, nothing recorded |
+| Time | `enabled: true, visible: true, planned: true` | Stub page only, labelled **Planned** (`modules/time/TimePage.tsx`); no backend, nothing recorded |
 
 Do not add a Global Rail item for a module whose backend surface does not exist.
 

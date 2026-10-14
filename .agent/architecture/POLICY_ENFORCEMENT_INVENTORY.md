@@ -203,9 +203,9 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
   `inquiry.thread.list`, `inquiry.iteration.record`, `inquiry.knowledge.promote`, `task.create`,
   `proposal.decide`, `task.report`, `task.handoff`, `task.stage.advance`, `artifact.declare`,
   `task.complete`, `handoff.write`, `task.request_review`.
-- **wired_via_proposal** (29): `lifecycle_status=wired_via_proposal` — enforced exclusively via the `proposal.apply`
+- **wired_via_proposal** (28): `lifecycle_status=wired_via_proposal` — enforced exclusively via the `proposal.apply`
   gate (`PolicyGateway.enforceProposalApply()`).
-  Actions: `memory.create`, `memory.update`, `memory.archive`, `policy.change`, `knowledge.create`,
+  Actions: `memory.create`, `memory.update`, `memory.archive`, `knowledge.create`,
   `knowledge.update`, `knowledge.archive`, `claim.create`, `claim.update`, `claim.archive`,
   `object_relation.create`, `object_relation.delete`, `object_profile.create`,
   `object_profile.update`, `object_profile.deprecate`, `object_profile.archive`,
@@ -225,7 +225,7 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
 - `fail_closed` — preferred enforcement raises `PolicyAuditPersistError` if durable persistence fails; the sensitive action must not proceed.
   Actions with `fail_closed`: `authorization.request.create`, `run.spawn_child`, `runtime.use_credential`,
   `runtime_context_policy.change`, `work_context_setup.change`, `project_folder.write_patch`,
-  `artifact.persist`, `proposal.apply`, `policy.change`, `skill.import`, `skill.convert`,
+  `artifact.persist`, `proposal.apply`, `skill.import`, `skill.convert`,
   `capability.enable`, `capability.disable`, `capability.update`, `runtime_skill.binding_update`,
   `input_resource.read`, `input_resource.search`, `project_folder.apply_patch`, `automation.create`,
   `automation.fire`, `automation.update`, `inquiry.thread.create`, `research.acquisition.start`,
@@ -254,7 +254,7 @@ fail closed via `unknown_policy_action` DENY if ever passed to `engineCheck` or
 |-------|-----------------|-----|
 | `context` | Decision inputs consumed by `checkHardInvariants` and `engineCheck` | Keys are flattened into the guard context. Fields such as `agent_status`, `tool_name`, `trigger_origin`, `derived_from_personal_memory_grant`, `raw_private_memory_included`, `target_visibility`, `target_space_id` must appear here. |
 | `metadata_json` | Sanitized audit-only metadata written to `PolicyDecisionRecord` | Never grants permission or satisfies approval. Forbidden sentinel fields in this audit bag may still trigger defensive hard-DENY behavior, such as `personal_context_block` or approval-proof flags. Dangerous fields are stripped by `sanitizePolicyMetadata()` (`policy/sanitizer.ts`). |
-| `payload` | Proposal/policy payload | Only `checkHardInvariants` inspects payload (approval-proof flag check for `proposal.apply` / `policy.change`). Not a decision input for any other action. |
+| `payload` | Proposal payload | Only `checkHardInvariants` inspects payload (approval-proof flag check for `proposal.apply`). Not a decision input for any other action. |
 
 ### WIRED_DIRECT action inventory
 
@@ -320,7 +320,6 @@ is the actual fail_closed audit and approval boundary for all of these actions.
 | `memory.create` | `proposal.apply` gate | The proposal route. No direct PolicyGateway call site. |
 | `memory.update` | `proposal.apply` gate | Memory updates require proposal approval. No direct PolicyGateway call site. |
 | `memory.archive` | `proposal.apply` gate | Memory archive requires proposal approval. No direct PolicyGateway call site. |
-| `policy.change` | `proposal.apply` gate | Requires admin/owner role. No direct PolicyGateway call site. Durable audit occurs through `proposal.apply`. |
 | `knowledge.create` | `proposal.apply` gate | `knowledge_create` creates active KnowledgeItem rows only after proposal acceptance. No direct PolicyGateway call site. |
 | `knowledge.update` | `proposal.apply` gate | `knowledge_update` creates a new KnowledgeItem version and marks the previous row superseded. No direct PolicyGateway call site. |
 | `knowledge.archive` | `proposal.apply` gate | `knowledge_archive` archives an item. No direct PolicyGateway call site. |

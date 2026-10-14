@@ -35,9 +35,10 @@ export const InformationDigestMissingSchema = z.object({
   timezone: z.string().min(1),
   period_start_utc: ISODateTimeSchema,
   period_end_utc: ISODateTimeSchema,
-  /** False while the day has not ended in the digest's timezone. */
+  /** Why the day has no snapshot: it has not ended yet, or nothing was generated for it. */
+  reason: z.enum(["day_not_complete", "not_generated"]),
+  /** Whether this viewer may request a backfill now: the day is over and they may write to the scope. */
   backfill_available: z.boolean(),
-  explanation: z.string(),
 });
 export type InformationDigestMissing = z.infer<typeof InformationDigestMissingSchema>;
 

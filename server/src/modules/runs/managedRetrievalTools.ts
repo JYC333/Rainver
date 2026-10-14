@@ -25,7 +25,8 @@ import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynt
 import { RetrievalToolService } from "../retrieval/tool/service.js";
 import type { RetrievalToolPolicyAction } from "../retrieval/tool/policy.js";
 import type { RunRecord } from "./repository.js";
-import { runRetrievalSwitchedOn } from "../runtimeContext/workContextService.js";
+import { runRetrievalChoice } from "../runtimeContext/workContextService.js";
+import type { WorkRetrievalDomain } from "@rainver/protocol";
 
 export interface RetrievalToolDeps {
   retrievalToolService?: RetrievalToolService | null;
@@ -51,7 +52,7 @@ const RETRIEVAL_TOOL_MODES = ["exact", "lexical", "hybrid", "hybrid_rerank"] as 
 const MAX_MODEL_RESULT_ITEMS = 8;
 const MAX_MODEL_SNIPPET_CHARS = 500;
 
-type RetrievalToolDomain = "knowledge" | "memory" | "project_public_summary" | "source";
+export type RetrievalToolDomain = "knowledge" | "memory" | "project_public_summary" | "source";
 
 interface RetrievalToolDomainSpec {
   domain: RetrievalToolDomain;
@@ -158,9 +159,13 @@ export async function resolveRetrievalToolBinding(
   const effectiveMode = runMode ?? (settings.retrievalToolMode === "off" ? null : settings.retrievalToolMode);
   if (!effectiveMode) return null;
   // A conversation whose person left knowledge retrieval off gets no search
-  // tools either: the switch governs real retrieval, not only the planner's.
-  if (!(await runRetrievalSwitchedOn(pool, run))) return null;
-  const enabledSpecs = enabledToolSpecs(run);
+  // tools either, and one narrowed to some domains gets only those domains'
+  // tools: the switch governs real retrieval, not only the planner's.
+  const choice = await runRetrievalChoice(pool, run);
+  if (!choice.switchedOn) return null;
+  const allowedDomains = new Set(retrievalToolDomainsForChoice(enabledToolSpecs(run).map((spec) => spec.domain), choice.domains));
+  const enabledSpecs = enabledToolSpecs(run).filter((spec) => allowedDomains.has(spec.domain));
+  if (enabledSpecs.length === 0) return null;
   const store = resolveProviderCommandStore(config);
   const egressPolicy = { externalEgressEnabled: settings.externalEgressEnabled };
   const services = Object.fromEntries(
@@ -454,6 +459,25 @@ function toolSpecForName(name: string): RetrievalToolDomainSpec | null {
     if (name === spec.searchTool || name === spec.briefTool) return spec;
   }
   return null;
+}
+
+/** The conversation domain each search tool reads; inquiry has no tool of its own. */
+const TOOL_WORK_DOMAIN: Record<RetrievalToolDomain, WorkRetrievalDomain> = {
+  knowledge: "knowledge",
+  memory: "memory",
+  project_public_summary: "projects",
+  source: "sources",
+};
+
+/**
+ * The tool domains a conversation's retrieval choice keeps: every one when
+ * it names no domain, otherwise only the chosen domains' tools.
+ */
+export function retrievalToolDomainsForChoice(
+  toolDomains: readonly RetrievalToolDomain[],
+  chosen: readonly WorkRetrievalDomain[],
+): RetrievalToolDomain[] {
+  return toolDomains.filter((domain) => chosen.length === 0 || chosen.includes(TOOL_WORK_DOMAIN[domain]));
 }
 
 function enabledToolSpecs(run: RunRecord): RetrievalToolDomainSpec[] {

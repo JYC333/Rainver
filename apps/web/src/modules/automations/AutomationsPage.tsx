@@ -12,6 +12,8 @@ import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Badge, StatusBadge } from '../../components/ui/badge'
 import { errMsg } from '../../lib/utils'
+import { formatDateTime } from '../../i18n/format'
+import i18n, { useAppTranslation } from '../../i18n'
 
 const BROWSER_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
@@ -25,9 +27,8 @@ const CRON_PRESETS: { label: string; expr: string }[] = [
 const fieldLabel = 'text-[11px] font-medium text-muted-foreground uppercase tracking-wider'
 const selectCls = 'flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm'
 
-function fmt(dt: string | null): string {
-  if (!dt) return '—'
-  try { return new Date(dt).toLocaleString() } catch { return dt }
+function fmt(dt: string | null | undefined) {
+  return formatDateTime(dt)
 }
 
 function cfgString(cfg: Record<string, unknown> | null, key: string): string {
@@ -50,17 +51,8 @@ function automationTarget(auto: AutomationOut): AutomationTargetType {
   return (AUTOMATION_TARGET_TYPES as readonly string[]).includes(target) ? target as AutomationTargetType : 'agent_run'
 }
 
-const TARGET_LABELS: Record<AutomationTargetType, string> = {
-  agent_run: 'agent run',
-  workflow: 'workflow',
-  knowledge_retrieval_maintenance: 'knowledge maintenance',
-  context_ops_review_cycle: 'context ops review cycle',
-  information_digest: 'daily digest',
-  autonomous_tick: 'autonomous tick',
-}
-
 function shortTargetLabel(target: AutomationTargetType): string {
-  return TARGET_LABELS[target]
+  return i18n.t(`management_ui.automations.target.${target}`)
 }
 
 /** The targets whose Project binding a person can change here; the server refuses it for the rest. */
@@ -336,6 +328,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
   projects: Project[]
   onChanged: (updated?: AutomationOut) => void
 }) {
+  const { t } = useAppTranslation()
   const [busy, setBusy] = useState(false)
   const [projectDraft, setProjectDraft] = useState(auto.project_id ?? '')
   const [savingProject, setSavingProject] = useState(false)
@@ -444,9 +437,9 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
             : target === 'context_ops_review_cycle'
             ? `Context Review Cycle report${cfgBool(auto.config_json, 'create_packets') ? ' + review packets' : ''} · memory ${cfgBoolDefault(auto.config_json, 'include_memory_maintenance', true) ? 'on' : 'off'}`
             : target === 'information_digest'
-            ? `Daily digest${auto.project_id ? ' for its Project' : ' for its owner'} · system-managed`
+            ? (auto.project_id ? t('management_ui.automations.digest_project') : t('management_ui.automations.digest_personal'))
             : target === 'autonomous_tick'
-            ? 'Autonomous work survey · system-managed'
+            ? t('management_ui.automations.autonomous')
             : `Private report${cfgBool(auto.config_json, 'create_packet') ? ' + proposal packet' : ''}`}
         </p>
       )}
@@ -471,7 +464,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
                 // a persona write on exactly that difference.
                 const result = await automationsApi.fire(auto.id)
                 if (result.skipped) toast.info(result.skip_reason ? `Skipped — ${result.skip_reason}` : 'Skipped')
-                else toast.success(spawnsRuns(target) ? 'Run queued' : 'Completed')
+                else toast.success(spawnsRuns(target) ? t('management_ui.automations.run_queued') : t('management_ui.automations.completed'))
                 onChanged()
               } catch (err) {
                 toast.error(errMsg(err))
@@ -479,7 +472,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
                 setBusy(false)
               }
             }}>
-            <Play className="size-3.5 mr-1" /> Run now
+            <Play className="size-3.5 mr-1" /> {t('management_ui.automations.run_now')}
           </Button>}
           {auto.status === 'active' ? (
             <Button size="sm" variant="outline" disabled={busy}

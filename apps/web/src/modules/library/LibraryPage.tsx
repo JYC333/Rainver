@@ -30,6 +30,7 @@ import { InformationDigestView } from './InformationDigestView'
 import { AnnotationRecoveryNotice, DigestDayNav, DigestMissing, DigestProvenance } from './DigestDay'
 import { useAppTranslation } from '../../i18n'
 import { InterestProfileControls } from './InterestProfileControls'
+import { formatCalendarDay } from '../../i18n/format'
 
 const ITEM_PAGE_SIZE = 30
 const BRIEF_PAGE_SIZE = 10
@@ -65,11 +66,7 @@ const TYPE_VIEW_COPY: Record<LibraryItemTypeFilter, { title: string; emptyTitle:
 }
 
 function fmtDate(date: string): string {
-  return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-  })
+  return formatCalendarDay(date)
 }
 
 export default function LibraryPage() {
@@ -462,7 +459,11 @@ export function LibraryDigestsPage() {
   const [profile, setProfile] = useState<InterestProfileSnapshot | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
 
+  // Fast prev/next fires overlapping loads: only the latest may land, so the
+  // day shown is always the day asked for.
+  const loadRequest = useRef(0)
   const load = useCallback(async () => {
+    const request = ++loadRequest.current
     if (!activeSpaceId) {
       setBriefings([])
       setBriefingTotal(0)
@@ -478,6 +479,7 @@ export function LibraryDigestsPage() {
         informationDigestsApi.profile(activeSpaceId),
         projectsApi.list({ status: 'active', limit: 200 }),
       ])
+      if (request !== loadRequest.current) return
       if (briefingResult.status === 'fulfilled') {
         setBriefings(briefingResult.value.items)
         setBriefingTotal(briefingResult.value.total)
@@ -488,13 +490,18 @@ export function LibraryDigestsPage() {
         setDaily(dailyResult.value)
         const result = dailyResult.value
         if (day === null) setLatestDay(result.status === 'available' ? result.digest.digest_date : result.digest_date)
+      } else {
+        // The day could not be read: say so rather than keep showing the
+        // previous day under the newly selected one.
+        setDaily(null)
+        toast.error(errMsg(dailyResult.reason))
       }
       if (profileResult.status === 'fulfilled') setProfile(profileResult.value)
       setProjects(projectResult.status === 'fulfilled' ? projectResult.value.items : [])
     } catch (e) {
-      toast.error(errMsg(e))
+      if (request === loadRequest.current) toast.error(errMsg(e))
     } finally {
-      setLoading(false)
+      if (request === loadRequest.current) setLoading(false)
     }
   }, [activeSpaceId, briefingOffset, day])
 

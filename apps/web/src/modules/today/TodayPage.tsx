@@ -15,6 +15,7 @@ import { ScopeBadge } from '../../components/ScopeBadge'
 import { EmptyState } from '../../components/ui/empty-state'
 import { codePatchAcceptOptions } from '../memory/codePatchConfirm'
 import { notifyReviewAttentionChanged } from '../../core/reviewAttention'
+import { formatDateParts, formatDateTime } from '../../i18n/format'
 
 /**
  * Space Today — the space-scoped dashboard for ONE concrete Space (the active Space).
@@ -30,7 +31,7 @@ function TodaySummaryCard({ stats }: { stats: Stat[] }) {
       <div className="flex items-center justify-between mb-3">
         <span className="text-[11px] font-bold tracking-[.1em] uppercase text-muted-foreground">Today</span>
         <span className="text-[11px] text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>
-          {new Date().toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
+          {formatDateParts(new Date(), { weekday: 'short', month: 'short', day: 'numeric' })}
         </span>
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -74,7 +75,7 @@ function ProductLoopStrip({ runs, tasks, proposals }: { runs: HomeRunSummaryItem
                     <ScopeBadge visibility={r.visibility} omitShared className="text-[9px] px-1 py-0" />
                     {r.mode === 'dry_run' && <PreviewBadge className="text-[9px] px-1 py-0" />}
                   </div>
-                  <div className="text-[10px] text-muted-foreground">{new Date(r.created_at).toLocaleString()}</div>
+                  <div className="text-[10px] text-muted-foreground">{formatDateTime(r.created_at)}</div>
                 </button>
               </li>
             ))}
@@ -124,7 +125,9 @@ function ProductLoopStrip({ runs, tasks, proposals }: { runs: HomeRunSummaryItem
 }
 
 function ProposalStatusCard({ proposals, onDecide }: { proposals: HomePendingProposalItem[]; onDecide: (proposal: HomePendingProposalItem, action: 'accept' | 'reject') => void }) {
-  const canQuick = (p: HomePendingProposalItem) => (p.proposal_type === 'memory_update' || p.proposal_type === 'code_patch') && p.status === 'pending'
+  // A maintenance update waiting for its revision is decided on its own page,
+  // where it can be revised; a quick accept here would only be refused.
+  const canQuick = (p: HomePendingProposalItem) => (p.proposal_type === 'memory_update' || p.proposal_type === 'code_patch') && p.status === 'pending' && !p.awaiting_revision
   return (
     <div className="bg-card border border-border rounded-lg p-4 flex flex-col gap-3">
       <div className="flex items-baseline justify-between">
@@ -270,7 +273,7 @@ function RecentCard({ sessions, artifacts }: { sessions: Session[]; artifacts: H
             <button key={a.id} onClick={() => navigate(`/artifacts/${a.id}`)} className="flex items-center gap-2.5 py-2 text-left w-full hover:bg-accent rounded transition-colors -mx-1 px-1" style={{ borderTop: i === 0 ? 'none' : '1px solid color-mix(in oklch, var(--border) 50%, transparent)' }}>
               <div className="flex-1 min-w-0">
                 <div className="text-[11px] text-accent-foreground truncate">{a.title}</div>
-                <div className="text-[10px] text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>{a.artifact_type === 'daily_capture_report' ? 'daily report' : 'summary'} · {new Date(a.created_at).toLocaleString([], { month: 'short', day: 'numeric' })}</div>
+                <div className="text-[10px] text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>{a.artifact_type === 'daily_capture_report' ? 'daily report' : 'summary'} · {formatDateParts(a.created_at, { month: 'short', day: 'numeric' })}</div>
               </div>
             </button>
           ))}
@@ -278,7 +281,7 @@ function RecentCard({ sessions, artifacts }: { sessions: Session[]; artifacts: H
             <button key={s.id} onClick={() => navigate(`/sessions?open=${s.id}`)} className="flex items-center gap-2.5 py-2 text-left w-full hover:bg-accent rounded transition-colors -mx-1 px-1" style={{ borderTop: (i === 0 && recent.length === 0) ? 'none' : '1px solid color-mix(in oklch, var(--border) 50%, transparent)' }}>
               <div className="flex-1 min-w-0">
                 <div className="text-[12px] text-foreground truncate">{s.title ?? '(untitled)'}</div>
-                <div className="text-[10px] text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>{new Date(s.updated_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+                <div className="text-[10px] text-muted-foreground" style={{ fontFamily: 'var(--font-mono)' }}>{formatDateParts(s.updated_at, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
               </div>
             </button>
           ))}

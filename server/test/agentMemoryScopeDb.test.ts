@@ -23,6 +23,7 @@ import {
   MemoryProposalUpdateCommandSchema,
 } from "@rainver/protocol";
 import { ensureDefaultRuntimeProfile } from "./support/domainSeeds.js";
+import { memoryProposalDecider } from "../src/modules/memory/memoryProposalDecider.js";
 
 /**
  * The `agent` Memory scope: what an Agent knows about itself and about a Room
@@ -174,6 +175,15 @@ async function agentRows() {
   )).rows;
 }
 
+/** Who alone decides the (single) pending proposal, as the accept path derives it. */
+async function deciderOf() {
+  const row = (await db.pool.query<{ space_id: string; proposal_type: string; payload_json: Record<string, unknown>; created_by_agent_id: string | null }>(
+    `SELECT space_id, proposal_type, payload_json, created_by_agent_id FROM proposals WHERE space_id = $1 ORDER BY created_at DESC LIMIT 1`,
+    [SPACE],
+  )).rows[0]!;
+  return memoryProposalDecider(db.pool, row);
+}
+
 describe("what an Agent records about itself and its Room", () => {
   it("enforces the Agent scope shape and same-Space reference in Postgres", async () => {
     if (!db.available) return;
@@ -262,13 +272,10 @@ describe("who may change what an Agent has become", () => {
     const proposals = await db.pool.query<{ payload_json: Record<string, unknown>; created_by_user_id: string }>(
       `SELECT payload_json, created_by_user_id FROM proposals WHERE space_id = $1`, [SPACE],
     );
-    expect(proposals.rows[0]?.payload_json).toMatchObject({
-      target_scope: "agent",
-      agent_id: AGENT_ID,
-      // Only this person decides it — by identity, not by role, because a
-      // Space owner or admin satisfies any role it could require.
-      required_owner_user_id: OWNER,
-    });
+    expect(proposals.rows[0]?.payload_json).toMatchObject({ target_scope: "agent", agent_id: AGENT_ID });
+    // Only this person decides it — by identity, not by role, because a
+    // Space owner or admin satisfies any role it could require.
+    await expect(deciderOf()).resolves.toEqual({ required: true, userId: OWNER });
   });
 
   it("allows only one pending persona change from a manual Run", async () => {
@@ -348,11 +355,8 @@ describe("who may change what an Agent has become", () => {
     expect(result.modelResult, JSON.stringify(result.modelResult)).toMatchObject({ ok: true, outcome: "proposed" });
     expect(JSON.stringify(result.modelResult)).toMatch(/owner/i);
     expect(await agentRows()).toEqual([]);
-    const proposal = await db.pool.query<{ payload_json: Record<string, unknown> }>(
-      `SELECT payload_json FROM proposals WHERE space_id = $1`, [SPACE],
-    );
     // Still the owner's to decide, though someone else asked for it.
-    expect(proposal.rows[0]?.payload_json).toMatchObject({ required_owner_user_id: OWNER });
+    await expect(deciderOf()).resolves.toEqual({ required: true, userId: OWNER });
   });
 
   it("applies what the Agent concluded during its owner's own unattended work", async () => {
@@ -394,11 +398,8 @@ describe("who may change what an Agent has become", () => {
     const proposal = await db.pool.query<{ payload_json: Record<string, unknown> }>(
       `SELECT payload_json FROM proposals WHERE space_id = $1`, [SPACE],
     );
-    expect(proposal.rows[0]?.payload_json).toMatchObject({
-      target_scope: "agent",
-      agent_id: AGENT_ID,
-      required_owner_user_id: OWNER,
-    });
+    expect(proposal.rows[0]?.payload_json).toMatchObject({ target_scope: "agent", agent_id: AGENT_ID });
+    await expect(deciderOf()).resolves.toEqual({ required: true, userId: OWNER });
   });
 
   it("applies the same automation when it is the Agent owner's own", async () => {
@@ -822,8 +823,8 @@ describe("the boundaries around an Agent's own memory", () => {
     const proposal = (await db.pool.query<{ payload_json: Record<string, unknown>; created_by_user_id: string }>(
       `SELECT payload_json, created_by_user_id FROM proposals WHERE space_id = $1`, [SPACE],
     )).rows[0]!;
+    await expect(deciderOf()).resolves.toEqual({ required: true, userId: OWNER });
     expect(proposal.payload_json).toMatchObject({
-      required_owner_user_id: OWNER,
       // Who asked, since the proposal is attributed to who decides.
       requested_by_user_id: MEMBER,
     });

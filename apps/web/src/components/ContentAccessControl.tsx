@@ -26,6 +26,7 @@ import {
 } from './ui/dialog'
 import { Label } from './ui/label'
 import { Skeleton } from './ui/skeleton'
+import { formatDateTime } from '../i18n/format'
 
 interface ContentAccessControlProps {
   resourceType: string
@@ -270,7 +271,7 @@ export function ContentAccessControl({
                     {accessLogs.map(log => (
                       <div key={log.id} className="flex flex-wrap justify-between gap-2 text-sm">
                         <span>{log.viewer_display_name} · {log.access_type}</span>
-                        <span className="text-xs text-muted-foreground">{new Date(log.accessed_at).toLocaleString()}</span>
+                        <span className="text-xs text-muted-foreground">{formatDateTime(log.accessed_at)}</span>
                       </div>
                     ))}
                   </div>

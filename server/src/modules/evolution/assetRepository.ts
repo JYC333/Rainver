@@ -6,9 +6,11 @@ import {
   objectValue,
   optionalObject,
   optionalString,
+  withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
+import { lockEvolutionAssets } from "./assetLocks.js";
 import {
   assertAssetAllowsTargetScope,
   assertCanPinScope,
@@ -489,30 +491,41 @@ export class EvolvableAssetRepository {
     assertAssetAllowsTargetScope(asset, identity, scopeType, scopeId);
     const versionId = optionalString(body.version_id);
     if (!versionId) throw new HttpError(422, "version_id is required");
-    const version = await this.versionRow(assetId, versionId);
-    if (!version) throw new HttpError(422, "version_id does not reference a version of this asset");
-    if (version.status !== "approved") throw new HttpError(422, "Only an approved version can be pinned");
-    if (!versionServesScope(identity, { scopeType, scopeId }, version)) {
-      throw new HttpError(422, "version_id is not visible to the target pin scope");
-    }
-    // Archive any existing active pin for this exact scope target (same
-    // scope_type AND scope_id — not just scope_type, which would archive an
-    // unrelated project/agent/user's pin on the same asset), then insert a
-    // fresh row — keeps pin history instead of updating in place.
-    const now = new Date().toISOString();
-    await this.db.query(
-      `UPDATE evolvable_asset_pins
-          SET status = 'archived', updated_at = $5
-        WHERE space_id = $1 AND asset_id = $2 AND scope_type = $3 AND scope_id = $4 AND status = 'active'`,
-      [identity.spaceId, assetId, scopeType, scopeId, now],
-    );
     const id = randomUUID();
-    await this.db.query(
-      `INSERT INTO evolvable_asset_pins (
-         id, space_id, asset_id, scope_type, scope_id, version_id, status, pinned_by_user_id, reason, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $9)`,
-      [id, identity.spaceId, assetId, scopeType, scopeId, versionId, identity.userId, optionalString(body.reason), now],
-    );
+    await withQueryableTransaction(this.db, async (db) => {
+      // Under the asset lock a promotion takes to deprecate earlier versions:
+      // a pin either lands before that check (and keeps its version approved)
+      // or sees the version already deprecated here. Never a pin on a version
+      // that stopped being approved in between.
+      await lockEvolutionAssets(db, [assetId]);
+      const found = await db.query<VersionRow>(
+        `SELECT ${VERSION_COLUMNS} FROM evolvable_asset_versions WHERE asset_id = $1 AND id = $2 LIMIT 1`,
+        [assetId, versionId],
+      );
+      const version = found.rows[0];
+      if (!version) throw new HttpError(422, "version_id does not reference a version of this asset");
+      if (version.status !== "approved") throw new HttpError(422, "Only an approved version can be pinned");
+      if (!versionServesScope(identity, { scopeType, scopeId }, version)) {
+        throw new HttpError(422, "version_id is not visible to the target pin scope");
+      }
+      // Archive any existing active pin for this exact scope target (same
+      // scope_type AND scope_id — not just scope_type, which would archive an
+      // unrelated project/agent/user's pin on the same asset), then insert a
+      // fresh row — keeps pin history instead of updating in place.
+      const now = new Date().toISOString();
+      await db.query(
+        `UPDATE evolvable_asset_pins
+            SET status = 'archived', updated_at = $5
+          WHERE space_id = $1 AND asset_id = $2 AND scope_type = $3 AND scope_id = $4 AND status = 'active'`,
+        [identity.spaceId, assetId, scopeType, scopeId, now],
+      );
+      await db.query(
+        `INSERT INTO evolvable_asset_pins (
+           id, space_id, asset_id, scope_type, scope_id, version_id, status, pinned_by_user_id, reason, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $9)`,
+        [id, identity.spaceId, assetId, scopeType, scopeId, versionId, identity.userId, optionalString(body.reason), now],
+      );
+    });
     const result = await this.db.query<PinRow>(`SELECT ${PIN_COLUMNS} FROM evolvable_asset_pins WHERE id = $1`, [id]);
     const row = result.rows[0];
     if (!row) throw new HttpError(500, "Failed to set pin");

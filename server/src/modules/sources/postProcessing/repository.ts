@@ -19,7 +19,7 @@ import {
 import { SOURCE_POST_PROCESSING_LIMITS } from "./config.js";
 import { upsertCanonicalEvidence } from "../evidenceIdentity.js";
 import { lockActiveProjectForMutation } from "../../projects/access.js";
-import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sourceItemAccess.js";
+import { evidenceProvenanceReadableClause, sourceConnectionLiveSubscriberClause, sourceItemReadableClause } from "../sourceItemAccess.js";
 
 const POST_PROCESSING_EVIDENCE_ACCESS = contentResourceDefinition("extracted_evidence")!;
 const POST_PROCESSING_SOURCE_ACCESS = contentResourceDefinition("source_item")!;
@@ -1383,22 +1383,66 @@ export class PgSourcePostProcessingRepository {
         run.owner_user_id,
         aggregateKey,
         input.runId,
-        // The pointer's audience is the connection's: a private connection's
-        // briefing reaches its owner alone, a shared one its readers; a
-        // selected-readers connection carries its grants over below.
-        run.connection_visibility === "private" ? "private" : run.connection_visibility === "selected_users" ? "selected_users" : "space_shared",
+        // The pointer reaches the people the briefing is for: a private
+        // connection's owner alone; otherwise the channel's current digest
+        // subscribers whom the connection still admits, granted below.
+        run.connection_visibility === "private" ? "private" : "selected_users",
       ],
     );
-    if (run.connection_visibility === "selected_users") {
-      await inheritContentAccessGrants(this.db, {
-        spaceId: input.spaceId,
-        sourceResourceType: "source_connection",
-        sourceResourceId: run.connection_id,
-        targetResourceType: "activity_record",
-        targetResourceId: await this.dailyBriefingActivityId(input.spaceId, aggregateKey),
-        inheritedAt: now,
+    if (run.connection_visibility !== "private") {
+      await this.grantBriefingToSubscribers(input.spaceId, {
+        activityId: await this.dailyBriefingActivityId(input.spaceId, aggregateKey),
+        channelId: run.source_channel_id,
+        connectionId: run.connection_id,
+        grantedByUserId: run.owner_user_id,
+        at: now,
       });
     }
+  }
+
+  /**
+   * Grants a shared briefing pointer to exactly the channel's current digest
+   * subscribers whom the connection admits today, and revokes it from anyone
+   * who no longer is one — someone who left the channel keeps reading what
+   * was delivered to them, but is not told about new briefings.
+   */
+  private async grantBriefingToSubscribers(
+    spaceId: string,
+    input: { activityId: string; channelId: string; connectionId: string; grantedByUserId: string; at: string },
+  ): Promise<void> {
+    const eligible = `
+      SELECT DISTINCT subscriber.user_id
+        FROM source_channel_user_subscriptions subscriber
+        JOIN space_memberships subscriber_membership
+          ON subscriber_membership.space_id = subscriber.space_id
+         AND subscriber_membership.user_id = subscriber.user_id
+         AND subscriber_membership.status = 'active'
+        JOIN source_connections briefing_connection
+          ON briefing_connection.space_id = subscriber.space_id AND briefing_connection.id = $3
+       WHERE subscriber.space_id = $1
+         AND subscriber.source_channel_id = $2
+         AND subscriber.status = 'subscribed'
+         AND subscriber.digest_enabled = true
+         AND ${sourceConnectionLiveSubscriberClause("briefing_connection", "subscriber.user_id")}`;
+    await this.db.query(
+      `INSERT INTO content_access_grants (
+         id, space_id, resource_type, resource_id, grantee_user_id,
+         granted_by_user_id, access_level, created_at, updated_at, revoked_at, revoked_by_user_id
+       )
+       SELECT gen_random_uuid()::varchar, $1, 'activity_record', $4, eligible.user_id, $5, 'full', $6, $6, NULL, NULL
+         FROM (${eligible}) eligible
+       ON CONFLICT (space_id, resource_type, resource_id, grantee_user_id)
+       DO UPDATE SET revoked_at = NULL, revoked_by_user_id = NULL, updated_at = EXCLUDED.updated_at`,
+      [spaceId, input.channelId, input.connectionId, input.activityId, input.grantedByUserId, input.at],
+    );
+    await this.db.query(
+      `UPDATE content_access_grants
+          SET revoked_at = $6, revoked_by_user_id = $5, updated_at = $6
+        WHERE space_id = $1 AND resource_type = 'activity_record' AND resource_id = $4
+          AND revoked_at IS NULL
+          AND grantee_user_id NOT IN (${eligible})`,
+      [spaceId, input.channelId, input.connectionId, input.activityId, input.grantedByUserId, input.at],
+    );
   }
 
   private async dailyBriefingActivityId(spaceId: string, aggregateKey: string): Promise<string> {

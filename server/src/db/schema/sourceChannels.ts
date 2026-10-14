@@ -93,11 +93,8 @@ export const sourceChannelUserSubscriptions = pgTable("source_channel_user_subsc
 	recommendedByUserId: varchar("recommended_by_user_id", { length: 36 }),
 	recommendationMessage: text("recommendation_message"),
 	lastNotifiedAt: timestamp("last_notified_at", { withTimezone: true, mode: "string" }),
-	// The window in which this person received the channel's items: set when
-	// the status becomes `subscribed`, closed when it leaves it. Items first
-	// seen inside the window stay readable after unsubscribing (historical
-	// reading eligibility) for as long as the connection itself still admits
-	// the reader; a new subscription opens a new window.
+	// Unused: subscription periods live in `source_channel_subscription_windows`.
+	// Kept until the contract step in .agent/tasks/deferred-register.md drops them.
 	subscribedAt: timestamp("subscribed_at", { withTimezone: true, mode: "string" }),
 	unsubscribedAt: timestamp("unsubscribed_at", { withTimezone: true, mode: "string" }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
@@ -111,6 +108,27 @@ export const sourceChannelUserSubscriptions = pgTable("source_channel_user_subsc
 	foreignKey({ columns: [table.userId], foreignColumns: [users.id], name: "source_channel_user_subscriptions_user_id_fkey" }),
 	foreignKey({ columns: [table.recommendedByUserId], foreignColumns: [users.id], name: "source_channel_user_subscriptions_recommended_by_user_id_fkey" }).onDelete("set null"),
 	check("ck_source_channel_user_subscriptions_status", sql`status IN ('subscribed','pending','dismissed','muted')`),
-	// A live subscription has no closing time; a closed window names its opening.
-	check("ck_source_channel_user_subscriptions_window", sql`(status <> 'subscribed' OR unsubscribed_at IS NULL) AND (unsubscribed_at IS NULL OR subscribed_at IS NOT NULL)`),
+]);
+
+/**
+ * One row per period in which a person received a channel's items: opened
+ * when their subscription becomes `subscribed`, closed when it leaves it.
+ * Items first seen inside a closed window stay readable after unsubscribing
+ * (historical reading eligibility) for as long as the connection still
+ * admits the reader; every rejoin opens a new window, so earlier periods are
+ * never overwritten.
+ */
+export const sourceChannelSubscriptionWindows = pgTable("source_channel_subscription_windows", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	sourceChannelId: varchar("source_channel_id", { length: 36 }).notNull(),
+	userId: varchar("user_id", { length: 36 }).notNull(),
+	subscribedAt: timestamp("subscribed_at", { withTimezone: true, mode: "string" }).notNull(),
+	unsubscribedAt: timestamp("unsubscribed_at", { withTimezone: true, mode: "string" }),
+}, (table): PgTableExtraConfigValue[] => [
+	index("ix_source_channel_subscription_windows_reader").using("btree", table.spaceId.asc().nullsLast(), table.userId.asc().nullsLast(), table.sourceChannelId.asc().nullsLast()),
+	uniqueIndex("uq_source_channel_subscription_windows_open").using("btree", table.spaceId.asc().nullsLast(), table.sourceChannelId.asc().nullsLast(), table.userId.asc().nullsLast()).where(sql`unsubscribed_at IS NULL`),
+	foreignKey({ columns: [table.sourceChannelId, table.spaceId], foreignColumns: [sourceChannels.id, sourceChannels.spaceId], name: "source_channel_subscription_windows_channel_id_fkey" }).onDelete("cascade"),
+	foreignKey({ columns: [table.userId], foreignColumns: [users.id], name: "source_channel_subscription_windows_user_id_fkey" }),
+	check("ck_source_channel_subscription_windows_order", sql`unsubscribed_at IS NULL OR unsubscribed_at >= subscribed_at`),
 ]);

@@ -17,9 +17,10 @@ import { codePatchAcceptOptions } from './codePatchConfirm'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
 import { notifyReviewAttentionChanged } from '../../core/reviewAttention'
 import { MemoryRevisionEditor } from './MemoryRevisionEditor'
+import { formatDateTime } from '../../i18n/format'
 
 function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString() : '—'
+  return formatDateTime(dt)
 }
 
 export default function ProposalDetailPage() {

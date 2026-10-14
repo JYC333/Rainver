@@ -97,9 +97,17 @@ Setup's `retrieval_preferences.enabled` is true, so a new conversation starts
 with retrieval off. Root tasks and workflows keep retrieving unless their setup
 turns it off. `GET`/`PUT /api/v1/runtime-context/work-contexts/:scopeId/retrieval`
 read and set the switch and its `preferred_domains` as the next Setup version
-for that person and conversation. Governing policy can still forbid retrieval.
+for that person and scope: a direct chat's scope is its session, so the choice
+holds for that conversation; a Room recipient's scope is its
+`room_agent_members` row, so the choice holds for that Agent across the
+person's conversations in the Room. The direct-chat composer shows one switch;
+the Room composer shows one per Agent the next message reaches (the manager
+when nobody is named). Governing policy can still forbid retrieval.
 The switch also withholds the managed retrieval tools from a Run planned under
-an off setup. It never affects material the person attaches or pins: explicit
+an off setup, and narrows them to the chosen domains under an on one
+(knowledge, memory, projects → Project summaries, sources; inquiry has no
+tool of its own; no choice keeps every tool) — `runRetrievalChoice` reads both
+from the Run's frozen setup. It never affects material the person attaches or pins: explicit
 references and `input_resource` descriptors reach the turn either way.
 
 ## Security boundaries

@@ -11,6 +11,8 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { knowledgeModule } from "../src/modules/knowledge/index.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { ensureProjectNotesFolder } from "../src/modules/knowledge/noteProjectFolders.js";
+import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
  * Multi-placement. `note_collection_items` is unique on
@@ -50,7 +52,7 @@ beforeEach(async () => {
   if (!db.available || !app) return;
   await resetTables(
     db.pool,
-    ["notes", "note_collections", "note_collection_items", "space_objects", "space_memberships", "users", "spaces"],
+    ["notes", "note_collections", "note_collection_items", "space_objects", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -230,6 +232,39 @@ describe("note placements (real Postgres)", () => {
     expect(placements(await repository.getNote(identity, also.id))).toEqual([{ collection_id: elsewhere, sort_order: 0 }]);
     const movedChild = await db.pool.query<{ parent_id: string | null }>(`SELECT parent_id FROM note_collections WHERE id = $1`, [child.id]);
     expect(movedChild.rows[0]?.parent_id).toBe(parent);
+  });
+
+  it("refuses to restore a trashed Project note whose Project folder was deleted until it names one", async () => {
+    if (!db.available || !app) return;
+    const projectId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO projects (id, space_id, name, status, owner_user_id, created_at, updated_at)
+       VALUES ($1, $2, 'Project', 'active', $3, now(), now())`,
+      [projectId, SPACE, USER],
+    );
+    await seedMainlineRoomsForAllProjects(db.pool);
+    const repository = new PgKnowledgeRepository(db.pool);
+    const projectFolder = await ensureProjectNotesFolder(db.pool, SPACE, projectId);
+    const doomed = await repository.createNoteCollection(identity, { name: "Doomed", parent_id: projectFolder }) as { id: string };
+    const note = await repository.createNote(identity, { title: "Trashed", primary_project_id: projectId, collection_id: doomed.id }) as { id: string };
+    await repository.updateNote(identity, note.id, { status: "deleted" });
+    // A deleted note holds no folder back, so its only folder can go.
+    expect((await app!.inject({ method: "DELETE", url: `/api/v1/notes/collections/${doomed.id}` })).statusCode).toBe(204);
+
+    await expect(repository.updateNote(identity, note.id, { status: "active" }))
+      .rejects.toMatchObject({ statusCode: 422, responseBody: expect.objectContaining({ code: "note_owning_entry_required", note_id: note.id }) });
+    const restored = await repository.updateNote(identity, note.id, { status: "active", collection_id: projectFolder });
+    expect(placements(restored)).toEqual([{ collection_id: projectFolder, sort_order: 0 }]);
+  });
+
+  it("restores a note outside every Project without a folder, since it may be unfiled", async () => {
+    if (!db.available || !app) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const doomed = await repository.createNoteCollection(identity, { name: "Doomed" }) as { id: string };
+    const note = await repository.createNote(identity, { title: "Loose", collection_id: doomed.id }) as { id: string };
+    await repository.updateNote(identity, note.id, { status: "deleted" });
+    expect((await app!.inject({ method: "DELETE", url: `/api/v1/notes/collections/${doomed.id}` })).statusCode).toBe(204);
+    await expect(repository.updateNote(identity, note.id, { status: "active" })).resolves.toMatchObject({ id: note.id });
   });
 
   it("refuses a batch reorder whose net effect strips a note of its last folder", async () => {

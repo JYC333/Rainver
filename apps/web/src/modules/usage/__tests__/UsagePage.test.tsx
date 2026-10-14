@@ -298,6 +298,19 @@ describe('UsagePage', () => {
     expect(await screen.findByText('1–100 of 150')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
     await waitFor(() => expect(usageApi.summary).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 100 })))
+
+    // Back to the first page reads it again, rather than keeping page 2's rows.
+    vi.mocked(usageApi.summary).mockClear()
+    fireEvent.click(await screen.findByRole('button', { name: 'Previous page' }))
+    await waitFor(() => expect(usageApi.summary).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 })))
+
+    // Refresh starts again from the first page.
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
+    await waitFor(() => expect(usageApi.summary).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 100 })))
+    vi.mocked(usageApi.summary).mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh usage' }))
+    await waitFor(() => expect(usageApi.summary).toHaveBeenCalledWith(expect.objectContaining({ offset: 0 })))
+    expect(await screen.findByText('1–100 of 150')).toBeInTheDocument()
   })
 
   it('renders shared empty-state panels instead of empty tables when there is no usage', async () => {

@@ -30,6 +30,7 @@ import { defaultModelProvider } from '../providers/defaultProvider'
 import { errMsg } from '../../lib/utils'
 import { useAuth } from '../../contexts/AuthContext'
 import { supportsStructuredOutput } from '../providers/providerMetadata'
+import { useAppTranslation } from '../../i18n'
 
 interface ResearchSetupDialogProps {
   projectId?: string
@@ -144,6 +145,7 @@ export function ResearchSetupDialog({
   onSave,
   onStart,
 }: ResearchSetupDialogProps) {
+  const { t } = useAppTranslation()
   const { currentUser } = useAuth()
   const userId = currentUser?.id
   const [draft, setDraft] = useState<ResearchSetupDraft>(() => copyDraft(initialDraft))
@@ -451,12 +453,12 @@ export function ResearchSetupDialog({
                         <SemanticQueryColumns query={selectedAttempt.semantic_query} />
                       </div>}
                       <details className="mt-2 text-xs">
-                        <summary className="cursor-pointer text-muted-foreground">View {plan.attempt_count} evaluation attempt{plan.attempt_count === 1 ? '' : 's'}</summary>
+                        <summary className="cursor-pointer text-muted-foreground">{t('management_ui.research_attempts.view_attempts', { count: plan.attempt_count })}</summary>
                         <div className="mt-2 space-y-1.5">
                         {shownAttempts.length < plan.attempt_count && <div className="flex items-center justify-between gap-2 text-muted-foreground">
-                          <span>Showing the {shownAttempts.length} most recent and selected attempts.</span>
+                          <span>{t('management_ui.research_attempts.showing_recent', { count: shownAttempts.length })}</span>
                           <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={loadingHistory !== null} onClick={() => void loadAttemptHistory(engineResult.id, plan.provider_key, plan.attempt_count)}>
-                            {loadingHistory === plan.provider_key ? 'Loading…' : `Show all ${plan.attempt_count}`}
+                            {loadingHistory === plan.provider_key ? t('management_ui.research_attempts.loading') : t('management_ui.research_attempts.show_all', { count: plan.attempt_count })}
                           </Button>
                         </div>}
                         {shownAttempts.map(attempt => <div key={attempt.id} className={`rounded border px-2 py-1.5 text-xs ${attempt.id === plan.selected_attempt_id ? 'border-success/50 bg-success/5' : 'border-border bg-background/40'}`}>

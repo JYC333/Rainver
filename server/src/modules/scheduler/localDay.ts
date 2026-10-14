@@ -63,12 +63,37 @@ export function reportDateForSlot(slotUtcIso: string, timezone: string): string 
 
 /** Half-open UTC bounds `[start, end)` of one local calendar day. */
 export function localDayUtcBounds(localDate: string, timezone: string): LocalDayBounds {
+  const zone = timezone || "UTC";
   const startLocal = { ...parseLocalDate(localDate), hour: 0, minute: 0 };
   const endLocal = addLocalDays(startLocal, 1);
   return {
-    startUtcIso: zonedLocalToUtc(startLocal, timezone || "UTC").toISOString(),
-    endUtcIso: zonedLocalToUtc(endLocal, timezone || "UTC").toISOString(),
+    startUtcIso: firstInstantOfLocalDay(startLocal, zone).toISOString(),
+    endUtcIso: firstInstantOfLocalDay(endLocal, zone).toISOString(),
   };
+}
+
+/**
+ * The first instant whose local date is `day`. Usually local midnight; where
+ * the clock jumps forward at midnight (America/Santiago, America/Havana) that
+ * midnight never happens and the day starts at the end of the gap, so the
+ * plain conversion can land an hour early, in the previous day.
+ */
+function firstInstantOfLocalDay(day: LocalDateTimeParts, timeZone: string): Date {
+  const target = localDateKey(day);
+  let instant = zonedLocalToUtc(day, timeZone).getTime();
+  // Forward out of the previous day, in steps no gap is shorter than…
+  for (let i = 0; i < 16 && localDateKey(zonedParts(new Date(instant), timeZone)) < target; i += 1) {
+    instant += 15 * 60_000;
+  }
+  // …then back to the first minute still on the target day.
+  for (let i = 0; i < 15 && localDateKey(zonedParts(new Date(instant - 60_000), timeZone)) === target; i += 1) {
+    instant -= 60_000;
+  }
+  return new Date(instant);
+}
+
+function localDateKey(parts: Pick<LocalDateTimeParts, "year" | "month" | "day">): string {
+  return `${String(parts.year).padStart(4, "0")}-${String(parts.month).padStart(2, "0")}-${String(parts.day).padStart(2, "0")}`;
 }
 
 /** Whether every instant of the local day has passed, so a report on it covers all of it. */

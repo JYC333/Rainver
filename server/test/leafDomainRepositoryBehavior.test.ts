@@ -965,8 +965,9 @@ describe("Leaf domain repository behavior", () => {
     expect(itemSelect?.sql).toContain("si.owner_user_id = $3");
     expect(itemSelect?.sql).toContain("FROM content_access_grants content_grant");
     expect(itemSelect?.sql).toContain("FROM space_memberships content_member");
-    expect(itemSelect?.sql).toContain("FROM source_channel_user_subscriptions scus_read");
-    expect(itemSelect?.sql).toContain("scus_read.status = 'subscribed'");
+    expect(itemSelect?.sql).toContain("FROM source_channel_user_subscriptions live_subscription");
+    expect(itemSelect?.sql).toContain("live_subscription.status = 'subscribed'");
+    expect(itemSelect?.sql).toContain("FROM source_channel_subscription_windows delivered_window");
   });
 
   it("allows source-derived summary proposals when the source policy opts in", async () => {

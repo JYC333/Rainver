@@ -8,6 +8,7 @@ import { normalizeSourceConnectionReadGovernance, enforceSourceDerivedImportTarg
 import type { SourceItemRow } from "../sources/sourceRepositoryRows.js";
 import { ITEM_COLUMNS } from "../sources/sourceRepositoryRows.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { sourceConnectionDeliveredToReaderClause, sourceConnectionLiveSubscriberClause, sourceConnectionReaderConsentClause } from "../sources/sourceItemAccess.js";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
@@ -158,6 +159,7 @@ interface SourceSnapshotRow {
   artifact_id: string | null;
   content_hash: string | null;
   source_uri: string | null;
+  captured_at: unknown;
 }
 
 // ── Reader document output ────────────────────────────────────────────────────
@@ -190,16 +192,32 @@ interface ReaderDocumentOut {
 
 // ── Source consent check ──────────────────────────────────────────────────────
 
+function isoTimestamp(value: unknown): string {
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(date.getTime())) throw new HttpError(404, "Not found");
+  return date.toISOString();
+}
+
 interface ConsentCheckInput {
   db: Queryable;
   identity: SpaceUserIdentity;
   item: SourceItemRow;
 }
 
+/**
+ * The Reader's connection gate for content the connection delivered at
+ * `deliveredAt` (an item's first sighting, or a connection-only snapshot's
+ * capture): its owner or a named reader, a live subscriber of a live channel,
+ * someone it was delivered to inside a subscription window (historical
+ * eligibility), or a Space owner/admin when the consent allows them. The
+ * subscriber branches hold only while the connection itself still admits
+ * the reader.
+ */
 async function enforceConnectionReadConsent(
   db: Queryable,
   identity: SpaceUserIdentity,
   connectionId: string,
+  deliveredAt: string,
 ): Promise<void> {
   const conn = await db.query<{ project_id: string | null; consent_json: unknown; policy_json: unknown; owner_user_id: string }>(
     `SELECT project_id, consent_json, policy_json, owner_user_id
@@ -235,18 +253,17 @@ async function enforceConnectionReadConsent(
   });
   const consent = gov.consent;
   if (identity.userId === consent.owner_user_id) return;
-  const subscription = await db.query<{ id: string }>(
-    `SELECT scus.id
-       FROM source_channel_user_subscriptions scus
-       JOIN source_channels sch ON sch.id = scus.source_channel_id
-      WHERE scus.space_id = $1
-        AND sch.source_connection_id = $2
-        AND scus.user_id = $3
-        AND scus.status = 'subscribed'
-      LIMIT 1`,
-    [identity.spaceId, connectionId, identity.userId],
+  const subscriber = await db.query(
+    `SELECT 1
+       FROM source_connections reader_connection
+      WHERE reader_connection.space_id = $1 AND reader_connection.id = $2
+        AND (
+          ${sourceConnectionLiveSubscriberClause("reader_connection", "$3")}
+          OR ${sourceConnectionDeliveredToReaderClause("reader_connection", "$3", "$4::timestamptz")}
+        )`,
+    [identity.spaceId, connectionId, identity.userId, deliveredAt],
   );
-  if (subscription.rows[0]) return;
+  if (subscriber.rows[0]) return;
   if (consent.allowed_reader_user_ids.includes(identity.userId)) return;
   if (consent.allow_space_admins) {
     const roleRow = await db.query<{ role: string }>(
@@ -261,7 +278,7 @@ async function enforceConnectionReadConsent(
 async function enforceSourceItemReadConsent({ db, identity, item }: ConsentCheckInput): Promise<void> {
   if (item.space_id !== identity.spaceId) throw new HttpError(404, "Not found");
   if (item.connection_id) {
-    await enforceConnectionReadConsent(db, identity, item.connection_id);
+    await enforceConnectionReadConsent(db, identity, item.connection_id, isoTimestamp(item.first_seen_at));
     return;
   }
   if (item.created_by_user_id !== identity.userId) throw new HttpError(404, "Not found");
@@ -438,7 +455,7 @@ export class PgReaderRepository {
   ): Promise<ReaderDocumentOut | null> {
     if ((await contentDecisionFromDb(this.db, identity, "source_snapshot", snapshotId)) !== "full") return null;
     const result = await this.db.query<SourceSnapshotRow>(
-      `SELECT id, space_id, project_id, source_item_id, connection_id, snapshot_type, artifact_id, content_hash, source_uri
+      `SELECT id, space_id, project_id, source_item_id, connection_id, snapshot_type, artifact_id, content_hash, source_uri, captured_at
          FROM source_snapshots WHERE space_id = $1 AND id = $2`,
       [identity.spaceId, snapshotId],
     );
@@ -456,12 +473,12 @@ export class PgReaderRepository {
         await enforceSourceItemReadConsent({ db: this.db, identity, item: itemResult.rows[0] });
       } else if (snap.connection_id) {
         // Item soft-deleted: fall back to connection gate rather than opening access.
-        await enforceConnectionReadConsent(this.db, identity, snap.connection_id);
+        await enforceConnectionReadConsent(this.db, identity, snap.connection_id, isoTimestamp(snap.captured_at));
       } else {
         throw new HttpError(404, "Not found");
       }
     } else if (snap.connection_id) {
-      await enforceConnectionReadConsent(this.db, identity, snap.connection_id);
+      await enforceConnectionReadConsent(this.db, identity, snap.connection_id, isoTimestamp(snap.captured_at));
     }
 
     if (!snap.artifact_id) return null;
@@ -774,8 +791,8 @@ async function assertDocumentReadable(
     if ((await contentDecisionFromDb(db, identity, "source_snapshot", documentId)) !== "full") {
       throw new HttpError(404, "Document not found");
     }
-    const r = await db.query<{ project_id: string | null; visibility: string; access_level: string; source_item_id: string | null; connection_id: string | null; artifact_id: string | null }>(
-      `SELECT project_id, visibility, access_level, source_item_id, connection_id, artifact_id FROM source_snapshots WHERE space_id = $1 AND id = $2`,
+    const r = await db.query<{ project_id: string | null; visibility: string; access_level: string; source_item_id: string | null; connection_id: string | null; artifact_id: string | null; captured_at: unknown }>(
+      `SELECT project_id, visibility, access_level, source_item_id, connection_id, artifact_id, captured_at FROM source_snapshots WHERE space_id = $1 AND id = $2`,
       [identity.spaceId, documentId],
     );
     if (!r.rows[0]) throw new HttpError(404, "Document not found");
@@ -788,14 +805,14 @@ async function assertDocumentReadable(
         await enforceSourceItemReadConsent({ db, identity, item: itemR.rows[0] });
       } else if (r.rows[0].connection_id) {
         // Item soft-deleted: fall back to connection gate so access is not silently opened.
-        await enforceConnectionReadConsent(db, identity, r.rows[0].connection_id);
+        await enforceConnectionReadConsent(db, identity, r.rows[0].connection_id, isoTimestamp(r.rows[0].captured_at));
       } else {
         // Source item referenced but no longer exists and no connection fallback: fail closed.
         throw new HttpError(404, "Not found");
       }
     } else if (r.rows[0].connection_id) {
       // Connection-only snapshot: enforce the connection's own consent gate.
-      await enforceConnectionReadConsent(db, identity, r.rows[0].connection_id);
+      await enforceConnectionReadConsent(db, identity, r.rows[0].connection_id, isoTimestamp(r.rows[0].captured_at));
     }
     // Snapshot content comes from its artifact; verify the caller can read it.
     // This mirrors resolveSourceSnapshot so annotation gate matches document gate.
@@ -1628,27 +1645,7 @@ export class PgReaderActionRepository {
           )
           AND ${contentReadSql("reader_annotation", "ra", "$3")}
           AND ${contentReadSql("source_item", "ii", "$3")}
-          AND (
-            sc.consent_json->>'owner_user_id' = $3
-            OR sc.consent_json->'allowed_reader_user_ids' @> to_jsonb($3::text)
-            OR EXISTS (
-              SELECT 1
-                FROM source_channel_user_subscriptions scus
-                JOIN source_channels sch ON sch.id = scus.source_channel_id
-               WHERE scus.space_id = $1
-                 AND sch.source_connection_id = sc.id
-                 AND scus.user_id = $3
-                 AND scus.status = 'subscribed'
-            )
-            OR (
-              (sc.consent_json->>'allow_space_admins')::boolean = true
-              AND EXISTS (
-                SELECT 1 FROM space_memberships sm
-                 WHERE sm.user_id = $3 AND sm.space_id = $1
-                   AND sm.status = 'active' AND sm.role IN ('owner', 'admin')
-              )
-            )
-          )
+          AND ${sourceConnectionReaderConsentClause("sc", "$3", "ii.first_seen_at")}
         ORDER BY ra.created_at DESC
         LIMIT $4`,
       [identity.spaceId, projectId, identity.userId, limit],

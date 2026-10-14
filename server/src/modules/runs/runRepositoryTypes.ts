@@ -397,6 +397,12 @@ export interface RunChatResultRecord {
 export interface RunEventInput {
   run_id: string;
   space_id: string;
+  /**
+   * The attempt that produced the event, for events an execution emits. A
+   * write from an attempt that is no longer the Run's latest is dropped.
+   * Omitted for Run-level events, which belong to the current attempt.
+   */
+  attempt_number?: number | null;
   event_type: string;
   status: "pending" | "running" | "succeeded" | "failed" | "skipped" | "warning" | "cancelled";
   step_id?: string | null;

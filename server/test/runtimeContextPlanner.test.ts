@@ -4,7 +4,7 @@ import { RetrievalCoordinator } from "../src/modules/runtimeContext/retrievalCoo
 import { RuntimeContextPlanner } from "../src/modules/runtimeContext/planner.js";
 import { RuntimeContextPlanningService } from "../src/modules/runtimeContext/planningService.js";
 import { contextItemText, normalizeContextItem } from "../src/modules/runtimeContext/itemNormalizer.js";
-import { runtimeContextProviderDestination } from "../src/modules/runtimeContext/productionAcquisition.js";
+import { runtimeProviderEgressDestination } from "../src/modules/retrieval/egress/egressPolicy.js";
 import { ACP_RUNTIME_MANAGED_WINDOW } from "../src/modules/usage/modelCatalog.js";
 
 const SPACE_ID = "00000000-0000-4000-8000-000000000001";
@@ -45,26 +45,30 @@ describe("Runtime Context common planner", () => {
   it("classifies provider-bound CLI egress from the adapter-specific upstream", () => {
     // A declared local Provider whose Claude bridge points at a public gateway
     // is external for a runtime that will use that bridge.
-    expect(runtimeContextProviderDestination("claude_code", {
+    expect(runtimeProviderEgressDestination("claude_code", {
+      space_id: "space-1",
       provider_type: "ollama",
       base_url: "http://127.0.0.1:11434",
       config_json: { deployment: "trusted_local", claude_compatible_base_url: "https://api.example.test/anthropic" },
-    })).toBe("external_provider");
-    expect(runtimeContextProviderDestination("codex_cli", {
+    }, "space-1")).toBe("external_provider");
+    expect(runtimeProviderEgressDestination("codex_cli", {
+      space_id: "space-1",
       provider_type: "openai_compatible",
       base_url: "https://generic.example.test",
       config_json: { deployment: "trusted_local", openai_compatible_base_url: "http://localhost:8080/v1" },
-    })).toBe("local_provider");
+    }, "space-1")).toBe("local_provider");
     // Without the declaration a loopback Ollama is still external.
-    expect(runtimeContextProviderDestination("opencode", {
+    expect(runtimeProviderEgressDestination("opencode", {
+      space_id: "space-1",
       provider_type: "ollama",
       base_url: "http://localhost:11434",
       config_json: {},
-    })).toBe("external_provider");
+    }, "space-1")).toBe("external_provider");
     // OpenCode follows the vendor's protocol, so the endpoint judged is the
     // Claude-compatible one it will actually reach; the declaration still
     // has to be there, and a hosted model name still counts.
-    expect(runtimeContextProviderDestination("opencode", {
+    expect(runtimeProviderEgressDestination("opencode", {
+      space_id: "space-1",
       provider_type: "openai_compatible",
       base_url: "http://localhost:8080/v1",
       config_json: {
@@ -73,13 +77,14 @@ describe("Runtime Context common planner", () => {
         openai_compatible_base_url: "http://localhost:4000/v1",
       },
       default_model: "qwen3:8b",
-    })).toBe("local_provider");
-    expect(runtimeContextProviderDestination("opencode", {
+    }, "space-1")).toBe("local_provider");
+    expect(runtimeProviderEgressDestination("opencode", {
+      space_id: "space-1",
       provider_type: "ollama",
       base_url: "http://localhost:11434",
       config_json: { deployment: "trusted_local", claude_compatible_base_url: "http://localhost:11434" },
       default_model: "gpt-oss:120b-cloud",
-    })).toBe("external_provider");
+    }, "space-1")).toBe("external_provider");
   });
 
   it("uses the same deterministic window decisions for preview and execution", () => {

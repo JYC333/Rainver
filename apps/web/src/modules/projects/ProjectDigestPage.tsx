@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { useParams } from 'react-router-dom'
@@ -23,17 +23,28 @@ export default function ProjectDigestPage() {
   const [loading, setLoading] = useState(true)
   const digest = lookup?.status === 'available' ? lookup.digest : null
 
+  // Another Project starts at its own latest day, not the day picked here.
+  useEffect(() => {
+    setDay(null)
+    setLatestDay(null)
+    setLookup(null)
+  }, [projectId])
+
+  // Only the latest request lands, so fast prev/next cannot show a stale day.
+  const loadRequest = useRef(0)
   const load = useCallback(async () => {
     if (!activeSpaceId || !projectId) return
+    const request = ++loadRequest.current
     setLoading(true)
     try {
       const next = await informationDigestsApi.project(activeSpaceId, projectId, day ?? undefined)
+      if (request !== loadRequest.current) return
       setLookup(next)
       if (day === null) setLatestDay(next.status === 'available' ? next.digest.digest_date : next.digest_date)
     } catch (error) {
-      toast.error(errMsg(error))
+      if (request === loadRequest.current) toast.error(errMsg(error))
     } finally {
-      setLoading(false)
+      if (request === loadRequest.current) setLoading(false)
     }
   }, [activeSpaceId, projectId, day])
   const shownDay = lookup ? (lookup.status === 'available' ? lookup.digest.digest_date : lookup.digest_date) : null

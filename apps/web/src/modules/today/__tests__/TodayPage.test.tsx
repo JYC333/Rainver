@@ -100,3 +100,30 @@ describe('TodayPage Space switch', () => {
     expect(screen.queryByText('Alpha project')).not.toBeInTheDocument()
   })
 })
+
+describe('TodayPage pending review', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    spaceState.activeSpaceId = 'space-a'
+    spaceState.activeSpaceName = 'Alpha'
+    vi.mocked(sessionsApi.list).mockResolvedValue({ items: [] } as never)
+    vi.mocked(projectsApi.list).mockResolvedValue({ items: [] } as never)
+  })
+
+  it('offers no quick accept for a maintenance update that still needs its revision', async () => {
+    const item = (id: string, awaiting_revision: boolean) => ({
+      id, title: `Update ${id}`, proposal_type: 'memory_update', status: 'pending', risk_level: 'low', urgency: 'normal',
+      review_deadline: null, expires_at: null, expired: false, preview: false, created_by_run_id: null, awaiting_revision,
+    })
+    vi.mocked(homeApi.summary).mockResolvedValue({
+      ...summaryWithSourceItems(0),
+      pending_proposals: { count: 2, items: [item('revised', false), item('unrevised', true)] },
+    } as HomeSummaryOut)
+    render(page())
+
+    await screen.findByRole('link', { name: 'Update unrevised' })
+    // Only the revised one can be accepted from here; the other opens to be revised.
+    expect(screen.getAllByTitle('Accept')).toHaveLength(1)
+  })
+})
+

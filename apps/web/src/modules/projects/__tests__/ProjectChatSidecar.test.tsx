@@ -38,6 +38,11 @@ vi.mock('../../../api/client', async () => {
   const { ApiRequestError } = await import('../../../test/apiClientMock')
   return {
   ApiRequestError,
+  // Each addressed Room recipient's knowledge retrieval switch, off.
+  runtimeContextApi: {
+    retrievalSwitch: vi.fn(async (scopeId: string) => ({ work_context_scope_id: scopeId, enabled: false, preferred_domains: [], setup_version: null })),
+    setRetrievalSwitch: vi.fn(),
+  },
   projectsApi: { mainlineRoom: vi.fn() },
   proposalsApi: { get: vi.fn(), accept: vi.fn(), reject: vi.fn() },
   runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn() },

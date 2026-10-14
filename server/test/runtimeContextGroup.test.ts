@@ -1255,13 +1255,13 @@ describe("runtimeContextPlannerDb", () => {
           allowed_provider_ids: [],
         },
       };
-      await expect(revalidateExecutionDestination(db.pool, control, "codex_cli"))
+      await expect(revalidateExecutionDestination(db.pool, control, { runtime_key: "codex_cli" }))
         .resolves.toBe("external_provider");
-      await expect(revalidateExecutionDestination(db.pool, control, "opencode"))
+      await expect(revalidateExecutionDestination(db.pool, control, { runtime_key: "opencode" }))
         .rejects.toThrow("not authorized by the control snapshot");
     });
 
-    it("revalidates an adapter-compatible upstream through a cross-space provider grant", async () => {
+    it("treats a Provider declared local in its home Space as external through a cross-space grant", async () => {
       if (!db.available) return;
       await db.pool.query(
         `INSERT INTO spaces (id, name, type, created_at, updated_at)
@@ -1292,7 +1292,18 @@ describe("runtimeContextPlannerDb", () => {
           external_egress_allowed: true,
           allowed_provider_ids: [PROVIDER_ID],
         },
-      }, "opencode")).resolves.toBe("local_provider");
+      }, { runtime_key: "opencode" })).resolves.toBe("external_provider");
+      // Nobody in this Space vouched for that local endpoint; the home Space did.
+      await expect(revalidateExecutionDestination(db.pool, {
+        space_id: PROVIDER_SPACE_ID,
+        egress: {
+          destination_type: "model_provider",
+          destination_id: PROVIDER_ID,
+          sensitivity_ceiling: "highly_restricted",
+          external_egress_allowed: false,
+          allowed_provider_ids: [PROVIDER_ID],
+        },
+      }, { runtime_key: "opencode" })).rejects.toThrow();
     });
 
     it("persists the immutable plan and reconciles provider-reported prompt tokens once", async () => {

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import SourceChannelsPage from '../SourceChannelsPage'
 import { projectsApi, sourcesApi } from '../../../api/client'
+import i18n from '../../../i18n'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
@@ -139,7 +140,24 @@ describe('Sources page', () => {
     expect(screen.getByText('These remain suggestions until you choose to follow them.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Follow' }))
     await waitFor(() => expect(sourcesApi.decideRecommendation).toHaveBeenCalledWith('recommended-channel', 'subscribed'))
-    await waitFor(() => expect(screen.queryByText('Outside Review · Systems monitor')).not.toBeInTheDocument())
+    // No longer a suggestion: it is one of the sources this person follows.
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Source recommendations' })).not.toBeInTheDocument())
+    const followedRegion = await screen.findByRole('region', { name: 'Followed sources' })
+    expect(followedRegion).toHaveTextContent('Outside Review · Systems monitor')
+  })
+
+  it('still shows the page when only the followed list fails to load, in either language', async () => {
+    vi.mocked(sourcesApi.followed).mockRejectedValue(new Error('Followed unavailable'))
+    renderPage()
+    expect(await screen.findByText(/Sources you follow could not be loaded/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Sources' })).toBeInTheDocument()
+
+    await i18n.changeLanguage('zh-CN')
+    try {
+      expect(await screen.findByText(/无法加载你关注的来源/)).toBeInTheDocument()
+    } finally {
+      await i18n.changeLanguage('en')
+    }
   })
 
   it('configures an academic source through the provider-aware setup dialog', async () => {

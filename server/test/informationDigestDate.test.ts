@@ -41,7 +41,7 @@ describe("the complete local day a scheduled slot reports on", () => {
   });
 
   it("puts consecutive days end to end, so every instant belongs to exactly one day", () => {
-    for (const timezone of ["UTC", "Asia/Shanghai", "America/New_York", "Europe/London"]) {
+    for (const timezone of ["UTC", "Asia/Shanghai", "America/New_York", "Europe/London", "America/Santiago", "America/Havana"]) {
       let day = "2026-03-01";
       for (let index = 0; index < 300; index += 1) {
         const next = previousLocalDate(day, -1);
@@ -49,6 +49,16 @@ describe("the complete local day a scheduled slot reports on", () => {
         day = next;
       }
     }
+  });
+
+  it("starts a day at the end of a clock jump that skips its midnight, never in the day before", () => {
+    // Chile moves 00:00 → 01:00 on 2026-09-06: that day begins at 01:00 local
+    // (UTC-3), and the 5th runs until then.
+    expect(localDayUtcBounds("2026-09-06", "America/Santiago")).toEqual({
+      startUtcIso: "2026-09-06T04:00:00.000Z",
+      endUtcIso: "2026-09-07T03:00:00.000Z",
+    });
+    expect(localDayUtcBounds("2026-09-05", "America/Santiago").endUtcIso).toBe("2026-09-06T04:00:00.000Z");
   });
 
   it("treats a day as complete only once its last instant has passed in the configured timezone", () => {

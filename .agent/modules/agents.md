@@ -342,8 +342,8 @@ nobody), and never
 from the prompt. Person-facing run create always stamps `manual`; a client
 cannot send `automation` to skip the in-turn proposal. The owner's own turn
 produces a proposal decided in that turn; any other member's turn produces a
-proposal only the owner can accept (`required_owner_user_id`, by identity and
-not by role). Owner-only proposal text is never stored in the shared Room
+proposal only the owner can accept (`memoryProposalDecider`, by identity and
+not by role, derived from the entry or the applier's own fields). Owner-only proposal text is never stored in the shared Room
 message; the Room reader projects it from the proposal authority only for that
 owner, so the member who asked gets nothing. An unattended Run applies it
 directly — and records it where the write happened — **only when the person
@@ -534,8 +534,12 @@ public config-proposal route:
    (`agents/agentAccess.ts`, 404 on refusal): the owner may; an unowned
    system-managed Agent (Project Research, source annotation, source
    post-processing) only the Space's owner or admin may; the Assistant is never
-   changed through these paths — its runtime profiles follow its Project's
-   write boundary.
+   changed through these paths — its runtime profiles, like its settings and
+   its agent-scope prompt and workflow versions, are changed only by the
+   person who configures it (`canConfigureAssistant`: the Space creator for
+   the Space Assistant, the Project owner for a Project Assistant). Agent-scope
+   asset versions and pins of any other Agent follow `canChangeAgent`; Space
+   role alone grants neither.
 
 **Read endpoints for the config UI:**
    `GET /agents/{id}/current-version` (current `AgentVersionOut` config snapshot),

@@ -9,6 +9,8 @@ import { Button } from '../../components/ui/button'
 import { Label } from '../../components/ui/label'
 import { Textarea } from '../../components/ui/textarea'
 import { ConfirmDialog } from '../../components/ui/dialog'
+import { useAppTranslation } from '../../i18n'
+import { formatDateTime } from '../../i18n/format'
 
 /**
  * The Project's space-public summary: a draft every Project writer may edit,
@@ -20,6 +22,7 @@ import { ConfirmDialog } from '../../components/ui/dialog'
  * the server refuses to publish a version nobody looked at.
  */
 export default function ProjectPublicSummaryCard({ projectId }: { projectId: string }) {
+  const { t } = useAppTranslation()
   const [state, setState] = useState<ProjectPublicSummaryEditorState | null>(null)
   const [loading, setLoading] = useState(true)
   const [forbidden, setForbidden] = useState(false)
@@ -64,7 +67,7 @@ export default function ProjectPublicSummaryCard({ projectId }: { projectId: str
       })
       setState(current => current ? { ...current, draft } : current)
       applyDraft(draft)
-      toast.success('Draft saved')
+      toast.success(t('management_ui.public_summary.saved'))
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -78,7 +81,7 @@ export default function ProjectPublicSummaryCard({ projectId }: { projectId: str
       const draft = await projectsApi.generatePublicSummaryDraft(projectId)
       setState(current => current ? { ...current, draft } : current)
       applyDraft(draft)
-      toast.success('Draft generated')
+      toast.success(t('management_ui.public_summary.generated'))
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -93,12 +96,12 @@ export default function ProjectPublicSummaryCard({ projectId }: { projectId: str
     try {
       const published = await projectsApi.publishPublicSummary(projectId, draft.draft_version)
       setState(current => current ? { ...current, published } : current)
-      toast.success('Public summary published')
+      toast.success(t('management_ui.public_summary.published_toast'))
     } catch (e) {
       // The draft moved on while it was being reviewed: show the current one
       // rather than publishing what was approved against a stale read.
       if (e instanceof ApiRequestError && e.code === 'project_public_summary_draft_changed') {
-        toast.error(e.message)
+        toast.error(t('management_ui.public_summary.draft_changed'))
         await load()
       } else {
         toast.error(errMsg(e))
@@ -113,7 +116,7 @@ export default function ProjectPublicSummaryCard({ projectId }: { projectId: str
     try {
       await projectsApi.revokePublicSummary(projectId)
       setState(current => current ? { ...current, published: null } : current)
-      toast.success('Public summary unpublished')
+      toast.success(t('management_ui.public_summary.unpublished_toast'))
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -135,18 +138,18 @@ export default function ProjectPublicSummaryCard({ projectId }: { projectId: str
     <Card className="p-4 space-y-4">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div className="min-w-0">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Public summary</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t('management_ui.public_summary.title')}</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            A high-level, redacted description every member of the Space can read. Edits stay in the draft until an owner publishes them.
+            {t('management_ui.public_summary.intro')}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Button variant="outline" size="sm" className="gap-1.5" onClick={() => { void generateDraft() }} disabled={busy !== null}>
             <Sparkles className="size-3.5" />
-            {busy === 'generate' ? 'Generating…' : 'Generate draft'}
+            {busy === 'generate' ? t('management_ui.public_summary.generating') : t('management_ui.public_summary.generate')}
           </Button>
           <Button size="sm" onClick={() => { void saveDraft() }} disabled={busy !== null || summaryText.trim().length === 0 || !draftDirty}>
-            {busy === 'save' ? 'Saving…' : 'Save draft'}
+            {busy === 'save' ? t('management_ui.public_summary.saving') : t('management_ui.public_summary.save')}
           </Button>
         </div>
       </div>
@@ -154,22 +157,22 @@ export default function ProjectPublicSummaryCard({ projectId }: { projectId: str
       <div className="grid gap-3 md:grid-cols-2">
         <div className="space-y-3">
           <div>
-            <Label htmlFor="public-summary-text">Draft{draft ? ` · version ${draft.draft_version}` : ''}</Label>
+            <Label htmlFor="public-summary-text">{draft ? t('management_ui.public_summary.draft_version', { version: draft.draft_version }) : t('management_ui.public_summary.draft')}</Label>
             <Textarea
               id="public-summary-text"
               value={summaryText}
               onChange={e => setSummaryText(e.target.value)}
               rows={5}
-              placeholder="What this project is about, in terms safe for the whole Space."
+              placeholder={t('management_ui.public_summary.placeholder')}
             />
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
-              <Label htmlFor="public-summary-topics">Topics (one per line)</Label>
+              <Label htmlFor="public-summary-topics">{t('management_ui.public_summary.topics')}</Label>
               <Textarea id="public-summary-topics" value={topics} onChange={e => setTopics(e.target.value)} rows={3} />
             </div>
             <div>
-              <Label htmlFor="public-summary-highlights">Highlights (one per line)</Label>
+              <Label htmlFor="public-summary-highlights">{t('management_ui.public_summary.highlights')}</Label>
               <Textarea id="public-summary-highlights" value={highlights} onChange={e => setHighlights(e.target.value)} rows={3} />
             </div>
           </div>
@@ -179,22 +182,22 @@ export default function ProjectPublicSummaryCard({ projectId }: { projectId: str
           <div className="flex items-center justify-between gap-2">
             <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
               <Globe className="size-3.5" />
-              Published
+              {t('management_ui.public_summary.published')}
             </p>
             {state.can_publish && (
               <div className="flex items-center gap-2">
                 {published && (
                   <Button variant="outline" size="sm" onClick={() => setRevokeConfirmOpen(true)} disabled={busy !== null}>
-                    {busy === 'revoke' ? 'Unpublishing…' : 'Unpublish'}
+                    {busy === 'revoke' ? t('management_ui.public_summary.unpublishing') : t('management_ui.public_summary.unpublish')}
                   </Button>
                 )}
                 <Button
                   size="sm"
                   onClick={() => { void publish() }}
                   disabled={busy !== null || draft === null || draftDirty || publishedIsCurrent}
-                  title={draftDirty ? 'Save the draft before publishing it' : undefined}
+                  title={draftDirty ? t('management_ui.public_summary.save_first') : undefined}
                 >
-                  {busy === 'publish' ? 'Publishing…' : published ? 'Publish current draft' : 'Publish'}
+                  {busy === 'publish' ? t('management_ui.public_summary.publishing') : published ? t('management_ui.public_summary.publish_current') : t('management_ui.public_summary.publish')}
                 </Button>
               </div>
             )}
@@ -203,16 +206,16 @@ export default function ProjectPublicSummaryCard({ projectId }: { projectId: str
             <div className="space-y-2">
               <p className="text-sm whitespace-pre-wrap">{published.summary_text}</p>
               {published.topics.length > 0 && (
-                <p className="text-xs text-muted-foreground">Topics: {published.topics.join(', ')}</p>
+                <p className="text-xs text-muted-foreground">{t('management_ui.public_summary.topics_list', { topics: published.topics.join(', ') })}</p>
               )}
               <p className="text-xs text-muted-foreground">
-                Draft version {published.source_draft_version}, published {new Date(published.published_at).toLocaleString()}
-                {publishedIsCurrent ? '' : ' · the draft has changed since'}
+                {t('management_ui.public_summary.published_from', { version: published.source_draft_version, when: formatDateTime(published.published_at) })}
+                {publishedIsCurrent ? '' : t('management_ui.public_summary.changed_since')}
               </p>
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">
-              Nothing is published. Other projects cannot see a summary of this one yet.
+              {t('management_ui.public_summary.nothing_published')}
             </p>
           )}
         </div>
@@ -221,9 +224,9 @@ export default function ProjectPublicSummaryCard({ projectId }: { projectId: str
       <ConfirmDialog
         open={revokeConfirmOpen}
         onOpenChange={setRevokeConfirmOpen}
-        title="Unpublish the public summary?"
-        description="Members of other projects will no longer see a summary of this project. The draft is kept."
-        confirmLabel="Unpublish"
+        title={t('management_ui.public_summary.confirm_title')}
+        description={t('management_ui.public_summary.confirm_description')}
+        confirmLabel={t('management_ui.public_summary.unpublish')}
         onConfirm={() => { void revoke() }}
       />
     </Card>

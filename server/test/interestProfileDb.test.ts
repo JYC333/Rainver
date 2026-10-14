@@ -58,9 +58,9 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO source_connections (
-       id, space_id, provider_connector_id, owner_user_id, name, status,
+       id, space_id, provider_connector_id, owner_user_id, name, status, visibility,
        capture_policy, trust_level, consent_json, policy_json, config_json, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,'Feed','active','reference_only','normal','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,$5,$5)`,
+     ) VALUES ($1,$2,$3,$4,'Feed','active','space_shared','reference_only','normal','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,$5,$5)`,
     [CONNECTION, SPACE, mappingId, OWNER, now],
   );
   // Both readers subscribe to the connection's channel: reading counts as

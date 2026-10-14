@@ -161,6 +161,9 @@ export default function ProposalsPage() {
   }
 
   const canDecide = (p: Proposal) => p.status === 'pending'
+  // A maintenance update the person has not revised yet is accepted only
+  // after the revision, which is made on its own page.
+  const awaitingRevision = (p: Proposal) => Boolean(p.operator_revision && !p.operator_revision.edited_by_user_id)
 
   return (
     <div className="p-6 space-y-6">
@@ -274,7 +277,9 @@ export default function ProposalsPage() {
               </Link>
               {canDecide(p) && (
                 <div className="flex gap-1.5 shrink-0">
-                  <Button size="sm" variant="success" onClick={() => decide(p.id, 'accept')}>Accept</Button>
+                  {awaitingRevision(p)
+                    ? <Button size="sm" variant="outline" asChild><Link to={`/proposals/${p.id}`}>Revise</Link></Button>
+                    : <Button size="sm" variant="success" onClick={() => decide(p.id, 'accept')}>Accept</Button>}
                   <Button size="sm" variant="destructive" onClick={() => decide(p.id, 'reject')}>Reject</Button>
                 </div>
               )}

@@ -168,7 +168,8 @@ rows are authoritative at runtime. A personal account with `visibility =
 private` is readable and exportable only by its owner; other Space members do
 not receive that account, its postings, or transactions that touch it.
 Finance import never posts. `POST /api/v1/finance/books/:bookId/import/beancount`
-takes the file text and nothing else (a `post_directly` field is a 400), lands
+takes the file text and an optional `source_type` label and nothing else (any
+other field, `post_directly` included, is a 400), lands
 every dated entry as `proposed`, and the posting step is the separate
 `finance_ledger.post_import_batch` / `finance_ledger.post_directive` proposal
 application with apply-time revalidation. A file is not authority over the
@@ -185,7 +186,9 @@ entry with a version; the original text is kept.
 
 Each parsed entry is one `finance_import_entries` row with a stable identity:
 `external:<id>` for a transaction whose `external_id` metadata names an
-upstream record, otherwise the hash of the entry's own lines plus its
+upstream record (a later line of the same file reusing that id gets its own
+key `external:<id>#<n>` and the status `error` /
+`external_id_repeated_in_file`, never merged into the first), otherwise the hash of the entry's own lines plus its
 occurrence index in the file, so two identical transactions in one file stay
 two records while the same file uploaded again (`finance_import_sources` is
 unique per book and content hash) finds its existing rows and retries only the

@@ -138,7 +138,10 @@ one it replaces, or the set an accepted change names, and the replaced
 version keeps none; restoring a superseded version takes them back from the
 version that replaced it. Every accepted create or update, and the owner's
 access change, re-checks the audience when it is applied: widening a person's
-entry is its owner's decision alone, and every reader a change adds must
+entry is its owner's decision alone — including moving it into a Project or
+handing it to another owner, which widens it to that Project's readers or to
+the new owner; only an entry that already is Project Memory widens under
+Project authority — and every reader a change adds must
 already be able to read what the entry was derived from (`activity`,
 `artifact`, Source and evidence, other Memory — a Run is governed by its
 context taint instead), or the apply fails with `memory_source_audience` and

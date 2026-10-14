@@ -248,7 +248,8 @@ async function applyEvolvableAssetVersionPromote(context: ProposalApplyContext):
 /**
  * Deprecates the earlier approved versions in the promoted version's own
  * scope, except any something still uses: an active pin, an active prompt
- * deployment ref, or a Run or workflow execution that has not finished.
+ * deployment ref, an Automation (active or paused) pinned to it, or a Run or
+ * workflow execution that has not finished.
  * Those stay approved until whoever owns the reference moves it; deprecating
  * them would make that reference fail to resolve. A finished execution is
  * history, not a reference that keeps a version alive.
@@ -266,6 +267,10 @@ async function deprecatePreviousUnreferenced(
               OR EXISTS (SELECT 1 FROM prompt_deployment_refs ref WHERE ref.version_id = v.id AND ref.status = 'active')
               OR EXISTS (SELECT 1 FROM runs run WHERE run.workflow_version_id = v.id AND run.status = ANY($5::text[]))
               OR EXISTS (SELECT 1 FROM workflow_executions execution WHERE execution.workflow_version_id = v.id AND execution.ended_at IS NULL)
+              OR EXISTS (SELECT 1 FROM automations automation
+                          WHERE automation.status <> 'archived'
+                            AND automation.config_json->>'workflow_resolution' = 'pin'
+                            AND automation.config_json->>'workflow_version_id' = v.id)
             ) AS referenced
        FROM evolvable_asset_versions v
       WHERE v.asset_id = $1 AND v.space_id = $2 AND v.scope_type = $3 AND v.scope_id = $4

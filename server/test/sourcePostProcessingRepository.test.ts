@@ -1048,6 +1048,56 @@ describe("source post-processing repository (real Postgres)", () => {
     expect(withoutOutputs?.runs).toEqual([expect.objectContaining({ run_id: run.id, summary: null })]);
   });
 
+  it("tells a shared source's current digest subscribers about its briefing, and nobody else", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString();
+    const BYSTANDER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    for (const user of [OTHER, BYSTANDER]) {
+      await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,$1,'active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [user, now]);
+      await db.pool.query(
+        `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`,
+        [randomUUID(), SPACE, user, now],
+      );
+    }
+    await db.pool.query(`UPDATE source_connections SET visibility = 'space_shared' WHERE id = $1`, [CONNECTION]);
+    await db.pool.query(
+      `INSERT INTO source_channel_user_subscriptions (id,space_id,source_channel_id,user_id,status,library_enabled,digest_enabled,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)`,
+      [randomUUID(), SPACE, CONNECTION, OTHER, now],
+    );
+    const item = await seedItem("Shared paper", "2026-07-01T00:00:00.000Z");
+    const rule = await repo().createRule({
+      spaceId: SPACE, sourceChannelId: CONNECTION, agentId: AGENT, projectId: PROJECT, name: "Daily briefing",
+      triggerType: "manual", triggerConfig: normalizeTriggerConfig(null, "manual"),
+      inputConfig: normalizeInputConfig({ timezone: "UTC" }), actions: normalizeActions({ batch_digest: true, mark_items: true }),
+      createdByUserId: OWNER,
+    });
+    const finishRun = async () => {
+      const run = await repo().createRun({
+        spaceId: SPACE, ruleId: rule.id, sourceChannelId: CONNECTION, agentId: AGENT, projectId: PROJECT,
+        triggeredByUserId: OWNER, triggerType: "manual", inputItemIds: [item], inputEvidenceIds: [], cursorBefore: null, cursorAfter: null,
+      });
+      await db.pool.query(`UPDATE source_post_processing_runs SET created_at = '2026-07-08T09:00:00.000Z' WHERE id = $1`, [run.id]);
+      await repo().markRunFinished({ runId: run.id, spaceId: SPACE, status: "succeeded", outputArtifactIds: [], summary: "Digest complete" });
+    };
+    const grantees = async () => (await db.pool.query<{ grantee_user_id: string }>(
+      `SELECT g.grantee_user_id FROM content_access_grants g
+         JOIN activity_records a ON a.id = g.resource_id AND g.resource_type = 'activity_record'
+        WHERE a.aggregate_key = $1 AND g.revoked_at IS NULL ORDER BY g.grantee_user_id`,
+      [`source:briefing:${CONNECTION}:2026-07-08`],
+    )).rows.map((row) => row.grantee_user_id);
+
+    await finishRun();
+    const pointer = await db.pool.query(`SELECT visibility FROM activity_records WHERE aggregate_key = $1`, [`source:briefing:${CONNECTION}:2026-07-08`]);
+    expect(pointer.rows[0]!.visibility).toBe("selected_users");
+    expect(await grantees()).toEqual([OWNER, OTHER].sort());
+
+    // Leaving the channel stops the notices: the next briefing of the day revokes it.
+    await db.pool.query(`UPDATE source_channel_user_subscriptions SET status = 'muted' WHERE user_id = $1`, [OTHER]);
+    await finishRun();
+    expect(await grantees()).toEqual([OWNER]);
+  });
+
   it("emits and re-surfaces one daily Activity Inbox briefing pointer per source local day", async () => {
     if (!db.available) return;
     const itemA = await seedItem("Relevant paper", "2026-07-01T00:00:00.000Z");

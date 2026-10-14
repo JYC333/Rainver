@@ -1,6 +1,7 @@
 import { HttpError, objectValue, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectWriter, canWriteProject } from "../projects/access.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { canChangeAgent, canConfigureAssistant } from "../agents/agentAccess.js";
 import { sha256, sha256Json } from "./hash.js";
 
 export interface EvolvableAssetAccessRow {
@@ -45,7 +46,7 @@ export async function normalizeAssetOwnerScopeForCreate(
   }
   if (ownerScopeType === "agent") {
     if (!ownerScopeId) throw new HttpError(422, "owner_scope_id is required for agent-owned assets");
-    await assertCanManageAgentScope(db, identity, ownerScopeId, "Requires agent owner or space owner/admin role to create an agent-owned asset");
+    await assertCanManageAgentScope(db, identity, ownerScopeId, "Requires permission to configure this Agent to create an agent-owned asset");
     return { ownerScopeType, ownerScopeId };
   }
   throw new HttpError(422, "owner_scope_type must be one of space, project, user, agent");
@@ -135,7 +136,7 @@ export async function normalizeVersionScopeForWrite(
     return scopeId;
   }
   if (scopeType === "agent") {
-    await assertCanManageAgentScope(db, identity, scopeId, "Requires agent owner or space owner/admin role to create an agent-scoped asset version");
+    await assertCanManageAgentScope(db, identity, scopeId, "Requires permission to configure this Agent to create an agent-scoped asset version");
     return scopeId;
   }
   throw new HttpError(422, "scope_type must be one of system, space, project, user, agent");
@@ -259,7 +260,7 @@ export async function assertCanPinScope(db: Queryable, identity: SpaceUserIdenti
     return;
   }
   if (scopeType === "agent") {
-    await assertCanManageAgentScope(db, identity, scopeId, "Requires agent owner or space owner/admin role to pin an agent-scoped asset version");
+    await assertCanManageAgentScope(db, identity, scopeId, "Requires permission to configure this Agent to pin an agent-scoped asset version");
   }
 }
 
@@ -280,8 +281,8 @@ async function canManageAgentScope(
   agentId: string,
   options: { missingAsFalse?: boolean } = {},
 ): Promise<boolean> {
-  const agent = await db.query<{ owner_user_id: string | null }>(
-    `SELECT owner_user_id
+  const agent = await db.query<{ agent_kind: string; project_id: string | null }>(
+    `SELECT agent_kind, project_id
        FROM agents
       WHERE id = $1 AND space_id = $2 AND status = 'active'
       LIMIT 1`,
@@ -292,8 +293,12 @@ async function canManageAgentScope(
     if (options.missingAsFalse) return false;
     throw new HttpError(404, "Agent not found");
   }
-  if (row.owner_user_id === identity.userId) return true;
-  return isSpaceOwnerOrAdmin(await activeSpaceRole(db, identity));
+  // Agent-scope versions and pins are what that Agent's prompts and
+  // workflows resolve to at run time: managing them is configuring the
+  // Agent, decided by the same person — never by Space role alone.
+  return row.agent_kind === "system_assistant"
+    ? canConfigureAssistant(db, identity, { projectId: row.project_id })
+    : canChangeAgent(db, identity, agentId);
 }
 
 async function assertSpaceOwnerOrAdmin(db: Queryable, identity: SpaceUserIdentity, message: string): Promise<void> {

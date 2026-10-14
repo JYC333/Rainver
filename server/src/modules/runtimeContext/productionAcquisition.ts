@@ -67,6 +67,8 @@ import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { isAcpRuntimeAdapter, isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 import { acpSessionConfigFromRunOverride } from "../runs/cliConversationProtocol.js";
 import { ACP_RUNTIME_MANAGED_WINDOW } from "../usage/modelCatalog.js";
+import { effectiveRunProviderModel } from "../runs/remoteProviderBinding.js";
+import { availableModels } from "../providers/dbReader.js";
 import {
   loadConversationInputResourceDescriptors,
   renderConversationInputResourceDescriptors,
@@ -125,7 +127,7 @@ class PgAuthorityProvider implements RuntimeContextAuthorityPort {
       [setup.agent_id, request.identity.spaceId, request.identity.userId, setup.scope_kind, request.turn.work_context_scope_id],
     );
     if (!agent.rows[0]) throw new Error("Runtime Context Agent authority is no longer active or readable");
-    const egressDestination = await revalidateExecutionDestination(this.db, control, run.runtime_key ?? null);
+    const egressDestination = await revalidateExecutionDestination(this.db, control, run);
     const modelOverride = record(run.model_override_json);
     const profileSnapshot = record(run.runtime_profile_snapshot_json);
     // The AgentVersion does not carry a deployment model. A per-run model
@@ -1141,8 +1143,9 @@ function effectiveRetrievalMaximum(setupValue: unknown, controlValue: number | n
 export async function revalidateExecutionDestination(
   db: Pool,
   control: Pick<RuntimeContextAuthoritySnapshot["controlSnapshot"], "space_id" | "egress">,
-  runtimeKey: string | null,
+  run: { runtime_key?: string | null; model_override_json?: unknown; runtime_profile_snapshot_json?: unknown },
 ): Promise<RetrievalEgressDestination> {
+  const runtimeKey = run.runtime_key ?? null;
   if (control.egress.destination_type !== "model_provider") {
     const cli = isVendorCliAdapter(runtimeKey);
     if (cli) {
@@ -1166,12 +1169,15 @@ export async function revalidateExecutionDestination(
     throw new Error("Execution provider is not authorized by the control snapshot");
   }
   const result = await db.query<{
+    space_id: string;
     provider_type: string;
     base_url: string | null;
     config_json: unknown;
     default_model: string | null;
+    capabilities_json: unknown;
   }>(
-    `SELECT provider.provider_type, provider.base_url, provider.config_json, provider.default_model
+    `SELECT provider.space_id, provider.provider_type, provider.base_url, provider.config_json,
+            provider.default_model, provider.capabilities_json
        FROM model_provider_space_grants provider_grant
        JOIN model_providers provider
          ON provider.id=provider_grant.provider_id
@@ -1181,7 +1187,11 @@ export async function revalidateExecutionDestination(
   );
   const provider = result.rows[0];
   if (!provider) throw new Error("Execution model-provider grant is no longer active");
-  const destination = runtimeContextProviderDestination(runtimeKey, provider);
+  const destination = runtimeProviderEgressDestination(
+    runtimeKey,
+    { ...provider, model: effectiveRunProviderModel(run, { ...provider, available_models: availableModels(provider.capabilities_json) }) },
+    control.space_id,
+  );
   if (destination === "external_provider") {
     const settings = await readSpaceRetrievalSettings(db, control.space_id);
     if (!settings.externalEgressEnabled || !control.egress.external_egress_allowed) {
@@ -1191,12 +1201,6 @@ export async function revalidateExecutionDestination(
   return destination;
 }
 
-export function runtimeContextProviderDestination(
-  runtimeKey: string | null,
-  provider: { provider_type: string; base_url: string | null; config_json: unknown; default_model?: string | null },
-): RetrievalEgressDestination {
-  return runtimeProviderEgressDestination(runtimeKey, provider);
-}
 
 function refKey(ref: { type: string; id: string }): string {
   return `${ref.type}:${ref.id}`;

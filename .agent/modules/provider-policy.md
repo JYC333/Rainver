@@ -223,7 +223,12 @@ Whether a Provider call is a *local* egress (allowed while a Space's
    self-hostable vendor (`VendorDescriptor.selfHostable`: `ollama`,
    `openai_compatible`) may carry the declaration, and only a Space owner or
    admin may make it (`ProviderCommandStore.requireSpaceOwnerOrAdmin`); the
-   Provider owner alone cannot.
+   Provider owner alone cannot. The same vouch is required again whenever a
+   declared Provider is pointed at another endpoint (`base_url` or either
+   compatible bridge URL), changes vendor, or is re-declared. The declaration
+   counts only in the Provider's home Space (`model_providers.space_id`),
+   where it was vouched: granted into another Space, nobody there vouched for
+   it, so there it is external.
 2. The endpoint the call will reach is inside this instance's network
    (`isInstanceNetworkUrl`): `localhost`/loopback, a private, link-local or
    otherwise non-public address, a single-label name such as a Compose
@@ -240,7 +245,13 @@ and a loopback URL proves nothing (a local gateway may forward anywhere), so
 an undeclared Provider is external. A Run's model override or a runtime's own
 configuration cannot change the classification: the declaration and the
 endpoint are the Provider's, and a cloud model chosen at run time is judged as
-such.
+such. Every judgement uses the model the call will actually run: for a Run,
+`effectiveRunProviderModel` (`runs/remoteProviderBinding.ts`) — the frozen
+Runtime Profile's model, then the Run's override, then the Provider default,
+then its first listed model, the order the binding uses — never the default
+alone. A proxy lease issued for a destination judged local carries that model
+(`pinned_model`), and the provider proxy refuses a request naming any other
+model (`403 provider_proxy_model_not_leased`).
 
 ## When Adding a New Provider
 

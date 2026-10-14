@@ -182,7 +182,9 @@ Do not collapse those rows into one folder:
   cross-Project share's entry in B does not count. Every writer that removes, moves or
   rewrites placements — `DELETE /knowledge/notes/{id}/placements/{collectionId}`,
   the tree reorder, `collection_id` / `primary_project_id` on a note update,
-  folder delete, share revoke — locks the note's `space_objects` row first
+  folder delete, share revoke, and restoring a deleted note (a trashed note
+  holds no folder back, so its folders may be gone; the restore names a
+  `collection_id` or is refused) — locks the note's `space_objects` row first
   (ascending id order), then its placements, does its work and checks the
   final state in the same transaction. A violation is 422
   `code: note_owning_entry_required` with `note_id`, `owning_project_id`,

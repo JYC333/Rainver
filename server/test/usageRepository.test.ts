@@ -390,13 +390,16 @@ describe("usage repository", () => {
     });
   });
 
-  it("reports the number of matched subjects and sessions, not the page size", async () => {
+  it("reports the number of matched subjects and sessions, not the page size, even past the last page", async () => {
     const db = new RecordingDb((sql) => {
       if (sql.includes("'all' AS group_key")) return { rows: [], rowCount: 0 };
-      if (sql.includes("count(*) OVER () AS group_total")) {
+      // The count is its own query, so a page past the end still knows it.
+      if (sql.includes(") matched")) return { rows: [{ total: "250" }], rowCount: 1 };
+      if (sql.includes("OFFSET 1000")) return { rows: [], rowCount: 0 };
+      if (sql.includes("GROUP BY")) {
         return {
           rows: [{
-            group_key: "run:run-1", group_label: "run run-1", group_total: "250",
+            group_key: "run:run-1", group_label: "run run-1",
             session_id: "s-1", external_session_id: null, session_path: null, session_name: null, run_ids: ["run-1"],
             event_count: 1, request_count: 1, input_tokens: 10, output_tokens: 5,
             cache_creation_input_tokens: 0, cache_creation_1h_input_tokens: 0, cache_read_input_tokens: 0,
@@ -413,6 +416,8 @@ describe("usage repository", () => {
 
     expect((await repository.subjects({ ...baseFilters, limit: 1 })).total).toBe(250);
     expect((await repository.sessions({ ...baseFilters, limit: 1 })).total).toBe(250);
+    expect(await repository.aggregate({ ...baseFilters, limit: 1, offset: 1000 })).toMatchObject({ items: [], total: 250 });
+    expect(await repository.sessions({ ...baseFilters, limit: 1, offset: 1000 })).toMatchObject({ items: [], total: 250 });
   });
 
   it("pages events on a total order, with the id as the tie-breaker", async () => {

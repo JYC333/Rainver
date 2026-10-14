@@ -15,6 +15,7 @@ import { EvolvableAssetEvaluationRepository } from "../evolution/assetEvaluation
 import { EvolvableAssetRepository } from "../evolution/assetRepository.js";
 import { HttpError, objectValue, optionalObject, optionalString, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { missingRequiredVariables, renderPromptMessages, renderPromptTemplate } from "./renderer.js";
+import { lockEvolutionAssets } from "../evolution/assetLocks.js";
 
 // Prompt assets are a prompt-specific view over the generic evolvable-asset
 // system (asset_type 'prompt_template'). Not every 'prompt_template' asset
@@ -346,6 +347,16 @@ export class PromptRepository {
     // committed on its own. The label would have no active ref at all.
     const id = randomUUID();
     await withQueryableTransaction(this.db, async (db) => {
+      // Under the asset lock a promotion takes to deprecate earlier
+      // versions, re-check the version: a deployment either lands before
+      // that check (and keeps its version approved) or sees it deprecated.
+      await lockEvolutionAssets(db, [assetId]);
+      const current = await db.query<PromptVersionRow>(
+        `SELECT id, asset_id, space_id, scope_type, scope_id, status FROM evolvable_asset_versions WHERE asset_id = $1 AND id = $2 LIMIT 1`,
+        [assetId, versionId],
+      );
+      if (!current.rows[0]) throw new HttpError(422, "version_id does not reference a version of this prompt asset");
+      validateVersionForDeployment(identity, label, scopeType, scopeId, current.rows[0]);
       await db.query(
         `UPDATE prompt_deployment_refs
             SET status = 'archived', updated_at = $6

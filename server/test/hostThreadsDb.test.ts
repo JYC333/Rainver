@@ -9,6 +9,7 @@ import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js
 import { recordHostThreadOutcome } from "../src/modules/hosts/threadOutcome.js";
 import { resolveRuntimeProfileScope, runtimeProfileKey } from "../src/modules/runs/remoteProviderBinding.js";
 import { PgHostThreadEventRepository } from "../src/modules/hosts/threadEventRepository.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { PgRoomRepository } from "../src/modules/rooms/repository.js";
 import { PgWorkspaceLocationRepository } from "../src/modules/projectFolders/workspaceLocations.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
@@ -826,6 +827,48 @@ describe("host_threads owner constraints", () => {
       tool_call_id: longCallId,
       tool_name: longToolName,
     });
+  });
+
+  it("keeps a superseded attempt's late events out of the retried attempt's turn", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const thread = await new PgHostThreadRepository(db.pool).getOrCreateForDirect({
+      executionHostId: HOST,
+      workspaceLocationId: null,
+      workspaceMode: "managed",
+      agentId: AGENT,
+      userId: OWNER,
+      runtimeKey: "claude_code",
+      runtimeInstallation: "own",
+      createdByUserId: OWNER,
+    });
+    const runId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+         model_override_json, owner_user_id, created_at, updated_at, execution_kind)
+       VALUES ($1,$2,$3::varchar,(SELECT current_version_id FROM agents WHERE id=$3::varchar),'agent','manual','queued','live',
+         '{}'::jsonb,$4,now(),now(), 'agent')`,
+      [runId, SPACE, AGENT, OWNER],
+    );
+    for (const attempt of [1, 2]) {
+      await db.pool.query(
+        `INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,now(),now())`,
+        [randomUUID(), SPACE, runId, attempt, attempt === 1 ? "failed" : "running"],
+      );
+    }
+    const events = new PgHostThreadEventRepository(db.pool);
+    // Attempt 1 is still unwinding after attempt 2 started: dropped.
+    await expect(events.append(thread.id, runId, [{ event_type: "status", status: "timed_out" }], 1)).resolves.toEqual([]);
+    const current = await events.append(thread.id, runId, [{ event_type: "status", status: "run_started" }], 2);
+    expect(current).toEqual([expect.objectContaining({ attempt_number: 2, status: "run_started" })]);
+
+    const runs = new PgRunRepository(db.pool);
+    await expect(runs.appendRunEvent({ run_id: runId, space_id: SPACE, attempt_number: 1, event_type: "tool_call_started", status: "running" }))
+      .resolves.toBeNull();
+    await expect(runs.appendRunEvent({ run_id: runId, space_id: SPACE, attempt_number: 2, event_type: "tool_call_started", status: "running" }))
+      .resolves.toMatchObject({ event_type: "tool_call_started" });
+    const stored = await db.pool.query<{ attempt_number: number }>(`SELECT attempt_number FROM run_events WHERE run_id = $1`, [runId]);
+    expect(stored.rows).toEqual([{ attempt_number: 2 }]);
   });
 
   it("rejects a host binding when the caller or installation is not authorized", async (ctx) => {

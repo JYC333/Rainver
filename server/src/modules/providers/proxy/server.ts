@@ -193,6 +193,13 @@ async function handleProviderProxyRequest(
   }
 
   const body = await readBody(request);
+  if (lease.pinned_model) {
+    const requested = stringValue(parseJsonObject(body)?.model);
+    if (requested && requested !== lease.pinned_model) {
+      sendJson(response, 403, { error: "provider_proxy_model_not_leased" });
+      return;
+    }
+  }
   const attributionObservation = providerProxyUsageObservation(lease, null);
   const attribution = deps.resolveUsageAttribution
     ? await deps.resolveUsageAttribution(attributionObservation)

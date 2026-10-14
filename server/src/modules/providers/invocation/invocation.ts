@@ -602,6 +602,8 @@ function structuredOutputUnsupportedError(providerType: string): ProviderInvocat
 
 function providerTargetEgressAllowed(
   target: InvocationTarget,
+  /** The Space whose content the call carries. */
+  spaceId: string,
   policy: RetrievalEgressPolicy | null | undefined,
   /** The model this call will run; the Provider's default when the request names none. */
   model: string | null = null,
@@ -615,7 +617,7 @@ function providerTargetEgressAllowed(
     },
     {
       ...policy,
-      destination: providerEgressDestination({ ...target.provider, model }),
+      destination: providerEgressDestination({ ...target.provider, model }, spaceId),
     },
   );
 }
@@ -1196,7 +1198,7 @@ async function completeAuthorizedProviderChat(
     // Fallback providers serve THEIR OWN default model: an explicit model
     // name from the request only binds to the provider it was meant for.
     const effectiveBody = index === 0 ? body : { ...body, model: null };
-    if (!providerTargetEgressAllowed(target, body.egressPolicy, effectiveBody.model ?? null)) {
+    if (!providerTargetEgressAllowed(target, spaceId, body.egressPolicy, effectiveBody.model ?? null)) {
       lastError = providerEgressDeniedError(target);
       continue;
     }
@@ -1539,7 +1541,7 @@ async function completeProviderEmbeddingWithFallback(
 
   let lastError: unknown = null;
   for (const [index, candidate] of chain.entries()) {
-    if (!providerTargetEgressAllowed(candidate, egressPolicy)) {
+    if (!providerTargetEgressAllowed(candidate, spaceId, egressPolicy)) {
       lastError = providerEgressDeniedError(candidate);
       continue;
     }
@@ -1891,7 +1893,7 @@ async function completeProviderRerankWithFallback(
 
   let lastError: unknown = null;
   for (const [index, candidate] of chain.entries()) {
-    if (!providerTargetEgressAllowed(candidate, egressPolicy)) {
+    if (!providerTargetEgressAllowed(candidate, spaceId, egressPolicy)) {
       lastError = providerEgressDeniedError(candidate);
       continue;
     }

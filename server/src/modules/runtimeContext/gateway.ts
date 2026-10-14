@@ -57,6 +57,8 @@ import { PgRuntimeSkillProvider, renderRuntimeSkillCandidate } from "../capabili
 import { enforce } from "../policy/service.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
+import { effectiveRunProviderModel } from "../runs/remoteProviderBinding.js";
+import { availableModels } from "../providers/dbReader.js";
 
 const deliverySourceRegistry = new RetrievalRegistry();
 for (const adapter of [
@@ -287,6 +289,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       run_group_id: string | null;
       session_id: string | null;
       model_override_json: unknown;
+      runtime_profile_snapshot_json: unknown;
       agent_id: string | null;
       project_id: string | null;
       capability_id: string | null;
@@ -294,7 +297,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     }>(
       `SELECT run.runtime_key,run.model_provider_id,run.owner_user_id,run.instructed_by_user_id,
               run.prompt,run.instruction,run.error_json,run.run_group_id,
-              run.session_id,run.model_override_json,run.agent_id,run.project_id,
+              run.session_id,run.model_override_json,run.runtime_profile_snapshot_json,run.agent_id,run.project_id,
               run.capability_id,run.capabilities_json
          FROM execution_control_snapshots control_row
          JOIN runs run ON run.id=control_row.run_id AND run.space_id=control_row.space_id
@@ -448,7 +451,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     db: Queryable,
     input: InvocationAttemptInput,
     control: ExecutionControlSnapshot,
-    run: { runtime_key: string | null; model_provider_id: string | null },
+    run: { runtime_key: string | null; model_provider_id: string | null; model_override_json: unknown; runtime_profile_snapshot_json: unknown },
   ): Promise<{ destination: RetrievalEgressDestination; externalEgressEnabled: boolean }> {
     let external = isVendorCliAdapter(run.runtime_key);
     let destination: RetrievalEgressDestination = external ? "external_provider" : "internal_process";
@@ -458,8 +461,8 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       throw new HttpError(409, "Invocation Delivery CLI egress authority no longer matches the adapter");
     }
     if (run.model_provider_id) {
-      const providerResult = await db.query<{ provider_type: string; base_url: string | null; config_json: unknown; default_model: string | null }>(
-        `SELECT provider.provider_type,provider.base_url,provider.config_json,provider.default_model
+      const providerResult = await db.query<{ space_id: string; provider_type: string; base_url: string | null; config_json: unknown; default_model: string | null; capabilities_json: unknown }>(
+        `SELECT provider.space_id,provider.provider_type,provider.base_url,provider.config_json,provider.default_model,provider.capabilities_json
            FROM model_provider_space_grants provider_grant
            JOIN model_providers provider ON provider.id=provider_grant.provider_id
           WHERE provider_grant.space_id=$1 AND provider_grant.provider_id=$2
@@ -472,7 +475,11 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
         || !control.egress.allowed_provider_ids.includes(run.model_provider_id)) {
         throw new HttpError(409, "Invocation Delivery provider grant is no longer active");
       }
-      destination = runtimeProviderEgressDestination(run.runtime_key, provider);
+      destination = runtimeProviderEgressDestination(
+        run.runtime_key,
+        { ...provider, model: effectiveRunProviderModel(run, { ...provider, available_models: availableModels(provider.capabilities_json) }) },
+        input.spaceId,
+      );
       external = destination === "external_provider";
     }
     if (!external) return { destination, externalEgressEnabled: true };

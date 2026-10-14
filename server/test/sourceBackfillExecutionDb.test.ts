@@ -420,6 +420,30 @@ describe("history page completion against a concurrent reconcile (real Postgres)
     expect(segment.rows[0]!.extraction_job_id).not.toBe(jobId);
   });
 
+  it("has a reconcile wait for the research operation before it holds any segment, the order a continuation takes", async () => {
+    if (!db.available) return;
+    await seedPlan(PLAN_A, CHANNEL_A, 10, 0, "running");
+    const segmentId = randomUUID();
+    await seedSegment(segmentId, PLAN_A, "running", { max_items: 10, remaining_items: 10, page_size: 5, cursor: 0 });
+    // A continuation finishing a page holds the operation (and would next
+    // take the segment and the plan).
+    const continuation = await db.pool.connect();
+    try {
+      await continuation.query("BEGIN");
+      await continuation.query(`SELECT id FROM project_operations WHERE id=$1 FOR UPDATE`, [OPERATION]);
+      const reconcile = new SourceBackfillExecutionService(db.pool).reconcile(SPACE, PLAN_A);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      // The waiting reconcile holds neither the segment nor the plan, so the
+      // continuation can take both: no deadlock.
+      await continuation.query(`SELECT id FROM source_backfill_segments WHERE id=$1 FOR UPDATE NOWAIT`, [segmentId]);
+      await continuation.query(`SELECT id FROM source_backfill_plans WHERE id=$1 FOR UPDATE NOWAIT`, [PLAN_A]);
+      await continuation.query("COMMIT");
+      await expect(reconcile).resolves.toBeDefined();
+    } finally {
+      continuation.release();
+    }
+  });
+
   it("reserves each continuation page against the budget siblings share, so concurrent segments never pass max_items", async () => {
     if (!db.available) return;
     // Operation total is 10. A's first page read 5; B has a 4-item page in flight.

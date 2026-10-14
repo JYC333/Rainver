@@ -34,18 +34,25 @@ source pipeline, subscription model, data model, and API.
   saver cannot read with 409 and no detail. Library uses
   `source_item_user_states.library_status`, `read_status` and `read_origin`;
   absent state rows render as `new/unread`.
-- Reading eligibility after leaving a source. Each
-  `source_channel_user_subscriptions` row records the window in which the
-  person received the channel (`subscribed_at`, closed by `unsubscribed_at`).
-  Leaving (`POST /api/v1/sources/channels/:channelId/subscription
-  {status:"muted"}`, the Sources page "Sources you follow" list) stops new
-  items and digest delivery; items first seen inside a closed window stay
-  readable in Library, Reader, export and every path that uses
-  `sourceItemReadableClause`. That historical access ends when the source
-  itself no longer admits the reader — the connection is archived or deleted,
-  its channel archived, or its visibility/grants narrowed past them — because
-  the clause re-checks the connection's current read decision. Following again
-  opens a new window. Already-downloaded offline copies are outside this.
+- Reading eligibility after leaving a source. Every period in which a person
+  received a channel is a row of `source_channel_subscription_windows`
+  (`subscribed_at`, closed by `unsubscribed_at`), opened and closed by each
+  subscription transition (`sources/channels/subscriptionWindows.ts`); leaving
+  and rejoining adds a period and never overwrites an earlier one. Leaving
+  (`POST /api/v1/sources/channels/:channelId/subscription {status:"muted"}`,
+  the Sources page "Sources you follow" list) stops new items and digest
+  delivery; items first seen inside a closed period stay readable in Library,
+  the Reader (items, snapshots, Project annotation lists), Evidence and
+  Source-derived artifacts (`source_reader_document`, `source_raw_snapshot`:
+  get, list and export), through one gate in `sources/sourceItemAccess.ts`.
+  Both a live subscription and a closed period hold only while the
+  connection still admits the reader: archiving or deleting the connection,
+  archiving its channel, or narrowing its visibility/grants past them ends
+  both. Already-downloaded offline copies are outside this.
+- Today's reading counts (`pending_reading_items`, `new_items_today` in the
+  home summary) are the viewer's own: items readable to them through the
+  Library gate without Space-admin oversight, unread and not set aside by
+  them. Another member's reading or private items never change them.
 - Interest evidence. A read counts toward the private interest profile only
   when the reader reached it themselves (`read_origin = 'library'`; an open
   from the digest's serendipity section is recorded `serendipity` and never

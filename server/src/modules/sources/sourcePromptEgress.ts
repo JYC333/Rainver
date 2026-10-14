@@ -69,6 +69,7 @@ async function resolveAgentPromptEgressDestination(
     backend_mode: "runtime_native" | "model_provider";
     model_provider_id: string | null;
     model_name: string | null;
+    provider_space_id: string | null;
     provider_type: string | null;
     base_url: string | null;
     config_json: unknown;
@@ -78,6 +79,7 @@ async function resolveAgentPromptEgressDestination(
             arp.backend_mode,
             arp.model_provider_id,
             arp.model_name,
+            p.space_id AS provider_space_id,
             p.provider_type,
             p.base_url,
             p.config_json,
@@ -103,16 +105,17 @@ async function resolveAgentPromptEgressDestination(
     if (!profile.model_provider_id) {
       throw new HttpError(409, "Selected agent Runtime Profile has no ModelProvider binding.");
     }
-    if (!profile.provider_type) {
+    if (!profile.provider_type || !profile.provider_space_id) {
       throw new HttpError(409, "Selected agent model provider is not available in this space.");
     }
     return runtimeProviderEgressDestination(profile.runtime_key, {
+      space_id: profile.provider_space_id,
       provider_type: profile.provider_type,
       base_url: profile.base_url,
       config_json: profile.config_json,
       default_model: profile.default_model,
       model: profile.model_name,
-    });
+    }, spaceId);
   }
   if (profile.model_provider_id) {
     throw new HttpError(409, "Runtime-native Agent Profiles cannot carry a ModelProvider binding.");

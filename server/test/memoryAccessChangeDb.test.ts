@@ -141,6 +141,41 @@ describe("memoryAccessChangeDb", () => {
     expect(head.rows[0]!.visibility).toBe("private");
   });
 
+  it("lets nobody but its owner move a personal memory into a Project or hand it to someone else", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    // OWNER's entry is shared with READER only; ADMIN owns the Project.
+    const memoryId = await ownMemory({ visibility: "selected_users" });
+    await db.pool.query(
+      `INSERT INTO content_access_grants (id, space_id, resource_type, resource_id, grantee_user_id, access_level, granted_by_user_id, created_at, updated_at)
+       VALUES ($1, $2, 'memory', $3, $4, 'full', $5, now(), now())`,
+      [randomUUID(), SPACE, memoryId, READER, OWNER],
+    );
+    const propose = async (payload: Record<string, unknown>) => {
+      const proposalId = randomUUID();
+      await db.pool.query(
+        `INSERT INTO proposals (id, space_id, proposal_type, status, payload_json, created_by_user_id, title, risk_level, urgency, visibility, created_at, updated_at)
+         VALUES ($1, $2, 'memory_update', 'pending', $3::jsonb, $4, 'Move', 'low', 'normal', 'space_shared', now(), now())`,
+        [proposalId, SPACE, JSON.stringify({
+          operation: "update",
+          target_memory_id: memoryId,
+          provenance_entries: [{ source_type: "user_confirmation", source_id: ADMIN, source_trust: "user_confirmed" }],
+          ...payload,
+        }), ADMIN],
+      );
+      return proposalId;
+    };
+    const intoProject = await propose({ target_scope: "project", target_visibility: "space_shared", project_id: PROJECT });
+    await expect(new PgProposalApplyService(config()).accept(intoProject, { spaceId: SPACE, userId: ADMIN }))
+      .rejects.toMatchObject({ statusCode: 409, detail: expect.objectContaining({ code: "memory_owner_sharing_required" }) });
+    const handOver = await propose({ target_visibility: "private", owner_user_id: ADMIN });
+    await expect(new PgProposalApplyService(config()).accept(handOver, { spaceId: SPACE, userId: ADMIN }))
+      .rejects.toMatchObject({ statusCode: 409, detail: expect.objectContaining({ code: "memory_owner_sharing_required" }) });
+    const head = await db.pool.query<{ scope_type: string; owner_user_id: string; status: string }>(
+      `SELECT scope_type, owner_user_id, status FROM memory_entries WHERE id = $1`, [memoryId],
+    );
+    expect(head.rows[0]).toEqual({ scope_type: "user", owner_user_id: OWNER, status: "active" });
+  });
+
   it("keeps a personal memory out of Space-wide sharing and its derived content behind its source", async (ctx) => {
     if (!db.available) return ctx.skip();
     const memoryId = await ownMemory();

@@ -80,6 +80,9 @@ export class SourceBackfillExecutionService {
   }
 
   private async startLocked(spaceId: string, planId: string, proposalId: string, strategy: unknown, quota: unknown) {
+    // Every path takes the research operation before the plan (see
+    // lockResearchOperationForPlan); taking the plan first could deadlock.
+    await this.lockResearchOperationForPlan(spaceId, planId);
     const updated = await this.db.query<{ id: string }>(
       `UPDATE source_backfill_plans
           SET status='approved', updated_at=$4
@@ -302,6 +305,11 @@ export class SourceBackfillExecutionService {
   }
 
   private async reconcileLocked(spaceId: string, planId: string) {
+    // Operation, then segments, then plan: the order a page continuation
+    // takes (extractionWorker.queueBackfillContinuationIfNeeded). Settling
+    // segments and counters first and the operation last would deadlock
+    // against a continuation finishing at the same time.
+    await this.lockResearchOperationForPlan(spaceId, planId);
     const rows = await this.db.query<ReconcileJobRow>(
       `SELECT s.id AS segment_id, j.id AS extraction_job_id, s.window_json, s.attempt_count,
               j.status, j.items_created, j.items_updated,
@@ -559,6 +567,12 @@ export class SourceBackfillExecutionService {
     await this.lockResearchOperationForPlan(spaceId, planId);
   }
 
+  /**
+   * The first lock of every plan mutation. A plan inside a research
+   * operation shares that operation's item budget with its siblings, so the
+   * operation row serializes them; it is always taken before any segment or
+   * plan row, so two paths can never wait on each other.
+   */
   private async lockResearchOperationForPlan(spaceId: string, planId: string): Promise<void> {
     const scope = await this.db.query<{ project_operation_id: string | null; project_operation_kind: string | null }>(
       `SELECT p.project_operation_id, o.kind AS project_operation_kind

@@ -5,6 +5,7 @@ import { errMsg } from '../../lib/utils'
 import type { Proposal } from '../../types/api'
 import { Button } from '../../components/ui/button'
 import { Textarea } from '../../components/ui/textarea'
+import { useAppTranslation } from '../../i18n'
 
 /**
  * The revision a maintenance finding asks for. The proposal cannot be accepted
@@ -15,6 +16,7 @@ export function MemoryRevisionEditor({ proposal, onRevised }: {
   proposal: Proposal
   onRevised: (proposal: Proposal) => void
 }) {
+  const { t } = useAppTranslation()
   const revised = Boolean(proposal.operator_revision?.edited_by_user_id)
   const [content, setContent] = useState(revised ? proposal.proposed_content : '')
   const [loaded, setLoaded] = useState(revised)
@@ -34,7 +36,7 @@ export function MemoryRevisionEditor({ proposal, onRevised }: {
     setSaving(true)
     try {
       onRevised(await memoryApi.reviseProposal(proposal.id, { content: content.trim() }))
-      toast.success('Revision saved')
+      toast.success(t('knowledge_ui.memory_revision.saved'))
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
@@ -44,21 +46,19 @@ export function MemoryRevisionEditor({ proposal, onRevised }: {
 
   return (
     <div className="rounded-md border border-border bg-muted/30 p-3 space-y-2">
-      <p className="text-sm font-medium">Revise this memory</p>
+      <p className="text-sm font-medium">{t('knowledge_ui.memory_revision.title')}</p>
       <p className="text-xs text-muted-foreground">
-        {revised
-          ? 'Your revision is saved. Accept to write it as the new version, or change it again.'
-          : 'This finding is fixed by rewriting the entry. Accepting it unchanged is refused.'}
+        {revised ? t('knowledge_ui.memory_revision.saved_hint') : t('knowledge_ui.memory_revision.required_hint')}
       </p>
       <Textarea
-        aria-label="Revised memory content"
+        aria-label={t('knowledge_ui.memory_revision.content_label')}
         value={content}
         disabled={!loaded || saving || proposal.status !== 'pending'}
         onChange={event => setContent(event.target.value)}
         rows={6}
       />
       <Button size="sm" disabled={!loaded || saving || !content.trim() || proposal.status !== 'pending'} onClick={() => void save()}>
-        Save revision
+        {t('knowledge_ui.memory_revision.save')}
       </Button>
     </div>
   )

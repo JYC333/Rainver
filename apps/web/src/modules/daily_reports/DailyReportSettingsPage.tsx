@@ -7,6 +7,7 @@ import type {
   DailyReportRunResponse,
   DailyReportArtifactItem,
 } from '../../types/api'
+import { formatDateTime } from '../../i18n/format'
 
 function errMsg(e: unknown): string {
   if (e instanceof Error) return e.message
@@ -287,7 +288,7 @@ export default function DailyReportSettingsPage() {
       )}
       {setting.next_run_at && (
         <div className="text-xs text-gray-400">
-          Next scheduled run: {new Date(setting.next_run_at).toLocaleString()}
+          Next scheduled run: {formatDateTime(setting.next_run_at)}
         </div>
       )}
     </div>

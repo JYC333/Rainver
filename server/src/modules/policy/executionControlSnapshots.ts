@@ -10,6 +10,8 @@ import { assembleRunInputEnvelope } from "../runs/runInputEnvelope.js";
 import { runtimeProviderEgressDestination } from "../retrieval/egress/egressPolicy.js";
 import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
 import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
+import { effectiveRunProviderModel } from "../runs/remoteProviderBinding.js";
+import { availableModels } from "../providers/dbReader.js";
 
 interface ExecutionControlSnapshotInputs {
   runtimeInstallation?: string | null;
@@ -74,7 +76,7 @@ export class ExecutionControlSnapshotRepository {
     const bindings = effectiveBindings ?? await this.resolveEffectiveBindingsForRun(run);
     const projectContextRefs = await this.resolveProjectContextRefs(run.space_id, bindings, resolvedPolicy);
     const egress = providerId
-      ? await this.providerEgress(run.space_id, providerId, run.runtime_key ?? null)
+      ? await this.providerEgress(run, providerId)
       : null;
     if (providerId && !egress!.allowed) {
       throw new Error("Execution preflight denied external model egress for this Space");
@@ -389,17 +391,20 @@ export class ExecutionControlSnapshotRepository {
   }
 
   private async providerEgress(
-    spaceId: string,
+    run: RunRecord,
     providerId: string,
-    runtimeKey: string | null,
   ): Promise<{ external: boolean; allowed: boolean }> {
+    const spaceId = run.space_id;
     const result = await this.db.query<{
+      space_id: string;
       provider_type: string;
       base_url: string | null;
       config_json: unknown;
       default_model: string | null;
+      capabilities_json: unknown;
     }>(
-      `SELECT provider.provider_type, provider.base_url, provider.config_json, provider.default_model
+      `SELECT provider.space_id, provider.provider_type, provider.base_url, provider.config_json,
+              provider.default_model, provider.capabilities_json
          FROM model_provider_space_grants provider_grant
          JOIN model_providers provider
            ON provider.id = provider_grant.provider_id
@@ -411,7 +416,11 @@ export class ExecutionControlSnapshotRepository {
     );
     const provider = result.rows[0];
     if (!provider) throw new Error("Execution preflight requires an enabled provider grant");
-    const destination = runtimeProviderEgressDestination(runtimeKey, provider);
+    const destination = runtimeProviderEgressDestination(
+      run.runtime_key ?? null,
+      { ...provider, model: effectiveRunProviderModel(run, { ...provider, available_models: availableModels(provider.capabilities_json) }) },
+      spaceId,
+    );
     if (destination === "local_provider") return { external: false, allowed: true };
     const settings = await readSpaceRetrievalSettings(this.db, spaceId);
     return { external: settings.externalEgressEnabled, allowed: settings.externalEgressEnabled };

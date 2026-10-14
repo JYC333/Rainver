@@ -267,6 +267,11 @@ export class PgSourceAnnotationRepository {
               stance_confidence = $11,
               annotation_run_id = $12,
               error_json = NULL,
+              -- A success ends whatever wait the row was in: it leaves its
+              -- retry schedule and failure episode.
+              wait_reason = NULL,
+              next_retry_at = NULL,
+              episode_id = NULL,
               annotated_at = $13,
               updated_at = $13
         WHERE space_id = $1 AND source_item_id = $2`,
@@ -371,6 +376,9 @@ export class PgSourceAnnotationRepository {
     await this.db.query(
       `UPDATE source_item_annotations
           SET status = 'skipped',
+              wait_reason = NULL,
+              next_retry_at = NULL,
+              episode_id = NULL,
               error_json = $3::jsonb,
               annotation_run_id = COALESCE($4, annotation_run_id),
               updated_at = $5
@@ -493,17 +501,29 @@ export class PgSourceAnnotationRepository {
     return result.rows.map((row) => row.connection_id);
   }
 
-  /** Spaces with rows waiting on a condition the sweep can re-check. */
-  async spacesWithWaitingConditions(limit: number): Promise<string[]> {
-    const result = await this.db.query<{ space_id: string }>(
+  /**
+   * Spaces with rows waiting on a condition the sweep can re-check, the next
+   * `limit` after `afterSpaceId` in id order, wrapping round. A row whose
+   * condition still holds does not change, so any order read from the rows
+   * would hand the same spaces to every sweep and starve the rest once more
+   * than `limit` are stuck; the caller carries the cursor between sweeps.
+   */
+  async spacesWithWaitingConditions(limit: number, afterSpaceId: string | null = null): Promise<string[]> {
+    const select = (after: string | null, count: number) => this.db.query<{ space_id: string }>(
       `SELECT DISTINCT space_id
          FROM source_item_annotations
         WHERE status = 'pending' AND wait_reason = ANY($2::text[])
+          AND ($3::text IS NULL OR space_id > $3)
         ORDER BY space_id
         LIMIT $1`,
-      [limit, ANNOTATION_CONDITION_REASONS],
+      [count, ANNOTATION_CONDITION_REASONS, after],
     );
-    return result.rows.map((row) => row.space_id);
+    const first = (await select(afterSpaceId, limit)).rows.map((row) => row.space_id);
+    if (first.length >= limit || afterSpaceId === null) return first;
+    const wrapped = (await select(null, limit - first.length)).rows
+      .map((row) => row.space_id)
+      .filter((spaceId) => !first.includes(spaceId));
+    return [...first, ...wrapped];
   }
 
   async getByItemId(spaceId: string, sourceItemId: string): Promise<SourceAnnotationRow | null> {

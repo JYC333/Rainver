@@ -10,6 +10,10 @@ import { SourceChannelService } from "../src/modules/sources/channels/sourceChan
 import { PgSourcesRepository } from "../src/modules/sources/repository.js";
 import { sourceItemReadableClause } from "../src/modules/sources/sourceItemAccess.js";
 import { PgFrontendSupportService } from "../src/modules/frontendSupport/service.js";
+import { openSubscriptionWindow } from "../src/modules/sources/channels/subscriptionWindows.js";
+import { PgReaderRepository } from "../src/modules/reader/repository.js";
+import { PgArtifactRepository } from "../src/modules/artifacts/repository.js";
+import { materializeExternalDiscovery } from "../src/modules/sources/externalDiscoveryMaterializer.js";
 
 // Real-Postgres coverage for reading eligibility (plan P07): what a reader may
 // still open after leaving a source, what counts as their interest evidence,
@@ -32,6 +36,7 @@ beforeEach(async () => {
     [
       "activity_records", "source_post_processing_runs", "interest_topic_observations", "interest_topic_candidates",
       "interest_topics", "interest_profiles", "source_item_annotations", "source_item_user_states", "source_items",
+      "artifacts", "content_access_grants", "source_channel_subscription_windows",
       "source_channel_user_subscriptions", "source_channels", "source_connections", "source_provider_connectors",
       "source_providers", "source_connectors", "space_memberships", "users", "spaces",
     ],
@@ -82,13 +87,15 @@ beforeEach(async () => {
      ) VALUES ($1,$2,$1,$3,'Feed Channel','feed','https://example.com/rss','{}'::jsonb,'{}'::jsonb,$1,'active','daily','{"frequency":"daily","hour":0,"minute":0}'::jsonb,$4,$4)`,
     [CONNECTION, SPACE, OWNER, now],
   );
+  const subscribedAt = new Date(Date.now() - 86_400_000).toISOString();
   for (const user of [OWNER, READER]) {
     await db.pool.query(
       `INSERT INTO source_channel_user_subscriptions (
-         id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, subscribed_at, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5,$5)`,
-      [randomUUID(), SPACE, CONNECTION, user, new Date(Date.now() - 86_400_000).toISOString()],
+         id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)`,
+      [randomUUID(), SPACE, CONNECTION, user, subscribedAt],
     );
+    await openSubscriptionWindow(db.pool, { spaceId: SPACE, channelId: CONNECTION, userId: user, at: subscribedAt });
   }
 });
 
@@ -103,6 +110,10 @@ async function seedItem(options: { domain?: string; firstSeenAt?: string } = {})
        first_seen_at, last_seen_at, content_state, retention_policy, created_at, updated_at
      ) VALUES ($1,$2,$3,'space_shared',$4,'feed_entry',$5,$6,$7,$7,'excerpt_saved','summary_only',$7,$7)`,
     [itemId, SPACE, OWNER, CONNECTION, `Item ${itemId.slice(0, 8)}`, `https://example.com/${itemId}`, seen],
+  );
+  await db.pool.query(
+    `UPDATE source_items SET excerpt = 'Delivered text for the reader.' WHERE id = $1`,
+    [itemId],
   );
   if (options.domain) {
     const annotations = new PgSourceAnnotationRepository(db.pool);
@@ -130,6 +141,13 @@ async function readable(userId: string, itemId: string): Promise<boolean> {
     [SPACE, itemId, userId],
   );
   return (result.rowCount ?? 0) === 1;
+}
+
+/** Whether the Reader serves the item to this person, through its own gates. */
+async function readerServes(userId: string, itemId: string): Promise<boolean> {
+  return new PgReaderRepository(db.pool, config)
+    .getDocument(identity(userId), "source_item", itemId)
+    .then((document) => document !== null, () => false);
 }
 
 const coverage = async (userId: string) =>
@@ -224,5 +242,86 @@ describe("Today", () => {
     const reader = await service.homeSummary(identity(READER), {});
     expect(owner.source_summary.pending_reading_items).toBe(1);
     expect(reader.source_summary.pending_reading_items).toBe(2);
+  });
+});
+
+describe("reading eligibility across every reading path", () => {
+  it("keeps the Reader open for what was delivered after leaving, and closes it when the source is withdrawn", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const delivered = await seedItem();
+    expect(await readerServes(READER, delivered)).toBe(true);
+    await new SourceChannelService(db.pool, config).setSubscription(identity(READER), CONNECTION, "muted");
+    expect(await readerServes(READER, delivered)).toBe(true);
+    await db.pool.query(`UPDATE source_connections SET status = 'archived' WHERE id = $1`, [CONNECTION]);
+    expect(await readerServes(READER, delivered)).toBe(false);
+  });
+
+  it("keeps every earlier subscription period readable after leaving and rejoining", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const firstPeriod = await seedItem({ firstSeenAt: new Date(Date.now() - 3_600_000).toISOString() });
+    const channels = new SourceChannelService(db.pool, config);
+    await channels.setSubscription(identity(READER), CONNECTION, "muted");
+    await channels.setSubscription(identity(READER), CONNECTION, "subscribed");
+    await channels.setSubscription(identity(READER), CONNECTION, "muted");
+    expect(await readable(READER, firstPeriod)).toBe(true);
+    expect(await readerServes(READER, firstPeriod)).toBe(true);
+    const windows = await db.pool.query(
+      `SELECT unsubscribed_at FROM source_channel_subscription_windows WHERE user_id = $1 ORDER BY subscribed_at`,
+      [READER],
+    );
+    expect(windows.rows).toHaveLength(2);
+    expect(windows.rows.every((row) => row.unsubscribed_at !== null)).toBe(true);
+  });
+
+  it("cuts a current subscriber off when the channel is archived", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const item = await seedItem();
+    expect(await readable(READER, item)).toBe(true);
+    await db.pool.query(`UPDATE source_channels SET status = 'archived' WHERE id = $1`, [CONNECTION]);
+    expect(await readable(READER, item)).toBe(false);
+    expect(await readerServes(READER, item)).toBe(false);
+  });
+
+  it("serves a Source-derived artifact only while its item is readable", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const item = await seedItem();
+    const artifactId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO artifacts (
+         id, space_id, artifact_type, title, content, mime_type, exportable, export_formats_json, preview,
+         metadata_json, created_at, updated_at, visibility, access_level, owner_user_id, trust_level
+       ) VALUES ($1,$2,'source_reader_document','Extracted','Full extracted text','application/json',true,'["application/json"]'::jsonb,false,
+         '{}'::jsonb, now(), now(), 'space_shared', 'full', $3, 'medium')`,
+      [artifactId, SPACE, OWNER],
+    );
+    await db.pool.query(`UPDATE source_items SET extracted_artifact_id = $2 WHERE id = $1`, [item, artifactId]);
+    const artifacts = new PgArtifactRepository(db.pool, { artifactStorageRoot: "/nonexistent", sandboxRoot: "/nonexistent" });
+    await expect(artifacts.getVisible(SPACE, READER, artifactId)).resolves.not.toBeNull();
+
+    // Narrowing the connection withdraws the copy with the item.
+    await db.pool.query(`UPDATE source_connections SET visibility = 'private' WHERE id = $1`, [CONNECTION]);
+    await expect(artifacts.getVisible(SPACE, READER, artifactId)).resolves.toBeNull();
+    const listed = await artifacts.listVisible(SPACE, READER, { artifactType: "source_reader_document" } as never);
+    expect((listed as { items: Array<{ id: string }> }).items.map((row) => row.id)).not.toContain(artifactId);
+  });
+
+  it("gives a discovery its own personal copy of a URL another member saved privately", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const saved = await new PgSourcesRepository(db.pool, config).createManualUrl(identity(OWNER), { url: "https://example.org/shared-paper", visibility: "private" }) as { id: string };
+    const [discovered] = await materializeExternalDiscovery(db.pool, {
+      spaceId: SPACE, projectId: null, userId: READER, discoveryKey: "probe",
+      samples: [{ source_uri: "https://example.org/shared-paper", title: "Shared paper" }] as never,
+    });
+    expect(discovered).toBeDefined();
+    expect(discovered).not.toBe(saved.id);
+    const owner = await db.pool.query(`SELECT owner_user_id FROM source_items WHERE id = $1`, [saved.id]);
+    expect(owner.rows[0]!.owner_user_id).toBe(OWNER);
+  });
+
+  it("does not count another member's private items in an admin's own reading", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    await new PgSourcesRepository(db.pool, config).createManualUrl(identity(READER), { url: "https://example.org/private-note", visibility: "private" });
+    const owner = await new PgFrontendSupportService(db.pool).homeSummary(identity(OWNER), {});
+    expect(owner.source_summary.pending_reading_items).toBe(0);
   });
 });

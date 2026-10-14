@@ -572,9 +572,15 @@ class PgProviderCommandStore implements ProviderCommandStore {
     const deployment = input.deployment ?? providerDeployment(currentConfig);
     validateDeployment(providerType, deployment);
     if (deployment === "trusted_local") {
-      // Declared, or kept declared under a changed vendor: either way the
-      // actor is vouching for a local service on the Space's behalf.
-      if (input.deployment !== undefined || providerType !== current.provider_type) {
+      // Declared, kept declared under a changed vendor, or pointed at another
+      // endpoint: each time the actor is vouching anew that the service it
+      // reaches is local, on the Space's behalf.
+      const endpointChanged = baseUrl !== normalizeBaseUrl(current.provider_type, current.base_url)
+        || (input.claude_compatible_base_url !== undefined
+          && (optionalTrimmedString(input.claude_compatible_base_url) ?? null) !== (stringConfig(currentConfig.claude_compatible_base_url) ?? null))
+        || (input.openai_compatible_base_url !== undefined
+          && (optionalTrimmedString(input.openai_compatible_base_url) ?? null) !== (stringConfig(currentConfig.openai_compatible_base_url) ?? null));
+      if (input.deployment !== undefined || providerType !== current.provider_type || endpointChanged) {
         await this.requireSpaceOwnerOrAdmin(current.space_id, userId);
       }
       configJson.deployment = deployment;
@@ -1335,4 +1341,8 @@ export function resolveProviderCommandStore(config: ServerConfig): ProviderComma
     pgStoreKey = key;
   }
   return pgStore;
+}
+
+function stringConfig(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }

@@ -16,6 +16,7 @@ import { ObjectSchemaPanel } from './ObjectSchemaPanel'
 import { promptLibraryPath } from '../prompts/paths'
 import type { MemberRole, SpaceMember, SpaceOversightMode } from '../../types/api'
 import { OneTimeLink } from '../../components/OneTimeLink'
+import { useAppTranslation } from '../../i18n'
 
 const INVITE_ROLES: MemberRole[] = ['admin', 'member', 'viewer']
 
@@ -31,6 +32,7 @@ function canManageSpace(role: MemberRole | undefined): boolean {
 }
 
 export default function SpaceSettingsPage() {
+  const { t } = useAppTranslation()
   const headingId = useId()
   const { currentUser } = useAuth()
   const { activeSpaceId, activeSpaceName, spaces, reloadSpaces } = useSpace()
@@ -107,7 +109,7 @@ export default function SpaceSettingsPage() {
     setInviting(true)
     try {
       const inv = await spacesApi.invite(activeSpaceId, { email: inviteEmail.trim(), role: inviteRole })
-      toast.success(`Invitation created for ${inv.invited_email}`)
+      toast.success(t('management_ui.space_invite.invite_created', { email: inv.invited_email }))
       setInviteLink({ email: inv.invited_email, link: `${window.location.origin}/invitations/claim#token=${encodeURIComponent(inv.token)}` })
       setInviteEmail('')
     } catch (err) {
@@ -379,18 +381,18 @@ export default function SpaceSettingsPage() {
                 </div>
               </div>
               <p className="text-xs text-muted-foreground">
-                An invitation link will be generated here for you to send.
+                {t('management_ui.space_invite.invite_hint')}
               </p>
               {inviteLink && (
                 <OneTimeLink
                   link={inviteLink.link}
-                  label={`Invitation link for ${inviteLink.email}`}
+                  label={t('management_ui.space_invite.invite_link_label', { email: inviteLink.email })}
                   onDismiss={() => setInviteLink(null)}
                 />
               )}
               <Button type="submit" size="sm" disabled={!inviteEmail.trim() || inviting}>
                 <Send className="size-3.5 mr-1.5" />
-                {inviting ? 'Sending…' : 'Generate invite link'}
+                {inviting ? t('management_ui.space_invite.sending') : t('management_ui.space_invite.generate')}
               </Button>
             </form>
           </Card>

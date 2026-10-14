@@ -11,6 +11,7 @@ import { PgProposalApplyService } from "../../proposals/applyService.js";
 import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService.js";
 import type { ResearchCompiledQuery, ResearchProviderKey } from "@rainver/protocol";
 import { ResearchProviderCompiler } from "../../research/queryPlanning/providerCompiler.js";
+import { closeSubscriptionWindow, openSubscriptionWindow } from "./subscriptionWindows.js";
 
 interface SourceChannelProposalActor {
   agentId?: string | null;
@@ -134,21 +135,25 @@ export class SourceChannelService {
     decision: "subscribed" | "dismissed" | "muted",
   ) {
     const now = new Date().toISOString();
-    const result = await this.db.query<{ status: string }>(
-      `UPDATE source_channel_user_subscriptions sub
-          SET status=$4::varchar(32), updated_at=$5::timestamptz,
-              subscribed_at = CASE WHEN $4::varchar(32) = 'subscribed' THEN $5::timestamptz ELSE sub.subscribed_at END
-         FROM source_channels ch, source_connections sc
-        WHERE sub.space_id=$1 AND sub.user_id=$2 AND sub.source_channel_id=$3
-          AND sub.status='pending' AND ch.id=sub.source_channel_id AND ch.space_id=sub.space_id
-          AND ch.status='active'
-          AND sc.id=ch.source_connection_id AND sc.space_id=ch.space_id
-          AND sc.visibility='space_shared' AND sc.deleted_at IS NULL
-      RETURNING sub.status`,
-      [identity.spaceId, identity.userId, channelId, decision, now],
-    );
-    if (!result.rows[0]) throw new HttpError(404, "Pending source recommendation not found");
-    return { source_channel_id: channelId, status: result.rows[0].status, updated_at: now };
+    return withQueryableTransaction(this.db, async (db) => {
+      const result = await db.query<{ status: string }>(
+        `UPDATE source_channel_user_subscriptions sub
+            SET status=$4::varchar(32), updated_at=$5::timestamptz
+           FROM source_channels ch, source_connections sc
+          WHERE sub.space_id=$1 AND sub.user_id=$2 AND sub.source_channel_id=$3
+            AND sub.status='pending' AND ch.id=sub.source_channel_id AND ch.space_id=sub.space_id
+            AND ch.status='active'
+            AND sc.id=ch.source_connection_id AND sc.space_id=ch.space_id
+            AND sc.visibility='space_shared' AND sc.deleted_at IS NULL
+        RETURNING sub.status`,
+        [identity.spaceId, identity.userId, channelId, decision, now],
+      );
+      if (!result.rows[0]) throw new HttpError(404, "Pending source recommendation not found");
+      if (decision === "subscribed") {
+        await openSubscriptionWindow(db, { spaceId: identity.spaceId, channelId, userId: identity.userId, at: now });
+      }
+      return { source_channel_id: channelId, status: result.rows[0].status, updated_at: now };
+    });
   }
 
   /**
@@ -166,25 +171,27 @@ export class SourceChannelService {
     status: "subscribed" | "muted",
   ): Promise<{ source_channel_id: string; status: string; updated_at: string }> {
     const now = new Date().toISOString();
-    const result = await this.db.query<{ status: string; previous: string }>(
-      `UPDATE source_channel_user_subscriptions sub
-          SET status = $4::varchar(32), updated_at = $5::timestamptz,
-              subscribed_at = CASE WHEN $4::varchar(32) = 'subscribed' AND sub.status <> 'subscribed' THEN $5::timestamptz ELSE sub.subscribed_at END,
-              unsubscribed_at = CASE WHEN $4::varchar(32) = 'subscribed' THEN NULL
-                                     WHEN sub.status = 'subscribed' THEN $5::timestamptz
-                                     ELSE sub.unsubscribed_at END
-         FROM (SELECT status AS previous FROM source_channel_user_subscriptions
-                WHERE space_id = $1 AND user_id = $2 AND source_channel_id = $3) prior,
-              source_channels ch
-        WHERE sub.space_id = $1 AND sub.user_id = $2 AND sub.source_channel_id = $3
-          AND sub.status IN ('subscribed', 'muted')
-          AND ch.id = sub.source_channel_id AND ch.space_id = sub.space_id
-          AND ch.status <> 'archived'
-      RETURNING sub.status, prior.previous`,
-      [identity.spaceId, identity.userId, channelId, status, now],
-    );
-    const row = result.rows[0];
-    if (!row) throw new HttpError(404, "Source channel subscription not found");
+    const row = await withQueryableTransaction(this.db, async (db) => {
+      const result = await db.query<{ status: string; previous: string }>(
+        `UPDATE source_channel_user_subscriptions sub
+            SET status = $4::varchar(32), updated_at = $5::timestamptz
+           FROM (SELECT status AS previous FROM source_channel_user_subscriptions
+                  WHERE space_id = $1 AND user_id = $2 AND source_channel_id = $3) prior,
+                source_channels ch
+          WHERE sub.space_id = $1 AND sub.user_id = $2 AND sub.source_channel_id = $3
+            AND sub.status IN ('subscribed', 'muted')
+            AND ch.id = sub.source_channel_id AND ch.space_id = sub.space_id
+            AND ch.status <> 'archived'
+        RETURNING sub.status, prior.previous`,
+        [identity.spaceId, identity.userId, channelId, status, now],
+      );
+      const updated = result.rows[0];
+      if (!updated) throw new HttpError(404, "Source channel subscription not found");
+      const ref = { spaceId: identity.spaceId, channelId, userId: identity.userId, at: now };
+      if (status === "subscribed") await openSubscriptionWindow(db, ref);
+      else await closeSubscriptionWindow(db, ref);
+      return updated;
+    });
     if (row.previous === "subscribed" && status === "muted") {
       await new InterestProfileService(this.db).forgetAutomaticFacts(identity.spaceId, identity.userId);
     }
@@ -304,11 +311,12 @@ export class SourceChannelService {
     }
     await this.db.query(
       `INSERT INTO source_channel_user_subscriptions (
-         id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, subscribed_at, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5,$5)
-       ON CONFLICT (space_id, source_channel_id, user_id) DO UPDATE SET status='subscribed', subscribed_at=EXCLUDED.subscribed_at, unsubscribed_at=NULL, updated_at=EXCLUDED.updated_at`,
+         id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)
+       ON CONFLICT (space_id, source_channel_id, user_id) DO UPDATE SET status='subscribed', updated_at=EXCLUDED.updated_at`,
       [randomUUID(), identity.spaceId, channel.id, identity.userId, now],
     );
+    await openSubscriptionWindow(this.db, { spaceId: identity.spaceId, channelId: channel.id, userId: identity.userId, at: now });
     await upsertSourceChannelScanTask(this.db, {
       channel: { id: channel.id, space_id: identity.spaceId, owner_user_id: identity.userId, status, fetch_frequency: frequency },
       nextRunAt: schedule.nextRunAt,
@@ -380,11 +388,12 @@ export class SourceChannelService {
     );
     await this.db.query(
       `INSERT INTO source_channel_user_subscriptions (
-         id,space_id,source_channel_id,user_id,status,library_enabled,digest_enabled,subscribed_at,created_at,updated_at
-       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5,$5)
-       ON CONFLICT (space_id,source_channel_id,user_id) DO UPDATE SET status='subscribed',subscribed_at=EXCLUDED.subscribed_at,unsubscribed_at=NULL,updated_at=EXCLUDED.updated_at`,
+         id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)
+       ON CONFLICT (space_id, source_channel_id, user_id) DO UPDATE SET status='subscribed', updated_at=EXCLUDED.updated_at`,
       [randomUUID(), identity.spaceId, channelId, identity.userId, now],
     );
+    await openSubscriptionWindow(this.db, { spaceId: identity.spaceId, channelId: channelId, userId: identity.userId, at: now });
     await upsertSourceChannelScanTask(this.db, {
       channel: { id: channelId, space_id: identity.spaceId, owner_user_id: identity.userId, status: "active", fetch_frequency: "daily" },
       nextRunAt: schedule.nextRunAt,

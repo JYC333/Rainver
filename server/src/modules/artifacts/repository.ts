@@ -9,6 +9,7 @@ import { contentAccessLevelSql, contentReadSql, roomRunReadAccessSql } from "../
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
 import { recordDetailRead } from "../contentAccess/audit.js";
+import { sourceDerivedArtifactReadableClause } from "../sources/sourceItemAccess.js";
 
 const ARTIFACT_ACCESS = contentResourceDefinition("artifact")!;
 
@@ -215,7 +216,8 @@ export class PgArtifactRepository {
         WHERE a.id = $1
           AND a.space_id = $2
           AND ${contentReadSql("artifact", "a", "$3")}
-          AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}`,
+          AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}
+          AND ${sourceDerivedArtifactReadableClause("a", "$3")}`,
       [artifactId, spaceId, userId],
     );
     return result.rows[0] ?? null;
@@ -245,6 +247,7 @@ function buildWhere(
     `a.space_id = $1`,
     contentReadSql("artifact", "a", "$2"),
     roomRunReadAccessSql("a.run_id", "a.space_id", "$2"),
+    sourceDerivedArtifactReadableClause("a", "$2"),
   ];
   if (!filters.includeSystemArchives) clauses.push(`a.surface_role <> 'system_archive'`);
   if (filters.artifactType) clauses.push(`a.artifact_type = ${add(filters.artifactType)}`);

@@ -1389,7 +1389,8 @@ export interface Memory {
   importance: number
   created_by: string | null
   version: number
-  access_count?: number
+  /** Read statistics are the owner's: null for anyone else. */
+  access_count?: number | null
   last_accessed_at?: string | null
   tags: string[] | null
   created_at: string
@@ -3731,6 +3732,8 @@ export interface HomePendingProposalItem {
   preview: boolean
   created_by_run_id: string | null
   visibility?: ObjectVisibility
+  /** A maintenance update the person must revise before it can be accepted. */
+  awaiting_revision: boolean
 }
 
 export interface HomePendingProposalsSection {

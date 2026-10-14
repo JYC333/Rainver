@@ -80,7 +80,7 @@ No automated check enforces this. It is a review rule.
 |-------|------|
 | `context` | **Decision inputs** consumed by the hard invariants and engine rules. Keys are flattened into the guard context. Fields such as `agent_status`, `tool_name`, `trigger_origin`, `derived_from_personal_memory_grant`, `raw_private_memory_included`, `target_visibility`, and `target_space_id` must appear here. |
 | `metadata_json` | **Audit-only metadata** written to `PolicyDecisionRecord`. It never grants permission or satisfies approval. Forbidden sentinel fields in this audit bag may still trigger defensive hard DENY, such as `personal_context_block` or approval-proof flags. Dangerous fields are stripped by `sanitizePolicyMetadata()`. |
-| `payload` | Proposal or policy payload. Only the hard invariants read it (approval-proof flag check for `proposal.apply` / `policy.change`). Not a decision input for any other action. |
+| `payload` | Proposal payload. Only the hard invariants read it (approval-proof flag check for `proposal.apply`). Not a decision input for any other action. |
 
 ### 5. PolicyDecision fields
 
@@ -158,7 +158,7 @@ Unknown actions fail closed with DENY (`audit_code="unknown_policy_action"`).
 
 The per-action mode lives in `POLICY_ACTION_REGISTRY` (`packages/protocol/src/policy.ts`),
 which is authoritative. `fail_closed` actions include `runtime.use_credential`,
-`artifact.persist`, `proposal.apply`, `policy.change`,
+`artifact.persist`, `proposal.apply`,
 `project_folder.write_patch`, `project_folder.apply_patch`, `run.spawn_child`,
 `automation.create` / `update` / `fire`, `input_resource.read` / `search`,
 `runtime_context_policy.change`, `work_context_setup.change`,
@@ -182,9 +182,9 @@ row.
 
 ### WIRED_VIA_PROPOSAL clarification
 
-`memory.create`, `memory.update`, `memory.archive`, and `policy.change` are **WIRED_VIA_PROPOSAL**. This means:
+`memory.create`, `memory.update` and `memory.archive` are **WIRED_VIA_PROPOSAL**. This means:
 
-- There is **no direct** sensitive-action enforcement call for `memory.create`, `memory.update`, `memory.archive`, or `policy.change`.
+- There is **no direct** sensitive-action enforcement call for `memory.create`, `memory.update` or `memory.archive`.
 - Protection is achieved through `enforceProposalApply()` in proposal apply acceptance.
 - `proposal.apply` is the fail_closed audit and approval gate for all of these actions.
 - Automation preflight calls `computeDecision` directly for non-mutating simulation — it does not write `PolicyDecisionRecord` rows. Real enforcement is exclusively in `RunOrchestrationService`.
@@ -321,7 +321,6 @@ These actions are enforced exclusively via the `proposal.apply` gate
 | `memory.create` | `proposal.apply` gate | Memory writes require proposal approval |
 | `memory.update` | `proposal.apply` gate | Memory updates require proposal approval |
 | `memory.archive` | `proposal.apply` gate | Memory archive requires proposal approval |
-| `policy.change` | `proposal.apply` gate | Requires admin/owner role through `enforceProposalApply()`; no direct `enforce()` call. **fail_closed**. |
 
 ---
 

@@ -65,6 +65,10 @@ pause evidence; a dispatch that finds no reusable attempt backfills one marked
    transaction (single CTE dual-write path).
 4. Retries only add Attempts; a terminal Attempt's error/exit evidence is never
    cleared or rewritten, and usage remains append-only in the token ledger.
+   Events an execution produces (runtime semantic events, host thread events)
+   carry the attempt that dispatch started (`markRunRunning` returns it); a
+   write from an attempt a retry has superseded is dropped, so an adapter
+   still unwinding cannot put its events into the newer attempt's turn.
 5. A Run returns from a terminal status to `queued` only through a persisted
    `RunSupervisorDecision` for that attempt or an explicit human resume.
 6. Crash recovery first terminalizes the orphaned Attempt, then the Supervisor
@@ -673,7 +677,11 @@ code, finalization answers `settlement_pending`, and the worker sweep
 (`resumeUnsettledRuns`, backing off to at most an hour) finalizes again, which
 runs only the reconcilers not yet completed. Settlement never re-runs the
 Agent, a model call, or output materialization: a terminal Run's job retry and
-the sweep both reach finalization of the existing attempt. The finalization
+the sweep both reach finalization of the existing attempt. Owed settlement is
+not a failed `agent_run` job: the job still records the host thread outcome,
+finalizes the chat turn and enqueues the terminal domain reconcilers, once,
+and the sweep finishes settlement on its own; any other finalization failure
+fails the job before those steps, and its retry runs them. The finalization
 read model separates the two: the Agent finished, and `settlement.status` is
 `settled` or `pending` with a `settlement_pending:<reconciler>` reason code.
 Evolution signals, the `run_finalized` audit event and cost estimates stay
@@ -908,8 +916,12 @@ recording cannot forge a passed engine evaluation.
 - **`deprecate_previous` keeps what is still used.** After the promotion
   moves its own pin and deployment ref, earlier approved versions of the same
   scope are deprecated unless an active pin, an active prompt deployment ref,
-  an unfinished Run (`workflow_version_id`) or an unfinished workflow
-  execution still names them. Those stay approved and are reported as
+  an Automation that is not archived pinned to it
+  (`config_json.workflow_resolution = 'pin'`), an unfinished Run
+  (`workflow_version_id`) or an unfinished workflow execution still names
+  them. Pins and prompt deployment refs are written under the same asset lock
+  the promotion holds and re-check the version there, so none can land on a
+  version a concurrent promotion is deprecating. Those stay approved and are reported as
   `kept_referenced_version_ids` until their owners move the reference. A
   finished execution is history, not a live reference.
 - **Rollback steps back once.** A prompt deployment ref written by a rollback

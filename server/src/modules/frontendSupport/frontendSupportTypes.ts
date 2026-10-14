@@ -126,6 +126,8 @@ export interface HomePendingProposalItem {
   preview: boolean;
   created_by_run_id: string | null;
   visibility: string;
+  /** Accept is refused until the person saves their revision (maintenance updates). */
+  awaiting_revision: boolean;
 }
 
 export interface HomeArtifactSummaryItem {

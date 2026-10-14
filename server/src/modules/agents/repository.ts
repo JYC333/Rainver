@@ -29,7 +29,7 @@ import {
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import { assertAgentOwner, canChangeAgent, canConfigureAssistant } from "./agentAccess.js";
-import { canReadProject, canWriteProject } from "../projects/access.js";
+import { canReadProject } from "../projects/access.js";
 import {
   DEFAULT_MEMORY_POLICY,
   DEFAULT_AGENT_MAX_RUN_TIME_SECONDS,
@@ -643,7 +643,11 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const agent = result.rows[0];
     if (!agent) return false;
     if (agent.agent_kind === "system_assistant") {
-      return agent.project_id ? canReadProject(this.pool, spaceId, agent.project_id, userId) : false;
+      // A Project's Assistant is the Project's: its readers may see where it
+      // runs. The Space's own Assistant is read by whoever configures it.
+      return agent.project_id
+        ? canReadProject(this.pool, spaceId, agent.project_id, userId)
+        : canConfigureAssistant(this.pool, { spaceId, userId }, { projectId: null });
     }
     return Boolean(await this.getVisible(spaceId, userId, agentId));
   }
@@ -658,11 +662,13 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     );
     const agent = result.rows[0];
     if (!agent) return false;
-    if (agent.agent_kind === "system_assistant") {
-      return agent.project_id ? canWriteProject(this.pool, spaceId, agent.project_id, userId) : false;
-    }
     // Profiles decide where the Agent runs and on whose host: changing them
-    // is changing the Agent.
+    // is changing the Agent. An Assistant is configured by the one person
+    // who configures it (the Space creator, or the Project owner), never by
+    // any Project writer or Space admin.
+    if (agent.agent_kind === "system_assistant") {
+      return canConfigureAssistant(this.pool, { spaceId, userId }, { projectId: agent.project_id });
+    }
     return canChangeAgent(this.pool, { spaceId, userId }, agentId);
   }
 

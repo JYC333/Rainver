@@ -14,6 +14,7 @@ import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSq
 import { loadViewerSpaceRole } from "../retrieval/sourcePolicy.js";
 import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
 import { localDayUtcBounds } from "../scheduler/localDay.js";
+import { withDedicatedSessionAdvisoryLock } from "../../db/advisoryLock.js";
 import {
   assertValidLocalDate,
   assertValidTimezone,
@@ -139,23 +140,37 @@ export function dailyReportSpend(
   };
 }
 
+interface DailyReportGenerationInput {
+  spaceId: string;
+  userId: string;
+  setting: SettingRow;
+  localDate: string;
+  triggerOrigin: string;
+  createExperienceProposalsOverride?: boolean | null;
+  createMemoryProposalsOverride?: boolean | null;
+}
+
 export class DailyCaptureReportService {
   constructor(
     private readonly db: Queryable,
     private readonly config: ServerConfig,
   ) {}
 
-  async generateForDate(input: {
-    spaceId: string;
-    userId: string;
-    setting: SettingRow;
-    localDate: string;
-    triggerOrigin: string;
-    createExperienceProposalsOverride?: boolean | null;
-    createMemoryProposalsOverride?: boolean | null;
-  }): Promise<DailyReportResult> {
+  async generateForDate(input: DailyReportGenerationInput): Promise<DailyReportResult> {
     assertValidLocalDate(input.localDate);
     assertValidTimezone(input.setting.timezone || "UTC");
+    // One generation per person and day at a time, held across the Provider
+    // call: a manual run beside the scheduled one waits here and then finds
+    // the report this one stored, instead of paying the Provider again. The
+    // write still re-checks under its own lock (persistReport).
+    return withDedicatedSessionAdvisoryLock(
+      this.db,
+      `daily_capture_report_generation:${input.spaceId}:${input.userId}:${input.localDate}`,
+      () => this.generateLocked(input),
+    );
+  }
+
+  private async generateLocked(input: DailyReportGenerationInput): Promise<DailyReportResult> {
     {
       // One report per person and day, never rewritten: a second request for
       // a day that has one answers with it.

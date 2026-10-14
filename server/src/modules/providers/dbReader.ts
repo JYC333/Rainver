@@ -44,7 +44,8 @@ export interface ProviderRow {
   updated_at: Date;
 }
 
-function availableModels(capabilities: unknown): string[] {
+/** A Provider's listed models, as `capabilities_json` stores them. */
+export function availableModels(capabilities: unknown): string[] {
   if (Array.isArray(capabilities)) {
     return capabilities.filter((m): m is string => typeof m === "string");
   }

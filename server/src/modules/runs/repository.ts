@@ -1741,9 +1741,9 @@ export class PgRunRepository {
     space_id: string;
     started_at: string;
     required_sandbox_level?: string | null;
-  }): Promise<AgentRunRecord | null> {
+  }): Promise<(AgentRunRecord & { attempt_number: number }) | null> {
     const attemptId = randomUUID();
-    const result = await this.db.query<AgentRunRecord>(
+    const result = await this.db.query<AgentRunRecord & { attempt_number: number }>(
       `WITH updated AS (
          UPDATE runs
             SET status = 'running',
@@ -1776,7 +1776,7 @@ export class PgRunRepository {
                 FROM run_attempts candidate
                WHERE candidate.space_id = u.space_id AND candidate.run_id = u.id
             )
-         RETURNING a.id
+         RETURNING a.id, a.attempt_number
        ), inserted_attempt AS (
          INSERT INTO run_attempts (
            id, space_id, run_id, attempt_number, status,
@@ -1792,12 +1792,14 @@ export class PgRunRepository {
            FROM updated u
           WHERE NOT EXISTS (SELECT 1 FROM updated_attempt)
          ON CONFLICT (space_id, run_id, attempt_number) DO NOTHING
-         RETURNING id
+         RETURNING id, attempt_number
        )
        SELECT u.*,
               a.name AS agent_name,
               av.system_prompt AS system_prompt,
-              COALESCE(u.runtime_profile_snapshot_json->'runtime_config_json', '{}'::jsonb) AS runtime_config_json
+              COALESCE(u.runtime_profile_snapshot_json->'runtime_config_json', '{}'::jsonb) AS runtime_config_json,
+              -- The attempt this dispatch runs: what its events are tagged with.
+              COALESCE((SELECT attempt_number FROM updated_attempt), (SELECT attempt_number FROM inserted_attempt)) AS attempt_number
          FROM updated u
          LEFT JOIN agent_versions av
            ON av.id = u.agent_version_id
@@ -2960,7 +2962,11 @@ export class PgRunRepository {
     });
   }
 
-  async appendRunEvent(input: RunEventInput): Promise<RunEventRecord> {
+  /**
+   * Appends one Run event. Returns null only for an event of an attempt a
+   * retry has superseded (`input.attempt_number`), which is dropped.
+   */
+  async appendRunEvent(input: RunEventInput): Promise<RunEventRecord | null> {
     // Two writers append to one Run at once — the runtime event sink and a
     // tool call's own HTTP request — and MAX()+1 computed on two connections
     // collides on `uq_run_events_space_run_event_index`, dropping one event.
@@ -2982,15 +2988,20 @@ export class PgRunRepository {
           artifact_id, proposal_id, data_exposure_level,
           trust_level, metadata_json, created_at
        )
-       VALUES ($3, $1, $2,
-               (SELECT MAX(attempt_number)
-                  FROM run_attempts
-                 WHERE space_id = $1::varchar AND run_id = $2::varchar),
-               (SELECT COALESCE(MAX(event_index) + 1, 0)
-                  FROM run_events
-                 WHERE space_id = $1::varchar AND run_id = $2::varchar),
-               $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-               $16::jsonb, $17)
+       SELECT $3, $1, $2,
+              current_attempt.attempt_number,
+              (SELECT COALESCE(MAX(event_index) + 1, 0)
+                 FROM run_events
+                WHERE space_id = $1::varchar AND run_id = $2::varchar),
+              $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+              $16::jsonb, $17
+         FROM (SELECT MAX(attempt_number) AS attempt_number
+                 FROM run_attempts
+                WHERE space_id = $1::varchar AND run_id = $2::varchar) current_attempt
+        -- An event an attempt produced is that attempt's: once a retry has
+        -- superseded it, its late writes are dropped rather than landing in
+        -- the newer attempt's turn. Run-level events name no attempt.
+        WHERE $18::int IS NULL OR current_attempt.attempt_number = $18::int
        ON CONFLICT (space_id, run_id)
          WHERE event_type = 'chat_completed'
        DO NOTHING
@@ -3013,6 +3024,7 @@ export class PgRunRepository {
         input.trust_level ?? null,
         JSON.stringify(sanitizeEvidenceJson(input.metadata_json ?? {})),
         new Date().toISOString(),
+        input.attempt_number ?? null,
       ],
     );
     const row = result.rows[0];
@@ -3029,6 +3041,8 @@ export class PgRunRepository {
       );
       if (existing.rows[0]) return existing.rows[0];
     }
+    // A superseded attempt's event, dropped by the guard above.
+    if (input.attempt_number != null) return null;
     throw new Error("RunEvent append returned no row");
     });
   }

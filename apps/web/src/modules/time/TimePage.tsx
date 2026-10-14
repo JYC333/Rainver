@@ -1,7 +1,9 @@
 import { Clock } from 'lucide-react'
 import { Badge } from '../../components/ui/badge'
+import { useAppTranslation } from '../../i18n'
 
 export default function TimePage() {
+  const { t } = useAppTranslation()
   return (
     <div className="p-6 space-y-6 max-w-3xl">
       <div className="flex items-center gap-4 pb-4 border-b border-border">
@@ -15,12 +17,12 @@ export default function TimePage() {
           <Clock className="size-5 text-accent-foreground" />
         </div>
         <div>
-          <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">Time <Badge variant="muted">Planned</Badge></h1>
-          <p className="text-sm text-muted-foreground">Track time records and convert them into activity summaries.</p>
+          <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">{t('management_ui.time.title')} <Badge variant="muted">{t('management_ui.time.planned')}</Badge></h1>
+          <p className="text-sm text-muted-foreground">{t('management_ui.time.subtitle')}</p>
         </div>
       </div>
       <div className="border border-dashed border-border rounded-lg p-12 text-center">
-        <p className="text-sm text-muted-foreground">Time tracking is planned and not available yet. Nothing here records or stores time.</p>
+        <p className="text-sm text-muted-foreground">{t('management_ui.time.placeholder')}</p>
       </div>
     </div>
   )

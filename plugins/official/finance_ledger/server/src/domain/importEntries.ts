@@ -67,6 +67,12 @@ export interface ParsedImportEntry {
   occurrence: number;
   sourceLineno: number;
   rawText: string;
+  /**
+   * Set when an earlier line of the same file already carries this entry's
+   * external id: the line where it first appears. Two records cannot share
+   * one trusted id, so this one is refused rather than merged into the first.
+   */
+  repeatOfLineno: number | null;
 }
 
 /**
@@ -92,6 +98,7 @@ export function identifyImportEntries(
   for (const error of errors) if (error.source) boundaries.add(error.source.lineno);
   const sortedBoundaries = [...boundaries].sort((left, right) => left - right);
   const occurrences = new Map<string, number>();
+  const externalIdLines = new Map<string, number[]>();
   const result: ParsedImportEntry[] = [];
   for (const entry of entries) {
     const lineno = entry.source?.lineno;
@@ -103,9 +110,16 @@ export function identifyImportEntries(
     const contentHash = createHash("sha256").update(rawText, "utf8").digest("hex");
     const externalId = entry.type === "transaction" ? externalIdOf(entry.meta) : null;
     if (externalId !== null) {
+      // The first line with an id is that id; each later one gets a key of
+      // its own (stable while the file is), so it keeps a status of its own.
+      const seen = externalIdLines.get(externalId) ?? [];
+      externalIdLines.set(externalId, [...seen, lineno]);
       result.push({
-        entry, entryKey: `external:${externalId}`, identityKind: "external_id", externalId,
-        contentHash, occurrence: 0, sourceLineno: lineno, rawText,
+        entry,
+        entryKey: seen.length === 0 ? `external:${externalId}` : `external:${externalId}#${seen.length}`,
+        identityKind: "external_id", externalId,
+        contentHash, occurrence: seen.length, sourceLineno: lineno, rawText,
+        repeatOfLineno: seen[0] ?? null,
       });
       continue;
     }
@@ -113,7 +127,7 @@ export function identifyImportEntries(
     occurrences.set(contentHash, occurrence + 1);
     result.push({
       entry, entryKey: `content:${contentHash}:${occurrence}`, identityKind: "content_occurrence", externalId: null,
-      contentHash, occurrence, sourceLineno: lineno, rawText,
+      contentHash, occurrence, sourceLineno: lineno, rawText, repeatOfLineno: null,
     });
   }
   return result;

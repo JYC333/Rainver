@@ -18,26 +18,34 @@ import { useAppTranslation } from '../../i18n'
  * whether turns search the knowledge base on their own. What the person
  * attaches reaches the turn either way.
  */
-export function KnowledgeRetrievalToggle({ scopeId, disabled = false }: {
-  /** The conversation; null before it exists, when the switch cannot be kept yet. */
+export function KnowledgeRetrievalToggle({ scopeId, disabled = false, agentName = null }: {
+  /**
+   * The Work Context: a direct conversation, or a Room recipient (one Agent
+   * in a Room). Null before a conversation exists, when nothing can be kept.
+   */
   scopeId: string | null
   disabled?: boolean
+  /** Names the Agent when the switch belongs to one Room recipient. */
+  agentName?: string | null
 }) {
   const { t } = useAppTranslation()
   const [state, setState] = useState<WorkRetrievalSwitch | null>(null)
   const [saving, setSaving] = useState(false)
   const [failed, setFailed] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [loadAttempt, setLoadAttempt] = useState(0)
 
   useEffect(() => {
     setState(null)
     setFailed(false)
+    setLoadFailed(false)
     if (!scopeId) return
     let active = true
     runtimeContextApi.retrievalSwitch(scopeId)
       .then(next => { if (active) setState(next) })
-      .catch(() => { if (active) setFailed(true) })
+      .catch(() => { if (active) setLoadFailed(true) })
     return () => { active = false }
-  }, [scopeId])
+  }, [scopeId, loadAttempt])
 
   const save = async (enabled: boolean, domains?: WorkRetrievalDomain[]) => {
     if (!scopeId) return
@@ -66,6 +74,22 @@ export function KnowledgeRetrievalToggle({ scopeId, disabled = false }: {
     if (next.length > 0) void save(true, next)
   }
 
+  if (loadFailed && !state) {
+    return (
+      <div className="flex items-center gap-1 text-xs" role="group" aria-label={t('conversation_retrieval.group')}>
+        <span className="text-destructive" role="alert">{t('conversation_retrieval.load_failed')}</span>
+        <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setLoadAttempt(attempt => attempt + 1)}>
+          {t('conversation_retrieval.retry')}
+        </Button>
+      </div>
+    )
+  }
+
+  const label = agentName
+    ? t(enabled ? 'conversation_retrieval.agent_on' : 'conversation_retrieval.agent_off', { agent: agentName })
+    : t(enabled ? 'conversation_retrieval.on' : 'conversation_retrieval.off')
+  const hint = agentName ? t('conversation_retrieval.room_hint', { agent: agentName }) : t('conversation_retrieval.hint')
+
   return (
     <div className="flex items-center" role="group" aria-label={t('conversation_retrieval.group')}>
       <Button
@@ -75,11 +99,11 @@ export function KnowledgeRetrievalToggle({ scopeId, disabled = false }: {
         className="h-7 gap-1 px-2 text-xs"
         aria-pressed={enabled}
         disabled={unavailable}
-        title={!scopeId ? t('conversation_retrieval.unavailable_until_started') : failed ? t('conversation_retrieval.failed') : t('conversation_retrieval.hint')}
+        title={!scopeId ? t('conversation_retrieval.unavailable_until_started') : failed ? t('conversation_retrieval.failed') : hint}
         onClick={() => void save(!enabled)}
       >
         <BookOpen className="size-3.5" />
-        {enabled ? t('conversation_retrieval.on') : t('conversation_retrieval.off')}
+        {label}
       </Button>
       {enabled && (
         <DropdownMenu>

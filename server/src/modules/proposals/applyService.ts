@@ -39,6 +39,7 @@ import type {
 } from "@rainver/protocol";
 import { ActionApprovalGrantService } from "../policy/actionApprovalGrantService.js";
 import { EvolutionSignalEmitter } from "../evolution/signalEmitters.js";
+import { memoryProposalDecider, type MemoryProposalDecider } from "../memory/memoryProposalDecider.js";
 
 /**
  * The accept response is a union discriminated on `result_type`, and the
@@ -1040,38 +1041,17 @@ function recordValue(value: unknown): Record<string, unknown> {
  * no role elevation substitutes, and the Project-owner promotion below does
  * not apply either.
  */
-/**
- * Derived from the Agent the proposal is about, never read off the payload:
- * a payload that omits or forges `required_owner_user_id` must not widen who
- * may decide. An Agent-scope Memory proposal names its Agent (`agent_id`, or
- * the Memory it revises); the Agent's `owner_user_id` is the decider. An
- * Agent that nobody owns has no persona to decide (ADR 0003 §5), so nobody
- * decides such a proposal by role either.
- */
-async function requiredOwnerUserId(
+/** See `memoryProposalDecider`: derived from the row or applier fields, never a payload scope claim. */
+function requiredOwnerUserId(
   client: PoolClient,
-  proposal: { space_id: string; proposal_type: string; payload_json: Record<string, unknown> | null },
-): Promise<{ required: true; userId: string | null } | { required: false }> {
-  const payload = proposal.payload_json ?? {};
-  if (!proposal.proposal_type.startsWith("memory_") || payload.target_scope !== "agent") return { required: false };
-  const agentId = typeof payload.agent_id === "string" && payload.agent_id ? payload.agent_id : null;
-  const memoryId = typeof payload.target_memory_id === "string" && payload.target_memory_id ? payload.target_memory_id : null;
-  const owner = await client.query<{ owner_user_id: string | null }>(
-    agentId
-      ? `SELECT owner_user_id FROM agents WHERE space_id = $1 AND id = $2 LIMIT 1`
-      : `SELECT a.owner_user_id
-           FROM memory_entries me
-           JOIN agents a ON a.id = me.agent_id AND a.space_id = me.space_id
-          WHERE me.space_id = $1 AND me.id = $2
-          LIMIT 1`,
-    [proposal.space_id, agentId ?? memoryId ?? ""],
-  );
-  return { required: true, userId: owner.rows[0]?.owner_user_id ?? null };
+  proposal: { space_id: string; proposal_type: string; payload_json: Record<string, unknown> | null; created_by_agent_id?: string | null },
+): Promise<MemoryProposalDecider> {
+  return memoryProposalDecider(client, proposal);
 }
 
 async function assertRequiredOwnerMayDecide(
   client: PoolClient,
-  proposal: { space_id: string; proposal_type: string; payload_json: Record<string, unknown> | null },
+  proposal: { space_id: string; proposal_type: string; payload_json: Record<string, unknown> | null; created_by_agent_id?: string | null },
   userId: string,
 ): Promise<void> {
   const required = await requiredOwnerUserId(client, proposal);

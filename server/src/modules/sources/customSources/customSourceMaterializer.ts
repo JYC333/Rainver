@@ -199,17 +199,20 @@ export class CustomSourceMaterializationService {
   ): Promise<{ itemId: string; created: boolean }> {
     const now = new Date().toISOString();
     // Found by this connection's own id first; failing that, by the URL the
-    // Space already holds in the same Project scope — the same reuse the
-    // built-in extraction does — since that URL is unique there and a second
-    // insert of it can only fail.
+    // connection's scope already holds — the Project's items, or for a
+    // personal connection its owner's items — the same reuse the built-in
+    // extraction does, since that URL is unique there and a second insert of
+    // it can only fail. Another member's personal copy is never reused.
     const existing = await this.db.query<{ id: string; content_state: string }>(
       `SELECT id, content_state FROM source_items
         WHERE space_id = $1::varchar AND connection_id = $2::varchar AND source_external_id = $3::varchar
         UNION ALL
-       (SELECT id, content_state FROM source_items
-         WHERE space_id = $1::varchar AND deleted_at IS NULL
-           AND project_id IS NOT DISTINCT FROM (SELECT project_id FROM source_connections WHERE space_id = $1::varchar AND id = $2::varchar)
-           AND (source_uri = $4::text OR canonical_uri = $4::text)
+       (SELECT si.id, si.content_state FROM source_items si
+          JOIN source_connections owning ON owning.space_id = $1::varchar AND owning.id = $2::varchar
+         WHERE si.space_id = $1::varchar AND si.deleted_at IS NULL
+           AND si.project_id IS NOT DISTINCT FROM owning.project_id
+           AND (owning.project_id IS NOT NULL OR si.owner_user_id IS NOT DISTINCT FROM owning.owner_user_id)
+           AND (si.source_uri = $4::text OR si.canonical_uri = $4::text)
          LIMIT 1)
         LIMIT 1`,
       [run.spaceId, run.sourceConnectionId, item.external_id, item.source_uri],

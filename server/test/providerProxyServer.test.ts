@@ -122,6 +122,41 @@ describe("provider proxy server", () => {
     expect(upstream.requests[0].headers["accept-encoding"]).toBe("identity");
   });
 
+  it("holds a lease judged local to its model, so a request cannot switch to one the server forwards to the cloud", async () => {
+    const upstream = await startMockUpstream();
+    upstreams.push(upstream);
+    const leases = new ProviderProxyLeaseRegistry();
+    const proxy = await startProviderProxyServer(config(), {
+      leaseRegistry: leases,
+      commandStore: { async resolveProviderApiKey() { return "provider-secret"; } },
+      resolveUsageAttribution: testUsageAttribution,
+      async recordUsageObservation() {},
+    });
+    handles.push(proxy);
+    const lease = leases.create(authorizedFor("space-1", "run-local", "provider-local"), {
+      run_id: "run-local",
+      space_id: "space-1",
+      provider_id: "provider-local",
+      route: "openai",
+      upstream_base_url: `${upstream.baseUrl}/v1`,
+      model: "llama3.1",
+      pinned_model: "llama3.1",
+      ttl_ms: 60_000,
+    });
+    const send = (model: string) => fetch(`${proxy.baseUrl}/openai/${lease.id}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${lease.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ model, messages: [] }),
+    });
+
+    const refused = await send("gpt-oss:120b-cloud");
+    expect(refused.status).toBe(403);
+    await expect(refused.json()).resolves.toEqual({ error: "provider_proxy_model_not_leased" });
+    expect(upstream.requests).toHaveLength(0);
+    expect((await send("llama3.1")).status).toBe(200);
+    expect(upstream.requests).toHaveLength(1);
+  });
+
   it("does not forward upstream encoding metadata after fetch decodes the body", async () => {
     const leases = new ProviderProxyLeaseRegistry();
     const proxy = await startProviderProxyServer(config(), {

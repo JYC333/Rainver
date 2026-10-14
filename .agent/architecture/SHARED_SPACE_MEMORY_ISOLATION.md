@@ -32,7 +32,8 @@ The database accepts `scope_type IN ('user', 'project', 'agent')`. User Memory
 has no `project_id`; Project Memory requires one; Agent Memory has none and
 requires both an `agent_id` and an `owner_user_id`. `memory_entries` has no
 Project Folder column: Project is the sole *shared* Memory attribution layer.
-System rules live in `policies`, and Agent/capability learning — how an Agent
+System rules are code-owned (the policy action registry and the Runtime
+Context Policy), and Agent/capability learning — how an Agent
 *works*, as opposed to what it knows — lives in `evolvable_assets`.
 
 ## Access model

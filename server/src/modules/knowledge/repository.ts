@@ -1490,10 +1490,18 @@ export class PgKnowledgeRepository {
     }
     // Rebinding the Project (an explicit `primary_project_id`) or filing the
     // note elsewhere must leave it with an entry in the Project that owns it.
+    // Bringing a Project note back from the trash must too: its folders can
+    // be deleted under it (the invariant does not hold a deleted note), so
+    // that restore is refused, with the move-or-delete actions, until it
+    // names a folder (`collection_id`). A note outside every Project may be
+    // unfiled, so restoring one never needs a folder.
     if (Object.hasOwn(body, "primary_project_id") || collectionId) {
       await assertNoteEntryInvariant(
         scope.db, identity.spaceId, await lockNotesForPlacementChange(scope.db, identity.spaceId, [noteId]),
       );
+    } else if (status && status !== "deleted") {
+      const locked = await lockNotesForPlacementChange(scope.db, identity.spaceId, [noteId]);
+      await assertNoteEntryInvariant(scope.db, identity.spaceId, locked.filter((note) => note.primary_project_id));
     }
     // Metadata-only edits (a rename, an archive) still change what retrieval
     // should return, so the scope is told even when no content write happened.

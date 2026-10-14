@@ -80,7 +80,9 @@ the `timezone` of the scope's daily `information_digest` Automation
 (`config_json.timezone`, an IANA name; `UTC` when absent). The day is the
 half-open UTC interval `[period_start_utc, period_end_utc)` computed with
 `Intl` (`digestPeriod`), so a DST day is 23 or 25 hours and every instant
-belongs to exactly one day. Candidates are chosen by that interval.
+belongs to exactly one day. Where the clock jumps forward at midnight
+(America/Santiago, America/Havana) the day starts at the end of the gap, the
+first instant whose local date is that day. Candidates are chosen by that interval.
 
 A scheduled pass reports the local day before its schedule slot, decided from
 the slot the Automation was due at (`next_run_at`), not from when a worker gets

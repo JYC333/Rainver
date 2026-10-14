@@ -221,7 +221,7 @@ async function handleAgentRun(
           });
       if (terminal) {
         const finalization = await materializer.finalizeRun(terminal);
-        if (finalization.status === "succeeded") {
+        if (finalizedForPostRun(finalization)) {
           const currentTerminal = await repository.getRun(job.space_id, runId);
           if (currentTerminal && isTerminalRun(currentTerminal.status)) {
             await orchestration.reconcileTerminalDelegation(currentTerminal);
@@ -258,7 +258,7 @@ async function handleAgentRun(
   let completedRun = await repository.getRun(job.space_id, runId);
   if (completedRun && isTerminalRun(completedRun.status)) {
     const finalization = await materializer.finalizeRun(completedRun);
-    if (finalization.status !== "succeeded") {
+    if (!finalizedForPostRun(finalization)) {
       throw new Error(
         finalization.error_message ?? "Run finalization reconciliation failed.",
       );
@@ -305,6 +305,18 @@ async function handleAgentRun(
     });
   }
   return result;
+}
+
+/**
+ * Whether the post-run steps below may run. A finalization that recorded its
+ * evaluation but still owes settlement is final for them: the thread outcome,
+ * the chat turn and the domain reconcilers do not depend on settlement, which
+ * the worker sweep finishes on its own (resumeUnsettledRuns). Throwing for it
+ * would fail a succeeded Run's job and skip those steps for good. Any other
+ * failure stops before them, and the job's retry runs them once it passes.
+ */
+export function finalizedForPostRun(finalization: { status: string; error_code?: string | null }): boolean {
+  return finalization.status === "succeeded" || finalization.error_code === "settlement_pending";
 }
 
 const TASK_RUN_AHEAD = "Another execution Run of this Task is still in progress";

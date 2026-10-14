@@ -14,6 +14,13 @@ export interface OperationalAlertInput {
   projectId?: string | null;
   sourceRunId?: string | null;
   payload?: Record<string, unknown>;
+  /**
+   * When an existing alert under this key comes back to the Inbox. `always`
+   * (the default) makes every emit unread again. `changed` does so only when
+   * what it says changed, so a periodic sync re-asserting the same state
+   * leaves a notice the person already read or dismissed alone.
+   */
+  resurface?: "always" | "changed";
 }
 
 export interface OperationalAlertPort {
@@ -56,9 +63,21 @@ export class OperationalAlertService implements OperationalAlertPort {
                      payload_json = EXCLUDED.payload_json,
                      occurred_at = EXCLUDED.occurred_at,
                      updated_at = EXCLUDED.updated_at,
-                     status = 'raw',
-                     processed_at = NULL,
-                     discarded_at = NULL`,
+                     status = CASE WHEN $12::boolean
+                                     OR activity_records.title IS DISTINCT FROM EXCLUDED.title
+                                     OR activity_records.content IS DISTINCT FROM EXCLUDED.content
+                                     OR activity_records.payload_json IS DISTINCT FROM EXCLUDED.payload_json
+                                   THEN 'raw' ELSE activity_records.status END,
+                     processed_at = CASE WHEN $12::boolean
+                                     OR activity_records.title IS DISTINCT FROM EXCLUDED.title
+                                     OR activity_records.content IS DISTINCT FROM EXCLUDED.content
+                                     OR activity_records.payload_json IS DISTINCT FROM EXCLUDED.payload_json
+                                   THEN NULL ELSE activity_records.processed_at END,
+                     discarded_at = CASE WHEN $12::boolean
+                                     OR activity_records.title IS DISTINCT FROM EXCLUDED.title
+                                     OR activity_records.content IS DISTINCT FROM EXCLUDED.content
+                                     OR activity_records.payload_json IS DISTINCT FROM EXCLUDED.payload_json
+                                   THEN NULL ELSE activity_records.discarded_at END`,
       [
         randomUUID(),
         input.spaceId,
@@ -71,6 +90,7 @@ export class OperationalAlertService implements OperationalAlertPort {
         now,
         input.userId ? "private" : "space_shared",
         aggregateKey,
+        (input.resurface ?? "always") === "always",
       ],
     );
   }

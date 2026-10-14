@@ -258,8 +258,9 @@ Extracted from `CREDENTIAL_STORAGE.md`, `docs/FUTURE_ROADMAP.md`,
 **Current fact:** ModelProvider keys use AES-256-GCM + disk master key.
 CLI login lives on the execution host (ADR 0016); the control plane does
 not broker CLI credentials. Persisted API-key product storage is
-feature-gated (no `api_keys` table). `policy_change` inserts an active
-`policies` row, and no server path reads it. `memory.private_placement` and
+feature-gated (no `api_keys` table). There is no generic persisted-policy
+proposal (`policy_change` is closed, with no applier), and no server path
+writes or reads `policies`. `memory.private_placement` and
 `run.user_private_scope` are not enforcement domains.
 
 **Extracted design**

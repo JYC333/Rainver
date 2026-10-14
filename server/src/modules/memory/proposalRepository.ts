@@ -230,11 +230,6 @@ export class PgMemoryProposalRepository {
       if (agentOrigin?.instructedByUserId) {
         payload.requested_by_user_id = agentOrigin.instructedByUserId;
       }
-      // Only this Agent's owner may accept it. Role is what proposal apply
-      // normally arbitrates on, and a Space owner or admin satisfies any role
-      // a persona proposal could require — which is exactly the person ADR
-      // 0003 §5 says must not be able to accept someone else's Agent's.
-      payload.required_owner_user_id = ownerUserId;
     }
 
     await this.enforceProposalCreate({
@@ -371,12 +366,6 @@ export class PgMemoryProposalRepository {
       if (agentOrigin?.instructedByUserId) {
         payload.requested_by_user_id = agentOrigin.instructedByUserId;
       }
-      // The same rule a create carries, and for the same reason: decided by
-      // the Agent's owner alone, by identity and not by role. Do not set it
-      // only on creates. A persona revision would be decidable by any Space
-      // owner or admin — including the member who asked for it, which is the
-      // one person ADR 0003 §5 names.
-      payload.required_owner_user_id = target.owner_user_id;
     }
     validateUpdatePayload(payload, target.visibility);
 

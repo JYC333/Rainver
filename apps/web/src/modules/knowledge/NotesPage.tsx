@@ -48,6 +48,7 @@ import {
   writeTabs,
   type NotesSurfaceScope,
 } from './notesPageModel'
+import { useAppTranslation } from '../../i18n'
 
 type CollectionDialogState =
   | { mode: 'create-root'; collection?: undefined }
@@ -83,6 +84,7 @@ interface NotesPageProps {
  * page itself knows nothing about which route it is under.
  */
 export default function NotesPage({ scope }: NotesPageProps) {
+  const { t } = useAppTranslation()
   const navigate = useNavigate()
   const { activeSpaceId } = useSpace()
   const location = useLocation()
@@ -1087,28 +1089,28 @@ export default function NotesPage({ scope }: NotesPageProps) {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {entryDialog?.owningProjectId ? 'Keep an entry in the project' : 'Keep the note in a folder'}
+              {entryDialog?.owningProjectId ? t('knowledge_ui.entry_dialog.title_project') : t('knowledge_ui.entry_dialog.title_folder')}
             </DialogTitle>
             <DialogDescription>{entryDialog?.detail}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div>
               <Label className="text-xs">
-                {entryDialog?.owningProjectId ? 'Move this entry to another folder of the project' : 'Move this entry to another folder'}
+                {entryDialog?.owningProjectId ? t('knowledge_ui.entry_dialog.move_label_project') : t('knowledge_ui.entry_dialog.move_label')}
               </Label>
               {entryDestinationOptions.length > 0 ? (
                 <Select
                   value={entryDestinationId}
                   onChange={setEntryDestinationId}
-                  options={[{ value: '', label: 'Choose a folder…' }, ...entryDestinationOptions]}
+                  options={[{ value: '', label: t('knowledge_ui.entry_dialog.choose_folder') }, ...entryDestinationOptions]}
                 />
               ) : (
-                <p className="text-sm text-muted-foreground">No other folder is available for this entry.</p>
+                <p className="text-sm text-muted-foreground">{t('knowledge_ui.entry_dialog.no_folder')}</p>
               )}
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setEntryDialog(null)}>Cancel</Button>
+            <Button variant="outline" size="sm" onClick={() => setEntryDialog(null)}>{t('knowledge_ui.entry_dialog.cancel')}</Button>
             <Button
               variant="destructive"
               size="sm"
@@ -1119,7 +1121,7 @@ export default function NotesPage({ scope }: NotesPageProps) {
                 void deleteNotes([target])
               }}
             >
-              Delete note
+              {t('knowledge_ui.entry_dialog.delete')}
             </Button>
             <Button
               size="sm"
@@ -1131,7 +1133,7 @@ export default function NotesPage({ scope }: NotesPageProps) {
                 if (updates.length > 0) dropNotes(updates)
               }}
             >
-              Move
+              {t('knowledge_ui.entry_dialog.move')}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -11,6 +11,7 @@ import { errMsg } from '../../lib/utils'
 import { SourceMonitorDialog } from './SourceMonitorDialog'
 import { sourceQueryText } from './sourceQueryText'
 import type { SourceChannel, SourceProvider, SourceProviderCategoryGroup } from '../../types/api'
+import { useAppTranslation } from '../../i18n'
 
 function sourceIcon(channel: Pick<SourceChannel, 'channel_type'>) {
   switch (channel.channel_type) {
@@ -50,6 +51,7 @@ export default function SourceChannelDetailPage() {
   // Kept apart from "not found": a request that failed says nothing about
   // whether the source exists.
   const [loadError, setLoadError] = useState<string | null>(null)
+  const { t } = useAppTranslation()
 
   const load = useCallback(async () => {
     if (!sourceId) return
@@ -112,9 +114,9 @@ export default function SourceChannelDetailPage() {
     return (
       <div className="p-6">
         <EmptyState
-          title="Could not load this source"
+          title={t('sources_ui.detail.load_failed_title')}
           description={loadError}
-          action={<Button variant="outline" onClick={() => void load()} disabled={loading}>Retry</Button>}
+          action={<Button variant="outline" onClick={() => void load()} disabled={loading}>{t('sources_ui.detail.retry')}</Button>}
         />
       </div>
     )
@@ -125,6 +127,13 @@ export default function SourceChannelDetailPage() {
   return (
     <div className="p-6 space-y-6 max-w-4xl">
       <Button variant="ghost" asChild><Link to=".."><ArrowLeft className="size-4 mr-2" />Back to sources</Link></Button>
+      {loadError && (
+        // A later refresh failed while the source is on screen: say so, keep what is shown.
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm" role="alert">
+          <span>{t('sources_ui.detail.refresh_failed', { message: loadError })}</span>
+          <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>{t('sources_ui.detail.retry')}</Button>
+        </div>
+      )}
 
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="flex min-w-0 items-start gap-3">

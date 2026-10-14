@@ -577,6 +577,11 @@ export class PgMemoryApplyRepository {
     const content = strOr(payload.proposed_content) ?? strOr(payload.content) ?? old.content;
     const title = strOr(payload.proposed_title) ?? strOr(payload.title) ?? old.title ?? "";
     const scope = memoryScope(strOr(payload.target_scope) ?? old.scope_type);
+    // An Agent's memory and a person's are decided by different people (ADR
+    // 0003 §5); a revision never moves an entry from one to the other.
+    if ((scope === "agent") !== (old.scope_type === "agent")) {
+      throw new MemoryApplyError("A revision cannot move a memory into or out of an Agent's scope");
+    }
     const namespace = strOr(payload.target_namespace) ?? old.namespace ?? "user.default";
     const memType = strOr(payload.memory_type) ?? old.memory_type;
     const rootId = old.root_memory_id ?? old.id;
@@ -720,7 +725,7 @@ export class PgMemoryApplyRepository {
     after: MemoryAudiencePlacement;
     sources: readonly ProvenanceEntry[];
   }): Promise<void> {
-    const { after } = input;
+    const { after, before } = input;
     if (after.visibility === "selected_users" && after.grants.length === 0) {
       throw new MemoryApplyError("selected_users memory requires at least one grantee");
     }
@@ -732,10 +737,17 @@ export class PgMemoryApplyRepository {
       ? await memoryAudience(this.db, input.spaceId, input.before)
       : new Map();
     const afterAudience = await memoryAudience(this.db, input.spaceId, after);
+    // The person the entry belongs to now: a revision that hands it to
+    // someone else widens it to them as much as any new reader.
+    const currentOwner = before ? before.ownerUserId : after.ownerUserId;
     const widened = widenedReaders(beforeAudience, afterAudience)
-      .filter((readerId) => readerId !== after.ownerUserId);
+      .filter((readerId) => readerId !== currentOwner);
     if (widened.length === 0) return;
-    if (after.scope !== "project" && after.ownerUserId !== input.approverUserId) {
+    // A personal entry is its owner's to share, wherever it is being moved
+    // to — a Project included. Only an entry that already is Project memory
+    // widens under Project authority.
+    const personal = before ? before.scope !== "project" : after.scope !== "project";
+    if (personal && currentOwner !== input.approverUserId) {
       throw new MemoryAudienceError(
         "memory_owner_sharing_required",
         "Only the owner of this memory can share it with more people",

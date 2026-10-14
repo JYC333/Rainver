@@ -356,6 +356,17 @@ async function settleEntry(
     // Re-diagnosed on every pass: the account may have been opened since.
     return { status: "excluded", statusReason: exclusionReason(item.entry), errors: [...entryErrors, ...(await persister.diagnoseExcluded(item.entry))] };
   }
+  if (item.repeatOfLineno !== null) {
+    return {
+      status: "error",
+      statusReason: "external_id_repeated_in_file",
+      errors: [...entryErrors, {
+        code: "external_id_repeated_in_file",
+        message: `external_id "${item.externalId}" already identifies the entry at line ${item.repeatOfLineno} of this file; give each record its own id`,
+        ...(item.entry.source ? { source: item.entry.source } : {}),
+      }],
+    };
+  }
   if (!RETRIED_STATUSES.has(row.status)) return null;
   if (row.status_reason === "not_attempted") {
     const review = await reviewAgainstOtherBatches(tx, spaceId, bookId, importSourceId, row);

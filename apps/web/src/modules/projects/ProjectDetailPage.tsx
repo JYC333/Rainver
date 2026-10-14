@@ -34,9 +34,10 @@ import EditProjectInstructionDialog from './EditProjectInstructionDialog'
 import ProjectConversationBackendCard from './ProjectConversationBackendCard'
 import ProjectPublicSummaryCard from './ProjectPublicSummaryCard'
 import { FocusAreaField } from '../focusAreas/FocusAreaField'
+import { formatDateTime } from '../../i18n/format'
 
 function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString() : '—'
+  return formatDateTime(dt)
 }
 
 /* ── Project settings dialog ──────────────────────────────────────────────── */

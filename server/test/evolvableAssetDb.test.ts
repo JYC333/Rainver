@@ -7,6 +7,7 @@ import { resolveEvolvableAssetVersion } from "../src/modules/evolution/assetReso
 import { assertCanResolveForScopes } from "../src/modules/evolution/assetAccess.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { lockEvolutionAssets } from "../src/modules/evolution/assetLocks.js";
 
 // Real-Postgres coverage for generic prompt/workflow template evolution:
 // asset/version/pin CRUD, immutability
@@ -573,6 +574,28 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
       allowUserPin: true,
     });
     expect(allowedResult.versionId).toBe(userVersion);
+  });
+
+  it("never pins a version a promotion deprecates in the meantime", async () => {
+    if (!db.available) return;
+    const asset = await createAsset();
+    const versionId = await createApprovedVersion(asset.id as string, "space", { system_prompt: "v1" });
+    const promotion = await db.pool.connect();
+    try {
+      // A promotion holds the asset and is deprecating v1.
+      await promotion.query("BEGIN");
+      await lockEvolutionAssets(promotion, [asset.id as string]);
+      const pin = repo().setPin(identity, asset.id as string, "project", PROJECT, { version_id: versionId });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await promotion.query(`UPDATE evolvable_asset_versions SET status = 'deprecated' WHERE id = $1`, [versionId]);
+      await promotion.query("COMMIT");
+      // The pin waited for the promotion and then saw v1 deprecated.
+      await expect(pin).rejects.toMatchObject({ statusCode: 422 });
+    } finally {
+      promotion.release();
+    }
+    const pins = await db.pool.query(`SELECT 1 FROM evolvable_asset_pins WHERE asset_id = $1 AND status = 'active'`, [asset.id]);
+    expect(pins.rowCount).toBe(0);
   });
 
   it("resolves an agent pin", async () => {

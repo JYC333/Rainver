@@ -44,49 +44,143 @@ export function sourceItemFullContentReadClause(itemAlias: string, userParam: st
  * Whether this reader is entitled to a connection's item: a live subscription
  * (with Library enabled, when the read is a Library read), or historical
  * eligibility — the item was first seen inside a window in which the reader
- * was subscribed, and the connection still admits them. Unsubscribing stops
- * new items and automatic profile facts, never the right to re-read what was
- * delivered; losing the connection itself (archived, deleted, visibility
- * narrowed, membership gone) ends both.
+ * was subscribed. Either way the connection must still admit the reader:
+ * unsubscribing stops new items and automatic profile facts, never the right
+ * to re-read what was delivered, while losing the connection itself
+ * (archived, deleted, visibility or grants narrowed, membership gone, its
+ * channel archived) ends both.
  */
 export function sourceItemConnectionGateClause(itemAlias: string, userParam: string, libraryOnly: boolean): string {
   return `(
     ${itemAlias}.connection_id IS NULL
     OR EXISTS (
-      SELECT 1
-        FROM source_channel_user_subscriptions scus_read
-        JOIN source_channels sch_read ON sch_read.id = scus_read.source_channel_id
-       WHERE scus_read.space_id = ${itemAlias}.space_id
-         AND sch_read.source_connection_id = ${itemAlias}.connection_id
-         AND scus_read.user_id = ${userParam}
-         AND scus_read.status = 'subscribed'
-         ${libraryOnly ? "AND scus_read.library_enabled = true" : ""}
+      SELECT 1 FROM source_connections gate_connection
+       WHERE gate_connection.space_id = ${itemAlias}.space_id
+         AND gate_connection.id = ${itemAlias}.connection_id
+         AND (
+           ${sourceConnectionLiveSubscriberClause("gate_connection", userParam, libraryOnly)}
+           OR ${sourceConnectionDeliveredToReaderClause("gate_connection", userParam, `${itemAlias}.first_seen_at`)}
+         )
     )
-    OR ${sourceItemHistoricalEligibilityClause(itemAlias, userParam)}
   )`;
 }
 
 /** The historical half of the gate above, on its own for callers that reason about it. */
 export function sourceItemHistoricalEligibilityClause(itemAlias: string, userParam: string): string {
   return `EXISTS (
-    SELECT 1
-      FROM source_channel_user_subscriptions scus_hist
-      JOIN source_channels sch_hist
-        ON sch_hist.id = scus_hist.source_channel_id AND sch_hist.space_id = scus_hist.space_id
-      JOIN source_connections sc_hist
-        ON sc_hist.id = sch_hist.source_connection_id AND sc_hist.space_id = sch_hist.space_id
-     WHERE scus_hist.space_id = ${itemAlias}.space_id
-       AND sch_hist.source_connection_id = ${itemAlias}.connection_id
-       AND scus_hist.user_id = ${userParam}
-       AND scus_hist.status <> 'subscribed'
-       AND scus_hist.subscribed_at IS NOT NULL
-       AND scus_hist.unsubscribed_at IS NOT NULL
-       AND ${itemAlias}.first_seen_at >= scus_hist.subscribed_at
-       AND ${itemAlias}.first_seen_at < scus_hist.unsubscribed_at
-       AND sc_hist.deleted_at IS NULL
-       AND sc_hist.status <> 'archived'
-       AND sch_hist.status <> 'archived'
-       AND ${contentReadSql("source_connection", "sc_hist", userParam, { includeOversight: false })}
+    SELECT 1 FROM source_connections hist_connection
+     WHERE hist_connection.space_id = ${itemAlias}.space_id
+       AND hist_connection.id = ${itemAlias}.connection_id
+       AND ${sourceConnectionDeliveredToReaderClause("hist_connection", userParam, `${itemAlias}.first_seen_at`)}
+  )`;
+}
+
+/**
+ * The connection still admits this reader as it stands today: not deleted or
+ * archived, and readable to them under its current visibility and grants.
+ * Oversight does not count: an admin may supervise, not subscribe.
+ */
+function connectionAdmitsReaderClause(connectionAlias: string, userParam: string): string {
+  return `(
+    ${connectionAlias}.deleted_at IS NULL
+    AND ${connectionAlias}.status <> 'archived'
+    AND ${contentReadSql("source_connection", connectionAlias, userParam, { includeOversight: false })}
+  )`;
+}
+
+/** The reader subscribes right now to a live channel of this connection, which still admits them. */
+export function sourceConnectionLiveSubscriberClause(connectionAlias: string, userParam: string, libraryOnly = false): string {
+  return `(
+    EXISTS (
+      SELECT 1
+        FROM source_channel_user_subscriptions live_subscription
+        JOIN source_channels live_channel
+          ON live_channel.id = live_subscription.source_channel_id AND live_channel.space_id = live_subscription.space_id
+       WHERE live_subscription.space_id = ${connectionAlias}.space_id
+         AND live_channel.source_connection_id = ${connectionAlias}.id
+         AND live_subscription.user_id = ${userParam}
+         AND live_subscription.status = 'subscribed'
+         AND live_channel.status <> 'archived'
+         ${libraryOnly ? "AND live_subscription.library_enabled = true" : ""}
+    )
+    AND ${connectionAdmitsReaderClause(connectionAlias, userParam)}
+  )`;
+}
+
+/**
+ * The reader received this connection's items when one delivered at
+ * `deliveredAtExpr` arrived: a closed subscription window of one of its live
+ * channels covers that moment, and the connection still admits the reader.
+ * Each subscription period is its own window, so leaving and rejoining keeps
+ * every earlier period readable.
+ */
+export function sourceConnectionDeliveredToReaderClause(connectionAlias: string, userParam: string, deliveredAtExpr: string): string {
+  return `(
+    EXISTS (
+      SELECT 1
+        FROM source_channel_subscription_windows delivered_window
+        JOIN source_channels delivered_channel
+          ON delivered_channel.id = delivered_window.source_channel_id AND delivered_channel.space_id = delivered_window.space_id
+       WHERE delivered_window.space_id = ${connectionAlias}.space_id
+         AND delivered_channel.source_connection_id = ${connectionAlias}.id
+         AND delivered_window.user_id = ${userParam}
+         AND delivered_window.unsubscribed_at IS NOT NULL
+         AND ${deliveredAtExpr} >= delivered_window.subscribed_at
+         AND ${deliveredAtExpr} < delivered_window.unsubscribed_at
+         AND delivered_channel.status <> 'archived'
+    )
+    AND ${connectionAdmitsReaderClause(connectionAlias, userParam)}
+  )`;
+}
+
+/** Artifact types that carry a Source item's own text and stay behind its gate. */
+export const SOURCE_DERIVED_ARTIFACT_TYPES = ["source_reader_document", "source_raw_snapshot"] as const;
+
+/**
+ * A Source-derived artifact (the extracted Reader document or the raw
+ * snapshot) is readable only while the content it copies is: through a
+ * readable item that references it, or through a snapshot whose connection
+ * still admits the reader. Its own visibility, copied from the item at
+ * capture, is not enough — it would outlive an unsubscribe window or a
+ * revoked connection. Other artifacts are unaffected.
+ */
+export function sourceDerivedArtifactReadableClause(artifactAlias: string, userParam: string): string {
+  return `(
+    ${artifactAlias}.artifact_type NOT IN (${SOURCE_DERIVED_ARTIFACT_TYPES.map((type) => `'${type}'`).join(", ")})
+    OR EXISTS (
+      SELECT 1 FROM source_items artifact_item
+       WHERE artifact_item.space_id = ${artifactAlias}.space_id
+         AND artifact_item.deleted_at IS NULL
+         AND ${artifactAlias}.id IN (artifact_item.raw_artifact_id, artifact_item.extracted_artifact_id)
+         AND ${sourceItemReadableClause("artifact_item", userParam, false)}
+    )
+    OR EXISTS (
+      SELECT 1
+        FROM source_snapshots artifact_snapshot
+        LEFT JOIN source_items artifact_snapshot_item
+          ON artifact_snapshot_item.space_id = artifact_snapshot.space_id
+         AND artifact_snapshot_item.id = artifact_snapshot.source_item_id
+         AND artifact_snapshot_item.deleted_at IS NULL
+        LEFT JOIN source_connections artifact_snapshot_connection
+          ON artifact_snapshot_connection.space_id = artifact_snapshot.space_id
+         AND artifact_snapshot_connection.id = artifact_snapshot.connection_id
+       WHERE artifact_snapshot.space_id = ${artifactAlias}.space_id
+         AND artifact_snapshot.artifact_id = ${artifactAlias}.id
+         AND (
+           (artifact_snapshot_item.id IS NOT NULL AND ${sourceItemReadableClause("artifact_snapshot_item", userParam, false)})
+           OR (
+             artifact_snapshot.source_item_id IS NULL
+             AND (
+               artifact_snapshot.connection_id IS NULL
+               OR (
+                 artifact_snapshot_connection.deleted_at IS NULL
+                 AND artifact_snapshot_connection.status <> 'archived'
+                 AND ${sourceConnectionReaderConsentClause("artifact_snapshot_connection", userParam, "artifact_snapshot.captured_at")}
+               )
+             )
+           )
+         )
+    )
   )`;
 }
 
@@ -105,33 +199,27 @@ export function sourceItemProfileEvidenceClause(itemAlias: string, userParam: st
          AND sc_own.deleted_at IS NULL AND sc_own.status <> 'archived'
     )
     OR EXISTS (
-      SELECT 1
-        FROM source_channel_user_subscriptions scus_fact
-        JOIN source_channels sch_fact ON sch_fact.id = scus_fact.source_channel_id
-       WHERE scus_fact.space_id = ${itemAlias}.space_id
-         AND sch_fact.source_connection_id = ${itemAlias}.connection_id
-         AND scus_fact.user_id = ${userParam}
-         AND scus_fact.status = 'subscribed'
+      SELECT 1 FROM source_connections fact_connection
+       WHERE fact_connection.space_id = ${itemAlias}.space_id
+         AND fact_connection.id = ${itemAlias}.connection_id
+         AND ${sourceConnectionLiveSubscriberClause("fact_connection", userParam)}
     )
   )`;
 }
 
-/** SQL form of the Reader connection-consent gate for Source-derived content. */
-function sourceConnectionReaderConsentClause(connectionAlias: string, userParam: string): string {
+/**
+ * SQL form of the Reader connection-consent gate for Source-derived content
+ * delivered at `deliveredAtExpr`: the connection's owner or a named reader, a
+ * live subscriber, a reader it was delivered to inside a subscription window,
+ * or a Space owner/admin when the consent allows them.
+ */
+export function sourceConnectionReaderConsentClause(connectionAlias: string, userParam: string, deliveredAtExpr: string): string {
   return `(
     ${connectionAlias}.owner_user_id = ${userParam}
     OR ${connectionAlias}.consent_json->>'owner_user_id' = ${userParam}
     OR ${connectionAlias}.consent_json->'allowed_reader_user_ids' @> to_jsonb(${userParam}::text)
-    OR EXISTS (
-      SELECT 1
-        FROM source_channel_user_subscriptions consent_subscription
-        JOIN source_channels consent_channel
-          ON consent_channel.id = consent_subscription.source_channel_id
-       WHERE consent_subscription.space_id = ${connectionAlias}.space_id
-         AND consent_channel.source_connection_id = ${connectionAlias}.id
-         AND consent_subscription.user_id = ${userParam}
-         AND consent_subscription.status = 'subscribed'
-    )
+    OR ${sourceConnectionLiveSubscriberClause(connectionAlias, userParam)}
+    OR ${sourceConnectionDeliveredToReaderClause(connectionAlias, userParam, deliveredAtExpr)}
     OR (
       COALESCE((${connectionAlias}.consent_json->>'allow_space_admins')::boolean, true)
       AND EXISTS (
@@ -164,7 +252,7 @@ export function sourceSnapshotReadableForEvidenceClause(evidenceAlias: string, u
            evidence_snapshot.connection_id IS NULL
            OR (
              evidence_snapshot_connection.id IS NOT NULL
-             AND ${sourceConnectionReaderConsentClause("evidence_snapshot_connection", userParam)}
+             AND ${sourceConnectionReaderConsentClause("evidence_snapshot_connection", userParam, `COALESCE((SELECT evidence_snapshot_item.first_seen_at FROM source_items evidence_snapshot_item WHERE evidence_snapshot_item.space_id = evidence_snapshot.space_id AND evidence_snapshot_item.id = evidence_snapshot.source_item_id), evidence_snapshot.captured_at)`)}
            )
          )
     )

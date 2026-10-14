@@ -1,6 +1,14 @@
 ALTER TABLE "information_digests" ADD COLUMN "timezone" varchar(64) DEFAULT 'UTC' NOT NULL;--> statement-breakpoint
-ALTER TABLE "information_digests" ADD COLUMN "period_start_utc" timestamp with time zone NOT NULL;--> statement-breakpoint
-ALTER TABLE "information_digests" ADD COLUMN "period_end_utc" timestamp with time zone NOT NULL;--> statement-breakpoint
+ALTER TABLE "information_digests" ADD COLUMN "period_start_utc" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "information_digests" ADD COLUMN "period_end_utc" timestamp with time zone;--> statement-breakpoint
+-- Existing digests covered `digest_date` as a UTC day, which is what the
+-- new `timezone` default ('UTC') says; their period is that day.
+UPDATE "information_digests"
+   SET "period_start_utc" = ("digest_date"::date)::timestamp AT TIME ZONE 'UTC',
+       "period_end_utc" = (("digest_date"::date) + 1)::timestamp AT TIME ZONE 'UTC'
+ WHERE "period_start_utc" IS NULL;--> statement-breakpoint
+ALTER TABLE "information_digests" ALTER COLUMN "period_start_utc" SET NOT NULL;--> statement-breakpoint
+ALTER TABLE "information_digests" ALTER COLUMN "period_end_utc" SET NOT NULL;--> statement-breakpoint
 ALTER TABLE "information_digests" ADD COLUMN "generation_kind" varchar(16) DEFAULT 'scheduled' NOT NULL;--> statement-breakpoint
 ALTER TABLE "information_digests" ADD COLUMN "generated_at" timestamp with time zone DEFAULT now() NOT NULL;--> statement-breakpoint
 ALTER TABLE "source_item_annotations" ADD COLUMN "wait_reason" varchar(32);--> statement-breakpoint

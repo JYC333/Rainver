@@ -17,9 +17,10 @@ import { PreviewBadge } from '../../components/PreviewBadge'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import { ProjectFolderSelectors } from '../../components/ProjectFolderSelectors'
 import { ProviderTaskBadge, runActorLabel } from './runActor'
+import { formatDateTime } from '../../i18n/format'
 
 function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString() : '—'
+  return formatDateTime(dt)
 }
 
 function RunRow({ r, agentName, onRefresh }: { r: Run; agentName: string | null; onRefresh: () => void }) {

@@ -442,20 +442,19 @@ export default function UsagePage() {
   ])
 
   const queryKey = useMemo(() => JSON.stringify(query), [query])
-  // The group table pages through every matched group; a new query starts
-  // from its first page.
+  // The group table pages through every matched group. Every summary read
+  // names its offset, page 1 included; a reload (new query or Refresh) starts
+  // again from the first page, and only the latest group read may land.
   const [groupOffset, setGroupOffset] = useState(0)
-  useEffect(() => { setGroupOffset(0) }, [queryKey])
   const groupRequest = useRef(0)
-  useEffect(() => {
-    if (!activeSpaceId || groupOffset === 0) return
+  function loadGroupPage(offset: number) {
+    if (!activeSpaceId) return
+    setGroupOffset(offset)
     const request = ++groupRequest.current
-    usageApi.summary({ ...query, offset: groupOffset })
+    usageApi.summary({ ...query, offset })
       .then(summary => { if (request === groupRequest.current) setData(current => ({ ...current, summary })) })
       .catch(error => { if (request === groupRequest.current) toast.error(errMsg(error)) })
-    // queryKey stands in for query.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSpaceId, groupOffset, queryKey])
+  }
 
   async function loadDashboard(nextQuery: UsageApiQuery = query) {
     if (!activeSpaceId) {
@@ -475,6 +474,8 @@ export default function UsagePage() {
       return
     }
     const request = ++dashboardRequest.current
+    const summaryRequest = ++groupRequest.current
+    setGroupOffset(0)
     setRefreshing(true)
     if (!data.summary) setLoading(true)
     try {
@@ -482,7 +483,7 @@ export default function UsagePage() {
         ? usageApi.summary({ ...nextQuery, group_by: `dimension:${customDimensionKey}`, limit: 50 })
         : Promise.resolve(null)
       const [summary, timeseries, dimensions, subjects, sessions, events, dimensionSummary, budgetPreview] = await Promise.all([
-        usageApi.summary(nextQuery),
+        usageApi.summary({ ...nextQuery, offset: 0 }),
         usageApi.timeseries({ ...nextQuery, granularity: 'day', limit: 20 }),
         usageApi.dimensions(nextQuery),
         usageApi.subjects({ ...nextQuery, limit: 100 }),
@@ -492,8 +493,8 @@ export default function UsagePage() {
         usageApi.budgetPreview({ ...nextQuery, projection_window_days: 30, limit: 8 }),
       ])
       if (request !== dashboardRequest.current) return
-      setData({
-        summary,
+      setData(current => ({
+        summary: summaryRequest === groupRequest.current ? summary : current.summary,
         timeseries,
         dimensions,
         subjects: safeItems(subjects.items),
@@ -503,7 +504,7 @@ export default function UsagePage() {
         events: safeItems(events.items),
         dimensionSummary,
         budgetPreview,
-      })
+      }))
     } catch (error) {
       if (request !== dashboardRequest.current) return
       toast.error(errMsg(error))
@@ -819,7 +820,7 @@ export default function UsagePage() {
                       ))}
                     </TableBody>
                   </Table>
-                  <Pagination className="mt-3" total={data.summary.total} limit={data.summary.limit} offset={groupOffset} onChange={setGroupOffset} />
+                  <Pagination className="mt-3" total={data.summary.total} limit={data.summary.limit} offset={groupOffset} onChange={loadGroupPage} />
                   </>
                 ) : (
                   <EmptyState title="No grouped usage." />

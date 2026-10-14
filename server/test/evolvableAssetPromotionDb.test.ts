@@ -30,7 +30,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["evolution_experiences", "evolvable_asset_evaluation_runs", "evolvable_asset_pins", "prompt_deployment_refs", "evolvable_asset_versions", "evolvable_assets", "proposals", "projects", "space_memberships", "users", "spaces"],
+    ["automations", "agents", "evolution_experiences", "evolvable_asset_evaluation_runs", "evolvable_asset_pins", "prompt_deployment_refs", "evolvable_asset_versions", "evolvable_assets", "proposals", "projects", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -329,6 +329,37 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
     expect(third.applied.result).toMatchObject({ kept_referenced_version_ids: [second.versionId] });
     expect((third.applied.result as { deprecated_version_ids: string[] }).deprecated_version_ids).toEqual([first.versionId]);
   });
+  it("keeps an earlier version an Automation is pinned to, so its next fire still resolves", async () => {
+    if (!db.available) return;
+    const asset = await repo().createAsset(identity, {
+      asset_type: "prompt_template",
+      asset_key: `academic.pinned_by_automation.${randomUUID()}`,
+      display_name: "Pinned by an Automation",
+    });
+    const assetId = asset.id as string;
+    const promote = async (content: string, options: Record<string, unknown>) => {
+      const version = await repo().createVersion(identity, assetId, { scope_type: "space", content_json: { system_prompt: content } });
+      await repo().transitionVersionStatus(identity, assetId, version.id as string, { status: "candidate" });
+      const proposal = await evalRepo().createPromotionProposal(identity, assetId, version.id as string, options);
+      return { versionId: version.id as string, applied: await applyProposal(proposal.proposal_id as string, OWNER) };
+    };
+    const first = await promote("v1", { target_scope_type: "space", target_scope_id: SPACE });
+    const agentId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO agents (id, space_id, owner_user_id, name, status, created_at, updated_at, visibility)
+       VALUES ($1, $2, $3, 'Scheduler', 'active', now(), now(), 'private')`,
+      [agentId, SPACE, OWNER],
+    );
+    await db.pool.query(
+      `INSERT INTO automations (id, space_id, owner_user_id, agent_id, name, trigger_type, status, config_json, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'Nightly', 'schedule', 'paused', $5::jsonb, now(), now())`,
+      [randomUUID(), SPACE, OWNER, agentId, JSON.stringify({ target_type: "workflow", workflow_resolution: "pin", workflow_version_id: first.versionId })],
+    );
+    const second = await promote("v2", { target_scope_type: "space", target_scope_id: SPACE, deprecate_previous: true });
+    // Paused, not archived: resuming it must still find v1 approved.
+    expect(second.applied.result).toMatchObject({ deprecated_version_ids: [], kept_referenced_version_ids: [first.versionId] });
+  });
+
   it("writes a prompt deployment ref when an accepted promotion carries deployment_label", async () => {
     if (!db.available) return;
     const { assetId, versionId } = await createCandidateVersion();

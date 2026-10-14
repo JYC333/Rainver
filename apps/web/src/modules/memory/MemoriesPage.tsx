@@ -27,9 +27,10 @@ import { Badge } from '../../components/ui/badge'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../../components/ui/table'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import { Pagination } from '../../components/ui/pagination'
+import { formatDateTime } from '../../i18n/format'
 
 const TYPES:  MemoryType[]  = ['preference', 'semantic', 'episodic', 'procedural', 'project']
-function fmt(dt: string | null | undefined) { return dt ? new Date(dt).toLocaleString() : '—' }
+function fmt(dt: string | null | undefined) { return formatDateTime(dt) }
 
 interface MemoryForm {
   title: string
@@ -97,7 +98,7 @@ export default function MemoriesPage() {
   const listRequest = useRef(0)
   // Any filter change starts from the first page; a page number from another
   // filter would skip or repeat rows.
-  const filterKey = [projectFilter, agentFilter, statusFilter, scopeFilter, writtenByFilter, sessionFilter, runFilter, sinceFilter].join('\u0000')
+  const filterKey = [activeSpaceId ?? '', projectFilter, agentFilter, statusFilter, scopeFilter, writtenByFilter, sessionFilter, runFilter, sinceFilter].join('\u0000')
   useEffect(() => { setMemoryOffset(0) }, [filterKey])
   const load = useCallback(async () => {
     const request = ++listRequest.current

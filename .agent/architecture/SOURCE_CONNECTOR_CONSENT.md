@@ -254,7 +254,14 @@ surfaced.
 Required checks:
 
 - `allowed_reader_user_ids` contains the viewer, or the viewer is the connection
-  owner.
+  owner, or the viewer subscribes now to a live channel of the connection, or
+  the content was delivered (item first seen, or a connection-only snapshot
+  captured) inside one of the viewer's closed subscription periods
+  (`source_channel_subscription_windows`). Both subscriber branches hold only
+  while the connection is neither deleted nor archived and is readable to the
+  viewer under its current visibility and grants
+  (`sourceConnectionReaderConsentClause` and the Reader's single-document gate
+  share them).
 - `allow_space_admins = true` plus current space owner/admin authority may allow
   administrative review; `allow_space_admins = false` blocks that path.
 - `allowed_agent_ids`, when non-empty, must contain the run agent before a

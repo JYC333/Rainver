@@ -32,6 +32,9 @@ export class SourceAnnotationRecoveryNotifier {
         dedupeKey: key,
         spaceId,
         userId: summary.responsible_user_id,
+        // Every sweep re-syncs; only a change (count, reason, next retry)
+        // brings a notice the person read or dismissed back as unread.
+        resurface: "changed",
         payload: {
           episode_id: summary.episode_id,
           reason: summary.wait_reason,
@@ -50,12 +53,14 @@ export class SourceAnnotationRecoveryNotifier {
 }
 
 /**
- * The alert row already carries its Space, so the key names only the person
- * and the episode — short enough that the stored aggregate key is never cut,
- * which is what lets a later sync recognize its own live notices.
+ * The alert row already carries its Space, so the key names the person, the
+ * episode and the reason: one episode can hold items waiting for different
+ * reasons, and each gets its own notice instead of overwriting another's.
+ * Short enough that the stored aggregate key is never cut, which is what
+ * lets a later sync recognize its own live notices.
  */
 function dedupeKey(summary: AnnotationEpisodeSummary): string {
-  return `source_annotation:${summary.responsible_user_id}:${summary.episode_id}`;
+  return `source_annotation:${summary.responsible_user_id}:${summary.episode_id}:${summary.wait_reason}`;
 }
 
 function title(reason: AnnotationWaitReason): string {

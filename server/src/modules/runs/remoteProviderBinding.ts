@@ -1,6 +1,7 @@
 import type { ServerConfig } from "../../config.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { resolveProvidersDbPort } from "../providers/dbReader.js";
+import { runtimeProviderEgressDestination } from "../retrieval/egress/egressPolicy.js";
 import {
   providerProxyLeases,
   type ProviderProxyLeaseRegistry,
@@ -342,6 +343,24 @@ export async function resolveRemoteRunBinding(
 }
 
 /**
+ * The model a provider-bound Run sends to, in the order the binding resolves
+ * it: the frozen Runtime Profile's model, then the Run's own override, then
+ * the Provider's default, then its first listed model. Egress is judged on
+ * this model, never on the Provider's default alone: the same local server
+ * may forward another model to its vendor's cloud.
+ */
+export function effectiveRunProviderModel(
+  run: { runtime_profile_snapshot_json?: unknown; model_override_json?: unknown },
+  provider: { default_model?: string | null; available_models?: unknown },
+): string | null {
+  return stringValue(recordValue(run.runtime_profile_snapshot_json).model_name)
+    ?? stringValue(recordValue(run.model_override_json).model)
+    ?? stringValue(provider.default_model)
+    ?? stringArray(provider.available_models)[0]
+    ?? null;
+}
+
+/**
  * Turns a resolved binding into a lease the host can use and the files its
  * runtime needs. The provider's real key is never part of this — the proxy
  * substitutes it inside the server process.
@@ -434,6 +453,21 @@ export async function buildRemoteProviderBinding(input: {
     throw error;
   }
 
+  // Classified on the Provider's own declaration, its home Space and the
+  // model this Run sends to — the same judgement egress made at admission.
+  const localDestination = runtimeProviderEgressDestination(input.runtimeKey, {
+    space_id: stringValue(record.home_space_id) ?? stringValue(record.space_id) ?? "",
+    provider_type: stringValue(record.provider_type) ?? "",
+    base_url: stringValue(record.base_url),
+    deployment: record.deployment === "trusted_local" ? "trusted_local" : "cloud",
+    config_json: {
+      claude_compatible_base_url: stringValue(record.claude_compatible_base_url),
+      openai_compatible_base_url: stringValue(record.openai_compatible_base_url),
+    },
+    default_model: stringValue(record.default_model),
+    model,
+  }, input.run.space_id) === "local_provider";
+
   const registry = input.leaseRegistry ?? providerProxyLeases;
   const lease = registry.create(authorization, {
     run_id: input.run.id,
@@ -445,6 +479,7 @@ export async function buildRemoteProviderBinding(input: {
     route: requirement.route,
     upstream_base_url: upstreamBaseUrl,
     model,
+    pinned_model: localDestination ? model : null,
     runtime_key: input.runtimeKey,
     session_id: input.run.session_id,
     parent_run_id: input.run.parent_run_id ?? null,

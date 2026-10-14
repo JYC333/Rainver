@@ -23,15 +23,19 @@ export function OneTimeLink({
   onDismiss: () => void
 }) {
   const { t } = useAppTranslation()
-  const [copy, setCopy] = useState<'idle' | 'copied' | 'failed'>('idle')
+  // The copy outcome belongs to the link it was for: a newly generated link
+  // starts uncopied, never inheriting the previous one's "Copied".
+  const [outcome, setOutcome] = useState<{ link: string; status: 'copied' | 'failed' } | null>(null)
+  const copy = outcome?.link === link ? outcome.status : 'idle'
 
   async function copyLink() {
+    const target = link
     try {
       if (!navigator.clipboard) throw new Error('clipboard unavailable')
-      await navigator.clipboard.writeText(link)
-      setCopy('copied')
+      await navigator.clipboard.writeText(target)
+      setOutcome({ link: target, status: 'copied' })
     } catch {
-      setCopy('failed')
+      setOutcome({ link: target, status: 'failed' })
     }
   }
 

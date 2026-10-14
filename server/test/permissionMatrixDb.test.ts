@@ -17,6 +17,9 @@ import type { SystemActionExecutor } from "../src/modules/systemActions/gateway.
 import { seedAgentWithVersion, seedMainlineRoomsForAllProjects, seedRun } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { PgMemoryApplyRepository } from "../src/modules/memory/memoryApplyRepository.js";
+import { normalizeVersionScopeForWrite } from "../src/modules/evolution/assetAccess.js";
+import { insertMemoryEntry } from "./support/memoryFixtures.js";
 
 // The P03 authority matrix, against real Postgres: who configures which
 // Assistant, who may create content in a Project, who turns a capture into
@@ -55,7 +58,7 @@ beforeEach(async () => {
   if (!db.available) return;
   config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
   await resetTables(db.pool, [
-    "settings", "skill_local_overlays", "skill_packages", "skill_sources", "proposals", "activity_records",
+    "settings", "skill_local_overlays", "skill_packages", "skill_sources", "proposals", "activity_records", "memory_entries",
     "sessions", "runs", "agent_runtime_profiles", "agent_versions", "agents", "project_members", "projects",
     "space_memberships", "users", "spaces",
   ], { cascade: true });
@@ -132,6 +135,26 @@ describe("P03 authority matrix (real Postgres)", () => {
       .rejects.toMatchObject({ statusCode: 404 });
     await expect(repository.assertAssistantSettingsReadable(as(READER), { spaceId: SPACE, projectId: PROJECT }))
       .resolves.toBeUndefined();
+  });
+
+  it("lets only an Assistant's configurer change where it runs, and only an Agent's configurer change what it resolves", async () => {
+    if (!db.available) return;
+    const agents = new PgAgentRepository(db.pool);
+    // A Project Assistant's runtime profiles: its Project owner, not the Space owner or a Project reader.
+    expect(await agents.canWriteRuntimeProfiles(SPACE, PROJECT_OWNER, PROJECT_ASSISTANT)).toBe(true);
+    expect(await agents.canWriteRuntimeProfiles(SPACE, CREATOR, PROJECT_ASSISTANT)).toBe(false);
+    expect(await agents.canWriteRuntimeProfiles(SPACE, READER, PROJECT_ASSISTANT)).toBe(false);
+    // The Space Assistant's: the Space creator, not another admin.
+    expect(await agents.canWriteRuntimeProfiles(SPACE, CREATOR, SPACE_ASSISTANT)).toBe(true);
+    expect(await agents.canWriteRuntimeProfiles(SPACE, OTHER_ADMIN, SPACE_ASSISTANT)).toBe(false);
+    // The Space Assistant's profiles are read by its configurer, not by any admin.
+    expect(await agents.canReadRuntimeProfiles(SPACE, CREATOR, SPACE_ASSISTANT)).toBe(true);
+    expect(await agents.canReadRuntimeProfiles(SPACE, OTHER_ADMIN, SPACE_ASSISTANT)).toBe(false);
+    // Agent-scope asset versions are what that Agent resolves at run time.
+    await expect(normalizeVersionScopeForWrite(db.pool, as(READER), "agent", AGENT)).resolves.toBe(AGENT);
+    await expect(normalizeVersionScopeForWrite(db.pool, as(OTHER_ADMIN), "agent", AGENT)).rejects.toMatchObject({ statusCode: 403 });
+    await expect(normalizeVersionScopeForWrite(db.pool, as(PROJECT_OWNER), "agent", PROJECT_ASSISTANT)).resolves.toBe(PROJECT_ASSISTANT);
+    await expect(normalizeVersionScopeForWrite(db.pool, as(CREATOR), "agent", PROJECT_ASSISTANT)).rejects.toMatchObject({ statusCode: 403 });
   });
 
   it("refuses a default Project the configurer cannot read, from another Space, or other than a Project Assistant's own", async () => {
@@ -264,6 +287,44 @@ describe("P03 authority matrix (real Postgres)", () => {
     // The Agent's owner decides both.
     expect(await service.reject(forged, as(READER))).toMatchObject({ status: "rejected" });
     expect(await service.reject(omitted, as(READER))).toMatchObject({ status: "rejected" });
+  });
+
+  it("decides a revision or archive of an Agent's memory by the stored entry, not by the payload's scope", async () => {
+    if (!db.available) return;
+    const service = new PgProposalApplyService(config);
+    const personaId = randomUUID();
+    await insertMemoryEntry(db.pool, SPACE, {
+      id: personaId, scope_type: "agent", agent_id: AGENT, owner_user_id: READER,
+      memory_type: "persona", root_memory_id: personaId,
+    });
+    const about = async (proposalType: string, payload: Record<string, unknown>) => (await insertProposalRow(db.pool, {
+      spaceId: SPACE,
+      proposalType,
+      title: "Change what the Agent has become",
+      // No `target_scope`: the stored entry is what this proposal is about.
+      payload: { target_memory_id: personaId, ...payload },
+      rationale: "",
+      createdByUserId: CREATOR,
+      ownerUserId: CREATOR,
+      visibility: "space_shared",
+      requiredApproverRole: "owner",
+    })).id;
+    for (const proposalId of [
+      await about("memory_update", { operation: "update", proposed_content: "changed" }),
+      await about("memory_archive", { operation: "archive" }),
+      // A claim that it is someone's personal memory changes nothing either.
+      await about("memory_update", { operation: "update", target_scope: "user", proposed_content: "changed" }),
+    ]) {
+      expect(await service.reject(proposalId, as(CREATOR))).toBeNull();
+      expect(await service.reject(proposalId, as(OTHER_ADMIN))).toBeNull();
+      expect(await service.reject(proposalId, as(READER))).toMatchObject({ status: "rejected" });
+    }
+    // Even its owner cannot move it out of the Agent's scope.
+    const crossing = await about("memory_update", { operation: "update", target_scope: "user", proposed_content: "now mine" });
+    await expect(new PgMemoryApplyRepository(db.pool).applyUpdate(
+      (await db.pool.query(`SELECT * FROM proposals WHERE id = $1`, [crossing])).rows[0],
+      READER,
+    )).rejects.toThrow(/into or out of an Agent/);
   });
 
   it("lists and decides only the conversation's proposals its person may read", async () => {

@@ -20,6 +20,12 @@ ALTER TABLE "runs" DROP CONSTRAINT "ck_runs_trigger_origin";--> statement-breakp
 ALTER TABLE "run_finalizations" ADD COLUMN "settled_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "run_finalizations" ADD COLUMN "settlement_attempts" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 ALTER TABLE "run_finalizations" ADD COLUMN "settlement_json" jsonb DEFAULT '{}'::jsonb NOT NULL;--> statement-breakpoint
+-- A finalization the previous release completed already passed its
+-- completion gate; nothing records what it still owed, so none is owed now.
+-- Only finalizations completed from this release on can be unsettled.
+UPDATE "run_finalizations"
+   SET "settled_at" = COALESCE(("metadata_json"->>'completion_gate_committed_at')::timestamptz, "finalized_at", "created_at")
+ WHERE "status" = 'completed' AND "settled_at" IS NULL;--> statement-breakpoint
 ALTER TABLE "runs" ADD COLUMN "cause_run_id" varchar(36);--> statement-breakpoint
 ALTER TABLE "plan_node_action_attempts" ADD CONSTRAINT "plan_node_action_attempts_node_space_fkey" FOREIGN KEY ("plan_node_id","space_id") REFERENCES "public"."plan_nodes"("id","space_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "plan_node_action_attempts" ADD CONSTRAINT "plan_node_action_attempts_space_id_fkey" FOREIGN KEY ("space_id") REFERENCES "public"."spaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint

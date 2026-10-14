@@ -40,6 +40,17 @@ describe('OneTimeLink', () => {
     await waitFor(() => expect(screen.getByText(/copy it yourself/)).toBeInTheDocument())
   })
 
+  it('does not carry "Copied" over to a newly generated link', async () => {
+    stubClipboard(vi.fn(async () => undefined))
+    const { rerender } = render(<OneTimeLink link={LINK} label="Invitation link" onDismiss={() => undefined} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    expect(await screen.findByRole('button', { name: 'Copied' })).toBeInTheDocument()
+
+    rerender(<OneTimeLink link={`${LINK}-second`} label="Invitation link" onDismiss={() => undefined} />)
+    expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copied' })).not.toBeInTheDocument()
+  })
+
   it('marks a reset link as a secret and removes it when dismissed', () => {
     const onDismiss = vi.fn()
     render(<OneTimeLink secret link={LINK} label="Password reset link" onDismiss={onDismiss} />)

@@ -200,7 +200,7 @@ describe('LibraryPage', () => {
     vi.mocked(informationDigestsApi.personal).mockResolvedValue({
       status: 'missing', digest_date: '2026-08-06', timezone: 'Asia/Shanghai',
       period_start_utc: '2026-08-05T16:00:00.000Z', period_end_utc: '2026-08-06T16:00:00.000Z',
-      backfill_available: true, explanation: 'No digest was made for this day.',
+      reason: 'not_generated', backfill_available: true,
     })
     vi.mocked(informationDigestsApi.backfillPersonal).mockImplementation(async () => {
       const made = available({
@@ -217,7 +217,7 @@ describe('LibraryPage', () => {
     // The day is the digest's own calendar date, labelled with its timezone.
     expect(await screen.findByText('Aug 6, 2026 · Asia/Shanghai')).toBeInTheDocument()
     expect(screen.getByText('No digest for Aug 6, 2026')).toBeInTheDocument()
-    expect(screen.getByText('No digest was made for this day.')).toBeInTheDocument()
+    expect(screen.getByText(/No digest was generated for this day/)).toBeInTheDocument()
     expect(informationDigestsApi.backfillPersonal).not.toHaveBeenCalled()
     expect(screen.getByRole('button', { name: 'Next day' })).toBeDisabled()
 
@@ -233,9 +233,9 @@ describe('LibraryPage', () => {
     await waitFor(() => expect(informationDigestsApi.personal).toHaveBeenLastCalledWith('space-1', '2026-08-05'))
   })
 
-  it('shows a countdown only for a scheduled retry, names a waiting condition, and retries on request', async () => {
+  it('shows a countdown only for a scheduled retry, names a waiting condition, and offers a retry only for a paused episode', async () => {
     const inTwoMinutes = new Date(Date.now() + 2 * 60_000).toISOString()
-    vi.mocked(informationDigestsApi.annotationEpisodes).mockResolvedValue({
+    vi.mocked(informationDigestsApi.annotationEpisodes).mockResolvedValueOnce({
       episodes: [
         { episode_id: 'episode-1', wait_reason: 'retry_scheduled', affected_count: 2, next_retry_at: inTwoMinutes, connection_ids: [] },
         { episode_id: 'episode-2', wait_reason: 'egress_denied', affected_count: 1, next_retry_at: null, connection_ids: ['connection-1'] },
@@ -243,14 +243,25 @@ describe('LibraryPage', () => {
     })
     vi.mocked(informationDigestsApi.retryAnnotation).mockResolvedValue({ reopened: 3 })
 
-    renderLibrary('/library/digests')
+    const first = renderLibrary('/library/digests')
 
     expect(await screen.findByText(/2 of your items failed to annotate\. Next automatic retry in 2 minutes/)).toBeInTheDocument()
     const waiting = screen.getByText('1 of your items is waiting until its Source may be sent to the annotation Provider.')
     expect(waiting.textContent).not.toMatch(/retry|minute/i)
+    // Both recover on their own: nothing for a person to retry.
+    expect(screen.queryByRole('button', { name: 'Retry now' })).not.toBeInTheDocument()
+    first.unmount()
+
+    vi.mocked(informationDigestsApi.annotationEpisodes).mockResolvedValue({
+      episodes: [{ episode_id: 'episode-3', wait_reason: 'budget_exhausted', affected_count: 3, next_retry_at: null, connection_ids: [] }],
+    })
+    renderLibrary('/library/digests')
+    expect(await screen.findByText('3 of your items failed repeatedly and are paused.')).toBeInTheDocument()
+    vi.mocked(informationDigestsApi.annotationEpisodes).mockClear()
     fireEvent.click(screen.getByRole('button', { name: 'Retry now' }))
     await waitFor(() => expect(informationDigestsApi.retryAnnotation).toHaveBeenCalledWith('space-1'))
-    expect(informationDigestsApi.annotationEpisodes).toHaveBeenCalledTimes(2)
+    // The notice reads its episodes again after the retry.
+    await waitFor(() => expect(informationDigestsApi.annotationEpisodes).toHaveBeenCalledTimes(1))
   })
 
   it('defaults the Library shell to the all items route', async () => {

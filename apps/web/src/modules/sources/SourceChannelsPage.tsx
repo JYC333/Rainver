@@ -13,6 +13,7 @@ import { errMsg } from '../../lib/utils'
 import { SourceMonitorDialog } from './SourceMonitorDialog'
 import { sourceQueryText } from './sourceQueryText'
 import type { FollowedSourceChannel, SourceChannel, SourceProvider, SourceProviderCategoryGroup, SourceRecommendation } from '../../types/api'
+import { useAppTranslation } from '../../i18n'
 
 interface SourceGroup {
   id: string
@@ -94,21 +95,27 @@ export default function SourceChannelsPage() {
   const [setupOpen, setSetupOpen] = useState(false)
   const [busyMonitorId, setBusyMonitorId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [followedError, setFollowedError] = useState<string | null>(null)
+  const { t } = useAppTranslation()
 
   const load = useCallback(async () => {
     if (!activeSpaceId) return
     setLoading(true)
+    // The followed list is its own request: if it fails, the rest of the page
+    // still shows, with a note where the list would be.
+    setFollowedError(null)
+    void sourcesApi.followed()
+      .then(setFollowed)
+      .catch(error => setFollowedError(errMsg(error)))
     try {
-      const [providerRows, channelRows, recommendationRows, followedRows] = await Promise.all([
+      const [providerRows, channelRows, recommendationRows] = await Promise.all([
         sourcesApi.providers(),
         sourcesApi.channels(),
         sourcesApi.recommendations(),
-        sourcesApi.followed(),
       ])
       setProviders(providerRows)
       setChannels(channelRows)
       setRecommendations(recommendationRows)
-      setFollowed(followedRows)
       setArxivCategoryGroups(providerRows.find(provider => provider.provider_key === 'arxiv')?.setup_schema?.category_groups ?? [])
     } catch (error) {
       toast.error(errMsg(error))
@@ -161,9 +168,7 @@ export default function SourceChannelsPage() {
     try {
       await sourcesApi.setChannelSubscription(channel.id, status)
       setFollowed(current => current.map(item => item.id === channel.id ? { ...item, subscription_status: status } : item))
-      toast.success(status === 'muted'
-        ? 'Left the source. What it already delivered stays readable in your Library.'
-        : 'Following the source again')
+      toast.success(status === 'muted' ? t('sources_ui.followed.left_toast') : t('sources_ui.followed.rejoined_toast'))
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
@@ -176,6 +181,10 @@ export default function SourceChannelsPage() {
     try {
       await sourcesApi.decideRecommendation(recommendation.id, decision)
       setRecommendations(current => current.filter(item => item.id !== recommendation.id))
+      // A followed recommendation is one of the sources this person follows now.
+      if (decision === 'subscribed') {
+        setFollowed(current => [{ ...recommendation, subscription_status: 'subscribed' as const }, ...current.filter(item => item.id !== recommendation.id)])
+      }
       toast.success(decision === 'subscribed' ? 'Source followed' : decision === 'muted' ? 'Source recommendation muted' : 'Recommendation dismissed')
     } catch (error) {
       toast.error(errMsg(error))
@@ -199,11 +208,15 @@ export default function SourceChannelsPage() {
         </div>
       </div>
 
+      {followedError && (
+        <p className="text-xs text-destructive" role="alert">{t('sources_ui.followed.load_failed', { message: followedError })}</p>
+      )}
+
       {followed.length > 0 && (
-        <section className="space-y-3 rounded-lg border p-4" aria-label="Followed sources">
+        <section className="space-y-3 rounded-lg border p-4" aria-label={t('sources_ui.followed.region')}>
           <div>
-            <h2 className="font-medium">Sources you follow</h2>
-            <p className="text-xs text-muted-foreground">Leaving stops new items and keeps what was already delivered readable. It also stops these items from shaping your interests.</p>
+            <h2 className="font-medium">{t('sources_ui.followed.title')}</h2>
+            <p className="text-xs text-muted-foreground">{t('sources_ui.followed.description')}</p>
           </div>
           <div className="space-y-2">
             {followed.map(channel => {
@@ -213,10 +226,10 @@ export default function SourceChannelsPage() {
                 <div key={channel.id} className="flex flex-col gap-3 rounded-md border bg-card p-3 md:flex-row md:items-center md:justify-between">
                   <div>
                     <p className="font-medium">{channel.source_name} · {channel.name}</p>
-                    <p className="text-xs text-muted-foreground">{following ? 'Following' : 'Left — earlier items stay readable'}</p>
+                    <p className="text-xs text-muted-foreground">{following ? t('sources_ui.followed.following') : t('sources_ui.followed.left')}</p>
                   </div>
                   <Button variant="outline" size="sm" disabled={busy} onClick={() => void setFollowing(channel, following ? 'muted' : 'subscribed')}>
-                    {following ? 'Leave' : 'Follow again'}
+                    {following ? t('sources_ui.followed.leave') : t('sources_ui.followed.follow_again')}
                   </Button>
                 </div>
               )

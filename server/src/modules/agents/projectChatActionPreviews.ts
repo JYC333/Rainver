@@ -1,4 +1,5 @@
 import type { Queryable } from "../routeUtils/common.js";
+import { memoryProposalDecider } from "../memory/memoryProposalDecider.js";
 
 interface ProjectChatActionPreview {
   action_id: string;
@@ -23,6 +24,7 @@ interface ProposalPreviewRow {
   payload_json: Record<string, unknown>;
   action_idempotency_key: string | null;
   created_by_run_id: string;
+  created_by_agent_id: string | null;
 }
 
 interface ActionEventRow {
@@ -64,7 +66,7 @@ export async function loadChatActionPreviewsByRunIds(
   const [proposalRows, eventRows] = await Promise.all([
     db.query<ProposalPreviewRow>(
       `SELECT id, proposal_type, title, status, risk_level, payload_json,
-              action_idempotency_key, created_by_run_id
+              action_idempotency_key, created_by_run_id, created_by_agent_id
          FROM proposals
         WHERE space_id = $1 AND created_by_run_id = ANY($2::varchar[])
         ORDER BY created_at`,
@@ -81,6 +83,9 @@ export async function loadChatActionPreviewsByRunIds(
 
   const proposalCallIds = new Map<string, Set<string>>();
   for (const row of proposalRows.rows) {
+    // The same decider the accept path enforces, so the card offers the
+    // decision to the one person who may make it.
+    const decider = await memoryProposalDecider(db, { space_id: spaceId, ...row });
     const callIds = proposalCallIds.get(row.created_by_run_id) ?? new Set<string>();
     if (row.action_idempotency_key) callIds.add(row.action_idempotency_key);
     proposalCallIds.set(row.created_by_run_id, callIds);
@@ -94,9 +99,7 @@ export async function loadChatActionPreviewsByRunIds(
       summary: null,
       risk_level: row.risk_level,
       scope: typeof row.payload_json?.project_id === "string" ? { project_id: row.payload_json.project_id } : null,
-      decidable_by_user_id: typeof row.payload_json?.required_owner_user_id === "string"
-        ? row.payload_json.required_owner_user_id
-        : null,
+      decidable_by_user_id: decider.required ? decider.userId : null,
     });
   }
   for (const row of eventRows.rows) {

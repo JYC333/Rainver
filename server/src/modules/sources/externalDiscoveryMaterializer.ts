@@ -28,10 +28,14 @@ export async function materializeExternalDiscovery(
   for (const sample of input.samples) {
     const uri = canonicalUrl(sample.source_uri);
     if (!uri || !sample.title.trim()) continue;
+    // A Project's copy of the URL is the Project's; a personal copy is the
+    // discovering person's own (unique per owner), never another member's.
     const existing = await db.query<{ id: string; owner_user_id: string | null; visibility: string }>(
       `SELECT id, owner_user_id, visibility FROM source_items
-        WHERE space_id=$1 AND project_id IS NOT DISTINCT FROM $3 AND (canonical_uri=$2 OR source_uri=$2) AND deleted_at IS NULL LIMIT 1`,
-      [input.spaceId, uri, input.projectId],
+        WHERE space_id=$1 AND project_id IS NOT DISTINCT FROM $3 AND (canonical_uri=$2 OR source_uri=$2) AND deleted_at IS NULL
+          AND ($3::varchar IS NOT NULL OR owner_user_id = $4::varchar)
+        LIMIT 1`,
+      [input.spaceId, uri, input.projectId, input.userId],
     );
     const row = existing.rows[0];
     if (row) {

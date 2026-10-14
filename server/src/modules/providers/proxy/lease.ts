@@ -12,6 +12,12 @@ interface ProviderProxyLeaseInput {
   route?: ProviderProxyRoute;
   upstream_base_url: string;
   model?: string | null;
+  /**
+   * Set on a lease whose destination was judged local for this model: the
+   * proxy then refuses a request for any other model, which the same local
+   * server could forward to its vendor's cloud.
+   */
+  pinned_model?: string | null;
   runtime_key?: string | null;
   session_id?: string | null;
   parent_run_id?: string | null;
@@ -61,6 +67,7 @@ interface ProviderProxyLease {
 }
 
 export interface ResolvedProviderProxyLease {
+  pinned_model: string | null;
   id: string;
   token_hash: Buffer;
   run_id: string;
@@ -164,6 +171,7 @@ export class ProviderProxyLeaseRegistry {
       route: input.route ?? "anthropic",
       upstream_base_url: normalizeBaseUrl(input.upstream_base_url),
       model: input.model ?? null,
+      pinned_model: input.pinned_model ?? null,
       runtime_key: input.runtime_key ?? null,
       session_id: input.session_id ?? null,
       parent_run_id: input.parent_run_id ?? null,

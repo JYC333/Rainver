@@ -196,6 +196,24 @@ describe("providerCommandStoreDb", () => {
     return rows.rows.map((row) => row.provider_id);
   }
 
+  it("asks for a fresh owner or admin vouch whenever a trusted-local provider is pointed elsewhere", async () => {
+    if (!db.available) return;
+    const id = await createdProviderId({
+      provider_type: "ollama", name: "Local box", base_url: "http://localhost:11434", deployment: "trusted_local", api_key: undefined,
+    });
+    // The person who vouched is no longer an owner or admin of the Space.
+    await db.pool.query(`UPDATE space_memberships SET role = 'member' WHERE space_id = $1 AND user_id = $2`, [SPACE, USER]);
+    try {
+      await expect(store().updateProvider(SPACE, USER, id, { base_url: "http://gpu-box.lan:11434" } as never))
+        .rejects.toThrow(/owner or admin/);
+      // Changes that do not move the endpoint need no new vouch.
+      await expect(store().updateProvider(SPACE, USER, id, { name: "Local box (renamed)" } as never))
+        .resolves.toMatchObject({ name: "Local box (renamed)" });
+    } finally {
+      await db.pool.query(`UPDATE space_memberships SET role = 'owner' WHERE space_id = $1 AND user_id = $2`, [SPACE, USER]);
+    }
+  });
+
   it("keeps a disabled provider listed for its owner, who can enable it again, and for nobody else", async () => {
     if (!db.available) return;
     const id = await createdProviderId({ name: "Paused provider" });

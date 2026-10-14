@@ -81,6 +81,13 @@ export class PgHostThreadEventRepository {
     threadId: string,
     runId: string,
     events: NewHostThreadEvent[],
+    /**
+     * The attempt that produced these events. Once a retry supersedes it,
+     * its late events (an adapter still unwinding) are dropped instead of
+     * landing in the newer attempt's turn. Null tags them with the Run's
+     * current attempt.
+     */
+    attemptNumber: number | null = null,
   ): Promise<HostThreadEvent[]> {
     if (events.length === 0) return [];
     return withDbTransaction(this.db, async (client) => {
@@ -93,9 +100,9 @@ export class PgHostThreadEventRepository {
              text, tool_call_id, tool_name, tool_input_summary, tool_kind,
              tool_result_summary, status, created_at
            )
-           VALUES (
+           SELECT
              $1, $2, $3,
-             (SELECT MAX(attempt_number) FROM run_attempts WHERE run_id = $3::varchar),
+             current_attempt.attempt_number,
              (SELECT pf.project_id
                 FROM host_threads t
                 JOIN workspace_locations wl ON wl.id = t.workspace_location_id
@@ -105,7 +112,8 @@ export class PgHostThreadEventRepository {
                 FROM host_thread_events
                WHERE host_task_thread_id = $2::varchar),
              $4, $5, $6, $7, $8, $9, $10, $11, now()
-           )
+           FROM (SELECT MAX(attempt_number) AS attempt_number FROM run_attempts WHERE run_id = $3::varchar) current_attempt
+           WHERE $12::int IS NULL OR current_attempt.attempt_number = $12::int
            RETURNING ${COLUMNS}`,
           [
             randomUUID(),
@@ -119,9 +127,13 @@ export class PgHostThreadEventRepository {
             event.tool_kind ?? null,
             event.tool_result_summary ?? null,
             event.status ?? null,
+            attemptNumber,
           ],
         );
-        written.push(result.rows[0]!);
+        // Nothing written: the attempt was superseded, and so is every later
+        // event of this batch.
+        if (!result.rows[0]) break;
+        written.push(result.rows[0]);
       }
       return written;
     });
@@ -164,6 +176,7 @@ export function createSerializedThreadEventSink(
   repository: PgHostThreadEventRepository,
   threadId: string,
   runId: string,
+  attemptNumber: number | null,
 ): (drafts: NewHostThreadEvent[]) => Promise<void> {
-  return serializeCalls((drafts: NewHostThreadEvent[]) => repository.append(threadId, runId, drafts));
+  return serializeCalls((drafts: NewHostThreadEvent[]) => repository.append(threadId, runId, drafts, attemptNumber));
 }

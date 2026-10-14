@@ -5,6 +5,10 @@ export const digestReportsEn = {
   backfilled: 'Backfilled {{when}}',
   backfill_note: 'Rebuilt later from the material retained now, without the outside-your-usual-view section.',
   missing_title: 'No digest for {{date}}',
+  missing_reason: {
+    not_generated: 'No digest was generated for this day. It can be backfilled from the material retained now.',
+    day_not_complete: 'This day has not ended yet in the digest\'s timezone; its digest is generated after it ends.',
+  },
   backfill: 'Backfill this day',
   backfilling: 'Backfilling…',
   backfill_done: 'Digest backfilled',

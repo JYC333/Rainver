@@ -83,8 +83,8 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO source_connections
-       (id,space_id,provider_connector_id,owner_user_id,name,status,capture_policy,trust_level,consent_json,policy_json,config_json,created_at,updated_at)
-     VALUES ($1,$2,$3,$4,'Feed','active','reference_only','normal','{}','{}','{}',$5,$5)`,
+       (id,space_id,provider_connector_id,owner_user_id,name,status,visibility,capture_policy,trust_level,consent_json,policy_json,config_json,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,'Feed','active','space_shared','reference_only','normal','{}','{}','{}',$5,$5)`,
     [CONNECTION, SPACE, mapping, OWNER, now],
   );
   await db.pool.query(
@@ -709,9 +709,9 @@ describe("information digest persistence", () => {
       const before = await footprint();
       const missing = await app.inject({ method: "GET", url: `/api/v1/spaces/${SPACE}/information-digests/personal` });
       expect(missing.statusCode).toBe(200);
-      expect(missing.json()).toMatchObject({ status: "missing", digest_date: yesterday, timezone: "UTC", backfill_available: true });
+      expect(missing.json()).toMatchObject({ status: "missing", digest_date: yesterday, timezone: "UTC", reason: "not_generated", backfill_available: true });
       const today = await app.inject({ method: "GET", url: `/api/v1/spaces/${SPACE}/information-digests/personal?date=${DATE}` });
-      expect(today.json()).toMatchObject({ status: "missing", backfill_available: false });
+      expect(today.json()).toMatchObject({ status: "missing", reason: "day_not_complete", backfill_available: false });
       expect(await footprint()).toEqual(before);
 
       // Today has not ended: no backfill for it.
@@ -741,6 +741,10 @@ describe("information digest persistence", () => {
     __setAuthIdentityForTests({ spaceId: SPACE, userId: OTHER });
     const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [informationDigestModule]);
     try {
+      // The history read says the day is missing without offering what the
+      // reader would be refused.
+      const read = await app.inject({ method: "GET", url: `/api/v1/spaces/${SPACE}/projects/${PROJECT}/information-digests?date=${yesterday}` });
+      expect(read.json()).toMatchObject({ status: "missing", reason: "not_generated", backfill_available: false });
       const response = await app.inject({
         method: "POST", url: `/api/v1/spaces/${SPACE}/projects/${PROJECT}/information-digests/backfill`, payload: { date: yesterday },
       });

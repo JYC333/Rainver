@@ -25,6 +25,7 @@ import { resetTables } from "./support/resetTables.js";
 import { ensureDefaultRuntimeProfile, seedServerHost } from "./support/domainSeeds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resolveExecutionHost } from "../src/modules/runs/executionHostResolution.js";
+import { finalizedForPostRun } from "../src/modules/runs/agentRunHandler.js";
 
 describe("runContractSnapshot", () => {
   it("keeps the dispatch-time Git snapshot immutable in the Run contract", () => {
@@ -817,5 +818,17 @@ describe("run detail withholding", () => {
   it("serves the same records whole at full", () => {
     expect(runStepToOut(step, "full")).toMatchObject({ output_summary: "SECRET OUTPUT", metadata_json: { secret: true } });
     expect(runEventToOut(event, "full")).toMatchObject({ summary: "SECRET SUMMARY" });
+  });
+});
+
+describe("agent_run post-run steps", () => {
+  it("run once settlement is merely owed, and wait on any other finalization failure", () => {
+    // Settlement owed: the evaluation is durable and the sweep finishes the
+    // reconcilers; the thread outcome, chat turn and domain reconcilers still
+    // happen now, once, and the succeeded Run's job does not fail.
+    expect(finalizedForPostRun({ status: "failed", error_code: "settlement_pending" })).toBe(true);
+    expect(finalizedForPostRun({ status: "succeeded" })).toBe(true);
+    // A real failure stops before them; the job's retry runs them.
+    expect(finalizedForPostRun({ status: "failed", error_code: "finalization_failed" })).toBe(false);
   });
 });

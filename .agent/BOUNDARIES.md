@@ -91,7 +91,7 @@ digest, or team report.
 
 | Link meaning | Canonical writer/table |
 |---|---|
-| Both endpoints are `space_objects` and the edge is part of the durable graph | `object_relations`, owned by the `ontology` module. Governance is declared per link type **and endpoint pair**, not per table: `supports` between two Threads is direct-write working structure, while `supports` between two Claims is a reviewed assertion ([ADR 0012](decisions/0012-ontology-ownership-and-language-alignment.md) decision 3, amended) |
+| Both endpoints are `space_objects` and the edge is part of the durable graph | `object_relations`, owned by the `ontology` module. Governance is declared per link type **and endpoint pair**, not per table: `supports` between two Threads is direct-write working structure, while `supports` between two Claims is a reviewed assertion ([ADR 0012](decisions/0012-ontology-ownership-and-language-alignment.md) decision 3) |
 | Curated KnowledgeItem/Claim citation or supporting evidence | `knowledge_item_sources` / `claim_sources`; citation lineage is not a canonical semantic graph edge |
 | Accepted asymmetric lineage with a non-object endpoint | `provenance_links`, or the owning domain's dedicated `*_sources` table |
 | MemoryEntry-to-MemoryEntry semantic relationship | `memory_relations`; its relation vocabulary is frozen and must not expand into general provenance |

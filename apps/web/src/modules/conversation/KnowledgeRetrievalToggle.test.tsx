@@ -53,4 +53,23 @@ describe('KnowledgeRetrievalToggle', () => {
     expect(screen.getByRole('button', { name: /Knowledge: off/ })).toBeDisabled()
     expect(runtimeContextApi.retrievalSwitch).not.toHaveBeenCalled()
   })
+
+  it('offers a retry when the setting cannot be read, instead of staying disabled', async () => {
+    const user = userEvent.setup({ delay: null })
+    vi.mocked(runtimeContextApi.retrievalSwitch)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ work_context_scope_id: SCOPE, enabled: true, preferred_domains: [], setup_version: 1 })
+    render(<KnowledgeRetrievalToggle scopeId={SCOPE} />)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('could not be loaded')
+    await user.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('button', { name: /Knowledge: on/ })).toBeEnabled()
+  })
+
+  it('names the Agent when the switch belongs to one Room recipient', async () => {
+    vi.mocked(runtimeContextApi.retrievalSwitch).mockResolvedValue({ work_context_scope_id: SCOPE, enabled: false, preferred_domains: [], setup_version: null })
+    render(<KnowledgeRetrievalToggle scopeId={SCOPE} agentName="Researcher" />)
+    expect(await screen.findByRole('button', { name: 'Researcher · Knowledge: off' })).toBeInTheDocument()
+    expect(runtimeContextApi.retrievalSwitch).toHaveBeenCalledWith(SCOPE)
+  })
 })

@@ -380,6 +380,28 @@ describe("finance ledger Beancount import", () => {
     expect(await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, { directiveType: "transaction" })).toHaveLength(4);
   });
 
+  it("refuses a second line reusing an external id in one file, with a status of its own", async () => {
+    const book = await createBook();
+    await addCommodities(book.id, ["USD"]);
+    await openAccounts(book.id, ["Assets:Cash", "Expenses:Food"]);
+    const entry = (date: string, amount: string) => `${date} * "Bank fee"
+  external_id: "bank-9"
+  Assets:Cash  -${amount} USD
+  Expenses:Food  ${amount} USD
+`;
+    const text = `${entry("2026-01-05", "1.00")}\n${entry("2026-01-06", "2.00")}`;
+    const result = await importText(book.id, text);
+    const [first, repeated] = entriesOf(result, "transaction").sort((a, b) => a.source_lineno - b.source_lineno);
+    expect(first).toMatchObject({ status: "imported", external_id: "bank-9" });
+    expect(repeated).toMatchObject({ status: "error", status_reason: "external_id_repeated_in_file", external_id: "bank-9", directive_id: null });
+    expect(repeated!.entry_key).not.toBe(first!.entry_key);
+    expect(await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, { directiveType: "transaction" })).toHaveLength(1);
+    // The same file again: still one record and the same refusal.
+    const again = await importText(book.id, text);
+    expect(entriesOf(again, "transaction").map((item) => item.status).sort()).toEqual(["error", "imported"]);
+    expect(await financeLedgerService.listDirectives(db.pool, SPACE_A, book.id, { directiveType: "transaction" })).toHaveLength(1);
+  });
+
   it("makes one batch and one set of drafts when the same file is imported concurrently", async () => {
     const book = await createBook();
     await addCommodities(book.id, ["USD"]);

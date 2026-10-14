@@ -10,6 +10,7 @@ import { Input } from '../../components/ui/input'
 import HostDirectoryBrowser from './HostDirectoryBrowser'
 import { errMsg } from '../../lib/utils'
 import { SpaceLink } from '../../core/spaceNav'
+import { useAppTranslation } from '../../i18n'
 
 export interface HostExecutionSelection {
   host_id: string
@@ -63,6 +64,7 @@ export default function HostExecutionTargetPicker({
   /** Offer only managed workspaces when a caller explicitly needs a private, Location-independent directory. */
   managedOnly?: boolean
 }) {
+  const { t } = useAppTranslation()
   const [targets, setTargets] = useState<HostExecutionTarget[]>([])
   const [adapterCatalog, setAdapterCatalog] = useState<HostRuntimeDefinitionOption[]>([])
   const [loading, setLoading] = useState(Boolean(projectId))
@@ -429,15 +431,15 @@ export default function HostExecutionTargetPicker({
                     its ACP methods); Command Center offers the ones this host
                     and installation actually support. */}
                 <SpaceLink to="/command-center" className="inline-flex items-center gap-1 underline underline-offset-2">
-                  <LogIn className="size-3.5" />Sign in from Command Center
+                  <LogIn className="size-3.5" />{t('management_ui.host_target.sign_in')}
                 </SpaceLink>
               </div>
-              <p className="text-muted-foreground">Models reported by ACP may still work without an account; choose one in the conversation.</p>
+              <p className="text-muted-foreground">{t('management_ui.host_target.acp_models_hint')}</p>
             </div>
           )}
         </>
       )}
-      {!projectId && <p className="text-xs text-muted-foreground">Managed workspaces are host-owned and isolated per Agent; Project Locations remain optional.</p>}
+      {!projectId && <p className="text-xs text-muted-foreground">{t('management_ui.host_target.managed_hint')}</p>}
     </div>
   )
 }

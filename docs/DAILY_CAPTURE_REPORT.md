@@ -44,8 +44,9 @@ DailyCaptureReportService.generateForDate()
   `source_trust=user_confirmed` from the original `user_capture` Activity rows.
   The report run and artifact are stored as `source_refs_metadata`, not as trust-bearing
   provenance entries.
-- **Idempotency.** For a given space/user/date, a second run without `force=True` returns the
-  existing artifact and does not create duplicate artifacts or proposals. The persist
+- **One report per day, never rewritten.** For a given space/user/date a second run returns
+  the existing artifact and creates no duplicate artifacts or proposals; there is no option to
+  regenerate over it. The persist
   transaction takes an advisory lock on that key and looks again before writing, so two
   generations that both passed the existence check while the first was still at the provider
   still leave one report; the later one returns `skipped` with `existing_artifact_id`.
@@ -79,7 +80,9 @@ DailyCaptureReportService.generateForDate()
 - `GET /api/v1/daily-capture-report/settings` — get or create settings for current user/space
 - `PUT|PATCH /api/v1/daily-capture-report/settings` — update settings
 - `POST /api/v1/daily-capture-report/run` — trigger manual run; optional body fields
-  `local_date`, `force`, `create_experience_proposals`, `create_memory_proposals`
+  `local_date`, `create_experience_proposals`, `create_memory_proposals`. Without
+  `local_date` the run reports the most recent complete day of the configured timezone; a
+  `local_date` that has not ended there is refused with 422 `report_day_not_complete`.
 - `GET /api/v1/daily-capture-report/reports` — list recent report artifacts
 
 ## Artifact structure
@@ -107,8 +110,7 @@ Payload:
   "setting_id": "...",
   "local_date": "YYYY-MM-DD",
   "timezone": "...",
-  "trigger_origin": "automation",
-  "force": false
+  "trigger_origin": "automation"
 }
 ```
 
@@ -126,11 +128,12 @@ The scheduler scans immediately on startup, then sleeps between subsequent scans
 ### DST / timezone semantics
 
 - The scheduled time is local-calendar based: the report runs at `local_time` in the
-  user's `timezone` each day.
+  user's `timezone` each day, and covers the local day before the scheduled slot
+  (`reportDateForSlot`), so a late or retried run still reports the same day.
 - `next_run_at` is stored in UTC, derived from the prior scheduled local slot plus one
   calendar day (same hour/minute in local time).
 - The local slot is converted to UTC with `Intl.DateTimeFormat` and a bounded offset
-  correction (`zonedLocalToUtc` in `dailyReports/repository.ts`). On DST transition
+  correction (`zonedLocalToUtc` in `scheduler/localDay.ts`, shared with the digests). On DST transition
   nights a nonexistent or ambiguous local time resolves to one of the two adjacent
   offsets, depending on the zone, so the report may run about an hour off its usual
   UTC time on that night.

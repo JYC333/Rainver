@@ -85,6 +85,8 @@ export function retrievalEgressAllowed(
 
 /** The Provider facts the destination is judged on; `model` is the one the call will actually use. */
 export interface ProviderEgressSubject {
+  /** The Provider's home Space, where its deployment was declared. */
+  space_id: string;
   provider_type: string;
   base_url?: string | null;
   /** The declaration, when the caller has it resolved; otherwise read from `config_json`. */
@@ -105,9 +107,17 @@ export interface ProviderEgressSubject {
  * forwards `-cloud` models to the vendor's hosted service. A loopback URL
  * proves nothing: a local gateway may forward anywhere. Unknown is external.
  */
-export function providerEgressDestination(subject: ProviderEgressSubject): RetrievalEgressDestination {
+export function providerEgressDestination(
+  subject: ProviderEgressSubject,
+  /** The Space whose content the call would carry. */
+  usingSpaceId: string,
+): RetrievalEgressDestination {
   const deployment = subject.deployment ?? providerDeployment(subject.config_json);
   if (deployment !== "trusted_local") return "external_provider";
+  // `trusted_local` is a vouch an owner or admin of the Provider's own Space
+  // made about where it runs. It says nothing to another Space the Provider
+  // is granted to: no one there vouched, so there it is a cloud service.
+  if (subject.space_id !== usingSpaceId) return "external_provider";
   if (!isInstanceNetworkUrl(subject.base_url)) return "external_provider";
   const model = subject.model ?? subject.default_model ?? null;
   if (isCloudServedModel(subject.provider_type, model)) return "external_provider";
@@ -118,8 +128,9 @@ export function providerEgressDestination(subject: ProviderEgressSubject): Retri
 export function runtimeProviderEgressDestination(
   runtimeKey: string | null | undefined,
   provider: ProviderEgressSubject,
+  usingSpaceId: string,
 ): RetrievalEgressDestination {
-  if (!adapterProviderApi(runtimeKey)) return providerEgressDestination(provider);
+  if (!adapterProviderApi(runtimeKey)) return providerEgressDestination(provider, usingSpaceId);
   // The same resolution the binding uses, so a runtime that follows its
   // vendor's protocol (OpenCode) is classified by the endpoint it will reach.
   // The deployment declaration and the model are the Provider's own: a
@@ -137,7 +148,7 @@ export function runtimeProviderEgressDestination(
   // Missing or malformed compatible endpoints, and a vendor protocol the
   // runtime cannot bind, fail conservatively as external;
   // the runtime binding will independently reject them before invocation.
-  return providerEgressDestination({ ...provider, base_url: compatibleUrl || null });
+  return providerEgressDestination({ ...provider, base_url: compatibleUrl || null }, usingSpaceId);
 }
 
 /**

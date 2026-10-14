@@ -15,9 +15,10 @@ import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
+import { formatDateTime } from '../../i18n/format'
 
 function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString() : '-'
+  return formatDateTime(dt)
 }
 
 function val(value: string | number | null | undefined) {

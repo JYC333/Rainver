@@ -60,7 +60,7 @@ describe('ProjectDigestPage', () => {
     vi.mocked(informationDigestsApi.project).mockResolvedValue({
       status: 'missing', digest_date: '2026-08-06', timezone: 'UTC',
       period_start_utc: '2026-08-06T00:00:00.000Z', period_end_utc: '2026-08-07T00:00:00.000Z',
-      backfill_available: true, explanation: 'No digest was made for this day.',
+      reason: 'not_generated', backfill_available: true,
     })
     vi.mocked(informationDigestsApi.backfillProject).mockRejectedValue(new Error('Project write access is required'))
     render(
@@ -73,5 +73,21 @@ describe('ProjectDigestPage', () => {
     await waitFor(() => expect(informationDigestsApi.backfillProject).toHaveBeenCalledWith('space-1', 'project-1', '2026-08-06'))
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Project write access is required'))
     expect(screen.getByText('No digest for Aug 6, 2026')).toBeInTheDocument()
+  })
+
+  it('tells a reader who cannot write that the day is missing, without offering a backfill', async () => {
+    vi.mocked(informationDigestsApi.project).mockResolvedValue({
+      status: 'missing', digest_date: '2026-08-06', timezone: 'UTC',
+      period_start_utc: '2026-08-06T00:00:00.000Z', period_end_utc: '2026-08-07T00:00:00.000Z',
+      reason: 'not_generated', backfill_available: false,
+    })
+    render(
+      <MemoryRouter initialEntries={['/projects/project-1/digest']}>
+        <Routes><Route path="/projects/:projectId/digest" element={<ProjectDigestPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText('No digest for Aug 6, 2026')).toBeInTheDocument()
+    expect(screen.getByText(/No digest was generated for this day/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Backfill this day' })).not.toBeInTheDocument()
   })
 })

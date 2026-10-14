@@ -115,7 +115,7 @@ describe("daily capture report Run ownership", () => {
 });
 
 describe("daily capture report persistence", () => {
-  it("keeps one report per day when a second generation finishes while the first is still at the provider", async () => {
+  it("pays the provider once and keeps one report when a second generation starts while the first is at the provider", async () => {
     if (!db.available) return;
     await seedProvider();
     await seedCapture("2026-09-12T10:00:00.000Z");
@@ -127,14 +127,17 @@ describe("daily capture report persistence", () => {
     });
 
     // The first generation's provider call is where the race lives: a second
-    // generation for the same day passes the existence check meanwhile, calls
-    // the provider, and persists first.
+    // generation for the same day (a manual run beside the scheduled one)
+    // starts meanwhile. It waits for the first instead of calling the
+    // provider too, then answers with the report the first stored.
     let overlapped: Promise<unknown> | null = null;
+    let providerCalls = 0;
     __setProviderHttpClientForTests({
       fetch: async () => {
+        providerCalls += 1;
         if (!overlapped) {
           overlapped = generate();
-          await overlapped;
+          await new Promise((resolve) => setTimeout(resolve, 100));
         }
         return openAiChatResponse({
           choices: [{ message: { content: JSON.stringify({ report_title: "Day", overview: "Overview" }) } }],
@@ -144,9 +147,10 @@ describe("daily capture report persistence", () => {
       },
     });
 
-    const second = await generate();
-    const first = await overlapped!;
+    const first = await generate();
+    const second = await overlapped!;
     expect(first).toMatchObject({ status: "succeeded" });
+    expect(providerCalls).toBe(1);
     expect(await countRows("artifacts", "AND artifact_type='daily_capture_report'")).toBe(1);
     expect(second).toMatchObject({
       status: "skipped",

@@ -428,10 +428,12 @@ executor rather than returned as an error.
 `persona` is the one entry per Agent delivered everywhere, and its gate is the
 Run's trigger rather than its reach — the owner's own turn proposes it, anyone
 else's turn leaves a proposal only the owner may decide (by identity and not
-by role: proposal apply derives the decider from the Agent the proposal names
-— its `agent_id`, or the Memory it revises — so a payload that omits or forges
-`required_owner_user_id` changes nothing, and an Agent nobody owns has nobody
-to decide its persona), and an unattended
+by role: `memoryProposalDecider` (`memory/memoryProposalDecider.ts`) derives
+the decider from what the canonical applier will write — the stored entry a
+revision or archive names, or the scope and Agent a create's applier fields
+name — never from a payload's scope claim, and an Agent nobody owns has nobody
+to decide its persona; a revision can never move an entry into or out of an
+Agent's scope), and an unattended
 origin applies it. That last case is the one exemption from
 `ORIGIN_GATED_PROJECT_WRITES`, resolved server-side by `memoryPolicyContext`
 and scoped to a persona write on an `agent`-scope entry; every other memory

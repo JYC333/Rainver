@@ -53,6 +53,27 @@ export function formatTime(value: DateInput, options: { timeZone?: string; fallb
   }).format(date)
 }
 
+/** A moment written with explicit parts, e.g. `{ month: 'short', day: 'numeric' }`. */
+export function formatDateParts(value: DateInput, options: Intl.DateTimeFormatOptions, fallback = '—'): string {
+  const date = toDate(value)
+  if (!date) return fallback
+  return new Intl.DateTimeFormat(currentLocale(), options).format(date)
+}
+
+/**
+ * A stored calendar day ("2026-10-14"), written in the UI locale. The day is
+ * formatted as itself, so neither the locale nor the browser's time zone can
+ * move it to a neighbouring day.
+ */
+export function formatCalendarDay(
+  day: string,
+  options: Intl.DateTimeFormatOptions = { weekday: 'short', month: 'short', day: 'numeric' },
+): string {
+  const date = toDate(`${day}T00:00:00Z`)
+  if (!date) return day
+  return new Intl.DateTimeFormat(currentLocale(), { ...options, timeZone: 'UTC' }).format(date)
+}
+
 /** A number with the locale's grouping, e.g. "12,345". */
 export function formatNumber(value: number, options: Intl.NumberFormatOptions = {}): string {
   return new Intl.NumberFormat(currentLocale(), options).format(value)

@@ -54,6 +54,7 @@ import {
 } from './DiscussionGroup'
 import { OpenDiscussionDialog } from './OpenDiscussionDialog'
 import { ConversationQuotaLine } from './ConversationQuotaLine'
+import { KnowledgeRetrievalToggle } from './KnowledgeRetrievalToggle'
 
 /**
  * One conversation, rendered wherever a conversation is read.
@@ -658,14 +659,20 @@ export function ConversationSurface({
   // A Conversation's binding is session-owned: its catalogs are read back
   // for the initialized session, never chosen elsewhere.
   const backendCatalogs = loadedBackendCatalogs
+  // Who the next message reaches: the manager under coordination or when
+  // nobody is named, otherwise the named Agents.
+  const addressedAgentIds = useMemo(() => routingMode === 'agent_coordination'
+    ? managerAgentId ? [managerAgentId] : []
+    : composer.routingSegments.length > 0
+      ? uniqueIds(composer.routingSegments.flatMap(segment => segment.recipient_agent_ids))
+      : managerAgentId ? [managerAgentId] : [], [composer.routingSegments, managerAgentId, routingMode])
+  // Knowledge retrieval is kept per person and Room recipient: each addressed
+  // Agent's membership row is its Work Context.
+  const retrievalRecipients = (detail?.agent_members ?? [])
+    .filter(member => member.status === 'active' && addressedAgentIds.includes(member.agent_id))
   const inputCapabilityMessage = useMemo(() => {
     if (!inputParts.some(part => part.kind === 'image')) return null
-    const targetIds = routingMode === 'agent_coordination'
-      ? managerAgentId ? [managerAgentId] : []
-      : composer.routingSegments.length > 0
-        ? uniqueIds(composer.routingSegments.flatMap(segment => segment.recipient_agent_ids))
-        : managerAgentId ? [managerAgentId] : []
-    const incompatible = targetIds.flatMap(agentId => {
+    const incompatible = addressedAgentIds.flatMap(agentId => {
       const catalog = backendCatalogs[agentId]
       const binding = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
       const option = catalog?.options.find(candidate => candidate.runtime_profile_id === binding?.runtime_profile_id)
@@ -674,7 +681,7 @@ export function ConversationSurface({
     return incompatible.length > 0
       ? t('conversation_ui.surface.images_unsupported_by', { agents: incompatible.join(', ') })
       : null
-  }, [backendCatalogs, composer.routingSegments, inputParts, managerAgentId, roomAgents, routingMode])
+  }, [addressedAgentIds, backendCatalogs, inputParts, roomAgents])
 
   useEffect(() => {
     const agentIds = configurableAgentKey ? configurableAgentKey.split(':') : []
@@ -1203,6 +1210,9 @@ export function ConversationSurface({
           />}
           controls={(
             <>
+              {retrievalRecipients.map(member => (
+                <KnowledgeRetrievalToggle key={member.id} scopeId={member.id} agentName={member.agent_name} disabled={sending} />
+              ))}
               {activeDiscussion && (
                 <div role="group" aria-label={t('conversation_ui.surface.destination')} className="flex items-center gap-1 text-xs">
                   <span className="mr-1 text-muted-foreground">{t('conversation_ui.surface.send_to')}</span>

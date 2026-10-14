@@ -125,7 +125,7 @@ export interface RunExecutionRepositoryPort {
     space_id: string;
     started_at: string;
     required_sandbox_level?: string | null;
-  }): Promise<AgentRunRecord | null>;
+  }): Promise<(AgentRunRecord & { attempt_number?: number }) | null>;
   checkRunExecutionAuthorization?(run: Pick<
     RunRecord,
     | "space_id"
@@ -390,6 +390,8 @@ export interface RunExecutionInput extends RunExecuteRequest {
   risk_level?: string | null;
   timeout_ms?: number | null;
   runtime_event_sink?: (event: RuntimeSemanticEvent) => Promise<void> | void;
+  /** The Run attempt this execution is; events it produces are tagged with it. */
+  run_attempt_number?: number | null;
   text_delta_sink?: (delta: string) => void;
   invocation_delivery?: InvocationDelivery;
   invocation_attempts?: RunInvocationAttemptLifecycle;
@@ -959,8 +961,11 @@ export class RunOrchestrationService {
       // run's transient write failure must not take the whole process
       // (and every other concurrently executing run) down with it, and
       // nothing that actually enforced anything is lost.
+      // Events this dispatch produces carry its attempt, so a retry that
+      // supersedes it does not inherit what it writes while unwinding.
+      const runAttemptNumber = running.attempt_number ?? null;
       const serializedRuntimeEventSink = serializeCalls(
-        (event: RuntimeSemanticEvent) => this.appendRuntimeSemanticEvent(effectiveRun, event),
+        (event: RuntimeSemanticEvent) => this.appendRuntimeSemanticEvent(effectiveRun, event, runAttemptNumber),
       );
       const effectiveInput: RunExecutionInput = {
         ...input,
@@ -970,6 +975,7 @@ export class RunOrchestrationService {
           ? { workspace_mounts: executionPort.workspaceMounts }
           : {}),
         runtime_event_sink: serializedRuntimeEventSink,
+        run_attempt_number: runAttemptNumber,
         ...(isChatTurnRun(effectiveRun)
           ? { text_delta_sink: (delta: string) => publishChatTextDelta(effectiveRun.id, delta) }
           : {}),
@@ -2581,7 +2587,7 @@ export class RunOrchestrationService {
           // and stderr chunks can arrive back-to-back through un-awaited
           // callbacks.
           thread_event_sink: threadEvents
-            ? createSerializedThreadEventSink(threadEvents, threadId!, run.id)
+            ? createSerializedThreadEventSink(threadEvents, threadId!, run.id, input.run_attempt_number ?? null)
             : undefined,
           process_registry: this.adapters.processRegistry,
           workspace: input.execution_port.workspace,
@@ -3152,6 +3158,7 @@ export class RunOrchestrationService {
   private async appendRuntimeSemanticEvent(
     run: RunRecord,
     event: RuntimeSemanticEvent,
+    attemptNumber: number | null = null,
   ): Promise<void> {
     const critical = /^(policy_checked|tool_call_|approval_)/.test(event.type);
     let canonical: unknown = null;
@@ -3159,6 +3166,7 @@ export class RunOrchestrationService {
       canonical = await this.repository.appendRunEvent({
       run_id: run.id,
       space_id: run.space_id,
+      attempt_number: attemptNumber,
       event_type: event.type,
       status: semanticEventStatus(event),
       summary: event.summary ?? null,

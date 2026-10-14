@@ -79,7 +79,7 @@ export function DigestMissing({ missing, onBackfill }: {
   return (
     <Card className="p-4 space-y-2">
       <p className="text-sm font-medium">{t('digest_reports.missing_title', { date: formatDigestDate(missing.digest_date, locale) })}</p>
-      <p className="text-xs text-muted-foreground">{missing.explanation}</p>
+      <p className="text-xs text-muted-foreground">{t(`digest_reports.missing_reason.${missing.reason}`)}</p>
       {missing.backfill_available && onBackfill && (
         <Button
           size="sm"
@@ -138,7 +138,9 @@ export function AnnotationRecoveryNotice({ spaceId }: { spaceId: string }) {
           })}
         </p>
       ))}
-      <Button
+      {/* Only a paused episode (its bounded retries spent) waits on a person;
+          a scheduled retry or a condition wait recovers on its own. */}
+      {episodes.some(episode => episode.wait_reason === 'budget_exhausted') && <Button
         size="sm"
         variant="outline"
         type="button"
@@ -159,7 +161,7 @@ export function AnnotationRecoveryNotice({ spaceId }: { spaceId: string }) {
         }}
       >
         {busy ? t('digest_reports.annotation_retrying') : t('digest_reports.annotation_retry')}
-      </Button>
+      </Button>}
     </Card>
   )
 }

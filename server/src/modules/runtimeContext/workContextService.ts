@@ -253,16 +253,17 @@ export function workContextRetrievalSwitchedOn(scopeKind: string, preferences: R
 }
 
 /**
- * The knowledge-retrieval switch a Run was planned under, as frozen in its
- * execution control snapshot's Work Context Setup version. A conversation Run
- * planned without any setup version is a conversation nobody switched on, so
- * it is off like a new conversation; a Run outside any conversation keeps the
- * default of its scope (on).
+ * The knowledge-retrieval choice a Run was planned under, as frozen in its
+ * execution control snapshot's Work Context Setup version: whether retrieval
+ * is on, and the domains it is narrowed to (empty: every domain). A
+ * conversation Run planned without any setup version is a conversation
+ * nobody switched on, so it is off like a new conversation; a Run outside
+ * any conversation keeps the default of its scope (on, every domain).
  */
-export async function runRetrievalSwitchedOn(
+export async function runRetrievalChoice(
   db: Queryable,
   run: { id: string; space_id: string; session_id: string | null },
-): Promise<boolean> {
+): Promise<{ switchedOn: boolean; domains: readonly protocol.WorkRetrievalDomain[] }> {
   const result = await db.query<{ scope_kind: string; retrieval_preferences_json: unknown }>(
     `SELECT setup.scope_kind, setup.retrieval_preferences_json
        FROM execution_control_snapshots control
@@ -275,11 +276,9 @@ export async function runRetrievalSwitchedOn(
     [run.space_id, run.id],
   );
   const row = result.rows[0];
-  if (!row) return run.session_id === null;
-  const preferences = row.retrieval_preferences_json && typeof row.retrieval_preferences_json === "object" && !Array.isArray(row.retrieval_preferences_json)
-    ? row.retrieval_preferences_json as Record<string, unknown>
-    : {};
-  return workContextRetrievalSwitchedOn(row.scope_kind, preferences);
+  if (!row) return { switchedOn: run.session_id === null, domains: [] };
+  const choice = retrievalSwitchOut(run.id, row.scope_kind, row.retrieval_preferences_json, null);
+  return { switchedOn: choice.enabled, domains: choice.preferred_domains };
 }
 
 /** Transactional authority check for mutations against an active Work Context. */

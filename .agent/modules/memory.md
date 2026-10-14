@@ -25,7 +25,9 @@ a vendor CLI's own auto-memory.
   provenance under the new reach, grants moved with it. No adapter, job or
   route inserts around it.
 - Grants follow the active head, and the applier re-checks the audience at
-  accept time: only the owner widens a person's entry, and every added reader
+  accept time: only the owner widens a person's entry (moving it into a
+  Project or to another owner included), a revision never moves an entry into
+  or out of an Agent's scope, and every added reader
   must already read the entry's sources (`memoryAudience.ts`). An accepted
   update that changes nothing writes no version.
 - User Memory is human-owned and Project-free. Project Memory is Project-owned

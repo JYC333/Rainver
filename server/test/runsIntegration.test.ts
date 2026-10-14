@@ -642,10 +642,10 @@ describe("runs repositories against real PostgreSQL", () => {
       status: "running",
     });
 
-    // The scalar subquery + ::varchar casts must execute. Do not use
-    // INSERT...SELECT. That shape fails with "inconsistent types deduced".
-    expect(e0.event_index).toBe(0);
-    expect(e1.event_index).toBe(1);
+    // The scalar subqueries and their ::varchar casts must execute: without
+    // the casts PostgreSQL fails with "inconsistent types deduced".
+    expect(e0!.event_index).toBe(0);
+    expect(e1!.event_index).toBe(1);
   });
 
   it("keeps every event when several writers append to one Run at once", async (ctx) => {
@@ -663,7 +663,7 @@ describe("runs repositories against real PostgreSQL", () => {
       summary: `event ${index}`,
     })));
 
-    expect(events.map((event) => event.event_index).sort((a, b) => a - b))
+    expect(events.map((event) => event!.event_index).sort((a, b) => a - b))
       .toEqual(Array.from({ length: 24 }, (_, index) => index));
   });
 
@@ -684,7 +684,7 @@ describe("runs repositories against real PostgreSQL", () => {
       },
     });
 
-    expect(event.event_type).toBe("delegation_requested");
+    expect(event!.event_type).toBe("delegation_requested");
   });
 
   it("rejects an event_type outside ck_run_events_event_type", async (ctx) => {

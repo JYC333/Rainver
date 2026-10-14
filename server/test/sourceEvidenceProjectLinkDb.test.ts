@@ -94,9 +94,9 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO source_connections (
-       id, space_id, provider_connector_id, owner_user_id, name, status,
+       id, space_id, provider_connector_id, owner_user_id, name, status, visibility,
        capture_policy, trust_level, consent_json, policy_json, config_json, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,'arXiv feed','active','reference_only','normal',$5::jsonb,$6::jsonb,'{}'::jsonb,$7,$7)`,
+     ) VALUES ($1,$2,$3,$4,'arXiv feed','active','space_shared','reference_only','normal',$5::jsonb,$6::jsonb,'{}'::jsonb,$7,$7)`,
     [
       CONNECTION,
       SPACE,

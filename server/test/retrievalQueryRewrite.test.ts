@@ -107,6 +107,8 @@ describe("ProviderQueryRewriter", () => {
         return {
           provider: {
             id: "local",
+            // Declared local in the Space it is used in: only there does it count as local.
+            space_id: "space-1",
             provider_type: "ollama",
             base_url: "http://localhost:11434",
             deployment: "trusted_local",

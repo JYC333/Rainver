@@ -325,7 +325,6 @@ export default function PromptLibraryPage() {
         label: 'production',
         scope_type: selectedVersion.scope_type,
         scope_id: selectedVersion.scope_id,
-        reason: `Promote ${selectedAsset.asset_key} v${selectedVersion.version} to production`,
       })
       toast.success(t('management_ui.prompts.promotion_created', { id: proposal.proposal_id }))
       await refreshSelectedAssetDetail()

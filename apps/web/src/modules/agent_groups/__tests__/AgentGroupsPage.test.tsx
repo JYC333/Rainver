@@ -13,8 +13,7 @@ import {
   roomsApi,
   runsApi,
   sessionsApi,
-  spacesApi,
-} from '../../../api/client'
+  spacesApi, runtimeContextApi } from '../../../api/client'
 import type { AgentOut, Project, Room, RoomConversation, RoomDetail, RoomDiscussion, Run, RunTurn, TurnPart } from '../../../types/api'
 
 /** A turn in progress, for the stream mock. */
@@ -42,6 +41,11 @@ vi.mock('../../../api/client', async () => {
   const { ApiRequestError } = await import('../../../test/apiClientMock')
   return {
   ApiRequestError,
+  // Each addressed Room recipient's knowledge retrieval switch, off.
+  runtimeContextApi: {
+    retrievalSwitch: vi.fn(async (scopeId: string) => ({ work_context_scope_id: scopeId, enabled: false, preferred_domains: [], setup_version: null })),
+    setRetrievalSwitch: vi.fn(),
+  },
   agentsApi: { list: vi.fn(), conversationBackends: vi.fn(), listRuntimeProfiles: vi.fn() },
   projectsApi: { list: vi.fn(), getOverview: vi.fn(), readers: vi.fn(), hostExecutionTargets: vi.fn() },
   hostsApi: { listRuntimeDefinitions: vi.fn() },
@@ -688,6 +692,13 @@ describe('Rooms page', () => {
     expect(screen.getByRole('heading', { level: 3, name: 'New conversation' })).toBeInTheDocument()
     // Nothing to read, so nothing was asked for.
     expect(roomsApi.messages).not.toHaveBeenCalled()
+  })
+
+  it('offers knowledge retrieval for the Room recipient the next message reaches', async () => {
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    // Nobody named: the manager answers, and its Room membership is the Work Context.
+    expect(await screen.findByRole('button', { name: 'Space Assistant · Knowledge: off' })).toBeInTheDocument()
+    expect(runtimeContextApi.retrievalSwitch).toHaveBeenCalledWith('agent-member-1')
   })
 
   it('puts an unsent message back when the conversation is opened again', async () => {

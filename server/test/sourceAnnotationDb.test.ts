@@ -8,6 +8,7 @@ import { ANNOTATION_ENQUEUE_WINDOW_MS } from "../src/modules/sourceAnnotation/ev
 import { ensureSourceAnnotatorAgent } from "../src/modules/sourceAnnotation/agent.js";
 import { SOURCE_ANNOTATION_SCHEMA_ID } from "../src/modules/sourceAnnotation/resultParser.js";
 import { SourceAnnotationService } from "../src/modules/sourceAnnotation/service.js";
+import { SourceAnnotationRecoveryNotifier } from "../src/modules/sourceAnnotation/notifier.js";
 import { loadConfig } from "../src/config.js";
 import { registerSourceAnnotationHandler } from "../src/modules/sourceAnnotation/job.js";
 import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
@@ -291,6 +292,36 @@ describe("annotation outcomes", () => {
     expect(b?.episode_id).toBe(a?.episode_id);
   });
 
+  it("saves a retry that succeeds, and leaves the retry schedule and episode behind", async () => {
+    if (!db.available) return;
+    const retried = await seedItem();
+    const skipped = await seedItem();
+    await repo().enqueueItems(SPACE, [retried, skipped], CHANNEL);
+    await repo().markAttemptFailed(SPACE, [retried, skipped], { error_code: "provider_timeout" }, null);
+    await makeRunnable(retried);
+    await makeRunnable(skipped);
+
+    await repo().markSucceeded(SPACE, {
+      source_item_id: retried,
+      domain_key: "artificial_intelligence",
+      depth: "analysis",
+      genre: "explainer",
+      summary: "Explains retrieval augmentation.",
+      topic_candidates: [],
+      stance_target: null,
+      stance_target_key: null,
+      stance_polarity: "neutral",
+      stance_confidence: 0,
+    }, null);
+    await repo().markSkipped(SPACE, [skipped], "no_usable_annotation", null);
+
+    expect(await repo().getByItemId(SPACE, retried)).toMatchObject({ status: "succeeded", wait_reason: null, next_retry_at: null, episode_id: null });
+    expect(await repo().getByItemId(SPACE, skipped)).toMatchObject({ status: "skipped", wait_reason: null, next_retry_at: null, episode_id: null });
+    // Neither is offered to the model again, and no episode is left open.
+    expect(await repo().loadPendingBatch(SPACE, 10)).toEqual([]);
+    expect(await repo().episodeSummaries(SPACE)).toEqual([]);
+  });
+
   it("parks an unanswered item without retrying it", async () => {
     if (!db.available) return;
     const itemId = await seedItem();
@@ -511,6 +542,51 @@ describe("annotation service", () => {
       [SPACE],
     );
     expect(after.rows.map((row) => row.status)).toEqual(["archived"]);
+  });
+
+  it("leaves a dismissed notice alone while its episode is unchanged, and brings it back when it changes", async () => {
+    if (!db.available) return;
+    const first = await seedItem();
+    await repo().enqueueItems(SPACE, [first], CHANNEL);
+    await repo().markAttemptFailed(SPACE, [first], { error_code: "provider_timeout" }, null);
+    const notifier = new SourceAnnotationRecoveryNotifier(db.pool);
+    await notifier.sync(SPACE);
+    const status = async () => (await db.pool.query<{ status: string }>(
+      `SELECT status FROM activity_records
+        WHERE space_id = $1 AND activity_type = 'operational_alert' AND payload_json->>'alert_kind' = 'source_annotation_recovery'`,
+      [SPACE],
+    )).rows.map((row) => row.status);
+    expect(await status()).toEqual(["raw"]);
+    await db.pool.query(
+      `UPDATE activity_records SET status = 'archived', discarded_at = now()
+        WHERE space_id = $1 AND activity_type = 'operational_alert'`,
+      [SPACE],
+    );
+    // Every sweep re-syncs the same state: the person's dismissal holds.
+    await notifier.sync(SPACE);
+    expect(await status()).toEqual(["archived"]);
+    // One more of their items joins the episode: that is news.
+    const second = await seedItem();
+    await repo().enqueueItems(SPACE, [second], CHANNEL);
+    await repo().markAttemptFailed(SPACE, [second], { error_code: "provider_timeout" }, null);
+    await notifier.sync(SPACE);
+    expect(await status()).toEqual(["raw"]);
+  });
+
+  it("visits every waiting space in turn, not the same first few every sweep", async () => {
+    if (!db.available) return;
+    const mine = await seedItem();
+    const theirs = await seedItem({ spaceId: OTHER_SPACE });
+    await repo().enqueueItems(SPACE, [mine], CHANNEL);
+    await repo().enqueueItems(OTHER_SPACE, [theirs], null);
+    await repo().markWaiting(SPACE, [mine], "provider_unavailable");
+    await repo().markWaiting(OTHER_SPACE, [theirs], "provider_unavailable");
+    const [firstSpace, secondSpace] = [SPACE, OTHER_SPACE].sort();
+
+    expect(await repo().spacesWithWaitingConditions(1, null)).toEqual([firstSpace]);
+    expect(await repo().spacesWithWaitingConditions(1, firstSpace!)).toEqual([secondSpace]);
+    // Past the last one it wraps round.
+    expect(await repo().spacesWithWaitingConditions(1, secondSpace!)).toEqual([firstSpace]);
   });
 
   it("waits without spending or a countdown while the space has no usable annotator", async () => {

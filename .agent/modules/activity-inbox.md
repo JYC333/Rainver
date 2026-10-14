@@ -80,11 +80,12 @@ These rows are notification pointers only. `payload_json` carries
 `briefing_date`, `source_channel_id`, `source_connection_name`,
 `post_processing_run_ids`, `artifact_ids`, `decision_counts`, and `run_count`;
 `content` states the decision counts and that the briefing is read in
-Library — never digest or run-summary text. The row's audience is the source
-connection's: a private connection's briefing is `private` to its owner, a
-`selected_users` connection's inherits that connection's grants, and a
-space-shared one is `space_shared`. Opening it re-checks the connection's
-read gate in Library. The per-source toggle is
+Library — never digest or run-summary text. A private connection's briefing is
+`private` to its owner. Any other briefing is `selected_users`, granted to the
+channel's current digest subscribers whom the connection still admits; each
+re-surface re-grants it and revokes it from anyone who has since left, so a
+person who unsubscribed keeps what was delivered but is not told about new
+briefings. Opening it re-checks the connection's read gate in Library. The per-source toggle is
 `source_connections.config_json.daily_inbox_briefing`; when absent, emission is
 enabled if the source channel currently has at least one active
 post-processing rule. Existing reviewed rows are re-surfaced to `raw` when a new run lands for

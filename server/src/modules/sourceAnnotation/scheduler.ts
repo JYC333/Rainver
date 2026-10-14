@@ -22,6 +22,9 @@ import { SourceAnnotationService } from "./service.js";
  * handler runs one pass per space at a time and returns `no_work` when there
  * is nothing runnable.
  */
+/** Where the next condition sweep resumes, so every waiting space is visited in turn. */
+let waitingSweepCursor: string | null = null;
+
 export async function enqueuePendingSourceAnnotationWork(
   config: ServerConfig,
   queue: PgJobQueueRepository,
@@ -31,13 +34,15 @@ export async function enqueuePendingSourceAnnotationWork(
   const db = getDbPool(config.databaseUrl);
   const repo = new PgSourceAnnotationRepository(db);
   const service = new SourceAnnotationService(db, config);
-  for (const spaceId of await repo.spacesWithWaitingConditions(limit)) {
+  const waitingSpaces = await repo.spacesWithWaitingConditions(limit, waitingSweepCursor);
+  for (const spaceId of waitingSpaces) {
     try {
       await service.recoverWaiting(spaceId);
     } catch {
       // The rows keep waiting; the next sweep checks again.
     }
   }
+  waitingSweepCursor = waitingSpaces.at(-1) ?? null;
   const spaceIds = await repo.spacesWithPendingWork(limit);
   let enqueued = 0;
   for (const spaceId of spaceIds) {

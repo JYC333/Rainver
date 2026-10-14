@@ -373,9 +373,7 @@ export default function ChatPanel({
             : [...current, completed]
         })
       } else {
-        const note = res.error_code === 'model_provider_required'
-          ? t('conversation_ui.chat.provider_missing')
-          : (res.error ?? t('conversation_ui.chat.turn_failed'))
+        const note = res.error ?? t('conversation_ui.chat.turn_failed')
         setMessages(current => {
           const streamed = current.find(item => item.id === streamingMessageId)
           const failed: ChatMessage = {
@@ -505,7 +503,6 @@ export default function ChatPanel({
     }
   }, [backend, initialDraft, loadingBackends, loadingHistory, send])
 
-  const providerMissing = messages.some(m => m.error && m.content.includes(t('conversation_ui.chat.provider_missing')))
   const backendChoices = flattenBackendChoices(backendOptions)
   const selectedBackendKey = backend ? backendKey(backend) : ''
   const selectedHost = selectedBackendOption?.host_id ? hosts.find(host => host.id === selectedBackendOption.host_id) : null
@@ -618,11 +615,6 @@ export default function ChatPanel({
                 {m.artifactRefs?.length ? <div className="mt-2 flex flex-wrap gap-3 text-[11px]">
                   {m.artifactRefs?.map((artifactId, index) => <Link key={artifactId} className="text-accent-foreground hover:underline" to={`/artifacts/${artifactId}`}>{t('conversation_ui.chat.produced_artifact', { index: index + 1 })}</Link>)}
                 </div> : null}
-                {m.error && providerMissing && m.content.includes('model provider') && (
-                  <div className="mt-1.5">
-                    <Link to="/providers" className="text-[12px] underline text-accent-foreground">{t('conversation_ui.chat.configure_provider')}</Link>
-                  </div>
-                )}
               </>
             ),
             runControls: runIds.length > 0 ? runIds.map(runId => <ConversationRunControls

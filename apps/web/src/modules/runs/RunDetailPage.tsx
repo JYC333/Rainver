@@ -25,6 +25,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Textarea } from '../../components/ui/textarea'
+import { formatDateTime } from '../../i18n/format'
+import { useAppTranslation } from '../../i18n'
 
 type RunDetailTab = 'io' | 'activities' | 'artifacts' | 'proposals' | 'contract' | 'verification' | 'route' | 'attempts'
 type OptionalRunResource = 'io' | 'activities' | 'artifacts' | 'proposals' | 'authorization' | 'attempts' | 'evaluations' | 'verifications' | 'finalizations'
@@ -38,7 +40,7 @@ async function loadOptionalRunResource<T>(loader: Promise<T>, fallback: T): Prom
 }
 
 function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString() : '—'
+  return formatDateTime(dt)
 }
 
 interface PromptRef {
@@ -81,6 +83,7 @@ function promptRefsForRun(run: Run): PromptRef[] {
 }
 
 export default function RunDetailPage() {
+  const { t } = useAppTranslation()
   const { runId = '' } = useParams()
   const { spaces, activeSpaceId, activeSpaceName, personalSpaceId, userId } = useSpace()
   const [reloadKey, setReloadKey] = useState(0)
@@ -806,7 +809,7 @@ export default function RunDetailPage() {
         <TabsContent value="verification" className="mt-4 space-y-3">
           <Card className="p-4"><h2 className="text-sm font-semibold">Verification results</h2>{!resourcesReady ? <Skeleton className="mt-3 h-24 w-full" /> : subresourceErrors.verifications ? <EmptyState title="Verification results unavailable" description={subresourceErrors.verifications} /> : verifications.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">No verification results recorded.</p> : <div className="mt-3 space-y-2">{verifications.map(result => <div key={result.id} className="rounded-md border border-border p-3"><div className="flex flex-wrap items-center gap-1.5"><StatusBadge status={result.status} /><Badge variant="outline">{result.verifier_type}</Badge><span className="text-xs text-muted-foreground">{result.verifier_version}</span></div><p className="mt-1 text-sm text-muted-foreground">{result.summary ?? '—'}</p></div>)}</div>}</Card>
           <Card className="p-4"><h2 className="text-sm font-semibold">Post-run evaluations</h2>{!resourcesReady ? <Skeleton className="mt-3 h-24 w-full" /> : subresourceErrors.evaluations ? <EmptyState title="Evaluations unavailable" description={subresourceErrors.evaluations} /> : evaluations.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">No evaluation records.</p> : <div className="mt-3 space-y-2">{evaluations.map(evaluation => <div key={evaluation.id} className="rounded-md border border-border p-3"><div className="flex flex-wrap items-center gap-1.5"><StatusBadge status={evaluation.outcome_status} /><Badge variant="outline">{evaluation.evaluator_type}</Badge><span className="text-xs text-muted-foreground">{fmt(evaluation.evaluated_at)}</span></div><p className="mt-1 text-xs text-muted-foreground">{evaluation.failure_reason_code ?? 'No failure reason'}</p></div>)}</div>}</Card>
-          <Card className="p-4"><h2 className="text-sm font-semibold">Finalization history</h2>{!resourcesReady ? <Skeleton className="mt-3 h-24 w-full" /> : subresourceErrors.finalizations ? <EmptyState title="Finalization history unavailable" description={subresourceErrors.finalizations} /> : finalizations.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">No finalization records.</p> : <div className="mt-3 space-y-2">{finalizations.map(finalization => <div key={finalization.id} className="flex flex-wrap items-center gap-1.5 rounded-md border border-border p-3"><Badge variant="outline">attempt {finalization.attempt_number}</Badge><StatusBadge status={finalization.outcome_status} />{finalization.settlement.status === 'pending' && <Badge variant="warning" title={`The Agent finished; carrying its result into the Task and plan is still being retried (${finalization.settlement.reason_code ?? 'settlement_pending'}).`}>settlement pending</Badge>}<span className="text-xs text-muted-foreground">{finalization.finalizer_version}</span></div>)}</div>}</Card>
+          <Card className="p-4"><h2 className="text-sm font-semibold">{t('management_ui.run_finalization.title')}</h2>{!resourcesReady ? <Skeleton className="mt-3 h-24 w-full" /> : subresourceErrors.finalizations ? <EmptyState title={t('management_ui.run_finalization.unavailable')} description={subresourceErrors.finalizations} /> : finalizations.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">{t('management_ui.run_finalization.empty')}</p> : <div className="mt-3 space-y-2">{finalizations.map(finalization => <div key={finalization.id} className="flex flex-wrap items-center gap-1.5 rounded-md border border-border p-3"><Badge variant="outline">{t('management_ui.run_finalization.attempt', { number: finalization.attempt_number })}</Badge><StatusBadge status={finalization.outcome_status} />{finalization.settlement.status === 'pending' && <Badge variant="warning" title={t('management_ui.run_finalization.settlement_pending_hint', { reason: finalization.settlement.reason_code ?? 'settlement_pending' })}>{t('management_ui.run_finalization.settlement_pending')}</Badge>}<span className="text-xs text-muted-foreground">{finalization.finalizer_version}</span></div>)}</div>}</Card>
         </TabsContent>
 
         <TabsContent value="route" className="mt-4"><Card className="p-4"><h2 className="mb-3 text-sm font-semibold">Route decision</h2>{!resourcesReady ? <Skeleton className="h-24 w-full" /> : routeDecisionError ? <EmptyState title="Route decision unavailable" description={routeDecisionError} /> : routeDecision ? <JsonBlock value={routeDecision} /> : <EmptyState title="No persisted route decision" description="This run did not produce a durable routing decision." />}</Card></TabsContent>

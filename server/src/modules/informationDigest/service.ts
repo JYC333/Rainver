@@ -13,6 +13,7 @@ import {
 import { digestPeriod, digestTimezone, isCompleteDigestDay, latestCompleteDigestDate } from "./digestPeriod.js";
 import { PgSerendipityRepository } from "./serendipityRepository.js";
 import { selectSerendipity } from "./serendipitySelection.js";
+import { canWriteProject } from "../projects/access.js";
 
 const DEFAULT_PROJECT_SLOTS = 8;
 
@@ -33,9 +34,9 @@ export type DigestLookup =
       timezone: string;
       period_start_utc: string;
       period_end_utc: string;
-      /** Whether a backfill may be requested for this day now. */
+      reason: "day_not_complete" | "not_generated";
+      /** Whether this viewer may request a backfill for this day now. */
       backfill_available: boolean;
-      explanation: string;
     };
 
 const BACKFILL_HISTORY_NOTE =
@@ -73,16 +74,18 @@ export class InformationDigestService {
     if (existing) return { status: "available", digest: (await repo.get(spaceId, existing.id, readerUserId))! };
     const period = digestPeriod(date, timezone);
     const complete = isCompleteDigestDay(date, timezone);
+    // A Project's digest is backfilled by someone who may write to the
+    // Project; a reader is told the day is missing, not offered a 403.
+    const mayBackfill = scope.type === "personal"
+      || await canWriteProject(this.db, spaceId, scope.projectId, scope.readerUserId);
     return {
       status: "missing",
       digest_date: date,
       timezone,
       period_start_utc: period.startUtc,
       period_end_utc: period.endUtc,
-      backfill_available: complete,
-      explanation: complete
-        ? "No digest was generated for this day. You can backfill it from the material retained now."
-        : "This day has not ended yet in the digest's timezone; its digest is generated after it ends.",
+      reason: complete ? "not_generated" : "day_not_complete",
+      backfill_available: complete && mayBackfill,
     };
   }
 
