@@ -17,7 +17,8 @@ import { nativePointerEvent } from './core/graphInteractions'
 import { GraphDetailPanel } from './GraphDetailPanel'
 import { GraphLegend } from './GraphLegend'
 import { GraphSearchBox } from './GraphSearchBox'
-import { GraphToolbar } from './GraphToolbar'
+import { GraphToolbar, graphLayoutWarningText } from './GraphToolbar'
+import { useAppTranslation } from '../../i18n'
 import type { GraphLayoutConfig, GraphNodePosition, GraphRenderData, GraphRendererHandle, GraphViewAction, GraphViewProps, GraphViewState } from './types'
 
 export function GraphView({
@@ -36,6 +37,7 @@ export function GraphView({
   onViewportChange,
   renderNodeDetails,
 }: GraphViewProps) {
+  const { t } = useAppTranslation()
   const [internalState, internalDispatch] = useGraphViewState({ rendererMode: renderer ?? 'canvas' })
   const [handle, setHandle] = useState<GraphRendererHandle | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -86,7 +88,7 @@ export function GraphView({
     }),
     [
       state.hiddenKinds,
-      state.activeEdgeKinds,
+      state.hiddenEdgeKinds,
       state.pinnedNodes,
     ],
   )
@@ -98,7 +100,7 @@ export function GraphView({
     }),
     [
       state.hiddenKinds,
-      state.activeEdgeKinds,
+      state.hiddenEdgeKinds,
       state.focusedNodeId,
     ],
   )
@@ -111,9 +113,9 @@ export function GraphView({
       projection,
       graphTheme,
       hiddenKinds: state.hiddenKinds,
-      activeEdgeKinds: state.activeEdgeKinds,
+      hiddenEdgeKinds: state.hiddenEdgeKinds,
     }),
-    [projection, graphTheme, state.hiddenKinds, state.activeEdgeKinds],
+    [projection, graphTheme, state.hiddenKinds, state.hiddenEdgeKinds],
   )
   const renderData = useMemo(
     () => projection
@@ -414,7 +416,7 @@ export function GraphView({
     const labels = buildInteractionLabelVisibility(projection, state, previousState, zoomRef.current)
     if (labels.nodes.length === 0 && labels.edges.length === 0) return
     void handle.setElementLabelVisibility(labels)
-  }, [handle, projection, state.selectedNodeId, state.hoveredNodeId, state.hiddenKinds, state.activeEdgeKinds])
+  }, [handle, projection, state.selectedNodeId, state.hoveredNodeId, state.hiddenKinds, state.hiddenEdgeKinds])
 
   useEffect(() => {
     if (!handle || !state.focusedNodeId) return
@@ -438,17 +440,13 @@ export function GraphView({
   }, [handle])
 
   const selectedNode = state.selectedNodeId ? nodeByIdRef.current.get(state.selectedNodeId) ?? null : null
-  const edgeKinds = useMemo(
-    () => Array.from(new Set((projection?.edges ?? []).map((edge) => edge.kind))).sort(),
-    [projection],
-  )
   const toolbarWarning = useMemo(() => {
     const warnings = [
-      projection?.view.truncated ? 'Projection is aggregated.' : null,
-      layoutResolution.warning,
+      projection?.view.truncated ? t('core_ui.graph.aggregated') : null,
+      layoutResolution.warning ? graphLayoutWarningText(layoutResolution.warning) : null,
     ].filter((warning): warning is string => Boolean(warning))
     return warnings.length ? warnings.join(' ') : null
-  }, [projection?.view.truncated, layoutResolution.warning])
+  }, [projection?.view.truncated, layoutResolution.warning, t])
   // What the graph is actually laid out as: the projection's own mode until
   // the person chooses one (a select whose value already matches the choice
   // would not fire). Without data there is nothing resolved, so the choice.
@@ -466,14 +464,7 @@ export function GraphView({
   }
 
   function setEdgeKindActive(kind: string, active: boolean) {
-    const current = state.activeEdgeKinds.length === 0 ? edgeKinds : state.activeEdgeKinds
-    const next = active
-      ? Array.from(new Set([...current, kind])).sort()
-      : current.filter((candidate) => candidate !== kind)
-    applyAction({
-      type: 'set-active-edge-kinds',
-      kinds: next.length === edgeKinds.length ? [] : next,
-    })
+    applyAction({ type: 'set-edge-kind-active', kind, active })
   }
 
   return (
@@ -485,7 +476,7 @@ export function GraphView({
       )}
       tabIndex={0}
       role="region"
-      aria-label="Interactive graph canvas"
+      aria-label={t('core_ui.graph.canvas_label')}
       onKeyDown={handleKeyDown}
     >
       <div className="flex min-w-0 flex-1 flex-col">
@@ -512,12 +503,12 @@ export function GraphView({
           />
           {projection && (
             <div className="pointer-events-none absolute bottom-3 left-3 z-10 rounded-md border border-border bg-background/85 px-2 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur">
-              {projection.nodes.length} nodes · {projection.edges.length} edges
+              {t('core_ui.graph.counts', { nodes: t('core_ui.graph.node_count', { count: projection.nodes.length }), edges: t('core_ui.graph.edge_count', { count: projection.edges.length }) })}
             </div>
           )}
-          {loading && <OverlayText>Loading graph...</OverlayText>}
+          {loading && <OverlayText>{t('core_ui.graph.loading')}</OverlayText>}
           {error && <OverlayText>{error}</OverlayText>}
-          {!loading && !error && projection && projection.nodes.length === 0 && <OverlayText>No graph data</OverlayText>}
+          {!loading && !error && projection && projection.nodes.length === 0 && <OverlayText>{t('core_ui.graph.empty')}</OverlayText>}
         </div>
       </div>
       {projection && (
@@ -561,15 +552,16 @@ function GraphViewportControls({
   onFocusSelected: () => void
   onReset: () => void
 }) {
+  const { t } = useAppTranslation()
   return (
     <div className="absolute right-3 top-3 z-10 flex items-center gap-1 rounded-md border border-border bg-background/90 p-1 shadow-sm backdrop-blur">
-      <Button type="button" variant="ghost" size="sm" className="h-7 w-7 px-0" onClick={onZoomIn} disabled={disabled} title="Zoom in" aria-label="Zoom in">
+      <Button type="button" variant="ghost" size="sm" className="h-7 w-7 px-0" onClick={onZoomIn} disabled={disabled} title={t('core_ui.graph.zoom_in')} aria-label={t('core_ui.graph.zoom_in')}>
         <ZoomIn className="size-3.5" />
       </Button>
-      <Button type="button" variant="ghost" size="sm" className="h-7 w-7 px-0" onClick={onZoomOut} disabled={disabled} title="Zoom out" aria-label="Zoom out">
+      <Button type="button" variant="ghost" size="sm" className="h-7 w-7 px-0" onClick={onZoomOut} disabled={disabled} title={t('core_ui.graph.zoom_out')} aria-label={t('core_ui.graph.zoom_out')}>
         <ZoomOut className="size-3.5" />
       </Button>
-      <Button type="button" variant="ghost" size="sm" className="h-7 w-7 px-0" onClick={onFitView} disabled={disabled} title="Fit view" aria-label="Fit view">
+      <Button type="button" variant="ghost" size="sm" className="h-7 w-7 px-0" onClick={onFitView} disabled={disabled} title={t('core_ui.graph.fit_view')} aria-label={t('core_ui.graph.fit_view')}>
         <Maximize2 className="size-3.5" />
       </Button>
       <Button
@@ -579,12 +571,12 @@ function GraphViewportControls({
         className="h-7 w-7 px-0"
         onClick={onFocusSelected}
         disabled={disabled || !canFocusSelected}
-        title="Focus selected node"
-        aria-label="Focus selected node"
+        title={t('core_ui.graph.focus_selected')}
+        aria-label={t('core_ui.graph.focus_selected')}
       >
         <Crosshair className="size-3.5" />
       </Button>
-      <Button type="button" variant="ghost" size="sm" className="h-7 w-7 px-0" onClick={onReset} disabled={disabled} title="Reset view" aria-label="Reset view">
+      <Button type="button" variant="ghost" size="sm" className="h-7 w-7 px-0" onClick={onReset} disabled={disabled} title={t('core_ui.graph.reset_view')} aria-label={t('core_ui.graph.reset_view')}>
         <RotateCcw className="size-3.5" />
       </Button>
     </div>

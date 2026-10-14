@@ -5,7 +5,7 @@ import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { enforce, type EnforceResult } from "../policy/service.js";
 import { HttpError, withDbTransaction } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
-import { PgRunRepository, type RunRecord } from "../runs/repository.js";
+import { PgRunRepository, type GroupedRunTrigger, type RunRecord } from "../runs/repository.js";
 import { visibleMessagePathSql } from "../sessions/messagePath.js";
 import { CONVERSATION_SERIALIZATION_WAIT_SCOPE } from "./waitScopes.js";
 import {
@@ -107,6 +107,12 @@ export interface SendAgentGroupMessageInput {
   capability_input_parts?: Array<{ kind: "image" | "file_reference" | "input_resource" }>;
   /** Marks a Room retry so remote prompt hydration can use immutable inputs. */
   retry_of_run_id?: string | null;
+  /**
+   * What started this turn. Absent is a person's own message (`manual`); a
+   * Room continuation names itself and its cause, so the turn's authority is
+   * its cause's rather than a fresh person's (`effectiveRunTrigger`).
+   */
+  trigger?: GroupedRunTrigger;
   parent_message_id?: string | null;
   routing_mode?: "direct" | "agent_coordination" | null;
   recipient_segments?: AgentGroupMessageRecipientSegment[] | null;
@@ -379,6 +385,7 @@ export class AgentGroupRunService {
       if (!content && !(input.input_parts?.length)) {
         throw new HttpError(422, "content or an input part is required");
       }
+      const trigger: GroupedRunTrigger = input.trigger ?? { origin: "manual" };
       const routingMode = input.routing_mode ?? "direct";
       const routingSegments = messageRecipientSegmentsForInput(input, group.manager_agent_id, content);
       const recipientAgentIds = routingSegments.flatMap((segment) => segment.recipient_agent_ids);
@@ -488,6 +495,7 @@ export class AgentGroupRunService {
               agent_id: recipientAgentId,
               space_id: input.space_id,
               user_id: identity.userId,
+              trigger,
               parent_run_id: rootRunId,
               root_run_id: rootRunId,
               run_group_id: group.id,
@@ -543,7 +551,8 @@ export class AgentGroupRunService {
           user_id: identity.userId,
           mode: "live",
           run_type: "agent",
-          trigger_origin: "manual",
+          trigger_origin: trigger.origin,
+          cause_run_id: trigger.origin === "continuation" ? trigger.cause_run_id : null,
               prompt: roomRunPrompt(preparedRootBackend, firstSegment.content, input.project_state_context),
               instruction: optionalTrimmedOrNull(group.goal),
               session_id: group.session_id,
@@ -606,6 +615,7 @@ export class AgentGroupRunService {
               agent_id: recipientAgentId,
               space_id: input.space_id,
               user_id: identity.userId,
+              trigger,
               parent_run_id: rootRunId,
               root_run_id: rootRunId,
               run_group_id: group.id,
@@ -693,6 +703,7 @@ export class AgentGroupRunService {
             group,
             identity,
             rootRunId,
+            trigger,
             recipientRun: entry.run,
             backend: preparedBackend,
             handoff: preparedBackend.host_handoff,
@@ -738,7 +749,7 @@ export class AgentGroupRunService {
           run_id: recipientRun.id,
           run_group_id: group.id,
           root_run_id: rootRunId,
-          trigger_origin: "manual",
+          trigger_origin: trigger.origin,
         };
         // The host thread and the vendor session to resume are read from the
         // Run's own `host_thread` override by the job handler, not carried here.
@@ -2099,6 +2110,8 @@ async function createRoomHandoffRun(
     group: AgentRunGroupRecord;
     identity: AgentGroupIdentity;
     rootRunId: string;
+    /** The turn's trigger: the handoff belongs to the same turn as its recipient. */
+    trigger: GroupedRunTrigger;
     recipientRun: RunRecord;
     backend: PreparedRoomConversationBackend;
     handoff: PreparedRoomHandoff;
@@ -2116,6 +2129,7 @@ async function createRoomHandoffRun(
     agent_id: input.recipientRun.agent_id!,
     space_id: input.group.space_id,
     user_id: input.identity.userId,
+    trigger: input.trigger,
     parent_run_id: input.rootRunId,
     root_run_id: input.rootRunId,
     run_group_id: input.group.id,

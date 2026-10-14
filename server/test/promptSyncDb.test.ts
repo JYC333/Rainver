@@ -250,7 +250,7 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
     expect(asset.rows[0]?.current_system_version_id).toBe(versions.rows[0]?.id);
   });
 
-  it("maintains system production deployment refs and rolls back to the previous built-in version", async () => {
+  it("keeps the system production ref on the current built-in version, which no Space role can roll back", async () => {
     if (!db.available) return;
     const assetKey = "test.rollback_prompt";
     const v1Dir = await singleManifestCatalog(assetKey, {
@@ -281,13 +281,21 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
     const archivedVersionId = refsBefore.rows.find((row) => row.status === "archived")?.version_id;
     expect(archivedVersionId).toBeTruthy();
 
+    // The baseline is release content: a Space owner cannot move it, and the
+    // next sync would not be undoing anyone's choice.
     const repo = new PromptRepository(db.pool);
-    const rolledBack = await repo.rollbackDeployment(identity, assetKey, { scope_type: "system", label: "production" });
-    expect(rolledBack).toMatchObject({ version_id: archivedVersionId, scope_type: "system", label: "production", status: "active" });
+    await expect(repo.rollbackDeployment(identity, assetKey, { scope_type: "system", label: "production" }))
+      .rejects.toMatchObject({ statusCode: 403 });
 
+    // The Space keeps the earlier built-in version as its own staging
+    // deployment; a later sync moves only the baseline, never that choice.
+    await repo.setDeployment(identity, assetKey, "staging", { scope_type: "space", version_id: archivedVersionId });
+    await syncBuiltinPrompts(db.pool, v2Dir);
     const resolved = await resolvePrompt(db.pool, { spaceId: SPACE, userId: OWNER, assetKey });
     expect(resolved.resolution_trace[0]).toContain("production:system");
-    expect(resolved.rendered_text).toBe("rollback v1");
+    expect(resolved.rendered_text).toBe("rollback v2");
+    const staged = await resolvePrompt(db.pool, { spaceId: SPACE, userId: OWNER, assetKey, label: "staging" });
+    expect(staged.rendered_text).toBe("rollback v1");
   });
   it("points the system baseline only at a built-in version, never at a Space's version with the same content", async () => {
     if (!db.available) return;

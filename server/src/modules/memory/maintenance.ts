@@ -44,9 +44,6 @@ const FINDING_KINDS = [
   "duplicate",
   "stale",
   "thin",
-  "lifecycle_drift",
-  "archived_state_drift",
-  "project_drift",
   "source_policy_drift",
   "contradiction",
 ] as const;
@@ -57,34 +54,22 @@ export class MemoryMaintenanceService {
   async scan(input: MemoryMaintenanceScanInput): Promise<MemoryMaintenanceScanResult> {
     const scanMode = input.scanMode ?? "recent";
     const cursor = scanMode === "full" ? decodeCursor(input.cursor ?? null) : null;
-    const { candidates, visible } = await this.loadVisibleWindow(input, cursor, scanMode);
-    const summaryAccessFullContentUsed = usesSummaryAccessFullContent(visible);
-
-    const findings = [
-      ...duplicateFindings(visible),
-      ...staleFindings(visible, input.staleAfterDays),
-      ...thinFindings(visible, input.thinContentChars),
-      ...lifecycleFindings(visible),
-      ...archivedStateFindings(visible),
-      ...projectDriftFindings(visible),
-      ...sourcePolicyDriftFindings(visible),
-      ...contradictionFindings(visible),
-    ];
-    const truncated = findings.length > input.maxFindings;
-    const capped = findings.slice(0, input.maxFindings);
-    const counts = countsFor(capped);
-    const contributingMemoryIds = uniqueMemoryIds(capped);
+    const page = cursor?.findingOffset
+      ? await this.resumeWithinEntry(input, cursor)
+      : await this.scanWindow(input, cursor, scanMode);
+    const summaryAccessFullContentUsed = usesSummaryAccessFullContent(page.visible);
+    const counts = countsFor(page.findings);
 
     return {
       report: {
-        findings: capped,
+        findings: page.findings,
         counts,
         candidate_limit: input.limit,
-        candidates_examined: visible.length,
-        scanned: visible.length,
-        truncated,
+        candidates_examined: page.visible.length,
+        scanned: page.visible.length,
+        truncated: page.truncated,
         scan_mode: scanMode,
-        next_cursor: scanMode === "full" ? nextCursor(candidates, visible, input.limit) : null,
+        next_cursor: page.nextCursor,
         access_safety: {
           owner_private: true,
           raw_content_included: false,
@@ -95,8 +80,105 @@ export class MemoryMaintenanceService {
           cursor_uses_visible_boundary: true,
         },
       },
-      contributingMemoryIds,
+      contributingMemoryIds: uniqueMemoryIds(page.findings),
     };
+  }
+
+  /**
+   * One window of entries after the cursor. When its findings exceed the cap,
+   * the page ends at the longest leading run of entries whose findings all
+   * fit, and the cursor resumes right after it; the entries beyond are read
+   * again on the next page rather than skipped. A single entry with more
+   * findings than the cap is split: the cursor stays on that entry and
+   * records how many of its findings were already reported.
+   */
+  private async scanWindow(
+    input: MemoryMaintenanceScanInput,
+    cursor: MemoryMaintenanceCursor | null,
+    scanMode: "recent" | "full",
+  ): Promise<ScanPage> {
+    const { candidates, visible } = await this.loadVisibleWindow(input, cursor, scanMode);
+    const all = findingsFor(visible, input);
+    const windowEnded = candidates.length < input.limit;
+    if (all.length <= input.maxFindings) {
+      return {
+        visible,
+        findings: all,
+        truncated: false,
+        nextCursor: scanMode === "full" && !windowEnded ? entryCursor(visible[visible.length - 1]?.row ?? null, 0) : null,
+      };
+    }
+    if (scanMode !== "full") {
+      // A recent scan is one look at the newest entries; it says how much it
+      // left out rather than offering to continue.
+      return { visible, findings: all.slice(0, input.maxFindings), truncated: true, nextCursor: null };
+    }
+    const fitting = longestFittingPrefix(visible, input);
+    if (fitting > 0) {
+      const included = visible.slice(0, fitting);
+      return {
+        visible: included,
+        findings: findingsFor(included, input),
+        truncated: true,
+        nextCursor: entryCursor(included[included.length - 1]!.row, 0),
+      };
+    }
+    const first = visible[0]!;
+    const own = findingsFor([first], input);
+    return {
+      visible: [first],
+      findings: own.slice(0, input.maxFindings),
+      truncated: true,
+      nextCursor: entryCursor(first.row, input.maxFindings),
+    };
+  }
+
+  /**
+   * The rest of one entry's findings. The entry is read by id: if it has
+   * changed or left the caller's view since, its earlier findings no longer
+   * describe it, and the scan carries on after it instead.
+   */
+  private async resumeWithinEntry(
+    input: MemoryMaintenanceScanInput,
+    cursor: MemoryMaintenanceCursor,
+  ): Promise<ScanPage> {
+    const oversightLevel = await resolveOversightLevel(this.db, input.spaceId, input.userId);
+    const rows = await this.loadEntry(input.spaceId, input.userId, cursor.id, input.projectId ?? null);
+    const visible = await this.visibleCandidates(input, rows, oversightLevel);
+    const entry = visible[0];
+    if (!entry || isoString(entry.row.updated_at) !== cursor.updatedAt) {
+      return this.scanWindow(input, { updatedAt: cursor.updatedAt, id: cursor.id, findingOffset: 0 }, "full");
+    }
+    const own = findingsFor([entry], input);
+    const end = cursor.findingOffset + input.maxFindings;
+    return {
+      visible: [entry],
+      findings: own.slice(cursor.findingOffset, end),
+      truncated: end < own.length,
+      nextCursor: entryCursor(entry.row, end < own.length ? end : 0),
+    };
+  }
+
+  private async loadEntry(
+    spaceId: string,
+    userId: string,
+    memoryId: string,
+    projectId: string | null,
+  ): Promise<WithAccessLevel<MemoryRow>[]> {
+    const result = await this.db.query<WithAccessLevel<MemoryRow>>(
+      `SELECT ${MEMORY_COLUMNS},
+              ${contentAccessLevelSql({ definition: MEMORY_DEFINITION, alias: "me", userExpr: "$3" })} AS effective_access_level
+         FROM memory_entries me
+        WHERE space_id = $1 AND id = $2
+          AND deleted_at IS NULL
+          AND status = 'active'
+          AND scope_type <> 'agent'
+          AND ($4::varchar IS NULL OR project_id = $4)
+          AND ${contentReadSql("memory", "me", "$3")}
+          AND ${memorySensitivityReadSql("me", "$3")}`,
+      [spaceId, memoryId, userId, projectId],
+    );
+    return result.rows;
   }
 
   private async loadCandidates(
@@ -112,7 +194,7 @@ export class MemoryMaintenanceService {
          FROM memory_entries me
         WHERE space_id = $1
           AND deleted_at IS NULL
-          AND status = ANY($2::varchar[])
+          AND status = $2
           -- Agent Memory is not the person's Memory to consolidate (see
           -- isExcludedMaintenanceRow). Excluded in the query rather than after
           -- it, so it does not consume the scan window either.
@@ -127,7 +209,7 @@ export class MemoryMaintenanceService {
           AND ${memorySensitivityReadSql("me", "$7")}
         ORDER BY updated_at DESC, id DESC
         LIMIT $3`,
-      [spaceId, ["active", "superseded", "archived"], limit, projectId, cursor?.updatedAt ?? null, cursor?.id ?? null, userId],
+      [spaceId, "active", limit, projectId, cursor?.updatedAt ?? null, cursor?.id ?? null, userId],
     );
     return result.rows;
   }
@@ -226,11 +308,9 @@ function staleFindings(memories: VisibleMemory[], staleAfterDays: number): Memor
       cluster_key: "stale:unconfirmed",
       cluster_label: "Stale memories",
       confidence_tier: "medium",
-      proposed_action: {
-        proposal_type: "memory_update",
-        target_memory_id: memory.row.id,
-        maintenance_action: "reconfirm_stale_memory",
-      },
+      // A hint the entry carries, not a task: age alone is no reason to ask
+      // anyone to confirm anything.
+      proposed_action: null,
     });
   }
   return findings;
@@ -249,96 +329,8 @@ function thinFindings(memories: VisibleMemory[], thinContentChars: number): Memo
       cluster_key: "thin:short_readable_content",
       cluster_label: "Thin memories",
       confidence_tier: "medium",
-      proposed_action: {
-        proposal_type: "memory_update",
-        target_memory_id: memory.row.id,
-        maintenance_action: "enrich_thin_memory",
-      },
-    });
-  }
-  return findings;
-}
-
-function lifecycleFindings(memories: VisibleMemory[]): MemoryMaintenanceFinding[] {
-  const findings: MemoryMaintenanceFinding[] = [];
-  for (const memory of memories) {
-    if (memory.row.status === "superseded" && !memory.row.supersedes_memory_id) {
-      findings.push({
-        kind: "lifecycle_drift",
-        objects: [memoryObject(memory.row)],
-        reason: "Memory is marked superseded but does not point at the superseding memory.",
-        cluster_key: "lifecycle:superseded_without_pointer",
-        cluster_label: "Lifecycle drift",
-        confidence_tier: "low",
-        proposed_action: {
-          proposal_type: "memory_update",
-          target_memory_id: memory.row.id,
-          maintenance_action: "review_missing_superseding_memory",
-          requires_operator_edit: true,
-        },
-      });
-    }
-    if (memory.row.status === "active" && memory.row.supersedes_memory_id) {
-      findings.push({
-        kind: "lifecycle_drift",
-        objects: [memoryObject(memory.row)],
-        reason: "Active memory still carries a supersedes pointer and may need lifecycle review.",
-        cluster_key: "lifecycle:active_with_supersedes_pointer",
-        cluster_label: "Lifecycle drift",
-        confidence_tier: "medium",
-        proposed_action: {
-          proposal_type: "memory_update",
-          target_memory_id: memory.row.id,
-          maintenance_action: "clear_active_supersedes_pointer",
-        },
-      });
-    }
-  }
-  return findings;
-}
-
-function archivedStateFindings(memories: VisibleMemory[]): MemoryMaintenanceFinding[] {
-  const findings: MemoryMaintenanceFinding[] = [];
-  for (const memory of memories) {
-    if (memory.row.status !== "archived") continue;
-    if (!memory.row.supersedes_memory_id && !memory.row.root_memory_id) continue;
-    findings.push({
-      kind: "archived_state_drift",
-      objects: [memoryObject(memory.row)],
-      reason: "Archived memory still carries lifecycle pointers and should be reviewed for stale state.",
-      cluster_key: "archived_state:lifecycle_pointer",
-      cluster_label: "Archived state drift",
-      confidence_tier: "low",
-      proposed_action: {
-        proposal_type: "memory_update",
-        target_memory_id: memory.row.id,
-        maintenance_action: "review_archived_lifecycle_state",
-        requires_operator_edit: true,
-      },
-    });
-  }
-  return findings;
-}
-
-function projectDriftFindings(memories: VisibleMemory[]): MemoryMaintenanceFinding[] {
-  const findings: MemoryMaintenanceFinding[] = [];
-  for (const memory of memories) {
-    if (memory.row.status !== "active" || !memory.row.project_id) continue;
-    if ((memory.row.scope_type ?? "").toLowerCase() === "project") continue;
-    findings.push({
-      kind: "project_drift",
-      objects: [memoryObject(memory.row)],
-      reason: "Memory is linked to a Project but is not scoped as project memory.",
-      cluster_key: `project_drift:${memory.row.project_id}`,
-      cluster_label: "Project scope drift",
-      confidence_tier: "medium",
-      proposed_action: {
-        proposal_type: "memory_update",
-        target_memory_id: memory.row.id,
-        maintenance_action: "align_project_scope",
-        target_scope: "project",
-        project_id: memory.row.project_id,
-      },
+      // A hint, not a task: short is not wrong.
+      proposed_action: null,
     });
   }
   return findings;
@@ -361,7 +353,6 @@ function sourcePolicyDriftFindings(memories: VisibleMemory[]): MemoryMaintenance
         proposal_type: "memory_update",
         target_memory_id: memory.row.id,
         maintenance_action: "attach_or_review_external_source",
-        requires_operator_edit: true,
       },
     });
   }
@@ -396,7 +387,6 @@ function contradictionFindings(memories: VisibleMemory[]): MemoryMaintenanceFind
         target_memory_id: affirmative.row.id,
         maintenance_action: "review_contradiction",
         related_memory_ids: [negative.row.id],
-        requires_operator_edit: true,
       },
     });
   }
@@ -477,18 +467,48 @@ function timestampMs(value: unknown): number | null {
 interface MemoryMaintenanceCursor {
   updatedAt: string;
   id: string;
+  /** Findings of this entry already reported; 0 means resume after it. */
+  findingOffset: number;
 }
 
-function nextCursor(
-  candidates: readonly MemoryRow[],
-  visible: readonly VisibleMemory[],
-  limit: number,
-): string | null {
-  if (candidates.length < limit || visible.length === 0) return null;
-  const boundary = visible[visible.length - 1]!.row;
-  const updatedAt = isoString(boundary.updated_at);
-  if (!updatedAt || !boundary.id) return null;
-  return Buffer.from(JSON.stringify({ updated_at: updatedAt, id: boundary.id }), "utf8").toString("base64url");
+interface ScanPage {
+  visible: VisibleMemory[];
+  findings: MemoryMaintenanceFinding[];
+  truncated: boolean;
+  nextCursor: string | null;
+}
+
+function findingsFor(memories: VisibleMemory[], input: MemoryMaintenanceScanInput): MemoryMaintenanceFinding[] {
+  return [
+    ...duplicateFindings(memories),
+    ...staleFindings(memories, input.staleAfterDays),
+    ...thinFindings(memories, input.thinContentChars),
+    ...sourcePolicyDriftFindings(memories),
+    ...contradictionFindings(memories),
+  ];
+}
+
+/** How many leading entries can be reported whole within the cap. */
+function longestFittingPrefix(visible: readonly VisibleMemory[], input: MemoryMaintenanceScanInput): number {
+  let low = 0;
+  let high = visible.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (findingsFor(visible.slice(0, middle), input).length <= input.maxFindings) low = middle;
+    else high = middle - 1;
+  }
+  return low;
+}
+
+function entryCursor(row: MemoryRow | null, findingOffset: number): string | null {
+  if (!row) return null;
+  const updatedAt = isoString(row.updated_at);
+  if (!updatedAt || !row.id) return null;
+  return Buffer.from(JSON.stringify({
+    updated_at: updatedAt,
+    id: row.id,
+    ...(findingOffset > 0 ? { finding_offset: findingOffset } : {}),
+  }), "utf8").toString("base64url");
 }
 
 function physicalCursor(candidates: readonly MemoryRow[]): MemoryMaintenanceCursor | null {
@@ -496,7 +516,7 @@ function physicalCursor(candidates: readonly MemoryRow[]): MemoryMaintenanceCurs
   if (!boundary) return null;
   const updatedAt = isoString(boundary.updated_at);
   if (!updatedAt || !boundary.id) return null;
-  return { updatedAt, id: boundary.id };
+  return { updatedAt, id: boundary.id, findingOffset: 0 };
 }
 
 function decodeCursor(value: string | null): MemoryMaintenanceCursor | null {
@@ -505,8 +525,10 @@ function decodeCursor(value: string | null): MemoryMaintenanceCursor | null {
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Record<string, unknown>;
     const updatedAt = typeof parsed.updated_at === "string" ? parsed.updated_at : "";
     const id = typeof parsed.id === "string" ? parsed.id : "";
+    const offset = parsed.finding_offset;
+    const findingOffset = typeof offset === "number" && Number.isInteger(offset) && offset > 0 ? offset : 0;
     if (!updatedAt || !id || Number.isNaN(Date.parse(updatedAt))) return null;
-    return { updatedAt, id };
+    return { updatedAt, id, findingOffset };
   } catch {
     return null;
   }

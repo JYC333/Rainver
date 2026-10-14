@@ -2,16 +2,19 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { enforce } from "../policy/service.js";
-import { proposalToOut } from "../proposals/repository.js";
+import { PgProposalRepository, proposalToOut } from "../proposals/repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { canReadMemory, type MemoryAuthFields } from "./memoryReadAuth.js";
 import { canAccessProject } from "./projectAccess.js";
+import { canWriteProject } from "../projects/access.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
 
 import type {
   MemoryProposalArchiveCommand,
   MemoryProposalCreateCommand,
+  MemoryProposalRevisionRequest,
   MemoryProposalUpdateCommand,
   ProposalOut,
 } from "@rainver/protocol";
@@ -466,6 +469,67 @@ export class PgMemoryProposalRepository {
       targetScope: target.scope_type,
       targetVisibility: target.visibility,
       sensitivityLevel: null,
+    });
+  }
+
+  /**
+   * A person writing the revision a maintenance finding asked for into its
+   * pending update. Only someone who decides what the entry says may write it
+   * — its owner, or a Project writer for Project Memory — and the revision
+   * records that they did, which is the confirmation the content then rests
+   * on. Accepting the proposal is still a separate decision.
+   */
+  async reviseOperatorEditProposal(
+    spaceId: string,
+    userId: string,
+    proposalId: string,
+    revision: MemoryProposalRevisionRequest,
+  ): Promise<ProposalOut> {
+    return withQueryableTransaction(this.db as never, async (tx: Queryable) => {
+      if (!(await new PgProposalRepository(tx as never).getVisible(spaceId, userId, proposalId))) {
+        throw new MemoryProposalNotFoundError("Proposal not found");
+      }
+      const locked = await tx.query<{ status: string; proposal_type: string; payload_json: Record<string, unknown> | null }>(
+        `SELECT status, proposal_type, payload_json FROM proposals WHERE id = $1 AND space_id = $2 FOR UPDATE`,
+        [proposalId, spaceId],
+      );
+      const proposal = locked.rows[0];
+      const payload = proposal?.payload_json ?? {};
+      if (!proposal || proposal.proposal_type !== "memory_update" || payload.requires_operator_edit !== true) {
+        throw new MemoryProposalValidationError("Only a maintenance update that asks for a revision can be revised here");
+      }
+      if (proposal.status !== "pending") {
+        throw new MemoryProposalValidationError("This proposal has already been decided");
+      }
+      const targetId = stringValue(payload.target_memory_id);
+      const target = targetId
+        ? await new PgMemoryProposalRepository(tx, this.config).getVisibleTargetMemory(spaceId, userId, targetId)
+        : null;
+      if (!target) throw new MemoryProposalNotFoundError("Memory not found");
+      const decides = target.scope_type === "project" && target.project_id
+        ? await canWriteProject(tx as never, spaceId, target.project_id, userId)
+        : target.owner_user_id === userId;
+      if (!decides) {
+        throw new MemoryProposalForbiddenError("Only the owner of this memory can revise what it says");
+      }
+      const editedAt = new Date().toISOString();
+      const revised: Record<string, unknown> = {
+        ...payload,
+        proposed_content: revision.content,
+        ...(revision.title ? { proposed_title: revision.title } : {}),
+        operator_edit: { edited_by_user_id: userId, edited_at: editedAt },
+        provenance_entries: mergeDistinctProvenanceEntries([
+          ...(Array.isArray(payload.provenance_entries) ? payload.provenance_entries as Array<Record<string, unknown>> : []),
+          userConfirmationEntry(userId, { method: "POST", path: `/memory/proposals/${proposalId}/revision` }),
+        ]),
+      };
+      await tx.query(
+        `UPDATE proposals SET payload_json = $3::jsonb, updated_at = $4 WHERE id = $1 AND space_id = $2`,
+        [proposalId, spaceId, JSON.stringify(revised), editedAt],
+      );
+      const out = await new PgProposalRepository(tx as never).getVisible(spaceId, userId, proposalId);
+      if (!out) throw new MemoryProposalNotFoundError("Proposal not found");
+      return out;
     });
   }
 

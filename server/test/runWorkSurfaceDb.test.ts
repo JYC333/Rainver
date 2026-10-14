@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgRunToolIdentityRepository } from "../src/modules/runs/runToolIdentityRepository.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
 import {
   applyRunArtifactDeclarations,
   declareRunArtifact,
@@ -164,6 +165,19 @@ beforeEach(async () => {
   );
   await db.pool!.query(`UPDATE agents SET current_version_id = $2 WHERE id = $1`, [AGENT, VERSION]);
   await ensureDefaultRuntimeProfile(db.pool!, { agent: AGENT, space: SPACE });
+});
+
+describe("a Run's linked Tasks", () => {
+  it("names the Task a Run worked on to someone who can read it, and to nobody else", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const taskId = randomUUID();
+    const runId = randomUUID();
+    await makeTask(taskId);
+    await makeRun(runId, taskId);
+    const runs = new PgRunRepository(db.pool!);
+    await expect(runs.linkedTasksForViewer(SPACE, runId, USER)).resolves.toEqual([{ id: taskId, title: "Write the report" }]);
+    await expect(runs.linkedTasksForViewer(SPACE, runId, randomUUID())).resolves.toEqual([]);
+  });
 });
 
 describe("run tool identity", () => {

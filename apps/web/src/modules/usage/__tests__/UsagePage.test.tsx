@@ -81,6 +81,9 @@ function summary(groupBy = 'provider'): UsageSummaryResponse {
       },
       last_seen_at: '2026-07-09T12:00:00.000Z',
     }],
+    total: 1,
+    limit: 100,
+    offset: 0,
   }
 }
 
@@ -135,6 +138,7 @@ const sessions: UsageSessionsResponse = {
     last_seen_at: '2026-07-09T12:00:00.000Z',
   }],
   total: 1,
+  totals,
 }
 
 const events: UsageEventsResponse = {
@@ -275,8 +279,11 @@ describe('UsagePage', () => {
     expect(screen.getAllByText('June Provider').length).toBeGreaterThan(0)
   })
 
-  it('averages per session over every matched session, not the one page listed', async () => {
-    // One session on the page, four matched: 1670 tokens average to 418 per session.
+  it('averages per session over every matched session, from the sessions\' own totals', async () => {
+    // One session on the page, four matched: their 1670 tokens average to 418
+    // per session. The summary's larger total also counts usage seen only at
+    // summary level, which no session in the list stands for.
+    vi.mocked(usageApi.summary).mockResolvedValue({ ...summary(), totals: { ...totals, total_tokens: 99_999 } })
     vi.mocked(usageApi.sessions).mockResolvedValue({ ...sessions, total: 4 })
     render(<UsagePage />)
 
@@ -284,11 +291,20 @@ describe('UsagePage', () => {
     expect(within(row).getAllByRole('cell')[1]).toHaveTextContent('418')
   })
 
+  it('pages through every matched group instead of stopping at the first page', async () => {
+    vi.mocked(usageApi.summary).mockResolvedValue({ ...summary(), total: 150, limit: 100, offset: 0 })
+    render(<UsagePage />)
+
+    expect(await screen.findByText('1–100 of 150')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
+    await waitFor(() => expect(usageApi.summary).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 100 })))
+  })
+
   it('renders shared empty-state panels instead of empty tables when there is no usage', async () => {
     vi.mocked(usageApi.summary).mockResolvedValue({ ...summary(), totals: { ...totals, event_count: 0, request_count: 0, total_tokens: 0 }, items: [] })
     vi.mocked(usageApi.timeseries).mockResolvedValue({ ...timeseries, items: [] })
     vi.mocked(usageApi.dimensions).mockResolvedValue({ ...dimensions, execution_channels: [] })
-    vi.mocked(usageApi.sessions).mockResolvedValue({ items: [], total: 0 })
+    vi.mocked(usageApi.sessions).mockResolvedValue({ items: [], total: 0, totals: { ...totals, total_tokens: 0, event_count: 0, request_count: 0 } })
     vi.mocked(usageApi.events).mockResolvedValue({ items: [], total: 0, limit: 25, offset: 0 })
 
     render(<UsagePage />)

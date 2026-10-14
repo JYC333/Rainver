@@ -12,7 +12,6 @@ import { Button } from '../../../components/ui/button'
 import { Select } from '../../../components/ui/select'
 import { Skeleton } from '../../../components/ui/skeleton'
 import { ConversationSurface } from '../../conversation/ConversationSurface'
-import { ConversationBackendSetupCard } from '../../agent_groups/conversation/ConversationBackendSetupCard'
 import { ConversationExecutionPreflight } from '../../conversation/ConversationExecutionPreflight'
 import { conversationInputSourcesFromExecutionSummary } from '../../conversation/ConversationInputComposer'
 import ProjectConversationBackendCard from '../ProjectConversationBackendCard'
@@ -126,7 +125,6 @@ export default function ProjectChatSidecar() {
   const [failure, setFailure] = useState<string | null>(null)
   const [conversations, setConversations] = useState<RoomConversationRecord[]>([])
   const [sessionId, setSessionId] = useState<string>('')
-  const [setupTargets, setSetupTargets] = useState<string[]>([])
   const [runtimeRevision, setRuntimeRevision] = useState(0)
   const [runtimeOpen, setRuntimeOpen] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -162,7 +160,6 @@ export default function ProjectChatSidecar() {
     if (!projectId || !open || onRoomsArea) return
     let active = true
     setLoading(true)
-    setSetupTargets([])
     setExecutionReady(false)
     setExecutionSummary(null)
     void (async () => {
@@ -331,11 +328,6 @@ export default function ProjectChatSidecar() {
         <p className="p-3 text-xs text-destructive">{failure}</p>
       ) : !room ? null : (
         <>
-          {setupTargets.length > 0 && (
-            <div className="border-b border-border p-3">
-              <ConversationBackendSetupCard setupTargets={setupTargets} />
-            </div>
-          )}
           {/* The same conversation module the full Room page renders: one
               implementation of what a conversation is, two places it is read. */}
           {onFilesArea && currentFileAttachment && (
@@ -375,9 +367,7 @@ export default function ProjectChatSidecar() {
             )}
             variant="panel"
             focusRefs={focusRefs}
-            onBackendRequired={setSetupTargets}
             onSent={() => {
-              setSetupTargets([])
               setRuntimeRevision(current => current + 1)
             }}
             onConversationUpdated={conversation => {

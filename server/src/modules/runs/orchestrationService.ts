@@ -1902,10 +1902,7 @@ export class RunOrchestrationService {
         const authorization = await authorizeCredentialSpend(
           this.config,
           { space_id: run.space_id, provider_id: selectedProviderId, basis: { kind: "run", run } },
-          {
-            enforcer: this.adapters.policyEnforcer,
-            readRun: (spaceId, runId) => this.repository.getRun(spaceId, runId),
-          },
+          { enforcer: this.adapters.policyEnforcer },
         );
         if (authorization.policy_decision_record_id) {
           base.policy_decision_record_ids.push(authorization.policy_decision_record_id);

@@ -23,7 +23,8 @@ export type SessionRefreshSink = (setCookies: readonly string[]) => void;
 export function sessionRefreshSink(reply: FastifyReply): SessionRefreshSink {
   return (setCookies) => { if (setCookies.length) reply.header("set-cookie", [...setCookies]); };
 }
-export interface CurrentUser { id: string; email: string | null; display_name: string; avatar_url: string | null; is_instance_admin: boolean; created_at: string; last_login_at: string | null }
+/** `default_space_id`: the Space a session lands in when it names none — the person's own personal Space, else their oldest active membership. */
+export interface CurrentUser { id: string; email: string | null; display_name: string; avatar_url: string | null; is_instance_admin: boolean; default_space_id: string | null; created_at: string; last_login_at: string | null }
 export interface UserSpace { id: string; name: string; type: string; role: string; oversight_mode: string; egress_notifications_enabled: boolean; member_count: number; created_at: string; updated_at: string }
 export interface SpaceView extends UserSpace { created_by_user_id: string | null }
 export interface AuthFailure { statusCode: number; detail: string }
@@ -120,7 +121,7 @@ export class PgAuthRepository implements AuthRepository {
     const validated = await this.validateSession(sessionToken); if (!validated) return { statusCode: 401, detail: "Authentication required" };
     refresh?.(validated.setCookies);
     const user = await this.getUserRow(validated.row.user_id); if (!user || user.status !== "active") return { statusCode: 401, detail: "Authentication required" };
-    return currentUserFromRow(user, this.instanceAdminEmail);
+    return currentUserFromRow(user, this.instanceAdminEmail, await this.selectDefaultSpace(user.id));
   }
   async currentSession(sessionToken?: string, refresh?: SessionRefreshSink): Promise<{ id: string; user_id: string } | null> {
     const validated = await this.validateSession(sessionToken); if (!validated) return null;
@@ -176,7 +177,9 @@ export class PgAuthRepository implements AuthRepository {
   }
   private async getUserRow(userId: string, client: QueryClient = this.pool as unknown as QueryClient): Promise<UserRow | null> { const result = await client.query<UserRow>("SELECT id, email, display_name, avatar_url, status, created_at, last_login_at FROM users WHERE id = $1 LIMIT 1", [userId]); return result.rows[0] ?? null }
   private async hasActiveMembership(userId: string, spaceId: string): Promise<boolean> { const result = await this.pool.query("SELECT 1 FROM space_memberships WHERE user_id = $1 AND space_id = $2 AND status = 'active' LIMIT 1", [userId, spaceId]); return Boolean(result.rowCount) }
-  private async selectDefaultSpace(userId: string): Promise<string | null> { const result = await this.pool.query<{ space_id: string }>(`SELECT m.space_id FROM space_memberships m JOIN spaces s ON s.id = m.space_id WHERE m.user_id = $1 AND m.status = 'active' ORDER BY (s.type = 'personal') DESC, m.created_at ASC, m.id ASC LIMIT 1`, [userId]); return result.rows[0]?.space_id ?? null }
+  // The person's own personal Space is the one they own; a personal Space
+  // someone else owns is never their default, whatever its age.
+  private async selectDefaultSpace(userId: string): Promise<string | null> { const result = await this.pool.query<{ space_id: string }>(`SELECT m.space_id FROM space_memberships m JOIN spaces s ON s.id = m.space_id WHERE m.user_id = $1 AND m.status = 'active' ORDER BY (s.type = 'personal' AND m.role = 'owner') DESC, m.created_at ASC, m.id ASC LIMIT 1`, [userId]); return result.rows[0]?.space_id ?? null }
 }
 
 /** Every cookie a Better Auth response set, each with its own attributes intact. */
@@ -189,4 +192,4 @@ function setCookiesOf(headers: Headers | undefined): readonly string[] {
 }
 
 function spaceFromRow(row: SpaceRow): UserSpace { return { id: row.id, name: row.name, type: row.type, role: row.role, oversight_mode: row.oversight_mode, egress_notifications_enabled: row.egress_notifications_enabled, member_count: Number(row.member_count ?? 1), created_at: asIso(row.created_at)!, updated_at: asIso(row.updated_at)! } }
-function currentUserFromRow(user: UserRow, admin: string | null): CurrentUser { return { id: user.id, email: user.email, display_name: user.display_name, avatar_url: user.avatar_url, is_instance_admin: isInstanceAdminEmail(user.email, admin), created_at: asIso(user.created_at)!, last_login_at: asIso(user.last_login_at) } }
+function currentUserFromRow(user: UserRow, admin: string | null, defaultSpaceId: string | null): CurrentUser { return { id: user.id, email: user.email, display_name: user.display_name, avatar_url: user.avatar_url, is_instance_admin: isInstanceAdminEmail(user.email, admin), default_space_id: defaultSpaceId, created_at: asIso(user.created_at)!, last_login_at: asIso(user.last_login_at) } }

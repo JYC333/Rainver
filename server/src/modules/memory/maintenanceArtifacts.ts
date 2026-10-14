@@ -1,4 +1,4 @@
-import type { MemoryMaintenanceReport } from "@rainver/protocol";
+import { MemoryMaintenanceProposedActionSchema, type MemoryMaintenanceReport } from "@rainver/protocol";
 import type { ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 import {
@@ -107,8 +107,11 @@ function childDraftsForFinding(
   packetPayload: Record<string, unknown>,
   context: ProposalApplyContext,
 ): ChildProposalDraft[] {
-  const action = record(finding.proposed_action);
-  if (!action) return [];
+  // Only an action the report contract names becomes a child; a hint (age,
+  // short content) proposes nothing and so asks nothing of anyone.
+  const parsed = MemoryMaintenanceProposedActionSchema.safeParse(finding.proposed_action);
+  if (!parsed.success) return [];
+  const action = parsed.data;
   const kind = stringValue(finding.kind) ?? "memory_maintenance";
   const objects = Array.isArray(finding.objects) ? finding.objects.map(record) : [];
   const basePayload = {
@@ -124,8 +127,7 @@ function childDraftsForFinding(
     })).filter((ref) => ref.object_id),
     canonical_write_performed: false,
   };
-  const proposalType = stringValue(action.proposal_type);
-  if (proposalType === "memory_archive") {
+  if (action.proposal_type === "memory_archive") {
     const targetIds = stringArray(action.target_memory_ids);
     return targetIds.map((targetId) => ({
       proposalType: "memory_archive",
@@ -144,43 +146,39 @@ function childDraftsForFinding(
       },
     }));
   }
-  if (proposalType === "memory_update") {
-    const targetId = stringValue(action.target_memory_id);
-    if (!targetId) return [];
-    const targetScope = stringValue(action.target_scope);
-    const projectId = stringValue(action.project_id);
-    const requiresOperatorEdit = action.requires_operator_edit === true;
-    return [{
-      proposalType: "memory_update",
-      riskLevel: requiresOperatorEdit ? "medium" : "low",
-      title: `Review memory update: ${titleForTarget(objects, targetId)}`,
-      summary: `Review Memory update for maintenance finding (${kind}).`,
-      rationale: requiresOperatorEdit
-        ? "Generated from accepted Memory maintenance packet; edit this child proposal before accepting if canonical Memory should change."
-        : "Generated from accepted Memory maintenance packet; accepting this child proposal applies the reviewed Memory update.",
-      visibility: context.proposal.visibility,
-      projectFolderId: context.proposal.project_folder_id ?? null,
-      projectId: projectId ?? context.proposal.project_id ?? null,
-      payload: {
-        ...basePayload,
-        operation: "update",
-        target_memory_id: targetId,
-        ...(targetScope ? { target_scope: targetScope } : {}),
-        ...(projectId ? { project_id: projectId } : {}),
-        maintenance_action: stringValue(action.maintenance_action),
-        related_memory_ids: stringArray(action.related_memory_ids),
-        requires_operator_edit: requiresOperatorEdit,
-        provenance_entries: [{
-          source_type: "memory_maintenance_packet",
-          source_id: context.proposal.id,
-          artifact_id: stringValue(packetPayload.report_artifact_id),
+  const targetId = action.target_memory_id;
+  // Every update a finding proposes is a person's revision of the content:
+  // the child waits for that revision and cannot be accepted as generated.
+  return [{
+    proposalType: "memory_update",
+    riskLevel: "medium",
+    title: `Revise memory: ${titleForTarget(objects, targetId)}`,
+    summary: `Revise this Memory for the maintenance finding (${kind}).`,
+    rationale: "Generated from an accepted Memory maintenance packet. Write the revision first; accepting it unchanged is refused.",
+    visibility: context.proposal.visibility,
+    projectFolderId: context.proposal.project_folder_id ?? null,
+    projectId: context.proposal.project_id ?? null,
+    payload: {
+      ...basePayload,
+      operation: "update",
+      target_memory_id: targetId,
+      maintenance_action: action.maintenance_action,
+      related_memory_ids: action.related_memory_ids ?? [],
+      requires_operator_edit: true,
+      // The packet that raised the finding, through the registered proposal
+      // source type. It carries no trust: it is why the entry is being
+      // revised, not a basis for what the revision says.
+      provenance_entries: [{
+        source_type: "proposal",
+        source_id: context.proposal.id,
+        evidence_json: {
+          report_artifact_id: stringValue(packetPayload.report_artifact_id),
           finding_kind: kind,
           reason: stringValue(finding.reason),
-        }],
-      },
-    }];
-  }
-  return [];
+        },
+      }],
+    },
+  }];
 }
 
 function reportPayload(

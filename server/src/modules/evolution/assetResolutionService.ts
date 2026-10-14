@@ -141,9 +141,9 @@ export async function resolveEvolvableAssetVersion(
   }
   const systemApproved = await db.query<VersionContentRow>(
     `SELECT id, space_id, scope_type, scope_id, content_ref, content_hash, content_json, status FROM evolvable_asset_versions
-      WHERE asset_id = $1 AND scope_type = 'system' AND status = 'approved' AND (space_id IS NULL OR space_id = $2)
+      WHERE asset_id = $1 AND scope_type = 'system' AND status = 'approved' AND space_id IS NULL
       ORDER BY version DESC LIMIT 1`,
-    [assetId, input.spaceId],
+    [assetId],
   );
   if (systemApproved.rows[0]) {
     trace.push(`system_baseline:${systemApproved.rows[0].id}`);
@@ -216,7 +216,6 @@ function canUseVersionForResolution(
 ): boolean {
   if (version.space_id === null) return version.scope_type === "system";
   if (version.space_id !== input.spaceId) return false;
-  if (version.scope_type === "system") return true;
   if (version.scope_type === "space") return version.scope_id === input.spaceId;
   if (version.scope_type === "project") return Boolean(input.projectId && version.scope_id === input.projectId);
   if (version.scope_type === "agent") return Boolean(input.agentId && version.scope_id === input.agentId);

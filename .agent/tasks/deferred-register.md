@@ -293,6 +293,14 @@ differ, which is what the trigger provides.
   together, tied to whatever the intended non-redacted read path for a Run's
   task description turns out to be.
 
+- **`server/test/retrievalEvalGroup.test.ts` has failed intermittently** in
+  earlier full-suite runs. On 2026-10-14 it passed in six isolated runs and in
+  two full-suite runs, so no cause could be shown; the `dbGroup` isolation fix
+  may already have removed it, but there is no direct evidence. Do not change
+  the tests on a guess. If it fails again, keep the failing run's output and
+  the template-database and `dbGroup` assignment evidence, then fix the cause
+  that output shows.
+
 ## Rooms — product follow-ups
 
 These items are deliberately outside the first Room release. They are
@@ -458,6 +466,7 @@ evidence of a problem).
 |---|---|---|
 | Drop `hosts.daemon_server_url`. Nothing has read or written it since the security remediation's item 1.1 (2026-09-11). Dropping it in the same release would break the release still running while the migration applies. | Every deployed release is one that no longer reads the column | Hosts |
 | Drop `project_public_summaries.review_status` and its CHECK. Publication moved to `project_public_summary_publications` (migration `0002`, 2026-10-14); nothing reads or writes the column, which was kept with default `'draft'` so the release still running during the migration keeps reading it (B59 expand-then-contract). The drop is a `-- rainver:maintenance` migration. | Every deployed release is one that no longer reads the column | Projects |
+| Drop the `policies` table. The generic `policy_change` applier was removed (2026-10-14) and nothing writes or reads the table any more; it stays this release because the release still running while migrations apply can still accept a `policy_change` proposal and insert into it (B59). | Every deployed release is one without the `policy_change` applier | Policy |
 | Set `workflow_executions.responsible_user_id` NOT NULL. Migration `0006` (2026-10-14) added it nullable and backfilled it from the coordinator Run's `instructed_by_user_id` or the Automation owner, because the release still running while it applies inserts without it (B59). The contract migration backfills any row that release wrote the same way, then sets NOT NULL; reconciliation already refuses a row without it. | Every deployed release is one that writes the column | Automations |
 
 ## Retirement

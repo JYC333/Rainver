@@ -53,6 +53,12 @@ export const runs = pgTable("runs", {
 	rootRunId: varchar("root_run_id", { length: 36 }),
 	runGroupId: varchar("run_group_id", { length: 36 }),
 	delegationId: varchar("delegation_id", { length: 36 }),
+	// A `continuation` Run's cause: the Run whose outcome this system-started
+	// turn reports on (a delegated child, the turn that started a research
+	// acquisition, the previous discussion wave). Its effective origin is the
+	// cause's (`effectiveRunTrigger`). Null on a continuation means its
+	// lineage is not verifiable or it ran past its budget: it is unattended.
+	causeRunId: varchar("cause_run_id", { length: 36 }),
 	instructedBy: varchar("instructed_by", { length: 128 }),
 	instructedByUserId: varchar("instructed_by_user_id", { length: 36 }),
 	instructedByAgentId: varchar("instructed_by_agent_id", { length: 36 }),
@@ -111,6 +117,7 @@ export const runs = pgTable("runs", {
 	index("ix_runs_parent_run_space").using("btree", table.spaceId.asc().nullsLast(), table.parentRunId.asc().nullsLast()),
 	index("ix_runs_project_id").using("btree", table.projectId.asc().nullsLast()),
 	index("ix_runs_root_run_id").using("btree", table.spaceId.asc().nullsLast(), table.rootRunId.asc().nullsLast()),
+	index("ix_runs_cause_run_id").using("btree", table.spaceId.asc().nullsLast(), table.causeRunId.asc().nullsLast()),
 	index("ix_runs_run_type").using("btree", table.runType.asc().nullsLast()),
 	index("ix_runs_requested_runtime_profile_id").using("btree", table.requestedRuntimeProfileId.asc().nullsLast()),
 	index("ix_runs_runtime_profile_id").using("btree", table.selectedRuntimeProfileId.asc().nullsLast()),
@@ -123,6 +130,7 @@ export const runs = pgTable("runs", {
 	index("ix_runs_workspace_location_id").using("btree", table.workspaceLocationId.asc().nullsLast()),
 	index("ix_runs_host_task_thread_id").using("btree", table.hostTaskThreadId.asc().nullsLast()),
 	foreignKey({ columns: [table.workflowVersionId], foreignColumns: [evolvableAssetVersions.id], name: "runs_workflow_version_fkey" }),
+	foreignKey({ columns: [table.causeRunId, table.spaceId], foreignColumns: [table.id, table.spaceId], name: "runs_cause_run_space_fkey" }),
 	foreignKey({
 			columns: [table.ownerUserId],
 			foreignColumns: [users.id],
@@ -306,7 +314,8 @@ export const runs = pgTable("runs", {
 	check("ck_runs_run_type", sql`(run_type)::text = ANY (ARRAY[('agent'::character varying)::text, ('planning'::character varying)::text, ('system'::character varying)::text, ('workflow'::character varying)::text, ('validation'::character varying)::text, ('reflection'::character varying)::text, ('export'::character varying)::text, ('evolution'::character varying)::text])`),
 	check("ck_runs_source", sql`(source IS NULL) OR ((source)::text = ANY (ARRAY[('managed'::character varying)::text, ('ide_assist'::character varying)::text, ('manual_import'::character varying)::text, ('remote_import'::character varying)::text, ('scheduled'::character varying)::text, ('webhook'::character varying)::text]))`),
 	check("ck_runs_status", sql`(status)::text = ANY (ARRAY[('queued'::character varying)::text, ('running'::character varying)::text, ('cancelling'::character varying)::text, ('succeeded'::character varying)::text, ('degraded'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text, ('orphaned'::character varying)::text, ('waiting_for_review'::character varying)::text, ('waiting_for_dependency'::character varying)::text])`),
-	check("ck_runs_trigger_origin", sql`(trigger_origin)::text = ANY (ARRAY[('manual'::character varying)::text, ('automation'::character varying)::text, ('autonomous'::character varying)::text, ('job'::character varying)::text, ('system'::character varying)::text, ('delegation'::character varying)::text])`),
+	check("ck_runs_trigger_origin", sql`(trigger_origin)::text = ANY (ARRAY[('manual'::character varying)::text, ('automation'::character varying)::text, ('autonomous'::character varying)::text, ('job'::character varying)::text, ('system'::character varying)::text, ('delegation'::character varying)::text, ('continuation'::character varying)::text])`),
+	check("ck_runs_cause_run_continuation", sql`cause_run_id IS NULL OR trigger_origin = 'continuation'`),
 	check("ck_runs_trust_level", sql`(trust_level IS NULL) OR ((trust_level)::text = ANY (ARRAY[('high'::character varying)::text, ('medium'::character varying)::text, ('low'::character varying)::text, ('unknown'::character varying)::text]))`),
 	// Distinct from `trust_level` above (a data/provenance trust rating) —
 	// `trust_mode` names which ADR 0016 execution/isolation model this Run
@@ -695,8 +704,18 @@ export const runFinalizations = pgTable("run_finalizations", {
 	metadataJson: jsonb("metadata_json"),
 	finalizedAt: timestamp("finalized_at", { withTimezone: true, mode: 'string' }).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+	// The completion gate: set once every settlement reconciler (the execution
+	// graph and the registry reconcilers) has succeeded for this finalization.
+	// Null on a completed finalization is settlement still owed, which the
+	// worker sweep resumes; the Agent and its output are never redone.
+	settledAt: timestamp("settled_at", { withTimezone: true, mode: 'string' }),
+	settlementAttempts: integer("settlement_attempts").default(0).notNull(),
+	// `{ completed: [reconciler keys], last_failure: { key, error_code, message, at } }`:
+	// a resumed settlement skips the reconcilers already completed.
+	settlementJson: jsonb("settlement_json").default({}).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_run_finalizations_finalized_at").using("btree", table.finalizedAt.asc().nullsLast()),
+	index("ix_run_finalizations_unsettled").using("btree", table.finalizedAt.asc().nullsLast()).where(sql`status = 'completed' AND settled_at IS NULL`),
 	index("ix_run_finalizations_run_evaluation_id").using("btree", table.runEvaluationId.asc().nullsLast()),
 	index("ix_run_finalizations_run_id").using("btree", table.runId.asc().nullsLast()),
 	index("ix_run_finalizations_space_id").using("btree", table.spaceId.asc().nullsLast()),

@@ -273,7 +273,7 @@ Effective risk computation (`PROPOSAL_TYPE_RISK` in `gateway.ts` is the table):
   `retrieval_diagnostics_packet`, `relation_discovery_packet`) → medium
 - `skill_import_approve`, `capability_disable`, `custom_source_policy_delta`,
   `custom_source_repair_activation`, `source_recipe_activation` → medium
-- `code_patch / policy_change / egress_review / agent_config_update`,
+- `code_patch / egress_review / agent_config_update`,
   `object_profile_*`, `capability_install / capability_update / capability_enable`,
   `runtime_skill_binding_update`, `custom_source_credentialed_source`,
   `evolution_bundle_rollback` → high
@@ -351,7 +351,6 @@ simulation path: the automation policy preflight.
 | `proposal.apply` | `server/src/modules/proposals/applyService.ts` via `enforceProposalApply()` | Before accepted proposal side effects |
 | `project_folder.write_patch` | `server/src/modules/projectFolders/` and proposal appliers via `enforce()` | Before any Project Folder file writes |
 | `project_folder.apply_patch` | `server/src/modules/projectFolders/repository.ts` via `enforce()` | Before human Save to Folder after exact draft/version and Host preconditions; direct user context is allowed and no Proposal is created. Restore as draft never mutates the Folder. There is no direct browser-content write or user-facing rollback route |
-| `policy.change` | `server/src/modules/proposals/applyService.ts` via `enforceProposalApply()` | Protected by the `proposal.apply` gate for `policy_change` proposals |
 | `runtime_skill.render` | execution-control policy resolution | Before enabled runtime-skill content may enter an accepted Delivery |
 | `retrieval.search` | `server/src/modules/retrieval/tool/service.ts` via `enforce()` | Before managed-run Knowledge search execution |
 | `retrieval.brief` | `server/src/modules/retrieval/tool/service.ts` via `enforce()` | Before managed-run Knowledge Context Brief execution |

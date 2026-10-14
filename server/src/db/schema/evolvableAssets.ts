@@ -55,6 +55,9 @@ export const evolvableAssets = pgTable("evolvable_assets", {
 	check("ck_evolvable_assets_owner_scope_type", sql`(owner_scope_type)::text = ANY (${SCOPE_TYPES})`),
 	check("ck_evolvable_assets_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('disabled'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_evolvable_assets_metadata_object", sql`jsonb_typeof(metadata_json) = 'object'::text`),
+	// The system baseline belongs to the release catalog: a system-owned asset
+	// is never a Space's row, and a Space's asset is never system-owned.
+	check("ck_evolvable_assets_system_owner_placement", sql`((owner_scope_type)::text = 'system'::text) = (space_id IS NULL)`),
 ]);
 
 export const evolvableAssetVersions = pgTable("evolvable_asset_versions", {
@@ -116,6 +119,9 @@ export const evolvableAssetVersions = pgTable("evolvable_asset_versions", {
 	check("ck_evolvable_asset_versions_status", sql`(status)::text = ANY (ARRAY[('draft'::character varying)::text, ('candidate'::character varying)::text, ('testing'::character varying)::text, ('approved'::character varying)::text, ('deprecated'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_evolvable_asset_versions_source", sql`(source)::text = ANY (ARRAY[('built_in'::character varying)::text, ('user_authored'::character varying)::text, ('evolved'::character varying)::text, ('imported'::character varying)::text, ('generated'::character varying)::text])`),
 	check("ck_evolvable_asset_versions_version_positive", sql`version > 0`),
+	// A system-scope version is catalog content, shared by every Space; any
+	// other scope is one Space's customization. Neither can become the other.
+	check("ck_evolvable_asset_versions_system_scope_placement", sql`(((scope_type)::text = 'system'::text) AND (space_id IS NULL) AND (scope_id IS NULL)) OR (((scope_type)::text <> 'system'::text) AND (space_id IS NOT NULL) AND (scope_id IS NOT NULL))`),
 ]);
 
 export const evolvableAssetPins = pgTable("evolvable_asset_pins", {
@@ -167,6 +173,10 @@ export const evolvableAssetEvaluationRuns = pgTable("evolvable_asset_evaluation_
 	spaceId: varchar("space_id", { length: 36 }),
 	assetId: varchar("asset_id", { length: 36 }).notNull(),
 	candidateVersionId: varchar("candidate_version_id", { length: 36 }).notNull(),
+	// The content the evaluation judged. A version's content can change only
+	// while it is a draft, and promotion counts an evaluation only when this
+	// still equals the version's content_hash.
+	candidateContentHash: varchar("candidate_content_hash", { length: 128 }),
 	baselineVersionId: varchar("baseline_version_id", { length: 36 }),
 	evolutionTargetId: varchar("evolution_target_id", { length: 36 }),
 	runId: varchar("run_id", { length: 36 }),

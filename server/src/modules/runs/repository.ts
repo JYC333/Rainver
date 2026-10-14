@@ -114,6 +114,16 @@ interface RuntimeProfileForRun {
   updated_at: string;
 }
 
+/**
+ * What started one turn of an Agent group: a person's message (`manual`), or
+ * the system reporting back on earlier work (`continuation`) with the Run that
+ * work came from. A continuation's cause is null when its lineage cannot be
+ * verified or it ran past its budget, and it is then unattended.
+ */
+export type GroupedRunTrigger =
+  | { origin: "manual" }
+  | { origin: "continuation"; cause_run_id: string | null };
+
 export class PgRunRepository {
   private readonly usageRepository: PgUsageRepository;
 
@@ -556,6 +566,8 @@ export class PgRunRepository {
     agent_id: string;
     space_id: string;
     user_id: string;
+    /** The turn's own trigger: the person's message, or a system continuation and its cause. */
+    trigger: GroupedRunTrigger;
     parent_run_id: string;
     root_run_id: string;
     run_group_id: string;
@@ -589,7 +601,8 @@ export class PgRunRepository {
         user_id: input.user_id,
         mode: "live",
         run_type: "agent",
-        trigger_origin: "manual",
+        trigger_origin: input.trigger.origin,
+        cause_run_id: input.trigger.origin === "continuation" ? input.trigger.cause_run_id : null,
         session_id: input.session_id ?? null,
         project_folder_id: input.project_folder_id ?? null,
         workspace_location_id: input.workspace_location_id ?? null,
@@ -780,14 +793,14 @@ export class PgRunRepository {
                   required_sandbox_level, owner_user_id, visibility, access_level, project_id,
                   contract_snapshot_json, workflow_version_id, source, runtime_profile_selection_source,
                   permission_snapshot_json, workspace_location_id, trust_mode, host_task_thread_id,
-                  execution_kind
+                  execution_kind, cause_run_id
        )
        VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
           $11, $12, $13, $14, $15, $16, $17, 'queued', $18, $19, $20, $21, $22, $22,
           $23, $24, $25::jsonb, $26, $27::jsonb, $28::jsonb, $29,
           $14, $30, $31, $32, $33::jsonb, $34, 'managed', $35,
-          $36::jsonb, $37, $38, $39, $40
+          $36::jsonb, $37, $38, $39, $40, $41
        )
        RETURNING id, space_id, agent_id, agent_version_id, run_role,
                  requested_runtime_profile_id, runtime_profile_id,
@@ -846,6 +859,7 @@ export class PgRunRepository {
         input.trust_mode ?? null,
         input.host_task_thread_id ?? null,
         input.execution_kind,
+        input.trigger_origin === "continuation" ? input.cause_run_id ?? null : null,
       ],
     );
     const row = result.rows[0];
@@ -1044,6 +1058,23 @@ export class PgRunRepository {
    * hand-write the join, and do not omit the Room rule from `listRuns`.
    * One definition is what keeps the list and this path in agreement.
    */
+  /**
+   * The Tasks a Run worked on, by their canonical TaskRun links, limited to
+   * those the viewer may read: a link never reveals a Task.
+   */
+  async linkedTasksForViewer(spaceId: string, runId: string, userId: string): Promise<Array<{ id: string; title: string }>> {
+    const result = await this.db.query<{ id: string; title: string }>(
+      `SELECT t.id, t.title
+         FROM task_runs tr
+         JOIN tasks t ON t.id = tr.task_id AND t.space_id = tr.space_id
+        WHERE tr.space_id = $1 AND tr.run_id = $2
+          AND ${contentReadSql("task", "t", "$3")}
+        ORDER BY tr.created_at ASC, t.id ASC`,
+      [spaceId, runId, userId],
+    );
+    return result.rows;
+  }
+
   async getVisibleRun(spaceId: string, userId: string, runId: string): Promise<VisibleRunRecord | null> {
     const roomReadable = await this.db.query<{ allowed: boolean }>(
       `SELECT ${roomRunReadAccessSql("$2", "$1", "$3")} AS allowed`,
@@ -1440,7 +1471,7 @@ export class PgRunRepository {
               run_evaluation_id, task_evaluation_id, outcome_status,
               failure_layer, failure_reason_code, trajectory_status,
               skipped_reasons_json, error_json, metadata_json, finalized_at,
-              created_at
+              created_at, settled_at, settlement_attempts, settlement_json
          FROM run_finalizations
         WHERE space_id = $1 AND run_id = $2
         ORDER BY finalized_at DESC, id DESC
@@ -1468,23 +1499,57 @@ export class PgRunRepository {
       fn(lockedDb === this.db ? this : new PgRunRepository(lockedDb)));
   }
 
-  async markRunFinalizationGateCommitted(
+  /**
+   * Records one settlement pass: the reconcilers completed so far, and either
+   * the completion gate (every one completed: `settled_at`) or the failure that
+   * leaves it owed, with when the sweep may try again. The Agent and its output
+   * are not part of settlement and are never redone by it.
+   */
+  async recordRunSettlement(
     spaceId: string,
     finalizationId: string,
-    committedAt: string,
+    input: {
+      completed: readonly string[];
+      failure: { key: string; error_code: string; message: string } | null;
+      at: string;
+    },
   ): Promise<void> {
     await this.db.query(
       `UPDATE run_finalizations
-          SET metadata_json = COALESCE(metadata_json, '{}'::jsonb)
-                || jsonb_build_object(
-                  'completion_gate_committed', true,
-                  'completion_gate_committed_at', $3::text
-                )
-        WHERE space_id = $1
-          AND id = $2
-          AND status = 'completed'`,
-      [spaceId, finalizationId, committedAt],
+          SET settlement_attempts = settlement_attempts + 1,
+              settled_at = CASE WHEN $4::jsonb IS NULL THEN $5::timestamptz ELSE NULL END,
+              settlement_json = jsonb_build_object('completed', $3::jsonb)
+                || CASE WHEN $4::jsonb IS NULL THEN '{}'::jsonb ELSE jsonb_build_object(
+                     'last_failure', $4::jsonb || jsonb_build_object('at', $5::text),
+                     -- Backs off with each failed pass, to at most an hour.
+                     'next_attempt_at', ($5::timestamptz + make_interval(mins => LEAST(60, power(2, settlement_attempts)::int)))::text
+                   ) END
+        WHERE space_id = $1 AND id = $2 AND status = 'completed' AND settled_at IS NULL`,
+      [spaceId, finalizationId, JSON.stringify(input.completed), input.failure ? JSON.stringify(input.failure) : null, input.at],
     );
+  }
+
+  /**
+   * Completed finalizations of a Run's current attempt whose settlement is still
+   * owed and due another try. An earlier attempt's is moot once the Run was
+   * retried: that attempt's own finalization settles the Run.
+   */
+  async listUnsettledFinalizations(limit = 50): Promise<Array<{ run_id: string; space_id: string }>> {
+    const result = await this.db.query<{ run_id: string; space_id: string }>(
+      `SELECT f.run_id, f.space_id
+         FROM run_finalizations f
+         JOIN runs r ON r.id = f.run_id AND r.space_id = f.space_id
+        WHERE f.status = 'completed' AND f.settled_at IS NULL
+          AND COALESCE((f.settlement_json->>'next_attempt_at')::timestamptz, f.finalized_at) <= now()
+          AND r.status IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned')
+          AND f.attempt_number = COALESCE((
+            SELECT max(a.attempt_number) FROM run_attempts a WHERE a.space_id = f.space_id AND a.run_id = f.run_id
+          ), 1)
+        ORDER BY f.finalized_at ASC, f.id ASC
+        LIMIT $1`,
+      [Math.max(1, Math.min(500, Math.trunc(limit)))],
+    );
+    return result.rows;
   }
 
   async getRunFinalizationByVersion(
@@ -1498,7 +1563,7 @@ export class PgRunRepository {
               run_evaluation_id, task_evaluation_id, outcome_status,
               failure_layer, failure_reason_code, trajectory_status,
               skipped_reasons_json, error_json, metadata_json, finalized_at,
-              created_at
+              created_at, settled_at, settlement_attempts, settlement_json
          FROM run_finalizations
         WHERE space_id = $1 AND run_id = $2 AND attempt_number = $3 AND finalizer_version = $4
         LIMIT 1`,
@@ -1516,7 +1581,7 @@ export class PgRunRepository {
               run_evaluation_id, task_evaluation_id, outcome_status,
               failure_layer, failure_reason_code, trajectory_status,
               skipped_reasons_json, error_json, metadata_json, finalized_at,
-              created_at
+              created_at, settled_at, settlement_attempts, settlement_json
          FROM run_finalizations
         WHERE space_id = $1 AND run_id = $2
         ORDER BY finalized_at DESC, id DESC`,
@@ -1626,7 +1691,7 @@ export class PgRunRepository {
                  run_evaluation_id, task_evaluation_id, outcome_status,
                  failure_layer, failure_reason_code, trajectory_status,
                  skipped_reasons_json, error_json, metadata_json, finalized_at,
-                 created_at`,
+                 created_at, settled_at, settlement_attempts, settlement_json`,
       [
         randomUUID(),
         input.space_id,

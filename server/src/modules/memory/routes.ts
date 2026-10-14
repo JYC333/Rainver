@@ -72,7 +72,7 @@ interface MemoryServices {
   repository: Pick<PgMemoryReadRepository, "list" | "get" | "search" | "versions"> &
     Pick<
       PgMemoryProposalRepository,
-      "createMemoryProposal" | "updateMemoryProposal" | "archiveMemoryProposal"
+      "createMemoryProposal" | "updateMemoryProposal" | "archiveMemoryProposal" | "reviseOperatorEditProposal"
     > &
     // Archiving and restoring your own memory is a direct write (ADR 0003
     // §3), so it belongs to the same service surface the routes resolve —
@@ -116,6 +116,7 @@ function memoryServices(context: ModuleContext): MemoryServices {
       createMemoryProposal: proposalRepository.createMemoryProposal.bind(proposalRepository),
       updateMemoryProposal: proposalRepository.updateMemoryProposal.bind(proposalRepository),
       archiveMemoryProposal: proposalRepository.archiveMemoryProposal.bind(proposalRepository),
+      reviseOperatorEditProposal: proposalRepository.reviseOperatorEditProposal.bind(proposalRepository),
     },
   };
 }
@@ -725,6 +726,26 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         command,
       );
       return reply.code(202).send(proposal);
+    } catch (error) {
+      return sendDomainError(reply, error);
+    }
+  });
+
+  // The revision a maintenance finding asked for, written into its pending
+  // update by the person who decides what the entry says. Accepting is
+  // separate; an update that asks for a revision is refused until it has one.
+  app.post("/api/v1/memory/proposals/:proposalId/revision", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    try {
+      const revision = protocol.MemoryProposalRevisionRequestSchema.parse(jsonBody(request));
+      const proposal = await memoryServices(context).repository.reviseOperatorEditProposal(
+        identity.spaceId,
+        identity.userId,
+        params(request).proposalId ?? "",
+        revision,
+      );
+      return reply.send(proposal);
     } catch (error) {
       return sendDomainError(reply, error);
     }

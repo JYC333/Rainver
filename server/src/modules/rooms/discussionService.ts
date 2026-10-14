@@ -18,7 +18,7 @@ import { PgSessionRepository } from "../sessions/repository.js";
 import { discussionOut, PgRoomDiscussionRepository, type DiscussionRecord } from "./discussionRepository.js";
 import { PgRoomRepository, roomConversationOut, type RoomAgentMemberRecord } from "./repository.js";
 import { PgAgentGroupRepository } from "../agentGroups/repository.js";
-import { RoomService, type RoomDelegationBudget, type RoomDispatchDiscussion, type RoomIdentity } from "./service.js";
+import { RoomService, type ContinuationCause, type RoomDelegationBudget, type RoomDispatchDiscussion, type RoomIdentity } from "./service.js";
 import { hasQueuedRoomMessage, isTransientDatabaseError, lockRoomConversationQueue, RoomMessageQueue } from "./messageQueue.js";
 import { admitTurnParkedRuns, discussionQuotaHold } from "./quotaGate.js";
 import { accountLabel, cachedQuotaReading, refusedWindow, subscriptionLoginOfRun } from "./subscriptionLogins.js";
@@ -725,6 +725,13 @@ export class RoomDiscussionService {
         recipient_segments: segments,
         discussion: { id: discussion.id, wave: input.wave },
         delegation_budget: overSpend(discussion) ? { max_depth: 1, max_fanout: 0 } : delegationBudget(turnsUsed),
+        // A wave is inside the discussion's budget while its spend holds and,
+        // for an emergent one, its turns fit the fan-out ceiling (the waves
+        // past it are held, never dispatched).
+        cause: {
+          run_id: await discussionCauseRunId(client, discussion),
+          within_budget: !overSpend(discussion) && (discussion.kind !== "emergent" || turnsUsed <= DISCUSSION_FANOUT_CEILING),
+        },
       },
     );
     await discussions.update(discussion.space_id, discussion.id, {
@@ -815,6 +822,7 @@ export class RoomDiscussionService {
         recipient_segments: null,
         discussion: { id: discussion.id, wave: wave + 1, closing: true },
         delegation_budget: { max_depth: 1, max_fanout: 0 },
+        cause: { run_id: await discussionCauseRunId(client, discussion), within_budget: !overSpend(discussion) },
       },
     );
   }
@@ -931,9 +939,9 @@ export async function agentOriginContinuation(
   client: PoolClient,
   spaceId: string,
   sourceGroupId: string,
-): Promise<{ discussion: RoomDispatchDiscussion | null; delegation_budget: RoomDelegationBudget }> {
-  const source = (await client.query<{ discussion_id: string | null; budget_json: unknown; metadata_json: unknown }>(
-    `SELECT grp.discussion_id, grp.budget_json, message.metadata_json
+): Promise<{ discussion: RoomDispatchDiscussion | null; delegation_budget: RoomDelegationBudget; cause: ContinuationCause }> {
+  const source = (await client.query<{ discussion_id: string | null; budget_json: unknown; metadata_json: unknown; root_run_id: string | null }>(
+    `SELECT grp.discussion_id, grp.budget_json, message.metadata_json, grp.root_run_id
        FROM agent_run_groups grp
        LEFT JOIN messages message ON message.space_id = grp.space_id AND message.id = grp.trigger_message_id
       WHERE grp.space_id = $1 AND grp.id = $2`,
@@ -952,11 +960,16 @@ export async function agentOriginContinuation(
         RETURNING turns_used, spend_usd, spend_cap_usd`,
       [spaceId, source.discussion_id],
     )).rows[0];
-    if (!charged) return { discussion, delegation_budget: { max_depth: 1, max_fanout: 0 } };
+    // An ended discussion still hears the result, but the turn is past what
+    // the person's discussion was given: it reports, unattended.
+    if (!charged) {
+      return { discussion, delegation_budget: { max_depth: 1, max_fanout: 0 }, cause: { run_id: source.root_run_id, within_budget: false } };
+    }
     const spent = charged.spend_cap_usd !== null && Number(charged.spend_usd) >= Number(charged.spend_cap_usd);
     return {
       discussion,
       delegation_budget: spent ? { max_depth: 1, max_fanout: 0 } : delegationBudget(charged.turns_used),
+      cause: { run_id: source.root_run_id, within_budget: !spent && charged.turns_used <= DISCUSSION_FANOUT_CEILING },
     };
   }
   const containerGroupId = containerGroupOf(sourceGroupId, source?.budget_json);
@@ -964,7 +977,25 @@ export async function agentOriginContinuation(
   return {
     discussion: null,
     delegation_budget: { ...delegationBudget(turns), container_group_id: containerGroupId },
+    cause: { run_id: source?.root_run_id ?? null, within_budget: turns <= DISCUSSION_FANOUT_CEILING },
   };
+}
+
+/**
+ * The cause of a discussion's next turn: the turn of its latest wave, which
+ * is the root Run of the newest task group stamped with the discussion (the
+ * person's opening message for an explicit one, the Agent reply that opened
+ * an emergent one, then each wave in turn).
+ */
+async function discussionCauseRunId(client: PoolClient, discussion: Pick<DiscussionRecord, "space_id" | "id">): Promise<string | null> {
+  const result = await client.query<{ root_run_id: string }>(
+    `SELECT root_run_id FROM agent_run_groups
+      WHERE space_id = $1 AND discussion_id = $2 AND root_run_id IS NOT NULL
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+    [discussion.space_id, discussion.id],
+  );
+  return result.rows[0]?.root_run_id ?? null;
 }
 
 /** The group whose `container_turns_used` counts this group's chain. */

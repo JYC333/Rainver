@@ -15,6 +15,7 @@ import {
   assertCanWriteAssetOwnerScope,
   canViewScopedRef,
   normalizeVersionScopeForWrite,
+  versionServesScope,
   type EvolvableAssetAccessRow,
 } from "./assetAccess.js";
 
@@ -93,6 +94,7 @@ interface VersionRefRow {
   space_id: string | null;
   scope_type: string;
   scope_id: string | null;
+  content_hash: string | null;
 }
 
 function evaluationRunOut(row: EvaluationRunRow): Record<string, unknown> {
@@ -161,6 +163,7 @@ export class EvolvableAssetEvaluationRepository {
     if (version.status !== "candidate" && version.status !== "testing") {
       throw new HttpError(422, "Only a candidate or testing version can record an evaluation run");
     }
+    if (!version.content_hash) throw new HttpError(422, "The version has no content hash to evaluate");
     const evalSuiteRef = optionalObject(body.eval_suite_ref);
     if (!evalSuiteRef) throw new HttpError(422, "eval_suite_ref is required");
     const evaluatorVersion = optionalString(body.evaluator_version);
@@ -186,10 +189,10 @@ export class EvolvableAssetEvaluationRepository {
     const now = new Date().toISOString();
     await this.db.query(
       `INSERT INTO evolvable_asset_evaluation_runs (
-         id, space_id, asset_id, candidate_version_id, baseline_version_id, run_id,
+         id, space_id, asset_id, candidate_version_id, candidate_content_hash, baseline_version_id, run_id,
          eval_suite_ref_json, evaluator_version, model_provider_ref_json, status, metrics_json,
          blockers_json, output_artifact_id, report_artifact_id, created_by_user_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, $10, $11::jsonb, $12::jsonb, $13, $14, $15, $16, $16)`,
+       ) VALUES ($1, $2, $3, $4, $17, $5, $6, $7::jsonb, $8, $9::jsonb, $10, $11::jsonb, $12::jsonb, $13, $14, $15, $16, $16)`,
       [
         id,
         identity.spaceId,
@@ -207,6 +210,7 @@ export class EvolvableAssetEvaluationRepository {
         optionalString(body.report_artifact_id),
         identity.userId,
         now,
+        version.content_hash,
       ],
     );
     // Recording an evaluation run against a still-candidate version advances
@@ -241,19 +245,18 @@ export class EvolvableAssetEvaluationRepository {
     if (version.status !== "candidate" && version.status !== "testing") {
       throw new HttpError(422, "Only a candidate or testing version can be proposed for promotion");
     }
+    if (!version.content_hash) throw new HttpError(422, "The version has no content hash to promote");
+    // The target is where a pin or deployment ref lands. The version keeps
+    // its own scope; it can only serve targets that scope covers.
     const targetScopeType = optionalString(body.target_scope_type);
-    if (!targetScopeType || !["project", "space", "system", "user", "agent"].includes(targetScopeType)) {
-      throw new HttpError(422, "target_scope_type must be one of project, space, system, user, agent");
+    if (!targetScopeType || !["project", "space", "user", "agent"].includes(targetScopeType)) {
+      throw new HttpError(422, "target_scope_type must be one of project, space, user, agent");
     }
-    const targetScopeId = optionalString(body.target_scope_id);
-    if (targetScopeType !== "system" && !targetScopeId) {
-      throw new HttpError(422, "target_scope_id is required for non-system target_scope_type");
-    }
-    if (targetScopeType === "system" && targetScopeId) {
-      throw new HttpError(422, "target_scope_id must be omitted for target_scope_type system");
-    }
-    const normalizedTargetScopeId = await normalizeVersionScopeForWrite(this.db, identity, targetScopeType, targetScopeId ?? null);
+    const normalizedTargetScopeId = await normalizeVersionScopeForWrite(this.db, identity, targetScopeType, optionalString(body.target_scope_id));
     assertAssetAllowsTargetScope(asset, identity, targetScopeType, normalizedTargetScopeId);
+    if (!versionServesScope(identity, { scopeType: targetScopeType, scopeId: normalizedTargetScopeId }, version)) {
+      throw new HttpError(422, "The version's scope does not cover the target; create a version in the target scope");
+    }
     const evaluationRunIds = Array.isArray(body.evaluation_run_ids)
       ? [...new Set(body.evaluation_run_ids.filter((value): value is string => typeof value === "string" && value.length > 0))].slice(0, 50)
       : [];
@@ -265,13 +268,15 @@ export class EvolvableAssetEvaluationRepository {
     }>(
       `SELECT id, status, metrics_json, created_at
          FROM evolvable_asset_evaluation_runs
-        WHERE asset_id = $1 AND candidate_version_id = $2 AND space_id = $3
-          ${evaluationRunIds.length > 0 ? "AND id = ANY($4::varchar[])" : ""}
+        WHERE asset_id = $1 AND candidate_version_id = $2 AND space_id = $3 AND candidate_content_hash = $4
+          ${evaluationRunIds.length > 0 ? "AND id = ANY($5::varchar[])" : ""}
         ORDER BY created_at DESC, id ASC`,
-      evaluationRunIds.length > 0 ? [assetId, versionId, identity.spaceId, evaluationRunIds] : [assetId, versionId, identity.spaceId],
+      evaluationRunIds.length > 0
+        ? [assetId, versionId, identity.spaceId, version.content_hash, evaluationRunIds]
+        : [assetId, versionId, identity.spaceId, version.content_hash],
     );
     if (evaluationRunIds.length > 0 && evaluationRows.rows.length !== evaluationRunIds.length) {
-      throw new HttpError(422, "evaluation_run_ids must reference evaluation runs for this candidate version");
+      throw new HttpError(422, "evaluation_run_ids must reference evaluation runs of this candidate version's current content");
     }
     const evaluationSummary = summarizeEvaluationRows(evaluationRows.rows);
     const caseCountResult = await this.db.query<{ count: string }>(
@@ -280,13 +285,14 @@ export class EvolvableAssetEvaluationRepository {
     );
     const caseCount = Number(caseCountResult.rows[0]?.count ?? 0);
     const assetRisk = optionalString(objectValue(asset.metadata_json).risk_level);
-    const riskLevel = higherRisk(assetRisk, targetScopeType === "system" ? "high" : "medium");
+    const riskLevel = higherRisk(assetRisk, "medium");
     const autoHardGate = (riskLevel === "high" || riskLevel === "critical") && caseCount >= EVALUATION_HARD_GATE_CASE_THRESHOLD;
     const hardGate = body.hard_gate === true || body.evaluation_hard_gate === true || autoHardGate;
     const payload = {
       proposal_type: "evolvable_asset_version_promote",
       asset_id: assetId,
       candidate_version_id: versionId,
+      candidate_content_hash: version.content_hash,
       target_scope_type: targetScopeType,
       target_scope_id: normalizedTargetScopeId,
       pin_after_approval: body.pin_after_approval === true,
@@ -341,7 +347,7 @@ export class EvolvableAssetEvaluationRepository {
 
   private async versionRow(assetId: string, versionId: string): Promise<VersionRefRow | null> {
     const result = await this.db.query<VersionRefRow>(
-      `SELECT status, version, space_id, scope_type, scope_id FROM evolvable_asset_versions WHERE asset_id = $1 AND id = $2 LIMIT 1`,
+      `SELECT status, version, space_id, scope_type, scope_id, content_hash FROM evolvable_asset_versions WHERE asset_id = $1 AND id = $2 LIMIT 1`,
       [assetId, versionId],
     );
     return result.rows[0] ?? null;

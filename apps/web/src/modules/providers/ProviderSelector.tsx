@@ -53,8 +53,8 @@ export default function ProviderSelector({
 
   const loadProviders = useCallback(() => {
     setLoading(true)
-    providersApi.list()
-      .then(list => setProviders(list.filter(p => p.enabled)))
+    providersApi.usable()
+      .then(setProviders)
       .catch(() => setProviders([]))
       .finally(() => setLoading(false))
   }, [])

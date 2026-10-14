@@ -214,23 +214,29 @@ describe("EvolutionRepository core", () => {
     expect((await repository.summary(other)).recent_runs).toBe(0);
   });
 
-  it("counts only the pending evolution proposals the viewer may read", async (ctx) => {
+  it("counts exactly the pending evolution proposals it lists, and only those the viewer may read", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const owner = await seedIdentity();
     const other = await seedMember(owner.spaceId);
-    await db.pool.query(
+    const insert = (proposalType: string, visibility: string) => db.pool!.query(
       `INSERT INTO proposals (
          id, space_id, proposal_type, status, risk_level, urgency, preview, title,
          summary, payload_json, created_at, updated_at, rationale, created_by_user_id,
          owner_user_id, visibility, access_level
-       ) VALUES ($1, $2, 'evolution_plan', 'pending', 'low', 'normal', false, 'Private plan',
-         'Private plan', '{}'::jsonb, $3, $3, 'test', $4, $4, 'private', 'full')`,
-      [randomUUID(), owner.spaceId, new Date().toISOString(), owner.userId],
+       ) VALUES ($1, $2, $5, 'pending', 'low', 'normal', false, 'Proposal',
+         'Proposal', '{}'::jsonb, $3, $3, 'test', $4, $4, $6, 'full')`,
+      [randomUUID(), owner.spaceId, new Date().toISOString(), owner.userId, proposalType, visibility],
     );
+    await insert("evolvable_asset_version_promote", "private");
+    await insert("evolution_bundle_rollback", "space_shared");
+    // Pending, readable, but not Evolution's: neither counted nor listed here.
+    await insert("memory_create", "space_shared");
     const repository = new EvolutionRepository(db.pool);
 
-    expect((await repository.summary(owner)).pending_proposals).toBe(1);
-    expect((await repository.summary(other)).pending_proposals).toBe(0);
+    expect((await repository.summary(owner)).pending_proposals).toBe(2);
+    expect(await repository.listProposals(owner, 50, 0)).toHaveLength(2);
+    expect((await repository.summary(other)).pending_proposals).toBe(1);
+    expect(await repository.listProposals(other, 50, 0)).toHaveLength(1);
   });
 
   it("refuses to attach an evolution Run to a Project the caller cannot write", async (ctx) => {

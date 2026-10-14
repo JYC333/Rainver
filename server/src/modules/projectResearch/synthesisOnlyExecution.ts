@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { sha256Json } from "../evolution/hash.js";
 import type { ServerConfig } from "../../config.js";
 import { HttpError, objectValue, optionalString, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { lockActiveProjectForMutation } from "../projects/access.js";
@@ -166,11 +167,11 @@ async function findOrCreateSynthesisOnlyTemplateVersion(db: Queryable, identity:
   const versionId = randomUUID();
   const inserted = await db.query<{ id: string }>(
     `INSERT INTO evolvable_asset_versions (
-       id, asset_id, space_id, scope_type, scope_id, version, status, source, content_json, created_at, updated_at
-     ) VALUES ($1, $2, $3, 'space', $3, 1, 'approved', 'user_authored', $4::jsonb, $5, $5)
+       id, asset_id, space_id, scope_type, scope_id, version, status, source, content_hash, content_json, created_at, updated_at
+     ) VALUES ($1, $2, $3, 'space', $3, 1, 'approved', 'user_authored', $6, $4::jsonb, $5, $5)
      ON CONFLICT (asset_id, version) DO NOTHING
      RETURNING id`,
-    [versionId, asset.rows[0]!.id, identity.spaceId, JSON.stringify(synthesisOnlyTemplateShape()), now],
+    [versionId, asset.rows[0]!.id, identity.spaceId, JSON.stringify(synthesisOnlyTemplateShape()), now, sha256Json(synthesisOnlyTemplateShape())],
   );
   if (inserted.rows[0]) return inserted.rows[0].id;
   const raced = await db.query<{ id: string }>(
@@ -271,7 +272,7 @@ async function materializeReport(context: ActionNodeContext): Promise<ActionNode
     context.db,
     context.identity.spaceId,
     operationId,
-    context.executionId,
+    context.container.id,
   );
 
   const archiveBinding = context.bindings.find((binding) => binding.name === "report_archive");
@@ -328,7 +329,7 @@ async function materializeReport(context: ActionNodeContext): Promise<ActionNode
     context.db,
     context.identity.spaceId,
     operationId,
-    context.executionId,
+    context.container.id,
     gated ? "waiting_review" : "idea_review_recorded",
     {
       research_report_id: materialized.id,

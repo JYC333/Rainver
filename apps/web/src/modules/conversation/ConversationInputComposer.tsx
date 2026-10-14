@@ -16,6 +16,8 @@ import {
 import { conversationInputApi, projectFoldersApi } from '../../api/client'
 import type { FileNode } from '../../types/api'
 import { errMsg } from '../../lib/utils'
+import i18n, { useAppTranslation } from '../../i18n'
+import { formatBytes } from '../../i18n/format'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 
@@ -50,7 +52,7 @@ export function conversationInputSourcesFromExecutionSummary(summary: Conversati
     sources.push({
       projectFolderId: summary.primary.project_folder_id,
       workspaceLocationId: summary.primary.workspace_location_id,
-      label: `Primary · ${summary.primary.display_path ?? 'Workspace'}`,
+      label: i18n.t('conversation_ui.input.source_primary', { path: summary.primary.display_path ?? i18n.t('conversation_ui.input.source_workspace') }),
     })
   }
   for (const attachment of summary.attachments) {
@@ -58,7 +60,7 @@ export function conversationInputSourcesFromExecutionSummary(summary: Conversati
     sources.push({
       projectFolderId: attachment.project_folder_id,
       workspaceLocationId: attachment.workspace_location_id,
-      label: `Attached · ${attachment.folder_name}`,
+      label: i18n.t('conversation_ui.input.source_attached', { folder: attachment.folder_name }),
     })
   }
   const seen = new Set<string>()
@@ -113,6 +115,7 @@ export function useConversationInputDraft({
   disabled?: boolean
   resetToken?: number
 }): ConversationInputDraftController {
+  const { t } = useAppTranslation()
   const [uploads, setUploads] = useState<UploadState[]>([])
   const [fileMenuOpen, setFileMenuOpen] = useState(false)
   const [fileQuery, setFileQuery] = useState('')
@@ -132,8 +135,8 @@ export function useConversationInputDraft({
   uploadsRef.current = uploads
 
   const fallbackFileSources = useMemo<ConversationInputFileSource[]>(() => projectFolderId
-    ? [{ projectFolderId, label: 'Project Folder' }]
-    : [], [projectFolderId])
+    ? [{ projectFolderId, label: t('conversation_ui.input.source_project_folder') }]
+    : [], [projectFolderId, t])
   const inputFileSources = fileSources ?? fallbackFileSources
   const inputFileSourceKey = inputFileSources.map(source => `${source.projectFolderId}:${source.workspaceLocationId ?? ''}:${source.label}`).join('|')
   const inputFileSourcesRef = useRef(inputFileSources)
@@ -161,7 +164,7 @@ export function useConversationInputDraft({
   const uploadImage = useCallback(async (file: File, retryLocalId?: string) => {
     if (!ConversationImageMediaTypeSchema.options.includes(file.type as never)) return
     if (imageSlotsUsed() >= CONVERSATION_MAX_IMAGES && !retryLocalId) {
-      setFileError(`You can attach up to ${CONVERSATION_MAX_IMAGES} images.`)
+      setFileError(t('conversation_ui.input.too_many_images', { max: CONVERSATION_MAX_IMAGES }))
       return
     }
     const localId = retryLocalId ?? crypto.randomUUID()
@@ -209,11 +212,11 @@ export function useConversationInputDraft({
   const receiveImages = useCallback((files: File[]) => {
     const images = files.filter(file => ConversationImageMediaTypeSchema.options.includes(file.type as never))
     if (files.some(file => file.type.startsWith('image/') && !ConversationImageMediaTypeSchema.options.includes(file.type as never))) {
-      setFileError('Only PNG, JPEG, and WebP images are supported.')
+      setFileError(t('conversation_ui.input.image_types'))
     }
     if (images.length === 0) return
     const remaining = Math.max(0, CONVERSATION_MAX_IMAGES - imageSlotsUsed())
-    if (images.length > remaining) setFileError(`You can attach up to ${CONVERSATION_MAX_IMAGES} images.`)
+    if (images.length > remaining) setFileError(t('conversation_ui.input.too_many_images', { max: CONVERSATION_MAX_IMAGES }))
     void Promise.all(images.slice(0, remaining).map(file => uploadImage(file)))
   }, [imageSlotsUsed, uploadImage])
 
@@ -282,12 +285,12 @@ export function useConversationInputDraft({
       const usable = loaded.filter((item): item is { source: ConversationInputFileSource & { workspaceLocationId: string }; tree: FileNode } => item !== null)
       if (controller.signal.aborted) return
       setFileTrees(usable)
-      if (usable.length !== loaded.length) setFileError('One or more Folder Locations are unavailable.')
+      if (usable.length !== loaded.length) setFileError(t('conversation_ui.input.locations_unavailable'))
     } catch (error) {
       if (controller.signal.aborted) return
       setSearchCandidates(null)
       setFileTrees([])
-      setFileError(`Files are unavailable: ${errMsg(error)}`)
+      setFileError(t('conversation_ui.input.files_unavailable', { error: errMsg(error) }))
     } finally {
       if (fileSearchControllerRef.current === controller) setFileLoading(false)
     }
@@ -315,15 +318,15 @@ export function useConversationInputDraft({
 
   const addFile = useCallback(async (candidate: FileCandidate) => {
     if (!projectId) {
-      setFileError('Files require a Project execution context.')
+      setFileError(t('conversation_ui.input.files_need_project'))
       return
     }
     if (partsRef.current.filter(part => part.kind === 'file_reference').length >= CONVERSATION_MAX_FILE_REFERENCES) {
-      setFileError(`You can reference up to ${CONVERSATION_MAX_FILE_REFERENCES} files.`)
+      setFileError(t('conversation_ui.input.too_many_files', { max: CONVERSATION_MAX_FILE_REFERENCES }))
       return
     }
     if (candidate.size > CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) {
-      setFileError(`${candidate.path} is too large to reference (max ${formatBytes(CONVERSATION_MAX_FILE_SNAPSHOT_BYTES)}).`)
+      setFileError(t('conversation_ui.input.file_too_large', { path: candidate.path, max: formatBytes(CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) }))
       return
     }
     setFileLoadingPath(candidate.path)
@@ -332,7 +335,7 @@ export function useConversationInputDraft({
       const content = await projectFoldersApi.file(projectId, candidate.projectFolderId, candidate.path)
       const bytes = new TextEncoder().encode(content.content)
       if (bytes.byteLength > CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) {
-        throw new Error(`file is too large to reference (max ${formatBytes(CONVERSATION_MAX_FILE_SNAPSHOT_BYTES)})`)
+        throw new Error(t('conversation_ui.input.file_too_large_error', { max: formatBytes(CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) }))
       }
       // The server admits the decoded body it freezes, so the digest is the
       // body's: `content.sha256` hashes the bytes on disk, a BOM included.
@@ -351,7 +354,7 @@ export function useConversationInputDraft({
       setFileMenuOpen(false)
       setFileQuery('')
     } catch (error) {
-      setFileError(`Could not reference ${candidate.path}: ${errMsg(error)}`)
+      setFileError(t('conversation_ui.input.reference_failed', { path: candidate.path, error: errMsg(error) }))
     } finally {
       setFileLoadingPath(null)
     }
@@ -416,14 +419,14 @@ export function useConversationInputDraft({
           accept="image/png,image/jpeg,image/webp"
           multiple
           className="sr-only"
-          aria-label="Choose images"
+          aria-label={t('conversation_ui.input.choose_images')}
           disabled={disabled}
           onChange={event => {
             receiveImages(Array.from(event.target.files ?? []))
             event.target.value = ''
           }}
         />
-        <Button type="button" size="icon-sm" variant="ghost" aria-label="Attach image" title="Attach image" disabled={disabled} onClick={() => inputRef.current?.click()}>
+        <Button type="button" size="icon-sm" variant="ghost" aria-label={t('conversation_ui.input.attach_image')} title={t('conversation_ui.input.attach_image')} disabled={disabled} onClick={() => inputRef.current?.click()}>
           <ImagePlus className="size-4" />
         </Button>
         <div className="relative">
@@ -431,8 +434,8 @@ export function useConversationInputDraft({
             type="button"
             size="icon-sm"
             variant={fileMenuOpen ? 'secondary' : 'ghost'}
-            aria-label="Reference file"
-            title={inputFileSources.length > 0 ? 'Reference a file from the execution context' : 'Files require a Project Folder'}
+            aria-label={t('conversation_ui.input.reference_file')}
+            title={inputFileSources.length > 0 ? t('conversation_ui.input.reference_file_hint') : t('conversation_ui.input.files_need_folder')}
             disabled={disabled || !projectId || inputFileSources.length === 0}
             onClick={openFileMenu}
           >
@@ -441,17 +444,17 @@ export function useConversationInputDraft({
           {fileMenuOpen && (
             <div className="absolute bottom-full left-0 z-30 mb-2 w-80 rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-lg">
               <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="text-xs font-medium">Reference a file from execution context</span>
-                <button type="button" className="rounded p-1 text-muted-foreground hover:bg-accent" aria-label="Close file picker" onClick={() => setFileMenuOpen(false)}><X className="size-3.5" /></button>
+                <span className="text-xs font-medium">{t('conversation_ui.input.picker_title')}</span>
+                <button type="button" className="rounded p-1 text-muted-foreground hover:bg-accent" aria-label={t('conversation_ui.input.close_picker')} onClick={() => setFileMenuOpen(false)}><X className="size-3.5" /></button>
               </div>
               <label className="relative block">
                 <Search className="pointer-events-none absolute left-2 top-2 size-3.5 text-muted-foreground" />
-                <Input autoFocus value={fileQuery} onChange={event => setFileQuery(event.target.value)} placeholder="Search authorized files…" className="h-8 pl-7 text-xs" aria-label="Search files" />
+                <Input autoFocus value={fileQuery} onChange={event => setFileQuery(event.target.value)} placeholder={t('conversation_ui.input.search_placeholder')} className="h-8 pl-7 text-xs" aria-label={t('conversation_ui.input.search_label')} />
               </label>
-              {fileLoading && <p className="flex items-center gap-1.5 px-2 py-3 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" /> Loading Project Files…</p>}
-              {!fileLoading && candidates.length === 0 && !fileError && <p className="px-2 py-3 text-xs text-muted-foreground">No matching files.</p>}
+              {fileLoading && <p className="flex items-center gap-1.5 px-2 py-3 text-xs text-muted-foreground"><Loader2 className="size-3.5 animate-spin" /> {t('conversation_ui.input.loading_files')}</p>}
+              {!fileLoading && candidates.length === 0 && !fileError && <p className="px-2 py-3 text-xs text-muted-foreground">{t('conversation_ui.input.no_files')}</p>}
               {!fileLoading && candidates.length > 0 && (
-                <div role="listbox" aria-label="Files" className="mt-2 max-h-56 overflow-auto">
+                <div role="listbox" aria-label={t('conversation_ui.input.files_list')} className="mt-2 max-h-56 overflow-auto">
                   {candidates.map(candidate => (
                     <button
                       key={candidate.path}
@@ -495,11 +498,12 @@ function ConversationInputAttachments({
   onRemoveUpload: (upload: UploadState) => void
   onRetry: (upload: UploadState) => void
 }) {
+  const { t } = useAppTranslation()
   const imageParts = parts.filter((part): part is ConversationInputImagePart => part.kind === 'image')
   if (imageParts.length === 0 && uploads.length === 0 && !dragging) return null
   return (
-    <div className={`flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 ${dragging ? 'bg-accent/50' : 'bg-muted/20'}`} aria-label="Image inputs">
-      {dragging && <span className="w-full text-xs text-muted-foreground">Drop images to upload</span>}
+    <div className={`flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 ${dragging ? 'bg-accent/50' : 'bg-muted/20'}`} aria-label={t('conversation_ui.input.image_inputs')}>
+      {dragging && <span className="w-full text-xs text-muted-foreground">{t('conversation_ui.input.drop_images')}</span>}
       {imageParts.map(part => {
         const upload = uploads.find(item => item.media?.media_id === part.media_id)
         return <ImageAttachment key={part.media_id} part={part} upload={upload} onRemove={() => onRemove(part)} />
@@ -507,13 +511,13 @@ function ConversationInputAttachments({
       {uploads.filter(upload => !upload.media).map(upload => (
         <div key={upload.localId} className="relative flex w-36 flex-col gap-1 rounded-md border border-border bg-background p-1.5" data-testid="image-upload">
           <img src={upload.previewUrl} alt={upload.file.name} className="h-24 w-full rounded bg-muted/40 object-contain opacity-70" />
-          <button type="button" aria-label={`Remove ${upload.file.name}`} className="absolute right-1 top-1 rounded-full bg-background/90 p-0.5 text-muted-foreground shadow hover:text-foreground" onClick={() => onRemoveUpload(upload)}><X className="size-3" /></button>
+          <button type="button" aria-label={t('conversation_ui.input.remove', { name: upload.file.name })} className="absolute right-1 top-1 rounded-full bg-background/90 p-0.5 text-muted-foreground shadow hover:text-foreground" onClick={() => onRemoveUpload(upload)}><X className="size-3" /></button>
           {upload.error ? (
             <>
-              <span className="truncate text-[10px] text-destructive" title={upload.error}>Upload failed</span>
-              <button type="button" className="text-left text-[10px] text-accent-foreground underline" onClick={() => onRetry(upload)}>Retry upload</button>
+              <span className="truncate text-[10px] text-destructive" title={upload.error}>{t('conversation_ui.input.upload_failed')}</span>
+              <button type="button" className="text-left text-[10px] text-accent-foreground underline" onClick={() => onRetry(upload)}>{t('conversation_ui.input.retry_upload')}</button>
             </>
-          ) : <progress value={upload.progress} max="100" className="h-1 w-full" aria-label={`Uploading ${upload.file.name}`} />}
+          ) : <progress value={upload.progress} max="100" className="h-1 w-full" aria-label={t('conversation_ui.input.uploading', { name: upload.file.name })} />}
         </div>
       ))}
     </div>
@@ -524,15 +528,16 @@ function ConversationInputReferences({ parts, onRemove }: {
   parts: ConversationInputPart[]
   onRemove: (part: ConversationInputPart) => void
 }) {
+  const { t } = useAppTranslation()
   const references = parts.filter((part): part is ConversationInputFileReferencePart => part.kind === 'file_reference')
   if (references.length === 0) return null
   return (
-    <div className="flex flex-wrap items-center gap-1.5 px-3 pt-2" aria-label="Referenced files">
+    <div className="flex flex-wrap items-center gap-1.5 px-3 pt-2" aria-label={t('conversation_ui.input.referenced_files')}>
       {references.map(part => (
-        <div key={`${part.project_folder_id}:${part.relative_path}`} className="flex max-w-64 items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-xs" title={`Referenced file: ${part.relative_path}`}>
+        <div key={`${part.project_folder_id}:${part.relative_path}`} className="flex max-w-64 items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-xs" title={t('conversation_ui.input.referenced_file_title', { path: part.relative_path })}>
           <FileText className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1 truncate">{part.relative_path}</span>
-          <button type="button" aria-label={`Remove ${part.display_name}`} className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => onRemove(part)}><X className="size-3.5" /></button>
+          <button type="button" aria-label={t('conversation_ui.input.remove', { name: part.display_name })} className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => onRemove(part)}><X className="size-3.5" /></button>
         </div>
       ))}
     </div>
@@ -540,19 +545,20 @@ function ConversationInputReferences({ parts, onRemove }: {
 }
 
 function ImageAttachment({ part, upload, onRemove }: { part: ConversationInputImagePart; upload?: UploadState; onRemove?: () => void }) {
+  const { t } = useAppTranslation()
   const [open, setOpen] = useState(false)
   return (
     <div className="relative w-36 rounded-md border border-border bg-background p-1.5">
-      <button type="button" className="block w-full rounded focus:outline-none focus:ring-1 focus:ring-ring" aria-label={`Preview ${part.filename}`} onClick={() => setOpen(true)}>
+      <button type="button" className="block w-full rounded focus:outline-none focus:ring-1 focus:ring-ring" aria-label={t('conversation_ui.input.preview', { name: part.filename })} onClick={() => setOpen(true)}>
         {upload ? <img src={upload.previewUrl} alt={part.filename} className="h-24 w-full rounded bg-muted/40 object-contain" /> : <AuthenticatedImage mediaId={part.media_id} alt={part.filename} className="h-24 w-full rounded bg-muted/40 object-contain" />}
       </button>
       <span className="mt-1 block truncate text-[10px]" title={part.filename}>{part.filename}</span>
-      {onRemove && <button type="button" aria-label={`Remove ${part.filename}`} className="absolute right-1 top-1 rounded-full bg-background/90 p-0.5 text-muted-foreground shadow hover:text-foreground" onClick={onRemove}><X className="size-3" /></button>}
+      {onRemove && <button type="button" aria-label={t('conversation_ui.input.remove', { name: part.filename })} className="absolute right-1 top-1 rounded-full bg-background/90 p-0.5 text-muted-foreground shadow hover:text-foreground" onClick={onRemove}><X className="size-3" /></button>}
       {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" role="dialog" aria-modal="true" aria-label={`Preview ${part.filename}`} onClick={() => setOpen(false)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6" role="dialog" aria-modal="true" aria-label={t('conversation_ui.input.preview', { name: part.filename })} onClick={() => setOpen(false)}>
           <div className="relative max-h-full max-w-4xl rounded-lg bg-background p-2" onClick={event => event.stopPropagation()}>
             {upload ? <img src={upload.previewUrl} alt={part.filename} className="max-h-[80vh] max-w-full object-contain" /> : <AuthenticatedImage mediaId={part.media_id} alt={part.filename} className="max-h-[80vh] max-w-full object-contain" />}
-            <button type="button" className="absolute right-3 top-3 rounded-full bg-background/90 p-1" aria-label="Close image preview" onClick={() => setOpen(false)}><X className="size-4" /></button>
+            <button type="button" className="absolute right-3 top-3 rounded-full bg-background/90 p-1" aria-label={t('conversation_ui.input.close_preview')} onClick={() => setOpen(false)}><X className="size-4" /></button>
           </div>
         </div>
       )}
@@ -561,14 +567,15 @@ function ImageAttachment({ part, upload, onRemove }: { part: ConversationInputIm
 }
 
 export function ConversationInputPartsView({ parts }: { parts?: Array<ConversationInputPart | ConversationInputResourceMessagePart> }) {
+  const { t } = useAppTranslation()
   if (!parts?.length) return null
   const inputParts = parts.filter((part): part is ConversationInputPart => 'kind' in part)
   const resourceParts = parts.filter((part): part is ConversationInputPart | ConversationInputResourceMessagePart => 'kind' in part && part.kind === 'input_resource')
   return (
-    <div className="mt-1 flex min-w-0 max-w-full flex-wrap gap-2" aria-label="Message inputs">
+    <div className="mt-1 flex min-w-0 max-w-full flex-wrap gap-2" aria-label={t('conversation_ui.input.message_inputs')}>
       {inputParts.filter((part): part is ConversationInputImagePart => part.kind === 'image').map(part => <ImageAttachment key={part.media_id} part={part} />)}
       {inputParts.filter((part): part is ConversationInputFileReferencePart => part.kind === 'file_reference').map(part => (
-        <div key={`${part.project_folder_id}:${part.relative_path}`} className="flex items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1.5 text-xs" title={`Referenced file: ${part.relative_path}`} aria-label={`Referenced file ${part.relative_path}`}>
+        <div key={`${part.project_folder_id}:${part.relative_path}`} className="flex items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1.5 text-xs" title={t('conversation_ui.input.referenced_file_title', { path: part.relative_path })} aria-label={t('conversation_ui.input.referenced_file_label', { path: part.relative_path })}>
           <FileText className="size-3.5 text-muted-foreground" /> <span className="max-w-56 truncate">{part.relative_path}</span>
         </div>
       ))}
@@ -576,10 +583,10 @@ export function ConversationInputPartsView({ parts }: { parts?: Array<Conversati
         if (!('source_state' in part) || !('display_name' in part) || !('sha256' in part)) return null
         const path = 'relative_path' in part && part.relative_path ? part.relative_path : part.display_name
         return (
-          <div key={'resource_id' in part ? part.resource_id : `${part.source_state}:${part.display_name}:${part.sha256}`} className="flex items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1.5 text-xs" title={`Current file: ${path}`} aria-label={`Current file ${path}`}>
+          <div key={'resource_id' in part ? part.resource_id : `${part.source_state}:${part.display_name}:${part.sha256}`} className="flex items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1.5 text-xs" title={t('conversation_ui.input.current_file_title', { path })} aria-label={t('conversation_ui.input.current_file_label', { path })}>
             <FileText className="size-3.5 text-muted-foreground" />
             <span className="max-w-56 truncate">{path}</span>
-            <span className="rounded border px-1 text-[9px] text-muted-foreground">{part.source_state === 'draft' ? 'Draft' : 'Saved'}</span>
+            <span className="rounded border px-1 text-[9px] text-muted-foreground">{part.source_state === 'draft' ? t('conversation_ui.input.state_draft') : t('conversation_ui.input.state_saved')}</span>
           </div>
         )
       })}
@@ -588,6 +595,7 @@ export function ConversationInputPartsView({ parts }: { parts?: Array<Conversati
 }
 
 function AuthenticatedImage({ mediaId, alt, className }: { mediaId: string; alt: string; className?: string }) {
+  const { t } = useAppTranslation()
   const [src, setSrc] = useState<string | null>(null)
   const [error, setError] = useState(false)
   useEffect(() => {
@@ -607,7 +615,7 @@ function AuthenticatedImage({ mediaId, alt, className }: { mediaId: string; alt:
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [mediaId])
-  if (error) return <div role="img" aria-label={`${alt} unavailable`} className={`${className ?? ''} flex items-center justify-center bg-muted/40 px-2 text-center text-[10px] text-muted-foreground`}>Image unavailable</div>
+  if (error) return <div role="img" aria-label={t('conversation_ui.input.image_unavailable_label', { alt })} className={`${className ?? ''} flex items-center justify-center bg-muted/40 px-2 text-center text-[10px] text-muted-foreground`}>{t('conversation_ui.input.image_unavailable')}</div>
   if (!src) return <div className={`${className ?? ''} flex items-center justify-center bg-muted/40`}><Loader2 className="size-4 animate-spin text-muted-foreground" /></div>
   return <img src={src} alt={alt} className={className} />
 }
@@ -646,12 +654,6 @@ function samePart(a: ConversationInputPart, b: ConversationInputPart): boolean {
         && a.relative_path === b.relative_path
   }
   return false
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 async function digestHex(bytes: Uint8Array): Promise<string> {

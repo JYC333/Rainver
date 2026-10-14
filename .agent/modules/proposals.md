@@ -58,7 +58,7 @@ CodePatchSnapshot:
    - Rejects preview proposals
    - Rejects already-accepted or rejected proposals
    - The memory applier enforces the `memory/sourceMonitoring.ts` source-trust gate (its accept context is fixed to `explicit_user_accept`)
-   - Writes `ProvenanceLink` rows for accepted memory/policy changes
+   - Writes `ProvenanceLink` rows for accepted memory changes
    - Dispatches through `ProposalApplierRegistry` to the target module's registered applier
 4. `proposal.status = "accepted"`, `reviewed_at`/`reviewed_by` set, commit — durable write completes. No separate approval-event row is created for normal accept/reject. `ProposalApproval` rows are distinct egress approval metadata (written via `/proposals/{id}/approvals/egress-granting-user`). The registered `egress_review` applier requires every owner named by the target's current context taint to have an active approval before it publishes the target.
 5. For `code_patch` proposals, a `CodePatchSnapshot` (pre-apply file content) is persisted inside the apply transaction. The user can later call `POST /api/v1/proposals/{id}/rollback` to restore files to their pre-apply state while the snapshot is within its retention window and status is `available`. Rollback has the reach every proposal decision has (`authorizeProposalDecision`: same Space, the state the decision acts on, readable, and inside a readable Room for a Run's proposal) plus the same `proposal.apply` role gate and `project_folder.write_patch` check as accept; a caller who can only read the accepted proposal cannot write the snapshot back. It refuses (409) when an applied file no longer hashes to what the patch wrote (`applied_files`), sets the proposal's status to `rolled_back`, and its activity — like the apply activity — takes the proposal's own visibility.
@@ -77,7 +77,7 @@ The public proposal review/apply surface is owned by the server:
 - `createDefaultProposalApplierRegistry` (`proposals/applierRegistry.ts`)
   assembles the registry from each domain's `register*ProposalAppliers`. The
   currently registered appliers are: `memory_create`, `memory_update`,
-  `memory_archive`, `policy_change`, `knowledge_create`, `knowledge_update`,
+  `memory_archive`, `knowledge_create`, `knowledge_update`,
   `knowledge_archive`, `follow_up_task`, `claim_create`, `claim_update`,
   `claim_archive`, `object_relation_create`, `object_relation_delete`,
   `object_profile_create`, `object_profile_update`, `object_profile_deprecate`,
@@ -132,7 +132,7 @@ path; `memoryApplyRepository.ts` fixes it to `explicit_user_accept`.
 - Rejected proposals do not create memory or relations
 - `ProposalApplyService` is the only normal durable write path
 - Target modules own proposal business mutations; `proposals` owns the registry and approval/apply orchestration
-- `provenance_links` are required for accepted memory and policy changes
+- `provenance_links` are required for accepted memory changes
 - Agents generate Proposals; humans approve explicitly or in advance through
   a scoped, expiring, use-limited ActionApprovalGrant. Both modes retain the
   Proposal and approval audit record.

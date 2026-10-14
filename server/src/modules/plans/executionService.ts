@@ -1,3 +1,4 @@
+import type { ServerConfig } from "../../config.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { PgPlanRepository, type PlanExecuteInput } from "./repository.js";
 
@@ -9,8 +10,8 @@ import { PgPlanRepository, type PlanExecuteInput } from "./repository.js";
 export class PlanExecutionService {
   private readonly repository: PgPlanRepository;
 
-  constructor(db: Queryable) {
-    this.repository = new PgPlanRepository(db);
+  constructor(db: Queryable, config: ServerConfig) {
+    this.repository = new PgPlanRepository(db, config);
   }
 
   execute(identity: SpaceUserIdentity, planId: string, input: PlanExecuteInput) {

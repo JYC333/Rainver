@@ -235,6 +235,17 @@ Room conversation summaries:
   shape. `research.cancel_acquisition` is the matching in-Room stop, so a
   report about running research never forces the user out to the web UI to
   act on it.
+- A domain-event continuation is the system's turn, not the person's: its
+  Runs carry `trigger_origin = 'continuation'` and `cause_run_id`, the Run its
+  report is about (a delegation's task-group root, the turn that started the
+  research, the discussion's latest wave). Its authority is its cause's
+  (`effectiveRunTrigger`), and only while inside that turn's budget
+  (`agentOriginContinuation` reports `within_budget` from the container or
+  discussion charge; a discussion wave also stays within its spend cap). Past
+  the budget, or with no originating turn (a research outcome no Room turn
+  started), the cause is not recorded on the Run — only on the message as
+  `continuation_cause_run_id` / `continuation_within_budget` for audit — and
+  the turn is unattended: its Project writes wait for approval.
 - Proposal-card continuation is a system execution instruction, not a human
   chat utterance. The dedicated Proposal-continuation endpoint accepts only a
   Proposal id; the server verifies that it is decided, visible, belongs to the
@@ -803,8 +814,10 @@ When a Room is open, conversation is the dominant surface: a compact left rail
 contains Room metadata, the conversation switcher, collapsed Room creation,
 and collapsed roster controls; the center column owns the available width and
 scrolls messages inside a viewport-height card; Project state remains a narrow
-supporting rail. Runtime/backend controls are collapsed under Run settings so
-they do not compete with the message history and composer.
+supporting rail. Routing is collapsed under Run settings so it does not
+compete with the message history and composer. Each Agent's runtime is chosen
+and pinned only in the conversation's execution preflight, before its first
+message; the Room page offers no second backend chooser.
 
 ## Project state panel
 

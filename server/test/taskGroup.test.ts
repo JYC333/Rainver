@@ -95,7 +95,7 @@ describe("taskContractDb", () => {
 
   beforeEach(async () => {
     if (!db.available) return;
-    await resetTables(db.pool, ["tasks", "space_memberships", "users", "spaces"], { cascade: true });
+    await resetTables(db.pool, ["tasks", "projects", "space_memberships", "users", "spaces"], { cascade: true });
     const now = new Date().toISOString();
     await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
@@ -181,6 +181,22 @@ describe("task contract persistence (real Postgres)", () => {
         status: "waiting_for_review",
       });
       expect(task.status).toBe("waiting_for_review");
+    });
+
+    it("refuses new work in an archived Project, whatever the entry point", async () => {
+      if (!db.available) return;
+      const projectId = randomUUID();
+      await db.pool.query(
+        `INSERT INTO projects (id, space_id, name, status, owner_user_id, created_at, updated_at)
+         VALUES ($1, $2, 'Wrapped up', 'archived', $3, now(), now())`,
+        [projectId, SPACE, OWNER],
+      );
+      const repository = new PgTaskRepository(db.pool);
+      await expect(repository.createTask(identity, { title: "Late addition", project_id: projectId }))
+        .rejects.toMatchObject({ statusCode: 409 });
+      await db.pool.query(`UPDATE projects SET status = 'active' WHERE id = $1`, [projectId]);
+      await expect(repository.createTask(identity, { title: "After reactivation", project_id: projectId }))
+        .resolves.toMatchObject({ project_id: projectId });
     });
   });
 });

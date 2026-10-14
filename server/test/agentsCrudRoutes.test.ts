@@ -302,6 +302,7 @@ describe("agents CRUD routes", () => {
     let insertedRuntimeConfig: Record<string, unknown> = {};
     let insertedContextPolicy: Record<string, unknown> = {};
     let insertedScheduleConfig: Record<string, unknown> = {};
+    let insertedSourceTemplate: [unknown, unknown] = [null, null];
     const client = {
       query: vi.fn(async (sql: string, params: readonly unknown[] = []) => {
         const norm = sql.replace(/\s+/g, " ").trim();
@@ -325,6 +326,7 @@ describe("agents CRUD routes", () => {
         }
         if (sql.startsWith("INSERT INTO agents")) {
           agentId = String(params[0]);
+          insertedSourceTemplate = [params[11], params[12]];
           return { rows: [], rowCount: 1 };
         }
         if (sql.startsWith("INSERT INTO agent_versions")) {
@@ -381,6 +383,8 @@ describe("agents CRUD routes", () => {
                 agent_kind: "standard",
                 current_version_id: versionId,
                 visibility: "private",
+                source_template_id: insertedSourceTemplate[0],
+                source_template_version_id: insertedSourceTemplate[1],
                 created_at: "2026-06-17T00:00:00.000Z",
                 updated_at: "2026-06-17T00:00:00.000Z",
                 model_provider_id: null,
@@ -472,7 +476,11 @@ describe("agents CRUD routes", () => {
       id: agentId,
       name: "Reviewer",
       runtime_key: "opencode",
+      // The Agent says which catalog template made it.
+      source_template_id: "coding_reviewer",
+      source_template_version_id: expect.any(String),
     });
+    expect(insertedSourceTemplate[0]).toBe("coding_reviewer");
     expect(insertedRuntimeConfig).not.toHaveProperty("runtime_key");
     expect(insertedContextPolicy).toMatchObject({ default_input_contexts: ["selected_workspace"] });
     expect(insertedScheduleConfig).toEqual({ enabled: false, cron: null });

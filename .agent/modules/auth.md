@@ -99,6 +99,11 @@ Google provider access, refresh and ID tokens are scrubbed before persistence;
 linking Google requires an explicit authenticated action, and unlinking cannot
 remove the last remaining login account. Later Google sign-ins do not overwrite
 the Rainver profile. Every Better Auth session creation records `last_login_at`.
+`GET /api/v1/me` returns `default_space_id`: the Space a session lands in
+when a request names none (`selectDefaultSpace`). It is the personal Space the
+person owns, else their oldest active membership; a personal Space they only
+belong to is never their default. The web shell uses it after the URL's and
+the last visited Space.
 A Google reauthentication nonce is one-time and bound to the user and session
 that initiated it. Successful reauthentication replaces the browser's session;
 Rainver records the session issued by a successful Google callback, then revokes

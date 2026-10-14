@@ -954,20 +954,10 @@ describe("bounded serendipity probe", () => {
   it("keeps the weekly probe budget within what the probe ledger can record", async () => {
     if (!db.available) return;
     const profiles = new InterestProfileService(db.pool);
-    await expect(profiles.updateSettings(SPACE, OWNER, { probe_domain_budget: 5 })).rejects.toThrow(/probe_domain_budget/);
-    // A budget saved while the setting still allowed up to ten.
-    await db.pool.query(
-      `UPDATE interest_profiles SET settings_json = settings_json || '{"probe_domain_budget":10}'::jsonb
-        WHERE space_id=$1 AND user_id=$2`,
-      [SPACE, OWNER],
-    );
-    const provider: SerendipityProbeProvider = { available: async () => true, search: async () => [] };
-
-    const result = await new SerendipityProbeService(db.pool, provider).run(SPACE, OWNER, new Date(`${DATE}T12:00:00Z`));
-
-    expect(result.request_count).toBe(3);
-    const ledger = await db.pool.query(`SELECT request_count,status FROM information_digest_probe_runs`);
-    expect(ledger.rows).toEqual([{ request_count: 3, status: "succeeded" }]);
+    // The ledger's request_count CHECK allows at most 3; a setting above it
+    // is refused when written, so no probe can be asked for more.
+    await expect(profiles.updateSettings(SPACE, OWNER, { probe_domain_budget: 4 })).rejects.toThrow(/probe_domain_budget/);
+    await expect(profiles.updateSettings(SPACE, OWNER, { probe_domain_budget: 3 })).resolves.toMatchObject({ probe_domain_budget: 3 });
   });
 });
 

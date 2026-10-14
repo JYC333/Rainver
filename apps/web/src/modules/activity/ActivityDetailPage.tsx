@@ -14,13 +14,12 @@ import { CaptureRelocationDialog } from '../../components/CaptureRelocationDialo
 import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
-
-function fmt(dt: string) {
-  return new Date(dt).toLocaleString()
-}
+import { useAppTranslation } from '../../i18n'
+import { formatDateTime } from '../../i18n/format'
 
 export default function ActivityDetailPage() {
   const { activityId = '' } = useParams()
+  const { t } = useAppTranslation()
   const { activeSpaceId, activeSpaceName } = useSpace()
   const [row, setRow] = useState<ActivityInboxRecord | null>(null)
   const [loading, setLoading] = useState(true)
@@ -56,12 +55,12 @@ export default function ActivityDetailPage() {
       const proposals = await activityApi.consolidate(activityId)
       setGeneratedProposals(proposals)
       if (proposals.length > 0) {
-        toast.success(`${proposals.length} proposal${proposals.length === 1 ? '' : 's'} generated`)
+        toast.success(t('activity_ui.detail.generated', { count: proposals.length }))
         // Refresh the record so its status updates to proposals_generated
         const updated = await activityApi.get(activityId).catch(() => null)
         if (updated) setRow(updated)
       } else {
-        toast.info('No proposals could be generated from this activity.')
+        toast.info(t('activity_ui.detail.none_generated_toast'))
       }
     } catch (e) {
       toast.error(errMsg(e))
@@ -73,20 +72,20 @@ export default function ActivityDetailPage() {
   return (
     <div className="p-6 space-y-6 max-w-3xl">
       <Button variant="ghost" size="sm" asChild>
-        <Link to="/activity"><ArrowLeft className="size-4 mr-1" />Activity Inbox</Link>
+        <Link to="/activity"><ArrowLeft className="size-4 mr-1" />{t('activity_ui.detail.back_to_inbox')}</Link>
       </Button>
 
       {loading && <Skeleton className="h-40 w-full" />}
 
       {!loading && !row && (
         <EmptyState
-          title={activeSpaceId ? 'Activity not found or not accessible' : 'No space selected'}
+          title={activeSpaceId ? t('activity_ui.detail.not_found_title') : t('activity_ui.detail.no_space_title')}
           description={activeSpaceId
-            ? 'This activity may not exist, or it may not be visible in your current space.'
-            : 'Select an operational space to inspect this activity.'}
+            ? t('activity_ui.detail.not_found_description')
+            : t('activity_ui.detail.no_space_description')}
           action={
             <Button variant="ghost" asChild>
-              <Link to="/activity">Back to Activity Inbox</Link>
+              <Link to="/activity">{t('activity_ui.detail.back_link')}</Link>
             </Button>
           }
         />
@@ -98,17 +97,17 @@ export default function ActivityDetailPage() {
           <div className="flex flex-wrap justify-between gap-2">
             <h1 className="text-lg font-semibold tracking-tight">{row.title ?? row.source_type}</h1>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs text-muted-foreground">{fmt(row.created_at)}</span>
+              <span className="text-xs text-muted-foreground">{formatDateTime(row.created_at)}</span>
               <ContentAccessControl resourceType="activity" resourceId={row.id} ownerUserId={row.owner_user_id ?? row.user_id} />
             </div>
           </div>
-          <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}</p>
+          <p className="text-xs text-muted-foreground">{t('activity_ui.detail.viewing', { space: activeSpaceName ?? activeSpaceId ?? t('activity_ui.detail.no_space_selected') })}</p>
           <div className="flex flex-wrap gap-1.5 items-center">
-            <Badge variant="secondary">{row.source_type.replace('_', ' ')}</Badge>
-            <Badge variant="outline">{row.status.replace('_', ' ')}</Badge>
+            <Badge variant="secondary">{t(`activity_ui.source_type.${row.source_type}`, { defaultValue: row.source_type })}</Badge>
+            <Badge variant="outline">{t(`activity_ui.status.${row.status}`, { defaultValue: row.status })}</Badge>
             {row.source_run_id && (
               <Link to={`/runs/${row.source_run_id}`} className="text-xs text-accent-foreground hover:underline">
-                Open run
+                {t('activity_ui.detail.open_run')}
               </Link>
             )}
           </div>
@@ -123,11 +122,10 @@ export default function ActivityDetailPage() {
           {Boolean((row.metadata_json as { marginalia?: { block_id?: string } } | null)?.marginalia?.block_id) && (
             <div className="pt-2 border-t border-border">
               <Button size="sm" variant="outline" onClick={() => setRelocating(true)}>
-                Relocate…
+                {t('activity_ui.detail.relocate')}
               </Button>
               <p className="text-xs text-muted-foreground mt-1">
-                Send this capture somewhere else — or promote it from your private notes to the
-                project's material.
+                {t('activity_ui.detail.relocate_hint')}
               </p>
               <CaptureRelocationDialog
                 activityId={row.id}
@@ -146,10 +144,10 @@ export default function ActivityDetailPage() {
                 disabled={consolidating}
                 onClick={doConsolidate}
               >
-                {consolidating ? 'Generating…' : 'Generate proposals'}
+                {consolidating ? t('activity_ui.detail.generating') : t('activity_ui.detail.generate_proposals')}
               </Button>
               <p className="text-xs text-muted-foreground mt-1">
-                Analyse this activity and create memory proposals for review.
+                {t('activity_ui.detail.generate_hint')}
               </p>
             </div>
           )}
@@ -158,11 +156,11 @@ export default function ActivityDetailPage() {
         {generatedProposals !== null && (
           generatedProposals.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No proposals were generated. The content may be too sparse or already captured in memory.
+              {t('activity_ui.detail.none_generated')}
             </p>
           ) : (
             <div className="space-y-2">
-              <p className="text-sm font-medium">Generated proposals</p>
+              <p className="text-sm font-medium">{t('activity_ui.detail.generated_heading')}</p>
               {generatedProposals.map(p => (
                 <div key={p.id} className="flex items-center gap-2 text-sm">
                   <Badge variant="secondary" className="shrink-0">{p.proposal_type}</Badge>
@@ -175,7 +173,7 @@ export default function ActivityDetailPage() {
                 to="/proposals?status=pending"
                 className="text-xs text-accent-foreground hover:underline block mt-1"
               >
-                View all pending proposals →
+                {t('activity_ui.detail.view_pending')}
               </Link>
             </div>
           )

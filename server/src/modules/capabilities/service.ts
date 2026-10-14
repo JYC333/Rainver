@@ -49,8 +49,19 @@ export class CapabilitiesService {
     );
   }
 
+  /**
+   * Import re-fetches the source. The commit names the package hash the
+   * person previewed, and the snapshot is saved only when the bytes fetched
+   * now hash to it: approval of one preview never carries over to content
+   * that changed upstream in between.
+   */
   async importSkill(identity: SpaceUserIdentity, body: Record<string, unknown>) {
+    const previewedHash = requiredString(body.package_hash, "package_hash");
     const preview = await this.previewSkillImport(body);
+    if (preview.package_hash !== previewedHash) {
+      const detail = "The skill package changed since it was previewed; preview it again before importing";
+      throw new HttpError(409, detail, { detail, code: "skill_package_changed" });
+    }
     return this.repository.saveImportedSkill(identity, preview);
   }
 

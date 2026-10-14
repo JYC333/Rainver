@@ -52,6 +52,17 @@ proposal generation becomes `proposals_generated`, and worker errors become
   `modules/activity-inbox.md` for the full rule
 - Pointer/aggregate Activity rows set `aggregate_key` and are not eligible for
   Activity-to-Memory consolidation
+- What a record becomes is decided by where it is
+  (`activity/activityMemoryProposal.ts`, shared by the capture endpoint and
+  the batch run): a personal record becomes the owner's private Memory; a
+  Project's record becomes Project Memory, proposed with `space_shared`
+  visibility under that Project so its reviewers can decide it. There is no
+  private Memory under a Project. A Project record becomes Project Memory only
+  when every Project reader can already read it: otherwise the capture
+  endpoint answers `409 activity_share_required`, and the batch run leaves the
+  record `raw` and lists it under `activities_awaiting_share` — the owner
+  shares it with the Project first. The Memory applier asks the same question
+  again when the proposal is accepted
 
 ## Related Files
 - `server/src/modules/activity/`

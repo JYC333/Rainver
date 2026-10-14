@@ -119,6 +119,18 @@ describe('ContentAccessControl', () => {
     expect(screen.queryByRole('button', { name: 'Access' })).not.toBeInTheDocument()
   })
 
+  it('leaves who reads a Memory entry to its owner, even for a Space admin', () => {
+    useSpaceMock.mockReturnValue({
+      activeSpaceId: 'space-1',
+      userId: 'user-1',
+      spaces: [{ ...DEFAULT_SPACES[0], role: 'admin' }],
+    })
+    const { rerender } = render(<ContentAccessControl resourceType="memory" resourceId="memory-1" ownerUserId="user-9" />)
+    expect(screen.queryByRole('button', { name: 'Access' })).not.toBeInTheDocument()
+    rerender(<ContentAccessControl resourceType="artifact" resourceId="artifact-1" ownerUserId="user-9" />)
+    expect(screen.getByRole('button', { name: 'Access' })).toBeInTheDocument()
+  })
+
   it('offers a disclosure-upgrade member picker for space_shared at a summary base, and includes grants on save', async () => {
     getPolicy.mockResolvedValue({ ...policy, visibility: 'space_shared', access_level: 'summary' })
     updatePolicy.mockImplementation(async (_type, _id, body) => ({ ...policy, ...body }))

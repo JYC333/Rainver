@@ -144,6 +144,10 @@ export const InternalMessageMetadataSchema = z.object({
   continuation_proposal_type: z.string().nullish(),
   continuation_event_kind: z.string().nullish(),
   continuation_event_key: z.string().nullish(),
+  /** The Run a domain-event continuation reports on, recorded for audit. */
+  continuation_cause_run_id: IdSchema.nullish(),
+  /** Whether the turn stayed inside its cause's budget, so its authority is its cause's. */
+  continuation_within_budget: z.boolean().nullish(),
   continuation_directive: z.string().nullish(),
   continuation_context: JsonObjectSchema.nullish(),
   ...CommonMessageMetadata,
@@ -443,6 +447,11 @@ export const MemoryOutSchema = z
     agent_id: IdSchema.nullish(),
     /** The Room an `agent`-scope note was learned in; null for a persona and outside the scope. */
     origin_room_id: IdSchema.nullish(),
+    /** Who accepted the write; null when nobody approved it (an automatic write). */
+    approved_by: z.string().nullish(),
+    /** Read statistics, for the owner only; null for anyone else. */
+    access_count: z.number().int().nonnegative().nullish(),
+    last_accessed_at: ISODateTimeSchema.nullish(),
     ...SecretResponseGuards,
   })
   .passthrough();
@@ -525,6 +534,18 @@ export type MemoryProposalArchiveCommand = z.infer<
   typeof MemoryProposalArchiveCommandSchema
 >;
 
+/**
+ * A person's revision of a pending maintenance update that asked for one:
+ * the content they wrote, which the proposal then carries to accept.
+ */
+export const MemoryProposalRevisionRequestSchema = z
+  .object({
+    content: z.string().trim().min(1),
+    title: z.string().trim().min(1).max(512).optional(),
+  })
+  .strict();
+export type MemoryProposalRevisionRequest = z.infer<typeof MemoryProposalRevisionRequestSchema>;
+
 export const MemoryProposalCommandSchema = z.discriminatedUnion("operation", [
   MemoryProposalCreateCommandSchema,
   MemoryProposalUpdateCommandSchema,
@@ -596,9 +617,6 @@ export const MemoryMaintenanceFindingKindSchema = z.enum([
   "duplicate",
   "stale",
   "thin",
-  "lifecycle_drift",
-  "archived_state_drift",
-  "project_drift",
   "source_policy_drift",
   "contradiction",
 ]);
@@ -613,6 +631,30 @@ export const MemoryMaintenanceObjectSchema = z
   .strict();
 export type MemoryMaintenanceObject = z.infer<typeof MemoryMaintenanceObjectSchema>;
 
+/**
+ * What accepting a finding's packet proposes. Archiving duplicates is a change
+ * in itself; an update is always a person's revision of the content, written
+ * before the child proposal can be accepted. Findings that are hints (age,
+ * short content) propose nothing.
+ */
+export const MemoryMaintenanceProposedActionSchema = z.discriminatedUnion("proposal_type", [
+  z
+    .object({
+      proposal_type: z.literal("memory_archive"),
+      target_memory_ids: z.array(IdSchema).min(1),
+    })
+    .strict(),
+  z
+    .object({
+      proposal_type: z.literal("memory_update"),
+      target_memory_id: IdSchema,
+      maintenance_action: z.enum(["review_contradiction", "attach_or_review_external_source"]),
+      related_memory_ids: z.array(IdSchema).optional(),
+    })
+    .strict(),
+]);
+export type MemoryMaintenanceProposedAction = z.infer<typeof MemoryMaintenanceProposedActionSchema>;
+
 export const MemoryMaintenanceFindingSchema = z
   .object({
     kind: MemoryMaintenanceFindingKindSchema,
@@ -621,7 +663,7 @@ export const MemoryMaintenanceFindingSchema = z
     cluster_key: z.string().trim().min(1).max(160).optional(),
     cluster_label: z.string().trim().min(1).max(240).optional(),
     confidence_tier: z.enum(["high", "medium", "low"]).optional(),
-    proposed_action: z.record(z.unknown()).nullable().optional(),
+    proposed_action: MemoryMaintenanceProposedActionSchema.nullable(),
   })
   .strict();
 export type MemoryMaintenanceFinding = z.infer<typeof MemoryMaintenanceFindingSchema>;

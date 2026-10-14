@@ -302,9 +302,15 @@ equivalent of Run materialization's derived-output clamp (B8A).
 
 The proposal-shaped generic write tools are
 `source.channel.propose_activation`, `project.source.propose_bind`,
-`project.propose_definition`, `source.backfill.propose_start`, `task.plan.propose`,
+`project.propose_definition`, `source.backfill.propose_start`,
 and `inquiry.promote_knowledge` (plus
-`authorization.request`, which is not itself proposal-shaped). They receive
+`authorization.request`, which is not itself proposal-shaped).
+`task.plan.propose` is a *conditional* proposal (`side_effects:
+"conditional_proposal"`, `proposal_type: "plan_review"`, `gate_class:
+"direction"`): a Plan inside its declared budget and risk is approved as
+written, and one past them files a `plan_review` and waits — the Plan
+repository reads that proposal type from the registry, so the two cannot
+drift. They receive
 the run's space, agent, instructed user, run, and Project scope. Project-only
 actions reject an unscoped run; backfill proposal lookup also proves the plan
 belongs to that Project. Agents do not receive direct activation, proposal-apply,
@@ -326,16 +332,30 @@ matter. One decomposition a person asked for must not become a stack of
 pending cards.
 
 Every other Project-internal write is governed by two things instead. **The
-trigger origin**: a write from a person's own turn (`manual`) executes, and a
-write from any other origin — scheduled, automated, or a delegated child whose
-root was unattended — is `require_approval` (`ruleUnattendedProjectWrite`,
+trigger origin**, read as the Run's *effective* origin
+(`systemActions/effectiveRunTrigger.ts`, the one lineage every origin gate —
+memory, persona, credential spend, system actions, the update drain — reads):
+the origin of the verified root, reached through parent hops (a delegated
+child, a later Room recipient, a graph node) and cause hops (a `continuation`,
+the turn the system starts to report a delegated result, a research outcome or
+a discussion wave, records `cause_run_id`). A continuation inherits its cause's
+origin only while inside the budget its cause's turn was given; one past it, or
+with no verifiable cause, is recorded without a cause and is unattended, and a
+chain that cannot be verified (a missing Run, a loop, a delegated child with no
+parent) is `unverified` — never `manual`. A write from a person's own turn
+(`manual`, stamped only by the server) executes, and a write from any other
+effective origin — scheduled, automated, an unattended chain — is
+`require_approval` (`ruleUnattendedProjectWrite`,
 covering `task.create`, `task.stage.advance`, `task.complete`,
 `proposal.decide`, `inquiry.thread.create`, `inquiry.iteration.record`,
 `inquiry.advice.adopt`, `research.acquisition.start` and `memory.write`). And **bounds set before the work runs**: at
 most five Threads opened per turn (`THREAD_FAN_OUT_PER_TURN`, counted from the
 Project's own event stream so a resumed Run cannot spend the budget twice), at
-most five Tasks created per turn by `task.create` (`TASK_FAN_OUT_PER_TURN`,
-counted from the Tasks the Run itself created, under the Project lock), and a
+most five Tasks per turn (`TASK_FAN_OUT_PER_TURN`, `tasks/turnFanOut.ts`),
+counted from every Task the Run created — its `task.create` calls and the
+follow-up Tasks applied for it after it succeeds — under one per-Run lock both
+routes take, so concurrent writers cannot both see room for the last one;
+follow-ups past the ceiling stay pending cards for the person, and a
 bounded acquisition corpus. Refusing a bound costs a turn, not a
 decision — the sixth question is opened in the next one.
 

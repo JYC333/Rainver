@@ -90,8 +90,8 @@ async function seedExecution(operationId: string, status: string): Promise<strin
     [assetId, SPACE, `research_pass_${assetId.slice(0, 8)}`, now],
   );
   await db.pool.query(
-    `INSERT INTO evolvable_asset_versions (id, asset_id, space_id, scope_type, version, status, source, created_at, updated_at)
-     VALUES ($1,$2,$3,'space',1,'approved','built_in',$4,$4)`,
+    `INSERT INTO evolvable_asset_versions (id, asset_id, space_id, scope_type, scope_id, version, status, source, created_at, updated_at)
+     VALUES ($1,$2,$3,'space',$3,1,'approved','user_authored',$4,$4)`,
     [versionId, assetId, SPACE, now],
   );
   await db.pool.query(
@@ -284,12 +284,11 @@ describe("research_operation_cancel job (real Postgres)", () => {
 
     await runHandler();
 
-    const finalization = await db.pool.query<{ completion_gate_committed: boolean }>(
-      `SELECT (metadata_json->>'completion_gate_committed')::boolean AS completion_gate_committed
-         FROM run_finalizations WHERE space_id=$1 AND run_id=$2`,
+    const finalization = await db.pool.query<{ settled: boolean }>(
+      `SELECT settled_at IS NOT NULL AS settled FROM run_finalizations WHERE space_id=$1 AND run_id=$2`,
       [SPACE, run],
     );
-    expect(finalization.rows).toEqual([{ completion_gate_committed: true }]);
+    expect(finalization.rows).toEqual([{ settled: true }]);
   });
 
   it("is idempotent, so a retried job cannot re-cancel or double count", async () => {

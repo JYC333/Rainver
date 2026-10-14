@@ -331,13 +331,14 @@ describe("memory + sessions contracts", () => {
             { object_type: "memory_entry", object_id: "memory-2", title: "A" },
           ],
           reason: "same normalized title",
+          proposed_action: { proposal_type: "memory_archive", target_memory_ids: ["memory-2"] },
         },
       ],
       counts: {
         duplicate: 1,
         stale: 0,
         thin: 0,
-        lifecycle_drift: 0,
+        source_policy_drift: 0,
       },
       candidate_limit: 500,
       candidates_examined: 2,
@@ -363,6 +364,25 @@ describe("memory + sessions contracts", () => {
             objects: [{ object_type: "memory_entry", object_id: "memory-1", title: "A" }],
             reason: "bad",
             raw_content: "must not be part of the wire shape",
+          },
+        ],
+      }),
+    ).toThrow();
+    // An update is a named revision; an action that would accept the entry
+    // back unchanged has no shape here.
+    expect(() =>
+      MemoryMaintenanceReportSchema.parse({
+        ...report,
+        findings: [
+          {
+            kind: "stale",
+            objects: [{ object_type: "memory_entry", object_id: "memory-1", title: "A" }],
+            reason: "old",
+            proposed_action: {
+              proposal_type: "memory_update",
+              target_memory_id: "memory-1",
+              maintenance_action: "reconfirm_stale_memory",
+            },
           },
         ],
       }),

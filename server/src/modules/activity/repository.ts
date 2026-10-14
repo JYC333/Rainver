@@ -17,6 +17,11 @@ import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { assertProjectReadable } from "../projects/access.js";
 import type { ProposalOut } from "@rainver/protocol";
 import { assessActivityMemoryDuplicate } from "./memoryDedup.js";
+import {
+  activityMemoryProposal,
+  projectReadersMissingActivity,
+  TRUST_BY_SOURCE_TYPE,
+} from "./activityMemoryProposal.js";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
 import { recordDetailRead } from "../contentAccess/audit.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
@@ -149,18 +154,6 @@ const SOURCE_TYPES = new Set([
   "source",
 ]);
 
-export const TRUST_BY_SOURCE_TYPE: Record<string, string> = {
-  user_capture: "user_confirmed",
-  chat_message: "user_confirmed",
-  external_chat: "user_confirmed",
-  file_import: "user_confirmed",
-  web_capture: "untrusted_external",
-  run_event: "internal_system",
-  project_folder_event: "internal_system",
-  system_event: "internal_system",
-  external_source: "untrusted_external",
-  source: "internal_system",
-};
 
 const CONSOLIDATABLE_STATUSES = new Set(["raw", "processed"]);
 
@@ -343,6 +336,7 @@ export class PgActivityRepository {
       );
       return [];
     }
+    if (activity.project_id) await this.assertProjectCanReadActivity(identity.spaceId, activity);
     const proposal = await this.insertMemoryProposalFromActivity(identity, activity);
     const now = new Date().toISOString();
     await this.db.query(
@@ -517,42 +511,24 @@ export class PgActivityRepository {
     for (const row of policies.rows) enforceSourceDerivedImportTarget(row.policy_json, target);
   }
 
+  /**
+   * A Project's record becomes Project Memory, which every Project reader can
+   * read, so they must all be able to read the record already.
+   */
+  private async assertProjectCanReadActivity(spaceId: string, activity: ActivityRow): Promise<void> {
+    const missing = await projectReadersMissingActivity(this.db, spaceId, activity);
+    if (missing > 0) {
+      const detail = "Share this Activity with its Project before turning it into Project Memory";
+      throw new HttpError(409, detail, { detail, code: "activity_share_required", unreadable_reader_count: missing });
+    }
+  }
+
   private async insertMemoryProposalFromActivity(
     identity: SpaceUserIdentity,
     activity: ActivityRow,
   ): Promise<ProposalOut> {
-    const payload = {
-      operation: "create",
-      proposed_content: activity.content ?? "",
-      memory_type: "experience",
-      target_scope: "user",
-      target_namespace: "activity.consolidation",
-      target_visibility: "private",
-      owner_user_id: activity.owner_user_id ?? activity.user_id ?? identity.userId,
-      subject_user_id: activity.subject_user_id ?? activity.user_id ?? identity.userId,
-      source_activity_id: activity.id,
-      activity_source_trust: activity.source_trust ?? TRUST_BY_SOURCE_TYPE[activity.activity_type] ?? "untrusted_external",
-      provenance_entries: [
-        {
-          source_type: "activity",
-          source_id: activity.id,
-          source_trust: activity.source_trust ?? TRUST_BY_SOURCE_TYPE[activity.activity_type] ?? "untrusted_external",
-          evidence_json: {
-            activity_type: activity.activity_type,
-            source_url: activity.source_url,
-          },
-        },
-      ],
-    };
-    return this.insertProposal({
-      identity,
-      proposalType: "memory_create",
-      title: activity.title || `Activity: ${(activity.content ?? "").slice(0, 80)}`,
-      payload,
-      rationale: "Activity consolidation generated a memory proposal.",
-      projectFolderId: activity.project_folder_id,
-      projectId: activity.project_id,
-    });
+    const now = new Date();
+    return proposalToOut(await insertProposalRow(this.db, activityMemoryProposal(identity, activity)), now);
   }
 
   private async insertSummaryMemoryProposal(
@@ -586,6 +562,7 @@ export class PgActivityRepository {
       rationale: "Input summary requested a memory proposal.",
       projectFolderId: null,
       projectId: null,
+      visibility: "private",
     });
   }
 
@@ -620,6 +597,7 @@ export class PgActivityRepository {
       rationale: "Input summary requested a knowledge proposal.",
       projectFolderId: null,
       projectId: null,
+      visibility: "private",
     });
   }
 
@@ -631,6 +609,7 @@ export class PgActivityRepository {
     rationale: string;
     projectFolderId: string | null;
     projectId: string | null;
+    visibility: "private" | "space_shared";
   }): Promise<ProposalOut> {
     const now = new Date();
     const row = await insertProposalRow(this.db, {
@@ -642,7 +621,7 @@ export class PgActivityRepository {
       projectFolderId: input.projectFolderId,
       projectId: input.projectId,
       createdByUserId: input.identity.userId,
-      visibility: "private",
+      visibility: input.visibility,
       riskLevel: "low",
     });
     return proposalToOut(row, now);

@@ -20,6 +20,7 @@ vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpac
 vi.mock('../../../core/spaceNav', () => ({ useSpaceNavigate: () => vi.fn() }))
 
 import AssetLifecyclePanel from '../AssetLifecyclePanel'
+import i18n from '../../../i18n'
 
 const asset = {
   id: 'asset-1', space_id: 'space-1', asset_type: 'workflow_template', asset_key: 'workflow.alpha',
@@ -64,5 +65,21 @@ describe('AssetLifecyclePanel', () => {
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('v3 · testing')).toBeInTheDocument()
     expect(within(dialog).queryByText('v2 · candidate')).not.toBeInTheDocument()
+  })
+
+  it('reads in Chinese, counting evaluation cases in the Chinese plural', async () => {
+    await i18n.changeLanguage('zh-CN')
+    try {
+      evolutionApiMock.evaluationCases.mockResolvedValue([{
+        id: 'case-1', name: 'Smoke', status: 'active', baseline_version_id: 'version-base-1', source_run_id: null,
+        input_json: {}, expectation_json: {}, baseline_output_json: {},
+      }])
+      render(<AssetLifecyclePanel asset={asset} versions={[]} evaluations={[]} onReload={vi.fn()} />)
+      expect(screen.getByRole('button', { name: /创建候选版本/ })).toBeInTheDocument()
+      expect(screen.getByText('版本生命周期')).toBeInTheDocument()
+      expect(await screen.findByText('1 个用例')).toBeInTheDocument()
+    } finally {
+      await i18n.changeLanguage('en')
+    }
   })
 })

@@ -290,7 +290,24 @@ export function proposalToOut(row: ProposalRow, now: Date): ProposalOut {
     egress_approval_status: row.egress_approval_status,
     egress_approval_id: row.egress_approval_id,
     project_id: row.project_id,
+    target_memory_id: stringValue(payload.target_memory_id),
+    ...operatorRevision(row.proposal_type, payload),
     ...codePatchFields,
+  };
+}
+
+/** Whether a maintenance update still waits for the person's revision. */
+function operatorRevision(
+  proposalType: string,
+  payload: Record<string, unknown>,
+): Pick<ProposalOut, "operator_revision"> {
+  if (proposalType !== "memory_update" || payload.requires_operator_edit !== true) return {};
+  const edit = recordValue(payload.operator_edit);
+  return {
+    operator_revision: {
+      edited_by_user_id: stringValue(edit.edited_by_user_id),
+      edited_at: stringValue(edit.edited_at),
+    },
   };
 }
 

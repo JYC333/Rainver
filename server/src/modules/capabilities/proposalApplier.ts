@@ -13,6 +13,22 @@ import { getBuiltInCapabilityDefinition } from "./registry.js";
 
 type JsonRecord = Record<string, unknown>;
 
+/**
+ * An imported Skill's version carries its reviewed package snapshot: the
+ * `normalized_skill` and the `capability_definition` derived from it, tied to
+ * the package by `skill_package_id`, the version's `content_ref` and its
+ * `content_hash` (the package hash), with the proposal it was created from.
+ * Delivery renders from these keys, so changing one would deliver content no
+ * review saw under a hash that no longer describes it. New content arrives
+ * only through a new import, which produces a new snapshot and hash.
+ */
+const IMPORTED_SKILL_SNAPSHOT_KEYS = [
+  "capability_definition",
+  "normalized_skill",
+  "skill_package_id",
+  "created_from_proposal_id",
+] as const;
+
 export function registerCapabilityProposalAppliers(registry: ProposalApplierRegistry): void {
   registry.register("skill_import_approve", applySkillImportApproveProposal);
   registry.register("capability_install", applyCapabilityInstallProposal);
@@ -130,13 +146,21 @@ async function applyCapabilityUpdateProposal(
     throw new HttpError(422, "capability_update status is invalid");
   }
   const now = new Date().toISOString();
-  const target = await context.db.query<{ id: string; capability_key: string }>(
-    `SELECT id, capability_key
+  const target = await context.db.query<{ id: string; capability_key: string; source: string }>(
+    `SELECT id, capability_key, source
        FROM capability_versions
-      WHERE id = $1 AND space_id = $2`,
+      WHERE id = $1 AND space_id = $2
+      FOR UPDATE`,
     [versionId, context.proposal.space_id],
   );
   if (!target.rows[0]) throw new HttpError(404, "Capability version not found");
+  if (target.rows[0].source === "imported_skill") {
+    const touched = IMPORTED_SKILL_SNAPSHOT_KEYS.filter((key) => Object.hasOwn(metadataPatch, key));
+    if (touched.length > 0) {
+      const detail = `An imported Skill's reviewed snapshot cannot be changed (${touched.join(", ")}); import the new package instead`;
+      throw new HttpError(422, detail, { detail, code: "imported_skill_snapshot_immutable" });
+    }
+  }
   const updated = await context.db.query<{ id: string; capability_key: string; status: string }>(
     `UPDATE capability_versions
         SET status = COALESCE($3, status),

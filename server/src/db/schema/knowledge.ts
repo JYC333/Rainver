@@ -441,6 +441,7 @@ export const spaceObjectProfiles = pgTable("space_object_profiles", {
     WHEN 'project_public_summary'::text THEN ((key)::text = 'project_public_summary'::text)
     WHEN 'source_item'::text THEN ((key)::text = ANY (ARRAY[('external_url'::character varying)::text, ('feed_entry'::character varying)::text, ('activity_record'::character varying)::text, ('artifact'::character varying)::text, ('run_event'::character varying)::text, ('file'::character varying)::text, ('document'::character varying)::text, ('log'::character varying)::text]))
     WHEN 'extracted_evidence'::text THEN ((key)::text = ANY (ARRAY[('document'::character varying)::text, ('excerpt'::character varying)::text, ('event'::character varying)::text, ('log'::character varying)::text, ('artifact'::character varying)::text, ('claim'::character varying)::text, ('summary'::character varying)::text]))
+    WHEN 'inquiry_thread'::text THEN ((key)::text = ANY (ARRAY[('question'::character varying)::text, ('hypothesis'::character varying)::text]))
     ELSE false
 END`),
 	check("ck_space_object_profiles_retrieval_policy_object", sql`jsonb_typeof(retrieval_policy_json) = 'object'::text`),

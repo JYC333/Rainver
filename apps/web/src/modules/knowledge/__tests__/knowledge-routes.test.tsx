@@ -159,6 +159,8 @@ import { MODULE_REGISTRY } from '../../registry'
 import { RAIL_ITEMS } from '../../../core/navigation'
 import { ApiRequestError, notesApi, notesCollectionsApi } from '../../../api/client'
 import type { EntityLink, Note } from '../../../types/api'
+import i18n from '../../../i18n'
+import { fmt } from '../utils'
 
 function LocationProbe() {
   const loc = useLocation()
@@ -303,6 +305,30 @@ describe('Knowledge routing', () => {
   it('renders Knowledge Home at /knowledge/home', async () => {
     renderAt('/spaces/personal-1/knowledge/home')
     expect(await screen.findByText('Continue working')).toBeInTheDocument()
+  })
+
+  it('reads Knowledge Home, Domains, the notes tree and dates in Chinese', async () => {
+    await i18n.changeLanguage('zh-CN')
+    try {
+      const home = renderAt('/spaces/personal-1/knowledge/home')
+      expect(await screen.findByText('继续工作')).toBeInTheDocument()
+      expect(screen.getByText('0 条待审阅')).toBeInTheDocument()
+      expect(screen.getByText('共 0 篇 · 已归档 0 篇')).toBeInTheDocument()
+      home.unmount()
+
+      const domains = renderAt('/spaces/personal-1/knowledge/domains')
+      expect(await screen.findByText('还没有领域')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '创建' })).toBeInTheDocument()
+      domains.unmount()
+
+      renderAt('/spaces/personal-1/knowledge/notes')
+      expect(await screen.findByRole('button', { name: 'Client Research 的文件夹操作' })).toBeInTheDocument()
+
+      expect(fmt('2026-10-14T12:00:00Z')).toMatch(/2026年10月14日/)
+      expect(fmt(null)).toBe('-')
+    } finally {
+      await i18n.changeLanguage('en')
+    }
   })
 
   it('renders the Notes section shell at /knowledge/notes', async () => {

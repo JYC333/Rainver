@@ -22,7 +22,15 @@ export type SystemActionVisibility = (typeof SYSTEM_ACTION_VISIBILITY_VALUES)[nu
 export const SYSTEM_ACTION_ACTOR_VALUES = ["user", "agent", "system", "automation"] as const;
 export type SystemActionActorType = (typeof SYSTEM_ACTION_ACTOR_VALUES)[number];
 
-export const SYSTEM_ACTION_SIDE_EFFECT_VALUES = ["none", "draft", "proposal", "durable"] as const;
+/**
+ * `conditional_proposal`: the action writes directly while it stays inside the
+ * bounds it declares, and files a proposal of `proposal_type` — gated by
+ * `gate_class` — when it does not (`task.plan.propose`: a Plan within its
+ * budget and risk is approved as written; one past them waits for a person's
+ * `plan_review`, a direction gate). Registered as such rather than as
+ * `durable`, so the registry never claims a write is ungated when it is not.
+ */
+export const SYSTEM_ACTION_SIDE_EFFECT_VALUES = ["none", "draft", "proposal", "conditional_proposal", "durable"] as const;
 
 /**
  * Why a write is gated behind per-instance human approval
@@ -476,7 +484,7 @@ export const SYSTEM_ACTION_REGISTRY = [
   agentAction("handoff.write", "Write the handoff your next session starts from", "agentGroups", "AgentHandoffService.write", "handoff.write", "durable", { resource_type: "host_thread", resource_id_fallback: "run", check_action_approval_grant: false }),
   action("proposal.list_pending", "List this conversation's pending Proposals with their ids", "proposals", "PgProposalRepository.listVisible", "proposal.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, inputSchema: proposalInputs["proposal.list_pending"] }),
   agentAction("proposal.decide", "Decide a proposal this conversation produced, on the person's instruction", "proposals", "ProposalDecisionExecutor.decide", "proposal.decide", "durable", { resource_type: "proposal", resource_id_input_field: "proposal_id", resource_id_fallback: "run", check_action_approval_grant: false }),
-  agentAction("task.plan.propose", "Propose an Agent-generated Task plan", "plans", "PgPlanRepository.createPlanFromAgent", "task.plan.propose", "durable", { resource_type: "plan", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: true }),
+  conditionallyGatedAgentAction("task.plan.propose", "Propose an Agent-generated Task plan", "plans", "PgPlanRepository.createPlanFromAgent", "task.plan.propose", "plan_review", "direction", { resource_type: "plan", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: true }),
   internalAction("source.backfill.start", "Start approved Source history import", "sources", "SourceBackfillExecutionService.start", "source.backfill.start"),
   httpAction("source.backfill.pause", "Pause Source history import", "sources", "SourceBackfillPlanningService.setPaused", "source.backfill.manage", "durable"),
   httpAction("source.backfill.resume", "Resume Source history import", "sources", "SourceBackfillPlanningService.setPaused", "source.backfill.manage", "durable"),
@@ -671,6 +679,16 @@ function agentAction<const Id extends string>(id: Id, title: string, owningModul
     application_service: applicationService, policy_action: policyAction, side_effects: sideEffects,
     idempotency_required: true, proposal_type: null, gate_class: null, grantable: false, policy_resource: policyResource,
     agent_tool_surface: agentToolSurface, policy_adapter: "declared_resource" };
+}
+
+/**
+ * An Agent action that writes directly inside its declared bounds and files a
+ * `proposalType` proposal, gated by `gateClass`, past them. The class is a
+ * required argument for the same reason `gatedProposalAction`'s is.
+ */
+function conditionallyGatedAgentAction<const Id extends string>(id: Id, title: string, owningModule: string, applicationService: string, policyAction: PolicyActionId, proposalType: string, gateClass: SystemActionGateClass, policyResource: SystemActionPolicyResource): SystemActionDefinition & { readonly id: Id } {
+  return { ...agentAction(id, title, owningModule, applicationService, policyAction, "conditional_proposal", policyResource),
+    proposal_type: proposalType, gate_class: gateClass };
 }
 
 function internalAction<const Id extends string>(id:Id,title:string,owningModule:string,applicationService:string,policyAction:PolicyActionId):SystemActionDefinition&{readonly id:Id}{

@@ -334,9 +334,11 @@ context file, and the CLI's own auto-memory is scratch Rainver never reads,
 imports or promotes.
 
 **Who may change a persona is decided by who is responsible for the Run**,
-read from the **root** Run's `trigger_origin` and `instructed_by_user_id`
-together (`systemActions/effectiveRunTrigger.ts`,
-one row, so a delegated child is judged by what started the chain), and never
+read from the verified **root** Run's `trigger_origin` and
+`instructed_by_user_id` together (`systemActions/effectiveRunTrigger.ts`,
+through parent and continuation-cause hops, so a delegated child or a Room
+continuation is judged by what started the chain, and an unverifiable chain by
+nobody), and never
 from the prompt. Person-facing run create always stamps `manual`; a client
 cannot send `automation` to skip the in-turn proposal. The owner's own turn
 produces a proposal decided in that turn; any other member's turn produces a
@@ -431,6 +433,7 @@ Run:
                                   — required for formal provider_task Runs
   status, mode, trigger_origin
   parent_run_id               — lineage link (follow-up/retry/manual continuation or delegated child run)
+  cause_run_id                — only on a `continuation` Run: the Run its report is about, within budget
   root_run_id                 — root of an AgentRunGroup run tree when grouped
   run_group_id                — owning AgentRunGroup when grouped
   delegation_id               — RunDelegation that created a delegated child run

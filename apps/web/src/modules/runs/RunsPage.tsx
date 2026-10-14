@@ -40,11 +40,6 @@ function RunRow({ r, agentName, onRefresh }: { r: Run; agentName: string | null;
           {r.started_at && ` · started ${fmt(r.started_at)}`}
           {r.ended_at && ` · ended ${fmt(r.ended_at)}`}
         </p>
-        {r.task_id && (
-          <Link to={`/tasks/${r.task_id}`} className="text-xs text-accent-foreground hover:underline">
-            Open linked task
-          </Link>
-        )}
         {r.status === 'failed' && r.error_message && (
           <p className="text-xs text-destructive border border-destructive/20 rounded p-2 bg-destructive/5">
             {r.error_message}

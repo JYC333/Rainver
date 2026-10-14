@@ -79,7 +79,6 @@ const PERSISTENCE_ACTIONS = new Set([
   "project_folder.apply_patch",
   "proposal.create",
   "proposal.apply",
-  "policy.change",
   "capability.enable",
   "capability.update",
   "tool_binding.enable",
@@ -208,7 +207,7 @@ const publicTargetBlocksGrantDerived: Invariant = (ctx) => {
 
 const payloadFlagsNotApprovalProof: Invariant = (ctx) => {
   const action = str(ctx.action);
-  if (action !== "proposal.apply" && action !== "policy.change") return null;
+  if (action !== "proposal.apply") return null;
   const payload = asRecord(ctx.payload) ?? {};
   const metadata = asRecord(ctx.metadata_json) ?? {};
   const context = asRecord(ctx.context) ?? {};

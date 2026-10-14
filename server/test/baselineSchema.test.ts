@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 // Every test here drops and reapplies the whole baseline, so each one costs
@@ -8,6 +8,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 // ceiling would fail them on contention rather than on anything being wrong.
 vi.setConfig({ testTimeout: 180_000 });
 import { Pool } from "pg";
+import { OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE } from "@rainver/protocol";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadMigrations, migrate } from "../src/db/migrator.js";
@@ -551,6 +552,31 @@ describe("server runner applies the migration chain", () => {
          'kind-archived-reuse', 'space-1', 'email', 'Email replacement', 'source', 'active', now(), now()
        )`,
     )).rejects.toThrow();
+  }, 120_000);
+
+  it("admits exactly the protocol's subtype keys for each base object type", async () => {
+    if (!db.available) return;
+    await migrate(db.pool, MIGRATIONS_DIR);
+    await resetTables(db.pool, ["users", "spaces"], { cascade: true });
+    await db.pool.query(
+      `INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ('space-keys', 'Keys', 'team', now(), now())`,
+    );
+    // The database CHECK and OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE
+    // must agree row for row, including Inquiry's question/hypothesis.
+    for (const [baseObjectType, keys] of Object.entries(OBJECT_PROFILE_KEY_VALUES_BY_BASE_OBJECT_TYPE)) {
+      for (const key of keys) {
+        await db.pool.query(
+          `INSERT INTO space_object_profiles (id, space_id, key, label, base_object_type, status, created_at, updated_at)
+           VALUES ($1, 'space-keys', $2, $2, $3, 'draft', now(), now())`,
+          [randomUUID(), key, baseObjectType],
+        );
+      }
+      await expect(db.pool.query(
+        `INSERT INTO space_object_profiles (id, space_id, key, label, base_object_type, status, created_at, updated_at)
+         VALUES ($1, 'space-keys', 'not_a_subtype', 'x', $2, 'draft', now(), now())`,
+        [randomUUID(), baseObjectType],
+      )).rejects.toMatchObject({ constraint: "ck_space_object_profiles_key_by_base_object_type" });
+    }
   }, 120_000);
 
   it("is idempotent on an already-migrated database", async () => {

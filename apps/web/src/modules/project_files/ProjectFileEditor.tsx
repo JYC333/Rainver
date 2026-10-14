@@ -10,6 +10,8 @@ import { CodeMirrorEditor, CodeMirrorMerge } from './CodeMirrorEditor'
 import { languageForPath } from './codeMirrorLanguages'
 import { toast } from 'sonner'
 import { errMsg } from '../../lib/utils'
+import i18n, { useAppTranslation } from '../../i18n'
+import { formatBytes } from '../../i18n/format'
 import { ProjectFileDraftController, conflictingDraft, sha256Utf8, type DraftControllerSnapshot, type DraftMutationInput } from './draftController'
 import type { CurrentFileAttachment } from '../projects/ProjectFolderConversationContext'
 
@@ -48,20 +50,16 @@ function lineEndingMode(file: FileContent | null): 'lf' | 'crlf' | 'mixed' | 'no
   return crlf ? 'crlf' : 'lf'
 }
 
-function formatBytes(bytes: number): string {
-  return bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`
-}
-
 function statusLabel(snapshot: DraftControllerSnapshot, draftLoading: boolean, savePending: boolean): string {
-  if (draftLoading) return 'Checking recovery draft…'
-  if (savePending) return 'Saving to Folder…'
+  if (draftLoading) return i18n.t('management_ui.file_editor.status.checking')
+  if (savePending) return i18n.t('management_ui.file_editor.status.saving_folder')
   switch (snapshot.status) {
-    case 'dirty': return 'Unsaved changes'
-    case 'saving': return 'Saving draft…'
-    case 'saved': return 'Draft saved'
-    case 'error': return 'Draft save failed'
-    case 'conflict': return 'Draft conflict'
-    default: return 'Clean'
+    case 'dirty': return i18n.t('management_ui.file_editor.status.dirty')
+    case 'saving': return i18n.t('management_ui.file_editor.status.saving')
+    case 'saved': return i18n.t('management_ui.file_editor.status.saved')
+    case 'error': return i18n.t('management_ui.file_editor.status.error')
+    case 'conflict': return i18n.t('management_ui.file_editor.status.conflict')
+    default: return i18n.t('management_ui.file_editor.status.clean')
   }
 }
 
@@ -94,6 +92,7 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
   workspaceLocationAvailable = true,
   onAttachmentStateChange,
 }: ProjectFileEditorProps, ref) {
+  const { t } = useAppTranslation()
   const [path, setPath] = useState(file?.path ?? draft?.relative_path ?? '')
   const [activeDraft, setActiveDraft] = useState<ProjectFileDraft | null>(draft)
   const activeDraftRef = useRef<ProjectFileDraft | null>(draft)
@@ -181,7 +180,7 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
     await controller.flush()
     const current = controller.snapshot()
     if (current.status === 'conflict' || current.status === 'error') {
-      throw current.error instanceof Error ? current.error : new Error('The current file draft could not be saved')
+      throw current.error instanceof Error ? current.error : new Error(t('management_ui.file_editor.draft_not_saved'))
     }
     return resourcePart(current)
   }
@@ -399,9 +398,9 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
     <ConfirmDialog
       open={confirmMixedSave}
       onOpenChange={setConfirmMixedSave}
-      title="Normalize mixed line endings?"
-      description="Saving will normalize this file's mixed line endings to LF. This changes line separators throughout the file."
-      confirmLabel="Normalize and save"
+      title={t('management_ui.file_editor.normalize_title')}
+      description={t('management_ui.file_editor.normalize_description')}
+      confirmLabel={t('management_ui.file_editor.normalize_confirm')}
       variant="default"
       onConfirm={() => { void saveToFolder(true) }}
     />
@@ -409,7 +408,7 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
       <div className="shrink-0 flex flex-wrap items-center gap-2 border-b bg-muted/30 px-4 py-2">
         {file ? <FileCode className="size-3.5 text-muted-foreground" /> : <FilePlus className="size-3.5 text-muted-foreground" />}
         <Input
-          aria-label="File path"
+          aria-label={t('management_ui.file_editor.file_path')}
           value={path}
           onChange={event => setPath(event.target.value)}
           placeholder="path/to/file.txt"
@@ -420,28 +419,28 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
         />
         <span role="status" className="text-[10px] text-muted-foreground">{statusLabel(snapshot, draftLoading, savePending)}</span>
         <span className="ml-auto flex items-center gap-1.5">
-          {onHistory && <Button type="button" size="sm" variant="ghost" className="h-6 gap-1 px-2 text-[10px]" onClick={onHistory}><History className="size-3" /> History</Button>}
-          {onCancel && !file && <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[10px]" onClick={onCancel}>Cancel</Button>}
-          {hasDraft && <Button type="button" size="sm" variant="ghost" className="h-6 gap-1 px-2 text-[10px]" onClick={() => void discardDraft()} disabled={savePending}><Trash2 className="size-3" /> Discard</Button>}
-          <Button type="button" size="sm" className="h-6 gap-1 px-2 text-[10px]" onClick={() => void saveToFolder()} disabled={!canSave || savePending}><Save className="size-3" /> Save to Folder</Button>
+          {onHistory && <Button type="button" size="sm" variant="ghost" className="h-6 gap-1 px-2 text-[10px]" onClick={onHistory}><History className="size-3" /> {t('management_ui.file_editor.history')}</Button>}
+          {onCancel && !file && <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[10px]" onClick={onCancel}>{t('management_ui.file_editor.cancel')}</Button>}
+          {hasDraft && <Button type="button" size="sm" variant="ghost" className="h-6 gap-1 px-2 text-[10px]" onClick={() => void discardDraft()} disabled={savePending}><Trash2 className="size-3" /> {t('management_ui.file_editor.discard')}</Button>}
+          <Button type="button" size="sm" className="h-6 gap-1 px-2 text-[10px]" onClick={() => void saveToFolder()} disabled={!canSave || savePending}><Save className="size-3" /> {t('management_ui.file_editor.save_to_folder')}</Button>
         </span>
       </div>
       <div className="shrink-0 flex flex-wrap items-center gap-2 border-b px-4 py-1.5 text-[10px] text-muted-foreground">
         <span>{formatBytes(new TextEncoder().encode(draftContent).byteLength)} · {language}</span>
-        <span>· {lineMode === 'mixed' ? 'mixed line endings' : `${lineMode.toUpperCase()} line endings`}</span>
-        {baseFile?.encoding && <Badge variant="muted" className="px-1.5 text-[9px]">{converted ? 'UTF-8 converted' : baseFile.encoding}</Badge>}
-        {hostConflict && <span className="text-amber-600 dark:text-amber-400">Host changed since this draft</span>}
-        {!editable && onConvert && <Button type="button" size="sm" variant="outline" className="h-5 gap-1 px-2 text-[10px]" onClick={() => void convertFile()}><WandSparkles className="size-3" /> Convert to UTF-8</Button>}
+        <span>· {lineMode === 'mixed' ? t('management_ui.file_editor.mixed_line_endings') : t('management_ui.file_editor.line_endings', { mode: lineMode.toUpperCase() })}</span>
+        {baseFile?.encoding && <Badge variant="muted" className="px-1.5 text-[9px]">{converted ? t('management_ui.file_editor.utf8_converted') : baseFile.encoding}</Badge>}
+        {hostConflict && <span className="text-amber-600 dark:text-amber-400">{t('management_ui.file_editor.host_changed')}</span>}
+        {!editable && onConvert && <Button type="button" size="sm" variant="outline" className="h-5 gap-1 px-2 text-[10px]" onClick={() => void convertFile()}><WandSparkles className="size-3" /> {t('management_ui.file_editor.convert_utf8')}</Button>}
       </div>
       {(hostConflict || draftConflict) && activeDraft && baseFile && (
         <div className="shrink-0 border-b border-amber-500/30 bg-amber-500/5 px-4 py-2 text-[11px] text-muted-foreground">
-          <p className="mb-1">{hostConflict ? 'The Folder file changed after this draft was saved.' : 'Another tab has a newer recovery draft.'} Review both versions before rebasing.</p>
+          <p className="mb-1">{hostConflict ? t('management_ui.file_editor.conflict_host') : t('management_ui.file_editor.conflict_tab')}</p>
           <div className="mb-2 h-40 min-h-0 overflow-hidden rounded border">
             <CodeMirrorMerge original={baseFile.content} current={draftContent} language={language} />
           </div>
           <div className="flex gap-2">
-            <Button type="button" size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => void rebaseDraft()}>Keep this draft, rebase</Button>
-            <Button type="button" size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => void discardDraft()}>Use current/server file</Button>
+            <Button type="button" size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => void rebaseDraft()}>{t('management_ui.file_editor.keep_rebase')}</Button>
+            <Button type="button" size="sm" variant="ghost" className="h-6 text-[10px]" onClick={() => void discardDraft()}>{t('management_ui.file_editor.use_server_file')}</Button>
           </div>
         </div>
       )}
@@ -452,7 +451,7 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
           readOnly={!canEdit || hostConflict || draftConflict || !path.trim()}
           lineSeparator={lineMode === 'crlf' ? '\r\n' : '\n'}
           indent={detectIndentUnit(draftContent)}
-          ariaLabel="File content"
+          ariaLabel={t('management_ui.file_editor.file_content')}
           onChange={content => controller.setContent(content)}
           onSelectionChange={next => {
             const nextSelection: InputResourceSelection = {

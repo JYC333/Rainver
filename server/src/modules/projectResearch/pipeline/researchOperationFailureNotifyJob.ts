@@ -8,7 +8,7 @@ import {
   type JobHandlerRegistry,
   type JobHandlerResult,
 } from "../../jobs/handlerRegistry.js";
-import { RoomService } from "../../rooms/service.js";
+import { RoomService, UNATTRIBUTED_CONTINUATION } from "../../rooms/service.js";
 import { isConversationTurnInProgressError } from "../../sessions/conversationRuntimeSessionRepository.js";
 
 export const RESEARCH_OPERATION_FAILURE_NOTIFY_JOB = "research_operation_failure_notify";
@@ -69,7 +69,9 @@ export function registerResearchOperationFailureNotifyHandler(registry: JobHandl
             key: episode === null ? `${operationId}:${status}` : `${operationId}:${status}:${episode}`,
             payload: { status, operation_id: operationId, reason },
             // Started by an Agent's turn: charged to that turn's container.
-            ...(originGroupId ? await agentOriginContinuation(client, job.space_id, originGroupId) : {}),
+            // With no originating turn there is nothing to inherit: it reports
+            // as unattended work.
+            ...(originGroupId ? await agentOriginContinuation(client, job.space_id, originGroupId) : { cause: UNATTRIBUTED_CONTINUATION }),
           },
         ),
       );

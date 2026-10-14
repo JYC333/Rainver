@@ -22,9 +22,11 @@ operate on the `.agent` context tree.
 
 **`engineCheck`** (`server/src/modules/policy/decisionCore.ts`) evaluates stateless built-in rules in priority order. When no rule matches, it uses the action registry's `default_decision` — not a permissive ALLOW. Unknown actions always fail closed with DENY (`audit_code="unknown_policy_action"`). It does not load `policies` rows.
 
-There is no `PolicyEffectCatalog`. `policy_change` requires `name` and `domain`,
-then inserts an active `policies` row for that domain. No server path reads the
-table, so the row does not change a decision.
+There is no `PolicyEffectCatalog` and no generic persisted-policy proposal.
+`policy_change` has no applier: no producer offers it and a stored one fails
+closed on accept. No server path writes or reads the `policies` table. The
+persisted policy that governs runs is the Runtime Context Policy
+(`runtime_context_policy.change`).
 
 **Policy service / gateway** (`server/src/modules/policy/service.ts` and `gateway.ts`) is the enforcement entry point for sensitive actions. It composes hard invariants, `engineCheck`, and PolicyDecisionRecord persistence. Business enforcement code must call one of:
 - **`enforce(req)`** — direct-action path. Returns blocked on DENY/REQUIRE_APPROVAL and writes durable audit on ALLOW when required. Used by runtime, context, Project Folder read/patch, artifact, proposal creation, and automation sensitive gates. Agent config routes do not call it.
@@ -92,9 +94,9 @@ A blocking decision is audited by `writePolicyAudit` as one `PolicyDecisionRecor
 
 Metadata is sanitized before persistence — no credentials, prompts, patch bodies, stdout, stderr, raw memory, or `personal_context_block`.
 
-Persisted `policies` rows are not an enforcement input. `policy_change` inserts
-an active row for whatever `domain` the payload names, and no server path reads
-that table. The names `memory.private_placement`, `run.user_private_scope`, and
+Persisted `policies` rows are not an enforcement input, and nothing writes
+them: the generic `policy_change` proposal type was closed rather than left to
+record rows no decision reads. The names `memory.private_placement`, `run.user_private_scope`, and
 `memory.cross_space_read` are not policy domains in `server/src`.
 
 What the code does instead:

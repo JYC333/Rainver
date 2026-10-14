@@ -25,10 +25,6 @@ const memoryArchive = z
   })
   .passthrough();
 
-const policyChange = z
-  .object({ proposal_type: z.literal("policy_change") })
-  .passthrough();
-
 const skillImportApprove = z
   .object({ proposal_type: z.literal("skill_import_approve") })
   .passthrough();
@@ -403,7 +399,6 @@ const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   memoryCreate,
   memoryUpdate,
   memoryArchive,
-  policyChange,
   skillImportApprove,
   capabilityInstall,
   capabilityUpdate,

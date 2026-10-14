@@ -211,7 +211,7 @@ describe('GraphView', () => {
       focusedNodeId: null,
       expandedClusterIds: [],
       hiddenKinds: [],
-      activeEdgeKinds: [],
+      hiddenEdgeKinds: [],
       currentLayout: 'force' as const,
       layoutSource: 'default' as const,
       pinnedNodes: {},
@@ -300,7 +300,7 @@ describe('GraphView', () => {
       focusedNodeId: null,
       expandedClusterIds: [],
       hiddenKinds: [],
-      activeEdgeKinds: [],
+      hiddenEdgeKinds: [],
       currentLayout: 'force' as const,
       layoutSource: 'default' as const,
       pinnedNodes: {},
@@ -431,7 +431,7 @@ describe('GraphView', () => {
       focusedNodeId: null,
       expandedClusterIds: [],
       hiddenKinds: [],
-      activeEdgeKinds: [],
+      hiddenEdgeKinds: [],
       currentLayout: 'force' as const,
       layoutSource: 'default' as const,
       pinnedNodes: {},
@@ -565,7 +565,7 @@ describe('GraphView', () => {
 
     rerender(<GraphView projection={projection} loading />)
 
-    expect(await screen.findByText('Loading graph...')).toBeInTheDocument()
+    expect(await screen.findByText('Loading graph…')).toBeInTheDocument()
     expect(graphMock.instances).toHaveLength(1)
     expect(graph.destroyed).toBe(false)
   })
@@ -614,7 +614,7 @@ describe('GraphView', () => {
 
   it('shows loading, error, and empty states inside the shared surface', () => {
     const { rerender } = render(<GraphView projection={null} loading />)
-    expect(screen.getByText('Loading graph...')).toBeInTheDocument()
+    expect(screen.getByText('Loading graph…')).toBeInTheDocument()
 
     rerender(<GraphView projection={null} error="Graph failed" />)
     expect(screen.getByText('Graph failed')).toBeInTheDocument()

@@ -39,13 +39,14 @@ function report(): MemoryMaintenanceReport {
           { object_type: "memory_entry", object_id: "memory-2", title: "A" },
         ],
         reason: "same normalized title",
+        // A hint only: a packet of such findings is acknowledged, never applied.
+        proposed_action: null,
       },
     ],
     counts: {
       duplicate: 1,
       stale: 0,
       thin: 0,
-      lifecycle_drift: 0,
     },
     candidate_limit: 500,
     candidates_examined: 2,
@@ -208,18 +209,18 @@ describe("Memory maintenance artifacts", () => {
               },
             },
             {
-              kind: "project_drift",
+              kind: "contradiction",
               objects: [
-                { object_type: "memory_entry", object_id: "memory-3", title: "Project memory" },
+                { object_type: "memory_entry", object_id: "memory-3", title: "Feature state" },
+                { object_type: "memory_entry", object_id: "memory-5", title: "Feature state" },
               ],
-              reason: "linked to a project but not scoped as project memory",
-              confidence_tier: "medium",
+              reason: "same title, opposite claims",
+              confidence_tier: "low",
               proposed_action: {
                 proposal_type: "memory_update",
                 target_memory_id: "memory-3",
-                maintenance_action: "align_project_scope",
-                target_scope: "project",
-                project_id: "project-1",
+                maintenance_action: "review_contradiction",
+                related_memory_ids: ["memory-5"],
               },
             },
             {
@@ -229,11 +230,7 @@ describe("Memory maintenance artifacts", () => {
               ],
               reason: "not confirmed recently",
               confidence_tier: "medium",
-              proposed_action: {
-                proposal_type: "memory_update",
-                target_memory_id: "memory-4",
-                maintenance_action: "reconfirm_stale_memory",
-              },
+              proposed_action: null,
             },
           ],
         },
@@ -249,14 +246,15 @@ describe("Memory maintenance artifacts", () => {
     expect(result).toMatchObject({
       result_type: "memory_maintenance_packet",
       result: {
-        generated_child_proposal_count: 3,
+        generated_child_proposal_count: 2,
         canonical_write_performed: false,
       },
     });
     expect(db.calls.some((call) => /INSERT INTO memory_entries/.test(call.sql))).toBe(false);
     const childInserts = db.calls.filter((call) => /INSERT INTO proposals/.test(call.sql));
-    expect(childInserts).toHaveLength(3);
-    expect(childInserts.map((call) => call.params[3])).toEqual(["memory_archive", "memory_update", "memory_update"]);
+    // The stale hint proposed nothing, so it produced no child.
+    expect(childInserts).toHaveLength(2);
+    expect(childInserts.map((call) => call.params[3])).toEqual(["memory_archive", "memory_update"]);
     const archivePayload = JSON.parse(String(childInserts[0]!.params[10]));
     expect(archivePayload).toMatchObject({
       operation: "memory_archive",
@@ -269,13 +267,16 @@ describe("Memory maintenance artifacts", () => {
     expect(updatePayload).toMatchObject({
       operation: "update",
       target_memory_id: "memory-3",
-      target_scope: "project",
-      project_id: "project-1",
+      maintenance_action: "review_contradiction",
+      related_memory_ids: ["memory-5"],
+      requires_operator_edit: true,
       source_maintenance_packet_id: "packet-1",
       canonical_write_performed: false,
+      provenance_entries: [{ source_type: "proposal", source_id: "packet-1" }],
     });
-    expect(result.proposalPayloadPatch?.generated_child_proposal_count).toBe(3);
-    expect(result.proposalPayloadPatch?.generated_child_proposal_ids).toHaveLength(3);
+    expect(updatePayload.provenance_entries[0].source_trust).toBeUndefined();
+    expect(result.proposalPayloadPatch?.generated_child_proposal_count).toBe(2);
+    expect(result.proposalPayloadPatch?.generated_child_proposal_ids).toHaveLength(2);
   });
 
   it("keeps packet acceptance private to the creator", async () => {

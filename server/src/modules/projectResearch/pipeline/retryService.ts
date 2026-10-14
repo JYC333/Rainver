@@ -73,10 +73,7 @@ export class ProjectResearchRetryService<TRead, TSetup> {
     const backfillPlanIds = state.source_backfill_plan_ids?.length
       ? state.source_backfill_plan_ids
       : state.source_backfill_plan_id ? [state.source_backfill_plan_id] : [];
-    const ruleIds = unique([
-      ...state.source_post_processing_rule_ids,
-      ...(state.source_post_processing_rule_id ? [state.source_post_processing_rule_id] : []),
-    ]);
+    const ruleIds = unique(state.source_post_processing_rule_ids);
     if (
       (state.run_kind === "baseline" || state.run_kind === "historical_backfill")
       && (failedStage === "backfill" || failedStage === "screening")

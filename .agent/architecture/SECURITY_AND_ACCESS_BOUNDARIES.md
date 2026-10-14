@@ -254,6 +254,13 @@ What a share is and is not:
 
 Boundary coverage: `server/test/noteCrossProjectShareDb.test.ts`.
 
+Memory is the one resource whose access change is not a column update: who
+may read a version is part of what it was, so `PUT /content-access/memory/:id`
+is owner-only (a Space owner/admin who can see someone else's entry cannot
+widen it) and the Memory applier writes a new version carrying the content,
+provenance and the new grants (`modules/memory.md`). The response names the new
+version's id.
+
 On `space_shared` resources, `content_access_grants` rows are per-user
 disclosure *upgrades*, not narrowing: the effective level is the widest of the
 resource's own `access_level` and any active grant for that viewer (a

@@ -26,7 +26,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "space_memberships", "users", "spaces"],
+    ["prompt_deployment_refs", "evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -97,6 +97,47 @@ describe("Prompt registry facade (real Postgres)", () => {
 
     const active = await repo().listDeployments(identity, "test.staging_proposal");
     expect(active.map((ref) => [ref.label, ref.version_id])).toEqual([["staging", v1]]);
+  });
+
+  it("rolls back once by default, then asks which version instead of swapping back", async () => {
+    if (!db.available) return;
+    const key = "test.rollback_once";
+    const asset = await createPromptAsset(key, "text");
+    const v1 = await approvedVersion(asset.id as string, { schema_version: "prompt_asset.v1", prompt_type: "text", template: "v1" });
+    const v2 = await approvedVersion(asset.id as string, { schema_version: "prompt_asset.v1", prompt_type: "text", template: "v2" });
+    const v3 = await approvedVersion(asset.id as string, { schema_version: "prompt_asset.v1", prompt_type: "text", template: "v3" });
+    for (const version of [v1, v2, v3]) {
+      await repo().setDeployment(identity, key, "staging", { scope_type: "space", version_id: version });
+    }
+
+    const back = await repo().rollbackDeployment(identity, key, { label: "staging", scope_type: "space" });
+    expect(back).toMatchObject({ version_id: v2, rolled_back_from_ref_id: expect.any(String) });
+    // A second default rollback would return to v3, the version just left.
+    await expect(repo().rollbackDeployment(identity, key, { label: "staging", scope_type: "space" }))
+      .rejects.toMatchObject({ statusCode: 409 });
+    const named = await repo().rollbackDeployment(identity, key, { label: "staging", scope_type: "space", version_id: v1 });
+    expect(named).toMatchObject({ version_id: v1 });
+  });
+
+  it("stages the built-in version for the Space, never as the global baseline", async () => {
+    if (!db.available) return;
+    const key = "test.builtin_stage";
+    const assetId = randomUUID();
+    const versionId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO evolvable_assets (id, space_id, asset_type, asset_key, display_name, owner_scope_type, status, metadata_json, created_at, updated_at)
+       VALUES ($1, NULL, 'prompt_template', $2, $2, 'system', 'active', '{"prompt_type":"text"}'::jsonb, now(), now())`,
+      [assetId, key],
+    );
+    await db.pool.query(
+      `INSERT INTO evolvable_asset_versions (id, asset_id, space_id, scope_type, scope_id, version, status, source, content_hash, content_json, created_at, updated_at)
+       VALUES ($1, $2, NULL, 'system', NULL, 1, 'approved', 'built_in', 'h', '{"schema_version":"prompt_asset.v1","prompt_type":"text","template":"builtin"}'::jsonb, now(), now())`,
+      [versionId, assetId],
+    );
+    await expect(repo().setDeployment(identity, key, "staging", { scope_type: "system", version_id: versionId }))
+      .rejects.toMatchObject({ statusCode: 403 });
+    await expect(repo().setDeployment(identity, key, "staging", { scope_type: "space", version_id: versionId }))
+      .resolves.toMatchObject({ scope_type: "space", scope_id: SPACE, version_id: versionId });
   });
 
   it("hides generic evolvable_assets rows that have no prompt_type marker", async () => {

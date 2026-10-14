@@ -11,11 +11,15 @@ import { canonicalRunOutput } from "../runs/orchestrationResults.js";
 import { assertBudgetSourceReferences, assertBudgetSourcesAvailable } from "../runs/budgetEnforcement.js";
 import { resolveBudgetSources, type RunBudgetSource } from "../runs/contractSnapshot.js";
 import { loadCanonicalPlanBudgetAuthority, type CanonicalBudgetAuthority } from "../runs/budgetAuthority.js";
-import { budgetSourcesFromNode, decidePlanApproval, materializePlanGraph, planNodeContentHash, type MaterializedPlanGraph } from "./graph.js";
+import { budgetSourcesFromNode, decidePlanApproval, materializePlanGraph, PlanGraphError, planNodeContentHash, type MaterializedPlanGraph } from "./graph.js";
+import { actionNodeHandlerRegistry } from "../automations/actionNodeRegistry.js";
 import { verifyIntegrationNode, verifyPlanIntegration } from "./integrationVerification.js";
 import { ExecutionGraphScheduler } from "../execution/executionGraphScheduler.js";
 import { InputBindingResolutionError, resolveNodeInputs } from "../execution/nodeInputResolver.js";
 import type { WorkflowNodeInputBinding } from "@rainver/protocol";
+import { SYSTEM_ACTION_REGISTRY } from "@rainver/protocol";
+import type { ServerConfig } from "../../config.js";
+import { executeActionNode } from "../execution/actionNodeExecution.js";
 import { contentReadSql, runReadSql } from "../access/contentAccessSql.js";
 import { assertProjectWriterForMutation, lockActiveProjectForMutation } from "../projects/access.js";
 
@@ -121,8 +125,26 @@ function planSourceTaskReadSql(alias: string, userParam: string): string {
   )`;
 }
 
+/**
+ * The proposal `task.plan.propose` files when a Plan is past its declared
+ * budget or risk, read from the registry that declares the action a
+ * conditional, direction-gated proposal (ADR 0017 §1), so the gate it files
+ * and the gate the registry names cannot drift apart.
+ */
+const PLAN_REVIEW_PROPOSAL_TYPE: string = (() => {
+  const definition = SYSTEM_ACTION_REGISTRY.find((entry) => entry.id === "task.plan.propose");
+  if (definition?.side_effects !== "conditional_proposal" || !definition.proposal_type || definition.gate_class !== "direction") {
+    throw new Error("task.plan.propose must be registered as a direction-gated conditional proposal");
+  }
+  return definition.proposal_type;
+})();
+
 export class PgPlanRepository {
-  constructor(private readonly db: Queryable) {}
+  constructor(
+    private readonly db: Queryable,
+    /** What an `action` node's handler runs with. */
+    private readonly config: ServerConfig,
+  ) {}
 
   private readonly scheduler = new ExecutionGraphScheduler();
 
@@ -288,6 +310,16 @@ export class PgPlanRepository {
 
   async createPlanFromAgent(identity: SpaceUserIdentity, input: AgentPlanProposalInput): Promise<Record<string, unknown>> {
     const graph = await materializePlanGraph(input.definitionJson);
+    // An action runs only through a handler that serves Plans; one that does
+    // not is refused now rather than failing the node once the Plan runs.
+    for (const node of graph.nodes) {
+      if (node.kind === "action" && !actionNodeHandlerRegistry.get(node.actionKey!, "plan_version")) {
+        throw new PlanGraphError(
+          `Plan node '${node.key}' names action '${node.actionKey}', which no handler runs in a Plan`,
+          "action_not_executable",
+        );
+      }
+    }
     const declaredPlanCap = input.budgetCap ?? declaredBudgetCap(graph.definition.metadata_json);
     return withQueryableTransaction(this.db, async (client) => {
       await this.assertPlanningRun(client, identity, input);
@@ -428,10 +460,10 @@ export class PgPlanRepository {
              id, space_id, proposal_type, status, risk_level, urgency, title, summary,
              payload_json, created_at, updated_at, created_by_user_id, owner_user_id,
              project_id, project_folder_id, created_by_run_id
-           ) VALUES ($1, $2, 'plan_review', 'pending', $3, 'normal', $4, $5, $6::jsonb,
+           ) VALUES ($1, $2, $12, 'pending', $3, 'normal', $4, $5, $6::jsonb,
                     $7, $7, $8, $8, $9, $10, $11)`,
           [proposalId, identity.spaceId, highestRisk(graph), `Review Agent plan: ${graph.definition.name}`,
-            "Agent-generated Plan requires review before execution.", JSON.stringify({ plan_id: planId, plan_version_id: versionId, source_task_id: input.sourceTaskId, reasons: approval.reasons }), now, identity.userId, task.project_id, task.project_folder_id, input.planningRunId],
+            "Agent-generated Plan requires review before execution.", JSON.stringify({ plan_id: planId, plan_version_id: versionId, source_task_id: input.sourceTaskId, reasons: approval.reasons }), now, identity.userId, task.project_id, task.project_folder_id, input.planningRunId, PLAN_REVIEW_PROPOSAL_TYPE],
         );
         await client.query(`UPDATE plan_versions SET approval_proposal_id = $3, updated_at = $4 WHERE id = $2 AND space_id = $1`, [identity.spaceId, versionId, proposalId, now]);
         await client.query(`UPDATE plan_nodes SET status = 'blocked', blocked_reason = 'Plan version requires approval', approval_proposal_id = $3, updated_at = $4 WHERE space_id = $1 AND plan_version_id = $2`, [identity.spaceId, versionId, proposalId, now]);
@@ -756,6 +788,24 @@ export class PgPlanRepository {
           `UPDATE plan_nodes SET status = 'failed', blocked_reason = $3, updated_at = $4 WHERE space_id = $1 AND id = $2`,
           [identity.spaceId, node.id, `input_binding_unresolved:${error.bindingName}:${error.reason}`, now],
         );
+        scheduled.push(node.id);
+        settledWithoutRun = true;
+        continue;
+      }
+      if (node.node_kind === "action") {
+        // A deterministic handler, through the executor Workflows use: never
+        // an Agent turn. Settled here unless it delegates to a Run, which then
+        // settles it like any node Run.
+        await executeActionNode({
+          db: client,
+          config: this.config,
+          identity,
+          container: { kind: "plan_version", id: input.planVersionId },
+          node: { id: node.id, node_key: node.node_key, metadata_json: recordValue(node.metadata_json), max_attempts: node.max_runs ?? 1 },
+          projectId: input.projectId,
+          projectFolderId: input.projectFolderId,
+          resolvedInputs,
+        });
         scheduled.push(node.id);
         settledWithoutRun = true;
         continue;

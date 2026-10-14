@@ -13,10 +13,10 @@ import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import KnowledgeSectionHeader from './KnowledgeSectionHeader'
 import RetrievalBriefPanel from './RetrievalBriefPanel'
+import { useAppTranslation } from '../../i18n'
+import { formatDateTime } from '../../i18n/format'
 
-function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString() : '—'
-}
+const fmt = (dt: string | null | undefined) => formatDateTime(dt)
 
 function recent<T extends { updated_at: string }>(items: T[], n: number): T[] {
   return [...items].sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)).slice(0, n)
@@ -34,6 +34,7 @@ function needsReview(s: KnowledgeSourceSummary): boolean {
  * compete with the Notes/Wiki/Sources/Cards sections.
  */
 export default function KnowledgeOverviewPage() {
+  const { t } = useAppTranslation()
   const { activeSpaceId } = useSpace()
   const [summary, setSummary] = useState<KnowledgeSummary | null>(null)
   const [notes, setNotes] = useState<NoteSummary[]>([])
@@ -73,7 +74,7 @@ export default function KnowledgeOverviewPage() {
         section="home"
         actions={
           <Button size="sm" variant="outline" asChild>
-            <Link to="/knowledge/notes">Open Notes</Link>
+            <Link to="/knowledge/notes">{t('knowledge_ui.overview.open_notes')}</Link>
           </Button>
         }
       />
@@ -81,8 +82,8 @@ export default function KnowledgeOverviewPage() {
       {!activeSpaceId ? (
         <Card>
           <EmptyState
-            title="Select an operational space"
-            description="Choose a space to see its Knowledge activity."
+            title={t('knowledge_ui.overview.select_space_title')}
+            description={t('knowledge_ui.overview.select_space_description')}
           />
         </Card>
       ) : loading ? (
@@ -91,16 +92,16 @@ export default function KnowledgeOverviewPage() {
         <>
           {/* Counts */}
           <div className="grid gap-3 grid-cols-2 sm:grid-cols-4">
-            <CountCard label="Notes" value={summary?.notes.active ?? notes.filter(n => n.status === 'active').length}
-              hint={`${summary?.notes.total ?? notes.length} total · ${summary?.notes.archived ?? 0} archived`} to="/knowledge/notes" />
-            <CountCard label="Wiki" value={summary?.wiki.active ?? wiki.length} hint="active canonical items" to="/knowledge/wiki" />
-            <CountCard label="Sources" value={summary?.sources.total ?? sources.length} hint={`${reviewSources.length} need review`} to="/knowledge/sources" />
-            <CountCard label="Cards" value="—" hint="coming soon" to="/knowledge/cards" />
+            <CountCard label={t('knowledge_ui.overview.notes')} value={summary?.notes.active ?? notes.filter(n => n.status === 'active').length}
+              hint={t('knowledge_ui.overview.notes_hint', { total: summary?.notes.total ?? notes.length, archived: summary?.notes.archived ?? 0 })} to="/knowledge/notes" />
+            <CountCard label={t('knowledge_ui.overview.wiki')} value={summary?.wiki.active ?? wiki.length} hint={t('knowledge_ui.overview.wiki_hint')} to="/knowledge/wiki" />
+            <CountCard label={t('knowledge_ui.overview.sources')} value={summary?.sources.total ?? sources.length} hint={t('knowledge_ui.overview.sources_hint', { count: reviewSources.length })} to="/knowledge/sources" />
+            <CountCard label={t('knowledge_ui.overview.cards')} value="—" hint={t('knowledge_ui.overview.cards_hint')} to="/knowledge/cards" />
           </div>
 
           {/* Continue working */}
           <Card>
-            <CardTitle className="flex items-center gap-1.5"><Clock className="size-3.5" /> Continue working</CardTitle>
+            <CardTitle className="flex items-center gap-1.5"><Clock className="size-3.5" /> {t('knowledge_ui.overview.continue_working')}</CardTitle>
             {resume ? (
               <Link
                 to={`/knowledge/notes/${resume.id}`}
@@ -108,12 +109,12 @@ export default function KnowledgeOverviewPage() {
               >
                 <div className="min-w-0">
                   <p className="font-medium text-sm truncate">{resume.title}</p>
-                  <p className="text-xs text-muted-foreground">Edited {fmt(resume.updated_at)}</p>
+                  <p className="text-xs text-muted-foreground">{t('knowledge_ui.overview.edited', { time: fmt(resume.updated_at) })}</p>
                 </div>
                 <ArrowRight className="size-4 text-muted-foreground shrink-0" />
               </Link>
             ) : (
-              <p className="mt-3 text-sm text-muted-foreground">No recent notes yet. Start one from the Notes section.</p>
+              <p className="mt-3 text-sm text-muted-foreground">{t('knowledge_ui.overview.no_recent_notes')}</p>
             )}
           </Card>
 
@@ -121,9 +122,9 @@ export default function KnowledgeOverviewPage() {
           <RetrievalBriefPanel hasOperationalSpace={Boolean(activeSpaceId)} />
 
           <div className="grid gap-3 lg:grid-cols-2">
-            <SectionCard title="Recent notes" to="/knowledge/notes" actionLabel="All notes">
+            <SectionCard title={t('knowledge_ui.overview.recent_notes')} to="/knowledge/notes" actionLabel={t('knowledge_ui.overview.all_notes')}>
               {recent(notes, 5).length === 0 ? (
-                <EmptyText>No notes yet — capture your first working note.</EmptyText>
+                <EmptyText>{t('knowledge_ui.overview.no_notes')}</EmptyText>
               ) : (
                 recent(notes, 5).map(n => (
                   <RowLink key={n.id} to={`/knowledge/notes/${n.id}`} title={n.title} meta={fmt(n.updated_at)} badge={n.status} />
@@ -131,9 +132,9 @@ export default function KnowledgeOverviewPage() {
               )}
             </SectionCard>
 
-            <SectionCard title="Recent wiki updates" to="/knowledge/wiki" actionLabel="Open Wiki">
+            <SectionCard title={t('knowledge_ui.overview.recent_wiki')} to="/knowledge/wiki" actionLabel={t('knowledge_ui.overview.open_wiki')}>
               {recent(wiki, 5).length === 0 ? (
-                <EmptyText>No canonical wiki items yet.</EmptyText>
+                <EmptyText>{t('knowledge_ui.overview.no_wiki')}</EmptyText>
               ) : (
                 recent(wiki, 5).map(w => (
                   <RowLink key={w.id} to={`/knowledge/wiki/${w.id}`} title={w.title} meta={fmt(w.updated_at)} badge={w.knowledge_kind} />
@@ -141,9 +142,9 @@ export default function KnowledgeOverviewPage() {
               )}
             </SectionCard>
 
-            <SectionCard title="Sources needing review" to="/knowledge/sources" actionLabel="All sources">
+            <SectionCard title={t('knowledge_ui.overview.sources_review')} to="/knowledge/sources" actionLabel={t('knowledge_ui.overview.all_sources')}>
               {reviewSources.length === 0 ? (
-                <EmptyText>No sources need review.</EmptyText>
+                <EmptyText>{t('knowledge_ui.overview.no_sources_review')}</EmptyText>
               ) : (
                 recent(reviewSources, 5).map(s => (
                   <RowLink key={s.id} to="/knowledge/sources" title={s.title} meta={fmt(s.created_at)} badge={s.status} />
@@ -151,18 +152,18 @@ export default function KnowledgeOverviewPage() {
               )}
             </SectionCard>
 
-            <SectionCard title="Process captures" to="/activity" actionLabel="Open Inbox">
+            <SectionCard title={t('knowledge_ui.overview.process_captures')} to="/activity" actionLabel={t('knowledge_ui.overview.open_inbox')}>
               <p className="text-sm text-muted-foreground">
-                Captures and activities are raw material — review them in the Activity Inbox, then turn them into Notes or Wiki items.
+                {t('knowledge_ui.overview.process_hint')}
               </p>
               <div className="mt-3 flex flex-wrap gap-2">
-                <Button size="sm" variant="outline" asChild><Link to="/activity">Activity Inbox</Link></Button>
-                <Button size="sm" variant="outline" asChild><Link to="/capture">Capture something</Link></Button>
+                <Button size="sm" variant="outline" asChild><Link to="/activity">{t('knowledge_ui.overview.activity_inbox')}</Link></Button>
+                <Button size="sm" variant="outline" asChild><Link to="/capture">{t('knowledge_ui.overview.capture_something')}</Link></Button>
               </div>
             </SectionCard>
 
-            <SectionCard title="Cards due" to="/knowledge/cards" actionLabel="Open Cards">
-              <EmptyText>Spaced-repetition review cards are coming soon.</EmptyText>
+            <SectionCard title={t('knowledge_ui.overview.cards_due')} to="/knowledge/cards" actionLabel={t('knowledge_ui.overview.open_cards')}>
+              <EmptyText>{t('knowledge_ui.overview.cards_soon')}</EmptyText>
             </SectionCard>
           </div>
         </>

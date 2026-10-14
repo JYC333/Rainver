@@ -37,7 +37,7 @@ function user(id: string, email: string | null, admin: boolean): CurrentUser {
     avatar_url: null,
     is_instance_admin: admin,
     created_at: new Date().toISOString(),
-    last_login_at: null,
+    default_space_id: null, last_login_at: null,
   };
 }
 

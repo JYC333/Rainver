@@ -200,7 +200,9 @@ export class PluginHostContextImpl implements PluginHostContext {
           db: ctx.db,
           config: ctx.config,
         });
-        return { result_type: "knowledge_item" as const, result: { plugin_id: pluginId, proposal_type: proposalType } };
+        // A plugin applier changes the plugin's own records; there is no core
+        // object (and no Knowledge item) to link or index.
+        return { result_type: "plugin_proposal" as const, result: { plugin_id: pluginId, proposal_type: proposalType } };
       };
 
       this._contributions.proposalAppliers.push({ proposalType, applier: wrapped });

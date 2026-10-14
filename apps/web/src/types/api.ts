@@ -80,6 +80,7 @@ import type {
   MemoryMaintenanceReport,
   MemoryMaintenanceScanRequest,
   MemoryMaintenanceScanRequestInput,
+  MemoryProposalRevisionRequest,
   MemoryScope,
   NormalizedSkill,
   NoteProjectRole,
@@ -269,6 +270,7 @@ export type {
   MemoryMaintenanceReport,
   MemoryMaintenanceScanRequest,
   MemoryMaintenanceScanRequestInput,
+  MemoryProposalRevisionRequest,
   MemoryScope,
   NormalizedSkill,
   NoteProjectRole,
@@ -2000,9 +2002,6 @@ export interface Run {
   mode: string
   prompt: string | null
   instruction: string | null
-  prompt_asset_key?: string | null
-  prompt_version_id?: string | null
-  prompt_content_hash?: string | null
   scheduled_at: string | null
   started_at: string | null
   ended_at: string | null
@@ -2020,7 +2019,8 @@ export interface Run {
   visibility?: ObjectVisibility
   access_level?: ContentAccessLevel
   owner_user_id?: string | null
-  task_id?: string | null
+  /** Run detail only: the Tasks this Run worked on that the viewer may read. */
+  linked_tasks?: Array<{ id: string; title: string }>
   required_sandbox_level?: string | null
   contract_snapshot_json?: Record<string, unknown>
   workflow_version_id?: string | null
@@ -2115,6 +2115,14 @@ export interface RunFinalization {
   skipped_reasons_json: unknown
   error_json: Record<string, unknown> | null
   metadata_json: Record<string, unknown> | null
+  /** Whether the Run's outcome reached its Task, graph and follow-ups — separate from the Agent finishing. */
+  settlement: {
+    status: 'settled' | 'pending' | 'not_applicable'
+    settled_at: string | null
+    attempts: number
+    reason_code: string | null
+    next_attempt_at?: string | null
+  }
 }
 
 export interface PlanVersionSummary {
@@ -2385,6 +2393,10 @@ export interface Proposal {
   requires_approval_type?: string | null
   egress_approval_status?: string | null
   egress_approval_id?: string | null
+  /** The Memory entry an update or archive proposal acts on. */
+  target_memory_id?: string | null
+  /** Set on a maintenance update that must be revised before it can be accepted. */
+  operator_revision?: { edited_by_user_id: string | null; edited_at: string | null }
   incomplete_patch?: boolean
   skipped_changes?: Array<Record<string, unknown>>
   skipped_count?: number
@@ -2991,9 +3003,6 @@ export interface RunCreateBody {
   capabilities_json?: string[]
   model_provider_id?: string | null
   model?: string | null
-  prompt_asset_key?: string | null
-  prompt_version_id?: string | null
-  prompt_content_hash?: string | null
 }
 
 export type ProjectFolderKind = 'code' | 'data' | 'docs'

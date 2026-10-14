@@ -95,6 +95,9 @@ export class UsageService {
       group_by: filters.groupBy ?? "provider",
       totals: result.totals,
       items: result.items,
+      total: result.total,
+      limit: filters.limit ?? 100,
+      offset: filters.offset ?? 0,
     };
   }
 

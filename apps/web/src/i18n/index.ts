@@ -14,6 +14,20 @@ import { digestReportsEn } from './digestReports.en'
 import { digestReportsZhCN } from './digestReports.zh-CN'
 import { conversationRetrievalEn } from './conversationRetrieval.en'
 import { conversationRetrievalZhCN } from './conversationRetrieval.zh-CN'
+import { skillPackagesEn } from './skillPackages.en'
+import { skillPackagesZhCN } from './skillPackages.zh-CN'
+import { conversationUiEn } from './conversationUi.en'
+import { conversationUiZhCN } from './conversationUi.zh-CN'
+import { sessionsUiEn } from './sessionsUi.en'
+import { sessionsUiZhCN } from './sessionsUi.zh-CN'
+import { managementUiEn } from './managementUi.en'
+import { managementUiZhCN } from './managementUi.zh-CN'
+import { activityUiEn } from './activityUi.en'
+import { activityUiZhCN } from './activityUi.zh-CN'
+import { knowledgeUiEn } from './knowledgeUi.en'
+import { knowledgeUiZhCN } from './knowledgeUi.zh-CN'
+import { coreUiEn } from './coreUi.en'
+import { coreUiZhCN } from './coreUi.zh-CN'
 
 export type Locale = 'en' | 'zh-CN'
 const LOCALE_STORAGE_KEY = 'rainver:locale'
@@ -36,8 +50,8 @@ void i18n.use(initReactI18next).init({
   fallbackLng: 'en',
   supportedLngs: ['en', 'zh-CN'],
   resources: {
-    en: { translation: { ...en, home: homeEn, evolution: evolutionEn, digest_reports: digestReportsEn, ...mixedSurfacesEn, ...publicAuthEn, ...conversationRetrievalEn } },
-    'zh-CN': { translation: { ...zhCN, home: homeZhCN, evolution: evolutionZhCN, digest_reports: digestReportsZhCN, ...mixedSurfacesZhCN, ...publicAuthZhCN, ...conversationRetrievalZhCN } },
+    en: { translation: { ...en, home: homeEn, evolution: evolutionEn, digest_reports: digestReportsEn, ...mixedSurfacesEn, ...publicAuthEn, ...conversationRetrievalEn, ...skillPackagesEn, ...conversationUiEn, ...sessionsUiEn, ...managementUiEn, ...activityUiEn, ...knowledgeUiEn, ...coreUiEn } },
+    'zh-CN': { translation: { ...zhCN, home: homeZhCN, evolution: evolutionZhCN, digest_reports: digestReportsZhCN, ...mixedSurfacesZhCN, ...publicAuthZhCN, ...conversationRetrievalZhCN, ...skillPackagesZhCN, ...conversationUiZhCN, ...sessionsUiZhCN, ...managementUiZhCN, ...activityUiZhCN, ...knowledgeUiZhCN, ...coreUiZhCN } },
   },
   interpolation: { escapeValue: false }, // React escapes text when it renders.
   initAsync: false,

@@ -89,6 +89,8 @@ export interface AgentRecord {
   current_version_id: string | null;
   visibility: string;
   access_level: string;
+  source_template_id: string | null;
+  source_template_version_id: string | null;
   created_at: unknown;
   updated_at: unknown;
   model_provider_id?: string | null;
@@ -140,6 +142,9 @@ export interface AgentOut {
   status: string;
   agent_kind: string;
   current_version_id: string | null;
+  /** Provenance only: the catalog template this Agent was created from. */
+  source_template_id: string | null;
+  source_template_version_id: string | null;
   model: {
     provider_id: string | null;
     provider_name: string | null;
@@ -206,12 +211,15 @@ export interface AgentCreateInput {
   outputSchemaJson?: Record<string, unknown> | null;
   agentKind?: string | null;
   ownerUserId?: string | null;
+  /** The catalog template this Agent is created from; absent for a direct create. */
+  sourceTemplate?: { templateId: string; versionId: string } | null;
 }
 
 const AGENT_COLUMNS = `
   a.id, a.space_id, a.project_id, a.owner_user_id, a.name, a.description, a.role_instruction,
   a.status, a.agent_kind,
-  a.current_version_id, a.visibility, a.access_level, a.created_at, a.updated_at,
+  a.current_version_id, a.visibility, a.access_level, a.source_template_id, a.source_template_version_id,
+  a.created_at, a.updated_at,
   arp.model_provider_id, arp.model_name,
   av.system_prompt,
   arp.runtime_key,
@@ -1048,6 +1056,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       workspaceLocationId: null,
       workspaceMode,
       runtimeInstallation,
+      sourceTemplate: input.sourceTemplate ?? null,
     });
   }
 
@@ -1823,6 +1832,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       runtimeInstallation: string | null;
       /** Who is provisioning; a system Agent has no owner to fall back on. */
       actorUserId: string;
+      sourceTemplate?: { templateId: string; versionId: string } | null;
     },
   ): Promise<AgentOut> {
     const agentId = randomUUID();
@@ -1830,8 +1840,8 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     await client.query(
       `INSERT INTO agents (
          id, space_id, project_id, owner_user_id, name, description, role_instruction,
-         status, agent_kind, visibility, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)`,
+         status, agent_kind, visibility, source_template_id, source_template_version_id, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $13, $11, $11)`,
       [
         agentId,
         input.spaceId,
@@ -1844,6 +1854,8 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         input.agentKind,
         input.visibility,
         now,
+        input.sourceTemplate?.templateId ?? null,
+        input.sourceTemplate?.versionId ?? null,
       ],
     );
     const version = await this.insertVersion(client, {

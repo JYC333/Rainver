@@ -18,7 +18,6 @@ const EVOLUTION_AVAILABLE_PROPOSAL_TYPES = [
   "memory_create",
   "memory_update",
   "memory_archive",
-  "policy_change",
   "skill_import_approve",
   "capability_install",
   "capability_update",

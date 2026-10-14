@@ -55,7 +55,7 @@ let app: FastifyInstance | undefined;
 const db = useTestDatabase(import.meta.filename);
 
 function user(id: string, email: string): CurrentUser {
-  return { id, email, display_name: id, avatar_url: null, is_instance_admin: false, created_at: new Date().toISOString(), last_login_at: null };
+  return { id, email, display_name: id, avatar_url: null, is_instance_admin: false, created_at: new Date().toISOString(), default_space_id: null, last_login_at: null };
 }
 
 function stubAuth(): AuthRepository {

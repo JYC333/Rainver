@@ -448,14 +448,6 @@ export type RoomAgentMutationResponse = z.infer<typeof RoomAgentMutationResponse
 export const CreateRoomResponseSchema = RoomDetailSchema;
 export type CreateRoomResponse = z.infer<typeof CreateRoomResponseSchema>;
 
-/** Where a Space with no usable backend can get one. A CLI is logged in on an execution host (ADR 0016); Rainver brokers none. */
-export const RoomBackendSetupTargetSchema = z.enum(["model_providers", "execution_hosts"]);
-export const RoomBackendRequiredErrorSchema = z.object({
-  code: z.literal("conversation_backend_required"),
-  detail: z.string().trim().min(1),
-  setup_targets: z.array(RoomBackendSetupTargetSchema).min(1),
-}).strict();
-export type RoomBackendRequiredError = z.infer<typeof RoomBackendRequiredErrorSchema>;
 
 /**
  * What the person is looking at while they type.

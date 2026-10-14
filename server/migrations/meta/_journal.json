@@ -57,6 +57,41 @@
       "when": 1791986023959,
       "tag": "0007_lease_fencing_embedding_block_research_intent",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791987697970,
+      "tag": "0008_proposal_pending_operation_key",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791987863204,
+      "tag": "0009_asset_baseline_placement_and_content_binding",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791988222283,
+      "tag": "0010_inquiry_object_profile_subtypes",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791988402786,
+      "tag": "0011_agent_template_provenance",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791988538862,
+      "tag": "0012_run_lineage_settlement_plan_actions",
+      "breakpoints": true
     }
   ]
 }

@@ -200,4 +200,42 @@ describe('AutomationsPage', () => {
     expect(screen.queryByText('Project binding')).toBeNull()
     expect(screen.getByRole('button', { name: /Pause/ })).toBeTruthy()
   })
+
+  it('names a system-managed digest for what it is and offers no Project binding the server would refuse', async () => {
+    const automation = {
+      id: 'automation-digest',
+      space_id: 'space-1',
+      owner_user_id: 'user-1',
+      agent_id: 'agent-digest',
+      project_folder_id: null,
+      project_id: null,
+      name: 'Daily digest',
+      description: null,
+      trigger_type: 'schedule',
+      status: 'active',
+      access: 'full',
+      preflight_snapshot_json: null,
+      config_json: { target_type: 'information_digest' },
+      next_run_at: null,
+      last_fired_at: null,
+      created_at: '2026-09-01T00:00:00.000Z',
+      updated_at: '2026-09-01T00:00:00.000Z',
+    }
+    automationsApiMock.list.mockResolvedValue([automation])
+    automationsApiMock.get.mockResolvedValue(automation)
+    agentsApiMock.list.mockResolvedValue([{ id: 'agent-digest', name: 'Digest builder' }])
+    projectsApiMock.list.mockResolvedValue({ items: [{ id: 'project-1', name: 'Project One' }] })
+    evolutionApiMock.assets.mockResolvedValue([])
+
+    render(
+      <MemoryRouter>
+        <AutomationsPage />
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText(/Daily digest for its owner/)).toBeInTheDocument()
+    expect(screen.getAllByText(/daily digest/).length).toBeGreaterThan(0)
+    expect(screen.queryByText('agent run')).not.toBeInTheDocument()
+    expect(screen.queryByText('Project binding')).not.toBeInTheDocument()
+  })
 })

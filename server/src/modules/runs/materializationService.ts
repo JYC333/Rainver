@@ -10,7 +10,7 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { enforce, type EnforceResult } from "../policy/service.js";
-import { PostRunFinalizationService } from "./finalizationService.js";
+import { PostRunFinalizationService, RunSettlementPendingError, type RunSettlementPort } from "./finalizationService.js";
 import { redactEvidenceText, sanitizeEvidenceJson } from "./evidenceRedaction.js";
 import {
   PgRunRepository,
@@ -74,6 +74,28 @@ const STRUCTURED_PACKET_PROPOSAL_TYPES = new Set([
   "object_relation_delete",
 ]);
 
+/**
+ * What settles a terminal Run, in order: the Plan and Workflow graphs it is a
+ * node of, then every domain reconciler registered for it. All of them are
+ * part of the completion gate.
+ */
+function runSettlement(config: ServerConfig, db: Queryable): RunSettlementPort {
+  return {
+    reconcilers: () => [
+      {
+        key: "plan_graph",
+        settle: (run) => new PlanExecutionService(db, config)
+          .reconcileForRun(run.space_id, run.id, run.owner_user_id ?? run.instructed_by_user_id ?? undefined),
+      },
+      { key: "workflow_graph", settle: (run) => new WorkflowExecutionService(config).reconcileForRun(db, run.space_id, run.id) },
+      ...runFinalizationReconcilerRegistry.entries().map(({ key, reconcile }) => ({
+        key,
+        settle: (run: RunRecord) => reconcile(db, run),
+      })),
+    ],
+  };
+}
+
 export class RunMaterializationService {
   constructor(
     private readonly config: ServerConfig,
@@ -83,14 +105,7 @@ export class RunMaterializationService {
       new EvolutionSolidifier(new EvolutionRepository(db)),
       new EvolutionSignalEmitter(db),
       new PgUsageRepository(db),
-      {
-        reconcileForRun: async (spaceId: string, runId: string, userId: string) => {
-          await new PlanExecutionService(db).reconcileForRun(spaceId, runId, userId);
-          await new WorkflowExecutionService(config).reconcileForRun(db, spaceId, runId);
-          const run = await new PgRunRepository(db).getRun(spaceId, runId);
-          if (run) await runFinalizationReconcilerRegistry.reconcileAll(db, run);
-        },
-      },
+      runSettlement(config, db),
       new PgRunSupervisor(db, new EvolutionSignalEmitter(db)),
     ),
     policyEnforcer?: MaterializationPolicyEnforcer,
@@ -224,6 +239,17 @@ export class RunMaterializationService {
         },
       };
     } catch (error) {
+      // Settlement owed is not a failed finalization: the evaluation and its
+      // record are durable, and the sweep resumes what is left.
+      if (error instanceof RunSettlementPendingError) {
+        return {
+          kind: "activity",
+          status: "failed",
+          error_code: "settlement_pending",
+          error_message: error.message,
+          metadata_json: { operation: "finalization.settle", reconciler: error.reconcilerKey },
+        };
+      }
       return {
         kind: "activity",
         status: "failed",

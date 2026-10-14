@@ -28,7 +28,7 @@ export default function QuestionAssessmentPage() {
       const [nextThread, nextWorkflows, nextProviders, nextProviderVendors, nextAssessmentSession] = await Promise.all([
         inquiryApi.getThread(projectId, threadId),
         projectResearchApi.workflows(projectId),
-        providersApi.list(),
+        providersApi.usable(),
         providersApi.vendors().catch(() => [] as ProviderVendorOut[]),
         projectResearchApi.questionAssessment(projectId, threadId),
       ])

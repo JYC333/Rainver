@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { ProposalApplierRegistry, ProposalApplyContext, ProposalApplyResult } from "../proposals/applierRegistry.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
 import {
   assertAssetAllowsTargetScope,
   assertCanWriteAssetOwnerScope,
   normalizeVersionScopeForWrite,
+  versionServesScope,
   type EvolvableAssetAccessRow,
 } from "./assetAccess.js";
 import { lockEvolutionAssets } from "./assetLocks.js";
@@ -11,7 +13,10 @@ import { lockEvolutionAssets } from "./assetLocks.js";
 interface PromotePayload {
   asset_id: string;
   candidate_version_id: string;
-  target_scope_type: "project" | "space" | "system" | "user" | "agent";
+  /** The content the reviewer approved; promotion refuses any other. */
+  candidate_content_hash: string;
+  /** Where a pin or deployment ref lands. The version keeps its own scope. */
+  target_scope_type: "project" | "space" | "user" | "agent";
   target_scope_id?: string | null;
   pin_after_approval?: boolean;
   deprecate_previous?: boolean;
@@ -25,6 +30,18 @@ interface AssetPromotionRow extends EvolvableAssetAccessRow {
   id: string;
   asset_type: string;
 }
+
+interface CandidateRow {
+  id: string;
+  status: string;
+  space_id: string | null;
+  scope_type: string;
+  scope_id: string | null;
+  content_hash: string | null;
+}
+
+/** Statuses of a Run that is still going to read the version it names. */
+const LIVE_RUN_STATUSES = ["queued", "running", "cancelling", "waiting_for_review", "waiting_for_dependency"];
 
 /**
  * Applies an `evolvable_asset_version_promote` proposal: the only path a
@@ -52,32 +69,45 @@ async function applyEvolvableAssetVersionPromote(context: ProposalApplyContext):
     [payload.asset_id, spaceId],
   );
   const asset = assetResult.rows[0];
-  if (!asset) throw new Error(`evolvable asset ${payload.asset_id} not found in this space`);
+  if (!asset) throw new HttpError(404, "Evolvable asset not found in this space");
   await assertCanWriteAssetOwnerScope(db, identity, asset);
 
-  const versionResult = await db.query<{
-    id: string;
-    status: string;
-    space_id: string | null;
-    scope_type: string;
-    scope_id: string | null;
-  }>(
-    `SELECT id, status, space_id, scope_type, scope_id FROM evolvable_asset_versions WHERE asset_id = $1 AND id = $2 LIMIT 1`,
+  const candidateResult = await db.query<CandidateRow>(
+    `SELECT id, status, space_id, scope_type, scope_id, content_hash
+       FROM evolvable_asset_versions
+      WHERE asset_id = $1 AND id = $2
+      FOR UPDATE`,
     [payload.asset_id, payload.candidate_version_id],
   );
-  const candidate = versionResult.rows[0];
-  if (!candidate) throw new Error(`candidate_version_id ${payload.candidate_version_id} does not belong to asset ${payload.asset_id}`);
+  const candidate = candidateResult.rows[0];
+  if (!candidate) throw new HttpError(409, "The candidate version no longer belongs to this asset");
   if (candidate.status !== "candidate" && candidate.status !== "testing") {
-    throw new Error(`candidate version must be in status 'candidate' or 'testing', found '${candidate.status}'`);
+    throw new HttpError(409, `The candidate version is ${candidate.status}, not candidate or testing`);
+  }
+  // The reviewer approved this content. A version's content is frozen once it
+  // leaves draft; a mismatch means the proposal names other content.
+  if (!payload.candidate_content_hash || candidate.content_hash !== payload.candidate_content_hash) {
+    throw new HttpError(409, "The candidate version's content differs from what was proposed; propose it again");
   }
   await normalizeVersionScopeForWrite(db, identity, candidate.scope_type, candidate.scope_id);
   assertAssetAllowsTargetScope(asset, identity, candidate.scope_type, candidate.scope_id);
 
+  const targetScopeType = payload.target_scope_type;
+  if (!["project", "space", "user", "agent"].includes(targetScopeType)) {
+    throw new HttpError(422, "target_scope_type must be one of project, space, user, agent");
+  }
+  const targetScopeId = await normalizeVersionScopeForWrite(db, identity, targetScopeType, payload.target_scope_id ?? null);
+  assertAssetAllowsTargetScope(asset, identity, targetScopeType, targetScopeId);
+  if (!versionServesScope(identity, { scopeType: targetScopeType, scopeId: targetScopeId }, candidate)) {
+    throw new HttpError(422, "The version's scope does not cover the promotion target");
+  }
+
   // Evaluation is warn-only by default. A proposal can opt into the hard
   // gate, but the applier always recomputes the decision from the database;
-  // the proposal's embedded summary is evidence, not authority.
-  const evalParams: unknown[] = [payload.asset_id, payload.candidate_version_id, spaceId];
-  let evalClause = "asset_id = $1 AND candidate_version_id = $2 AND space_id = $3";
+  // the proposal's embedded summary is evidence, not authority. Only an
+  // evaluation of this exact content counts.
+  const evalParams: unknown[] = [payload.asset_id, payload.candidate_version_id, spaceId, candidate.content_hash];
+  let evalClause = "asset_id = $1 AND candidate_version_id = $2 AND space_id = $3 AND candidate_content_hash = $4";
   if (payload.evaluation_policy?.hard_gate === true) {
     evalClause += " AND status = 'passed' AND evaluator_version = 'verification_engine.v1' AND eval_suite_ref_json->>'kind' = 'evaluation_case'";
   }
@@ -92,79 +122,37 @@ async function applyEvolvableAssetVersionPromote(context: ProposalApplyContext):
   const passedEvaluation = evaluationRows.rows.some((row) => row.status === "passed");
   const hardGate = payload.evaluation_policy?.hard_gate === true;
   if (hardGate && !passedEvaluation) {
-    throw new Error("Promotion hard gate requires at least one passed evaluation run for this candidate version");
+    throw new HttpError(409, "Promotion hard gate requires at least one passed evaluation run of this version's content");
   }
   const evaluationSummary = summarizeEvaluationRows(evaluationRows.rows);
 
-  const targetScopeType = payload.target_scope_type;
-  const targetScopeId = payload.target_scope_id ?? null;
-  if (!["project", "space", "system", "user", "agent"].includes(targetScopeType)) {
-    throw new Error("target_scope_type must be one of project, space, system, user, agent");
-  }
-  if (targetScopeType !== "system" && !targetScopeId) {
-    throw new Error(`target_scope_id is required for target_scope_type '${targetScopeType}'`);
-  }
-  if (targetScopeType === "space" && targetScopeId !== spaceId) {
-    throw new Error("space-scoped asset promotion target_scope_id must match the proposal space_id");
-  }
-  if (targetScopeType === "system" && targetScopeId) {
-    throw new Error("system-scoped asset promotion must not include target_scope_id");
-  }
-  const normalizedTargetScopeId = await normalizeVersionScopeForWrite(db, identity, targetScopeType, targetScopeId);
-  assertAssetAllowsTargetScope(asset, identity, targetScopeType, normalizedTargetScopeId);
-
   const now = new Date().toISOString();
-  await db.query(
+  const approved = await db.query(
     `UPDATE evolvable_asset_versions
-        SET status = 'approved', scope_type = $3, scope_id = $4, promotion_proposal_id = $5,
-            approved_by_user_id = $6, updated_at = $7
-      WHERE asset_id = $1 AND id = $2`,
-    [payload.asset_id, payload.candidate_version_id, targetScopeType, normalizedTargetScopeId, context.proposal.id, context.userId, now],
+        SET status = 'approved', promotion_proposal_id = $3, approved_by_user_id = $4, updated_at = $5
+      WHERE asset_id = $1 AND id = $2 AND status IN ('candidate', 'testing') AND content_hash = $6`,
+    [payload.asset_id, payload.candidate_version_id, context.proposal.id, context.userId, now, candidate.content_hash],
   );
-
-  if (payload.deprecate_previous) {
-    await db.query(
-      `UPDATE evolvable_asset_versions
-          SET status = 'deprecated', updated_at = $5
-        WHERE asset_id = $1 AND scope_type = $2 AND scope_id IS NOT DISTINCT FROM $3
-          AND status = 'approved' AND id <> $4`,
-      [payload.asset_id, targetScopeType, normalizedTargetScopeId, payload.candidate_version_id, now],
-    );
-  }
-
-  if (targetScopeType === "system") {
-    await db.query(`UPDATE evolvable_assets SET current_system_version_id = $2, updated_at = $3 WHERE id = $1`, [
-      payload.asset_id,
-      payload.candidate_version_id,
-      now,
-    ]);
-  }
+  if (approved.rowCount !== 1) throw new HttpError(409, "The candidate version changed while it was being promoted");
 
   const deploymentLabel = payload.deployment_label?.trim() || null;
   if (deploymentLabel) {
     if (asset.asset_type !== "prompt_template") {
-      throw new Error("deployment_label is only valid for prompt_template asset promotions");
+      throw new HttpError(422, "deployment_label is only valid for prompt_template asset promotions");
     }
     if (!/^[a-z][a-z0-9_.-]{0,63}$/.test(deploymentLabel)) {
-      throw new Error("deployment_label is invalid");
+      throw new HttpError(422, "deployment_label is invalid");
     }
     await db.query(
       `UPDATE prompt_deployment_refs
           SET status = 'archived', updated_at = $6
         WHERE asset_id = $1
           AND scope_type = $2
-          AND scope_id IS NOT DISTINCT FROM $3
+          AND scope_id = $3
           AND label = $4
           AND status = 'active'
-          AND space_id IS NOT DISTINCT FROM $5`,
-      [
-        payload.asset_id,
-        targetScopeType,
-        normalizedTargetScopeId,
-        deploymentLabel,
-        targetScopeType === "system" ? null : spaceId,
-        now,
-      ],
+          AND space_id = $5`,
+      [payload.asset_id, targetScopeType, targetScopeId, deploymentLabel, spaceId, now],
     );
     await db.query(
       `INSERT INTO prompt_deployment_refs (
@@ -173,10 +161,10 @@ async function applyEvolvableAssetVersionPromote(context: ProposalApplyContext):
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10, $10)`,
       [
         randomUUID(),
-        targetScopeType === "system" ? null : spaceId,
+        spaceId,
         payload.asset_id,
         targetScopeType,
-        normalizedTargetScopeId,
+        targetScopeId,
         deploymentLabel,
         payload.candidate_version_id,
         context.userId,
@@ -186,12 +174,12 @@ async function applyEvolvableAssetVersionPromote(context: ProposalApplyContext):
     );
   }
 
-  if (payload.pin_after_approval && targetScopeType !== "system" && normalizedTargetScopeId) {
+  if (payload.pin_after_approval && targetScopeId) {
     await db.query(
       `UPDATE evolvable_asset_pins
           SET status = 'archived', updated_at = $5
         WHERE space_id = $1 AND asset_id = $2 AND scope_type = $3 AND scope_id = $4 AND status = 'active'`,
-      [spaceId, payload.asset_id, targetScopeType, normalizedTargetScopeId, now],
+      [spaceId, payload.asset_id, targetScopeType, targetScopeId, now],
     );
     await db.query(
       `INSERT INTO evolvable_asset_pins (
@@ -202,7 +190,7 @@ async function applyEvolvableAssetVersionPromote(context: ProposalApplyContext):
         spaceId,
         payload.asset_id,
         targetScopeType,
-        normalizedTargetScopeId,
+        targetScopeId,
         payload.candidate_version_id,
         context.userId,
         payload.reason ?? null,
@@ -210,6 +198,12 @@ async function applyEvolvableAssetVersionPromote(context: ProposalApplyContext):
       ],
     );
   }
+
+  // After this promotion moved its own pin and deployment ref: what it
+  // replaced no longer keeps the earlier version alive.
+  const deprecation = payload.deprecate_previous
+    ? await deprecatePreviousUnreferenced(db, payload.asset_id, candidate, now)
+    : { deprecated: [] as string[], keptReferenced: [] as string[] };
 
   await db.query(
     `INSERT INTO evolution_experiences (
@@ -225,7 +219,7 @@ async function applyEvolvableAssetVersionPromote(context: ProposalApplyContext):
       spaceId,
       context.proposal.id,
       `evolvable_asset_promotion:${payload.candidate_version_id}`,
-      `Promoted asset ${payload.asset_id} version ${payload.candidate_version_id} to ${targetScopeType}${normalizedTargetScopeId ? `:${normalizedTargetScopeId}` : ""}`,
+      `Promoted asset ${payload.asset_id} version ${payload.candidate_version_id} for ${targetScopeType}:${targetScopeId}`,
       now,
     ],
   );
@@ -236,9 +230,11 @@ async function applyEvolvableAssetVersionPromote(context: ProposalApplyContext):
       asset_id: payload.asset_id,
       version_id: payload.candidate_version_id,
       target_scope_type: targetScopeType,
-      target_scope_id: normalizedTargetScopeId,
-      pinned: Boolean(payload.pin_after_approval && targetScopeType !== "system" && normalizedTargetScopeId),
+      target_scope_id: targetScopeId,
+      pinned: Boolean(payload.pin_after_approval && targetScopeId),
       deployment_label: deploymentLabel,
+      deprecated_version_ids: deprecation.deprecated,
+      kept_referenced_version_ids: deprecation.keptReferenced,
       evaluation: {
         policy: hardGate ? "hard_gate" : "warn_only",
         passed: passedEvaluation,
@@ -247,6 +243,45 @@ async function applyEvolvableAssetVersionPromote(context: ProposalApplyContext):
       },
     },
   };
+}
+
+/**
+ * Deprecates the earlier approved versions in the promoted version's own
+ * scope, except any something still uses: an active pin, an active prompt
+ * deployment ref, or a Run or workflow execution that has not finished.
+ * Those stay approved until whoever owns the reference moves it; deprecating
+ * them would make that reference fail to resolve. A finished execution is
+ * history, not a reference that keeps a version alive.
+ */
+async function deprecatePreviousUnreferenced(
+  db: Queryable,
+  assetId: string,
+  candidate: CandidateRow,
+  now: string,
+): Promise<{ deprecated: string[]; keptReferenced: string[] }> {
+  const previous = await db.query<{ id: string; referenced: boolean }>(
+    `SELECT v.id,
+            (
+              EXISTS (SELECT 1 FROM evolvable_asset_pins pin WHERE pin.version_id = v.id AND pin.status = 'active')
+              OR EXISTS (SELECT 1 FROM prompt_deployment_refs ref WHERE ref.version_id = v.id AND ref.status = 'active')
+              OR EXISTS (SELECT 1 FROM runs run WHERE run.workflow_version_id = v.id AND run.status = ANY($5::text[]))
+              OR EXISTS (SELECT 1 FROM workflow_executions execution WHERE execution.workflow_version_id = v.id AND execution.ended_at IS NULL)
+            ) AS referenced
+       FROM evolvable_asset_versions v
+      WHERE v.asset_id = $1 AND v.space_id = $2 AND v.scope_type = $3 AND v.scope_id = $4
+        AND v.status = 'approved' AND v.id <> $6
+      FOR UPDATE OF v`,
+    [assetId, candidate.space_id, candidate.scope_type, candidate.scope_id, LIVE_RUN_STATUSES, candidate.id],
+  );
+  const deprecated = previous.rows.filter((row) => !row.referenced).map((row) => row.id);
+  const keptReferenced = previous.rows.filter((row) => row.referenced).map((row) => row.id);
+  if (deprecated.length > 0) {
+    await db.query(
+      `UPDATE evolvable_asset_versions SET status = 'deprecated', updated_at = $3 WHERE asset_id = $1 AND id = ANY($2::varchar[])`,
+      [assetId, deprecated, now],
+    );
+  }
+  return { deprecated, keptReferenced };
 }
 
 function summarizeEvaluationRows(rows: Array<{ id: string; status: string }>): Record<string, unknown> {

@@ -133,7 +133,7 @@ vi.mock('../../../api/client', () => ({
     resolveQuestionChange: vi.fn().mockResolvedValue({}),
   },
   providersApi: {
-    list: vi.fn().mockResolvedValue([]),
+    usable: vi.fn().mockResolvedValue([]),
     vendors: vi.fn().mockResolvedValue([]),
   },
   inquiryApi: {

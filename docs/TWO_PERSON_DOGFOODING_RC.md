@@ -845,7 +845,7 @@ Backup manifest inspected: <yes / no>
 |---|---|
 | `Credential.secret_ref` full decryption deferred | Only `ModelProvider` encrypted keys decryptable; full secret_ref deferred |
 | Obsolete agents-module runtime path | Runtime execution uses `RuntimeAdapterSpec`; new adapters must start there |
-| Persisted policy not wired to enforcement | `policy_change` writes versioned `policies` rows, but no enforcement point reads them yet; the structural memory write boundary is the canonical applier; rest documented in `PRODUCT_AND_BOUNDARIES.md` |
+| No generic persisted policy | The generic `policy_change` proposal is closed (no applier; a stored one fails closed). Run governance is the Runtime Context Policy; the structural memory write boundary is the canonical applier; rest documented in `PRODUCT_AND_BOUNDARIES.md` |
 | Artifact archive/delete API | Not implemented; artifacts accumulate. See [unimplemented-from-guides.md](../.agent/plans/unimplemented-from-guides.md) §17 |
 | Activity archive | Implemented (`PATCH /api/v1/activity/:activityId/archive`). No hard-delete API |
 | Workspace stale status has no recovery UI | Operator must use `PATCH /workspaces/{id}` |

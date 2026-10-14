@@ -172,8 +172,9 @@ class PgProvidersDbPort implements ProvidersDbPort {
          JOIN "${table}" p ON p.id = g.provider_id
          LEFT JOIN credentials c ON c.id = p.credential_id
         WHERE g.space_id = $1
-          AND g.enabled = true
-          AND p.enabled = true
+          -- A disabled Provider stays listed for its owner, who can enable it
+          -- again; nobody else sees it, and selectors filter on enabled.
+          AND ((g.enabled = true AND p.enabled = true) OR p.owner_user_id = $2)
           AND (c.credential_type IS DISTINCT FROM 'subscription_oauth' OR p.owner_user_id = $2)
         ORDER BY g.is_default DESC, p.created_at DESC`,
       [spaceId, userId],
@@ -207,8 +208,9 @@ class PgProvidersDbPort implements ProvidersDbPort {
          LEFT JOIN credentials c ON c.id = p.credential_id
         WHERE g.space_id = $1
           AND g.provider_id = $2
-          AND g.enabled = true
-          AND p.enabled = true
+          -- The owner can read their disabled Provider; a runtime read (no
+          -- person) and everyone else read only an enabled one.
+          AND ((g.enabled = true AND p.enabled = true) OR p.owner_user_id = $3)
           AND (c.credential_type IS DISTINCT FROM 'subscription_oauth' OR p.owner_user_id = $3)
         LIMIT 1`,
       [spaceId, configId, userId],

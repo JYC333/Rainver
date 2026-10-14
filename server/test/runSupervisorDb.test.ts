@@ -236,14 +236,14 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       completed_at: new Date().toISOString(),
     });
     await finalizer.finalize(runId, SPACE);
-    expect((await db.pool.query<{ committed: string | null }>(
-      `SELECT metadata_json->>'completion_gate_committed' AS committed
+    expect((await db.pool.query<{ settled: boolean }>(
+      `SELECT settled_at IS NOT NULL AS settled
          FROM run_finalizations
         WHERE space_id = $1 AND run_id = $2
         ORDER BY finalized_at DESC
         LIMIT 1`,
       [SPACE, runId],
-    )).rows[0]?.committed).toBe("true");
+    )).rows[0]?.settled).toBe(true);
 
     const firstAttempt = await db.pool.query<{ attempt_number: number; status: string }>(
       `SELECT attempt_number, status FROM run_attempts WHERE space_id = $1 AND run_id = $2`,

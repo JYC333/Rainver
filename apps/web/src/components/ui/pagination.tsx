@@ -2,6 +2,8 @@ import { useEffect } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from './button'
 import { cn } from '../../lib/utils'
+import { useAppTranslation } from '../../i18n'
+import { formatNumber } from '../../i18n/format'
 
 interface PaginationProps {
   total: number
@@ -12,6 +14,7 @@ interface PaginationProps {
 }
 
 export function Pagination({ total, limit, offset, onChange, className }: PaginationProps) {
+  const { t } = useAppTranslation()
   const page     = Math.floor(offset / limit) + 1
   const pages    = Math.ceil(total / limit)
   const hasPrev  = offset > 0
@@ -31,7 +34,7 @@ export function Pagination({ total, limit, offset, onChange, className }: Pagina
   return (
     <div className={cn('flex items-center justify-between text-xs text-muted-foreground', className)}>
       <span>
-        {offset + 1}–{Math.min(offset + limit, total)} of {total}
+        {t('core_ui.pagination.range', { from: formatNumber(offset + 1), to: formatNumber(Math.min(offset + limit, total)), total: formatNumber(total) })}
       </span>
       <div className="flex items-center gap-1">
         <Button
@@ -39,6 +42,7 @@ export function Pagination({ total, limit, offset, onChange, className }: Pagina
           size="sm"
           className="h-7 w-7 p-0"
           disabled={!hasPrev}
+          aria-label={t('core_ui.pagination.previous')}
           onClick={() => onChange(offset - limit)}
         >
           <ChevronLeft className="size-3.5" />
@@ -49,6 +53,7 @@ export function Pagination({ total, limit, offset, onChange, className }: Pagina
           size="sm"
           className="h-7 w-7 p-0"
           disabled={!hasNext}
+          aria-label={t('core_ui.pagination.next')}
           onClick={() => onChange(offset + limit)}
         >
           <ChevronRight className="size-3.5" />

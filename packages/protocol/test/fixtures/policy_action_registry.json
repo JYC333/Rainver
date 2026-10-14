@@ -208,19 +208,6 @@
     "record_failure_mode": "best_effort"
   },
   {
-    "action": "policy.change",
-    "resource_type": "policy",
-    "default_risk_level": "high",
-    "default_decision": "require_approval",
-    "audit_required": true,
-    "approval_capability": "approve_policy_change",
-    "default_required_approver_role": "owner",
-    "current_enforcement_point": "server/src/modules/proposals/applyService.ts via proposal.apply",
-    "description": "Create or supersede a policy version. Protected via proposal.apply gate and ProposalApplyService. Must not be called directly through PolicyGateway.",
-    "lifecycle_status": "wired_via_proposal",
-    "record_failure_mode": "fail_closed"
-  },
-  {
     "action": "knowledge.create",
     "resource_type": "knowledge",
     "default_risk_level": "medium",

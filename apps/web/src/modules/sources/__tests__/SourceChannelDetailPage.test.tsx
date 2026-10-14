@@ -78,6 +78,22 @@ describe('Source detail', () => {
     ])
   })
 
+  it('offers a retry when the first load fails, instead of calling the source missing', async () => {
+    vi.mocked(sourcesApi.channels).mockRejectedValueOnce(new Error('Network unavailable'))
+    renderPage()
+
+    expect(await screen.findByText('Could not load this source')).toBeInTheDocument()
+    expect(screen.queryByText('Source not found')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('heading', { name: 'arXiv Research' })).toBeInTheDocument()
+  })
+
+  it('still says a source is missing when it loads and is not there', async () => {
+    vi.mocked(sourcesApi.channels).mockResolvedValue([])
+    renderPage()
+    expect(await screen.findByText('Source not found')).toBeInTheDocument()
+  })
+
   it('groups multiple monitors under one source origin', async () => {
     renderPage()
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { takeReferences } from './pendingReferences'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { Loader2, MessageSquarePlus, Plus, RefreshCw, Users } from 'lucide-react'
@@ -10,7 +10,6 @@ import { errMsg } from '../../lib/utils'
 import type {
   ThreadReferencePick,
   AgentOut,
-  ConversationBackendCatalog,
   ConversationExecutionSummary,
   Project,
   ProjectFolder,
@@ -23,7 +22,6 @@ import type {
   RoomPendingApprovalListResponse,
   SpaceMember,
 } from '../../types/api'
-import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Label } from '../../components/ui/label'
@@ -31,14 +29,10 @@ import { Select } from '../../components/ui/select'
 import { LimitedRoomDialog } from './LimitedRoomDialog'
 import { RoomRosterPanel } from './RoomRosterPanel'
 import { audienceLabel } from './audience'
-import { ConversationSurface, type ConversationBackendSelection, type RoutingMode } from '../conversation/ConversationSurface'
-import { ConversationBackendSetupCard } from './conversation/ConversationBackendSetupCard'
+import { ConversationSurface, type RoutingMode } from '../conversation/ConversationSurface'
 import { ConversationExecutionPreflight } from '../conversation/ConversationExecutionPreflight'
 import { conversationInputSourcesFromExecutionSummary } from '../conversation/ConversationInputComposer'
 
-type BackendSelection = {
-  runtime_profile_id: string
-}
 const LIST_PAGE_SIZE = 100
 
 export default function AgentGroupsPage() {
@@ -99,14 +93,11 @@ export default function AgentGroupsPage() {
   const locallyCommittedRooms = useRef(new Map<string, Room>())
   const catalogRequestSequence = useRef(0)
   const roomRequestSequence = useRef(0)
-  const [backendCatalogs, setBackendCatalogs] = useState<Record<string, ConversationBackendCatalog>>({})
-  const [backendSelections, setBackendSelections] = useState<Record<string, BackendSelection>>({})
   const [loading, setLoading] = useState(true)
   const [roomLoading, setRoomLoading] = useState(false)
   const [roomLoadError, setRoomLoadError] = useState<string | null>(null)
   /** A retry of the catalog load is in flight; the empty state's button waits on it. */
   const [retrying, setRetrying] = useState(false)
-  const [roomSetupTargets, setRoomSetupTargets] = useState<string[]>([])
   const [routingMode, setRoutingMode] = useState<RoutingMode>('direct')
   const loadCatalog = useCallback(async () => {
     if (!activeSpaceId) return
@@ -288,44 +279,6 @@ export default function AgentGroupsPage() {
     }, { replace: true })
   }, [conversationId, conversations, detail, roomId, setSearch, startingNew])
 
-  useEffect(() => {
-    if (!detail) {
-      setBackendCatalogs({})
-      setBackendSelections({})
-      return
-    }
-    let cancelled = false
-    Promise.all(detail.agent_members
-      .filter(member => member.agent_kind !== 'system_assistant')
-      .map(async member => ({
-        agentId: member.agent_id,
-        // Without a session id the server returns the options with no stored
-        // binding, which is exactly right while the user is reviewing a new
-        // Conversation draft. Once opened, the draft's pinned selection is
-        // fetched by the execution preflight.
-        catalog: await agentsApi.conversationBackends(member.agent_id, {
-          ...(conversationId ? { sessionId: conversationId } : {}),
-        }),
-      }))).then(entries => {
-      if (cancelled) return
-      const catalogs = Object.fromEntries(entries.map(entry => [entry.agentId, entry.catalog]))
-      setBackendCatalogs(catalogs)
-      setBackendSelections(current => {
-        const next: Record<string, BackendSelection> = {}
-        for (const entry of entries) {
-          const selection = current[entry.agentId] ?? selectedBackend(entry.catalog)
-          if (selection) next[entry.agentId] = selection
-        }
-        return next
-      })
-    }).catch(error => {
-      if (!cancelled) toast.error(errMsg(error))
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [conversationId, detail])
-
   /**
    * Take up a Room the dialog just created.
    *
@@ -335,7 +288,6 @@ export default function AgentGroupsPage() {
    * the empty state and invite somebody to create a second one.
    */
   async function takeUpRoom(room: Room): Promise<void> {
-    setRoomSetupTargets([])
     locallyCommittedRooms.current.set(room.id, room)
     setRooms(current => current.some(item => item.id === room.id) ? current : [...current, room])
     setSearch({ room: room.id })
@@ -369,14 +321,6 @@ export default function AgentGroupsPage() {
     setExecutionReady(false)
   }
 
-  const roomAgents = useMemo(() => {
-    return detail?.agent_members.map(member => ({
-      id: member.agent_id,
-      name: member.agent_name,
-      kind: member.agent_kind,
-      status: member.status,
-    })) ?? []
-  }, [detail])
   const currentConversation = conversations.find(item => item.id === conversationId) ?? null
   /**
    * The picks this render hands to the composer, if any.
@@ -418,12 +362,6 @@ export default function AgentGroupsPage() {
   const roomAudience = detail
     ? audienceLabel({ otherMemberNames: detail.other_member_names, agentCount: detail.agent_count })
     : ''
-  const backendsFor = useCallback((recipientAgentIds: string[]): ConversationBackendSelection[] =>
-    conversationId ? [] :
-    recipientAgentIds.flatMap(agent_id => {
-      const selection = backendSelections[agent_id]
-      return selection ? [{ agent_id, ...selection }] : []
-    }), [backendSelections, conversationId])
 
   if (loading) {
     return <div className="p-6 flex items-center gap-2 text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading Rooms…</div>
@@ -463,10 +401,6 @@ export default function AgentGroupsPage() {
           <RefreshCw className="size-3.5 mr-1" />Refresh
         </Button>
       </header>
-
-      {roomSetupTargets.length > 0 && (
-        <ConversationBackendSetupCard setupTargets={roomSetupTargets} />
-      )}
 
       {pendingApprovals.length > 0 && (
         <Card className="border-amber-500/40 bg-amber-500/5 p-4">
@@ -697,13 +631,10 @@ export default function AgentGroupsPage() {
                     agents={agents}
                     humans={spaceMembers}
                     routingMode={routingMode}
-                    backendsFor={backendsFor}
-                    backendCatalogs={backendCatalogs}
                     isOwner={detail.user_members.some(member => member.user_id === userId && member.role === 'owner')}
                     references={referencesForThisThread}
                     onReferencesRejected={() => setPendingReferences(null)}
                     onConversationUpdated={upsertConversation}
-                    onBackendRequired={setRoomSetupTargets}
                     siblingConversations={conversations}
                     // The same handoff import continuation uses: the picks
                     // remain in the Room-keyed draft until the user sends or
@@ -711,7 +642,6 @@ export default function AgentGroupsPage() {
                     // message or execution run behind.
                     onUseInNewThread={startConversation}
                     onSent={() => {
-                      setRoomSetupTargets([])
                       // Consumed. Do not leave the pick on the draft. Pressing "New" puts
                       // `currentConversation` back to null and the same reference
                       // silently attaches to a second thread nobody picked it for.
@@ -738,35 +668,13 @@ export default function AgentGroupsPage() {
                                 { value: 'agent_coordination', label: 'Agent coordination' },
                               ]}
                             />
-                            <Badge variant="secondary">own backend</Badge>
                           </div>
-                          <div className="grid gap-2 sm:grid-cols-2">
-                            {!currentConversation && roomAgents.filter(agent => agent.kind !== 'system_assistant').map(agent => {
-                              const catalog = backendCatalogs[agent.id]
-                              const choices = backendChoices(catalog)
-                              const selection = backendSelections[agent.id]
-                              return (
-                                <div key={agent.id} className="space-y-1">
-                                  <Label>{agent.name} backend</Label>
-                                  <Select
-                                    value={selection ? backendSelectionValue(selection) : ''}
-                                    onChange={value => setBackendSelections(current => ({
-                                      ...current,
-                                      [agent.id]: parseBackendSelection(value),
-                                    }))}
-                                    options={choices}
-                                    disabled={choices.length === 0 || Boolean(currentConversation)}
-                                  />
-                                  {currentConversation && <p className="text-[11px] text-muted-foreground">Pinned by this Conversation; start a new Conversation to change it.</p>}
-                                </div>
-                              )
-                            })}
-                            {currentConversation && (
-                              <p className="text-[11px] text-muted-foreground sm:col-span-2">
-                                Runtime pins are fixed for this Conversation and are shown in the execution context above.
-                              </p>
-                            )}
-                          </div>
+                          {/* Each Agent's runtime is chosen in the conversation's
+                              execution preflight, before its first message, and
+                              pinned there; there is no second chooser here. */}
+                          <p className="text-[11px] text-muted-foreground">
+                            Each Agent's runtime is confirmed in the execution context before the first message.
+                          </p>
                         </div>
                       </details>
                     )}
@@ -861,33 +769,3 @@ async function loadAllPages<T>(
   }
 }
 
-function selectedBackend(catalog: ConversationBackendCatalog): BackendSelection | null {
-  if (catalog.binding) return { runtime_profile_id: catalog.binding.runtime_profile_id }
-  const option = catalog.options.find(candidate => candidate.usable !== false) ?? catalog.options[0]
-  return option ? { runtime_profile_id: option.runtime_profile_id } : null
-}
-
-function backendChoices(catalog: ConversationBackendCatalog | undefined) {
-  if (!catalog) return []
-  return catalog.options.flatMap(option => {
-    const statusSuffix = option.host_bound && option.host_name
-      ? ` · on ${option.host_name}`
-      : ''
-    const reasonSuffix = option.usable === false && option.reason
-      ? ` — ${option.reason}`
-      : ''
-    return [{
-      value: backendSelectionValue({ runtime_profile_id: option.runtime_profile_id }),
-      label: `${option.model_name ? `${option.name} · ${option.model_name}` : option.name}${statusSuffix}${reasonSuffix}`,
-      disabled: option.usable === false,
-    }]
-  })
-}
-
-function backendSelectionValue(selection: BackendSelection): string {
-  return selection.runtime_profile_id
-}
-
-function parseBackendSelection(value: string): BackendSelection {
-  return { runtime_profile_id: value }
-}

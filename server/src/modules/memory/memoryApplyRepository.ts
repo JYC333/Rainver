@@ -39,6 +39,18 @@ import { memoryRetrievalRegistry } from "./retrievalAdapter.js";
 import { assertProjectInSpace } from "../projects/access.js";
 import { isContentAccessLevel, isContentVisibility } from "../access/contentAccessTypes.js";
 import { recordAgentPersonaRevisionPointer } from "../activity/notificationPointers.js";
+import {
+  activeMemoryGrants,
+  grantsFromPayload,
+  inactiveGrantees,
+  memoryAudience,
+  memoryProvenanceEntries,
+  sourcesUnreadableBy,
+  transferMemoryGrants,
+  widenedReaders,
+  type MemoryAudiencePlacement,
+  type MemoryGrant,
+} from "./memoryAudience.js";
 
 // The memory retrieval projection is a derived index. A projection failure must
 // not roll back an accepted canonical memory write, but the reindex runs inside
@@ -68,6 +80,40 @@ async function reindexMemoryWithinApply(
 
 export class MemoryApplyError extends Error {
   readonly statusCode = 422;
+}
+
+/**
+ * A maintenance finding that needs a person's revision was accepted as it
+ * was generated: accepting it would write the old content back under a
+ * "fixed" label. The revision is written first, then accepted.
+ */
+export class MemoryOperatorEditRequiredError extends Error {
+  readonly statusCode = 409;
+  readonly code = "memory_operator_edit_required";
+  constructor() {
+    super("Revise this memory in the proposal before accepting it; the finding cannot be fixed by accepting it unchanged");
+    this.name = "MemoryOperatorEditRequiredError";
+  }
+}
+
+/**
+ * Maintenance actions whose fix is a person's revision of the content. Each
+ * action that reaches the applier names the change it makes; there is no
+ * action that is accepted by writing the entry back unchanged.
+ */
+const OPERATOR_EDIT_MAINTENANCE_ACTIONS = new Set(["review_contradiction", "attach_or_review_external_source"]);
+
+/**
+ * The accepted change would show this Memory to someone it may not reach: a
+ * person other than its owner widened it, or a reader it adds cannot read
+ * what it was derived from.
+ */
+export class MemoryAudienceError extends Error {
+  readonly statusCode = 409;
+  constructor(readonly code: string, message: string, readonly detail: Record<string, unknown> = {}) {
+    super(message);
+    this.name = "MemoryAudienceError";
+  }
 }
 
 /** Raised when a memory proposal needs a grant-derived egress apply capability
@@ -215,6 +261,7 @@ export interface ApplyProposal {
 interface MemoryAcceptResult {
   memoryId: string;
   supersededMemoryId: string | null;
+  unchanged: boolean;
   payloadJson: Record<string, unknown>;
   scopeType: string;
   agentId: string | null;
@@ -247,6 +294,8 @@ export interface AppliedMemoryRow {
 interface MemoryApplyResult {
   memory: AppliedMemoryRow;
   supersededMemoryId: string | null;
+  /** The accepted update matched the entry as it is: no version was written. */
+  unchanged?: boolean;
 }
 
 const INSERT_COLUMNS = `id, space_id, scope_type, memory_type, content, status,
@@ -320,6 +369,9 @@ export class PgMemoryApplyRepository {
       throw new MemoryApplyError(`unsupported proposal type: ${proposal.proposal_type}`);
     }
     this.assertNoEgressContext(proposal);
+    // Before the source gate: a finding's update that nobody has revised yet
+    // fails for that reason, not for the trust its unrevised payload lacks.
+    if (proposal.proposal_type === "memory_update") assertMaintenanceRevision(proposal.payload_json ?? {});
 
     const acceptContext = "explicit_user_accept";
     let payload: Record<string, unknown> = { ...(proposal.payload_json ?? {}) };
@@ -362,18 +414,26 @@ export class PgMemoryApplyRepository {
     }
 
     const result = await this.applyByType({ ...proposal, payload_json: payload }, userId);
+    const unchanged = result.unchanged === true;
 
     // Best-effort derived retrieval reindex. Runs inside the caller's transaction;
     // SAVEPOINT-isolated so a projection failure never rolls back the canonical write.
-    const reindexIds = result.supersededMemoryId
-      ? [result.memory.id, result.supersededMemoryId]
-      : [result.memory.id];
-    await reindexMemoryWithinApply(this.db, proposal.space_id, reindexIds);
+    if (!unchanged) {
+      const reindexIds = result.supersededMemoryId
+        ? [result.memory.id, result.supersededMemoryId]
+        : [result.memory.id];
+      await reindexMemoryWithinApply(this.db, proposal.space_id, reindexIds);
+    }
 
-    const finalPayload: Record<string, unknown> = { ...payload, resulting_memory_id: result.memory.id };
+    const finalPayload: Record<string, unknown> = {
+      ...payload,
+      resulting_memory_id: result.memory.id,
+      ...(unchanged ? { no_change: true } : {}),
+    };
     return {
       memoryId: result.memory.id,
       supersededMemoryId: result.supersededMemoryId,
+      unchanged,
       payloadJson: finalPayload,
       finalPayload,
       scopeType: result.memory.scope_type,
@@ -426,6 +486,14 @@ export class PgMemoryApplyRepository {
     const ownerUserId = this.resolveOwner(strOr(payload.owner_user_id), vis, acting);
     const projectId = scope === "agent" ? null : await this.resolveProjectId(proposal, payload, null);
     assertMemoryPlacement(scope, vis, ownerUserId, projectId);
+    const grants = targetGrants(payload, vis, ownerUserId) ?? [];
+    await this.assertAudience({
+      spaceId: proposal.space_id,
+      approverUserId: userId,
+      before: null,
+      after: { scope, visibility: vis, accessLevel, ownerUserId, projectId, grants },
+      sources: entries,
+    });
 
     const memId = await this.insertMemory(proposal, {
       scope,
@@ -470,6 +538,13 @@ export class PgMemoryApplyRepository {
       targetId: memId.id,
       entries: linkEntries,
     });
+    await transferMemoryGrants(this.db, {
+      spaceId: proposal.space_id,
+      fromMemoryId: null,
+      toMemoryId: memId.id,
+      grants,
+      actorUserId: userId,
+    });
     return {
       memory: memId,
       supersededMemoryId: null,
@@ -489,6 +564,7 @@ export class PgMemoryApplyRepository {
         `target memory '${targetId}' not found or not active in space '${proposal.space_id}'`,
       );
     }
+    assertMaintenanceRevision(payload);
 
     const vis = lower(
       strOr(payload.target_visibility) ?? strOr(payload.visibility) ?? old.visibility,
@@ -513,6 +589,37 @@ export class PgMemoryApplyRepository {
     );
     const projectId = scope === "agent" ? null : await this.resolveProjectId(proposal, payload, old.project_id);
     assertMemoryPlacement(scope, vis, ownerUserId, projectId);
+    const priorGrants = await activeMemoryGrants(this.db, proposal.space_id, old.id);
+    const grants = targetGrants(payload, vis, ownerUserId) ?? retainedGrants(priorGrants, vis, ownerUserId);
+    await this.assertAudience({
+      spaceId: proposal.space_id,
+      approverUserId: userId,
+      before: {
+        scope: old.scope_type,
+        visibility: old.visibility,
+        accessLevel: old.access_level,
+        ownerUserId: old.owner_user_id,
+        projectId: old.project_id,
+        grants: priorGrants,
+      },
+      after: { scope, visibility: vis, accessLevel, ownerUserId, projectId, grants },
+      sources: [...await memoryProvenanceEntries(this.db, proposal.space_id, old.id), ...entries],
+    });
+
+    // Accepting what the entry already is writes nothing: a version is a
+    // change, not a record that someone looked.
+    const subjectUserId = strOr(payload.subject_user_id) ?? old.subject_user_id;
+    const layer = memoryLayer(payload) ?? old.memory_layer;
+    if (
+      content === old.content && title === (old.title ?? "") && vis === old.visibility
+      && accessLevel === old.access_level && sens === old.sensitivity_level && scope === old.scope_type
+      && namespace === (old.namespace ?? "user.default") && memType === old.memory_type
+      && subjectUserId === old.subject_user_id && projectId === old.project_id
+      && ownerUserId === old.owner_user_id && layer === old.memory_layer
+      && sameGrants(grants, priorGrants)
+    ) {
+      return { memory: old, supersededMemoryId: null, unchanged: true };
+    }
 
     // Same order as the direct path, and for the same reason: the head steps
     // down before its replacement is inserted, or the partial unique index on
@@ -528,7 +635,7 @@ export class PgMemoryApplyRepository {
       namespace,
       title,
       ownerUserId,
-      subjectUserId: strOr(payload.subject_user_id) ?? old.subject_user_id,
+      subjectUserId,
       projectId,
       // An agent-scope entry stays the Agent's it was written for: the
       // revision keeps `old.agent_id`, whatever the payload or the proposer
@@ -538,7 +645,7 @@ export class PgMemoryApplyRepository {
       // may receive it is a fact about where it came from, not about who
       // revised it.
       originRoomId: scope === "agent" ? (strOr(payload.origin_room_id) ?? old.origin_room_id) : null,
-      memoryLayer: memoryLayer(payload) ?? old.memory_layer,
+      memoryLayer: layer,
       sourceTrust: dominantSourceTrust(entries) ?? old.source_trust,
       rootMemoryId: rootId,
       supersedesMemoryId: old.id,
@@ -583,10 +690,65 @@ export class PgMemoryApplyRepository {
       oldMemoryId: old.id,
       proposalId: proposal.id,
     });
+    await transferMemoryGrants(this.db, {
+      spaceId: proposal.space_id,
+      fromMemoryId: old.id,
+      toMemoryId: newMem.id,
+      grants,
+      actorUserId: userId,
+    });
     return {
       memory: newMem,
       supersededMemoryId: old.id,
     };
+  }
+
+  /**
+   * Who the accepted version reaches, checked at accept time.
+   *
+   * A person's own Memory widens only by its owner's decision: a Space owner
+   * or admin approving someone else's entry for more readers is refused, the
+   * same rule the content-access API applies. Project Memory is the Project's,
+   * shared by its placement, so its reach is the Project's readers. Either
+   * way, every reader the change adds must already be able to read what the
+   * Memory was derived from — share the source first, then the Memory.
+   */
+  private async assertAudience(input: {
+    spaceId: string;
+    approverUserId: string;
+    before: MemoryAudiencePlacement | null;
+    after: MemoryAudiencePlacement;
+    sources: readonly ProvenanceEntry[];
+  }): Promise<void> {
+    const { after } = input;
+    if (after.visibility === "selected_users" && after.grants.length === 0) {
+      throw new MemoryApplyError("selected_users memory requires at least one grantee");
+    }
+    const inactive = await inactiveGrantees(this.db, input.spaceId, after.grants);
+    if (inactive.length > 0) {
+      throw new MemoryApplyError("every grantee must be an active member of this Space");
+    }
+    const beforeAudience = input.before
+      ? await memoryAudience(this.db, input.spaceId, input.before)
+      : new Map();
+    const afterAudience = await memoryAudience(this.db, input.spaceId, after);
+    const widened = widenedReaders(beforeAudience, afterAudience)
+      .filter((readerId) => readerId !== after.ownerUserId);
+    if (widened.length === 0) return;
+    if (after.scope !== "project" && after.ownerUserId !== input.approverUserId) {
+      throw new MemoryAudienceError(
+        "memory_owner_sharing_required",
+        "Only the owner of this memory can share it with more people",
+      );
+    }
+    const unreadable = await sourcesUnreadableBy(this.db, input.spaceId, input.sources, widened);
+    if (unreadable.length > 0) {
+      throw new MemoryAudienceError(
+        "memory_source_audience",
+        "Some of the people this memory would reach cannot read what it was derived from; share those sources first",
+        { unreadable_sources: unreadable },
+      );
+    }
   }
 
   /** Apply a memory_archive proposal: mark the target archived (soft delete). */
@@ -1047,8 +1209,129 @@ export class PgMemoryApplyRepository {
     }
     const updated = await this.markStatus(memoryId, spaceId, status, db, found.status);
     if (!updated) throw new MemoryApplyError(`this memory changed while it was being ${status}`);
+    if (status === "active" && found.status === "superseded") {
+      // Grants follow the active head: the version that replaced this one
+      // carried them, and putting this one back takes them with it.
+      const successor = await db.query<{ id: string }>(
+        `SELECT id FROM memory_entries WHERE space_id = $1 AND supersedes_memory_id = $2
+          ORDER BY version DESC LIMIT 1`,
+        [spaceId, memoryId],
+      );
+      const successorId = successor.rows[0]?.id;
+      if (successorId) {
+        await transferMemoryGrants(db, {
+          spaceId,
+          fromMemoryId: successorId,
+          toMemoryId: memoryId,
+          grants: retainedGrants(await activeMemoryGrants(db, spaceId, successorId), updated.visibility, updated.owner_user_id),
+          actorUserId: userId,
+        });
+      }
+    }
     await reindexMemoryWithinApply(db, spaceId, [memoryId]);
     return updated;
+  }
+
+  /**
+   * The owner changing who may read their own entry
+   * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §3).
+   *
+   * Who could read a version is part of what it was, so the change is a new
+   * version: the same content, trust and provenance under the new visibility,
+   * access level and grants, superseding the old one. Nobody else decides it,
+   * so there is no proposal; the placement and audience checks an accepted
+   * proposal faces run here all the same. Runs inside the caller's
+   * transaction.
+   */
+  async applyOwnerAccessChange(input: {
+    spaceId: string;
+    ownerUserId: string;
+    memoryId: string;
+    visibility: string;
+    accessLevel: string;
+    grants: readonly MemoryGrant[];
+  }): Promise<AppliedMemoryRow> {
+    const old = await this.getActive(input.memoryId, input.spaceId);
+    if (!old || old.owner_user_id !== input.ownerUserId) {
+      throw new MemoryApplyError("only the owner of an active memory can change who may read it");
+    }
+    await this.db.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+      [`memory-chain:${input.spaceId}:${old.root_memory_id ?? old.id}`],
+    );
+    const visibility = lower(input.visibility);
+    const accessLevel = lower(input.accessLevel);
+    assertContentPolicyFields(visibility, accessLevel, old.sensitivity_level);
+    const scope = memoryScope(old.scope_type);
+    assertMemoryPlacement(scope, visibility, old.owner_user_id, old.project_id);
+    const grants = retainedGrants(input.grants, visibility, old.owner_user_id);
+    await this.assertAudience({
+      spaceId: input.spaceId,
+      approverUserId: input.ownerUserId,
+      before: {
+        scope: old.scope_type,
+        visibility: old.visibility,
+        accessLevel: old.access_level,
+        ownerUserId: old.owner_user_id,
+        projectId: old.project_id,
+        grants: await activeMemoryGrants(this.db, input.spaceId, old.id),
+      },
+      after: { scope, visibility, accessLevel, ownerUserId: old.owner_user_id, projectId: old.project_id, grants },
+      sources: await memoryProvenanceEntries(this.db, input.spaceId, old.id),
+    });
+
+    await this.markStatus(old.id, input.spaceId, "superseded");
+    const shape: ApplyProposal = {
+      id: randomUUID(),
+      space_id: input.spaceId,
+      proposal_type: "memory_update",
+      title: null,
+      payload_json: null,
+      project_folder_id: null,
+      visibility,
+      created_by_user_id: input.ownerUserId,
+      owner_user_id: input.ownerUserId,
+      project_id: old.project_id,
+    };
+    const memory = await this.insertMemory(shape, {
+      scope,
+      memoryType: old.memory_type,
+      content: old.content,
+      visibility,
+      accessLevel,
+      sensitivity: old.sensitivity_level,
+      namespace: old.namespace ?? "user.default",
+      title: old.title ?? "",
+      ownerUserId: old.owner_user_id,
+      subjectUserId: old.subject_user_id,
+      projectId: old.project_id,
+      agentId: old.agent_id,
+      originRoomId: old.origin_room_id,
+      memoryLayer: old.memory_layer,
+      sourceTrust: old.source_trust,
+      rootMemoryId: old.root_memory_id ?? old.id,
+      supersedesMemoryId: old.id,
+      version: Number(old.version ?? 1) + 1,
+      createdBy: input.ownerUserId,
+      approvedBy: input.ownerUserId,
+      createdFromProposalId: null,
+    });
+    await copyProvenanceToMemory(this.db, { spaceId: input.spaceId, fromMemoryId: old.id, toMemoryId: memory.id });
+    await recordMemorySupersedesRelation(this.db, {
+      spaceId: input.spaceId,
+      newMemoryId: memory.id,
+      oldMemoryId: old.id,
+      proposalId: null,
+    });
+    await transferMemoryGrants(this.db, {
+      spaceId: input.spaceId,
+      fromMemoryId: old.id,
+      toMemoryId: memory.id,
+      grants,
+      actorUserId: input.ownerUserId,
+    });
+    await reindexMemoryWithinApply(this.db, input.spaceId, [memory.id, old.id]);
+    return memory;
   }
 
   /**
@@ -1335,4 +1618,56 @@ function provKey(e: ProvenanceEntry): string | null {
   if (typeof e.source_type !== "string" || typeof e.source_id !== "string") return null;
   const tr = typeof e.source_trust === "string" ? e.source_trust : "";
   return `${e.source_type} ${e.source_id} ${tr}`;
+}
+
+/**
+ * The grants an accepted change names. Grants never include the owner, and a
+ * private version has none to keep.
+ */
+function targetGrants(
+  payload: Record<string, unknown>,
+  visibility: string,
+  ownerUserId: string | null,
+): MemoryGrant[] | null {
+  let named: MemoryGrant[] | null;
+  try {
+    named = grantsFromPayload(payload.target_grants);
+  } catch (error) {
+    throw new MemoryApplyError((error as Error).message);
+  }
+  if (named === null) return null;
+  return retainedGrants(named, visibility, ownerUserId);
+}
+
+function retainedGrants(grants: readonly MemoryGrant[], visibility: string, ownerUserId: string | null): MemoryGrant[] {
+  if (visibility === "private") return [];
+  return grants.filter((grant) => grant.user_id !== ownerUserId);
+}
+
+/**
+ * A maintenance update names a known action and carries the person's
+ * revision; one accepted as generated would write the old content back
+ * under a "fixed" label.
+ */
+function assertMaintenanceRevision(payload: Record<string, unknown>): void {
+  const maintenanceAction = strOr(payload.maintenance_action);
+  if (maintenanceAction !== null && !OPERATOR_EDIT_MAINTENANCE_ACTIONS.has(maintenanceAction)) {
+    throw new MemoryApplyError(`unknown maintenance action '${maintenanceAction}'`);
+  }
+  if ((maintenanceAction !== null || payload.requires_operator_edit === true) && !hasOperatorEdit(payload)) {
+    throw new MemoryOperatorEditRequiredError();
+  }
+}
+
+/** Whether a person has written the revision a maintenance finding asked for. */
+function hasOperatorEdit(payload: Record<string, unknown>): boolean {
+  const edit = payload.operator_edit;
+  return Boolean(edit && typeof edit === "object" && strOr((edit as Record<string, unknown>).edited_by_user_id))
+    && strOr(payload.proposed_content) !== null;
+}
+
+function sameGrants(left: readonly MemoryGrant[], right: readonly MemoryGrant[]): boolean {
+  const key = (grants: readonly MemoryGrant[]) =>
+    grants.map((grant) => `${grant.user_id}:${grant.access_level}`).sort().join(",");
+  return key(left) === key(right);
 }

@@ -16,6 +16,7 @@ import { EgressReviewNotice, isGrantDerivedProposal } from './EgressReviewNotice
 import { codePatchAcceptOptions } from './codePatchConfirm'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
 import { notifyReviewAttentionChanged } from '../../core/reviewAttention'
+import { MemoryRevisionEditor } from './MemoryRevisionEditor'
 
 function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
@@ -57,6 +58,8 @@ export default function ProposalDetailPage() {
   // and the rest are sent here to be decided, and a type the server cannot
   // apply yet is reported by `decide`.
   const canDecide = p?.status === 'pending'
+  // A maintenance update waits for the person's revision before it can be accepted.
+  const awaitingRevision = Boolean(p?.operator_revision && !p.operator_revision.edited_by_user_id)
 
   async function decide(action: 'accept' | 'reject') {
     if (!p) return
@@ -155,7 +158,7 @@ export default function ProposalDetailPage() {
               <ContentAccessControl resourceType="proposal" resourceId={p.id} ownerUserId={p.user_id || null} />
               {canDecide && (
                 <>
-                <Button size="sm" variant="success" disabled={busy} onClick={() => decide('accept')}>Accept</Button>
+                <Button size="sm" variant="success" disabled={busy || awaitingRevision} onClick={() => decide('accept')}>Accept</Button>
                 <Button size="sm" variant="destructive" disabled={busy} onClick={() => decide('reject')}>Reject</Button>
                 </>
               )}
@@ -187,7 +190,9 @@ export default function ProposalDetailPage() {
           <p className="text-xs text-muted-foreground">
             review_deadline {fmt(p.review_deadline)} · expires {fmt(p.expires_at)}
           </p>
-          <p className="text-sm whitespace-pre-wrap">{p.proposed_content}</p>
+          {p.operator_revision
+            ? <MemoryRevisionEditor proposal={p} onRevised={setP} />
+            : <p className="text-sm whitespace-pre-wrap">{p.proposed_content}</p>}
           {p.proposal_type === 'retrieval_maintenance_packet' && (
             <div className="rounded-md border border-border bg-muted/30 p-3 text-sm">
               <p className="font-medium">Maintenance packet</p>

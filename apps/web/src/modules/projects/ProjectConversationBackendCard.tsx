@@ -85,10 +85,7 @@ export default function ProjectConversationBackendCard({ projectId }: { projectI
             before the first message.
           </p>
         </div>
-        <ConversationBackendSetupCard
-          mode="prepare"
-          setupTargets={['model_providers', 'execution_hosts']}
-        />
+        <ConversationBackendSetupCard />
       </div>
     )
   }

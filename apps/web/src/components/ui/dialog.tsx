@@ -3,6 +3,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { type ButtonProps, Button } from './button'
+import { useAppTranslation } from '../../i18n'
 
 export const Dialog        = DialogPrimitive.Root
 export const DialogTrigger = DialogPrimitive.Trigger
@@ -34,6 +35,7 @@ export const DialogContent = forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   DialogContentProps
 >(function DialogContent({ className, children, showClose = true, ...props }, ref) {
+  const { t } = useAppTranslation()
   return (
     <DialogPrimitive.Portal>
       <DialogOverlay />
@@ -55,7 +57,7 @@ export const DialogContent = forwardRef<
         {showClose && (
           <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm text-muted-foreground hover:text-foreground transition-colors focus:outline-none focus:ring-1 focus:ring-ring">
             <X className="size-4" />
-            <span className="sr-only">Close</span>
+            <span className="sr-only">{t('core_ui.dialog.close')}</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Content>
@@ -121,12 +123,13 @@ export function ConfirmDialog({
   title,
   description,
   onConfirm,
-  confirmLabel = 'Confirm',
+  confirmLabel,
   variant = 'destructive',
   restoreAvailable = false,
   restoreChecked = false,
   onRestoreChange,
 }: ConfirmDialogProps) {
+  const { t } = useAppTranslation()
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent showClose={false} className="max-w-sm">
@@ -137,16 +140,16 @@ export function ConfirmDialog({
         {restoreAvailable && (
           <label className="mb-4 flex items-start gap-2 text-sm">
             <input type="checkbox" checked={restoreChecked} onChange={event => onRestoreChange?.(event.target.checked)} />
-            <span><span className="font-medium">Restore previous host state</span><span className="block text-xs text-muted-foreground">Bring back what this Agent left on the host — its CLI login and sessions, and its workspace when it had one — if the archive is still there and the host is online.</span></span>
+            <span><span className="font-medium">{t('core_ui.dialog.restore_title')}</span><span className="block text-xs text-muted-foreground">{t('core_ui.dialog.restore_description')}</span></span>
           </label>
         )}
         <div className="flex justify-end gap-2">
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>{t('core_ui.dialog.cancel')}</Button>
           <Button
             variant={variant}
             onClick={() => { onConfirm(); onOpenChange(false) }}
           >
-            {confirmLabel}
+            {confirmLabel ?? t('core_ui.dialog.confirm')}
           </Button>
         </div>
       </DialogContent>

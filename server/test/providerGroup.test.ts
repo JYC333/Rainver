@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ServerConfig } from "../src/config.js";
 import { createProviderFromPreset } from "../src/modules/providers/commands/fromPreset.js";
 import { providerSupportsTask, resolveProviderCommandStore } from "../src/modules/providers/commands/store.js";
+import { resolveProvidersDbPort } from "../src/modules/providers/dbReader.js";
 import { effectiveProviderDefault, isProviderEligibleForUser, providerCredentialEligibilitySql } from "../src/modules/providers/eligibility.js";
 import { piCatalogForVendor, piCatalogVendorIds, piStructuredToolChoice } from "../src/modules/providers/invocation/piAiChat.js";
 import { providerSupportsStructuredOutput } from "../src/modules/providers/structuredOutputCapabilities.js";
@@ -194,6 +195,23 @@ describe("providerCommandStoreDb", () => {
     );
     return rows.rows.map((row) => row.provider_id);
   }
+
+  it("keeps a disabled provider listed for its owner, who can enable it again, and for nobody else", async () => {
+    if (!db.available) return;
+    const id = await createdProviderId({ name: "Paused provider" });
+    await store().updateProvider(SPACE, USER, id, { enabled: false } as never);
+    const port = resolveProvidersDbPort({ databaseUrl: db.connectionUri } as ServerConfig)!;
+
+    const owned = (await port.listProviders(SPACE, USER)) as Array<{ id: string; enabled: boolean }>;
+    expect(owned.find((row) => row.id === id)).toMatchObject({ enabled: false });
+    const someoneElse = (await port.listProviders(SPACE, randomUUID())) as Array<{ id: string }>;
+    expect(someoneElse.map((row) => row.id)).not.toContain(id);
+    // A run (no person) never resolves a disabled provider.
+    await expect(port.getProvider(SPACE, null, id)).resolves.toBeNull();
+
+    await store().updateProvider(SPACE, USER, id, { enabled: true } as never);
+    await expect(port.getProvider(SPACE, null, id)).resolves.toMatchObject({ id, enabled: true });
+  });
 
   it("rejects an invalid embedding dimension before creating the provider", async () => {
     if (!db.available) return;

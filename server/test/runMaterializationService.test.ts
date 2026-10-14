@@ -1038,6 +1038,9 @@ describe("RunMaterializationService", () => {
           metadata_json: {},
           finalized_at: "2026-06-12T10:00:00.000Z",
           created_at: "2026-06-12T10:00:00.000Z",
+          settled_at: new Date().toISOString(),
+          settlement_attempts: 1,
+          settlement_json: { completed: [] },
         };
       },
     };

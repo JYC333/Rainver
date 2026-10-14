@@ -73,7 +73,8 @@ export const MEMORY_COLUMNS = `id, space_id, subject_user_id, owner_user_id,
   sensitivity_level, last_confirmed_at, confidence, importance,
   source_id, created_by, created_at, updated_at, deleted_at, version, tags,
   memory_layer, source_trust, created_from_proposal_id,
-  root_memory_id, supersedes_memory_id, project_id, agent_id, origin_room_id`;
+  root_memory_id, supersedes_memory_id, project_id, agent_id, origin_room_id,
+  approved_by, access_count, last_accessed_at`;
 
 export interface MemoryRow extends MemoryAuthFields {
   id: string;
@@ -100,6 +101,11 @@ export interface MemoryRow extends MemoryAuthFields {
   project_id: string | null;
   agent_id: string | null;
   origin_room_id: string | null;
+  /** Who accepted the write; null for an automatic write nobody approved. */
+  approved_by: string | null;
+  /** Kept by the read audit (`contentAccess/audit.ts`), never by a content write. */
+  access_count: number | string | null;
+  last_accessed_at: unknown;
 }
 
 const MEMORY_DEFINITION = contentResourceDefinition("memory")!;
@@ -515,6 +521,11 @@ export function serializeMemoryRow(row: WithAccessLevel<MemoryRow>, viewerUserId
       agent_id: row.agent_id ?? null,
       origin_room_id: row.origin_room_id ?? null,
       project_id: row.project_id,
+      approved_by: row.approved_by ?? null,
+      // How often an entry is read says something about its readers: the
+      // owner sees it, nobody else.
+      access_count: row.owner_user_id === viewerUserId ? Number(row.access_count ?? 0) : null,
+      last_accessed_at: row.owner_user_id === viewerUserId ? isoOrNull(row.last_accessed_at) : null,
     };
 }
 

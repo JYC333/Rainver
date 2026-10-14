@@ -5,6 +5,8 @@ import type { ReactNode } from 'react'
 import MemoryDetailPage from '../MemoryDetailPage'
 import { memoryApi } from '../../../api/client'
 
+const navigate = vi.hoisted(() => vi.fn())
+
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), message: vi.fn() } }))
 vi.mock('../../../api/client', () => ({
   memoryApi: { get: vi.fn(), versions: vi.fn(), delete: vi.fn(), restore: vi.fn() },
@@ -17,8 +19,15 @@ vi.mock('../../../contexts/AuthContext', () => ({
 }))
 vi.mock('../../../core/spaceNav', () => ({
   SpaceLink: ({ to, children }: { to: string; children: ReactNode }) => <a href={to}>{children}</a>,
+  useSpaceNavigate: () => navigate,
 }))
-vi.mock('../../../components/ContentAccessControl', () => ({ ContentAccessControl: () => null }))
+// Stands in for the access dialog: saving reports the policy of the version
+// the change wrote.
+vi.mock('../../../components/ContentAccessControl', () => ({
+  ContentAccessControl: ({ onUpdated }: { onUpdated?: (policy: { resource_id: string }) => void }) => (
+    <button type="button" onClick={() => onUpdated?.({ resource_id: 'memory-3' })}>Save access</button>
+  ),
+}))
 
 function memoryRow(over: Record<string, unknown>) {
   return {
@@ -71,5 +80,12 @@ describe('MemoryDetailPage history', () => {
 
     expect(await screen.findByRole('button', { name: 'Restore this version' })).toBeInTheDocument()
     expect(memoryApi.delete).toHaveBeenCalledWith('memory-2')
+  })
+
+  it('opens the version an access change wrote', async () => {
+    renderPage()
+    expect(await screen.findByRole('heading', { name: 'Meeting times' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Save access' }))
+    expect(navigate).toHaveBeenCalledWith('/memory/memory-3', { replace: true })
   })
 })

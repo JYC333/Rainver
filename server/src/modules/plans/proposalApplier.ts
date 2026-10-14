@@ -43,7 +43,7 @@ async function applyPlanCheckpoint(context: ProposalApplyContext): Promise<Propo
   if (node.node_kind !== "approval_checkpoint" || node.status !== "waiting_for_review" || node.approval_proposal_id !== context.proposal.id) throw new HttpError(409, "Plan Node is not awaiting this checkpoint proposal");
   const now = new Date().toISOString();
   await context.db.query(`UPDATE plan_nodes SET status = 'done', blocked_reason = NULL, approval_proposal_id = NULL, updated_at = $4 WHERE id = $1 AND plan_version_id = $2 AND space_id = $3`, [payload.node_id, payload.plan_version_id, context.proposal.space_id, now]);
-  await new PlanExecutionService(context.db).reconcile({ spaceId: context.proposal.space_id, userId: context.userId }, payload.plan_id);
+  await new PlanExecutionService(context.db, context.config).reconcile({ spaceId: context.proposal.space_id, userId: context.userId }, payload.plan_id);
   return { result_type: "plan_checkpoint", result: { plan_id: payload.plan_id, plan_version_id: payload.plan_version_id, node_id: payload.node_id, status: "completed" } };
 }
 

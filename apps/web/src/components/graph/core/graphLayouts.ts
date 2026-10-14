@@ -13,19 +13,22 @@ const SEMANTIC_CLUSTER_BY = 'node.clusterId || node.data.projection.clusterId ||
 
 type GraphLayoutTier = 'in-thread' | 'worker' | 'degraded'
 
+/** Why a projection is laid out below its best layout; the view words it. */
+export type GraphLayoutWarning = 'node_and_edge_budget' | 'node_budget' | 'edge_budget' | 'worker_budget' | 'large'
+
 interface GraphScalePolicy {
   nodeCount: number
   edgeCount: number
   layoutTier: GraphLayoutTier
   nodeBudgetExceeded: boolean
   edgeBudgetExceeded: boolean
-  warning: string | null
+  warning: GraphLayoutWarning | null
 }
 
 interface GraphLayoutResolution {
   layout: GraphLayoutConfig
   mode: GraphProjectionLayoutMode
-  warning: string | null
+  warning: GraphLayoutWarning | null
 }
 
 export function resolveGraphLayout(
@@ -121,22 +124,12 @@ export function resolveGraphLayout(
   }
 }
 
-function layoutWarningForCounts(nodeCount: number, edgeCount: number): string | null {
-  if (nodeCount > CLIENT_GRAPH_NODE_BUDGET && edgeCount > CLIENT_GRAPH_EDGE_BUDGET) {
-    return 'Projection exceeds the client node and edge budgets; using a degraded layout and requiring producer-side capping or aggregation.'
-  }
-  if (nodeCount > CLIENT_GRAPH_NODE_BUDGET) {
-    return 'Projection exceeds the client node budget; using a degraded layout.'
-  }
-  if (edgeCount > CLIENT_GRAPH_EDGE_BUDGET) {
-    return 'Projection exceeds the client edge budget; ask the projection producer to cap or aggregate edges.'
-  }
-  if (nodeCount > WORKER_LAYOUT_NODE_LIMIT) {
-    return 'Projection exceeds the worker layout budget; using a degraded layout.'
-  }
-  if (nodeCount > IN_THREAD_FORCE_NODE_LIMIT) {
-    return 'Large projection; layout may run in a worker or degrade.'
-  }
+function layoutWarningForCounts(nodeCount: number, edgeCount: number): GraphLayoutWarning | null {
+  if (nodeCount > CLIENT_GRAPH_NODE_BUDGET && edgeCount > CLIENT_GRAPH_EDGE_BUDGET) return 'node_and_edge_budget'
+  if (nodeCount > CLIENT_GRAPH_NODE_BUDGET) return 'node_budget'
+  if (edgeCount > CLIENT_GRAPH_EDGE_BUDGET) return 'edge_budget'
+  if (nodeCount > WORKER_LAYOUT_NODE_LIMIT) return 'worker_budget'
+  if (nodeCount > IN_THREAD_FORCE_NODE_LIMIT) return 'large'
   return null
 }
 

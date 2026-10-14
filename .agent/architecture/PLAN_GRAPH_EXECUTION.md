@@ -140,8 +140,16 @@ links and post-finalization reconciliation. The Automation fire transaction
 commits the Workflow Execution, coordinator Run, child scheduling, and
 `automation_runs` audit link together.
 
-Workflow nodes may be Model (`leaf`), deterministic `action`, integration, or
-approval-checkpoint nodes. Model and Action failures create bounded new Run
+Workflow and Plan nodes may be Model (`leaf`), deterministic `action`,
+integration, or approval-checkpoint nodes. An `action` node in either graph
+runs through one executor (`execution/actionNodeExecution.ts`): the handler
+`actionNodeHandlerRegistry` holds for its `metadata_json.action_key`, with its
+attempts in `workflow_execution_action_attempts` or
+`plan_node_action_attempts`, never an Agent Run. A handler registers the
+graphs it can run in (`workflow_execution`, `plan_version`; research handlers
+read their Workflow execution and serve Workflows only), and a Plan naming an
+action no Plan-capable handler serves is refused when it is proposed
+(`action_not_executable`). A Plan node's attempts are its `max_runs`. Model and Action failures create bounded new Run
 attempts on the same node according to `contract_json.max_attempts`; retry does
 not reopen a completed execution or add a graph cycle. A domain that needs to
 project terminal Workflow status into its own aggregate registers an outcome
@@ -152,7 +160,7 @@ An Action may return a `delegatedRunId` for durable asynchronous work that it
 started. Its own system Run completes immediately, but the node remains
 `in_progress` and links the delegated Run with role `delegated`. The delegated
 Run's evaluated terminal outcome becomes the node outcome and authoritative
-downstream output. Attempt counts include only primary node Runs, so delegated
+downstream output (`plan_node_runs` carries the same `delegated` role). Attempt counts include only primary node Runs, so delegated
 work does not consume a retry attempt. If delegated work fails and the node
 has another attempt, its audit link is retained as `delegated_superseded`
 before the new primary attempt becomes authoritative.
@@ -167,7 +175,9 @@ are guarded by the operation's `current_execution_id`, so an older pass cannot
 overwrite the outcome of a newer authoritative pass.
 
 Post-finalization reconciliation is the immediate path, not the only recovery
-path. Within one Plan pass, a node that settles without a Run (an integration
+path. It is part of the Run's completion gate (`EXECUTION_MODEL.md`,
+"Finalized"): a graph reconciliation that fails leaves the Run's settlement
+owed, and the worker resumes it. Within one Plan pass, a node that settles without a Run (an integration
 verdict, a failed input binding) readies the nodes behind it and can finish
 or fail the Plan in that same pass, rather than at the next scan.
 `ExecutionGraphRecoveryService` scans active Plan and Workflow executions

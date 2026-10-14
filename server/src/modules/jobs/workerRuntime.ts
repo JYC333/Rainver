@@ -181,6 +181,7 @@ export function startJobsWorker(
       }
       await reconcileTerminalChatRuns(config, runs, log);
       await reconcileUnfinalizedTaskRuns(config, runs, log);
+      await resumeUnsettledRuns(config, runs, log);
     } catch (error) {
       log?.error(
         `[jobs-worker] stale run recovery failed: ${
@@ -196,6 +197,7 @@ export function startJobsWorker(
           if (reclaimed > 0) log?.warn(`[jobs-worker] reclaimed ${reclaimed} stuck job(s)`);
           await reconcileTerminalChatRuns(config, runs, log);
           await reconcileUnfinalizedTaskRuns(config, runs, log);
+      await resumeUnsettledRuns(config, runs, log);
           lastReclaim = now;
         }
         const result = await worker.processOne();
@@ -313,6 +315,29 @@ export async function reconcileUnfinalizedTaskRuns(
           error instanceof Error ? error.message : String(error)
         }`,
       );
+    }
+  }
+}
+
+/**
+ * A finalized Run whose settlement is still owed — a reconciler failed, or the
+ * process died between the finalization record and the completion gate — is
+ * settled here. Finalizing again resumes from the reconcilers not yet
+ * completed; the Agent, its model calls and its output are never redone.
+ */
+export async function resumeUnsettledRuns(
+  config: ServerConfig,
+  runs: PgRunRepository,
+  log?: JobsWorkerLogger,
+  materializer: Pick<RunMaterializationService, "finalizeRun"> =
+    RunMaterializationService.fromConfig(config),
+): Promise<void> {
+  for (const item of await runs.listUnsettledFinalizations()) {
+    const run = await runs.getRun(item.space_id, item.run_id);
+    if (!run) continue;
+    const settled = await materializer.finalizeRun(run);
+    if (settled.status !== "succeeded") {
+      log?.warn(`[jobs-worker] Run ${item.run_id} settlement still owed: ${settled.error_code ?? "unknown"}`);
     }
   }
 }

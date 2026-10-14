@@ -6,6 +6,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger,
 } from '../../components/ui/dialog'
 import { cn } from '../../lib/utils'
+import { useAppTranslation } from '../../i18n'
 
 export type SessionConfigSelection = RuntimeSessionConfigSelection
 
@@ -92,6 +93,7 @@ export function ConversationAgentSessionConfigs({
   agents: AgentSessionConfiguration[]
   disabled?: boolean
 }) {
+  const { t } = useAppTranslation()
   const configurable = agents.filter(agent => configurableOptions(agent.options).length > 0)
   if (configurable.length === 0) return null
   if (agents.length === 1) {
@@ -116,14 +118,14 @@ export function ConversationAgentSessionConfigs({
           disabled={disabled}
         >
           <SlidersHorizontal className="size-3.5" />
-          Agent settings · {configurable.length}
+          {t('conversation_ui.session_config.trigger', { count: configurable.length })}
         </Button>
       </DialogTrigger>
       <DialogContent className="max-w-xl">
         <DialogHeader>
-          <DialogTitle>Agent settings</DialogTitle>
+          <DialogTitle>{t('conversation_ui.session_config.title')}</DialogTitle>
           <DialogDescription>
-            Choose the model and runtime options each Agent will use for the next message.
+            {t('conversation_ui.session_config.description')}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">

@@ -8,6 +8,7 @@ import {
   SkillImportApprovalProposalResponseSchema,
   SkillImportPreviewRequestSchema,
   SkillImportPreviewResponseSchema,
+  SkillImportRequestSchema,
   SkillPackageSchema,
   SkillSourceSchema,
 } from "../src";
@@ -97,8 +98,12 @@ describe("capability/open-skill protocol schemas", () => {
       status: "reviewed",
       created_at: "2026-06-20T00:00:00.000Z",
       updated_at: "2026-06-20T00:00:00.000Z",
+      pending_proposal: { id: "proposal-1", operation: "install_from_skill_package" },
     };
     expect(SkillPackageSchema.parse(skillPackage).status).toBe("reviewed");
+    expect(SkillPackageSchema.safeParse({ ...skillPackage, pending_proposal: undefined }).success).toBe(false);
+    expect(SkillImportRequestSchema.safeParse({ url: "https://github.com/org/repo/blob/main/SKILL.md" }).success).toBe(false);
+    expect(SkillImportRequestSchema.parse({ url: "https://github.com/org/repo/blob/main/SKILL.md", package_hash: "abc" }).package_hash).toBe("abc");
 
     expect(
       SkillImportPreviewRequestSchema.parse({

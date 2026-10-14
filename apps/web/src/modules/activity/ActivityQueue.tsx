@@ -12,8 +12,8 @@ import { Button } from '../../components/ui/button'
 import { Badge } from '../../components/ui/badge'
 import { EmptyState } from '../../components/ui/empty-state'
 import { ScopeBadge } from '../../components/ScopeBadge'
-
-function fmt(dt: string) { return new Date(dt).toLocaleString() }
+import { useAppTranslation } from '../../i18n'
+import { formatDateTime } from '../../i18n/format'
 
 type StatusFilter = ActivityStatus | 'all'
 const STATUS_FILTERS: StatusFilter[] = ['all', 'raw', 'proposals_generated', 'processed', 'failed', 'archived']
@@ -126,6 +126,7 @@ interface ActivityQueueProps {
  * drift on what "reviewed" does, which is the whole content of the pipeline.
  */
 export function ActivityQueue({ projectId }: ActivityQueueProps) {
+  const { t } = useAppTranslation()
   const { activeSpaceId } = useSpace()
   const [searchParams, setSearchParams] = useSearchParams()
   // Pinned wins over the URL: a Project's page cannot be pointed at another
@@ -200,7 +201,7 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
     setBusy(id)
     try {
       await activityApi.review(id)
-      toast.success('Marked as reviewed')
+      toast.success(t('activity_ui.queue.marked_reviewed'))
       await load()
     } catch (e) { toast.error(errMsg(e)) }
     finally { setBusy(null) }
@@ -210,7 +211,7 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
     setBusy(id)
     try {
       await activityApi.archive(id)
-      toast.success('Archived')
+      toast.success(t('activity_ui.queue.archived_toast'))
       await load()
     } catch (e) { toast.error(errMsg(e)) }
     finally { setBusy(null) }
@@ -222,15 +223,15 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
         <div className="flex gap-1.5">
           {STATUS_FILTERS.map(s => (
             <Button key={s} size="sm" variant={filter === s ? 'default' : 'ghost'} onClick={() => setFilter(s)}>
-              {s === 'proposals_generated' ? 'proposals generated' : s.replace('_', ' ')}
+              {t(`activity_ui.status.${s}`)}
             </Button>
           ))}
         </div>
         {!pinned && projectFilter && (
           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent/40 text-xs text-accent-foreground">
             <FolderKanban className="size-3" />
-            {projectNames.get(projectFilter) ?? 'Filtered by project'}
-            <button onClick={clearProjectFilter} className="ml-0.5 hover:text-foreground" aria-label="Clear project filter">
+            {projectNames.get(projectFilter) ?? t('activity_ui.queue.filtered_by_project')}
+            <button onClick={clearProjectFilter} className="ml-0.5 hover:text-foreground" aria-label={t('activity_ui.queue.clear_project_filter')}>
               <X className="size-3" />
             </button>
           </span>
@@ -238,33 +239,33 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
       </div>
 
       {loading && (
-        <Card><p className="text-muted-foreground text-center py-10 text-sm">Loading…</p></Card>
+        <Card><p className="text-muted-foreground text-center py-10 text-sm">{t('activity_ui.queue.loading')}</p></Card>
       )}
 
       {!loading && records.length === 0 && (
         !activeSpaceId ? (
           <EmptyState
-            title="No space selected"
-            description="Select an operational space to browse activity."
+            title={t('activity_ui.queue.no_space_title')}
+            description={t('activity_ui.queue.no_space_description')}
           />
         ) : filter === 'raw' ? (
           <EmptyState
-            title="No captures yet"
+            title={t('activity_ui.queue.no_captures_title')}
             description={pinned
-              ? 'Capture something inside this project, or paste a link, and it lands here first.'
-              : 'Capture a thought, paste a link, or save a snippet to get started.'}
+              ? t('activity_ui.queue.no_captures_project')
+              : t('activity_ui.queue.no_captures_space')}
             action={pinned ? undefined : (
               <Button variant="outline" asChild>
-                <Link to="/capture">Open Capture</Link>
+                <Link to="/capture">{t('activity_ui.queue.open_capture')}</Link>
               </Button>
             )}
           />
         ) : (
           <EmptyState
-            title={filter === 'all' ? 'No activity yet' : `No ${filter.replace(/_/g, ' ')} activity`}
+            title={filter === 'all' ? t('activity_ui.queue.no_activity_title') : t('activity_ui.queue.no_status_activity_title', { status: t(`activity_ui.status.${filter}`) })}
             description={filter === 'archived'
-              ? 'Archived records appear here after you dismiss them.'
-              : 'Records with proposals generated appear here.'}
+              ? t('activity_ui.queue.archived_empty')
+              : t('activity_ui.queue.proposals_empty')}
           />
         )
       )}
@@ -295,28 +296,28 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
                 {r.title && <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{r.content}</p>}
                 {briefing && (
                   <div className="flex gap-1.5 flex-wrap mt-2">
-                    <Badge variant="default">{briefing.counts.relevant} relevant</Badge>
-                    <Badge variant="secondary">{briefing.counts.maybe} maybe</Badge>
-                    <Badge variant="muted">{briefing.counts.not_relevant} not relevant</Badge>
-                    {briefing.runCount > 1 && <Badge variant="outline">{briefing.runCount} runs</Badge>}
+                    <Badge variant="default">{t('activity_ui.queue.relevant', { count: briefing.counts.relevant })}</Badge>
+                    <Badge variant="secondary">{t('activity_ui.queue.maybe', { count: briefing.counts.maybe })}</Badge>
+                    <Badge variant="muted">{t('activity_ui.queue.not_relevant', { count: briefing.counts.not_relevant })}</Badge>
+                    {briefing.runCount > 1 && <Badge variant="outline">{t('activity_ui.queue.runs', { count: briefing.runCount })}</Badge>}
                   </div>
                 )}
                 {recommendation && (
                   <div className="flex gap-1.5 flex-wrap mt-2">
-                    <Badge variant="secondary">source recommendation</Badge>
+                    <Badge variant="secondary">{t('activity_ui.queue.source_recommendation')}</Badge>
                     {recommendation.connectionName && <Badge variant="muted">{recommendation.connectionName}</Badge>}
                   </div>
                 )}
                 {projectCollection && (
                   <div className="flex gap-1.5 flex-wrap mt-2">
-                    <Badge variant="secondary">project sources</Badge>
+                    <Badge variant="secondary">{t('activity_ui.queue.project_sources')}</Badge>
                     {projectCollection.date && <Badge variant="muted">{projectCollection.date}</Badge>}
                   </div>
                 )}
                 {persona && (
                   <div className="flex gap-1.5 flex-wrap mt-2">
-                    <Badge variant="secondary">Agent persona</Badge>
-                    <Badge variant="muted">{persona.revision ? 'revised' : 'created'}</Badge>
+                    <Badge variant="secondary">{t('activity_ui.queue.agent_persona')}</Badge>
+                    <Badge variant="muted">{persona.revision ? t('activity_ui.queue.persona_revised') : t('activity_ui.queue.persona_created')}</Badge>
                   </div>
                 )}
               </div>
@@ -328,7 +329,7 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
                       disabled={busy === r.id}
                       onClick={() => doReview(r.id)}
                     >
-                      Mark reviewed
+                      {t('activity_ui.queue.mark_reviewed')}
                     </Button>
                   )}
                   <Button
@@ -338,7 +339,7 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
                   >
                     <Link to={targetPath}>
                       {briefing && <Newspaper className="size-3.5 mr-1" />}
-                      {briefing ? 'Open Digest' : recommendation ? 'Review Source' : projectCollection ? 'Open Sources' : persona ? 'Review Persona' : 'Generate proposals'}
+                      {briefing ? t('activity_ui.queue.open_digest') : recommendation ? t('activity_ui.queue.review_source') : projectCollection ? t('activity_ui.queue.open_sources') : persona ? t('activity_ui.queue.review_persona') : t('activity_ui.queue.generate_proposals')}
                     </Link>
                   </Button>
                   <Button
@@ -346,7 +347,7 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
                     disabled={busy === r.id}
                     onClick={() => doArchive(r.id)}
                   >
-                    Archive
+                    {t('activity_ui.queue.archive')}
                   </Button>
                 </div>
               )}
@@ -354,9 +355,9 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
 
             <div className="flex gap-1.5 flex-wrap mb-2">
               <Badge variant={SOURCE_COLORS[r.source_type] as 'default' | 'secondary' | 'muted' ?? 'secondary'}>
-                {briefing ? 'briefing' : recommendation ? 'source recommendation' : r.source_type.replace('_', ' ')}
+                {briefing ? t('activity_ui.queue.briefing') : recommendation ? t('activity_ui.queue.source_recommendation') : t(`activity_ui.source_type.${r.source_type}`, { defaultValue: r.source_type })}
               </Badge>
-              <Badge variant="outline">{r.status.replace('_', ' ')}</Badge>
+              <Badge variant="outline">{t(`activity_ui.status.${r.status}`, { defaultValue: r.status })}</Badge>
               <ScopeBadge visibility={r.visibility} omitShared />
               {/* Which Project owns this. A capture made inside a Project lands
                   in the Space's raw queue by design. Do not omit the tag. The
@@ -365,20 +366,20 @@ export function ActivityQueue({ projectId }: ActivityQueueProps) {
                 <button
                   type="button"
                   onClick={() => filterByProject(r.project_id!)}
-                  title={`Show only this project's activity`}
-                  aria-label={`Filter by project ${projectNames.get(r.project_id) ?? r.project_id}`}
+                  title={t('activity_ui.queue.show_project_only')}
+                  aria-label={t('activity_ui.queue.filter_by_project', { name: projectNames.get(r.project_id) ?? r.project_id })}
                 >
                   <Badge variant="secondary" className="cursor-pointer hover:opacity-80">
                     <FolderKanban className="size-3 mr-1" />
-                    {projectNames.get(r.project_id) ?? 'project'}
+                    {projectNames.get(r.project_id) ?? t('activity_ui.queue.project')}
                   </Badge>
                 </button>
               )}
-              {r.project_folder_id && <Badge variant="muted">ws: {r.project_folder_id.slice(0, 8)}…</Badge>}
-              {r.source_run_id && <Badge variant="muted">run: {r.source_run_id.slice(0, 8)}…</Badge>}
+              {r.project_folder_id && <Badge variant="muted">{t('activity_ui.queue.folder_badge', { id: r.project_folder_id.slice(0, 8) })}</Badge>}
+              {r.source_run_id && <Badge variant="muted">{t('activity_ui.queue.run_badge', { id: r.source_run_id.slice(0, 8) })}</Badge>}
             </div>
 
-            <p className="text-xs text-muted-foreground">{fmt(r.created_at)}</p>
+            <p className="text-xs text-muted-foreground">{formatDateTime(r.created_at)}</p>
           </Card>
         )
       })}

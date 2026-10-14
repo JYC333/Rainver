@@ -41,7 +41,7 @@ export default function ProjectNotesPage() {
     // opening a Project always has one.
     void Promise.all([
       notesCollectionsApi.ensureForProject(projectId),
-      providersApi.list().catch(() => [] as ModelProviderOut[]),
+      providersApi.usable().catch(() => [] as ModelProviderOut[]),
     ])
       .then(([collection, nextProviders]) => {
         if (cancelled) return

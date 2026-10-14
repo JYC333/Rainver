@@ -873,13 +873,12 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       { source: { kind: "workflow", id: WORKFLOW_VERSION }, max_runs: 1 },
     ])).rejects.toMatchObject({ code: "budget_source_not_found" });
     await db.pool.query(`UPDATE evolvable_assets SET status = 'active' WHERE id = $1`, [WORKFLOW_ASSET]);
-    await db.pool.query(
+    // A catalog version cannot become a Space's version in place: the
+    // database refuses a Space scope with no Space.
+    await expect(db.pool.query(
       `UPDATE evolvable_asset_versions SET scope_type = 'space', scope_id = $2 WHERE id = $1`,
       [WORKFLOW_VERSION, SPACE],
-    );
-    await expect(assertBudgetSourcesAvailable(db.pool, SPACE, [
-      { source: { kind: "workflow", id: WORKFLOW_VERSION }, max_runs: 1 },
-    ])).rejects.toMatchObject({ code: "budget_source_not_found" });
+    )).rejects.toMatchObject({ code: "23514", constraint: "ck_evolvable_asset_versions_system_scope_placement" });
   });
 
   it("rejects a space-scoped Workflow budget source that belongs to another space", async () => {
@@ -913,15 +912,13 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       { source: { kind: "workflow", id: otherVersion }, max_runs: 1 },
     ])).resolves.toBeUndefined();
 
-    await db.pool.query(
+    // A Space's version is never the system baseline.
+    await expect(db.pool.query(
       `UPDATE evolvable_asset_versions
           SET scope_type = 'system', scope_id = NULL
         WHERE id = $1`,
       [otherVersion],
-    );
-    await expect(assertBudgetSourcesAvailable(db.pool, OTHER_SPACE, [
-      { source: { kind: "workflow", id: otherVersion }, max_runs: 1 },
-    ])).resolves.toBeUndefined();
+    )).rejects.toMatchObject({ code: "23514", constraint: "ck_evolvable_asset_versions_system_scope_placement" });
   });
 
   it("rejects a Workflow Version whose scope is forbidden by its parent Asset ownership", async () => {

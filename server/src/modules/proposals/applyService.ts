@@ -30,6 +30,7 @@ import { assertCodePatchTargetInsideRoot, CodePatchFileTransaction } from "../pr
 import { withCodePatchTarget } from "../projectFolders/codePatchTarget.js";
 import { validatePath } from "@rainver/folder-read";
 import { HttpError } from "../routeUtils/common.js";
+import { MemoryAudienceError, MemoryOperatorEditRequiredError } from "../memory/memoryApplyRepository.js";
 import type {
   ProposalAcceptOut,
   ProposalAcceptResultType,
@@ -1189,6 +1190,12 @@ function normalizeApplyError(error: unknown): unknown {
     });
   }
   if (error instanceof ProposalApplyHttpError) return error;
+  if (error instanceof MemoryAudienceError) {
+    return new ProposalApplyHttpError(error.statusCode, { code: error.code, message: error.message, ...error.detail });
+  }
+  if (error instanceof MemoryOperatorEditRequiredError) {
+    return new ProposalApplyHttpError(error.statusCode, { code: error.code, message: error.message });
+  }
   if (
     error && typeof error === "object"
     && (error as { code?: unknown }).code === "23505"

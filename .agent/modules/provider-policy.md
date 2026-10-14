@@ -13,6 +13,10 @@ another space lets eligible members of that space use it in runs, but only the
 provider owner can edit provider metadata or replace secret material. Active
 space default selection and provider `network_profile_id` are grant-level
 fields.
+`GET /api/v1/providers` lists a disabled provider (or a disabled grant) only
+to the provider's owner, so they can enable it again; nobody else sees it, a
+run never resolves it, and pickers use the client's `providersApi.usable()`,
+which keeps only enabled providers with an enabled grant.
 
 Auxiliary system tasks can bind to provider/model chains through
 `provider_task_policies`. The retrieval settings UI surfaces the retrieval

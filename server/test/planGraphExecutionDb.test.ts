@@ -182,7 +182,7 @@ async function createApprovedPlanWithBudget(
       WHERE space_id = $1 AND id = $2`,
     [SPACE, planningRun.id, JSON.stringify(budgetSources)],
   );
-  const plans = new PgPlanRepository(db.pool);
+  const plans = new PgPlanRepository(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
   const created = await plans.createPlanFromAgent(identity, {
     sourceTaskId: TASK,
     planningRunId: planningRun.id,
@@ -230,7 +230,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       [SPACE, TASK, planningRun.id],
     )).rows[0]?.role).toBe("planning");
 
-    const plans = new PgPlanRepository(db.pool);
+    const plans = new PgPlanRepository(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
     const first = await plans.createPlanFromAgent(identity, {
       sourceTaskId: TASK,
       planningRunId: planningRun.id,
@@ -342,7 +342,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       { ...step, id: "gather", title: "Gather the material" },
       { ...step, id: "write", title: "Write it up", depends_on: ["gather"] as never[] },
     ];
-    const plans = new PgPlanRepository(db.pool);
+    const plans = new PgPlanRepository(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
     const created = await plans.createPlanFromAgent(identity, {
       sourceTaskId: TASK,
       planningRunId: planningRun.id,
@@ -411,7 +411,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       agent_id: AGENT,
       prompt: "Plan this source task.",
     }) as { id: string };
-    const plans = new PgPlanRepository(db.pool);
+    const plans = new PgPlanRepository(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
     const first = await plans.createPlanFromAgent(identity, {
       sourceTaskId: TASK,
       planningRunId: planningRun.id,
@@ -469,7 +469,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       { ...step, id: "gather", title: "Gather the material" },
       { ...step, id: "merge", title: "Merge the result", depends_on: ["gather"], metadata_json: { ...step.metadata_json, node_kind: "integration" } } as never,
     ];
-    const plans = new PgPlanRepository(db.pool);
+    const plans = new PgPlanRepository(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
     const created = await plans.createPlanFromAgent(identity, {
       sourceTaskId: TASK,
       planningRunId: planningRun.id,
@@ -613,7 +613,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       prompt: "Plan this source task.",
     }) as { id: string };
 
-    const plans = new PgPlanRepository(db.pool);
+    const plans = new PgPlanRepository(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
     const definition = agentPlanDefinition();
     (definition.nodes[0] as { contract_json: Record<string, unknown> }).contract_json = {
       ...(definition.nodes[0] as { contract_json: Record<string, unknown> }).contract_json,
@@ -678,7 +678,7 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
       prompt: "Plan this source task.",
     }) as { id: string };
 
-    const plans = new PgPlanRepository(db.pool);
+    const plans = new PgPlanRepository(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
     const definition = agentPlanDefinition();
     (definition.nodes[0] as { contract_json: Record<string, unknown> }).contract_json = {
       ...(definition.nodes[0] as { contract_json: Record<string, unknown> }).contract_json,
@@ -1066,6 +1066,71 @@ describeWithPostgres("Task to Agent Plan real PostgreSQL lifecycle", () => {
     expect(states[0]!.resolved_inputs_json?.bindings[0]?.missing_reason).toBe("output_text_missing");
     expect(states[1]).toMatchObject({ node_key: "required", status: "failed", run_count: 0 });
     expect(states[1]!.blocked_reason).toBe("input_binding_unresolved:missing:output_text_missing");
+  });
+
+  it("runs a Plan's action node through the same handler contract, never as an Agent turn", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString();
+    actionNodeHandlerRegistry.register("test.plan_echo", async (context) => ({
+      output: { container: context.container.kind, node: context.nodeKey },
+    }), "plan_graph_test", ["workflow_execution", "plan_version"]);
+    actionNodeHandlerRegistry.register("test.workflow_only", async () => ({ output: {} }), "plan_graph_test");
+    await db.pool.query(
+      `INSERT INTO tasks (
+         id, space_id, task_role, title, description, task_type, status, priority,
+         risk_level, owner_user_id, visibility, access_level, created_by_user_id,
+         created_at, updated_at
+       ) VALUES ($1, $2, 'source', 'Action plan task', 'Task with an action node.', 'general',
+                 'inbox', 'normal', 'medium', $3, 'space_shared', 'full', $3, $4, $4)`,
+      [TASK, SPACE, USER, now],
+    );
+    const planningRun = await new PgTaskRepository(db.pool).requestPlanningRun(identity, TASK, {
+      agent_id: AGENT, prompt: "Plan this source task.",
+    }) as { id: string };
+    const plans = new PgPlanRepository(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }));
+    const definition = (actionKey: string) => ({
+      ...agentPlanDefinition("low"),
+      nodes: [{
+        id: "act", title: "Deterministic step", depends_on: [],
+        verification_recipe_refs: ["output-check"],
+        contract_json: { risk_level: "low", max_runs: 1, max_attempts: 1 },
+        metadata_json: { node_kind: "action", action_key: actionKey, runtime_delegation_allowed: false },
+      }],
+    });
+
+    // A handler that serves only Workflows is refused when the Plan is proposed.
+    await expect(plans.createPlanFromAgent(identity, {
+      sourceTaskId: TASK, planningRunId: planningRun.id, planningToolCallId: "tool-call-workflow-only",
+      agentId: AGENT, definitionJson: definition("test.workflow_only"), budgetCap: 100,
+    })).rejects.toMatchObject({ code: "action_not_executable" });
+
+    const created = await plans.createPlanFromAgent(identity, {
+      sourceTaskId: TASK, planningRunId: planningRun.id, planningToolCallId: "tool-call-action",
+      agentId: AGENT, definitionJson: definition("test.plan_echo"), budgetCap: 100,
+    });
+    const versionId = (created.current_version as { id: string }).id;
+    await plans.executePlan(identity, String(created.id), { agentId: AGENT });
+
+    const node = await db.pool.query<{ status: string }>(
+      `SELECT status FROM plan_nodes WHERE space_id = $1 AND plan_version_id = $2`, [SPACE, versionId],
+    );
+    expect(node.rows).toEqual([{ status: "done" }]);
+    const attempts = await db.pool.query<{ status: string; action_key: string; output_text: string; output_json: unknown }>(
+      `SELECT a.status, a.action_key, a.output_text, a.output_json
+         FROM plan_node_action_attempts a JOIN plan_nodes n ON n.id = a.plan_node_id
+        WHERE n.plan_version_id = $1`,
+      [versionId],
+    );
+    expect(attempts.rows).toEqual([{
+      status: "succeeded", action_key: "test.plan_echo", output_text: "Plan action completed.",
+      output_json: { container: "plan_version", node: "act" },
+    }]);
+    // No Agent Run was spent on it: the only node Run link is none at all.
+    const links = await db.pool.query(
+      `SELECT 1 FROM plan_node_runs pnr JOIN plan_nodes n ON n.id = pnr.plan_node_id WHERE n.plan_version_id = $1`,
+      [versionId],
+    );
+    expect(links.rowCount).toBe(0);
   });
 
   it("dispatches 'action' nodes to a registered deterministic handler without spawning an agent run", async () => {

@@ -1,6 +1,7 @@
 import { HttpError, objectValue, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectWriter, canWriteProject } from "../projects/access.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { sha256, sha256Json } from "./hash.js";
 
 export interface EvolvableAssetAccessRow {
   id: string;
@@ -110,9 +111,10 @@ export async function normalizeVersionScopeForWrite(
   scopeId: string | null,
 ): Promise<string | null> {
   if (scopeType === "system") {
-    if (scopeId) throw new HttpError(422, "system-scoped asset versions must not include scope_id");
-    await assertSpaceOwnerOrAdmin(db, identity, "Requires space owner/admin role to create a system-scoped asset version");
-    return null;
+    // The system baseline is release content, synced from the built-in
+    // catalog at startup. No Space role writes it; customize at Space,
+    // Project, Agent or personal scope instead.
+    throw new HttpError(403, "The built-in baseline comes from the release catalog; customize it at Space, Project, Agent or personal scope");
   }
   if (scopeType === "space") {
     if (scopeId && scopeId !== identity.spaceId) {
@@ -137,6 +139,37 @@ export async function normalizeVersionScopeForWrite(
     return scopeId;
   }
   throw new HttpError(422, "scope_type must be one of system, space, project, user, agent");
+}
+
+/**
+ * Whether a version may serve a target scope (a pin, a deployment ref, or a
+ * resolution for that scope). A built-in version serves every Space; a
+ * Space version serves anything in its Space; a Project, Agent or personal
+ * version serves only its own scope. A version never changes scope: to use
+ * other content elsewhere, create a version in that scope.
+ */
+export function versionServesScope(
+  identity: SpaceUserIdentity,
+  target: { scopeType: string; scopeId: string | null },
+  version: { space_id: string | null; scope_type: string; scope_id: string | null },
+): boolean {
+  if (version.space_id === null) return version.scope_type === "system";
+  if (version.space_id !== identity.spaceId) return false;
+  if (version.scope_type === "space") return version.scope_id === identity.spaceId;
+  if (version.scope_type === "project" || version.scope_type === "agent") {
+    return target.scopeType === version.scope_type && target.scopeId === version.scope_id;
+  }
+  if (version.scope_type === "user") {
+    return target.scopeType === "user" && target.scopeId === identity.userId && version.scope_id === identity.userId;
+  }
+  return false;
+}
+
+/** The identity of a version's content: its JSON body, or the reference it names. */
+export function assetVersionContentHash(contentJson: unknown, contentRef: string | null): string {
+  if (contentJson !== null && contentJson !== undefined) return sha256Json(contentJson);
+  if (!contentRef) throw new HttpError(422, "content_json or content_ref is required");
+  return sha256(`content_ref:${contentRef}`);
 }
 
 export function assertAssetAllowsTargetScope(

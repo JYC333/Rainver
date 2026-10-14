@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { useAppTranslation } from '../../i18n'
 
 interface DatePickerProps {
   value: string
@@ -13,7 +14,11 @@ interface DatePickerProps {
   className?: string
 }
 
-const WEEKDAYS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su']
+/** Monday-first short weekday names in the UI locale (2024-01-01 was a Monday). */
+function weekdayNames(locale: string): string[] {
+  const format = new Intl.DateTimeFormat(locale, { weekday: 'short' })
+  return Array.from({ length: 7 }, (_, index) => format.format(new Date(2024, 0, 1 + index)))
+}
 
 function pad(value: number): string {
   return String(value).padStart(2, '0')
@@ -34,18 +39,18 @@ function startOfMonth(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), 1)
 }
 
-function formatDate(value: string): string {
+function formatDate(value: string, locale: string): string {
   const date = parseIsoDate(value)
   if (!date) return value
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(locale, {
     day: '2-digit',
     month: 'short',
     year: 'numeric',
   }).format(date)
 }
 
-function formatMonth(date: Date): string {
-  return new Intl.DateTimeFormat(undefined, {
+function formatMonth(date: Date, locale: string): string {
+  return new Intl.DateTimeFormat(locale, {
     month: 'long',
     year: 'numeric',
   }).format(date)
@@ -59,12 +64,13 @@ export function DatePicker({
   value,
   onChange,
   ariaLabel,
-  placeholder = 'dd/mm/yyyy',
+  placeholder,
   min,
   max,
   disabled = false,
   className,
 }: DatePickerProps) {
+  const { t, locale } = useAppTranslation()
   const rootRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const [dropUp, setDropUp] = useState(false)
@@ -135,14 +141,14 @@ export function DatePicker({
           'disabled:cursor-not-allowed disabled:opacity-60',
         )}
       >
-        <span className={cn('truncate', !value && 'text-muted-foreground')}>{value ? formatDate(value) : placeholder}</span>
+        <span className={cn('truncate', !value && 'text-muted-foreground')}>{value ? formatDate(value, locale) : placeholder ?? t('core_ui.date_picker.placeholder')}</span>
         <CalendarDays className="size-3.5 shrink-0 text-muted-foreground" />
       </button>
 
       {open && !disabled && (
         <div
           role="dialog"
-          aria-label={ariaLabel ?? 'Choose date'}
+          aria-label={ariaLabel ?? t('core_ui.date_picker.choose_date')}
           className={cn(
             'absolute left-0 z-[1000] w-[min(19rem,calc(100vw-2rem))] rounded-lg border border-border bg-card p-3 shadow-md',
             dropUp ? 'bottom-full mb-1' : 'top-full mt-1',
@@ -151,16 +157,16 @@ export function DatePicker({
           <div className="flex items-center justify-between gap-2">
             <button
               type="button"
-              aria-label="Previous month"
+              aria-label={t('core_ui.date_picker.previous_month')}
               onClick={() => changeMonth(-1)}
               className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
             >
               <ChevronLeft className="size-4" />
             </button>
-            <span className="text-sm font-medium text-foreground">{formatMonth(viewDate)}</span>
+            <span className="text-sm font-medium text-foreground">{formatMonth(viewDate, locale)}</span>
             <button
               type="button"
-              aria-label="Next month"
+              aria-label={t('core_ui.date_picker.next_month')}
               onClick={() => changeMonth(1)}
               className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
             >
@@ -169,7 +175,7 @@ export function DatePicker({
           </div>
 
           <div className="mt-3 grid grid-cols-7 gap-1 text-center text-[11px] font-medium text-muted-foreground">
-            {WEEKDAYS.map(day => <span key={day}>{day}</span>)}
+            {weekdayNames(locale).map(day => <span key={day}>{day}</span>)}
           </div>
           <div className="mt-1 grid grid-cols-7 gap-1">
             {days.map((date, index) => {
@@ -182,7 +188,7 @@ export function DatePicker({
                   key={dateValue}
                   type="button"
                   disabled={disabledDate}
-                  aria-label={date.toLocaleDateString()}
+                  aria-label={new Intl.DateTimeFormat(locale, { dateStyle: 'long' }).format(date)}
                   aria-pressed={selected}
                   onClick={() => selectDate(date)}
                   className={cn(

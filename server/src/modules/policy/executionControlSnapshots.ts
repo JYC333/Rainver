@@ -122,6 +122,14 @@ export class ExecutionControlSnapshotRepository {
               service_name: "run_orchestration",
               instructed_by_user_id: run.instructed_by_user_id ?? run.owner_user_id ?? null,
             }
+        // A Room continuation is the system reporting back, not the person
+        // whose conversation it reports into; its authority is its cause's.
+        : run.trigger_origin === "continuation"
+          ? {
+              type: "system",
+              service_name: "room_continuation",
+              instructed_by_user_id: run.instructed_by_user_id ?? run.owner_user_id ?? null,
+            }
         : run.trigger_origin === "job" || run.trigger_origin === "autonomous"
           ? {
               type: "service",

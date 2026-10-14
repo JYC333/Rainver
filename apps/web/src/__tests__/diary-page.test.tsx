@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createDiaryPage } from '../../../../plugins/official/diary/web/src/DiaryPage'
 import { saveDiaryEntry } from '../../../../plugins/official/diary/web/src/saveQueue'
 import type { DiaryApi, DiaryEntry, DiaryWebHost } from '../../../../plugins/official/diary/web/src/host'
+import { DIARY_MESSAGES } from '../../../../plugins/official/diary/web/src/messages'
 
 function entry(date: string, content: string): DiaryEntry {
   return { id: `entry-${date}`, user_id: 'user-1', entry_date: date, content, created_at: '', updated_at: '' }
@@ -34,11 +35,12 @@ function heldApi(stored: DiaryEntry[]) {
   return { api, release }
 }
 
-function renderPage(api: DiaryApi) {
+function renderPage(api: DiaryApi, locale = 'en') {
   const host: DiaryWebHost = {
     api,
     Link: ({ to, children }) => <a href={to}>{children}</a>,
     usePluginState: () => ({ loading: false, enabled: true }),
+    useLocale: () => locale,
   }
   const Page = createDiaryPage(host)
   return render(<Page />)
@@ -124,7 +126,7 @@ describe('DiaryPage', () => {
     const today = localToday()
     const { api, release } = heldApi([entry(today, 'Written today'), entry('2025-03-04', 'Written in March')])
     renderPage(api)
-    fireEvent.click(await screen.findByRole('button', { name: '2025-03-04' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Mar 4, 2025' }))
 
     await release(today)
     await release(new Date().toISOString().slice(0, 10))
@@ -141,7 +143,7 @@ describe('DiaryPage', () => {
     await release(new Date().toISOString().slice(0, 10))
     fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'Unsaved thought' } })
 
-    fireEvent.click(await screen.findByRole('button', { name: '2025-03-04' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Mar 4, 2025' }))
 
     await waitFor(() => expect(api.saveEntry).toHaveBeenCalledWith(today, 'Unsaved thought'))
   })
@@ -156,5 +158,23 @@ describe('DiaryPage', () => {
     expect(await screen.findByRole('heading', { name: /October 2, 2026/ })).toBeInTheDocument()
     expect(api.today).not.toHaveBeenCalled()
     expect(api.onThisDay).toHaveBeenCalledWith('2026-10-02')
+  })
+
+  it('reads in the host locale, keeping each entry on its own calendar day', async () => {
+    const today = localToday()
+    const { api, release } = heldApi([entry('2025-03-04', '三月写的')])
+    renderPage(api, 'zh-CN')
+    await release(today)
+    await release(new Date().toISOString().slice(0, 10))
+
+    expect(await screen.findByRole('button', { name: '立即保存' })).toBeInTheDocument()
+    expect(screen.getByText('历史')).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).toHaveAttribute('placeholder', '今天在想些什么？')
+    expect(await screen.findByRole('button', { name: '2025年3月4日' })).toBeInTheDocument()
+  })
+
+  it('has the same messages in every language it ships', () => {
+    const keys = Object.keys(DIARY_MESSAGES.en).sort()
+    for (const messages of Object.values(DIARY_MESSAGES)) expect(Object.keys(messages).sort()).toEqual(keys)
   })
 })

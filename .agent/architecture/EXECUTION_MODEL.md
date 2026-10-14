@@ -28,9 +28,12 @@ finalization boundary after a Run reaches a terminal state. Idempotent per
 `(run_id, attempt_number, finalizer_version)`, so a successful retry receives a
 fresh evaluation and downstream projection. Records run evaluation outcome,
 task evaluation bridge result, and skipped reasons. Its evidence is
-append-only; `metadata_json.completion_gate_committed` has one permitted
-monotonic transition from absent to true after delegation reconciliation,
-Supervisor decision, and execution-graph reconciliation all commit.
+append-only. Its completion gate is `settled_at`: set once, after delegation
+reconciliation, the Supervisor decision and every settlement reconciler (the
+Plan and Workflow graphs, then each registered domain reconciler) have
+committed. `settlement_json.completed` records the reconcilers already done
+and `last_failure` the one a pass is still owed, so a resumed settlement does
+only what is left.
 
 **RunAttempt** — one physical runtime execution under a logical Run. A queued
 execution Run creates queued attempt 1 atomically; Supervisor retries create
@@ -119,9 +122,9 @@ Runtime-output delegation has one execution entry: terminal finalization
 replays the durable canonical output with a stable idempotency key before
 creating RunEvaluation/Supervisor evidence. Explicit finalization uses the same
 materializer path. Chat/Room completion recovery only projects Runs that have a
-completed current-version finalization for the latest Attempt whose
-`completion_gate_committed` marker confirms delegation reconciliation and the
-Supervisor decision both committed.
+completed current-version finalization for the latest Attempt that is settled
+(`settled_at`): delegation reconciliation, the Supervisor decision and
+settlement all committed.
 
 **Job** — background system task (import, consolidation, backup, agent-run dispatch). Separate from Run. Job handlers create or dispatch Runs; jobs themselves are not product execution records.
 
@@ -661,9 +664,20 @@ continue instruction (`modules/rooms.md`).
 
 **Finalized** means the canonical materializer has reconciled durable
 runtime-output delegation, `PostRunFinalizationService` has performed
-deterministic evaluation and Supervisor handling, and the completion gate is
-committed. Execution-graph reconciliation runs after that and is best-effort:
-a failure is swallowed, and the completion gate is still marked committed.
+deterministic evaluation and Supervisor handling, and the Run is **settled**:
+every settlement reconciler — Plan graph, Workflow graph, then each one in
+`runFinalizationReconcilerRegistry` (project work, autonomy, follow-up Tasks)
+— has completed and `settled_at` is set. A reconciler that fails does not
+stop the others; it leaves the finalization unsettled with its key and error
+code, finalization answers `settlement_pending`, and the worker sweep
+(`resumeUnsettledRuns`, backing off to at most an hour) finalizes again, which
+runs only the reconcilers not yet completed. Settlement never re-runs the
+Agent, a model call, or output materialization: a terminal Run's job retry and
+the sweep both reach finalization of the existing attempt. The finalization
+read model separates the two: the Agent finished, and `settlement.status` is
+`settled` or `pending` with a `settlement_pending:<reconciler>` reason code.
+Evolution signals, the `run_finalized` audit event and cost estimates stay
+best-effort extras outside the gate.
 
 Before finalization, the A2 Verification Engine evaluates declared
 deterministic checks in the live run sandbox and persists attempt-scoped
@@ -727,7 +741,7 @@ The finalize endpoint is the single write surface.
 2. Creates one `RunEvaluation`.
 3. Dispatches the run-finalized hooks through the server finalization service. The tasks-owned `task_evaluation_bridge` hook creates one `TaskEvaluation` bridge row when a `TaskRun` link exists (`runs` never imports `tasks`; `tasks` registers the hook through the module registry).
 4. Creates one `RunFinalization` row with `status=completed`.
-5. Awaits Supervisor handling, attempts execution-graph reconciliation, and commits the monotonic completion gate. Reconciliation failure does not block the gate.
+5. Awaits Supervisor handling, then settles: every settlement reconciler must complete before `settled_at` (the completion gate) is set; a failure leaves settlement owed for the sweep, and finalization answers `settlement_pending`.
 6. Appends one `run_finalized` `RunEvent`.
 
 When a Run has declared checks, finalization also includes the verification
@@ -866,6 +880,42 @@ applier re-queries evaluation rows and only accepts a passed
 `verification_engine.v1` evaluation created by the evaluation-case executor.
 Proposal payload summaries are evidence, not authorization. Public metadata
 recording cannot forge a passed engine evaluation.
+
+### Asset scopes, content binding and references
+
+- **Built-in baseline.** A `system` asset or version is release content. Only
+  the startup catalog sync writes it (`prompts/builtins.ts`), with no Space,
+  and it owns the `system` production deployment ref. No Space role creates,
+  promotes to, deploys to, pins or rolls back `system` scope (403), and the
+  database refuses a Space row in `system` scope or a `system` row with a
+  Space (`ck_evolvable_asset*_system_*_placement`). A Space customizes a
+  built-in by its own Space, Project, Agent or personal versions, which
+  resolution prefers to the baseline; sync never touches them.
+- **A version keeps its scope.** Promotion approves a version where it lives;
+  the proposal's target is only where its pin or deployment ref lands.
+  `versionServesScope` (`evolution/assetAccess.ts`) decides which targets a
+  version may serve: a built-in one every Space, a Space version its Space
+  and that Space's Projects, Agents and people, a Project, Agent or personal
+  version only itself. Pins, deployments and promotion targets share it.
+- **Content is bound.** The server computes `content_hash` (canonical JSON,
+  or the named `content_ref`); callers cannot set it. Content changes only in
+  `draft`; statuses move forward only (draft → candidate → testing, any of
+  them → archived), so a changed version is a child version. An evaluation
+  run records the `candidate_content_hash` it judged and a promotion proposal
+  the `candidate_content_hash` it proposes. The applier locks the version,
+  counts only evaluations of that hash, and approves only while the version
+  is still candidate/testing with that hash (409 otherwise).
+- **`deprecate_previous` keeps what is still used.** After the promotion
+  moves its own pin and deployment ref, earlier approved versions of the same
+  scope are deprecated unless an active pin, an active prompt deployment ref,
+  an unfinished Run (`workflow_version_id`) or an unfinished workflow
+  execution still names them. Those stay approved and are reported as
+  `kept_referenced_version_ids` until their owners move the reference. A
+  finished execution is history, not a live reference.
+- **Rollback steps back once.** A prompt deployment ref written by a rollback
+  records `rolled_back_from_ref_id`. Another rollback without `version_id`
+  from such a ref answers 409, because the default target is the ref just
+  left; naming the version rolls back to it.
 
 ## TaskEvaluation — Task-Level Evaluation Bridge
 

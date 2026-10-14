@@ -12,24 +12,9 @@ class FakeApplyDb {
     agent_id: unknown;
     payload: Record<string, unknown>;
   }> = [];
-  readonly policies: Array<{
-    name: unknown;
-    domain: unknown;
-    rule_json: unknown;
-    applies_to_json: unknown;
-  }> = [];
 
   async query(sql: string, params: readonly unknown[] = []) {
     const norm = sql.replace(/\s+/g, " ").trim();
-    if (norm.startsWith("INSERT INTO policies")) {
-      this.policies.push({
-        name: params[2],
-        domain: params[3],
-        rule_json: params[8],
-        applies_to_json: params[9],
-      });
-      return { rows: [], rowCount: 1 };
-    }
     if (norm.startsWith("INSERT INTO jobs")) {
       this.jobs.push({
         job_type: String(params[5]),
@@ -67,9 +52,6 @@ class FakeApplyDb {
     if (norm.startsWith("UPDATE proposals")) {
       return { rows: [], rowCount: 1 };
     }
-    if (norm.startsWith("UPDATE policies SET status = 'superseded'")) {
-      return { rows: [], rowCount: 1 };
-    }
     return { rows: [], rowCount: 0 };
   }
 }
@@ -89,8 +71,8 @@ function proposal(overrides: Partial<ApplyProposal> = {}): ApplyProposal {
   return {
     id: "proposal-1",
     space_id: "space-1",
-    proposal_type: "policy_change",
-    title: "Change policy",
+    proposal_type: "memory_create",
+    title: "Remember something",
     project_folder_id: null,
     project_id: null,
     visibility: "space_shared",
@@ -207,31 +189,10 @@ describe("proposal applier registry", () => {
     );
   });
 
-  it("applies a policy change without enqueueing a job", async () => {
-    const db = new FakeApplyDb();
-
-    const result = await createDefaultProposalApplierRegistry().apply({
-      config: loadConfig({
-        SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
-        SERVER_INTERNAL_TOKEN: "internal-token",
-      }),
-      db: db as never,
-      proposal: proposal(),
-      userId: "user-1",
-    });
-
-    expect(result.result_type).toBe("policy_version");
-    expect(db.policies[0]).toMatchObject({
-      name: "Scoped policy",
-      domain: "runtime",
-      rule_json: JSON.stringify({ effect: "allow" }),
-      applies_to_json: JSON.stringify({
-        project_folder_ids: ["ws-1", "ws-1"],
-        agents: [{ id: "agent-1" }],
-      }),
-    });
-    expect(db.dirtyUpdates).toEqual([]);
-    expect(db.jobs).toEqual([]);
+  it("has no applier for a generic policy change, which nothing would enforce", () => {
+    // `policy_change` wrote `policies` rows no decision ever read. It is not a
+    // proposal type: accepting one is refused rather than recorded as applied.
+    expect(createDefaultProposalApplierRegistry().registeredTypes().has("policy_change")).toBe(false);
   });
 
   it("rejects a capability_enable proposal whose version belongs to another capability", async () => {

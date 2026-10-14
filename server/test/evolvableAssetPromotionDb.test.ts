@@ -7,6 +7,7 @@ import { EvolvableAssetRepository } from "../src/modules/evolution/assetReposito
 import { EvolvableAssetEvaluationRepository } from "../src/modules/evolution/assetEvaluationRepository.js";
 import { ProposalApplierRegistry, type ProposalApplyContext } from "../src/modules/proposals/applierRegistry.js";
 import { registerEvolvableAssetPromotionProposalApplier } from "../src/modules/evolution/assetPromotionProposalApplier.js";
+import { resolveEvolvableAssetVersion } from "../src/modules/evolution/assetResolutionService.js";
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
@@ -167,17 +168,6 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
-  it("rejects system promotion proposals that include target_scope_id", async () => {
-    if (!db.available) return;
-    const { assetId, versionId } = await createCandidateVersion();
-    await expect(
-      evalRepo().createPromotionProposal(identity, assetId, versionId, {
-        target_scope_type: "system",
-        target_scope_id: SPACE,
-      }),
-    ).rejects.toMatchObject({ statusCode: 422 });
-  });
-
   it("allows warn-only promotion without a passed evaluation and reports the warning", async () => {
     if (!db.available) return;
     const { assetId, versionId } = await createCandidateVersion();
@@ -256,17 +246,89 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
     await expect(applyProposal(proposal.proposal_id as string, OUTSIDER)).rejects.toThrow(/permission|writer|owner/i);
   });
 
-  it("sets the asset's current_system_version_id when promoting to system scope", async () => {
+  it("never makes the system baseline a promotion target, nor a version a Space writes", async () => {
     if (!db.available) return;
     const { assetId, versionId } = await createCandidateVersion();
-    await passEvaluation(assetId, versionId);
-    const proposal = await evalRepo().createPromotionProposal(identity, assetId, versionId, { target_scope_type: "system" });
-    await applyProposal(proposal.proposal_id as string, OWNER);
-
-    const asset = await repo().getAsset(identity, assetId);
-    expect(asset.current_system_version_id).toBe(versionId);
+    await expect(evalRepo().createPromotionProposal(identity, assetId, versionId, { target_scope_type: "system" }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    await expect(repo().createVersion(identity, assetId, { scope_type: "system", content_json: { system_prompt: "global" } }))
+      .rejects.toMatchObject({ statusCode: 403 });
   });
 
+  it("keeps the version in its own scope and only lets it serve targets that scope covers", async () => {
+    if (!db.available) return;
+    const { assetId, versionId } = await createCandidateVersion();
+    // A Project version cannot become the Space's version by promotion.
+    await expect(evalRepo().createPromotionProposal(identity, assetId, versionId, { target_scope_type: "space", target_scope_id: SPACE }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    const proposal = await evalRepo().createPromotionProposal(identity, assetId, versionId, { target_scope_type: "project", target_scope_id: PROJECT });
+    await applyProposal(proposal.proposal_id as string, OWNER);
+    const version = await db.pool.query<{ scope_type: string; scope_id: string; status: string }>(
+      `SELECT scope_type, scope_id, status FROM evolvable_asset_versions WHERE id = $1`,
+      [versionId],
+    );
+    expect(version.rows[0]).toEqual({ scope_type: "project", scope_id: PROJECT, status: "approved" });
+  });
+
+  it("binds evaluation and promotion to the content they judged", async () => {
+    if (!db.available) return;
+    const { assetId, versionId } = await createCandidateVersion();
+    const evaluationId = await passEvaluation(assetId, versionId);
+    // Once out of draft, content changes only through a child version.
+    await expect(repo().transitionVersionStatus(identity, assetId, versionId, { status: "draft" }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    await expect(repo().updateVersionContent(identity, assetId, versionId, { content_json: { system_prompt: "edited" } }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    const proposal = await evalRepo().createPromotionProposal(identity, assetId, versionId, {
+      target_scope_type: "project",
+      target_scope_id: PROJECT,
+      evaluation_run_ids: [evaluationId],
+      hard_gate: true,
+    });
+
+    // Content that differs from what was proposed and evaluated is refused,
+    // however it got there.
+    await db.pool.query(
+      `UPDATE evolvable_asset_versions SET content_json = '{"system_prompt":"swapped"}'::jsonb, content_hash = 'other' WHERE id = $1`,
+      [versionId],
+    );
+    await expect(applyProposal(proposal.proposal_id as string, OWNER)).rejects.toMatchObject({ statusCode: 409 });
+    await expect(evalRepo().createPromotionProposal(identity, assetId, versionId, {
+      target_scope_type: "project",
+      target_scope_id: PROJECT,
+      evaluation_run_ids: [evaluationId],
+    })).rejects.toMatchObject({ statusCode: 422 });
+    const status = await db.pool.query<{ status: string }>(`SELECT status FROM evolvable_asset_versions WHERE id = $1`, [versionId]);
+    expect(status.rows[0]!.status).toBe("testing");
+  });
+
+  it("does not deprecate an earlier version something else still pins", async () => {
+    if (!db.available) return;
+    const asset = await repo().createAsset(identity, {
+      asset_type: "prompt_template",
+      asset_key: `academic.shared_screening.${randomUUID()}`,
+      display_name: "Shared screening",
+    });
+    const assetId = asset.id as string;
+    const promoteSpaceVersion = async (content: string, options: Record<string, unknown>) => {
+      const version = await repo().createVersion(identity, assetId, { scope_type: "space", content_json: { system_prompt: content } });
+      await repo().transitionVersionStatus(identity, assetId, version.id as string, { status: "candidate" });
+      const proposal = await evalRepo().createPromotionProposal(identity, assetId, version.id as string, options);
+      return { versionId: version.id as string, applied: await applyProposal(proposal.proposal_id as string, OWNER) };
+    };
+    // The Space version v1 serves a Project through that Project's pin.
+    const first = await promoteSpaceVersion("v1", { target_scope_type: "project", target_scope_id: PROJECT, pin_after_approval: true });
+    const second = await promoteSpaceVersion("v2", { target_scope_type: "space", target_scope_id: SPACE, deprecate_previous: true });
+    expect(second.applied.result).toMatchObject({ deprecated_version_ids: [], kept_referenced_version_ids: [first.versionId] });
+    const pinned = await resolveEvolvableAssetVersion(db.pool, { spaceId: SPACE, assetKey: asset.asset_key as string, projectId: PROJECT });
+    expect(pinned.versionId).toBe(first.versionId);
+
+    // Once the Project moves its pin, the next promotion retires v1.
+    await repo().setPin(identity, assetId, "project", PROJECT, { version_id: second.versionId });
+    const third = await promoteSpaceVersion("v3", { target_scope_type: "space", target_scope_id: SPACE, deprecate_previous: true });
+    expect(third.applied.result).toMatchObject({ kept_referenced_version_ids: [second.versionId] });
+    expect((third.applied.result as { deprecated_version_ids: string[] }).deprecated_version_ids).toEqual([first.versionId]);
+  });
   it("writes a prompt deployment ref when an accepted promotion carries deployment_label", async () => {
     if (!db.available) return;
     const { assetId, versionId } = await createCandidateVersion();

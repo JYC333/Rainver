@@ -53,6 +53,22 @@ describe('MemoriesPage, memory an Agent wrote', () => {
     })
   })
 
+  it('pages through more than one page of entries and starts again from the first page on a new filter', async () => {
+    vi.mocked(memoryApi.list).mockResolvedValue({ items: [memoryRow()], limit: 50, offset: 0, total: 120 })
+    renderPage()
+
+    expect(await screen.findByText('1–50 of 120')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
+    await waitFor(() => {
+      expect(memoryApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 50, offset: 50 }))
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Written by an Agent' }))
+    await waitFor(() => {
+      expect(memoryApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ created_by: 'agent', offset: 0 }))
+    })
+  })
+
   it('carries a paused session straight into the list', async () => {
     renderPage('/memory?session=session-1')
 
@@ -238,7 +254,7 @@ describe('MemoriesPage maintenance UI', () => {
     vi.mocked(memoryApi.create).mockResolvedValue({ id: 'proposal-1' } as never)
     vi.mocked(memoryApi.maintenanceScan).mockResolvedValue({
       findings: [],
-      counts: { duplicate: 0, stale: 0, thin: 0, lifecycle_drift: 0 },
+      counts: { duplicate: 0, stale: 0, thin: 0, contradiction: 0 },
       candidate_limit: 500,
       candidates_examined: 0,
       scanned: 0,

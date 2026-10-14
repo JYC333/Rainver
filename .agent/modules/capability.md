@@ -14,9 +14,13 @@ through `/api/v1/capability-definitions`. Catalog YAML under
   `/api/v1/capability-definitions/:id/enable-proposal` and `/disable-proposal`
   routes create, and their applier.
 - Skill packages: skill-source import preview/import from GitHub
-  (`/api/v1/skill-sources/*`), `/api/v1/skill-packages` reads, review proposals,
-  conversion to a capability, and the local skill overlay
-  (`/api/v1/capabilities/skills/*`).
+  (`/api/v1/skill-sources/*`; import must carry the preview's `package_hash`),
+  `/api/v1/skill-packages` reads (with the caller's `pending_proposal`),
+  idempotent review proposals, conversion to a capability, and the local
+  skill overlay (`/api/v1/capabilities/skills/*`). See
+  [CAPABILITY_WORKFLOW_SKILL_SYSTEM](../architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md)
+  for the preview binding, the immutable imported snapshot and the pending
+  proposal identity.
 
 ## Does Not Own
 - Automation, schedules, or cron triggers.

@@ -24,7 +24,12 @@ export const agents = pgTable("agents", {
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 	visibility: varchar({ length: 32 }).notNull(),
 	accessLevel: varchar("access_level", { length: 16 }).default('full').notNull(),
+	// Provenance only: the catalog Agent template (and its version) this Agent
+	// was created from. Never read to assemble runtime configuration.
+	sourceTemplateId: varchar("source_template_id", { length: 128 }),
+	sourceTemplateVersionId: varchar("source_template_version_id", { length: 128 }),
 }, (table): PgTableExtraConfigValue[] => [
+	check("ck_agents_source_template_pair", sql`(source_template_id IS NULL) = (source_template_version_id IS NULL)`),
 	index("ix_agents_agent_kind").using("btree", table.agentKind.asc().nullsLast()),
 	index("ix_agents_current_version_id").using("btree", table.currentVersionId.asc().nullsLast()),
 	index("ix_agents_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),

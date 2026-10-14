@@ -1,6 +1,7 @@
 import { useState, useEffect, useId } from 'react'
 import { Archive, Clock, Loader2, Pause, Play, Plus, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
+import { AUTOMATION_TARGET_TYPES, automationTargetDefinition } from '@rainver/protocol'
 import { automationsApi, agentsApi, evolutionApi, projectsApi } from '../../api/client'
 import type { AutomationOut, AutomationTargetType, AutomationTriggerType, AgentOut, EvolvableAsset, EvolvableAssetVersion, Project, WorkflowExecutionSummary } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
@@ -43,19 +44,32 @@ function cfgBoolDefault(cfg: Record<string, unknown> | null, key: string, fallba
   return typeof value === 'boolean' ? value : fallback
 }
 
+/** The Automation's registered target. A config without one is an Agent run, as the server reads it. */
 function automationTarget(auto: AutomationOut): AutomationTargetType {
-  const target = cfgString(auto.config_json, 'target_type')
-  if (target === 'knowledge_retrieval_maintenance') return 'knowledge_retrieval_maintenance'
-  if (target === 'context_ops_review_cycle') return 'context_ops_review_cycle'
-  if (target === 'workflow') return 'workflow'
-  return 'agent_run'
+  const target = cfgString(auto.config_json, 'target_type') || 'agent_run'
+  return (AUTOMATION_TARGET_TYPES as readonly string[]).includes(target) ? target as AutomationTargetType : 'agent_run'
+}
+
+const TARGET_LABELS: Record<AutomationTargetType, string> = {
+  agent_run: 'agent run',
+  workflow: 'workflow',
+  knowledge_retrieval_maintenance: 'knowledge maintenance',
+  context_ops_review_cycle: 'context ops review cycle',
+  information_digest: 'daily digest',
+  autonomous_tick: 'autonomous tick',
 }
 
 function shortTargetLabel(target: AutomationTargetType): string {
-  if (target === 'knowledge_retrieval_maintenance') return 'knowledge maintenance'
-  if (target === 'context_ops_review_cycle') return 'context ops review cycle'
-  if (target === 'workflow') return 'workflow'
-  return 'agent run'
+  return TARGET_LABELS[target]
+}
+
+/** The targets whose Project binding a person can change here; the server refuses it for the rest. */
+function bindsProject(target: AutomationTargetType): boolean {
+  return target === 'agent_run' || target === 'workflow'
+}
+
+function spawnsRuns(target: AutomationTargetType): boolean {
+  return automationTargetDefinition(target)?.spawns_runs !== 'none'
 }
 
 function defaultName(target: AutomationTargetType): string {
@@ -403,7 +417,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
           You can pause or archive this automation. Its prompt, configuration and results belong to its owner.
         </p>
       )}
-      {target === 'agent_run' && !archived && isOwner && (
+      {bindsProject(target) && !archived && isOwner && (
         <div className="flex flex-wrap items-end gap-2 mb-3">
           <label className="min-w-48 flex-1 space-y-1">
             <span className={fieldLabel}>Project binding</span>
@@ -429,6 +443,10 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
             ? `Workflow ${cfgString(auto.config_json, 'workflow_asset_key') || '—'} · ${cfgString(auto.config_json, 'workflow_resolution') || 'pin'}${cfgString(auto.config_json, 'workflow_version_id') ? ` · version ${cfgString(auto.config_json, 'workflow_version_id').slice(-8)}` : ''}`
             : target === 'context_ops_review_cycle'
             ? `Context Review Cycle report${cfgBool(auto.config_json, 'create_packets') ? ' + review packets' : ''} · memory ${cfgBoolDefault(auto.config_json, 'include_memory_maintenance', true) ? 'on' : 'off'}`
+            : target === 'information_digest'
+            ? `Daily digest${auto.project_id ? ' for its Project' : ' for its owner'} · system-managed`
+            : target === 'autonomous_tick'
+            ? 'Autonomous work survey · system-managed'
             : `Private report${cfgBool(auto.config_json, 'create_packet') ? ' + proposal packet' : ''}`}
         </p>
       )}
@@ -453,7 +471,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
                 // a persona write on exactly that difference.
                 const result = await automationsApi.fire(auto.id)
                 if (result.skipped) toast.info(result.skip_reason ? `Skipped — ${result.skip_reason}` : 'Skipped')
-                else toast.success(target === 'agent_run' || target === 'workflow' ? 'Run queued' : 'Scan completed')
+                else toast.success(spawnsRuns(target) ? 'Run queued' : 'Completed')
                 onChanged()
               } catch (err) {
                 toast.error(errMsg(err))
@@ -461,7 +479,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
                 setBusy(false)
               }
             }}>
-            <Play className="size-3.5 mr-1" /> {target === 'agent_run' || target === 'workflow' ? 'Run now' : 'Scan now'}
+            <Play className="size-3.5 mr-1" /> Run now
           </Button>}
           {auto.status === 'active' ? (
             <Button size="sm" variant="outline" disabled={busy}

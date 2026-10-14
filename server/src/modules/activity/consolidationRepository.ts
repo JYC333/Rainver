@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import type { SpaceUserIdentity } from "../routeUtils/common.js";
-import { TRUST_BY_SOURCE_TYPE } from "./repository.js";
+import { activityMemoryProposal, projectReadersMissingActivity } from "./activityMemoryProposal.js";
 import { assessActivityMemoryDuplicate } from "./memoryDedup.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql.js";
@@ -50,6 +50,7 @@ export class PgActivityConsolidationRepository {
     const activitiesSkipped: string[] = [];
     const activitiesDeduped: DedupedActivity[] = [];
     const activitiesFailed: string[] = [];
+    const activitiesAwaitingShare: string[] = [];
 
     const params: unknown[] = [input.spaceId];
     let idFilter = "";
@@ -107,6 +108,11 @@ export class PgActivityConsolidationRepository {
             await repository.markActivityStatus(activity.id, input.spaceId, "processed");
             return { kind: "deduped" as const, duplicate };
           }
+          // A Project's record waits, still raw, until its owner shares it
+          // with the Project; it is not a failure.
+          if (await projectReadersMissingActivity(db, input.spaceId, activity) > 0) {
+            return { kind: "awaiting_share" as const };
+          }
           const proposalId = await repository.insertMemoryProposal(identity, activity);
           await repository.markActivityStatus(activity.id, input.spaceId, "proposals_generated");
           return { kind: "processed" as const, proposalId };
@@ -114,6 +120,8 @@ export class PgActivityConsolidationRepository {
         if (outcome.kind === "processed") {
           proposalsCreated.push(outcome.proposalId);
           activitiesProcessed.push(candidate.id);
+        } else if (outcome.kind === "awaiting_share") {
+          activitiesAwaitingShare.push(candidate.id);
         } else if (outcome.kind === "deduped") {
           activitiesDeduped.push({ activity_id: candidate.id, create_safety: outcome.duplicate.createSafety, match_ids: outcome.duplicate.matchIds });
         } else {
@@ -134,6 +142,7 @@ export class PgActivityConsolidationRepository {
       activities_skipped: activitiesSkipped,
       activities_deduped: activitiesDeduped,
       activities_failed: activitiesFailed,
+      activities_awaiting_share: activitiesAwaitingShare,
     };
   }
 
@@ -157,41 +166,6 @@ export class PgActivityConsolidationRepository {
     identity: SpaceUserIdentity,
     activity: ActivityRow,
   ): Promise<string> {
-    const row = await insertProposalRow(this.db, {
-      spaceId: identity.spaceId,
-      proposalType: "memory_create",
-      title: activity.title || `Activity: ${(activity.content ?? "").slice(0, 80)}`,
-      rationale: "Activity consolidation generated a memory proposal.",
-      payload: {
-        operation: "create",
-        proposed_content: activity.content ?? "",
-        memory_type: "experience",
-        target_scope: "user",
-        target_namespace: "activity.consolidation",
-        owner_user_id: activity.owner_user_id ?? activity.user_id ?? identity.userId,
-        subject_user_id: activity.subject_user_id ?? activity.user_id ?? identity.userId,
-        source_activity_id: activity.id,
-        activity_source_trust:
-          activity.source_trust ?? TRUST_BY_SOURCE_TYPE[activity.activity_type] ?? "untrusted_external",
-        provenance_entries: [
-          {
-            source_type: "activity",
-            source_id: activity.id,
-            source_trust:
-              activity.source_trust ?? TRUST_BY_SOURCE_TYPE[activity.activity_type] ?? "untrusted_external",
-            evidence_json: {
-              activity_type: activity.activity_type,
-              source_url: activity.source_url,
-            },
-          },
-        ],
-      },
-      createdByUserId: identity.userId,
-      projectFolderId: activity.project_folder_id,
-      projectId: activity.project_id,
-      visibility: activity.visibility,
-      riskLevel: "low",
-    });
-    return row.id;
+    return (await insertProposalRow(this.db, activityMemoryProposal(identity, activity))).id;
   }
 }

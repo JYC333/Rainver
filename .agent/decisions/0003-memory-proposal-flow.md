@@ -95,9 +95,11 @@ Direct writes are conditional on the person being able to see and reverse
 them without ceremony:
 
 - the Memory page shows every entry's provenance and version chain, filters
-  by "written by an Agent since I last looked" and by owning Agent, and offers **archive and
-  restore as direct actions for the person** — a person's own archive is not
-  a proposal;
+  by "written by an Agent since I last looked" and by owning Agent, and offers **archive,
+  restore and changing who may read the entry as direct actions for its
+  owner** — a person's own archive, or their own decision about who reads
+  their entry, is not a proposal. An access change is still a new version
+  written by the Memory applier, and nobody but the owner may widen it;
 - each bounded write made during Project work appears in that Project's
   updates with a one-step undo (`archive_memory`); a write in a session with
   no Project is read on the Memory page, which is the only surface a

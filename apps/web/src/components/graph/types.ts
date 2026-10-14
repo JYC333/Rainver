@@ -46,7 +46,8 @@ export interface GraphViewState {
   focusedNodeId: string | null
   expandedClusterIds: string[]
   hiddenKinds: string[]
-  activeEdgeKinds: string[]
+  /** Edge kinds the person switched off. Empty: every kind shows; every kind listed: no edges. */
+  hiddenEdgeKinds: string[]
   currentLayout: GraphProjectionLayoutMode
   layoutSource: GraphLayoutSource
   pinnedNodes: Record<string, { x: number; y: number }>
@@ -65,7 +66,6 @@ export type GraphViewAction =
   | { type: 'focus-node'; nodeId: string | null }
   | { type: 'toggle-kind'; kind: string }
   | { type: 'set-edge-kind-active'; kind: string; active: boolean }
-  | { type: 'set-active-edge-kinds'; kinds: string[] }
   | { type: 'set-layout'; layout: GraphProjectionLayoutMode }
   | { type: 'set-renderer'; renderer: GraphRendererMode }
   | { type: 'pin-node'; nodeId: string; point: { x: number; y: number } }

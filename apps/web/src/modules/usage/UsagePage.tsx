@@ -41,6 +41,7 @@ import {
 } from '../../components/ui/table'
 import { useSpace } from '../../contexts/SpaceContext'
 import { cn, errMsg } from '../../lib/utils'
+import { Pagination } from '../../components/ui/pagination'
 
 type AccuracyFilter = UsageAccuracy | 'all'
 type ChannelFilter = UsageExecutionChannel | 'all'
@@ -59,6 +60,8 @@ interface DashboardData {
   sessions: UsageSessionSummary[]
   /** Sessions matched by the filters; the list above holds at most one page. */
   sessionTotal: number
+  /** Totals over those same sessions, at the same (full) access level as the count. */
+  sessionTotals: UsageTotals
   events: UsageEventDTO[]
   dimensionSummary: UsageSummaryResponse | null
   budgetPreview: UsageBudgetPreviewResponse | null
@@ -381,6 +384,7 @@ export default function UsagePage() {
     subjects: [],
     sessions: [],
     sessionTotal: 0,
+    sessionTotals: EMPTY_TOTALS,
     events: [],
     dimensionSummary: null,
     budgetPreview: null,
@@ -438,6 +442,20 @@ export default function UsagePage() {
   ])
 
   const queryKey = useMemo(() => JSON.stringify(query), [query])
+  // The group table pages through every matched group; a new query starts
+  // from its first page.
+  const [groupOffset, setGroupOffset] = useState(0)
+  useEffect(() => { setGroupOffset(0) }, [queryKey])
+  const groupRequest = useRef(0)
+  useEffect(() => {
+    if (!activeSpaceId || groupOffset === 0) return
+    const request = ++groupRequest.current
+    usageApi.summary({ ...query, offset: groupOffset })
+      .then(summary => { if (request === groupRequest.current) setData(current => ({ ...current, summary })) })
+      .catch(error => { if (request === groupRequest.current) toast.error(errMsg(error)) })
+    // queryKey stands in for query.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSpaceId, groupOffset, queryKey])
 
   async function loadDashboard(nextQuery: UsageApiQuery = query) {
     if (!activeSpaceId) {
@@ -448,6 +466,7 @@ export default function UsagePage() {
         subjects: [],
         sessions: [],
         sessionTotal: 0,
+        sessionTotals: EMPTY_TOTALS,
         events: [],
         dimensionSummary: null,
         budgetPreview: null,
@@ -480,6 +499,7 @@ export default function UsagePage() {
         subjects: safeItems(subjects.items),
         sessions: safeItems(sessions.items),
         sessionTotal: sessions.total,
+        sessionTotals: sessions.totals,
         events: safeItems(events.items),
         dimensionSummary,
         budgetPreview,
@@ -771,6 +791,7 @@ export default function UsagePage() {
                   <Badge variant="secondary">{labelForGroupBy(data.summary?.group_by ?? resolvedGroupBy)}</Badge>
                 </div>
                 {data.summary?.items.length ? (
+                  <>
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -798,6 +819,8 @@ export default function UsagePage() {
                       ))}
                     </TableBody>
                   </Table>
+                  <Pagination className="mt-3" total={data.summary.total} limit={data.summary.limit} offset={groupOffset} onChange={setGroupOffset} />
+                  </>
                 ) : (
                   <EmptyState title="No grouped usage." />
                 )}
@@ -912,18 +935,20 @@ export default function UsagePage() {
                   </TableHeader>
                   <TableBody>
                     {[
-                      { label: 'Request', divisor: selectedTotals.request_count },
-                      { label: 'Event', divisor: selectedTotals.event_count },
-                      { label: 'Session', divisor: data.sessionTotal },
-                      { label: labelForGroupBy(data.summary?.group_by ?? 'Group'), divisor: data.summary?.items.length ?? 0 },
+                      { label: 'Request', totals: selectedTotals, divisor: selectedTotals.request_count },
+                      { label: 'Event', totals: selectedTotals, divisor: selectedTotals.event_count },
+                      // Sessions are listed only at full access, so their
+                      // average divides their own totals, not the summary's.
+                      { label: 'Session', totals: data.sessionTotals, divisor: data.sessionTotal },
+                      { label: labelForGroupBy(data.summary?.group_by ?? 'Group'), totals: selectedTotals, divisor: data.summary?.total ?? 0 },
                     ].map(row => {
                       const divisor = Math.max(0, row.divisor)
-                      const cost = selectedTotals.estimated_cost_usd
+                      const cost = row.totals.estimated_cost_usd
                       return (
                         <TableRow key={row.label}>
                           <TableCell>{row.label}</TableCell>
                           <TableCell className="text-right font-mono">
-                            {divisor > 0 ? formatTokens(selectedTotals.total_tokens / divisor) : '-'}
+                            {divisor > 0 ? formatTokens(row.totals.total_tokens / divisor) : '-'}
                           </TableCell>
                           <TableCell className="text-right font-mono">
                             {divisor > 0 && cost !== null ? formatCost(cost / divisor) : '-'}

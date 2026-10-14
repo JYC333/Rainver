@@ -166,9 +166,14 @@ Durable jobs wrap the same scan flow:
    memories.
 4. The job stores the next visible cursor, accumulated scanned/finding totals,
    last report/proposal ids, and returns to `pending` when more pages remain or
-   `completed` when the cursor is exhausted.
-5. Failures mark the job `failed` with a bounded error message and return
-   `report = null`; failed jobs are terminal until an operator creates a new job.
+   `completed` when the cursor is exhausted. A page cut short by `max_findings`
+   always leaves a cursor, so a truncated scan is never `completed`.
+5. A failing page rolls back to its savepoint and marks the job `failed` with a
+   bounded error message, leaving the cursor where the page started and
+   `completed_at` unset. Running the job again resumes from that cursor; the
+   scheduler does not pick failed jobs up on its own. Each page is one
+   transaction under the job row lock, so a re-run after an interruption
+   repeats the page rather than duplicating its report or packet.
 
 The background service registers `memory_maintenance_scheduler` when
 `SERVER_DATABASE_URL` exists and
@@ -189,7 +194,8 @@ to continue the scan across pages.
 - `deleted_at IS NULL`
 - `scope_type <> 'agent'` (Agent Memory is excluded in the query, so it does
   not consume the scan window)
-- `status IN ('active', 'superseded', 'archived')`
+- `status = 'active'` (a superseded or archived version is the history of an
+  entry, not something to repair)
 - optional exact `project_id`
 - optional cursor boundary over `(updated_at DESC, id DESC)`
 - ordered by `updated_at DESC, id DESC`
@@ -215,12 +221,22 @@ candidate windows using a non-returned physical boundary so the external cursor
 still avoids exposing hidden ids while the scan can reach older visible rows.
 
 Findings are generated in this order: duplicate, stale, thin,
-`lifecycle_drift`, `archived_state_drift`, `project_drift`,
 `source_policy_drift`, and `contradiction`. Every finding carries
-`cluster_key`/`cluster_label` for batched review grouping and may carry a
-bounded `proposed_action`. The combined finding list is capped to
-`max_findings`; `counts` are computed from the capped list. `truncated=true`
-means more findings existed before capping.
+`cluster_key`/`cluster_label` for batched review grouping and a
+`proposed_action`, which is `null` for a hint. `counts` are computed from the
+findings the page returns.
+
+`max_findings` caps a page without losing what lies beyond it. In a full scan,
+when a window's findings exceed the cap, the page reports the longest leading
+run of entries whose findings all fit and the cursor resumes right after it,
+so the remaining entries are read again on the next page. If the first entry
+alone has more findings than the cap, the page reports the first `max_findings`
+of them and the cursor stays on that entry with a `finding_offset`; the next
+page reports the rest of that entry's findings, reading it by id (an entry that
+changed or left the caller's view since is skipped, because its earlier
+findings no longer describe it). `truncated=true` means the page was cut short.
+A recent scan has no cursor; it reports the first `max_findings` findings and
+`truncated=true`.
 
 ## Access Boundary
 
@@ -258,11 +274,14 @@ Protocol enum:
 - `duplicate`
 - `stale`
 - `thin`
-- `lifecycle_drift`
-- `archived_state_drift`
-- `project_drift`
 - `source_policy_drift`
 - `contradiction`
+
+A finding names a real problem or carries a hint. Age and short content are
+hints: visible on the report, with `proposed_action = null`, and never a task
+for anyone. A version chain is not drift — an active head points at the
+version it replaced, and every version keeps its root — so the scan does not
+report it.
 
 Current behavior:
 
@@ -272,29 +291,22 @@ Current behavior:
   uses the first 120 normalized characters. Proposed action:
   `memory_archive` for duplicate targets after the first visible memory.
 - `stale`: active visible memories whose `last_confirmed_at`, falling back to
-  `updated_at`, is older than `stale_after_days`. Proposed action:
-  `memory_update` with `maintenance_action = reconfirm_stale_memory`.
+  `updated_at`, is older than `stale_after_days`. A hint: no proposed action.
 - `thin`: active visible memories with full readable content shorter than
-  `thin_content_chars`. Proposed action: `memory_update` with
-  `maintenance_action = enrich_thin_memory`.
-- `lifecycle_drift`: visible superseded memories without
-  `supersedes_memory_id`, or active memories that still carry
-  `supersedes_memory_id`. Proposed action: `memory_update`, with
-  `requires_operator_edit = true` for missing superseding-memory review.
-- `archived_state_drift`: visible archived memories that still carry lifecycle
-  pointers (`root_memory_id` or `supersedes_memory_id`). Proposed action:
-  `memory_update` with `requires_operator_edit = true`.
-- `project_drift`: active visible memories linked to a Project but not scoped as
-  project memory. Proposed action: `memory_update` to align target scope and
-  project id.
+  `thin_content_chars`. A hint: no proposed action.
 - `source_policy_drift`: active visible external-trust memories without a
-  source pointer for source-policy review. Proposed action: `memory_update` with
-  `requires_operator_edit = true`.
+  source pointer for source-policy review. Proposed action: `memory_update`
+  with `maintenance_action = attach_or_review_external_source`.
 - `contradiction`: active visible memories with the same normalized title and a
   deterministic negation disagreement signal. This is low-confidence advisory
   output and does not include content. Proposed action: `memory_update` on the
-  affirmative memory, with the disagreeing visible memory id listed in
-  `related_memory_ids` and `requires_operator_edit = true`.
+  affirmative memory with `maintenance_action = review_contradiction` and the
+  disagreeing visible memory id in `related_memory_ids`.
+
+`proposed_action` is typed by `MemoryMaintenanceProposedActionSchema`: a
+`memory_archive` with its targets, or a `memory_update` naming one of the two
+actions above. Every update is a person's revision of the content (see Packet
+apply below).
 
 Findings include only:
 
@@ -304,7 +316,7 @@ Findings include only:
 - reason string
 - cluster key/label for grouped review
 - optional `confidence_tier`
-- optional structured `proposed_action`
+- `proposed_action`, typed, or `null` for a hint
 
 Findings do not include raw `content`, snippets, hidden ids, hidden titles, or
 dropped-row counts.
@@ -373,18 +385,41 @@ Accepting a packet:
 - records `reviewed_at`, `reviewed_by`, `accepted_by_user_id`, and
   `accepted_at`
 - returns `result_type = memory_maintenance_packet`
-- creates child pending `memory_archive` proposals for supported duplicate
-  findings and child pending `memory_update` proposals for supported stale,
-  thin, lifecycle, archived-state, project-scope, source-policy, and
-  contradiction findings
-- child update payloads carry `operation = update`, `target_memory_id`, optional
-  `target_scope`/`project_id`, `maintenance_action`, related visible memory ids
-  where relevant, provenance back to the maintenance packet/report artifact, and
-  `requires_operator_edit` when the system cannot safely propose a complete
-  no-edit update
+- creates child pending `memory_archive` proposals for duplicate findings and
+  child pending `memory_update` proposals for source-policy and contradiction
+  findings; a hint (`proposed_action = null`) creates nothing
+- child update payloads carry `operation = update`, `target_memory_id`,
+  `maintenance_action`, related visible memory ids where relevant,
+  `requires_operator_edit = true`, and one provenance entry of the registered
+  `proposal` source type naming the packet, with the report artifact id, the
+  finding kind and its reason as evidence. That entry carries no trust: it
+  says why the entry is being revised, not what the revision rests on
 - records `generated_child_proposal_ids` and
   `generated_child_proposal_count` on the accepted packet
 - performs no canonical Memory writes
+
+A child update is a person's revision of the entry, never an accept of the
+entry as it was:
+
+- The canonical applier refuses a `memory_update` with a `maintenance_action`
+  or `requires_operator_edit` until it carries an `operator_edit`, answering
+  `409 memory_operator_edit_required`, and refuses an unknown action. The check
+  runs before the source-monitoring gate, so that is the reason given.
+- `POST /api/v1/memory/proposals/:proposalId/revision`
+  (`MemoryProposalRevisionRequestSchema`: `content`, optional `title`) writes
+  the revision into the pending child. Only someone who decides what the entry
+  says may write it — its owner, or a Project writer for Project Memory — and
+  someone who cannot read the entry gets a 404. The revision records
+  `operator_edit` (who, when) and appends a `user_confirmation` provenance
+  entry: the person wrote the text, which is the basis it now rests on.
+  Clicking accept on anything else never adds a confirmation.
+- The proposal wire shape exposes `target_memory_id` and `operator_revision`,
+  and the proposal page offers the editor, starting from the entry's current
+  text, with Accept disabled until a revision is saved.
+- Accepting any update that would leave the entry exactly as it is — content,
+  title, placement, reach, sensitivity, subject, layer and grants — writes no
+  version; the proposal is accepted with `no_change = true` and
+  `resulting_memory_id` naming the unchanged entry.
 
 A space admin cannot accept another user's private maintenance packet through
 the current applier. Admin/member review applies only to explicit shared
@@ -413,6 +448,7 @@ Focused coverage:
 - `server/test/memoryMaintenanceJobs.test.ts`
 - `server/test/memoryMaintenanceRoutes.test.ts`
 - `server/test/memoryMaintenanceDb.test.ts`
+- `server/test/memoryMaintenanceRevisionDb.test.ts`
 - `server/test/proposalApplierRegistry.test.ts`
 - `server/test/policyDecisionCore.test.ts`
 - `server/test/proposalsRoutes.test.ts`

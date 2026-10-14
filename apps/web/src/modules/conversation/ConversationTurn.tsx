@@ -11,6 +11,7 @@ import {
 import { Shimmer } from '../../components/ai-elements/shimmer'
 import { SpaceLink } from '../../core/spaceNav'
 import { cn } from '../../lib/utils'
+import { useAppTranslation } from '../../i18n'
 import { presentConversationParts } from './turnPresentation'
 
 /**
@@ -57,6 +58,7 @@ export function ConversationTurn({
   className?: string
 }) {
   const presentedParts = presentConversationParts(turn.parts)
+  const { t } = useAppTranslation()
   const steps = presentedParts.filter(isStep)
   const working = turn.state === 'working'
   const blocked = turn.state === 'blocked'
@@ -80,7 +82,7 @@ export function ConversationTurn({
             className="flex w-fit items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
           >
             <ChevronRight className={cn('size-3 transition-transform', showWork && 'rotate-90')} />
-            <span>{showWork ? 'hide work' : `show work (${steps.length} step${steps.length === 1 ? '' : 's'})`}</span>
+            <span>{showWork ? t('conversation_ui.turn.hide_work') : t('conversation_ui.turn.show_work', { count: steps.length })}</span>
           </button>
         )}
 
@@ -96,7 +98,7 @@ export function ConversationTurn({
 
         {turn.state === 'failed' && (
           <span className="flex w-fit items-center gap-1.5 text-xs text-destructive">
-            <AlertTriangle className="size-3" /> Could not complete
+            <AlertTriangle className="size-3" /> {t('conversation_ui.turn.failed')}
           </span>
         )}
 
@@ -105,10 +107,10 @@ export function ConversationTurn({
             <AlertTriangle className="size-3 shrink-0" />
             <span>
               {turn.blocked_on === 'authorization'
-                ? 'approval needed'
+                ? t('conversation_ui.turn.blocked_authorization')
                 : turn.blocked_on === 'workspace'
-                  ? 'waiting for the directory — another Run is writing it'
-                  : 'waiting for a decision'}
+                  ? t('conversation_ui.turn.blocked_workspace')
+                  : t('conversation_ui.turn.blocked_decision')}
             </span>
             {/*
               Somewhere to act. A turn that says it is waiting on you and does
@@ -117,7 +119,7 @@ export function ConversationTurn({
             */}
             {runHref && turn.blocked_on !== 'workspace' && (
               <SpaceLink to={runHref} className="underline underline-offset-2">
-                {turn.blocked_on === 'authorization' ? 'Review request' : 'Resolve Run'}
+                {turn.blocked_on === 'authorization' ? t('conversation_ui.turn.review_request') : t('conversation_ui.turn.resolve_run')}
               </SpaceLink>
             )}
           </div>
@@ -128,7 +130,7 @@ export function ConversationTurn({
           said anything: a reply that has stopped growing and a reply that is
           still arriving look identical without it.
         */}
-        {working && <Shimmer className="text-sm">Working…</Shimmer>}
+        {working && <Shimmer className="text-sm">{t('conversation_ui.turn.working')}</Shimmer>}
       </MessageContent>
     </Message>
   )
@@ -140,9 +142,10 @@ export function ConversationTurn({
  * message. Done, not blocked — nothing is held open waiting for it.
  */
 export function AwaitingAnswerMarker() {
+  const { t } = useAppTranslation()
   return (
     <span className="mt-1 flex w-fit items-center gap-1.5 text-xs text-muted-foreground">
-      <CircleHelp className="size-3" /> waiting for an answer
+      <CircleHelp className="size-3" /> {t('conversation_ui.turn.awaiting_answer')}
     </span>
   )
 }
@@ -155,12 +158,13 @@ function isStep(part: TurnPart): part is StepPart {
 }
 
 function TurnStep({ part }: { part: StepPart }) {
+  const { t } = useAppTranslation()
   if (part.type === 'plan') {
     return (
       <Plan defaultOpen className="mb-0 rounded border-0 p-0">
         <PlanHeader className="mb-0 min-h-7 flex-row items-center gap-1.5 px-1.5">
           <ListChecks className="size-3.5 shrink-0 text-muted-foreground" />
-          <PlanTitle className="text-xs font-normal normal-case tracking-normal">Plan</PlanTitle>
+          <PlanTitle className="text-xs font-normal normal-case tracking-normal">{t('conversation_ui.turn.plan')}</PlanTitle>
           <PlanTrigger className="ml-auto size-7 [&_svg]:size-3.5" />
         </PlanHeader>
         <PlanContent className="ml-5 space-y-1 px-1.5 pb-1 text-xs text-muted-foreground">

@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { pluginsApi } from '../../api/client'
+import { useAppTranslation } from '../../i18n'
+import { formatDate } from '../../i18n/format'
 
 interface EffectiveState {
   plugin_id: string
@@ -33,6 +35,7 @@ interface PluginListItem {
 type ActionState = Record<string, 'idle' | 'loading' | 'success' | 'error'>
 
 export default function PluginsPage() {
+  const { t } = useAppTranslation()
   const [items, setItems] = useState<PluginListItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -46,10 +49,10 @@ export default function PluginsPage() {
         setLoading(false)
       })
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : 'Failed to load plugins')
+        setError(err instanceof Error ? err.message : t('management_ui.plugins.load_failed'))
         setLoading(false)
       })
-  }, [])
+  }, [t])
 
   useEffect(() => { load() }, [load])
 
@@ -97,17 +100,16 @@ export default function PluginsPage() {
 
   return (
     <div style={{ maxWidth: 720, margin: '32px auto', padding: '0 24px', fontFamily: 'inherit' }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>Optional Modules</h1>
+      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>{t('management_ui.plugins.title')}</h1>
       <p style={{ color: '#666', marginBottom: 28, fontSize: 14 }}>
-        Official optional modules are developed by rainver maintainers and can be
-        enabled or disabled per account. This is not a third-party plugin marketplace.
+        {t('management_ui.plugins.subtitle')}
       </p>
 
-      {loading && <p style={{ color: '#888' }}>Loading…</p>}
-      {error && <p style={{ color: '#b71c1c' }}>Error: {error}</p>}
+      {loading && <p style={{ color: '#888' }}>{t('management_ui.plugins.loading')}</p>}
+      {error && <p style={{ color: '#b71c1c' }}>{t('management_ui.plugins.error', { message: error })}</p>}
 
       {!loading && items.length === 0 && (
-        <p style={{ color: '#888' }}>No official optional modules registered.</p>
+        <p style={{ color: '#888' }}>{t('management_ui.plugins.none')}</p>
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -137,7 +139,7 @@ export default function PluginsPage() {
                       fontSize: 11, fontWeight: 600, background: '#fff3e0',
                       color: '#e65100', borderRadius: 4, padding: '1px 7px',
                     }}>
-                      Deprecated
+                      {t('management_ui.plugins.deprecated')}
                     </span>
                   )}
                 </div>
@@ -146,28 +148,28 @@ export default function PluginsPage() {
                 </p>
                 <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 12, color: '#888' }}>
-                    Scope: {descriptor.scope === 'user' ? 'per account' : 'per space'}
+                    {descriptor.scope === 'user' ? t('management_ui.plugins.scope_account') : t('management_ui.plugins.scope_space')}
                   </span>
                   {effective.installed && (
                     <span style={{ fontSize: 12, color: '#4caf50' }}>
-                      Installed {effective.installed_version ? `v${effective.installed_version}` : ''}
+                      {effective.installed_version ? t('management_ui.plugins.installed_version', { version: effective.installed_version }) : t('management_ui.plugins.installed')}
                     </span>
                   )}
                   {!effective.installed && (
-                    <span style={{ fontSize: 12, color: '#999' }}>Not installed</span>
+                    <span style={{ fontSize: 12, color: '#999' }}>{t('management_ui.plugins.not_installed')}</span>
                   )}
                   {effective.enabled && effective.enabled_at && (
                     <span style={{ fontSize: 12, color: '#4caf50' }}>
-                      Enabled {new Date(effective.enabled_at).toLocaleDateString()}
+                      {t('management_ui.plugins.enabled_on', { date: formatDate(effective.enabled_at) })}
                     </span>
                   )}
                   {!effective.enabled && effective.disabled_at && (
                     <span style={{ fontSize: 12, color: '#999' }}>
-                      Disabled {new Date(effective.disabled_at).toLocaleDateString()}
+                      {t('management_ui.plugins.disabled_on', { date: formatDate(effective.disabled_at) })}
                     </span>
                   )}
                   {!effective.enabled && !effective.disabled_at && (
-                    <span style={{ fontSize: 12, color: '#bbb' }}>Not yet enabled</span>
+                    <span style={{ fontSize: 12, color: '#bbb' }}>{t('management_ui.plugins.not_yet_enabled')}</span>
                   )}
                 </div>
               </div>
@@ -178,7 +180,7 @@ export default function PluginsPage() {
                   background: effective.enabled ? '#4caf50' : effective.installed ? '#90a4ae' : '#bdbdbd',
                 }} />
                 <span style={{ fontSize: 13, color: effective.enabled ? '#2e7d32' : '#757575', fontWeight: 500 }}>
-                  {effective.enabled ? 'Enabled' : effective.installed ? 'Installed' : 'Available'}
+                  {effective.enabled ? t('management_ui.plugins.state_enabled') : effective.installed ? t('management_ui.plugins.installed') : t('management_ui.plugins.state_available')}
                 </span>
                 {!effective.installed ? (
                   <button
@@ -191,7 +193,7 @@ export default function PluginsPage() {
                       opacity: actions[descriptor.id] === 'loading' ? 0.6 : 1,
                     }}
                   >
-                    {actions[descriptor.id] === 'loading' ? 'Installing…' : 'Install'}
+                    {actions[descriptor.id] === 'loading' ? t('management_ui.plugins.installing') : t('management_ui.plugins.install')}
                   </button>
                 ) : effective.enabled ? (
                   <button
@@ -203,7 +205,7 @@ export default function PluginsPage() {
                       opacity: actions[descriptor.id] === 'loading' ? 0.6 : 1,
                     }}
                   >
-                    {actions[descriptor.id] === 'loading' ? 'Disabling…' : 'Disable'}
+                    {actions[descriptor.id] === 'loading' ? t('management_ui.plugins.disabling') : t('management_ui.plugins.disable')}
                   </button>
                 ) : (
                   <button
@@ -216,7 +218,7 @@ export default function PluginsPage() {
                       opacity: actions[descriptor.id] === 'loading' ? 0.6 : 1,
                     }}
                   >
-                    {actions[descriptor.id] === 'loading' ? 'Enabling…' : 'Enable'}
+                    {actions[descriptor.id] === 'loading' ? t('management_ui.plugins.enabling') : t('management_ui.plugins.enable')}
                   </button>
                 )}
               </div>
@@ -224,7 +226,7 @@ export default function PluginsPage() {
 
             {actions[descriptor.id] === 'error' && (
               <p style={{ margin: '8px 0 0', color: '#b71c1c', fontSize: 13 }}>
-                Action failed. Please try again.
+                {t('management_ui.plugins.action_failed')}
               </p>
             )}
           </div>
@@ -232,7 +234,7 @@ export default function PluginsPage() {
       </div>
 
       <p style={{ marginTop: 32, fontSize: 12, color: '#bbb' }}>
-        Install runs the official plugin package migrations. Third-party plugin downloads are not implemented yet.
+        {t('management_ui.plugins.footer')}
       </p>
     </div>
   )

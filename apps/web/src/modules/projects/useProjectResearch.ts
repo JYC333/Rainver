@@ -190,7 +190,7 @@ export function useProjectResearch(projectId: string | undefined): ProjectResear
         projectResearchApi.evidenceMatrix(projectId).then(setEvidenceMatrix),
         projectResearchApi.reports(projectId).then(setResearchReports),
         projectResearchApi.scanSummaries(projectId).then(setResearchScanSummaries),
-        providersApi.list().catch(() => []).then(setModelProviders),
+        providersApi.usable().catch(() => []).then(setModelProviders),
         providersApi.vendors().catch(() => []).then(setProviderVendors),
         inquiryApi.listThreads(projectId).then(setInquiryThreads),
       ])

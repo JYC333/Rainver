@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { loadConfig } from "../src/config.js";
-import { reconcileUnfinalizedTaskRuns } from "../src/modules/jobs/workerRuntime.js";
+import { reconcileUnfinalizedTaskRuns, resumeUnsettledRuns } from "../src/modules/jobs/workerRuntime.js";
+import { PostRunFinalizationService } from "../src/modules/runs/finalizationService.js";
+import { runFinalizationToOut } from "../src/modules/runs/runReadModel.js";
 import { settleTasksForRun } from "../src/modules/projectWork/settlement.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import type { RunRecord } from "../src/modules/runs/runRepositoryTypes.js";
@@ -99,7 +101,7 @@ beforeEach(async () => {
   await resetTables(
     db.pool!,
     [
-      "project_work_events", "task_loop_states", "task_evaluations", "task_artifacts", "run_finalizations",
+      "project_work_events", "task_loop_states", "task_evaluations", "task_artifacts", "run_finalizations", "run_evaluations",
       "task_runs", "tasks", "artifacts", "runs", "actors", "agent_versions", "agents",
       "projects", "users", "spaces",
     ],
@@ -548,5 +550,70 @@ describe("run settlement", () => {
     });
     expect(finalizedRuns).toEqual([cancelled]);
     expect(await runs.listTaskRunsAwaitingFinalization()).toEqual([]);
+  });
+
+  it("keeps the completion gate open while a settlement reconciler fails, and resumes without redoing the rest", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    // D12: the evaluation and its record are durable after the first pass;
+    // what is owed is only settlement, which the sweep resumes. The Task is
+    // settled once, the flaky reconciler retried, and nothing re-executes.
+    const task = randomUUID();
+    const run = randomUUID();
+    await makeTask(task);
+    await makeRun(run, task, "cancelled", "2026-08-27T00:00:00.000Z");
+    const runs = new PgRunRepository(db.pool!);
+    let flakyCalls = 0;
+    let projectWorkCalls = 0;
+    const finalizer = new PostRunFinalizationService(runs, undefined, undefined, undefined, {
+      reconcilers: () => [
+        { key: "project_work", settle: async (target) => { projectWorkCalls += 1; await settleTasksForRun(db.pool!, SPACE, target.id); } },
+        {
+          key: "plan_graph",
+          settle: async () => {
+            flakyCalls += 1;
+            if (flakyCalls === 1) throw Object.assign(new Error("could not serialize access"), { code: "40001" });
+          },
+        },
+      ],
+    });
+    const materializer = { finalizeRun: async (target: RunRecord) => {
+      try {
+        await finalizer.finalize(target.id, target.space_id);
+        return { kind: "activity" as const, status: "succeeded" as const };
+      } catch (error) {
+        return { kind: "activity" as const, status: "failed" as const, error_code: (error as { code?: string }).code };
+      }
+    } };
+
+    const first = await materializer.finalizeRun((await runs.getRun(SPACE, run))!);
+    expect(first).toMatchObject({ status: "failed", error_code: "settlement_pending" });
+    const owed = (await runs.getLatestRunFinalization(SPACE, run))!;
+    expect(owed.settled_at).toBeNull();
+    expect(owed.settlement_json).toMatchObject({
+      completed: ["project_work"],
+      last_failure: { key: "plan_graph", error_code: "40001" },
+    });
+    expect(runFinalizationToOut(owed, "full")).toMatchObject({
+      settlement: { status: "pending", reason_code: "settlement_pending:plan_graph" },
+    });
+    // The Task itself is settled already: the reconciler that succeeded counted.
+    expect(await eventKindCounts(task)).toMatchObject({ "task.run_settled": 1 });
+
+    // Not due yet: the sweep waits out the backoff.
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, SERVER_INTERNAL_TOKEN: "test" });
+    expect(await runs.listUnsettledFinalizations()).toEqual([]);
+    await db.pool!.query(`UPDATE run_finalizations SET settlement_json = settlement_json - 'next_attempt_at' WHERE run_id = $1`, [run]);
+    await resumeUnsettledRuns(config, runs, undefined, materializer);
+
+    const settled = (await runs.getLatestRunFinalization(SPACE, run))!;
+    expect(settled.settled_at).not.toBeNull();
+    expect(settled.settlement_attempts).toBe(2);
+    expect(runFinalizationToOut(settled, "full")).toMatchObject({ settlement: { status: "settled", reason_code: null } });
+    // Only the failed reconciler ran again; one evaluation, one settlement event.
+    expect({ flakyCalls, projectWorkCalls }).toEqual({ flakyCalls: 2, projectWorkCalls: 1 });
+    expect(await eventKindCounts(task)).toMatchObject({ "task.run_settled": 1 });
+    const evaluations = await db.pool!.query(`SELECT 1 FROM run_evaluations WHERE run_id = $1`, [run]);
+    expect(evaluations.rowCount).toBe(1);
+    expect(await runs.listUnsettledFinalizations()).toEqual([]);
   });
 });

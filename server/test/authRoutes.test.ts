@@ -30,6 +30,7 @@ function fakeRepo(overrides: Partial<AuthRepository> = {}): AuthRepository {
         created_at: "2026-06-15T12:00:00.000Z",
         last_login_at: null,
         is_instance_admin: false,
+        default_space_id: "space-1",
       };
     },
     async getUserSpaces() {

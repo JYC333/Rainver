@@ -26,6 +26,7 @@ import { Select } from '../../components/ui/select'
 import { Badge } from '../../components/ui/badge'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../../components/ui/table'
 import { ScopeBadge } from '../../components/ScopeBadge'
+import { Pagination } from '../../components/ui/pagination'
 
 const TYPES:  MemoryType[]  = ['preference', 'semantic', 'episodic', 'procedural', 'project']
 function fmt(dt: string | null | undefined) { return dt ? new Date(dt).toLocaleString() : '—' }
@@ -40,6 +41,8 @@ interface MemoryForm {
 const EMPTY_FORM: MemoryForm = {
   title: '', content: '', type: 'semantic', namespace: 'user.default',
 }
+
+const MEMORY_PAGE_SIZE = 50
 
 export default function MemoriesPage() {
   const { activeSpaceId, activeSpaceName } = useSpace()
@@ -65,6 +68,8 @@ export default function MemoriesPage() {
   const statusFilter = searchParams.get('status') ?? 'active'
 
   const [memories, setMemories] = useState<Memory[]>([])
+  const [memoryTotal, setMemoryTotal] = useState(0)
+  const [memoryOffset, setMemoryOffset] = useState(0)
   const [agents, setAgents] = useState<AgentOut[]>([])
   const [form, setForm]         = useState<MemoryForm>(EMPTY_FORM)
   const [query, setQuery]       = useState('')
@@ -90,14 +95,21 @@ export default function MemoriesPage() {
   // Filters change faster than the list answers; only the latest request's
   // page is shown, so the rows always match the filter in the URL.
   const listRequest = useRef(0)
+  // Any filter change starts from the first page; a page number from another
+  // filter would skip or repeat rows.
+  const filterKey = [projectFilter, agentFilter, statusFilter, scopeFilter, writtenByFilter, sessionFilter, runFilter, sinceFilter].join('\u0000')
+  useEffect(() => { setMemoryOffset(0) }, [filterKey])
   const load = useCallback(async () => {
     const request = ++listRequest.current
     if (!activeSpaceId) {
       setMemories([])
+      setMemoryTotal(0)
       return
     }
     try {
       const page = await memoryApi.list({
+        limit: MEMORY_PAGE_SIZE,
+        offset: memoryOffset,
         status: statusFilter,
         scope: scopeFilter || undefined,
         project_id: projectFilter || undefined,
@@ -109,9 +121,10 @@ export default function MemoriesPage() {
       })
       if (request !== listRequest.current) return
       setMemories(page.items)
+      setMemoryTotal(page.total)
     }
     catch (e) { if (request === listRequest.current) toast.error(errMsg(e)) }
-  }, [projectFilter, agentFilter, activeSpaceId, statusFilter, scopeFilter, writtenByFilter, sessionFilter, runFilter, sinceFilter])
+  }, [projectFilter, agentFilter, activeSpaceId, statusFilter, scopeFilter, writtenByFilter, sessionFilter, runFilter, sinceFilter, memoryOffset])
 
   useEffect(() => { load() }, [load])
 
@@ -377,7 +390,7 @@ export default function MemoriesPage() {
             <div>
               <CardTitle>Memory Maintenance</CardTitle>
               <p className="mt-1 text-sm text-muted-foreground">
-                Scan visible memories for duplicate, stale, thin, lifecycle, project/source-policy, archived-state, and deterministic contradiction findings.
+                Scan visible memories for duplicates, contradictions and external content without a source. Age and short content are shown as hints and never become review tasks.
                 Recent scans sample the newest window; full scans continue by cursor.
               </p>
               {projectFilter && <p className="mt-1 text-xs text-muted-foreground">Project filter active: {projectFilter}</p>}
@@ -542,7 +555,7 @@ export default function MemoriesPage() {
               {showingSearch
                 ? 'Search Results'
                 : statusFilter === 'archived' ? 'Archived Memories' : 'Active Memories'}
-              {' '}({showingSearch ? searchResults.length : memories.length})
+              {' '}({showingSearch ? searchResults.length : memoryTotal})
             </CardTitle>
             {!showingSearch && (
               <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -759,6 +772,9 @@ export default function MemoriesPage() {
               </TableBody>
             </Table>
           )}
+        {!showingSearch && (
+          <Pagination className="mt-3" total={memoryTotal} limit={MEMORY_PAGE_SIZE} offset={memoryOffset} onChange={setMemoryOffset} />
+        )}
       </Card>
     </div>
   )

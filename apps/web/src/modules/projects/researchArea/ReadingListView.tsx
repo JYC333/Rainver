@@ -42,7 +42,7 @@ export function ReadingListView({
   const [noteForObject, setNoteForObject] = useState<Record<string, string>>({})
 
   useEffect(() => {
-    void providersApi.list()
+    void providersApi.usable()
       .then((rows) => setCompareProvider(defaultModelProvider(rows)?.id ?? ''))
       .catch(() => undefined)
   }, [])

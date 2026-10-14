@@ -52,6 +52,14 @@ interface PersistSelectedRunRequestInput {
   selection: EvolutionSelection;
 }
 
+/**
+ * What the Evolution inbox counts and lists: proposals of the evolution
+ * module's own types and anything an evolution Run proposed. The summary's
+ * pending count and the list share it, so they always agree. Expects `p`
+ * (proposals) and `r` (the proposing Run, left-joined).
+ */
+const EVOLUTION_PROPOSAL_SQL = `(p.proposal_type IN ('evolution_bundle_rollback', 'evolvable_asset_version_promote', 'workflow_save') OR r.run_type = 'evolution')`;
+
 export class EvolutionRepository {
   private readonly runRepository: PgRunRepository;
   private readonly selector = new EvolutionSelector();
@@ -82,7 +90,7 @@ export class EvolutionRepository {
            LEFT JOIN runs r ON r.id = p.created_by_run_id AND r.space_id = p.space_id
           WHERE p.space_id = $1
             AND p.status = 'pending'
-            AND (p.proposal_type LIKE 'evolution_%' OR r.run_type = 'evolution')
+            AND ${EVOLUTION_PROPOSAL_SQL}
             AND ${contentReadSql("proposal", "p", "$2")}`,
         [identity.spaceId, identity.userId],
       ),
@@ -864,6 +872,7 @@ export class EvolutionRepository {
          LEFT JOIN evolution_targets et ON et.id = esd.target_id
         WHERE p.space_id = $1
           AND p.status = 'pending'
+          AND ${EVOLUTION_PROPOSAL_SQL}
           AND ${contentReadSql("proposal", "p", "$2")}
         ORDER BY p.created_at DESC
         LIMIT $3 OFFSET $4`,

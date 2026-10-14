@@ -737,9 +737,7 @@ export class ProjectResearchOrchestrator {
     if (!workflow) throw new HttpError(404, "Research workflow not found");
     await this.assertResearchQuestionAligned(identity.spaceId, projectId, workflow.state_json);
     const state = researchState(workflow.state_json);
-    const bindingIds = state.project_source_binding_ids?.length
-      ? state.project_source_binding_ids
-      : state.project_source_binding_id ? [state.project_source_binding_id] : [];
+    const bindingIds = state.project_source_binding_ids ?? [];
     if (!(state.channel_ids?.length ?? 0) || bindingIds.length !== state.channel_ids.length) {
       throw new HttpError(409, "The research workflow has not completed monitor setup");
     }
@@ -1093,10 +1091,7 @@ export class ProjectResearchOrchestrator {
           spaceId,
           projectId: row.project_id,
           channelIds: state.channel_ids,
-          ruleIds: unique([
-            ...state.source_post_processing_rule_ids,
-            ...(state.source_post_processing_rule_id ? [state.source_post_processing_rule_id] : []),
-          ]),
+          ruleIds: unique(state.source_post_processing_rule_ids),
           sourceItemIds: state.source_item_ids,
           operationId: row.id,
           recoveryRequestedAt: state.post_processing_recovery_requested_at,
@@ -1956,14 +1951,10 @@ export class ProjectResearchOrchestrator {
       input.sourceChannelIds,
       input,
     );
-    const binding = bindings[0]!;
-    const rule = rules[0]!;
     const state = researchState(operation.progress_json);
     state.channel_ids = channels.map((channel) => String(channel.id));
     state.project_source_binding_ids = bindings.map((row) => String(row.id));
     state.source_post_processing_rule_ids = rules.map((row) => String(row.id));
-    state.project_source_binding_id = String(binding.id);
-    state.source_post_processing_rule_id = String(rule.id);
     state.source_backfill_plan_ids = plans.map((plan) => String(plan.id));
     state.source_backfill_plan_id = state.source_backfill_plan_ids[0] ?? null;
     state.coverage_ranges = [{ from: input.from!, to: input.to!, operation_id: operation.id, status: "pending" }];
@@ -1984,8 +1975,6 @@ export class ProjectResearchOrchestrator {
         WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
       [identity.spaceId, projectId, workflow.id, JSON.stringify({
         channel_ids: state.channel_ids,
-        project_source_binding_id: state.project_source_binding_id,
-        source_post_processing_rule_id: state.source_post_processing_rule_id,
         project_source_binding_ids: state.project_source_binding_ids,
         source_post_processing_rule_ids: state.source_post_processing_rule_ids,
         source_backfill_plan_id: state.source_backfill_plan_id,
@@ -2000,7 +1989,9 @@ export class ProjectResearchOrchestrator {
       }), new Date().toISOString()],
     );
     await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "research_workflow", workflow.id, "workflow_definition");
-    await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "project_source_binding", String(binding.id), "source_binding");
+    for (const binding of bindings) {
+      await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "project_source_binding", String(binding.id), "source_binding");
+    }
     for (let index = 0; index < plans.length; index += 1) {
       await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "source_backfill_plan", String(plans[index]!.id), "history_backfill");
     }
@@ -2766,9 +2757,7 @@ export class ProjectResearchOrchestrator {
     const channelRows = state.channel_ids?.length
       ? await new SourceChannelService(this.db, this.config!).listForSpaceByIds(identity, state.channel_ids)
       : [];
-    const bindingIds = state.project_source_binding_ids?.length
-      ? state.project_source_binding_ids
-      : state.project_source_binding_id ? [state.project_source_binding_id] : [];
+    const bindingIds = state.project_source_binding_ids ?? [];
     const bindingRows = bindingIds.length
       ? (await this.db.query(
         `SELECT * FROM project_source_bindings WHERE id=ANY($1::text[]) AND space_id=$2 ORDER BY created_at ASC`,
@@ -3090,7 +3079,7 @@ function questionVersion(value: unknown): number {
 
 function initialState(input: ResearchInput, workflowId: string, fingerprint: string): ResearchOperationState {
   return {
-    schema_version: "project_research_operation.v1", run_kind: "baseline", workflow_id: workflowId, query_strategy_id: input.queryStrategyId, research_question: input.researchQuestion, research_question_version: 1, thread_scope: input.threadScope, research_scope: input.researchScope, report_depth: input.reportDepth, question_refine_skipped: input.questionRefineSkipped, channel_ids: input.sourceChannelIds, project_source_binding_ids: [], source_post_processing_rule_ids: [], project_source_binding_id: null, source_post_processing_rule_id: null, source_backfill_plan_id: null,
+    schema_version: "project_research_operation.v1", run_kind: "baseline", workflow_id: workflowId, query_strategy_id: input.queryStrategyId, research_question: input.researchQuestion, research_question_version: 1, thread_scope: input.threadScope, research_scope: input.researchScope, report_depth: input.reportDepth, question_refine_skipped: input.questionRefineSkipped, channel_ids: input.sourceChannelIds, project_source_binding_ids: [], source_post_processing_rule_ids: [], source_backfill_plan_id: null,
     query: { source_channel_ids: input.sourceChannelIds, fingerprint: fingerprintOf({ source_channel_ids: input.sourceChannelIds, history_mode: input.historyMode, from: input.from, to: input.to, sort_by: input.monitoringField }), sort_by: input.monitoringField, history_mode: input.historyMode, from: input.from, to: input.to },
     history: { mode: input.historyMode, from: input.from, to: input.to, max_items: input.maxItems }, watermark: { before: null, after: null, overlap_hours: OVERLAP_HOURS }, source_item_ids: [], current_stage: "monitor_setup", stage_state: "running", agent_id: input.agentId, runtime_profile_id: input.runtimeProfileId,
     source_backfill_plan_ids: [], checkpoint_ids: [], synthesis_run_id: null, artifact_ids: [], partial: false, monitoring_active: false, idempotency: { key: input.idempotencyKey, fingerprint },
@@ -3125,8 +3114,6 @@ function incrementalStateFromWorkflow(
     channel_ids: stringArray(workflow.channel_ids),
     project_source_binding_ids: workflowBindingIds(workflow),
     source_post_processing_rule_ids: workflowRuleIds(workflow),
-    project_source_binding_id: optionalString(workflow.project_source_binding_id),
-    source_post_processing_rule_id: optionalString(workflow.source_post_processing_rule_id),
     source_backfill_plan_id: null,
     source_backfill_plan_ids: [],
     query: {
@@ -3178,8 +3165,6 @@ function historicalBackfillStateFromWorkflow(
     channel_ids: stringArray(workflow.channel_ids),
     project_source_binding_ids: workflowBindingIds(workflow),
     source_post_processing_rule_ids: workflowRuleIds(workflow),
-    project_source_binding_id: optionalString(workflow.project_source_binding_id),
-    source_post_processing_rule_id: optionalString(workflow.source_post_processing_rule_id),
     source_backfill_plan_id: null,
     source_backfill_plan_ids: [],
     query: {
@@ -3263,20 +3248,13 @@ function canonical(value: unknown): unknown {
   return value;
 }
 
-/**
- * A Workflow's monitor bindings and screening rules. A row that stores only
- * the singular id is read from that key.
- */
+/** A Workflow's monitor bindings and screening rules, one per channel. */
 function workflowBindingIds(state: Record<string, unknown>): string[] {
-  const ids = stringArray(state.project_source_binding_ids);
-  const single = optionalString(state.project_source_binding_id);
-  return ids.length > 0 ? ids : single ? [single] : [];
+  return stringArray(state.project_source_binding_ids);
 }
 
 function workflowRuleIds(state: Record<string, unknown>): string[] {
-  const ids = stringArray(state.source_post_processing_rule_ids);
-  const single = optionalString(state.source_post_processing_rule_id);
-  return ids.length > 0 ? ids : single ? [single] : [];
+  return stringArray(state.source_post_processing_rule_ids);
 }
 
 /**

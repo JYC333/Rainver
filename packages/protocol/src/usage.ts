@@ -147,6 +147,10 @@ export const UsageSummaryResponseSchema = z.object({
   group_by: z.string(),
   totals: UsageTotalsSchema,
   items: z.array(UsageBreakdownItemSchema),
+  /** Groups matched, not groups on this page. */
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
   ...SecretResponseGuards,
 });
 export type UsageSummaryResponse = z.infer<typeof UsageSummaryResponseSchema>;
@@ -268,6 +272,12 @@ export type UsageSessionSummary = z.infer<typeof UsageSessionSummarySchema>;
 export const UsageSessionsResponseSchema = z.object({
   items: z.array(UsageSessionSummarySchema),
   total: z.number().int().nonnegative(),
+  /**
+   * Totals over every matched session, at the same full-access level as
+   * `total`: a per-session average divides these, never the summary's
+   * totals, which also count summary-level access.
+   */
+  totals: UsageTotalsSchema,
   ...SecretResponseGuards,
 });
 export type UsageSessionsResponse = z.infer<typeof UsageSessionsResponseSchema>;

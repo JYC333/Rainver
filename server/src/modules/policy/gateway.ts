@@ -268,7 +268,6 @@ const PROPOSAL_TYPE_RISK: Record<string, RiskLevel> = {
   plan_review: "medium",
   plan_checkpoint: "medium",
   code_patch: "high",
-  policy_change: "high",
   egress_review: "high",
   agent_config_update: "high",
   prompt_update: "medium",

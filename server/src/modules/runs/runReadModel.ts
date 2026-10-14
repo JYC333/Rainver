@@ -205,6 +205,28 @@ export function runFinalizationToOut(row: RunFinalizationRecord, level: ContentA
     metadata_json: withheld ? null : row.metadata_json ?? null,
     finalized_at: row.finalized_at,
     created_at: row.created_at,
+    settlement: runSettlementToOut(row),
+  };
+}
+
+/**
+ * Whether the Run's outcome reached the domain state it settles (its Task,
+ * its Plan or Workflow node, its follow-ups), apart from whether the Agent
+ * finished. A pending settlement names the reconciler it waits on and a
+ * stable code — never the error text — and is resumed by the worker.
+ */
+function runSettlementToOut(row: RunFinalizationRecord): Record<string, unknown> {
+  if (row.status !== "completed") return { status: "not_applicable", settled_at: null, attempts: row.settlement_attempts, reason_code: null };
+  if (row.settled_at) return { status: "settled", settled_at: row.settled_at, attempts: row.settlement_attempts, reason_code: null };
+  const settlement = row.settlement_json && typeof row.settlement_json === "object" ? row.settlement_json as Record<string, unknown> : {};
+  const failure = settlement.last_failure && typeof settlement.last_failure === "object" ? settlement.last_failure as Record<string, unknown> : null;
+  const reconciler = typeof failure?.key === "string" ? failure.key : null;
+  return {
+    status: "pending",
+    settled_at: null,
+    attempts: row.settlement_attempts,
+    reason_code: reconciler ? `settlement_pending:${reconciler}` : "settlement_pending",
+    next_attempt_at: typeof settlement.next_attempt_at === "string" ? settlement.next_attempt_at : null,
   };
 }
 

@@ -19,8 +19,15 @@ a vendor CLI's own auto-memory.
   the Agent itself for an agent-scope one. A person importing a published
   user-memory snapshot also goes through the same repository
   (`applyPublicationImport`): private, normal-sensitivity, attributed to the
-  importer, with user-confirmation provenance. No adapter, job or route inserts
-  around it.
+  importer, with user-confirmation provenance. The owner changing who may read
+  their own entry is the same applier too (`applyOwnerAccessChange`, reached
+  from the content-access API): a new version with the same content and
+  provenance under the new reach, grants moved with it. No adapter, job or
+  route inserts around it.
+- Grants follow the active head, and the applier re-checks the audience at
+  accept time: only the owner widens a person's entry, and every added reader
+  must already read the entry's sources (`memoryAudience.ts`). An accepted
+  update that changes nothing writes no version.
 - User Memory is human-owned and Project-free. Project Memory is Project-owned
   and shared only through the Project access boundary. Agent Memory
   (`scope_type = 'agent'`) is Agent-owned: there, and only there, `agent_id` is

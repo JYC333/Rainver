@@ -17,7 +17,7 @@ vi.mock('../../../../api/client', () => ({
   notesApi: { jot, linkingTo },
   projectResearchApi: { updateEvidenceCard: vi.fn(), askAi },
   projectsApi: { updateCorpusItem: vi.fn() },
-  providersApi: { list: listProviders },
+  providersApi: { usable: listProviders },
 }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../../../../core/spaceNav', async () => {

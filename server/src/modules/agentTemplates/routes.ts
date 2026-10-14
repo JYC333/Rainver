@@ -146,6 +146,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         outputPolicyJson: optionalObject(body.output_policy_json) ?? version.output_policy_json,
         scheduleConfigJson: optionalObject(body.schedule_config_json) ?? version.schedule_defaults_json,
         outputSchemaJson: optionalObject(body.output_schema_json) ?? version.output_schema_json,
+        sourceTemplate: { templateId: template.id, versionId: version.id },
       });
       return reply.code(201).send(agent);
     } catch (error) {

@@ -202,6 +202,9 @@ function memoryRow(overrides: Partial<MemoryRow> = {}): MemoryRow {
     project_id: null,
     agent_id: null,
     origin_room_id: null,
+    approved_by: null,
+    access_count: 0,
+    last_accessed_at: null,
     ...overrides,
   };
 }

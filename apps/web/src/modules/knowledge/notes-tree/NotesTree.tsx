@@ -14,6 +14,7 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '../../../components/ui/dropdown-menu'
 import { TreeContextMenu, type TreeContextMenuPosition } from './TreeContextMenu'
+import { useAppTranslation } from '../../../i18n'
 import {
   buildCollectionTree, collectionAndDescendantIds, findCollectionNode, flattenVisibleNotes,
   groupNotesByCollection, isDraggableCollection, isProtectedCollection, resolveTreeDrop,
@@ -97,6 +98,7 @@ export default function NotesTree({
   onCreateChild, onRename, onMove, onHide, onDeleteCollection, onDropCollections, onDropNotes,
   onPlaceNote, onRemovePlacement, hoistRootId, onHoist, canExitHoist,
 }: NotesTreeProps) {
+  const { t } = useAppTranslation()
   const fullTree = useMemo(() => buildCollectionTree(collections), [collections])
   const hoistRoot = useMemo(
     () => (hoistRootId ? findCollectionNode(fullTree, hoistRootId) : null),
@@ -347,9 +349,9 @@ export default function NotesTree({
         onDelete={onDeleteCollection}
       />
       <TreeContextMenu
-        label={contextMenuPlacements.length > 1 ? 'Selected notes' : contextMenuPlacements[0]?.note.title ?? 'Note'}
-        archiveLabel={contextMenuPlacements.length > 1 ? `Archive ${contextMenuPlacements.length} notes` : 'Archive'}
-        deleteLabel={contextMenuPlacements.length > 1 ? `Delete ${contextMenuPlacements.length} notes` : 'Delete'}
+        label={contextMenuPlacements.length > 1 ? t('knowledge_ui.tree.selected_notes') : contextMenuPlacements[0]?.note.title ?? t('knowledge_ui.tree.note')}
+        archiveLabel={contextMenuPlacements.length > 1 ? t('knowledge_ui.tree.archive_notes', { count: contextMenuPlacements.length }) : undefined}
+        deleteLabel={contextMenuPlacements.length > 1 ? t('knowledge_ui.tree.delete_notes', { count: contextMenuPlacements.length }) : undefined}
         position={contextMenu}
         onClose={() => setContextMenu(null)}
         onArchive={() => requestArchiveNotes(contextMenuPlacements)}
@@ -375,6 +377,7 @@ export default function NotesTree({
 /** Says where you are while hoisted, and — where there is somewhere to go back
  * to — is the way out. */
 function HoistBar({ name, onExit }: { name: string; onExit: (() => void) | null }) {
+  const { t } = useAppTranslation()
   return (
     <div className="mb-1 flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/5 px-2 py-1 text-[12px]">
       <Focus className="size-3.5 shrink-0 text-accent-foreground" />
@@ -383,8 +386,8 @@ function HoistBar({ name, onExit }: { name: string; onExit: (() => void) | null 
         <button
           type="button"
           onClick={onExit}
-          aria-label={`Exit focus on ${name}`}
-          title="Exit focus"
+          aria-label={t('knowledge_ui.tree.exit_focus_on', { name })}
+          title={t('knowledge_ui.tree.exit_focus')}
           className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-background/80 hover:text-foreground"
         >
           <X className="size-3" />
@@ -395,13 +398,14 @@ function HoistBar({ name, onExit }: { name: string; onExit: (() => void) | null 
 }
 
 function RootDropZone({ visible }: { visible: boolean }) {
+  const { t } = useAppTranslation()
   const droppable = useDroppable({ id: 'root-drop', data: { kind: 'into-root' } satisfies DropTargetData })
   if (!visible) return null
   return (
     <div className="relative h-0">
       <div
         ref={droppable.setNodeRef}
-        aria-label="Move folder to top level"
+        aria-label={t('knowledge_ui.tree.move_to_top')}
         className="absolute inset-x-1 -top-1 z-20 flex h-2 items-center"
       >
         <span className={cn(
@@ -416,6 +420,7 @@ function RootDropZone({ visible }: { visible: boolean }) {
 function DragPreview({
   source, titleFor, additive,
 }: { source: DragSourceData; titleFor: (id: string) => string; additive: boolean }) {
+  const { t } = useAppTranslation()
   const label = source.type === 'collection' ? source.collection.name : titleFor(source.placed.note.id)
   return (
     <div className="flex size-full items-center gap-2 overflow-hidden rounded-md border border-border bg-card/90 px-2 text-[13px] opacity-85 shadow-lg backdrop-blur-[1px]">
@@ -424,7 +429,7 @@ function DragPreview({
       {/* Says which of the two drops this is before the pointer is released. */}
       {additive && source.type === 'note' && (
         <span className="ml-auto shrink-0 rounded bg-primary/15 px-1 text-[10px] font-medium text-accent-foreground">
-          + folder
+          {t('knowledge_ui.tree.add_folder')}
         </span>
       )}
     </div>
@@ -634,6 +639,7 @@ function FolderRow({
   node, active, indent, protectedCollection, draggableCollection, invalidDropTarget, hasChildren, expanded,
   isHoistRoot, onToggle, onSelect, onCreateChild, onRename, onMove, onHide, onDelete, onHoist,
 }: FolderRowProps) {
+  const { t } = useAppTranslation()
   const draggable = useDraggable({
     id: `collection:${node.id}`,
     data: { type: 'collection', collection: node } satisfies DragSourceData,
@@ -664,7 +670,7 @@ function FolderRow({
         <button
           type="button"
           onClick={onToggle}
-          aria-label={expanded ? `Collapse ${node.name}` : `Expand ${node.name}`}
+          aria-label={expanded ? t('knowledge_ui.tree.collapse', { name: node.name }) : t('knowledge_ui.tree.expand', { name: node.name })}
           className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
         >
           <ChevronRight className={cn('size-3.5 transition-transform', expanded && 'rotate-90')} />
@@ -679,7 +685,7 @@ function FolderRow({
         {...draggable.attributes}
         onClick={onSelect}
         className="min-w-0 flex-1 flex items-center gap-2 py-1.5 text-left"
-        title={workspaceRoot ? `${node.name} · Project workspace` : node.name}
+        title={workspaceRoot ? t('knowledge_ui.tree.project_workspace', { name: node.name }) : node.name}
       >
         {/* A Project's folder is a workspace root: hoisting into it is what
             turns this tree into that Project's notes surface. Marked so a user
@@ -693,7 +699,7 @@ function FolderRow({
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            aria-label={`Folder actions for ${node.name}`}
+            aria-label={t('knowledge_ui.tree.folder_actions', { name: node.name })}
             className="shrink-0 rounded p-1 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:bg-background/80"
           >
             <MoreHorizontal className="size-3.5" />
@@ -706,35 +712,35 @@ function FolderRow({
           {node.project_id && (
             <DropdownMenuItem asChild>
               <Link to={`/projects/${node.project_id}/research`}>
-                <ExternalLink className="size-4" /> Open project
+                <ExternalLink className="size-4" /> {t('knowledge_ui.tree.open_project')}
               </Link>
             </DropdownMenuItem>
           )}
           {onHoist && (
             <DropdownMenuItem onSelect={onHoist}>
-              <Focus className="size-4" /> {isHoistRoot ? 'Exit focus' : 'Focus on this folder'}
+              <Focus className="size-4" /> {isHoistRoot ? t('knowledge_ui.tree.exit_focus') : t('knowledge_ui.tree.focus_folder')}
             </DropdownMenuItem>
           )}
           <DropdownMenuItem onSelect={onCreateChild}>
-            <FolderPlus className="size-4" /> New child folder
+            <FolderPlus className="size-4" /> {t('knowledge_ui.tree.new_child_folder')}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={onRename}>
-            <Pencil className="size-4" /> Rename
+            <Pencil className="size-4" /> {t('knowledge_ui.tree.rename')}
           </DropdownMenuItem>
           {!protectedCollection && (
             <DropdownMenuItem onSelect={onMove}>
-              <Folder className="size-4" /> Move
+              <Folder className="size-4" /> {t('knowledge_ui.tree.move')}
             </DropdownMenuItem>
           )}
           {!protectedCollection && <DropdownMenuSeparator />}
           {!protectedCollection && (
             <DropdownMenuItem onSelect={onHide}>
-              <EyeOff className="size-4" /> Hide
+              <EyeOff className="size-4" /> {t('knowledge_ui.tree.hide')}
             </DropdownMenuItem>
           )}
           {!protectedCollection && (
             <DropdownMenuItem onSelect={onDelete} className="text-destructive">
-              <Trash2 className="size-4" /> Delete
+              <Trash2 className="size-4" /> {t('knowledge_ui.tree.delete')}
             </DropdownMenuItem>
           )}
         </DropdownMenuContent>
@@ -756,6 +762,7 @@ function NoteTreeItem({
   onDelete: () => void
   indent: number
 }) {
+  const { t } = useAppTranslation()
   // Keyed by placement, not by note: the same note in two folders is two
   // draggables, and dnd-kit would otherwise see one id in two places.
   const draggable = useDraggable({
@@ -778,7 +785,7 @@ function NoteTreeItem({
         event.preventDefault()
         onDelete()
       }}
-      title={placementCount > 1 ? `${title} · also in ${placementCount - 1} other folder${placementCount > 2 ? 's' : ''}` : title}
+      title={placementCount > 1 ? t('knowledge_ui.tree.also_in', { title, count: placementCount - 1 }) : title}
       style={{ paddingLeft: indent }}
       className={cn(
         'mx-1 mb-1 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-md py-1 pr-2 text-[13px] transition-colors',

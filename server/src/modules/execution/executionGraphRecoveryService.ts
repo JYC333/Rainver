@@ -12,7 +12,7 @@ export class ExecutionGraphRecoveryService {
     private readonly alerts?: OperationalAlertPort | null,
     private readonly log?: { warn(message: string): void },
     private readonly reconcilePlan: (spaceId: string, userId: string, planId: string) => Promise<unknown> =
-      (spaceId, userId, planId) => new PlanExecutionService(db).reconcile({ spaceId, userId }, planId),
+      (spaceId, userId, planId) => new PlanExecutionService(db, config).reconcile({ spaceId, userId }, planId),
     private readonly reconcileWorkflow: (spaceId: string, userId: string, executionId: string) => Promise<unknown> =
       (spaceId, _userId, executionId) => new WorkflowExecutionService(config).reconcile(db, spaceId, executionId),
   ) {}

@@ -281,10 +281,12 @@ describe("PgRunRepository SQL shape", () => {
     expect(runInsert).toBeTruthy();
     const { columns, values } = insertColumnsAndValues(runInsert!.sql);
     expect(values).toHaveLength(columns.length);
-    expect(runInsert!.params).toHaveLength(40);
+    expect(runInsert!.params).toHaveLength(41);
     expect(runInsert!.params[34]).toBe("default");
     expect(runInsert!.params[35]).toBe('{"tool_grants":[]}');
-    expect(columns.slice(-2)).toEqual(["host_task_thread_id", "execution_kind"]);
+    expect(columns.slice(-3)).toEqual(["host_task_thread_id", "execution_kind", "cause_run_id"]);
+    // A person's turn has no cause: only a continuation records one.
+    expect(runInsert!.params[40]).toBeNull();
     expect(new Set(columns).size).toBe(columns.length);
     expect(columns.slice(15, 18)).toEqual(["run_type", "trigger_origin", "status"]);
     expect(values.slice(15, 18)).toEqual(["$16", "$17", "'queued'"]);
@@ -453,6 +455,7 @@ describe("PgRunRepository SQL shape", () => {
       agent_id: "agent-1",
       space_id: "space-1",
       user_id: "user-1",
+      trigger: { origin: "manual" },
       parent_run_id: "run-root",
       root_run_id: "run-root",
       run_group_id: "group-1",

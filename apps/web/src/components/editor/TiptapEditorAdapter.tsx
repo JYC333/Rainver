@@ -15,16 +15,12 @@ import {
 import { Button } from '../ui/button'
 import { Select } from '../ui/select'
 import { cn } from '../../lib/utils'
+import { useAppTranslation } from '../../i18n'
 import { BlockIds, stripEmptyBlockIds } from './blockIds'
 import { richTextSnapshotFromDocument } from './document'
 import type { RichTextDocument, RichTextEditorHandle, RichTextEditorProps } from './types'
 
-const BLOCK_OPTIONS = [
-  { value: 'paragraph', label: 'Paragraph' },
-  { value: 'heading-1', label: 'Heading 1' },
-  { value: 'heading-2', label: 'Heading 2' },
-  { value: 'heading-3', label: 'Heading 3' },
-]
+const BLOCK_VALUES = ['paragraph', 'heading-1', 'heading-2', 'heading-3'] as const
 
 export const TiptapEditorAdapter = forwardRef<RichTextEditorHandle, RichTextEditorProps>(
   function TiptapEditorAdapter({ initialContent, variant = 'default', className, onChange }, ref) {
@@ -145,7 +141,9 @@ interface TiptapToolbarProps {
 
 function TiptapToolbar({ editor, renderKey, variant }: TiptapToolbarProps) {
   void renderKey
+  const { t } = useAppTranslation()
   const isPage = variant === 'page'
+  const blockOptions = BLOCK_VALUES.map(value => ({ value, label: t(`core_ui.editor.block.${value.replace('-', '_')}`) }))
 
   function activeBlock() {
     if (editor.isActive('heading', { level: 1 })) return 'heading-1'
@@ -174,36 +172,36 @@ function TiptapToolbar({ editor, renderKey, variant }: TiptapToolbarProps) {
       <Select
         value={activeBlock()}
         onChange={setBlock}
-        options={BLOCK_OPTIONS}
+        options={blockOptions}
         size="sm"
         className="w-32"
       />
-      <ToolbarButton label="Bold" active={editor.isActive('bold')} onClick={() => editor.chain().focus().toggleBold().run()}>
+      <ToolbarButton label={t('core_ui.editor.bold')} active={editor.isActive('bold')} onClick={() => editor.chain().focus().toggleBold().run()}>
         <Bold className="size-3.5" />
       </ToolbarButton>
-      <ToolbarButton label="Italic" active={editor.isActive('italic')} onClick={() => editor.chain().focus().toggleItalic().run()}>
+      <ToolbarButton label={t('core_ui.editor.italic')} active={editor.isActive('italic')} onClick={() => editor.chain().focus().toggleItalic().run()}>
         <Italic className="size-3.5" />
       </ToolbarButton>
-      <ToolbarButton label="Strike" active={editor.isActive('strike')} onClick={() => editor.chain().focus().toggleStrike().run()}>
+      <ToolbarButton label={t('core_ui.editor.strike')} active={editor.isActive('strike')} onClick={() => editor.chain().focus().toggleStrike().run()}>
         <Strikethrough className="size-3.5" />
       </ToolbarButton>
-      <ToolbarButton label="Bullet list" active={editor.isActive('bulletList')} onClick={() => editor.chain().focus().toggleBulletList().run()}>
+      <ToolbarButton label={t('core_ui.editor.bullet_list')} active={editor.isActive('bulletList')} onClick={() => editor.chain().focus().toggleBulletList().run()}>
         <List className="size-3.5" />
       </ToolbarButton>
-      <ToolbarButton label="Ordered list" active={editor.isActive('orderedList')} onClick={() => editor.chain().focus().toggleOrderedList().run()}>
+      <ToolbarButton label={t('core_ui.editor.ordered_list')} active={editor.isActive('orderedList')} onClick={() => editor.chain().focus().toggleOrderedList().run()}>
         <ListOrdered className="size-3.5" />
       </ToolbarButton>
-      <ToolbarButton label="Blockquote" active={editor.isActive('blockquote')} onClick={() => editor.chain().focus().toggleBlockquote().run()}>
+      <ToolbarButton label={t('core_ui.editor.blockquote')} active={editor.isActive('blockquote')} onClick={() => editor.chain().focus().toggleBlockquote().run()}>
         <Quote className="size-3.5" />
       </ToolbarButton>
-      <ToolbarButton label="Code" active={editor.isActive('code')} onClick={() => editor.chain().focus().toggleCode().run()}>
+      <ToolbarButton label={t('core_ui.editor.code')} active={editor.isActive('code')} onClick={() => editor.chain().focus().toggleCode().run()}>
         <Code className="size-3.5" />
       </ToolbarButton>
       <div className="mx-1 h-5 w-px bg-border" />
-      <ToolbarButton label="Undo" disabled={!editor.can().undo()} onClick={() => editor.chain().focus().undo().run()}>
+      <ToolbarButton label={t('core_ui.editor.undo')} disabled={!editor.can().undo()} onClick={() => editor.chain().focus().undo().run()}>
         <Undo2 className="size-3.5" />
       </ToolbarButton>
-      <ToolbarButton label="Redo" disabled={!editor.can().redo()} onClick={() => editor.chain().focus().redo().run()}>
+      <ToolbarButton label={t('core_ui.editor.redo')} disabled={!editor.can().redo()} onClick={() => editor.chain().focus().redo().run()}>
         <Redo2 className="size-3.5" />
       </ToolbarButton>
     </div>

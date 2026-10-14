@@ -15,6 +15,7 @@ import { CustomSourceSpacePolicyPanel } from './CustomSourceSpacePolicyPanel'
 import { ObjectSchemaPanel } from './ObjectSchemaPanel'
 import { promptLibraryPath } from '../prompts/paths'
 import type { MemberRole, SpaceMember, SpaceOversightMode } from '../../types/api'
+import { OneTimeLink } from '../../components/OneTimeLink'
 
 const INVITE_ROLES: MemberRole[] = ['admin', 'member', 'viewer']
 
@@ -38,6 +39,7 @@ export default function SpaceSettingsPage() {
   const waitingForSpace = Boolean(activeSpaceId && !activeSpace && spaces.length === 0)
 
   const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteLink, setInviteLink] = useState<{ email: string; link: string } | null>(null)
   const [inviteRole, setInviteRole] = useState<MemberRole>('member')
   const [inviting, setInviting] = useState(false)
   const [members, setMembers] = useState<SpaceMember[]>([])
@@ -105,10 +107,8 @@ export default function SpaceSettingsPage() {
     setInviting(true)
     try {
       const inv = await spacesApi.invite(activeSpaceId, { email: inviteEmail.trim(), role: inviteRole })
-      toast.success(`Invitation sent to ${inv.invited_email}`)
-      const link = `${window.location.origin}/invitations/claim#token=${encodeURIComponent(inv.token)}`
-      await navigator.clipboard.writeText(link).catch(() => null)
-      toast.info('Invite link copied to clipboard')
+      toast.success(`Invitation created for ${inv.invited_email}`)
+      setInviteLink({ email: inv.invited_email, link: `${window.location.origin}/invitations/claim#token=${encodeURIComponent(inv.token)}` })
       setInviteEmail('')
     } catch (err) {
       toast.error(errMsg(err))
@@ -379,8 +379,15 @@ export default function SpaceSettingsPage() {
                 </div>
               </div>
               <p className="text-xs text-muted-foreground">
-                An invitation link will be generated and copied to your clipboard.
+                An invitation link will be generated here for you to send.
               </p>
+              {inviteLink && (
+                <OneTimeLink
+                  link={inviteLink.link}
+                  label={`Invitation link for ${inviteLink.email}`}
+                  onDismiss={() => setInviteLink(null)}
+                />
+              )}
               <Button type="submit" size="sm" disabled={!inviteEmail.trim() || inviting}>
                 <Send className="size-3.5 mr-1.5" />
                 {inviting ? 'Sending…' : 'Generate invite link'}

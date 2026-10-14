@@ -857,14 +857,14 @@ describe("the boundaries around an Agent's own memory", () => {
     // asking one Agent to ask another.
     const delegated = randomUUID();
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, project_id, root_run_id, instructed_by_user_id, permission_snapshot_json, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
-       VALUES ($1, $2, $3, $4, 'agent', 'delegation', 'running', 'live', now(), now(), $5, 'private', $6, $7, $5, $8::jsonb, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, project_id, root_run_id, parent_run_id, instructed_by_user_id, permission_snapshot_json, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'delegation', 'running', 'live', now(), now(), $5, 'private', $6, $7, $7, $5, $8::jsonb, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [delegated, SPACE, AGENT_ID, AGENT_VERSION_ID, OWNER, PROJECT, RUN_ID,
         JSON.stringify({ tool_grants: [{ action_id: "memory.remember" }, { action_id: "memory.revise" }] })],
     );
 
     const result = await (await dispatcher({
-      id: delegated, trigger_origin: "delegation", root_run_id: RUN_ID, session_id: null,
+      id: delegated, trigger_origin: "delegation", root_run_id: RUN_ID, parent_run_id: RUN_ID, session_id: null,
     })).dispatch(remember({ memory_type: "persona", content: "what Alice asked for" }, "deleg"));
 
     // The root is `manual`, so this is a person's turn: proposed, not applied.

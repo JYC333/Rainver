@@ -101,13 +101,13 @@ function initialEdgeStates(source: string, target: string, state: GraphViewState
 /** The nodes and edges `mapProjectionToRenderData` draws for this view state. */
 function visibleElements(projection: GraphProjection, state: GraphViewState) {
   const hiddenKinds = new Set(state.hiddenKinds)
-  const activeEdgeKinds = new Set(state.activeEdgeKinds)
+  const hiddenEdgeKinds = new Set(state.hiddenEdgeKinds)
   const nodes = projection.nodes.filter((node) => !hiddenKinds.has(node.kind))
   const visibleNodeIds = new Set(nodes.map((node) => node.id))
   const edges = projection.edges
     .filter((edge) => !edge.hidden)
     .filter((edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target))
-    .filter((edge) => activeEdgeKinds.size === 0 || activeEdgeKinds.has(edge.kind))
+    .filter((edge) => !hiddenEdgeKinds.has(edge.kind))
   return { nodes, edges }
 }
 

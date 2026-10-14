@@ -10,6 +10,8 @@ import { registerProposalDecisionExecutor } from "../src/modules/proposals/propo
 import { registerProposalsProjectIntegration } from "../src/modules/proposals/projectIntegration.js";
 import { ProjectAttentionService } from "../src/modules/projects/attentionService.js";
 import type { SystemActionId } from "@rainver/protocol";
+import { POLICY_ACTION_REGISTRY } from "@rainver/protocol";
+import { engineCheck } from "../src/modules/policy/decisionCore.js";
 import type { SystemActionExecutor } from "../src/modules/systemActions/gateway.js";
 import { seedConversationMessages } from "./support/domainSeeds.js";
 
@@ -73,6 +75,7 @@ import { resetTables } from "./support/resetTables.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance.js";
 import type { CredentialSpendBasis } from "../src/modules/policy/credentialSpend.js";
+import { effectiveRunTrigger } from "../src/modules/systemActions/effectiveRunTrigger.js";
 
 let service: RoomService | undefined;
 let groupService: AgentGroupRunService | undefined;
@@ -600,6 +603,7 @@ describe("Room workflow (real Postgres)", () => {
       kind: "research_pipeline_outcome",
       key: `${thread}:${jobId}`,
       payload: { status: "stage_failed", stage: "start_intake", thread_id: thread, reason: `attempt ${jobId} failed` },
+      cause: { run_id: null, within_budget: false },
     });
     const client = await db.pool.connect();
     try {
@@ -626,6 +630,21 @@ describe("Room workflow (real Postgres)", () => {
       expect(second.message.content).toContain("attempt job-2 failed");
       // The same run reporting twice is still one message.
       expect(repeat.message.id).toBe(first.message.id);
+
+      // No turn of this conversation started the pipeline, so nothing stands
+      // behind the report: it is the system's, and the unattended write gate
+      // applies to it as to any scheduled work (D3). It is not `manual`.
+      const runs = new PgRunRepository(db.pool);
+      for (const runId of first.run_ids) {
+        const report = await runs.getRun("space-1", runId);
+        expect(report).toMatchObject({ trigger_origin: "continuation" });
+        const trigger = await effectiveRunTrigger(db.pool, report!);
+        expect(trigger).toMatchObject({ origin: "continuation", instructedByUserId: null });
+        expect(engineCheck(
+          new Map(POLICY_ACTION_REGISTRY.map((definition) => [definition.action, definition])),
+          { action: "task.create", space_id: "space-1", trigger_origin: trigger.origin },
+        ).decision).toBe("require_approval");
+      }
     } finally {
       client.release();
     }
@@ -3093,6 +3112,9 @@ describe("Room workflow (real Postgres)", () => {
         expect(late).toEqual({
           discussion: { id: opened.discussion.id, wave: 0 },
           delegation_budget: { max_depth: 1, max_fanout: 0 },
+          // It still reports on the turn that started it, but past what the
+          // stopped discussion was given: unattended, not the person's.
+          cause: { run_id: expect.any(String), within_budget: false },
         });
       } finally {
         client.release();
@@ -5162,6 +5184,20 @@ describe("Room workflow (real Postgres)", () => {
       continuation_event_key: spawned.delegation.id,
     });
     expect(posted.rows[0]?.content).toContain("Layered memory improves recall by 12%.");
+
+    // The report is the system's turn, not a new instruction from the person:
+    // it carries its cause, and only inherits the person's turn because it is
+    // inside that turn's delegation budget (D3).
+    const reportRuns = await db.pool.query<{ id: string; trigger_origin: string; cause_run_id: string | null }>(
+      `SELECT id, trigger_origin, cause_run_id FROM runs WHERE id = ANY($1::varchar[])`,
+      [recordOf(posted.rows[0]?.metadata_json).run_ids],
+    );
+    expect(reportRuns.rows.length).toBeGreaterThan(0);
+    for (const reportRun of reportRuns.rows) {
+      expect(reportRun).toMatchObject({ trigger_origin: "continuation", cause_run_id: group.root_run_id });
+      const report = await runs.getRun("space-1", reportRun.id);
+      await expect(effectiveRunTrigger(db.pool, report!)).resolves.toMatchObject({ origin: "manual", rootRunId: group.root_run_id });
+    }
 
     // Idempotent retry: reconciling the same terminal transition again (as
     // a reconciliation job retry would) must not post a second continuation.

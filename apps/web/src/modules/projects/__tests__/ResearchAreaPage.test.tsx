@@ -53,7 +53,7 @@ vi.mock('../../../api/client', () => ({
   inquiryApi: {
     listOpenSteps: vi.fn().mockResolvedValue([]), listThreads: vi.fn() },
   sourcesApi: { channels: vi.fn(), projectSourceBindings: vi.fn(), projectItems: vi.fn() },
-  providersApi: { list: vi.fn(), vendors: vi.fn() },
+  providersApi: { usable: vi.fn(), vendors: vi.fn() },
 }))
 
 const area = {
@@ -78,7 +78,7 @@ describe('ResearchAreaPage', () => {
     vi.mocked(projectResearchApi.readingList).mockResolvedValue(reading)
     vi.mocked(projectResearchApi.updateChecklistItem).mockImplementation(async (_projectId, _itemId, body) => ({ ...area.checklist[0], ...body }))
     vi.mocked(projectResearchApi.generateReportSnapshot).mockResolvedValue({ id: 'operation-1' } as never)
-    vi.mocked(api.providersApi.list).mockResolvedValue([{ id: 'provider-1', name: 'Provider', enabled: true }] as never)
+    vi.mocked(api.providersApi.usable).mockResolvedValue([{ id: 'provider-1', name: 'Provider', enabled: true }] as never)
     vi.mocked(api.providersApi.vendors).mockResolvedValue([])
     vi.mocked(api.notesApi.linkingTo).mockResolvedValue([])
     // useProjectResearch loads the workbench's own state on this route.

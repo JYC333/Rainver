@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { toast } from 'sonner'
 import { ambientSessionsApi, projectFoldersApi, projectsApi } from '../../api/client'
 import ProjectFolderSettingsPage from './ProjectFolderSettingsPage'
+import i18n from '../../i18n'
+import { formatDate } from '../../i18n/format'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
@@ -159,5 +161,25 @@ describe('Project Folder settings route', () => {
     fireEvent.click(await screen.findByRole('option', { name: /Only me/ }))
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('host offline'))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Who can read it \u2014 claude own' })).toHaveTextContent('Project shared'))
+  })
+
+  it('reads in Chinese, with the creation date in the Chinese locale', async () => {
+    await i18n.changeLanguage('zh-CN')
+    try {
+      render(
+        <MemoryRouter initialEntries={['/projects/project-1/folders/folder-1']}>
+          <Routes>
+            <Route path="/projects/:projectId/folders/:folderId" element={<ProjectFolderSettingsPage />} />
+          </Routes>
+        </MemoryRouter>,
+      )
+      expect(await screen.findByText('项目文件夹设置')).toBeInTheDocument()
+      expect(screen.getByText('工作区位置')).toBeInTheDocument()
+      expect(screen.getByText('就绪')).toBeInTheDocument()
+      expect(screen.getByText(formatDate('2026-07-25T00:00:00.000Z'))).toBeInTheDocument()
+      expect(formatDate('2026-07-25T00:00:00.000Z', { timeZone: 'UTC' })).toBe('2026年7月25日')
+    } finally {
+      await i18n.changeLanguage('en')
+    }
   })
 })

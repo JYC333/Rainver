@@ -298,6 +298,22 @@ user-facing report is the corresponding `project_research_reports` row.
   time, package hash, package root, and bounded same-repository file inventory.
 - GitHub imports must pin a commit SHA when available or at least record source
   ref plus content hash.
+- Import is bound to the preview the person looked at. Preview returns
+  `package_hash`, the hash of the package inventory with each fetched file's
+  SHA-256. `POST /api/v1/skill-sources/import` must carry that
+  `package_hash`, re-fetches the source, and saves the snapshot only when the
+  bytes it fetched hash to it. Otherwise it answers 409
+  `skill_package_changed`, and the Capabilities page withdraws the preview and
+  asks for a new one. Approval of one preview never applies to other content.
+- An imported Skill's capability version carries its reviewed snapshot in
+  `metadata_json`: `normalized_skill`, the `capability_definition` derived
+  from it, `skill_package_id` and `created_from_proposal_id`. `content_ref` and
+  `content_hash` name the package and its hash. Runtime rendering reads these
+  keys. `capability_update` refuses to change any of them on a
+  `source = 'imported_skill'` version (422
+  `imported_skill_snapshot_immutable`); new content comes only from a new
+  import, which produces a new snapshot and hash. Status and other metadata
+  remain updatable.
 - GitHub package imports are limited to files under the detected skill root.
   Text files are fetched with size/type caps and traversal checks. Non-text
   assets remain inventory metadata unless a later storage path is explicitly
@@ -314,6 +330,16 @@ user-facing report is the corresponding `project_research_reports` row.
   not approve a skill, convert a skill, enable a capability, or bypass proposal
   review. Capability conversion and enablement continue through
   `capability_enablements` and proposal boundaries.
+- Review (`skill_import_approve`) and Convert (`capability_install`) are
+  idempotent per person, package snapshot and operation. The proposal's
+  `pending_operation_key` is `skill_package:<package>:<package_hash>:<operation>:<person>`,
+  unique among pending proposals of its type in a Space
+  (`uq_proposals_pending_operation`). Asking again while that proposal is
+  pending returns it with 200 instead of 201, and two concurrent requests
+  file one proposal. Once it is decided, a new request files a new one.
+  Skill package reads include the caller's `pending_proposal`
+  (`{id, operation}` or null). The Capabilities page shows it as pending and
+  disables the matching action.
 - Conversion requests create a `capability_install` proposal. Applying it
   produces a disabled draft capability version plus disabled runtime bindings;
   requesting direct enablement during conversion (`enable_for_project_id`) fails

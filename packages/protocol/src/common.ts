@@ -26,6 +26,9 @@ export const RUN_TRIGGER_ORIGIN_VALUES = [
   "job",
   "system",
   "delegation",
+  // A turn the system started to report on earlier work (a delegated result,
+  // a research outcome, a discussion wave). Its authority is its cause's.
+  "continuation",
   // Accepted on read so existing rows still parse. Do not write these as a new trigger origin.
   "user",
   "api",

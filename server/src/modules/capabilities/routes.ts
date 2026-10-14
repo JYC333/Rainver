@@ -230,12 +230,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     try {
-      return reply.code(201).send(
-        await service(context).createSkillReviewProposal(
-          identity,
-          params(request).skillPackageId ?? "",
-        ),
+      const result = await service(context).createSkillReviewProposal(
+        identity,
+        params(request).skillPackageId ?? "",
       );
+      // 200 when the caller's pending proposal for this snapshot is returned.
+      return reply.code(result.created ? 201 : 200).send(result.proposal);
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -245,13 +245,12 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     try {
-      return reply.code(201).send(
-        await service(context).convertSkillToCapability(
-          identity,
-          params(request).skillPackageId ?? "",
-          jsonBody(request),
-        ),
+      const result = await service(context).convertSkillToCapability(
+        identity,
+        params(request).skillPackageId ?? "",
+        jsonBody(request),
       );
+      return reply.code(result.created ? 201 : 200).send(result.proposal);
     } catch (error) {
       return sendRouteError(reply, error);
     }

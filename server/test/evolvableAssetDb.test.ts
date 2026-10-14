@@ -137,6 +137,29 @@ async function insertApprovedVersion(
   return id;
 }
 
+/**
+ * A built-in (catalog) asset and its versions, as the startup catalog sync
+ * writes them: no Space, system scope. No product route can create either.
+ */
+async function createBuiltinAsset(
+  assetKey = "academic.paper_screening_assistant",
+  metadata: Record<string, unknown> = {},
+): Promise<{ id: string; asset_key: string }> {
+  const id = await createSystemAsset(assetKey);
+  await db.pool.query(`UPDATE evolvable_assets SET metadata_json = $2::jsonb WHERE id = $1`, [id, JSON.stringify(metadata)]);
+  return { id, asset_key: assetKey };
+}
+
+async function createCatalogVersion(assetId: string, content: Record<string, unknown>): Promise<string> {
+  const next = await db.pool.query<{ next: number }>(
+    `SELECT COALESCE(MAX(version), 0) + 1 AS next FROM evolvable_asset_versions WHERE asset_id = $1`,
+    [assetId],
+  );
+  const versionId = await insertApprovedVersion(assetId, next.rows[0]!.next, null, "system", null, content);
+  await db.pool.query(`UPDATE evolvable_assets SET current_system_version_id = $2 WHERE id = $1`, [assetId, versionId]);
+  return versionId;
+}
+
 describe("Evolvable asset/version/pin (real Postgres)", () => {
   it("lets an HTTP caller resolve only for a Project and Agent whose versions it could list", async () => {
     if (!db.available) return;
@@ -430,9 +453,9 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
 
   it("resolves project pin over space-approved version, and space-approved over system baseline", async () => {
     if (!db.available) return;
-    const asset = await createAsset();
+    const asset = await createBuiltinAsset();
     // A system baseline also exists, to prove space-approved is preferred over it.
-    await createApprovedVersion(asset.id as string, "system", { system_prompt: "system baseline" });
+    await createCatalogVersion(asset.id as string, { system_prompt: "system baseline" });
     const spaceVersion = await createApprovedVersion(asset.id as string, "space", { system_prompt: "space approved" });
     const projectVersion = await createApprovedVersion(asset.id as string, "project", { system_prompt: "project pinned" });
 
@@ -455,8 +478,8 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
 
   it("falls back to the system baseline when there is no pin or space-approved version, and records a fallback reason", async () => {
     if (!db.available) return;
-    const asset = await createAsset();
-    const systemVersion = await createApprovedVersion(asset.id as string, "system", { system_prompt: "system baseline" });
+    const asset = await createBuiltinAsset();
+    const systemVersion = await createCatalogVersion(asset.id as string, { system_prompt: "system baseline" });
 
     const result = await resolveEvolvableAssetVersion(db.pool, { spaceId: SPACE, assetKey: asset.asset_key as string });
     expect(result.versionId).toBe(systemVersion);
@@ -516,8 +539,8 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
 
   it("rejects explicit runtime resolution to a non-approved version", async () => {
     if (!db.available) return;
-    const asset = await createAsset();
-    await createApprovedVersion(asset.id as string, "system", { system_prompt: "system baseline" });
+    const asset = await createBuiltinAsset();
+    await createCatalogVersion(asset.id as string, { system_prompt: "system baseline" });
     const draft = await repo().createVersion(identity, asset.id as string, { scope_type: "space", content_json: { system_prompt: "draft" } });
 
     await expect(
@@ -531,8 +554,8 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
 
   it("ignores a user pin unless allowUserPin is explicitly set", async () => {
     if (!db.available) return;
-    const asset = await createAsset("academic.user_pin_resolution", { metadata_json: { allow_user_override: true } });
-    const systemVersion = await createApprovedVersion(asset.id as string, "system", { system_prompt: "system baseline" });
+    const asset = await createBuiltinAsset("academic.user_pin_resolution", { allow_user_override: true });
+    const systemVersion = await createCatalogVersion(asset.id as string, { system_prompt: "system baseline" });
     const userVersion = await createApprovedVersion(asset.id as string, "user", { system_prompt: "user personal" });
     await repo().setPin(identity, asset.id as string, "user", OWNER, { version_id: userVersion });
 

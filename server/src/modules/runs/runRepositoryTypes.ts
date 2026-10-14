@@ -151,6 +151,11 @@ export interface RunFinalizationRecord {
   metadata_json: unknown;
   finalized_at: string;
   created_at: string;
+  /** The completion gate: when settlement completed. Null while it is owed. */
+  settled_at: string | null;
+  settlement_attempts: number;
+  /** `{ completed: string[], last_failure?: { key, error_code, message, at }, next_attempt_at? }` */
+  settlement_json: unknown;
 }
 
 export interface RunStepDetailRecord {
@@ -251,6 +256,11 @@ export interface RunCreateInput {
   mode: string;
   run_type: string;
   trigger_origin: string;
+  /**
+   * Only on a `continuation` Run: the Run whose outcome this system-started
+   * turn reports on (`runs.cause_run_id`). Server-derived, never from a client.
+   */
+  cause_run_id?: string | null;
   session_id?: string | null;
   project_folder_id?: string | null;
   workspace_location_id?: string | null;

@@ -2,6 +2,7 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import type { Queryable } from "../routeUtils/common.js";
 import type { RunRecord } from "../runs/runRepositoryTypes.js";
+import { effectiveRunTrigger } from "../systemActions/effectiveRunTrigger.js";
 import { loadActionRegistry } from "./actionRegistry.js";
 import {
   credentialPolicyMetadata,
@@ -72,14 +73,8 @@ export class CredentialSpendDeniedError extends Error {
 }
 
 export interface CredentialSpendDeps {
-  /** Reads a child Run's root and the automation grant; defaults to the configured pool. */
+  /** Reads the Run's lineage and the automation grant; defaults to the configured pool. */
   db?: Queryable;
-  /**
-   * Reads a Run by id, for the walk up a child's parent chain. The Run
-   * executor passes its own repository so the decision reads Runs the way the
-   * rest of execution does; everyone else reads the database.
-   */
-  readRun?: (spaceId: string, runId: string) => Promise<CredentialSpendRun | null>;
   /** The Run executor's policy seam; defaults to the policy service. */
   enforcer?: (request: Parameters<typeof enforce>[2]) => Promise<EnforceResult>;
 }
@@ -178,8 +173,16 @@ async function spendFacts(
   if (basis.run.space_id !== spaceId) {
     throw new CredentialSpendDeniedError("This Run belongs to another Space.");
   }
-  const root = await rootRun(config, basis.run, deps);
-  const origin = root.trigger_origin;
+  // The same lineage every origin gate reads (`effectiveRunTrigger`): a
+  // delegated child, a later Room recipient and a continuation all spend as
+  // their verified root does, and a chain that cannot be verified spends as
+  // nobody's — the rule then denies it.
+  const db = requireDb(config, deps.db);
+  const trigger = await effectiveRunTrigger(db, basis.run);
+  const root = trigger.rootRunId && trigger.rootRunId !== basis.run.id
+    ? await readRun(db, basis.run.space_id, trigger.rootRunId) ?? basis.run
+    : basis.run;
+  const origin = trigger.origin;
   const context: Record<string, unknown> = {
     ...credentialPolicyMetadata(managedExecutionPolicyFromContract(root.contract_snapshot_json)),
   };
@@ -200,38 +203,8 @@ async function spendFacts(
   };
 }
 
-const MAX_LINEAGE_DEPTH = 32;
-
-/**
- * The Run that set this one's tree going: the top of its parent chain.
- * Walked rather than read from `root_run_id`, which not every creator writes —
- * an autonomy candidate names its coordinator only as its parent.
- */
-async function rootRun(
-  config: ServerConfig,
-  run: CredentialSpendRun,
-  deps: CredentialSpendDeps,
-): Promise<CredentialSpendRun> {
-  let current = run;
-  for (let depth = 0; current.parent_run_id; depth += 1) {
-    if (depth >= MAX_LINEAGE_DEPTH) {
-      throw new CredentialSpendDeniedError("This Run descends from too many Runs to decide its spend.");
-    }
-    const parent = await readRun(config, deps, run.space_id, current.parent_run_id);
-    if (!parent) throw new CredentialSpendDeniedError("A Run this one descends from no longer exists.");
-    current = parent;
-  }
-  return current;
-}
-
-async function readRun(
-  config: ServerConfig,
-  deps: CredentialSpendDeps,
-  spaceId: string,
-  runId: string,
-): Promise<CredentialSpendRun | null> {
-  if (deps.readRun) return deps.readRun(spaceId, runId);
-  const result = await requireDb(config, deps.db).query<CredentialSpendRun>(
+async function readRun(db: Queryable, spaceId: string, runId: string): Promise<CredentialSpendRun | null> {
+  const result = await db.query<CredentialSpendRun>(
     `SELECT id, space_id, parent_run_id, trigger_origin, contract_snapshot_json
        FROM runs
       WHERE space_id = $1 AND id = $2`,

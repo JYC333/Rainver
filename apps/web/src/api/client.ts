@@ -192,6 +192,7 @@ import type {
   MemoryMaintenanceReport,
   MemoryVersion,
   MemoryMaintenanceScanRequestInput,
+  MemoryProposalRevisionRequest,
   MePendingProposalItem,
   Message,
   MeSummaryOut,
@@ -937,6 +938,10 @@ export const memoryApi = {
     post<Memory>(`/memory/${id}/revert`, {}),
   versions: (id: string) =>
     get<{ items: MemoryVersion[] }>(`/memory/${id}/versions`),
+  // The revision a maintenance finding asked for, written into its pending
+  // update; accepting the proposal is still a separate decision.
+  reviseProposal: (proposalId: string, body: MemoryProposalRevisionRequest) =>
+    post<Proposal>(`/memory/proposals/${proposalId}/revision`, body),
   search: (data: { query: string; scope?: string; namespace?: string; type?: string; limit?: number }) =>
     // Memory search is identity-scoped server-side; do not send space_id/user_id.
     post<Memory[]>('/memory/search', data),
@@ -2217,7 +2222,8 @@ export const capabilitiesFrameworkApi = {
     get<CapabilityPackDescriptor>(`/capability-packs/${encodeURIComponent(id)}`),
   previewSkillImport: (data: { url: string }) =>
     post<SkillImportPreviewResponse>('/skill-sources/import-preview', data),
-  importSkill: (data: { url: string }) =>
+  /** Imports the previewed package; `package_hash` is the preview's, and a changed package answers 409 `skill_package_changed`. */
+  importSkill: (data: { url: string; package_hash: string }) =>
     post<SkillPackage>('/skill-sources/import', data),
   listSkillPackages: () =>
     get<Page<SkillPackage>>('/skill-packages'),
@@ -3690,7 +3696,11 @@ export type ManagedSubscriptionLoginEvent =
   | { type: 'error'; message: string }
 
 export const providersApi = {
+  /** Every Provider this person may see here, including the ones they own and disabled. For management. */
   list: () => get<ModelProviderOut[]>('/providers'),
+  /** The Providers a run can use here: enabled, with an enabled grant. For pickers. */
+  usable: () => get<ModelProviderOut[]>('/providers')
+    .then(rows => rows.filter(row => row.enabled && row.grant_enabled !== false)),
 
   presets: () => get<ProviderPresetOut[]>('/providers/presets'),
 

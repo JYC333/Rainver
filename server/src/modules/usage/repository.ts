@@ -799,6 +799,7 @@ export class PgUsageRepository {
       last_seen_at: string | null;
     }>;
     total: number;
+    totals: UsageTotals;
   }> {
     const where = buildWhere(filters, { fullOnly: true });
     const rows = await this.db.query<AggregateRow & {
@@ -837,6 +838,13 @@ export class PgUsageRepository {
         last_seen_at: dateIsoOrNull(row.last_seen_at),
       })),
       total: intValue(rows.rows[0]?.group_total ?? 0),
+      // Same rows and access level as the sessions themselves.
+      totals: aggregateRowToBreakdown((await this.db.query<AggregateRow>(
+        `SELECT 'all' AS group_key, 'All sessions' AS group_label, ${aggregateSelectSql()}
+           FROM token_usage_events e
+           ${where.sql}`,
+        where.params,
+      )).rows[0]).totals,
     };
   }
 

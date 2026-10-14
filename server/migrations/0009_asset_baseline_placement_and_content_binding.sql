@@ -1,0 +1,5 @@
+ALTER TABLE "evolvable_asset_evaluation_runs" ADD COLUMN "candidate_content_hash" varchar(128);--> statement-breakpoint
+ALTER TABLE "prompt_deployment_refs" ADD COLUMN "rolled_back_from_ref_id" varchar(36);--> statement-breakpoint
+ALTER TABLE "prompt_deployment_refs" ADD CONSTRAINT "prompt_deployment_refs_rolled_back_from_ref_id_fkey" FOREIGN KEY ("rolled_back_from_ref_id") REFERENCES "public"."prompt_deployment_refs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "evolvable_asset_versions" ADD CONSTRAINT "ck_evolvable_asset_versions_system_scope_placement" CHECK ((((scope_type)::text = 'system'::text) AND (space_id IS NULL) AND (scope_id IS NULL)) OR (((scope_type)::text <> 'system'::text) AND (space_id IS NOT NULL) AND (scope_id IS NOT NULL)));--> statement-breakpoint
+ALTER TABLE "evolvable_assets" ADD CONSTRAINT "ck_evolvable_assets_system_owner_placement" CHECK (((owner_scope_type)::text = 'system'::text) = (space_id IS NULL));

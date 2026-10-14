@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { SpaceLink as Link } from '../../core/spaceNav'
+import { SpaceLink as Link, useSpaceNavigate } from '../../core/spaceNav'
 import { ArrowLeft, Archive, Database } from 'lucide-react'
 import { toast } from 'sonner'
 import { memoryApi } from '../../api/client'
@@ -37,6 +37,7 @@ export default function MemoryDetailPage() {
   const { memoryId = '' } = useParams()
   const { activeSpaceId, activeSpaceName } = useSpace()
   const { currentUser } = useAuth()
+  const navigate = useSpaceNavigate()
   const [memory, setMemory] = useState<Memory | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -161,7 +162,16 @@ export default function MemoryDetailPage() {
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
-              <ContentAccessControl resourceType="memory" resourceId={memory.id} ownerUserId={memory.owner_user_id} />
+              <ContentAccessControl
+                resourceType="memory"
+                resourceId={memory.id}
+                ownerUserId={memory.owner_user_id}
+                // Who may read an entry is part of its version: the change
+                // wrote a new head, which is the entry to show now.
+                onUpdated={policy => {
+                  if (policy.resource_id !== memory.id) navigate(`/memory/${policy.resource_id}`, { replace: true })
+                }}
+              />
               {memory.status === 'archived'
                 ? (
                   // Owner-only: the route answers 404 for anyone else, and

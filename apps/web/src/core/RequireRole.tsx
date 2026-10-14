@@ -3,6 +3,7 @@ import { ShieldAlert } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useSpace } from '../contexts/SpaceContext'
 import { Card, CardTitle } from '../components/ui/card'
+import { useAppTranslation } from '../i18n'
 
 function RoleRequiredCard({ title, message }: { title: string; message: string }) {
   return (
@@ -23,12 +24,13 @@ function canManageSpaceRole(role: string | undefined | null): boolean {
 
 export function RequireSpaceAdmin({ children }: { children: ReactNode }) {
   const { spaces, activeSpaceId } = useSpace()
+  const { t } = useAppTranslation()
   const role = spaces.find(space => space.id === activeSpaceId)?.role
   if (!canManageSpaceRole(role)) {
     return (
       <RoleRequiredCard
-        title="Space admin required"
-        message="Only a space owner or admin can open this page."
+        title={t('core_ui.require_role.space_admin_title')}
+        message={t('core_ui.require_role.space_admin_message')}
       />
     )
   }
@@ -37,11 +39,12 @@ export function RequireSpaceAdmin({ children }: { children: ReactNode }) {
 
 export function RequireInstanceAdmin({ children }: { children: ReactNode }) {
   const { currentUser } = useAuth()
+  const { t } = useAppTranslation()
   if (!currentUser?.is_instance_admin) {
     return (
       <RoleRequiredCard
-        title="Instance admin required"
-        message="Only the configured instance admin can open this page."
+        title={t('core_ui.require_role.instance_admin_title')}
+        message={t('core_ui.require_role.instance_admin_message')}
       />
     )
   }

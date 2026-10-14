@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import type { OfficialPluginEffectiveMap } from '@rainver/protocol'
 import { pluginsApi } from '../../api/client'
+import i18n from '../../i18n'
 import { MODULE_REGISTRY, modulesWithEffectivePlugins, type Module } from '../registry'
 
 type EffectivePluginMap = OfficialPluginEffectiveMap
@@ -39,7 +40,7 @@ export function useEffectivePlugins(): UseEffectivePluginsResult {
         setLoading(false)
       })
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : 'Failed to load plugin state')
+        setError(err instanceof Error ? err.message : i18n.t('management_ui.plugins.state_load_failed'))
         setLoading(false)
       })
   }, [])

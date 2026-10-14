@@ -9,17 +9,15 @@ import { Button } from '../../components/ui/button'
 import { StatusBadge, Badge } from '../../components/ui/badge'
 import { Skeleton } from '../../components/ui/skeleton'
 import type { Job, JobEvent, JobStatus } from '../../types/api'
-
-function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString() : '—'
-}
+import i18n, { useAppTranslation } from '../../i18n'
+import { formatDateTime, formatNumber, formatTime } from '../../i18n/format'
 
 function elapsed(start: string | null, end: string | null): string {
   if (!start) return '—'
   const ms = new Date(end ?? Date.now()).getTime() - new Date(start).getTime()
-  if (ms < 1000) return `${ms}ms`
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
-  return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1000)}s`
+  if (ms < 1000) return i18n.t('management_ui.job_queue.elapsed_ms', { value: formatNumber(ms) })
+  if (ms < 60_000) return i18n.t('management_ui.job_queue.elapsed_seconds', { value: formatNumber(ms / 1000, { maximumFractionDigits: 1 }) })
+  return i18n.t('management_ui.job_queue.elapsed_minutes', { minutes: Math.floor(ms / 60_000), seconds: Math.floor((ms % 60_000) / 1000) })
 }
 
 const ACTIVE: Set<JobStatus> = new Set(['pending', 'claimed', 'running'])
@@ -31,14 +29,11 @@ const EVENT_COLOR: Record<string, string> = {
   error:         'text-destructive',
 }
 
-const STATUS_FILTERS: { label: string; value: string }[] = [
-  { label: 'All',       value: '' },
-  { label: 'Pending',   value: 'pending' },
-  { label: 'Running',   value: 'running' },
-  { label: 'Completed', value: 'completed' },
-  { label: 'Failed',    value: 'failed' },
-  { label: 'Cancelled', value: 'cancelled' },
-]
+const STATUS_FILTERS = ['', 'pending', 'running', 'completed', 'failed', 'cancelled'] as const
+
+function statusFilterLabel(value: string): string {
+  return i18n.t(`management_ui.job_queue.filter.${value || 'all'}`)
+}
 
 // ---------------------------------------------------------------------------
 // JobRow
@@ -50,6 +45,7 @@ function JobRow({
   job: Job
   onCancel: (id: string) => void
 }) {
+  const { t } = useAppTranslation()
   const [expanded, setExpanded] = useState(false)
   const [events, setEvents]     = useState<JobEvent[] | null>(null)
   const [loadingEvts, setLoadingEvts] = useState(false)
@@ -98,9 +94,9 @@ function JobRow({
           {(job.status === 'running' || job.status === 'completed' || job.status === 'failed') && (
             <span>{elapsed(job.started_at, job.completed_at)}</span>
           )}
-          <span className="hidden md:inline">{fmt(job.created_at)}</span>
+          <span className="hidden md:inline">{formatDateTime(job.created_at)}</span>
           {job.attempts > 0 && job.max_attempts > 1 && (
-            <span className="tabular-nums">{job.attempts}/{job.max_attempts}</span>
+            <span className="tabular-nums">{t('management_ui.job_queue.attempts', { attempts: job.attempts, max: job.max_attempts })}</span>
           )}
         </div>
 
@@ -110,7 +106,7 @@ function JobRow({
             size="icon"
             className="size-7 shrink-0"
             onClick={e => { e.stopPropagation(); onCancel(job.id) }}
-            title="Cancel job"
+            title={t('management_ui.job_queue.cancel_job')}
           >
             <X className="size-3.5" />
           </Button>
@@ -126,13 +122,13 @@ function JobRow({
               <Skeleton className="h-4 w-3/4" />
             </div>
           ) : !events || events.length === 0 ? (
-            <p className="text-xs text-muted-foreground px-3 py-2">No events yet.</p>
+            <p className="text-xs text-muted-foreground px-3 py-2">{t('management_ui.job_queue.no_events')}</p>
           ) : (
             <div className="divide-y divide-border/60">
               {events.map(evt => (
                 <div key={evt.id} className="flex gap-3 px-3 py-1.5 items-baseline">
                   <span className="font-mono text-[10px] text-muted-foreground shrink-0 w-[90px]">
-                    {new Date(evt.created_at).toLocaleTimeString()}
+                    {formatTime(evt.created_at)}
                   </span>
                   <Badge variant="muted" className="text-[10px] py-0 shrink-0">
                     {evt.event_type}
@@ -148,7 +144,7 @@ function JobRow({
           {/* Result / payload peek */}
           {job.result && (
             <div className="border-t border-border/60 px-3 py-2">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">Result</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">{t('management_ui.job_queue.result')}</p>
               <pre className="text-xs text-foreground whitespace-pre-wrap break-all">
                 {JSON.stringify(job.result, null, 2)}
               </pre>
@@ -164,6 +160,7 @@ function JobRow({
 // Page
 // ---------------------------------------------------------------------------
 export default function JobQueuePage() {
+  const { t } = useAppTranslation()
   const { activeSpaceId, activeSpaceName } = useSpace()
   const [jobs, setJobs]               = useState<Job[]>([])
   const [total, setTotal]             = useState(0)
@@ -209,7 +206,7 @@ export default function JobQueuePage() {
   async function cancel(jobId: string) {
     try {
       await jobsApi.cancel(jobId)
-      toast.success('Job cancelled')
+      toast.success(t('management_ui.job_queue.cancelled'))
       load(true)
     } catch (e) {
       toast.error(errMsg(e))
@@ -232,15 +229,15 @@ export default function JobQueuePage() {
           <ListChecks className="size-5 text-accent-foreground" />
         </div>
         <div className="flex-1">
-          <h1 className="text-xl font-semibold tracking-tight">Job Queue</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{t('management_ui.job_queue.title')}</h1>
           <p className="text-sm text-muted-foreground">
-            Durable background jobs — persisted, retried, and tracked.
+            {t('management_ui.job_queue.subtitle')}
             {activeCount > 0 && (
-              <span className="ml-2 text-warning font-medium">{activeCount} active</span>
+              <span className="ml-2 text-warning font-medium">{t('management_ui.job_queue.active', { count: activeCount })}</span>
             )}
           </p>
           <p className="text-xs text-muted-foreground">
-            Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}
+            {t('management_ui.job_queue.viewing', { space: activeSpaceName ?? activeSpaceId ?? t('management_ui.job_queue.no_space') })}
           </p>
         </div>
         <Button
@@ -248,7 +245,7 @@ export default function JobQueuePage() {
           size="icon"
           onClick={() => load(true)}
           disabled={refreshing || !activeSpaceId}
-          title="Refresh"
+          title={t('management_ui.job_queue.refresh')}
         >
           <RefreshCw className={`size-4 ${refreshing ? 'animate-spin' : ''}`} />
         </Button>
@@ -256,17 +253,17 @@ export default function JobQueuePage() {
 
       {/* Filter bar */}
       <div className="flex gap-1 flex-wrap">
-        {STATUS_FILTERS.map(f => (
+        {STATUS_FILTERS.map(value => (
           <button
-            key={f.value}
-            onClick={() => setStatusFilter(f.value)}
+            key={value}
+            onClick={() => setStatusFilter(value)}
             className={`px-3 py-1 rounded-full text-xs font-medium transition-colors
-              ${statusFilter === f.value
+              ${statusFilter === value
                 ? 'bg-primary text-primary-foreground'
                 : 'bg-muted text-muted-foreground hover:bg-muted/80'
               }`}
           >
-            {f.label}
+            {statusFilterLabel(value)}
           </button>
         ))}
       </div>
@@ -274,7 +271,7 @@ export default function JobQueuePage() {
       {/* Jobs list */}
       <Card>
         <CardTitle>
-          {statusFilter ? `${statusFilter} jobs` : 'All jobs'} · {total}
+          {statusFilter ? t('management_ui.job_queue.jobs_with_status', { status: statusFilterLabel(statusFilter) }) : t('management_ui.job_queue.all_jobs')} · {formatNumber(total)}
         </CardTitle>
 
         {loading ? (
@@ -286,8 +283,8 @@ export default function JobQueuePage() {
         ) : jobs.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-10">
             {!activeSpaceId
-              ? 'Select an operational space to browse jobs.'
-              : statusFilter ? `No ${statusFilter} jobs.` : 'No jobs yet. Submit an agent run to see it here.'}
+              ? t('management_ui.job_queue.select_space')
+              : statusFilter ? t('management_ui.job_queue.none_with_status', { status: statusFilterLabel(statusFilter) }) : t('management_ui.job_queue.none')}
           </p>
         ) : (
           <div className="mt-1">

@@ -1,16 +1,11 @@
 import { useState, useEffect, useCallback, useRef, type ComponentType } from 'react'
 import type { DiaryApi, DiaryEntry, DiaryReflection, DiaryWebHost } from './host'
 import { saveDiaryEntry } from './saveQueue'
+import { diaryMessages, formatDiaryDate, type DiaryMessages } from './messages'
 
 export type { DiaryApi, DiaryEntry, DiaryReflection, DiaryWebHost } from './host'
 
 const PLUGIN_ID = 'diary'
-
-function formatDate(iso: string): string {
-  return new Date(iso + 'T00:00:00').toLocaleDateString(undefined, {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-  })
-}
 
 // The person's own calendar day: a UTC date is yesterday or tomorrow for
 // hours of every day away from UTC, and the header shows the local date.
@@ -27,11 +22,13 @@ function EntryEditor({
   date,
   initial,
   onSaved,
+  text: messages,
 }: {
   api: DiaryApi
   date: string
   initial: string
   onSaved: (entry: DiaryEntry) => void
+  text: DiaryMessages
 }) {
   const [content, setContent] = useState(initial)
   const [saving, setSaving] = useState(false)
@@ -59,11 +56,11 @@ function EntryEditor({
       setSaved(latestRef.current === text)
       setTimeout(() => setSaved(false), 2000)
     } catch (err) {
-      if (mountedRef.current) setError(err instanceof Error ? err.message : 'Save failed')
+      if (mountedRef.current) setError(err instanceof Error ? err.message : messages.save_failed)
     } finally {
       if (mountedRef.current) setSaving(false)
     }
-  }, [api, date, onSaved])
+  }, [api, date, onSaved, messages])
 
   const handleChange = (text: string) => {
     setContent(text)
@@ -90,7 +87,7 @@ function EntryEditor({
       <textarea
         value={content}
         onChange={(e) => handleChange(e.target.value)}
-        placeholder={`What's on your mind today?`}
+        placeholder={messages.placeholder}
         style={{
           width: '100%', minHeight: 200, padding: '12px 14px',
           borderRadius: 8, border: '1px solid #e0e0e0', fontSize: 15,
@@ -99,11 +96,11 @@ function EntryEditor({
         }}
       />
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
-        {saving && <span style={{ color: '#888' }}>Saving…</span>}
-        {saved && !saving && <span style={{ color: '#4caf50' }}>Saved</span>}
+        {saving && <span style={{ color: '#888' }}>{messages.saving}</span>}
+        {saved && !saving && <span style={{ color: '#4caf50' }}>{messages.saved}</span>}
         {error && <span style={{ color: '#b71c1c' }}>{error}</span>}
         {!saving && !saved && !error && content.length > 0 && (
-          <span style={{ color: '#bbb' }}>Auto-saves after typing pauses</span>
+          <span style={{ color: '#bbb' }}>{messages.autosave_hint}</span>
         )}
         <div style={{ flex: 1 }} />
         <button
@@ -115,7 +112,7 @@ function EntryEditor({
             fontSize: 13, fontWeight: 500, opacity: saving ? 0.6 : 1,
           }}
         >
-          Save now
+          {messages.save_now}
         </button>
       </div>
     </div>
@@ -124,7 +121,7 @@ function EntryEditor({
 
 // ── On-This-Day Panel ─────────────────────────────────────────────────────────
 
-function OnThisDay({ api, date, currentEntryId }: { api: DiaryApi; date: string; currentEntryId?: string }) {
+function OnThisDay({ api, date, currentEntryId, text, locale }: { api: DiaryApi; date: string; currentEntryId?: string; text: DiaryMessages; locale: string }) {
   const [entries, setEntries] = useState<DiaryEntry[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -140,12 +137,12 @@ function OnThisDay({ api, date, currentEntryId }: { api: DiaryApi; date: string;
   return (
     <div style={{ marginTop: 28 }}>
       <h3 style={{ fontSize: 13, fontWeight: 600, color: '#888', marginBottom: 12, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-        On this day in past years
+        {text.on_this_day}
       </h3>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {entries.map((e) => (
           <div key={e.id} style={{ border: '1px solid #e8e8e8', borderRadius: 8, padding: '14px 16px', background: '#fafafa' }}>
-            <div style={{ fontSize: 12, color: '#888', marginBottom: 6, fontWeight: 500 }}>{formatDate(e.entry_date)}</div>
+            <div style={{ fontSize: 12, color: '#888', marginBottom: 6, fontWeight: 500 }}>{formatDiaryDate(e.entry_date, locale)}</div>
             <p style={{ margin: 0, fontSize: 14, color: '#444', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
               {e.content.length > 300 ? e.content.slice(0, 300) + '…' : e.content}
             </p>
@@ -158,7 +155,7 @@ function OnThisDay({ api, date, currentEntryId }: { api: DiaryApi; date: string;
 
 // ── Reflections ───────────────────────────────────────────────────────────────
 
-function Reflections({ api, date }: { api: DiaryApi; date: string }) {
+function Reflections({ api, date, text }: { api: DiaryApi; date: string; text: DiaryMessages }) {
   const [reflections, setReflections] = useState<DiaryReflection[]>([])
 
   useEffect(() => {
@@ -172,7 +169,7 @@ function Reflections({ api, date }: { api: DiaryApi; date: string }) {
   return (
     <div style={{ marginTop: 20 }}>
       <h3 style={{ fontSize: 13, fontWeight: 600, color: '#888', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-        Reflections
+        {text.reflections}
       </h3>
       {reflections.map((r) => (
         <div key={r.id} style={{ fontSize: 13, color: '#555', lineHeight: 1.6, whiteSpace: 'pre-wrap', padding: '10px 14px', background: '#f0f4ff', borderRadius: 6, marginBottom: 8 }}>
@@ -185,7 +182,7 @@ function Reflections({ api, date }: { api: DiaryApi; date: string }) {
 
 // ── History Sidebar ───────────────────────────────────────────────────────────
 
-function HistorySidebar({ api, selectedDate, onSelect }: { api: DiaryApi; selectedDate: string; onSelect: (date: string) => void }) {
+function HistorySidebar({ api, selectedDate, onSelect, text, locale }: { api: DiaryApi; selectedDate: string; onSelect: (date: string) => void; text: DiaryMessages; locale: string }) {
   const [entries, setEntries] = useState<DiaryEntry[]>([])
 
   useEffect(() => {
@@ -196,8 +193,8 @@ function HistorySidebar({ api, selectedDate, onSelect }: { api: DiaryApi; select
 
   return (
     <div style={{ width: 180, flexShrink: 0, borderRight: '1px solid #ebebeb', paddingRight: 16 }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: '#999', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>History</div>
-      {entries.length === 0 && <div style={{ fontSize: 13, color: '#ccc' }}>No entries yet</div>}
+      <div style={{ fontSize: 11, fontWeight: 600, color: '#999', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.05em' }}>{text.history}</div>
+      {entries.length === 0 && <div style={{ fontSize: 13, color: '#ccc' }}>{text.no_entries}</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
         {entries.map((e) => (
           <button
@@ -211,7 +208,7 @@ function HistorySidebar({ api, selectedDate, onSelect }: { api: DiaryApi; select
               fontWeight: e.entry_date === selectedDate ? 600 : 400,
             }}
           >
-            {e.entry_date}
+            {formatDiaryDate(e.entry_date, locale, 'short')}
           </button>
         ))}
       </div>
@@ -222,8 +219,10 @@ function HistorySidebar({ api, selectedDate, onSelect }: { api: DiaryApi; select
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 function DiaryPage({ host }: { host: DiaryWebHost }) {
-  const { api, Link, usePluginState } = host
+  const { api, Link, usePluginState, useLocale } = host
   const { enabled, loading: pluginLoading } = usePluginState(PLUGIN_ID)
+  const locale = useLocale()
+  const text = diaryMessages(locale)
   const [selectedDate, setSelectedDate] = useState(todayDate())
   const [entry, setEntry] = useState<DiaryEntry | null>(null)
   const [loadingEntry, setLoadingEntry] = useState(true)
@@ -252,13 +251,13 @@ function DiaryPage({ host }: { host: DiaryWebHost }) {
     return (
       <div style={{ maxWidth: 520, margin: '80px auto', padding: '0 24px', textAlign: 'center' }}>
         <div style={{ fontSize: 40, marginBottom: 16 }}>📖</div>
-        <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>Diary</h1>
-        <p style={{ color: '#666', marginBottom: 24 }}>Write daily — see what you wrote on this day in past years.</p>
+        <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>{text.title}</h1>
+        <p style={{ color: '#666', marginBottom: 24 }}>{text.description}</p>
         <Link
           to="/plugins"
           style={{ display: 'inline-block', padding: '8px 20px', borderRadius: 8, background: '#1976d2', color: '#fff', textDecoration: 'none', fontSize: 14, fontWeight: 500 }}
         >
-          Install or enable in Optional Modules
+          {text.enable}
         </Link>
       </div>
     )
@@ -266,23 +265,23 @@ function DiaryPage({ host }: { host: DiaryWebHost }) {
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '32px 24px', display: 'flex', gap: 24, alignItems: 'flex-start' }}>
-      <HistorySidebar api={api} selectedDate={selectedDate} onSelect={handleSelect} />
+      <HistorySidebar api={api} selectedDate={selectedDate} onSelect={handleSelect} text={text} locale={locale} />
 
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-          <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>{formatDate(selectedDate)}</h1>
+          <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>{formatDiaryDate(selectedDate, locale)}</h1>
           {selectedDate !== todayDate() && (
             <button
               onClick={() => handleSelect(todayDate())}
               style={{ fontSize: 13, color: '#1976d2', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
             >
-              → today
+              {text.to_today}
             </button>
           )}
         </div>
 
         {loadingEntry ? (
-          <div style={{ color: '#bbb', fontSize: 14 }}>Loading…</div>
+          <div style={{ color: '#bbb', fontSize: 14 }}>{text.loading}</div>
         ) : (
           <EntryEditor
             key={selectedDate}
@@ -290,13 +289,14 @@ function DiaryPage({ host }: { host: DiaryWebHost }) {
             date={selectedDate}
             initial={entry?.content ?? ''}
             onSaved={(saved) => setEntry(saved)}
+            text={text}
           />
         )}
 
         {!loadingEntry && (
           <>
-            <OnThisDay api={api} date={selectedDate} currentEntryId={entry?.id} />
-            {entry && <Reflections api={api} date={selectedDate} />}
+            <OnThisDay api={api} date={selectedDate} currentEntryId={entry?.id} text={text} locale={locale} />
+            {entry && <Reflections api={api} date={selectedDate} text={text} />}
           </>
         )}
       </div>

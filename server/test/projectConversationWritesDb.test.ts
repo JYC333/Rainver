@@ -12,7 +12,8 @@ import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 import { ProjectDefinitionProposalService } from "../src/modules/projects/projectDefinitionProposalService.js";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
-import { registerProjectWorkSystemActionExecutors, TASK_FAN_OUT_PER_TURN } from "../src/modules/projectWork/projectWorkSystemActionExecutors.js";
+import { registerProjectWorkSystemActionExecutors } from "../src/modules/projectWork/projectWorkSystemActionExecutors.js";
+import { TASK_FAN_OUT_PER_TURN } from "../src/modules/tasks/turnFanOut.js";
 import type { SystemActionExecutor } from "../src/modules/systemActions/gateway.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
 

@@ -12,16 +12,15 @@ import { Input } from '../../components/ui/input'
 import { Badge } from '../../components/ui/badge'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { AmbientSessionImportPanel } from './AmbientSessionImportPanel'
+import { useAppTranslation } from '../../i18n'
+import { formatDate } from '../../i18n/format'
 
 function canManageSpace(role: MemberRole | undefined): boolean {
   return role === 'owner' || role === 'admin'
 }
 
-function fmt(dt: string) {
-  return new Date(dt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-}
-
 export default function ProjectFolderSettingsPage() {
+  const { t } = useAppTranslation()
   const { projectId = '', folderId = '' } = useParams<{ projectId: string; folderId: string }>()
   const { activeSpaceId, spaces } = useSpace()
   const activeSpace = spaces.find(s => s.id === activeSpaceId)
@@ -64,12 +63,12 @@ export default function ProjectFolderSettingsPage() {
     if (!projectId || !folderId) return
     const days = retentionDays.trim() ? parseInt(retentionDays, 10) : null
     const count = maxCount.trim() ? parseInt(maxCount, 10) : null
-    if (days !== null && (isNaN(days) || days < 1)) { toast.error('Retention days must be a positive integer'); return }
-    if (count !== null && (isNaN(count) || count < 1)) { toast.error('Max count must be a positive integer'); return }
+    if (days !== null && (isNaN(days) || days < 1)) { toast.error(t('management_ui.folder_settings.retention_invalid')); return }
+    if (count !== null && (isNaN(count) || count < 1)) { toast.error(t('management_ui.folder_settings.max_invalid')); return }
     setSaving(true)
     try {
       await projectFoldersApi.update(projectId, folderId, { snapshot_retention_days: days, snapshot_max_count: count })
-      toast.success('Snapshot settings saved')
+      toast.success(t('management_ui.folder_settings.saved'))
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -79,12 +78,12 @@ export default function ProjectFolderSettingsPage() {
 
   async function handleActivateLocation(location: WorkspaceLocation) {
     if (!projectId || !folderId || location.status !== 'stale') return
-    if (!window.confirm('Use this checkout for new conversations and mark the current active checkout as stale? Existing conversations will stay on their current checkout.')) return
+    if (!window.confirm(t('management_ui.folder_settings.activate_confirm'))) return
     setActivatingLocationId(location.id)
     try {
       await projectFoldersApi.activateLocation(projectId, folderId, location.id)
       await load()
-      toast.success('Workspace Location activated for new conversations')
+      toast.success(t('management_ui.folder_settings.activated'))
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -112,50 +111,50 @@ export default function ProjectFolderSettingsPage() {
         </div>
         <div className="min-w-0">
           <h1 className="text-lg font-semibold tracking-tight truncate">
-            {loading ? 'Loading…' : (folder?.name ?? 'Project Folder not found')}
+            {loading ? t('management_ui.folder_settings.loading') : (folder?.name ?? t('management_ui.folder_settings.not_found'))}
           </h1>
-          <p className="text-xs text-muted-foreground">Project Folder settings</p>
+          <p className="text-xs text-muted-foreground">{t('management_ui.folder_settings.title')}</p>
         </div>
       </div>
 
       {!loading && folder && (
         <>
           <Card>
-            <CardTitle>Info</CardTitle>
+            <CardTitle>{t('management_ui.folder_settings.info')}</CardTitle>
             <div className="space-y-1.5 text-sm">
               <div className="flex items-center gap-2">
-                <span className="text-muted-foreground w-24 shrink-0">Status</span>
+                <span className="text-muted-foreground w-24 shrink-0">{t('management_ui.folder_settings.status')}</span>
                 <Badge variant={folder.status === 'active' ? 'default' : 'muted'} className="text-[10px] px-1.5 py-0">
                   {folder.status}
                 </Badge>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-muted-foreground w-24 shrink-0">Kind</span>
+                <span className="text-muted-foreground w-24 shrink-0">{t('management_ui.folder_settings.kind')}</span>
                 <Badge variant="muted" className="text-[10px] px-1.5 py-0">{folder.kind}</Badge>
-                {folder.is_primary && <Badge variant="secondary" className="text-[10px] px-1.5 py-0">primary</Badge>}
+                {folder.is_primary && <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{t('management_ui.folder_settings.primary')}</Badge>}
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-muted-foreground w-24 shrink-0">Created</span>
-                <span className="text-foreground">{fmt(folder.created_at)}</span>
+                <span className="text-muted-foreground w-24 shrink-0">{t('management_ui.folder_settings.created')}</span>
+                <span className="text-foreground">{formatDate(folder.created_at)}</span>
               </div>
               <div className="flex items-start gap-2">
-                <span className="text-muted-foreground w-24 shrink-0 mt-0.5">ID</span>
+                <span className="text-muted-foreground w-24 shrink-0 mt-0.5">{t('management_ui.folder_settings.id')}</span>
                 <span className="font-mono text-xs text-muted-foreground break-all">{folder.id}</span>
               </div>
             </div>
           </Card>
 
           <Card>
-            <CardTitle>Workspace Locations</CardTitle>
+            <CardTitle>{t('management_ui.folder_settings.locations')}</CardTitle>
             <div className="space-y-2 text-sm">
-              {locations.length === 0 && <p className="text-muted-foreground">No execution location registered.</p>}
+              {locations.length === 0 && <p className="text-muted-foreground">{t('management_ui.folder_settings.no_locations')}</p>}
               {locations.map(location => (
                 <div key={location.id} className="rounded border border-border p-2 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant={location.execution_ready ? 'success' : 'muted'}>{location.execution_ready ? 'ready' : 'not ready'}</Badge>
+                    <Badge variant={location.execution_ready ? 'success' : 'muted'}>{location.execution_ready ? t('management_ui.folder_settings.ready') : t('management_ui.folder_settings.not_ready')}</Badge>
                     <Badge variant="outline">{location.execution_host_kind}</Badge>
                     <Badge variant={location.status === 'active' ? 'secondary' : 'muted'}>{location.status}</Badge>
-                    {location.dirty !== null && <span className="text-xs text-muted-foreground">{location.dirty ? 'dirty' : 'clean'}</span>}
+                    {location.dirty !== null && <span className="text-xs text-muted-foreground">{location.dirty ? t('management_ui.folder_settings.dirty') : t('management_ui.folder_settings.clean')}</span>}
                     {projectWritable && location.status === 'stale' && (
                       <Button
                         size="sm"
@@ -163,11 +162,11 @@ export default function ProjectFolderSettingsPage() {
                         disabled={!location.execution_ready || activatingLocationId !== null}
                         onClick={() => void handleActivateLocation(location)}
                       >
-                        {activatingLocationId === location.id ? 'Activating…' : 'Use for new conversations'}
+                        {activatingLocationId === location.id ? t('management_ui.folder_settings.activating') : t('management_ui.folder_settings.use_for_new')}
                       </Button>
                     )}
                   </div>
-                  <div className="text-xs text-muted-foreground">{location.branch ?? 'no branch'} · {location.git_head ?? 'no git head'}</div>
+                  <div className="text-xs text-muted-foreground">{location.branch ?? t('management_ui.folder_settings.no_branch')} · {location.git_head ?? t('management_ui.folder_settings.no_git_head')}</div>
                   {location.display_path && <div className="font-mono text-xs text-muted-foreground break-all">{location.display_path}</div>}
                 </div>
               ))}
@@ -176,22 +175,22 @@ export default function ProjectFolderSettingsPage() {
 
           <Card>
             <CardTitle className="flex items-center gap-2">
-              <History className="size-3.5" /> Snapshot settings
+              <History className="size-3.5" /> {t('management_ui.folder_settings.snapshot_settings')}
             </CardTitle>
             {!manageable ? (
               <div className="flex items-start gap-2 text-sm text-muted-foreground">
                 <ShieldAlert className="size-4 shrink-0 mt-0.5 text-muted-foreground" />
-                <span>Only space owners and admins can configure snapshot settings.</span>
+                <span>{t('management_ui.folder_settings.admins_only')}</span>
               </div>
             ) : (
               <form onSubmit={handleSave} className="space-y-4">
                 <p className="text-sm text-muted-foreground">
-                  Leave blank to use the space default (see Space Settings).
+                  {t('management_ui.folder_settings.blank_default')}
                 </p>
                 <div className="flex items-end gap-4">
                   <div className="flex flex-col gap-1">
                     <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
-                      Retention (days)
+                      {t('management_ui.folder_settings.retention_days')}
                     </label>
                     <Input
                       type="number"
@@ -203,7 +202,7 @@ export default function ProjectFolderSettingsPage() {
                   </div>
                   <div className="flex flex-col gap-1">
                     <label className="text-[10px] text-muted-foreground font-medium uppercase tracking-wide">
-                      Max snapshots
+                      {t('management_ui.folder_settings.max_snapshots')}
                     </label>
                     <Input
                       type="number"
@@ -214,7 +213,7 @@ export default function ProjectFolderSettingsPage() {
                     />
                   </div>
                   <Button type="submit" size="sm" disabled={saving}>
-                    {saving ? 'Saving…' : 'Save'}
+                    {saving ? t('management_ui.folder_settings.saving') : t('management_ui.folder_settings.save')}
                   </Button>
                 </div>
               </form>

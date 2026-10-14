@@ -44,4 +44,6 @@ export interface DiaryWebHost {
   api: DiaryApi
   Link: ElementType<DiaryHostLinkProps>
   usePluginState(pluginId: string): DiaryPluginState
+  /** The UI locale the person reads (e.g. `en`, `zh-CN`), from the host's i18n. */
+  useLocale(): string
 }

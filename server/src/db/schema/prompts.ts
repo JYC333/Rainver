@@ -18,6 +18,10 @@ export const promptDeploymentRefs = pgTable("prompt_deployment_refs", {
 	status: varchar({ length: 16 }).default('active').notNull(),
 	promotedByUserId: varchar("promoted_by_user_id", { length: 36 }),
 	promotedFromProposalId: varchar("promoted_from_proposal_id", { length: 36 }),
+	// Set when this ref was written by a rollback: the ref it rolled back from.
+	// A rollback without a named version is refused from such a ref, so two
+	// versions cannot swap back and forth on repeated "roll back".
+	rolledBackFromRefId: varchar("rolled_back_from_ref_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
@@ -51,6 +55,11 @@ export const promptDeploymentRefs = pgTable("prompt_deployment_refs", {
 			columns: [table.promotedFromProposalId],
 			foreignColumns: [proposals.id],
 			name: "prompt_deployment_refs_promoted_from_proposal_id_fkey"
+		}).onDelete("set null"),
+	foreignKey({
+			columns: [table.rolledBackFromRefId],
+			foreignColumns: [table.id],
+			name: "prompt_deployment_refs_rolled_back_from_ref_id_fkey"
 		}).onDelete("set null"),
 	check("ck_prompt_deployment_refs_label", sql`(label)::text ~ '^[a-z][a-z0-9_.-]{0,63}$'::text`),
 	check("ck_prompt_deployment_refs_scope_type", sql`(scope_type)::text = ANY (${SCOPE_TYPES})`),

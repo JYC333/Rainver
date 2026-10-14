@@ -30,7 +30,7 @@ vi.mock('../../../components/graph', () => {
     focusedNodeId: null as string | null,
     expandedClusterIds: [] as string[],
     hiddenKinds: [] as string[],
-    activeEdgeKinds: [] as string[],
+    hiddenEdgeKinds: [] as string[],
     currentLayout: 'force',
     layoutSource: 'default',
     pinnedNodes: {} as Record<string, { x: number; y: number }>,
@@ -49,7 +49,7 @@ vi.mock('../../../components/graph', () => {
     persistentGraphViewState: (state: typeof defaultState) => ({
       expandedClusterIds: state.expandedClusterIds,
       hiddenKinds: state.hiddenKinds,
-      activeEdgeKinds: state.activeEdgeKinds,
+      hiddenEdgeKinds: state.hiddenEdgeKinds,
       currentLayout: state.currentLayout,
       layoutSource: state.layoutSource,
       pinnedNodes: state.pinnedNodes,

@@ -31,6 +31,11 @@ interface ContentAccessControlProps {
   resourceType: string
   resourceId: string
   ownerUserId: string | null
+  /**
+   * Called with the saved policy. A Memory access change writes a new version,
+   * so its `resource_id` is the new head's id.
+   */
+  onUpdated?: (policy: ContentAccessPolicy) => void
 }
 
 const ACCESS_OPTIONS: Array<{ value: ContentAccessLevel; label: string }> = [
@@ -48,6 +53,7 @@ export function ContentAccessControl({
   resourceType,
   resourceId,
   ownerUserId,
+  onUpdated,
 }: ContentAccessControlProps) {
   const { activeSpaceId, spaces = [], userId = '' } = useSpace()
   const [open, setOpen] = useState(false)
@@ -68,7 +74,10 @@ export function ContentAccessControl({
   const activeSpace = spaces.find(space => space.id === activeSpaceId)
   const role = activeSpace?.role
   const oversightMode = activeSpace?.oversight_mode ?? 'none'
-  const canManage = ownerUserId === userId || role === 'owner' || role === 'admin'
+  // Only its owner decides who reads a Memory entry; a Space owner or admin
+  // manages everything else here.
+  const canManage = ownerUserId === userId
+    || (resourceType !== 'memory' && (role === 'owner' || role === 'admin'))
   const publishableType = publicationResourceType(resourceType)
   const canPublish = ownerUserId === userId && publishableType !== null
   const availableTargets = useMemo(
@@ -158,6 +167,7 @@ export function ContentAccessControl({
       setPolicy(updated)
       setDemotionDisclosure(null)
       toast.success('Access updated')
+      onUpdated?.(updated)
     } catch (error) {
       toast.error(errMsg(error))
     } finally {

@@ -510,31 +510,11 @@ export class RoomService {
     // action is the point at which the Project Agent becomes visible to the
     // preflight. Keep the expensive preparation outside the transaction, just
     // as the send path does, and enforce membership again under the Room lock.
-    let preparation: ManagedAssistantPreparation | null = null;
-    try {
-      preparation = await this.prepareManagerIfMissing(identity, roomId);
-    } catch (error) {
-      // A missing provider/CLI must not prevent the user from opening the
-      // visible draft. The preflight can then explain the missing setup and
-      // the same explicit action can retry manager provisioning after config.
-      if (!(error instanceof HttpError)
-        || error.responseBody === undefined
-        || typeof error.responseBody !== "object"
-        || error.responseBody === null
-        || (error.responseBody as { code?: unknown }).code !== "conversation_backend_required") {
-        throw error;
-      }
-    }
+    const preparation = await this.prepareManagerIfMissing(identity, roomId);
     return withDbTransaction(this.pool, async (client) => {
       const rooms = new PgRoomRepository(client);
       const room = await requireRoom(rooms, identity, roomId, true);
-      if (preparation) {
-        try {
-          await this.ensureRoomManager(client, rooms, room, identity, preparation);
-        } catch (error) {
-          if (!isConversationBackendRequired(error)) throw error;
-        }
-      }
+      if (preparation) await this.ensureRoomManager(client, rooms, room, identity, preparation);
       const sessions = new PgSessionRepository(client);
       const existing = await sessions.findOpenRoomDraft({ space_id: identity.spaceId, room_id: room.id });
       if (existing) return existing;
@@ -1041,6 +1021,13 @@ export class RoomService {
       kind: string;
       key: string;
       payload?: Record<string, unknown>;
+      /**
+       * The Run whose outcome this reports on, and whether this turn still
+       * falls inside the budget that Run's turn was given. Required, so every
+       * caller says where the turn's authority comes from: a continuation is
+       * never a person's new instruction (`ContinuationCause`).
+       */
+      cause: ContinuationCause;
       /** Addressed Agents and what each is told; the Manager alone when absent. */
       recipient_segments?: AgentGroupMessageRecipientSegment[] | null;
       /** The discussion wave (or closing turn) this continuation is part of. */
@@ -1089,6 +1076,7 @@ export class RoomService {
       backends: [],
       kind: "domain_event_continuation",
       event: { kind: event.kind, key: event.key },
+      cause: event.cause,
       continuation: { directive: continuation.directive, context: continuation.context },
       discussion: event.discussion ?? null,
       delegation_budget: event.delegation_budget ?? null,
@@ -1137,6 +1125,7 @@ export class RoomService {
       | {
           kind: "domain_event_continuation";
           event: { kind: string; key: string };
+          cause: ContinuationCause;
           continuation: { directive: string | null; context?: Record<string, unknown> };
         }
     ),
@@ -1240,6 +1229,10 @@ export class RoomService {
           ? {
               continuation_event_kind: input.event.kind,
               continuation_event_key: input.event.key,
+              // Recorded even when it grants nothing (over budget, unverified),
+              // so the audit shows what the turn reported on.
+              continuation_cause_run_id: input.cause.run_id,
+              continuation_within_budget: input.cause.within_budget,
               continuation_directive: input.continuation.directive,
               ...(input.continuation.context ? { continuation_context: input.continuation.context } : {}),
             }
@@ -1363,6 +1356,12 @@ export class RoomService {
         // A domain-event continuation is an Agent-triggered turn: admitted
         // through the subscription quota gate (`quotaGate.ts`).
         agent_origin: input.kind === "domain_event_continuation",
+        // ...and the system's turn, not a person's: its authority is its
+        // cause's, and only while it stays within that turn's budget. A
+        // proposal continuation is a person's explicit request and stays theirs.
+        trigger: input.kind === "domain_event_continuation"
+          ? { origin: "continuation", cause_run_id: input.cause.within_budget ? input.cause.run_id : null }
+          : { origin: "manual" },
         // Retry capability parts are read-only metadata from the original
         // message. The persisted message already owns its frozen inputs; do
         // not feed the read-model shape back through the create-input path —
@@ -1482,13 +1481,6 @@ async function joinPostedRoomMessage(
   return wave;
 }
 
-function isConversationBackendRequired(error: unknown): boolean {
-  return error instanceof HttpError
-    && typeof error.responseBody === "object"
-    && error.responseBody !== null
-    && (error.responseBody as { code?: unknown }).code === "conversation_backend_required";
-}
-
 function roomRecipientIds(
   input: { routing_mode: "direct" | "agent_coordination"; recipient_segments: AgentGroupMessageRecipientSegment[] | null },
   managerAgentId: string,
@@ -1550,6 +1542,37 @@ interface RoomSendInput {
  * container that is not a discussion — how many Agent-triggered turns the
  * chain has already charged.
  */
+/**
+ * Where a continuation's authority comes from: the Run whose outcome it
+ * reports on, and whether the turn is inside the budget that Run's turn was
+ * given. A continuation inherits its cause's origin only when both hold; with
+ * no verifiable cause, or past the budget, it is unattended.
+ */
+export interface ContinuationCause {
+  run_id: string | null;
+  within_budget: boolean;
+}
+
+/** A continuation with no verifiable cause: it reports, as unattended work. */
+export const UNATTRIBUTED_CONTINUATION: ContinuationCause = { run_id: null, within_budget: false };
+
+/**
+ * The cause of a turn reporting on a Room task group's work: the group's own
+ * root Run, which is the turn that started it. Null when the group has none.
+ */
+export async function groupRootRunId(
+  db: Pick<PoolClient, "query">,
+  spaceId: string,
+  groupId: string | null,
+): Promise<string | null> {
+  if (!groupId) return null;
+  const result = await db.query<{ root_run_id: string | null }>(
+    `SELECT root_run_id FROM agent_run_groups WHERE space_id = $1 AND id = $2`,
+    [spaceId, groupId],
+  );
+  return result.rows[0]?.root_run_id ?? null;
+}
+
 export interface RoomDelegationBudget {
   max_depth: number;
   max_fanout: number;

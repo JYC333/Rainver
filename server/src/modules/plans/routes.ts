@@ -6,8 +6,8 @@ import { PgPlanRepository } from "./repository.js";
 import { PlanExecutionService } from "./executionService.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
-  const repository = () => new PgPlanRepository(dbPool(context.config));
-  const execution = () => new PlanExecutionService(dbPool(context.config));
+  const repository = () => new PgPlanRepository(dbPool(context.config), context.config);
+  const execution = () => new PlanExecutionService(dbPool(context.config), context.config);
 
   app.get("/api/v1/plans", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);

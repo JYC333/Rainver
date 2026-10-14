@@ -406,6 +406,10 @@ export class PgTaskRepository {
     if (taskRole !== "source" && taskRole !== "subtask") throw new HttpError(422, "task_role must be 'source' or 'subtask'");
     const parentTaskId = optionalString(body.parent_task_id);
     if (taskRole === "source" && parentTaskId) throw new HttpError(422, "Source tasks cannot have a parent task");
+    // Every entry (API, agent tool, batch) lands here: an archived Project
+    // takes no new work, and the row lock serializes this with archiving.
+    const projectId = optionalString(body.project_id);
+    if (projectId) await lockActiveProjectForMutation(db, identity.spaceId, projectId);
     if (taskRole === "subtask") {
       if (!parentTaskId) throw new HttpError(422, "Subtasks require a parent task");
       const parent = await db.query<{ id: string }>(
@@ -436,7 +440,7 @@ export class PgTaskRepository {
         randomUUID(),
         identity.spaceId,
         optionalString(body.project_folder_id),
-        optionalString(body.project_id),
+        projectId,
         optionalString(body.board_id),
         optionalString(body.column_id),
         parentTaskId,

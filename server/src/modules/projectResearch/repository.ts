@@ -616,10 +616,7 @@ export class ProjectResearchRepository {
 
     if (checkpoint.checkpoint_type === "screening_gate") {
       const sourceItemIds = await this.reviewSourceItemIds(spaceId, progress);
-      const ruleIds = uniqueStrings([
-        ...stringArray(progress.source_post_processing_rule_ids),
-        optionalString(progress.source_post_processing_rule_id) ?? "",
-      ]);
+      const ruleIds = uniqueStrings(stringArray(progress.source_post_processing_rule_ids));
       // A decided checkpoint's review stays reproducible as of the decision.
       // A pending checkpoint must read through the present: classification
       // may finish after the operation enters waiting_review, when no later

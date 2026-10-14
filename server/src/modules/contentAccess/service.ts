@@ -20,6 +20,8 @@ import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { ContentAccessAuditService } from "./audit.js";
 import { ContentDemotionService } from "./demotion.js";
 import { entityDefinition } from "../ontology/entities.js";
+import { changeOwnMemoryAccess, lockActiveMemoryForAccess } from "../memory/memoryAccessChange.js";
+import { MemoryApplyError, MemoryAudienceError } from "../memory/memoryApplyRepository.js";
 
 interface ResourcePolicyRow {
   id: string;
@@ -126,6 +128,7 @@ export class ContentAccessService {
     const definition = requireDefinition(resourceType);
     await this.rejectManagedAssistant(resourceType, identity.spaceId, resourceId);
     validateUpdate(update);
+    if (resourceType === "memory") return this.updateMemoryPolicy(identity, definition, resourceId, update);
     return withDbTransaction(this.pool, async (client) => {
       const resource = await this.loadResource(client, definition, identity.spaceId, resourceId, true);
       if (!resource || !(await this.canManage(client, identity, resource))) {
@@ -147,19 +150,6 @@ export class ContentAccessService {
       }
       if (update.visibility !== "space_shared" && !resource.owner_user_id) {
         throw new HttpError(422, "owner_user_id is required for private or selected-user content");
-      }
-      // An Agent's own memory is private by construction and by database CHECK
-      // ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md)
-      // §4): what it learned about itself and about a Room reaches a wider
-      // audience only by being promoted to Project Memory, which is a
-      // proposal. Refused here with a reason rather than letting the CHECK
-      // surface as an unmapped constraint error.
-      if (resourceType === "memory" && update.visibility !== "private"
-        && await this.isAgentScopeMemory(client, identity.spaceId, resourceId)) {
-        throw new HttpError(
-          422,
-          "An Agent's own memory stays private. Promote it to Project Memory instead of widening it.",
-        );
       }
       if (update.project_id !== null && update.project_id !== resource.project_id) {
         throw new HttpError(422, "Moving content into another Project requires an explicit filing action");
@@ -239,6 +229,83 @@ export class ContentAccessService {
         await new ContentDemotionService(client).consume(client, update.demotion_confirmation_id!);
       }
       return policyOut(resourceType, updated!, activeGrants);
+    });
+  }
+
+  /**
+   * Memory is versioned, so a change of who may read it is a new version
+   * written by the canonical applier rather than a column update. Only the
+   * owner decides who reads their entry; a Space owner or admin who can see
+   * someone else's Memory still cannot widen it.
+   */
+  private async updateMemoryPolicy(
+    identity: SpaceUserIdentity,
+    definition: ContentResourceDefinition,
+    resourceId: string,
+    update: ContentAccessUpdate,
+  ) {
+    return withDbTransaction(this.pool, async (client) => {
+      const memory = await lockActiveMemoryForAccess(client, identity.spaceId, resourceId);
+      const resource = memory ? await this.loadResource(client, definition, identity.spaceId, resourceId) : null;
+      if (!memory || !resource || !(await this.canManage(client, identity, resource))) {
+        throw new HttpError(404, "Content not found");
+      }
+      if (memory.owner_user_id !== identity.userId) {
+        throw new HttpError(403, "Only the owner of this memory can change who may read it");
+      }
+      // An Agent's own memory is private by construction and by database CHECK
+      // ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md)
+      // §4): what it learned about itself and about a Room reaches a wider
+      // audience only by being promoted to Project Memory, which is a
+      // proposal. Refused here with a reason rather than as a placement error.
+      if (memory.scope_type === "agent" && update.visibility !== "private") {
+        throw new HttpError(
+          422,
+          "An Agent's own memory stays private. Promote it to Project Memory instead of widening it.",
+        );
+      }
+      if (update.project_id !== memory.project_id) {
+        throw new HttpError(422, "Moving memory into or out of a Project is a separate filing action");
+      }
+      const demoting = narrowsVisibility(memory.visibility, update.visibility);
+      if (demoting) {
+        await new ContentDemotionService(client).validate(
+          client,
+          identity,
+          "memory",
+          resourceId,
+          update.visibility,
+          update.demotion_confirmation_id,
+        );
+      }
+      const grants = update.visibility === "private" ? [] : dedupeGrants(update.grants, memory.owner_user_id);
+      if (update.visibility === "selected_users" && grants.length === 0) {
+        throw new HttpError(422, "selected_users visibility requires at least one grantee");
+      }
+      await this.assertActiveMembers(client, identity.spaceId, grants.map((grant) => grant.user_id));
+      let memoryId: string;
+      try {
+        memoryId = await changeOwnMemoryAccess(client, {
+          spaceId: identity.spaceId,
+          ownerUserId: identity.userId,
+          memoryId: resourceId,
+          visibility: update.visibility,
+          accessLevel: update.access_level,
+          grants,
+        });
+      } catch (error) {
+        if (error instanceof MemoryAudienceError) {
+          throw new HttpError(error.statusCode, error.message, { detail: error.message, code: error.code, ...error.detail });
+        }
+        if (error instanceof MemoryApplyError) throw new HttpError(error.statusCode, error.message);
+        throw error;
+      }
+      if (demoting) {
+        await new ContentDemotionService(client).consume(client, update.demotion_confirmation_id!);
+      }
+      const updated = await this.loadResource(client, definition, identity.spaceId, memoryId);
+      const activeGrants = await this.loadGrants(client, identity.spaceId, "memory", memoryId);
+      return policyOut("memory", updated!, activeGrants);
     });
   }
 
@@ -356,7 +423,6 @@ export class ContentAccessService {
     return result.rows[0] ?? null;
   }
 
-  /** Whether this memory row is the Agent's own rather than a person's. */
   private async isProjectOwnedObject(db: Queryable, spaceId: string, objectId: string): Promise<boolean> {
     const found = await db.query<{ object_type: string }>(
       `SELECT object_type FROM space_objects WHERE space_id = $1 AND id = $2`,
@@ -364,14 +430,6 @@ export class ContentAccessService {
     );
     const objectType = found.rows[0]?.object_type;
     return Boolean(objectType && entityDefinition(objectType)?.requiresProjectScope);
-  }
-
-  private async isAgentScopeMemory(db: Queryable, spaceId: string, resourceId: string): Promise<boolean> {
-    const row = await db.query<{ scope_type: string }>(
-      `SELECT scope_type FROM memory_entries WHERE space_id = $1 AND id = $2 LIMIT 1`,
-      [spaceId, resourceId],
-    );
-    return row.rows[0]?.scope_type === "agent";
   }
 
   private async canManage(

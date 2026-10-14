@@ -6,6 +6,7 @@ import type {
   KnowledgeLinkType,
   KnowledgeVisibility,
 } from '../../types/api'
+import { formatDateTime } from '../../i18n/format'
 
 export const KNOWLEDGE_ITEM_KINDS: KnowledgeItemKind[] = [
   'concept',
@@ -38,8 +39,9 @@ export const KNOWLEDGE_LINK_TYPES: KnowledgeLinkType[] = [
 
 export const KNOWLEDGE_RELATION_STATUSES: Extract<KnowledgeRelationStatus, 'candidate' | 'active'>[] = ['candidate', 'active']
 
+/** A timestamp in the current UI locale; a missing one reads as a dash. */
 export function fmt(dt: string | null | undefined): string {
-  return dt ? new Date(dt).toLocaleString() : '-'
+  return formatDateTime(dt, { fallback: '-' })
 }
 
 export function parseTags(value: string): string[] {

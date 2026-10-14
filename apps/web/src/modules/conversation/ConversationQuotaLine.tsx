@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Gauge } from 'lucide-react'
 import { toast } from 'sonner'
 import { errMsg } from '../../lib/utils'
+import { useAppTranslation } from '../../i18n'
 import type { RoomConversationQuota } from '../../types/api'
 import { quotaWindowText, resetLabel } from './DiscussionGroup'
 
@@ -20,6 +21,7 @@ export function ConversationQuotaLine({
   /** Absent for a reader who may not continue anyway. */
   onContinueAnyway?: () => Promise<void>
 }) {
+  const { t } = useAppTranslation()
   const [busy, setBusy] = useState(false)
   if (!quota) return null
   const warned = quota.logins.filter(login => login.window && login.window.utilization >= quota.warn_pct)
@@ -34,13 +36,15 @@ export function ConversationQuotaLine({
       {warned.map(login => (
         <p key={login.account_label} className="flex items-center gap-1.5">
           <Gauge className="size-3.5 shrink-0" />
-          <span>{login.account_label} is at {quotaWindowText(login.window!)}</span>
+          <span>{t('conversation_ui.quota.login_at', { account: login.account_label, window: quotaWindowText(login.window!) })}</span>
         </p>
       ))}
       {quota.holds.length > 0 && (
         <p className="flex flex-wrap items-center gap-1 pl-5">
           <span>
-            Agents are waiting for the window{resets.length > 0 ? ` (resets ${resets[0]})` : ''}
+            {resets.length > 0
+              ? t('conversation_ui.quota.agents_waiting_resets', { reset: resets[0] })
+              : t('conversation_ui.quota.agents_waiting')}
           </span>
           {continuable && <span aria-hidden="true">·</span>}
           {continuable && <button
@@ -58,7 +62,7 @@ export function ConversationQuotaLine({
               }
             }}
           >
-            continue anyway
+            {t('conversation_ui.quota.continue_anyway')}
           </button>}
         </p>
       )}

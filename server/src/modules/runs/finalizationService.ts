@@ -101,8 +101,27 @@ interface RunEstimatedCostReader {
   getRunEstimatedCost(spaceId: string, runId: string): Promise<number | null>;
 }
 
-interface ExecutionGraphReconciler {
-  reconcileForRun(spaceId: string, runId: string, userId: string): Promise<void>;
+/**
+ * What settling a terminal Run means: the reconcilers that carry its outcome
+ * into durable domain state — the Plan or Workflow graph it is a node of, the
+ * Task it worked on, the autonomy candidate, the follow-up Tasks it asked
+ * for. Each is keyed so a resumed settlement skips the ones already done.
+ */
+export interface RunSettlementPort {
+  reconcilers(): ReadonlyArray<{ key: string; settle(run: RunRecord): Promise<void> }>;
+}
+
+/**
+ * Settlement still owed after this pass: the finalization is durable, the
+ * completion gate is not committed, and the worker sweep resumes it. Carries
+ * only the reconciler key and a code, never internals.
+ */
+export class RunSettlementPendingError extends Error {
+  readonly code = "settlement_pending";
+  constructor(readonly reconcilerKey: string) {
+    super(`Run settlement is pending: ${reconcilerKey} did not complete and will be retried`);
+    this.name = "RunSettlementPendingError";
+  }
 }
 
 export class PostRunFinalizationService {
@@ -111,7 +130,7 @@ export class PostRunFinalizationService {
     private readonly evolutionSolidifier?: EvolutionRunEvaluationSolidifier,
     private readonly evolutionSignalEmitter?: EvolutionSignalEmitter,
     private readonly runEstimatedCostReader?: RunEstimatedCostReader,
-    private readonly executionGraphReconciler?: ExecutionGraphReconciler,
+    private readonly settlement?: RunSettlementPort,
     private readonly supervisor?: RunSupervisorPort,
   ) {}
 
@@ -137,7 +156,7 @@ export class PostRunFinalizationService {
         this.evolutionSolidifier,
         this.evolutionSignalEmitter,
         this.runEstimatedCostReader,
-        this.executionGraphReconciler,
+        this.settlement,
         this.supervisor,
       ).finalizeLocked(run, attemptNumber),
     );
@@ -182,13 +201,10 @@ export class PostRunFinalizationService {
       if (isSupervisableStatus(run.status)) {
         await this.superviseBestEffort(run, repeatedEvaluation);
       }
-      const currentRun = await this.repository.getRun(spaceId, runId);
-      await this.reconcileExecutionGraphBestEffort(currentRun ?? run);
-      await this.repository.markRunFinalizationGateCommitted(
-        spaceId,
-        existing.id,
-        new Date().toISOString(),
-      );
+      if (!existing.settled_at) {
+        const currentRun = await this.repository.getRun(spaceId, runId);
+        await this.settle(currentRun ?? run, existing);
+      }
       return existing;
     }
 
@@ -254,12 +270,7 @@ export class PostRunFinalizationService {
     }
     await this.superviseBestEffort(run, evaluation);
     const currentRun = await this.repository.getRun(spaceId, runId);
-    await this.reconcileExecutionGraphBestEffort(currentRun ?? run);
-    await this.repository.markRunFinalizationGateCommitted(
-      spaceId,
-      finalization.id,
-      new Date().toISOString(),
-    );
+    await this.settle(currentRun ?? run, finalization);
     return finalization;
   }
 
@@ -274,15 +285,39 @@ export class PostRunFinalizationService {
     await this.supervisor.supervise({ run, evaluation });
   }
 
-  private async reconcileExecutionGraphBestEffort(run: RunRecord): Promise<void> {
-    if (!this.executionGraphReconciler) return;
-    const userId = run.owner_user_id ?? run.instructed_by_user_id ?? "system";
-    try {
-      await this.executionGraphReconciler.reconcileForRun(run.space_id, run.id, userId);
-    } catch {
-      // Reconciliation is idempotent and best-effort. A terminal run and its
-      // finalization remain durable even if the scheduler needs a later retry.
+  /**
+   * The completion gate. Every settlement reconciler must complete before it
+   * commits; one that fails leaves the finalization unsettled — with the ones
+   * that did complete recorded, so a resumed pass does not redo them — and the
+   * worker sweep tries again. Signals, the audit event and cost estimates are
+   * best-effort extras outside the gate.
+   */
+  private async settle(run: RunRecord, finalization: RunFinalizationRecord): Promise<void> {
+    const recorded = recordValue(finalization.settlement_json).completed;
+    const completed = new Set(Array.isArray(recorded) ? recorded.filter((key): key is string => typeof key === "string") : []);
+    let failure: { key: string; error_code: string; message: string } | null = null;
+    for (const { key, settle } of this.settlement?.reconcilers() ?? []) {
+      if (completed.has(key)) continue;
+      try {
+        await settle(run);
+        completed.add(key);
+      } catch (error) {
+        // The next reconciler still runs: they settle unrelated things, and
+        // one failing must not hold the others back.
+        failure ??= {
+          key,
+          error_code: stringValue(recordValue(error).code) ?? "reconciler_failed",
+          message: (error instanceof Error ? error.message : String(error)).slice(0, 500),
+        };
+        process.stderr.write(`[runs] settlement reconciler ${key} failed for run ${run.id}: ${failure.key === key ? failure.message : String(error)}\n`);
+      }
     }
+    await this.repository.recordRunSettlement(run.space_id, finalization.id, {
+      completed: [...completed],
+      failure,
+      at: new Date().toISOString(),
+    });
+    if (failure) throw new RunSettlementPendingError(failure.key);
   }
 
   private async estimatedCostBestEffort(spaceId: string, runId: string): Promise<number | null> {

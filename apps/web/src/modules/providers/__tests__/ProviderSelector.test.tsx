@@ -6,7 +6,7 @@ import { providersApi } from '../../../api/client'
 
 vi.mock('../../../api/client', () => ({
   providersApi: {
-    list: vi.fn().mockResolvedValue([]),
+    usable: vi.fn().mockResolvedValue([]),
     models: vi.fn(),
     vendors: vi.fn().mockResolvedValue([]),
   },
@@ -39,7 +39,7 @@ describe('ProviderSelector', () => {
       id, name: id, provider_type, enabled: true, default_model: null, available_models: [],
       claude_compatible_base_url: null, openai_compatible_base_url: null, ...urls,
     })
-    vi.mocked(providersApi.list).mockResolvedValueOnce([
+    vi.mocked(providersApi.usable).mockResolvedValueOnce([
       provider('anthropic-ok', 'anthropic', { claude_compatible_base_url: 'https://api.anthropic.com' }),
       provider('anthropic-openai-only', 'anthropic', { openai_compatible_base_url: 'https://gw.example/v1' }),
       provider('openai-ok', 'openai', { openai_compatible_base_url: 'https://api.openai.com/v1' }),
@@ -63,7 +63,7 @@ describe('ProviderSelector', () => {
   })
 
   it('shows the model it will save, even one the provider does not list', async () => {
-    vi.mocked(providersApi.list).mockResolvedValueOnce([{
+    vi.mocked(providersApi.usable).mockResolvedValueOnce([{
       id: 'cohere-1', name: 'Cohere', provider_type: 'cohere', enabled: true, default_model: 'embed-v4.0',
       available_models: ['embed-v4.0'], claude_compatible_base_url: null, openai_compatible_base_url: null,
     }] as never)
@@ -79,7 +79,7 @@ describe('ProviderSelector', () => {
   })
 
   it('binds an unset model to the first one listed, the one on screen', async () => {
-    vi.mocked(providersApi.list).mockResolvedValueOnce([{
+    vi.mocked(providersApi.usable).mockResolvedValueOnce([{
       id: 'openai-1', name: 'OpenAI', provider_type: 'openai', enabled: true, default_model: null,
       available_models: [], claude_compatible_base_url: null, openai_compatible_base_url: 'https://api.openai.com/v1',
     }] as never)

@@ -10,7 +10,7 @@ import {
   type JobEnvelopeForHandler,
   type JobHandlerResult,
 } from "../../jobs/handlerRegistry.js";
-import { RoomService } from "../../rooms/service.js";
+import { RoomService, UNATTRIBUTED_CONTINUATION } from "../../rooms/service.js";
 import { isConversationTurnInProgressError } from "../../sessions/conversationRuntimeSessionRepository.js";
 import { ProjectResearchQuestionAssessmentRepository } from "../questionAssessmentRepository.js";
 import { ProjectResearchQuestionRefineService } from "../questionRefineService.js";
@@ -399,7 +399,9 @@ export class ResearchAcquisitionPipelineRunner {
             key: `${payload.threadId}:${payload.jobId}`,
             payload: outcome,
             // Started by an Agent's turn: its result is charged to that turn's container.
-            ...(payload.originGroupId ? await agentOriginContinuation(client, identity.spaceId, payload.originGroupId) : {}),
+            // With no originating turn there is nothing to inherit: it reports
+            // as unattended work.
+            ...(payload.originGroupId ? await agentOriginContinuation(client, identity.spaceId, payload.originGroupId) : { cause: UNATTRIBUTED_CONTINUATION }),
           },
         ),
       );

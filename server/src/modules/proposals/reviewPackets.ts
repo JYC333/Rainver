@@ -29,7 +29,7 @@ export function visibilityForReviewScope(value: ReviewScope | undefined): "priva
   return value === "space_ops" ? "space_shared" : "private";
 }
 
-interface InsertProposalRowInput {
+export interface InsertProposalRowInput {
   id?: string;
   spaceId: string;
   proposalType: string;
@@ -52,6 +52,8 @@ interface InsertProposalRowInput {
   createdAt?: string;
   requiredApproverRole?: string | null;
   actionIdempotencyKey?:string|null;
+  /** A person's pending request identity; unique among pending proposals of a type in a Space. */
+  pendingOperationKey?: string | null;
 }
 
 export async function insertProposalRow(db: Queryable, input: InsertProposalRowInput): Promise<ProposalRow> {
@@ -63,13 +65,15 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
        urgency, preview, title, summary, payload_json, review_deadline,
        expires_at, created_at, updated_at, reviewed_at, reviewed_by,
        project_folder_id, rationale, created_by_agent_id, created_by_user_id, owner_user_id,
-       required_approver_role, visibility, project_id, access_level, action_idempotency_key
+       required_approver_role, visibility, project_id, access_level, action_idempotency_key,
+       pending_operation_key
      ) VALUES (
        $1, $2, $3, $4, $5, $6,
        $7, $8, $9, $10, $11::jsonb, NULL,
        NULL, $12, $12, NULL, NULL,
        $13, $14, $18, $15, $22,
-       $19, $16, $17, $20, $21
+       $19, $16, $17, $20, $21,
+       $23
      )
      RETURNING id, space_id, created_by_user_id, project_folder_id,
                created_by_run_id, proposal_type, status, risk_level, urgency,
@@ -101,6 +105,7 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
       input.accessLevel ?? "full",
       input.actionIdempotencyKey??null,
       input.ownerUserId === undefined ? input.createdByUserId : input.ownerUserId,
+      input.pendingOperationKey ?? null,
     ],
   );
   return result.rows[0]!;

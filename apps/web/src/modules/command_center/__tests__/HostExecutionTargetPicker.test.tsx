@@ -136,27 +136,11 @@ describe('HostExecutionTargetPicker', () => {
     await waitFor(() => expect(screen.getByLabelText('Execution Location')).toHaveTextContent('Financial System'))
     expect(screen.getByText('Account not signed in')).toBeInTheDocument()
     expect(screen.getByText(/Models reported by ACP may still work without an account/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Login' }))
-    expect(await screen.findByTestId('runtime-login-terminal')).toBeInTheDocument()
-    expect(mockedApi.loginStream).toHaveBeenCalledWith('host-1', 'claude_code', 'own', null, expect.any(AbortSignal))
-  })
-
-  it('keeps a failed login on screen so its output can be read', async () => {
-    mockedApi.loginStream.mockImplementation(async function* () {
-      yield { type: 'output', data: 'The device code expired.' }
-      yield { type: 'exit', exit_code: 1, logged_in: false }
-    })
-    render(<Harness />)
-    fireEvent.click(await screen.findByLabelText('Execution host'))
-    fireEvent.click(screen.getByRole('option', { name: 'Workstation · online' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Login' }))
-
-    await waitFor(() => expect(mockedApi.executionTargets).toHaveBeenCalledTimes(2))
-    expect(screen.getByTestId('runtime-login-terminal')).toHaveTextContent('The device code expired.')
-
-    // Login again starts a fresh attempt rather than leaving the finished one.
-    fireEvent.click(screen.getByRole('button', { name: 'Login' }))
-    await waitFor(() => expect(mockedApi.loginStream).toHaveBeenCalledTimes(2))
+    // Signing in happens where this host's real login methods are offered;
+    // the picker starts no login of its own.
+    expect(screen.getByRole('link', { name: /Sign in from Command Center/ })).toHaveAttribute('href', expect.stringContaining('/command-center'))
+    expect(screen.queryByRole('button', { name: 'Login' })).not.toBeInTheDocument()
+    expect(mockedApi.loginStream).not.toHaveBeenCalled()
   })
 
   it('does not require a native login for a ModelProvider-backed Server Profile', async () => {

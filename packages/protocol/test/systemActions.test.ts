@@ -207,7 +207,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
 
   it("keeps proposal metadata and visibility internally coherent", () => {
     for (const definition of SYSTEM_ACTION_REGISTRY) {
-      expect(definition.side_effects === "proposal").toBe(definition.proposal_type !== null);
+      expect(["proposal", "conditional_proposal"].includes(definition.side_effects)).toBe(definition.proposal_type !== null);
       if (definition.visibility.has("internal_only")) {
         expect(definition.visibility.has("public_api")).toBe(false);
       }
@@ -222,7 +222,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
     // you register when you can name which row of it applies. Do not default
     // the gate class.
     for (const definition of SYSTEM_ACTION_REGISTRY) {
-      if (definition.side_effects === "proposal") {
+      if (definition.side_effects === "proposal" || definition.side_effects === "conditional_proposal") {
         expect(definition.gate_class, `${definition.id} is a proposal with no gate class`).not.toBeNull();
         expect(SYSTEM_ACTION_GATE_CLASSES).toContain(definition.gate_class!);
       } else {
@@ -257,5 +257,10 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
     expect(byId.get("inquiry.promote_knowledge")?.gate_class).toBe("exposure");
     expect(byId.get("project.propose_definition")?.gate_class).toBe("direction");
     expect(byId.get("source.backfill.propose_start")?.gate_class).toBe("money");
+    // A Plan inside its bounds is approved as written; past them it waits for
+    // a person's `plan_review`, which is a direction gate (ADR 0017 §1).
+    expect(byId.get("task.plan.propose")).toMatchObject({
+      side_effects: "conditional_proposal", proposal_type: "plan_review", gate_class: "direction",
+    });
   });
 });

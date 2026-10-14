@@ -47,10 +47,14 @@ export default function SourceChannelDetailPage() {
   const [editingMonitor, setEditingMonitor] = useState<SourceChannel | null>(null)
   const [busyMonitorId, setBusyMonitorId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  // Kept apart from "not found": a request that failed says nothing about
+  // whether the source exists.
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (!sourceId) return
     setLoading(true)
+    setLoadError(null)
     try {
       const [channelRows, providerRows] = await Promise.all([
         sourcesApi.channels(),
@@ -61,7 +65,7 @@ export default function SourceChannelDetailPage() {
       setProviders(providerRows)
       setCategoryGroups(providerRows.find(provider => provider.provider_key === 'arxiv')?.setup_schema?.category_groups ?? [])
     } catch (error) {
-      toast.error(errMsg(error))
+      setLoadError(errMsg(error))
     } finally {
       setLoading(false)
     }
@@ -104,6 +108,17 @@ export default function SourceChannelDetailPage() {
     }
   }
 
+  if (loadError && !source) {
+    return (
+      <div className="p-6">
+        <EmptyState
+          title="Could not load this source"
+          description={loadError}
+          action={<Button variant="outline" onClick={() => void load()} disabled={loading}>Retry</Button>}
+        />
+      </div>
+    )
+  }
   if (!activeSpaceId || (!loading && !source)) return <div className="p-6"><EmptyState title="Source not found" description="This source may have been archived or is unavailable." /></div>
   if (!source) return <div className="p-6"><EmptyState title="Loading source" description="Loading source monitors…" /></div>
 

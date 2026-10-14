@@ -15,11 +15,14 @@ import { StatusBadge } from '../../components/ui/badge'
 import { EmptyState } from '../../components/ui/empty-state'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../../components/ui/table'
 import { ProjectFolderSelectors } from '../../components/ProjectFolderSelectors'
+import { useAppTranslation } from '../../i18n'
+import { formatDateTime } from '../../i18n/format'
 
-function fmt(dt: string | null | undefined) { return dt ? new Date(dt).toLocaleString() : '—' }
+const MESSAGE_ROLES = new Set(['user', 'assistant', 'system'])
 
 export default function SessionsPage() {
   const { activeSpaceId, activeSpaceName } = useSpace()
+  const { t } = useAppTranslation()
   const [searchParams] = useSearchParams()
   const [sessions, setSessions]             = useState<Session[]>([])
   const [activeSession, setActiveSession]   = useState<Session | null>(null)
@@ -56,13 +59,13 @@ export default function SessionsPage() {
 
   async function createSession() {
     if (!activeSpaceId) {
-      toast.error('Select an operational space before creating a session')
+      toast.error(t('sessions_ui.sessions.no_space_create'))
       return
     }
     try {
       await sessionsApi.create({ title: title || undefined, project_id: projectId || undefined, project_folder_id: folder || undefined })
       setTitle(''); setProjectId(''); setFolder('')
-      toast.success('Session created')
+      toast.success(t('sessions_ui.sessions.created'))
       await loadSessions()
     } catch (e) { toast.error(errMsg(e)) }
   }
@@ -98,7 +101,7 @@ export default function SessionsPage() {
     setLoading(true)
     try {
       const result = await sessionsApi.reflect(activeSession.id)
-      toast.success(`${result.proposals_created} proposal(s) created`)
+      toast.success(t('sessions_ui.sessions.reflected', { count: result.proposals_created }))
     } catch (e) { toast.error(errMsg(e)) }
     finally { setLoading(false) }
   }
@@ -117,54 +120,54 @@ export default function SessionsPage() {
           <MessageSquare className="size-5 text-accent-foreground" />
         </div>
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Sessions</h1>
-          <p className="text-sm text-muted-foreground">Create and replay agent conversation sessions.</p>
+          <h1 className="text-xl font-semibold tracking-tight">{t('sessions_ui.sessions.title')}</h1>
+          <p className="text-sm text-muted-foreground">{t('sessions_ui.sessions.subtitle')}</p>
         </div>
       </div>
 
       <Card>
-        <CardTitle>New Session</CardTitle>
+        <CardTitle>{t('sessions_ui.sessions.new')}</CardTitle>
         <p className="text-xs text-muted-foreground mb-3">
-          Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}
+          {t('sessions_ui.sessions.viewing', { space: activeSpaceName ?? activeSpaceId ?? t('sessions_ui.sessions.no_space') })}
         </p>
         <div className="grid grid-cols-2 gap-3 mb-3">
           <div>
-            <Label>Title (optional)</Label>
+            <Label>{t('sessions_ui.sessions.title_optional')}</Label>
             <Input
               value={title}
               onChange={e => setTitle(e.target.value)}
-              placeholder="Describe this session…"
+              placeholder={t('sessions_ui.sessions.title_placeholder')}
               onKeyDown={e => e.key === 'Enter' && createSession()}
             />
           </div>
           <ProjectFolderSelectors projectId={projectId} folderId={folder} onProjectChange={setProjectId} onFolderChange={setFolder} />
         </div>
-        <Button onClick={createSession} disabled={!activeSpaceId}>Create Session</Button>
+        <Button onClick={createSession} disabled={!activeSpaceId}>{t('sessions_ui.sessions.create')}</Button>
       </Card>
 
       <Card>
-        <CardTitle>Sessions</CardTitle>
+        <CardTitle>{t('sessions_ui.sessions.list')}</CardTitle>
         {sessions.length === 0
           ? <p className="text-muted-foreground text-center py-10 text-sm">
-              {activeSpaceId ? 'No sessions yet.' : 'Select an operational space to browse sessions.'}
+              {activeSpaceId ? t('sessions_ui.sessions.empty') : t('sessions_ui.sessions.select_space')}
             </p>
           : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Title</TableHead>
-                  <TableHead>Status</TableHead><TableHead>Created</TableHead>
+                  <TableHead>{t('sessions_ui.sessions.col_title')}</TableHead>
+                  <TableHead>{t('sessions_ui.sessions.col_status')}</TableHead><TableHead>{t('sessions_ui.sessions.col_created')}</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {sessions.map(s => (
                   <TableRow key={s.id}>
-                    <TableCell>{s.title ?? <span className="text-muted-foreground">Untitled session</span>}</TableCell>
+                    <TableCell>{s.title ?? <span className="text-muted-foreground">{t('sessions_ui.sessions.untitled')}</span>}</TableCell>
                     <TableCell><StatusBadge status={s.status} /></TableCell>
-                    <TableCell className="text-muted-foreground text-xs">{fmt(s.created_at)}</TableCell>
+                    <TableCell className="text-muted-foreground text-xs">{formatDateTime(s.created_at)}</TableCell>
                     <TableCell>
-                      <Button variant="ghost" size="sm" onClick={() => openSession(s.id)}>Open</Button>
+                      <Button variant="ghost" size="sm" onClick={() => openSession(s.id)}>{t('sessions_ui.sessions.open')}</Button>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -176,18 +179,18 @@ export default function SessionsPage() {
       {sessionNotFound && (
         <Card>
           <EmptyState
-            title="Session not found or not accessible"
-            description="This session may not exist, may belong to another user, or may not be visible in your current space."
+            title={t('sessions_ui.sessions.not_found')}
+            description={t('sessions_ui.sessions.not_found_description')}
           />
         </Card>
       )}
 
       {!sessionNotFound && activeSession && (
         <Card>
-          <CardTitle>Session: {activeSession.title ?? 'Untitled session'}</CardTitle>
+          <CardTitle>{t('sessions_ui.sessions.session_title', { title: activeSession.title ?? t('sessions_ui.sessions.untitled') })}</CardTitle>
           <div className="flex flex-col gap-2.5 max-h-72 overflow-y-auto mb-4 pr-1">
             {messages.length === 0
-              ? <p className="text-muted-foreground text-center py-6 text-sm">No messages.</p>
+              ? <p className="text-muted-foreground text-center py-6 text-sm">{t('sessions_ui.sessions.no_messages')}</p>
               : messages.map(m => (
                 <div
                   key={m.id}
@@ -197,7 +200,7 @@ export default function SessionsPage() {
                       : 'self-start bg-card border border-border'
                   }`}
                 >
-                  <span className="text-[11px] text-muted-foreground mr-2">{m.role}</span>
+                  <span className="text-[11px] text-muted-foreground mr-2">{MESSAGE_ROLES.has(m.role) ? t(`sessions_ui.sessions.role.${m.role}`) : m.role}</span>
                   {m.content}
                 </div>
               ))}
@@ -205,7 +208,7 @@ export default function SessionsPage() {
           <Textarea
             value={msgInput}
             onChange={e => setMsgInput(e.target.value)}
-            placeholder="Type a message…"
+            placeholder={t('sessions_ui.sessions.message_placeholder')}
             className="mb-3"
             onKeyDown={e => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
@@ -215,9 +218,9 @@ export default function SessionsPage() {
             }}
           />
           <div className="flex gap-2">
-            <Button onClick={sendMessage} disabled={!msgInput.trim()}>Send</Button>
+            <Button onClick={sendMessage} disabled={!msgInput.trim()}>{t('sessions_ui.sessions.send')}</Button>
             <Button variant="outline" onClick={reflect} disabled={loading}>
-              {loading ? 'Reflecting…' : 'Reflect → Proposals'}
+              {loading ? t('sessions_ui.sessions.reflecting') : t('sessions_ui.sessions.reflect')}
             </Button>
           </div>
         </Card>

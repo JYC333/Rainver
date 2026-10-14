@@ -631,14 +631,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/runs/:runId", async (request, reply) => {
     const result = await visibleRun(context, request, reply);
     if (!result) return reply;
-    const [runOut, invocationSnapshots] = await Promise.all([
+    const [runOut, invocationSnapshots, linkedTasks] = await Promise.all([
       runToOutWithProvider(result.repository, result.run),
       new InvocationSnapshotService(dbPool(context.config))
         .listSafeForInvocation(result.run.space_id, result.run.id),
+      result.repository.linkedTasksForViewer(result.run.space_id, result.run.id, result.identity.userId),
     ]);
     return reply.send({
       ...runOut,
       invocation_snapshots: invocationSnapshots,
+      linked_tasks: linkedTasks,
     });
   });
 

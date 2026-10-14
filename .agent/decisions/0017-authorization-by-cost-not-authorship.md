@@ -68,7 +68,9 @@ owner, and nobody but the owner can reach it by scheduling work either.
 
 Explicit checkpoints placed by a plan or workflow author also remain binding:
 `plan_checkpoint` and `workflow_execution_checkpoint` are requested stops, not
-author-based default gates. `plan_review` is a direction gate and
+author-based default gates. `plan_review` is a direction gate — `task.plan.propose` registers as a
+conditional proposal that files it only when a Plan is past its declared
+budget or risk — and
 `workflow_save` is self-modification.
 
 ### 2. Everything else is governed by origin and bounds
@@ -81,7 +83,13 @@ proposal. Two mechanisms replace it:
 - **Trigger origin.** A write from a run whose origin is a person in a
   conversation (`manual`) executes. A write from any other origin
   (scheduled, delegated from an unattended root, automated) is
-  `require_approval`. `ruleUnattendedProjectWrite` enforces the origin boundary for writes in this
+  `require_approval`. The origin is the Run's verified root: a delegated
+  child, a later Room recipient and a graph node take their root's, and a
+  turn the system starts to report on earlier work (a `continuation`: a
+  delegated result, a research outcome, a discussion wave) takes its cause's
+  only while inside the budget the person's turn was given. Past that budget,
+  or with no verifiable lineage, it is unattended; a system event never
+  stands in for a person's new instruction. `ruleUnattendedProjectWrite` enforces the origin boundary for writes in this
   class.
 
   **The persona exception, and its reasoning.** An Agent's persona entry
@@ -124,8 +132,10 @@ proposal. Two mechanisms replace it:
 
 A `follow_up_task` may still be drafted as a proposal envelope to carry Run
 context taint and egress requirements. After a successful user-requested Run,
-the governed path applies it for the user when eligible; failed or unattended
-Runs leave it pending. A proposal record is not itself a requirement for an
+the governed path applies it for the user when eligible — within the same
+five-Task ceiling the turn's own `task.create` calls count against, so
+follow-ups past it stay pending cards; failed or unattended Runs leave it
+pending. A proposal record is not itself a requirement for an
 additional human decision.
 
 ### 3. Money is bounded, then asked about — never silently spent

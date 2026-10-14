@@ -4,6 +4,7 @@ import {
   shouldRedactMemoryContent,
   type MemoryAuthFields,
 } from "../src/modules/memory/memoryReadAuth.js";
+import { serializeMemoryRow, type MemoryRow } from "../src/modules/memory/repository.js";
 
 function memory(overrides: Partial<MemoryAuthFields> = {}): MemoryAuthFields {
   return {
@@ -42,6 +43,28 @@ describe("memory content access adapter", () => {
     expect(memoryAccessDecision(memory({ visibility: "space_shared", sensitivity_level: "highly_restricted" }), ctx)).toBe("deny");
     expect(memoryAccessDecision(memory({ owner_user_id: "viewer-1", sensitivity_level: "highly_restricted" }), ctx)).toBe("full");
     expect(memoryAccessDecision(memory({ visibility: "space_shared", deleted_at: "2026-01-01T00:00:00Z" }), ctx)).toBe("deny");
+  });
+
+  it("returns who approved an entry to its readers, and how often it is read to its owner only", () => {
+    const row = {
+      ...memory({ visibility: "space_shared" }),
+      effective_access_level: "full",
+      subject_user_id: null, namespace: null, memory_type: "semantic", title: "T", content: "C", status: "active",
+      last_confirmed_at: null, confidence: 1, importance: 0.5, source_id: null, created_by: "owner-1",
+      created_at: "2026-10-01T00:00:00.000Z", updated_at: "2026-10-01T00:00:00.000Z", version: 1, tags: [],
+      memory_layer: null, source_trust: "user_confirmed", created_from_proposal_id: "proposal-1", root_memory_id: "memory-1",
+      supersedes_memory_id: null, project_id: null, agent_id: null, origin_room_id: null,
+      approved_by: "owner-1", access_count: 7, last_accessed_at: "2026-10-10T00:00:00.000Z",
+    } as MemoryRow & { effective_access_level: "full" };
+
+    expect(serializeMemoryRow(row, "owner-1")).toMatchObject({
+      approved_by: "owner-1", access_count: 7, last_accessed_at: "2026-10-10T00:00:00.000Z",
+    });
+    expect(serializeMemoryRow(row, "viewer-1")).toMatchObject({
+      approved_by: "owner-1", access_count: null, last_accessed_at: null,
+    });
+    // An automatic write nobody approved says so, rather than naming someone.
+    expect(serializeMemoryRow({ ...row, approved_by: null }, "owner-1").approved_by).toBeNull();
   });
 
   it("redacts content from non-owners when the effective level is summary", () => {

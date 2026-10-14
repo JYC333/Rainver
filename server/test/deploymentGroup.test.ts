@@ -96,7 +96,7 @@ describe("deployment authority", () => {
       avatar_url: null,
       is_instance_admin: false,
       created_at: new Date().toISOString(),
-      last_login_at: null,
+      default_space_id: null, last_login_at: null,
     };
   }
 

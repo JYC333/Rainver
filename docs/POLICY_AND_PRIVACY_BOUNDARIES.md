@@ -270,9 +270,10 @@ append an `AgentVersion` directly.
 ### Persisted Policy Effect Contract
 
 There is no `PolicyEffectCatalog`. The engine stays stateless and does not load
-`policies`. `policy_change` requires `name` and `domain`, then inserts an
-active row for that domain, including names that have no enforcement point.
-No server path reads the table, so the row does not change a decision.
+`policies`. There is no generic persisted-policy proposal: `policy_change` has
+no applier and fails closed, so no row can claim to change a decision that
+nothing enforces. Runtime Context Policy versions are the persisted policy
+that governs runs.
 Cross-space memory denial is `hard_invariant_cross_space_memory` in
 `decisionCore.ts`.
 

@@ -13,7 +13,7 @@ Proposals are the product review and application boundary for durable mutations.
 - `GET /api/v1/proposals` defaults to pending proposals.
 - `status=all` is explicit and returns proposals across statuses.
 - Product-recognized proposal types are `memory_create`, `memory_update`,
-  `memory_archive`, `policy_change`, `code_patch`, `egress_review`,
+  `memory_archive`, `code_patch`, `egress_review`,
   `follow_up_task`, `agent_config_update`, `knowledge_create`,
   `knowledge_update`, `knowledge_archive`, `claim_create`, `claim_update`,
   `claim_archive`, `object_relation_create`, `object_relation_delete`,
@@ -23,7 +23,7 @@ Proposals are the product review and application boundary for durable mutations.
   `custom_source_policy_delta`, `custom_source_credentialed_source`, and
   `custom_source_repair_activation`.
 - Registered server apply types include `memory_create`, `memory_update`,
-  `memory_archive`, `policy_change`, `code_patch`, Knowledge proposal types,
+  `memory_archive`, `code_patch`, Knowledge proposal types,
   Claim Candidate Packet, retrieval review packet types, task proposal types,
   Project Folder proposal types, and capability proposal types contributed through
   the server `ProposalApplierRegistry`, plus the Custom Source proposal types
@@ -115,10 +115,14 @@ Proposals are the product review and application boundary for durable mutations.
   can only be rejected, and a follow-up naming a Project other than the Run's
   own is never applied automatically — it waits for a person, being the same
   input `task.create` refuses outright.
-- `policy_change` applies through a registered server applier that inserts a
-  new active `policies` row and marks a named `supersedes_policy_id` as
-  `superseded`. `agent_config_update` and other unregistered non-memory target
-  mutations fail closed. Do not apply a type that has no server applier.
+- There is no generic `policy_change` proposal type. Nothing enforced the
+  `policies` rows it wrote, so it has no applier and no producer offers it;
+  a stored `policy_change` proposal fails closed on accept like any
+  unregistered type. The policy that does govern runs is the Runtime Context
+  Policy, versioned through its own `runtime_context_policy.change` path
+  (`modules/policy.md`). `agent_config_update` and other unregistered
+  non-memory target mutations fail closed. Do not apply a type that has no
+  server applier.
 - Custom Source proposal apply validates the handler version/proposal binding,
   rejects stale active-pointer or envelope changes, and then activates the
   named handler version while superseding the previous active version.
@@ -169,3 +173,8 @@ Proposals are the product review and application boundary for durable mutations.
 - Automatic grant acceptance records `approval_source=action_grant:<id>` and
   increments the bounded grant use count in the same transaction as apply.
 - Proposal application must be idempotence-safe at the API boundary: repeated accept attempts must not repeat the mutation.
+- A person-initiated request may name its identity in `pending_operation_key`.
+  It is unique among pending proposals of one type in a Space
+  (`uq_proposals_pending_operation`), so asking again while that proposal is
+  pending returns it, and a decided proposal frees the key for a new request.
+  Skill package Review/Convert use it (`modules/capability.md`).

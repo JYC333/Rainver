@@ -3,9 +3,14 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PromptLibraryPage from '../PromptLibraryPage'
+import i18n from '../../../i18n'
+import { formatDateTime } from '../../../i18n/format'
 import { promptsApi } from '../../../api/client'
 import type { PromptAssetDetail, PromptAssetSummary, PromptVersion } from '../../../types/api'
 
+vi.mock('../../../contexts/SpaceContext', () => ({
+  useSpace: () => ({ activeSpaceId: 'space-1', preferredSpaceId: 'space-1', userId: 'user-1' }),
+}))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 vi.mock('../../../api/client', () => ({
   promptsApi: {
@@ -74,5 +79,24 @@ describe('PromptLibraryPage', () => {
 
     expect(screen.getByRole('heading', { name: 'Prompt B' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Prompt A' })).not.toBeInTheDocument()
+  })
+
+  it('reads in Chinese, with plural counts and the asset date in the Chinese locale', async () => {
+    await i18n.changeLanguage('zh-CN')
+    try {
+      const user = userEvent.setup({ delay: null })
+      render(
+        <MemoryRouter initialEntries={['/prompts?asset=prompt.a']}>
+          <Routes><Route path="/prompts" element={<PromptLibraryPage />} /></Routes>
+        </MemoryRouter>,
+      )
+      expect(await screen.findByRole('heading', { name: '提示词库' })).toBeInTheDocument()
+      expect(await screen.findByText(formatDateTime('2026-07-01T00:00:00.000Z'))).toBeInTheDocument()
+      expect(screen.getAllByText('对话').length).toBeGreaterThan(0)
+      await user.click(screen.getByRole('tab', { name: '套件' }))
+      expect(await screen.findByText('0 个工作流提示词 · 5 项能力')).toBeInTheDocument()
+    } finally {
+      await i18n.changeLanguage('en')
+    }
   })
 })
