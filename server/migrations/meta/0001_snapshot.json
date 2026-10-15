@@ -1,5 +1,5 @@
 {
-  "id": "fbb6760e-9863-4f17-8385-957cd6617809",
+  "id": "232e3aaf-a606-4d53-8ea1-c12c227d2a7f",
   "prevId": "110422aa-27f1-4ab8-a924-c57077676e2a",
   "version": "7",
   "dialect": "postgresql",
@@ -3617,6 +3617,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'full'"
+        },
+        "source_template_id": {
+          "name": "source_template_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_template_version_id": {
+          "name": "source_template_version_id",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -3870,6 +3882,10 @@
       },
       "policies": {},
       "checkConstraints": {
+        "ck_agents_source_template_pair": {
+          "name": "ck_agents_source_template_pair",
+          "value": "(source_template_id IS NULL) = (source_template_version_id IS NULL)"
+        },
         "ck_agents_agent_kind": {
           "name": "ck_agents_agent_kind",
           "value": "(agent_kind)::text = ANY (ARRAY[('standard'::character varying)::text, ('system_assistant'::character varying)::text, ('system_source_post_processor'::character varying)::text, ('system_source_annotator'::character varying)::text, ('system_research'::character varying)::text])"
@@ -4894,6 +4910,139 @@
         "ck_users_registration_source": {
           "name": "ck_users_registration_source",
           "value": "registration_source IN ('bootstrap', 'space_invitation', 'admin_recovery', 'system')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.auth_reauth_grants": {
+      "name": "auth_reauth_grants",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "method": {
+          "name": "method",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "consumed_for": {
+          "name": "consumed_for",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "ix_auth_reauth_grants_session": {
+          "name": "ix_auth_reauth_grants_session",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "auth_reauth_grants_user_id_fkey": {
+          "name": "auth_reauth_grants_user_id_fkey",
+          "tableFrom": "auth_reauth_grants",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "auth_reauth_grants_session_id_fkey": {
+          "name": "auth_reauth_grants_session_id_fkey",
+          "tableFrom": "auth_reauth_grants",
+          "tableTo": "user_sessions",
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_auth_reauth_grants_token_hash": {
+          "name": "uq_auth_reauth_grants_token_hash",
+          "nullsNotDistinct": false,
+          "columns": [
+            "token_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_auth_reauth_grants_method": {
+          "name": "ck_auth_reauth_grants_method",
+          "value": "method IN ('password', 'google')"
+        },
+        "ck_auth_reauth_grants_consumed": {
+          "name": "ck_auth_reauth_grants_consumed",
+          "value": "(consumed_at IS NULL) = (consumed_for IS NULL)"
         }
       },
       "isRLSEnabled": false
@@ -7101,6 +7250,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "responsible_user_id": {
+          "name": "responsible_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -7214,6 +7369,19 @@
         }
       },
       "foreignKeys": {
+        "workflow_executions_responsible_user_id_fkey": {
+          "name": "workflow_executions_responsible_user_id_fkey",
+          "tableFrom": "workflow_executions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "responsible_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
         "workflow_executions_automation_space_fkey": {
           "name": "workflow_executions_automation_space_fkey",
           "tableFrom": "workflow_executions",
@@ -10204,6 +10372,19 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "execution_lease_run_id": {
+          "name": "execution_lease_run_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "execution_lease_generation": {
+          "name": "execution_lease_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "last_acknowledged_at": {
           "name": "last_acknowledged_at",
@@ -18549,6 +18730,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "candidate_content_hash": {
+          "name": "candidate_content_hash",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "baseline_version_id": {
           "name": "baseline_version_id",
           "type": "varchar(36)",
@@ -19349,6 +19536,10 @@
         "ck_evolvable_asset_versions_version_positive": {
           "name": "ck_evolvable_asset_versions_version_positive",
           "value": "version > 0"
+        },
+        "ck_evolvable_asset_versions_system_scope_placement": {
+          "name": "ck_evolvable_asset_versions_system_scope_placement",
+          "value": "(((scope_type)::text = 'system'::text) AND (space_id IS NULL) AND (scope_id IS NULL)) OR (((scope_type)::text <> 'system'::text) AND (space_id IS NOT NULL) AND (scope_id IS NOT NULL))"
         }
       },
       "isRLSEnabled": false
@@ -19576,6 +19767,10 @@
         "ck_evolvable_assets_metadata_object": {
           "name": "ck_evolvable_assets_metadata_object",
           "value": "jsonb_typeof(metadata_json) = 'object'::text"
+        },
+        "ck_evolvable_assets_system_owner_placement": {
+          "name": "ck_evolvable_assets_system_owner_placement",
+          "value": "((owner_scope_type)::text = 'system'::text) = (space_id IS NULL)"
         }
       },
       "isRLSEnabled": false
@@ -26150,6 +26345,39 @@
           "notNull": true,
           "default": "'{}'::jsonb"
         },
+        "timezone": {
+          "name": "timezone",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'UTC'"
+        },
+        "period_start_utc": {
+          "name": "period_start_utc",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "period_end_utc": {
+          "name": "period_end_utc",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "generation_kind": {
+          "name": "generation_kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'scheduled'"
+        },
+        "generated_at": {
+          "name": "generated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -26359,6 +26587,14 @@
         "ck_information_digests_status": {
           "name": "ck_information_digests_status",
           "value": "status IN ('ready','empty','failed')"
+        },
+        "ck_information_digests_generation_kind": {
+          "name": "ck_information_digests_generation_kind",
+          "value": "generation_kind IN ('scheduled','backfill')"
+        },
+        "ck_information_digests_period": {
+          "name": "ck_information_digests_period",
+          "value": "period_start_utc < period_end_utc"
         },
         "ck_information_digests_settings": {
           "name": "ck_information_digests_settings",
@@ -31866,7 +32102,7 @@
         },
         "ck_space_object_profiles_key_by_base_object_type": {
           "name": "ck_space_object_profiles_key_by_base_object_type",
-          "value": "CASE (base_object_type)::text\n    WHEN 'knowledge_item'::text THEN ((key)::text = ANY (ARRAY[('concept'::character varying)::text, ('lesson'::character varying)::text, ('procedure'::character varying)::text, ('decision'::character varying)::text, ('question'::character varying)::text, ('answer'::character varying)::text, ('summary'::character varying)::text]))\n    WHEN 'note'::text THEN ((key)::text = 'note'::text)\n    WHEN 'source'::text THEN ((key)::text = ANY (ARRAY[('activity_record'::character varying)::text, ('chat_capture'::character varying)::text, ('webpage'::character varying)::text, ('article'::character varying)::text, ('paper'::character varying)::text, ('pdf'::character varying)::text, ('file'::character varying)::text, ('email'::character varying)::text, ('manual_reference'::character varying)::text, ('external_note'::character varying)::text]))\n    WHEN 'claim'::text THEN ((key)::text = ANY (ARRAY[('fact'::character varying)::text, ('hypothesis'::character varying)::text, ('belief'::character varying)::text, ('preference'::character varying)::text, ('commitment'::character varying)::text, ('question'::character varying)::text, ('interpretation'::character varying)::text, ('instruction'::character varying)::text, ('metric'::character varying)::text, ('relationship'::character varying)::text, ('event'::character varying)::text]))\n    WHEN 'memory_entry'::text THEN ((key)::text = ANY (ARRAY[('preference'::character varying)::text, ('semantic'::character varying)::text, ('episodic'::character varying)::text, ('procedural'::character varying)::text, ('project'::character varying)::text]))\n    WHEN 'project_public_summary'::text THEN ((key)::text = 'project_public_summary'::text)\n    WHEN 'source_item'::text THEN ((key)::text = ANY (ARRAY[('external_url'::character varying)::text, ('feed_entry'::character varying)::text, ('activity_record'::character varying)::text, ('artifact'::character varying)::text, ('run_event'::character varying)::text, ('file'::character varying)::text, ('document'::character varying)::text, ('log'::character varying)::text]))\n    WHEN 'extracted_evidence'::text THEN ((key)::text = ANY (ARRAY[('document'::character varying)::text, ('excerpt'::character varying)::text, ('event'::character varying)::text, ('log'::character varying)::text, ('artifact'::character varying)::text, ('claim'::character varying)::text, ('summary'::character varying)::text]))\n    ELSE false\nEND"
+          "value": "CASE (base_object_type)::text\n    WHEN 'knowledge_item'::text THEN ((key)::text = ANY (ARRAY[('concept'::character varying)::text, ('lesson'::character varying)::text, ('procedure'::character varying)::text, ('decision'::character varying)::text, ('question'::character varying)::text, ('answer'::character varying)::text, ('summary'::character varying)::text]))\n    WHEN 'note'::text THEN ((key)::text = 'note'::text)\n    WHEN 'source'::text THEN ((key)::text = ANY (ARRAY[('activity_record'::character varying)::text, ('chat_capture'::character varying)::text, ('webpage'::character varying)::text, ('article'::character varying)::text, ('paper'::character varying)::text, ('pdf'::character varying)::text, ('file'::character varying)::text, ('email'::character varying)::text, ('manual_reference'::character varying)::text, ('external_note'::character varying)::text]))\n    WHEN 'claim'::text THEN ((key)::text = ANY (ARRAY[('fact'::character varying)::text, ('hypothesis'::character varying)::text, ('belief'::character varying)::text, ('preference'::character varying)::text, ('commitment'::character varying)::text, ('question'::character varying)::text, ('interpretation'::character varying)::text, ('instruction'::character varying)::text, ('metric'::character varying)::text, ('relationship'::character varying)::text, ('event'::character varying)::text]))\n    WHEN 'memory_entry'::text THEN ((key)::text = ANY (ARRAY[('preference'::character varying)::text, ('semantic'::character varying)::text, ('episodic'::character varying)::text, ('procedural'::character varying)::text, ('project'::character varying)::text]))\n    WHEN 'project_public_summary'::text THEN ((key)::text = 'project_public_summary'::text)\n    WHEN 'source_item'::text THEN ((key)::text = ANY (ARRAY[('external_url'::character varying)::text, ('feed_entry'::character varying)::text, ('activity_record'::character varying)::text, ('artifact'::character varying)::text, ('run_event'::character varying)::text, ('file'::character varying)::text, ('document'::character varying)::text, ('log'::character varying)::text]))\n    WHEN 'extracted_evidence'::text THEN ((key)::text = ANY (ARRAY[('document'::character varying)::text, ('excerpt'::character varying)::text, ('event'::character varying)::text, ('log'::character varying)::text, ('artifact'::character varying)::text, ('claim'::character varying)::text, ('summary'::character varying)::text]))\n    WHEN 'inquiry_thread'::text THEN ((key)::text = ANY (ARRAY[('question'::character varying)::text, ('hypothesis'::character varying)::text]))\n    ELSE false\nEND"
         },
         "ck_space_object_profiles_retrieval_policy_object": {
           "name": "ck_space_object_profiles_retrieval_policy_object",
@@ -36239,6 +36475,167 @@
       },
       "isRLSEnabled": false
     },
+    "public.plan_node_action_attempts": {
+      "name": "plan_node_action_attempts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "plan_node_id": {
+          "name": "plan_node_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt_number": {
+          "name": "attempt_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action_key": {
+          "name": "action_key",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resolved_inputs_json": {
+          "name": "resolved_inputs_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
+        },
+        "output_text": {
+          "name": "output_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "output_json": {
+          "name": "output_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error_json": {
+          "name": "error_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "ix_plan_node_action_attempts_node_started": {
+          "name": "ix_plan_node_action_attempts_node_started",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "plan_node_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": false,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "plan_node_action_attempts_node_space_fkey": {
+          "name": "plan_node_action_attempts_node_space_fkey",
+          "tableFrom": "plan_node_action_attempts",
+          "tableTo": "plan_nodes",
+          "columnsFrom": [
+            "plan_node_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "plan_node_action_attempts_space_id_fkey": {
+          "name": "plan_node_action_attempts_space_id_fkey",
+          "tableFrom": "plan_node_action_attempts",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uq_plan_node_action_attempts_node_number": {
+          "name": "uq_plan_node_action_attempts_node_number",
+          "nullsNotDistinct": false,
+          "columns": [
+            "plan_node_id",
+            "attempt_number"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "ck_plan_node_action_attempts_number": {
+          "name": "ck_plan_node_action_attempts_number",
+          "value": "attempt_number > 0"
+        },
+        "ck_plan_node_action_attempts_status": {
+          "name": "ck_plan_node_action_attempts_status",
+          "value": "(status = 'running' AND ended_at IS NULL AND output_text IS NULL AND output_json IS NULL AND error_json IS NULL) OR (status = 'succeeded' AND ended_at IS NOT NULL AND output_text IS NOT NULL AND output_json IS NOT NULL AND error_json IS NULL) OR (status = 'failed' AND ended_at IS NOT NULL AND error_json IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.plan_node_dependencies": {
       "name": "plan_node_dependencies",
       "schema": "",
@@ -38204,6 +38601,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "rolled_back_from_ref_id": {
+          "name": "rolled_back_from_ref_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -38369,6 +38772,19 @@
           "tableTo": "proposals",
           "columnsFrom": [
             "promoted_from_proposal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "prompt_deployment_refs_rolled_back_from_ref_id_fkey": {
+          "name": "prompt_deployment_refs_rolled_back_from_ref_id_fkey",
+          "tableFrom": "prompt_deployment_refs",
+          "tableTo": "prompt_deployment_refs",
+          "columnsFrom": [
+            "rolled_back_from_ref_id"
           ],
           "columnsTo": [
             "id"
@@ -42390,6 +42806,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "semantic_intent_json": {
+          "name": "semantic_intent_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -45382,12 +45804,19 @@
           "primaryKey": false,
           "notNull": true
         },
+        "draft_version": {
+          "name": "draft_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
         "review_status": {
           "name": "review_status",
           "type": "varchar(32)",
           "primaryKey": false,
           "notNull": true,
-          "default": "'pending'"
+          "default": "'draft'"
         },
         "updated_by_user_id": {
           "name": "updated_by_user_id",
@@ -45426,21 +45855,6 @@
             }
           ],
           "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "ix_project_public_summaries_review_status": {
-          "name": "ix_project_public_summaries_review_status",
-          "columns": [
-            {
-              "expression": "review_status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -45525,10 +45939,6 @@
           "name": "ck_project_public_summaries_highlights_array",
           "value": "jsonb_typeof(highlights_json) = 'array'::text"
         },
-        "ck_project_public_summaries_review_status": {
-          "name": "ck_project_public_summaries_review_status",
-          "value": "(review_status)::text = ANY (ARRAY[('draft'::character varying)::text, ('approved'::character varying)::text, ('archived'::character varying)::text])"
-        },
         "ck_project_public_summaries_source_refs_array": {
           "name": "ck_project_public_summaries_source_refs_array",
           "value": "jsonb_typeof(source_refs_json) = 'array'::text"
@@ -45536,6 +45946,186 @@
         "ck_project_public_summaries_topics_array": {
           "name": "ck_project_public_summaries_topics_array",
           "value": "jsonb_typeof(topics_json) = 'array'::text"
+        },
+        "ck_project_public_summaries_draft_version": {
+          "name": "ck_project_public_summaries_draft_version",
+          "value": "draft_version >= 1"
+        },
+        "ck_project_public_summaries_review_status": {
+          "name": "ck_project_public_summaries_review_status",
+          "value": "(review_status)::text = ANY (ARRAY[('draft'::character varying)::text, ('approved'::character varying)::text, ('archived'::character varying)::text])"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.project_public_summary_publications": {
+      "name": "project_public_summary_publications",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "summary_text": {
+          "name": "summary_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "topics_json": {
+          "name": "topics_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "highlights_json": {
+          "name": "highlights_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "source_refs_json": {
+          "name": "source_refs_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "redaction_version": {
+          "name": "redaction_version",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_draft_version": {
+          "name": "source_draft_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "published_by_user_id": {
+          "name": "published_by_user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "published_at": {
+          "name": "published_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "ix_project_public_summary_publications_project_unique": {
+          "name": "ix_project_public_summary_publications_project_unique",
+          "columns": [
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_project_public_summary_publications_space_id": {
+          "name": "ix_project_public_summary_publications_space_id",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "project_public_summary_publications_space_project_fkey": {
+          "name": "project_public_summary_publications_space_project_fkey",
+          "tableFrom": "project_public_summary_publications",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "project_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "project_public_summary_publications_space_id_fkey": {
+          "name": "project_public_summary_publications_space_id_fkey",
+          "tableFrom": "project_public_summary_publications",
+          "tableTo": "spaces",
+          "columnsFrom": [
+            "space_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "project_public_summary_publications_published_by_user_id_fkey": {
+          "name": "project_public_summary_publications_published_by_user_id_fkey",
+          "tableFrom": "project_public_summary_publications",
+          "tableTo": "users",
+          "columnsFrom": [
+            "published_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ck_project_public_summary_publications_highlights_array": {
+          "name": "ck_project_public_summary_publications_highlights_array",
+          "value": "jsonb_typeof(highlights_json) = 'array'::text"
+        },
+        "ck_project_public_summary_publications_source_refs_array": {
+          "name": "ck_project_public_summary_publications_source_refs_array",
+          "value": "jsonb_typeof(source_refs_json) = 'array'::text"
+        },
+        "ck_project_public_summary_publications_topics_array": {
+          "name": "ck_project_public_summary_publications_topics_array",
+          "value": "jsonb_typeof(topics_json) = 'array'::text"
+        },
+        "ck_project_public_summary_publications_source_draft_version": {
+          "name": "ck_project_public_summary_publications_source_draft_version",
+          "value": "source_draft_version >= 1"
         }
       },
       "isRLSEnabled": false
@@ -46912,6 +47502,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "pending_operation_key": {
+          "name": "pending_operation_key",
+          "type": "varchar(256)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "proposal_type": {
           "name": "proposal_type",
           "type": "varchar(64)",
@@ -47214,6 +47810,34 @@
           ],
           "isUnique": true,
           "where": "action_idempotency_key IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_proposals_pending_operation": {
+          "name": "uq_proposals_pending_operation",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "proposal_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "pending_operation_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "status='pending' AND pending_operation_key IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -52208,6 +52832,12 @@
           "notNull": true,
           "default": 0
         },
+        "embedding_blocked_generation": {
+          "name": "embedding_blocked_generation",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -54338,6 +54968,26 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settlement_attempts": {
+          "name": "settlement_attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "settlement_json": {
+          "name": "settlement_json",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::jsonb"
         }
       },
       "indexes": {
@@ -54352,6 +55002,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_run_finalizations_unsettled": {
+          "name": "ix_run_finalizations_unsettled",
+          "columns": [
+            {
+              "expression": "finalized_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "status = 'completed' AND settled_at IS NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -55300,6 +55966,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "cause_run_id": {
+          "name": "cause_run_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "instructed_by": {
           "name": "instructed_by",
           "type": "varchar(128)",
@@ -55816,6 +56488,27 @@
           "method": "btree",
           "with": {}
         },
+        "ix_runs_cause_run_id": {
+          "name": "ix_runs_cause_run_id",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "cause_run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "ix_runs_run_type": {
           "name": "ix_runs_run_type",
           "columns": [
@@ -55992,6 +56685,21 @@
           ],
           "columnsTo": [
             "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "runs_cause_run_space_fkey": {
+          "name": "runs_cause_run_space_fkey",
+          "tableFrom": "runs",
+          "tableTo": "runs",
+          "columnsFrom": [
+            "cause_run_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
           ],
           "onDelete": "no action",
           "onUpdate": "no action"
@@ -56392,7 +57100,11 @@
         },
         "ck_runs_trigger_origin": {
           "name": "ck_runs_trigger_origin",
-          "value": "(trigger_origin)::text = ANY (ARRAY[('manual'::character varying)::text, ('automation'::character varying)::text, ('autonomous'::character varying)::text, ('job'::character varying)::text, ('system'::character varying)::text, ('delegation'::character varying)::text])"
+          "value": "(trigger_origin)::text = ANY (ARRAY[('manual'::character varying)::text, ('automation'::character varying)::text, ('autonomous'::character varying)::text, ('job'::character varying)::text, ('system'::character varying)::text, ('delegation'::character varying)::text, ('continuation'::character varying)::text])"
+        },
+        "ck_runs_cause_run_continuation": {
+          "name": "ck_runs_cause_run_continuation",
+          "value": "cause_run_id IS NULL OR trigger_origin = 'continuation'"
         },
         "ck_runs_trust_level": {
           "name": "ck_runs_trust_level",
@@ -60555,7 +61267,7 @@
         },
         "ck_settings_scope_type": {
           "name": "ck_settings_scope_type",
-          "value": "(scope_type)::text = ANY (ARRAY[('instance'::character varying)::text, ('space'::character varying)::text, ('user'::character varying)::text, ('space_user'::character varying)::text])"
+          "value": "(scope_type)::text = ANY (ARRAY[('instance'::character varying)::text, ('space'::character varying)::text, ('project'::character varying)::text, ('user'::character varying)::text, ('space_user'::character varying)::text])"
         }
       },
       "isRLSEnabled": false
@@ -63198,6 +63910,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "read_origin": {
+          "name": "read_origin",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "progress_json": {
           "name": "progress_json",
           "type": "jsonb",
@@ -63357,6 +64075,10 @@
         "ck_source_item_user_states_progress_json": {
           "name": "ck_source_item_user_states_progress_json",
           "value": "jsonb_typeof(progress_json) = 'object'::text"
+        },
+        "ck_source_item_user_states_read_origin": {
+          "name": "ck_source_item_user_states_read_origin",
+          "value": "read_origin IS NULL OR read_origin IN ('library', 'serendipity')"
         }
       },
       "isRLSEnabled": false
@@ -63955,6 +64677,12 @@
               "nulls": "last"
             },
             {
+              "expression": "COALESCE(owner_user_id, '')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
               "expression": "canonical_uri",
               "isExpression": false,
               "asc": true,
@@ -64002,6 +64730,12 @@
               "expression": "space_id",
               "isExpression": false,
               "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "COALESCE(owner_user_id, '')",
+              "asc": true,
+              "isExpression": true,
               "nulls": "last"
             },
             {
@@ -66504,6 +67238,145 @@
       },
       "isRLSEnabled": false
     },
+    "public.source_channel_subscription_windows": {
+      "name": "source_channel_subscription_windows",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "varchar(36)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "space_id": {
+          "name": "space_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_channel_id": {
+          "name": "source_channel_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subscribed_at": {
+          "name": "subscribed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "unsubscribed_at": {
+          "name": "unsubscribed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "ix_source_channel_subscription_windows_reader": {
+          "name": "ix_source_channel_subscription_windows_reader",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_channel_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_source_channel_subscription_windows_open": {
+          "name": "uq_source_channel_subscription_windows_open",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "source_channel_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "unsubscribed_at IS NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "source_channel_subscription_windows_channel_id_fkey": {
+          "name": "source_channel_subscription_windows_channel_id_fkey",
+          "tableFrom": "source_channel_subscription_windows",
+          "tableTo": "source_channels",
+          "columnsFrom": [
+            "source_channel_id",
+            "space_id"
+          ],
+          "columnsTo": [
+            "id",
+            "space_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "source_channel_subscription_windows_user_id_fkey": {
+          "name": "source_channel_subscription_windows_user_id_fkey",
+          "tableFrom": "source_channel_subscription_windows",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "ck_source_channel_subscription_windows_order": {
+          "name": "ck_source_channel_subscription_windows_order",
+          "value": "unsubscribed_at IS NULL OR unsubscribed_at >= subscribed_at"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.source_channel_user_subscriptions": {
       "name": "source_channel_user_subscriptions",
       "schema": "",
@@ -66566,6 +67439,18 @@
         },
         "last_notified_at": {
           "name": "last_notified_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "subscribed_at": {
+          "name": "subscribed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unsubscribed_at": {
+          "name": "unsubscribed_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
@@ -67272,6 +68157,24 @@
           "notNull": true,
           "default": 0
         },
+        "wait_reason": {
+          "name": "wait_reason",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_retry_at": {
+          "name": "next_retry_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "episode_id": {
+          "name": "episode_id",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "error_json": {
           "name": "error_json",
           "type": "jsonb",
@@ -67315,6 +68218,54 @@
             },
             {
               "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_source_item_annotations_retry": {
+          "name": "ix_source_item_annotations_retry",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "next_retry_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "ix_source_item_annotations_episode": {
+          "name": "ix_source_item_annotations_episode",
+          "columns": [
+            {
+              "expression": "space_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "episode_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -67454,6 +68405,18 @@
         "ck_source_item_annotations_status": {
           "name": "ck_source_item_annotations_status",
           "value": "status IN ('pending','succeeded','failed','skipped')"
+        },
+        "ck_source_item_annotations_wait_reason": {
+          "name": "ck_source_item_annotations_wait_reason",
+          "value": "wait_reason IS NULL OR wait_reason IN ('retry_scheduled','provider_unavailable','egress_denied','consent_missing','budget_exhausted')"
+        },
+        "ck_source_item_annotations_wait_shape": {
+          "name": "ck_source_item_annotations_wait_shape",
+          "value": "(wait_reason = 'retry_scheduled') = (next_retry_at IS NOT NULL)"
+        },
+        "ck_source_item_annotations_wait_status": {
+          "name": "ck_source_item_annotations_wait_status",
+          "value": "wait_reason IS NULL OR (wait_reason = 'budget_exhausted' AND status = 'failed') OR (wait_reason <> 'budget_exhausted' AND status = 'pending')"
         },
         "ck_source_item_annotations_topic_candidates": {
           "name": "ck_source_item_annotations_topic_candidates",
@@ -72333,6 +73296,12 @@
           "type": "varchar(36)",
           "primaryKey": false,
           "notNull": true
+        },
+        "attempt_number": {
+          "name": "attempt_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
         },
         "event_index": {
           "name": "event_index",

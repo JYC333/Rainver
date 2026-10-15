@@ -15,7 +15,7 @@ import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
 // The default embedding dimension (2560) has a halfvec HNSW partial index, and
 // the vector arm emits a matching constant-dimension halfvec cosine query so
-// the planner can use it. The index is in migration 0001. This asserts the
+// the planner can use it. The index is in the baseline. This asserts the
 // planner uses it for the arm's query shape, and that recall still holds.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";

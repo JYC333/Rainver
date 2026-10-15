@@ -1,2 +1,0 @@
-ALTER TABLE "proposals" ADD COLUMN "pending_operation_key" varchar(256);--> statement-breakpoint
-CREATE UNIQUE INDEX "uq_proposals_pending_operation" ON "proposals" USING btree ("space_id","proposal_type","pending_operation_key") WHERE status='pending' AND pending_operation_key IS NOT NULL;
