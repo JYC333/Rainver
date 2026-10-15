@@ -127,11 +127,7 @@ export const workflowExecutions = pgTable("workflow_executions", {
 	// checkpoint approval, a recovery pass, a Run's finalization — names this
 	// person, never whoever happened to trigger the pass. The approver of a
 	// checkpoint is recorded on the checkpoint's proposal and node as audit.
-	// Nullable for one release (B59 expand-then-contract: the build still
-	// running while migration 0001 applies inserts without it); every row this build
-	// writes carries it, and reconciliation refuses a row without one. The
-	// NOT NULL contract is recorded under "Schema follow-ups".
-	responsibleUserId: varchar("responsible_user_id", { length: 36 }),
+	responsibleUserId: varchar("responsible_user_id", { length: 36 }).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	startedAt: timestamp("started_at", { withTimezone: true, mode: 'string' }),
 	endedAt: timestamp("ended_at", { withTimezone: true, mode: 'string' }),

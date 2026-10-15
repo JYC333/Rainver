@@ -5,13 +5,12 @@ append-only chain the server migration runner applies, and at the same time the
 drizzle-kit output directory: `NNNN_<name>.sql` files in order, plus `meta/`
 with the Drizzle journal and the snapshot each file was diffed from.
 
-**`0000_baseline.sql` is the 2026-09-26 host-thread-tool-field schema
-epoch.** It is drizzle-kit output generated from `src/db/schema/`
-against an empty chain, so every object in it has a Drizzle definition
-`schema:check` can see. `host_thread_events.tool_call_id` and `tool_name` are
-`text`. There is no `0001_widen_host_thread_tool_fields.sql`, no legacy
-authentication tables, no backfill, and no compatibility path. Do not recreate
-that widen migration.
+**`0000_baseline.sql` is the 2026-10-15 access, reading and execution
+integrity schema epoch** ([ADR 0024](../../.agent/decisions/0024-access-reading-and-execution-integrity-schema-epoch.md)).
+It is drizzle-kit output generated from `src/db/schema/` against an empty
+chain, so every object in it has a Drizzle definition `schema:check` can see.
+It carries no retired column or table, no backfill, no `NOT VALID` check and
+no compatibility path.
 
 Its one hand-added line is the `CREATE EXTENSION` at the top, which drizzle-kit
 does not model and the `vector` columns need first. Never regenerate it from a

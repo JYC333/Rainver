@@ -93,10 +93,6 @@ export const sourceChannelUserSubscriptions = pgTable("source_channel_user_subsc
 	recommendedByUserId: varchar("recommended_by_user_id", { length: 36 }),
 	recommendationMessage: text("recommendation_message"),
 	lastNotifiedAt: timestamp("last_notified_at", { withTimezone: true, mode: "string" }),
-	// Unused: subscription periods live in `source_channel_subscription_windows`.
-	// Kept until the contract step in .agent/tasks/deferred-register.md drops them.
-	subscribedAt: timestamp("subscribed_at", { withTimezone: true, mode: "string" }),
-	unsubscribedAt: timestamp("unsubscribed_at", { withTimezone: true, mode: "string" }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [

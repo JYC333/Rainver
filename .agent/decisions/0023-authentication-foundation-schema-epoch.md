@@ -41,8 +41,9 @@ The generated baseline contains the final authentication schema directly:
 path.
 
 The new baseline was frozen after this change; the 2026-09-26
-host-thread-tool-field epoch has since replaced it with a regenerated baseline
-(BOUNDARIES B59). Later schema changes append new numbered migrations under
+host-thread-tool-field epoch and then the 2026-10-15 epoch
+([ADR 0024](0024-access-reading-and-execution-integrity-schema-epoch.md)) have
+since replaced it with regenerated baselines (BOUNDARIES B59). Later schema changes append new numbered migrations under
 B59.
 
 ## Operational consequences

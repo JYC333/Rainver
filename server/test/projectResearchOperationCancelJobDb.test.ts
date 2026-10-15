@@ -97,9 +97,9 @@ async function seedExecution(operationId: string, status: string): Promise<strin
   await db.pool.query(
     `INSERT INTO workflow_executions (
        id, space_id, automation_id, workflow_version_id, status, trigger_type, definition_json,
-       research_operation_id, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,$5,'manual','{}'::jsonb,$6,$7,$7)`,
-    [executionId, SPACE, automationId, versionId, status, operationId, now],
+       research_operation_id, responsible_user_id, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,'manual','{}'::jsonb,$6,$8,$7,$7)`,
+    [executionId, SPACE, automationId, versionId, status, operationId, now, OWNER],
   );
   return executionId;
 }

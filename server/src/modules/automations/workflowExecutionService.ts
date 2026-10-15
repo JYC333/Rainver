@@ -173,7 +173,7 @@ export class WorkflowExecutionService {
       id: string; automation_id: string; workflow_version_id: string; root_run_id: string | null;
       status: string; input_json: Record<string, unknown>; definition_json: unknown; resolution_trace_json: string[];
       budget_snapshot_json: unknown; project_id: string | null; project_folder_id: string | null; agent_id: string;
-      research_operation_id: string | null; responsible_user_id: string | null;
+      research_operation_id: string | null; responsible_user_id: string;
       name: string; description: string | null; config_json: Record<string, unknown> | null;
       automation_status: string;
     }>(
@@ -231,10 +231,7 @@ export class WorkflowExecutionService {
       return { workflow_execution_id: executionId, status: "completed", scheduled_node_ids: [] };
     }
     if (!execution.root_run_id) throw new HttpError(409, "Workflow Execution coordinator run is missing");
-    // An execution with no recorded principal schedules nothing: guessing one
-    // from whoever triggered this pass is exactly the substitution this column
-    // exists to prevent.
-    if (!execution.responsible_user_id) throw new HttpError(409, "Workflow Execution has no recorded responsible person");
+    // The recorded principal, never whoever triggered this pass.
     const userId = execution.responsible_user_id;
     const automation: AutomationRow = {
       id: execution.automation_id,

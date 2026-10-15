@@ -109,7 +109,7 @@ capture / trigger
 ### `engineCheck` evaluates built-in runtime rules; persisted policy rows are not read
 
 - `engineCheck` (`policy/decisionCore.ts`) evaluates stateless built-in rules. It does not load persisted Policy rows.
-- There is no generic persisted-policy proposal: `policy_change` has no applier and fails closed, and no server path writes or reads the `policies` table. Runtime Context Policy versions are the persisted policy that governs runs.
+- There is no generic persisted-policy proposal: `policy_change` has no applier and fails closed, and there is no `policies` table. Runtime Context Policy versions are the persisted policy that governs runs.
 - Cross-space memory denial is the hard invariant `hard_invariant_cross_space_memory` in `policy/decisionCore.ts`, not a persisted policy domain.
 
 ### App runtime must not self-deploy with arbitrary host authority

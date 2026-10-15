@@ -643,12 +643,13 @@ previous build — expand in the release that needs the new shape, contract in a
 later one. That is a constraint on what a single release may drop or rename, not
 a licence for compatibility code: B58 still applies to the application.
 
-The chain has three explicitly authorized schema-epoch replacements: the ACP
+The chain has four explicitly authorized schema-epoch replacements: the ACP
 runtime-authority epoch
 ([ADR 0022](decisions/0022-acp-runtime-authority-and-schema-epoch.md) §5), the
 authentication-foundation epoch
-([ADR 0023](decisions/0023-authentication-foundation-schema-epoch.md)), and the
-host-thread-tool-field epoch. A database from before the current
+([ADR 0023](decisions/0023-authentication-foundation-schema-epoch.md)), the
+host-thread-tool-field epoch, and the access, reading and execution integrity
+epoch ([ADR 0024](decisions/0024-access-reading-and-execution-integrity-schema-epoch.md)). A database from before the current
 epoch has no upgrade path or compatible backup restore: it must be recreated
 from the baseline. None of these decisions itself authorizes deleting a
 running database.

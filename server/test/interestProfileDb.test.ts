@@ -75,8 +75,8 @@ beforeEach(async () => {
   for (const user of [OWNER, OTHER]) {
     await db.pool.query(
       `INSERT INTO source_channel_user_subscriptions (
-         id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, subscribed_at, created_at, updated_at
-       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5,$5)`,
+         id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)`,
       [randomUUID(), SPACE, CONNECTION, user, now],
     );
   }

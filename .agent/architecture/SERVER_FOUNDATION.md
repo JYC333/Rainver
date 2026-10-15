@@ -61,7 +61,8 @@ command, not a startup hook.
 
 `server/migrations/` is the append-only migration chain: the frozen
 `0000_baseline.sql` plus one numbered file per schema change. That baseline
-starts the 2026-09-26 host-thread-tool-field schema epoch (B59):
+starts the 2026-10-15 access, reading and execution integrity schema epoch
+(B59, ADR 0024):
 a pre-epoch database has no upgrade path and must be recreated from it, while
 everything after it is append-only. Ordinary schema
 changes start in `server/src/db/schema/`, run through

@@ -24,7 +24,7 @@ operate on the `.agent` context tree.
 
 There is no `PolicyEffectCatalog` and no generic persisted-policy proposal.
 `policy_change` has no applier: no producer offers it and a stored one fails
-closed on accept. No server path writes or reads the `policies` table. The
+closed on accept. There is no `policies` table. The
 persisted policy that governs runs is the Runtime Context Policy
 (`runtime_context_policy.change`).
 

@@ -195,12 +195,6 @@ export const projectPublicSummaries = pgTable("project_public_summaries", {
 	// Incremented by every draft save. Publishing names the version it approves,
 	// so a draft replaced between review and approval is refused, not published.
 	draftVersion: integer("draft_version").default(1).notNull(),
-	// Written by nothing since publication moved to
-	// `project_public_summary_publications`. It stays this release because the
-	// build this one replaces still reads it while the migration runs (B59
-	// expand-then-contract); the next release drops it in a maintenance
-	// migration. Do not read it.
-	reviewStatus: varchar("review_status", { length: 32 }).default('draft').notNull(),
 	updatedByUserId: varchar("updated_by_user_id", { length: 36 }),
 	generatedByRunId: varchar("generated_by_run_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
@@ -232,7 +226,6 @@ export const projectPublicSummaries = pgTable("project_public_summaries", {
 	check("ck_project_public_summaries_source_refs_array", sql`jsonb_typeof(source_refs_json) = 'array'::text`),
 	check("ck_project_public_summaries_topics_array", sql`jsonb_typeof(topics_json) = 'array'::text`),
 	check("ck_project_public_summaries_draft_version", sql`draft_version >= 1`),
-	check("ck_project_public_summaries_review_status", sql`(review_status)::text = ANY (ARRAY[('draft'::character varying)::text, ('approved'::character varying)::text, ('archived'::character varying)::text])`),
 ]);
 
 /**

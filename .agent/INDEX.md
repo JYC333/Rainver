@@ -259,6 +259,7 @@ when shortening a decision; do not delete an ADR merely because it is old.
 | [0021](decisions/0021-files-code-codemirror-drafts-and-input-resources.md) | Files & Code uses CodeMirror for complete text files; PostgreSQL recovery drafts remain private pending state while the Project Folder stays canonical; sent file state freezes as an immutable message resource read lazily through Run-scoped governed tools |
 | [0022](decisions/0022-acp-runtime-authority-and-schema-epoch.md) | AgentRuntimeProfile is the mutable Agent deployment/backend authority; Agent loops use the single ACP adapter, bounded provider work has explicit execution shape, and the pre-release schema epoch is reset once after cutover |
 | [0023](decisions/0023-authentication-foundation-schema-epoch.md) | The completed authentication foundation replaced the provisional auth migrations with a Drizzle-generated baseline; earlier databases had no upgrade path or compatibility shim |
+| [0024](decisions/0024-access-reading-and-execution-integrity-schema-epoch.md) | This release's schema changes were folded into a new Drizzle-generated baseline with the contract steps applied directly; earlier databases are recreated, not upgraded |
 
 ---
 
