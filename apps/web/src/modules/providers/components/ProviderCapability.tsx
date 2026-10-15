@@ -1,5 +1,6 @@
 import type { ProviderType, ProviderVendorOut } from '../../../api/client'
 import { Badge } from '../../../components/ui/badge'
+import { useAppTranslation } from '../../../i18n'
 import { modelFieldCopy, providerCapabilities } from '../providerMetadata'
 import type { AddProviderMode } from '../types'
 
@@ -34,6 +35,7 @@ export function ProviderCapabilityNotice({
   vendors: readonly ProviderVendorOut[]
   mode?: AddProviderMode
 }) {
+  const { t } = useAppTranslation()
   const capabilities = providerCapabilities(providerType, vendors, mode)
   const copy = modelFieldCopy(providerType, mode)
   return (
@@ -42,7 +44,9 @@ export function ProviderCapabilityNotice({
       <p className="text-xs text-muted-foreground">{copy.help}</p>
       {capabilities.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          {capabilities.map(capability => `${capability.label}: ${capability.detail}`).join(' ')}
+          {capabilities
+            .map(capability => t('workspace_ui.providers.capability.notice_item', { label: capability.label, detail: capability.detail }))
+            .join(t('workspace_ui.providers.capability.notice_separator'))}
         </p>
       )}
     </div>

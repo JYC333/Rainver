@@ -1,8 +1,9 @@
 import { act, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TodayPage from '../TodayPage'
 import { homeApi, projectsApi, sessionsApi } from '../../../api/client'
+import i18n from '../../../i18n'
 import type { HomeSummaryOut, Project } from '../../../types/api'
 
 const { spaceState } = vi.hoisted(() => ({
@@ -127,3 +128,56 @@ describe('TodayPage pending review', () => {
   })
 })
 
+
+describe('TodayPage language', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    spaceState.activeSpaceId = 'space-a'
+    spaceState.activeSpaceName = 'Alpha'
+    vi.mocked(sessionsApi.list).mockResolvedValue({ items: [] } as never)
+    vi.mocked(projectsApi.list).mockResolvedValue({ items: [] } as never)
+  })
+  afterEach(async () => { await i18n.changeLanguage('en') })
+
+  function withProviders(enabled: number): HomeSummaryOut {
+    const summary = summaryWithSourceItems(enabled)
+    return {
+      ...summary,
+      model_provider_status: { ...summary.model_provider_status, enabled_model_providers_count: enabled },
+      recent_artifacts: [{ id: 'artifact-1', title: 'Week notes', artifact_type: 'daily_capture_report', created_at: '2026-08-06T12:00:00Z' }],
+    } as HomeSummaryOut
+  }
+
+  async function expectCountLines(lines: ReadonlyArray<readonly [number, string, string]>) {
+    for (const [enabled, providerLine, toReadLine] of lines) {
+      vi.mocked(homeApi.summary).mockResolvedValue(withProviders(enabled))
+      const view = render(page())
+      expect(await screen.findByText(providerLine)).toBeInTheDocument()
+      expect(screen.getByText(toReadLine)).toBeInTheDocument()
+      view.unmount()
+    }
+  }
+
+  it('words counts and labels in English by default', async () => {
+    vi.mocked(homeApi.summary).mockResolvedValue(withProviders(0))
+    const view = render(page())
+    expect(await screen.findByText('0 enabled providers')).toBeInTheDocument()
+    expect(screen.getByText('daily report · Aug 6')).toBeInTheDocument()
+    view.unmount()
+    await expectCountLines([[1, '1 enabled provider', '1 item to read'], [7, '7 enabled providers', '7 items to read']])
+  })
+
+  it('shows the page in Chinese, with its counts and dates', async () => {
+    await i18n.changeLanguage('zh-CN')
+    vi.mocked(homeApi.summary).mockResolvedValue(withProviders(0))
+    const view = render(page())
+    expect(await screen.findByText('已启用 0 个提供方')).toBeInTheDocument()
+    expect(screen.getByText('待审核')).toBeInTheDocument()
+    expect(screen.getByText('没有待审核提案。')).toBeInTheDocument()
+    expect(screen.getByText('配置模型提供方')).toBeInTheDocument()
+    expect(screen.getByText('日报 · 8月6日')).toBeInTheDocument()
+    view.unmount()
+
+    await expectCountLines([[1, '已启用 1 个提供方', '1 条待读'], [7, '已启用 7 个提供方', '7 条待读']])
+  })
+})

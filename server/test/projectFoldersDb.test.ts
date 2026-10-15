@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { seedServerHost, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
@@ -130,6 +130,35 @@ function draftBody(input: {
 }
 
 describe("Project Folder database invariants", () => {
+  it("serves a registered Folder's own files but no symbolic link below it, whether the file or a parent directory", async (ctx) => {
+    // Plan §17.2 scenario 10 across the server: a registered Folder, the
+    // Project read gate and the shared folder reader together.
+    if (!db.available || !db.pool) return ctx.skip();
+    const { folderRoot, repo, cleanup } = await draftFolder(db.pool, "16161616-1616-4616-8616-161616161616");
+    const outside = await mkdtemp(join(tmpdir(), "rainver-folder-outside-"));
+    try {
+      await writeFile(join(folderRoot, "notes.md"), "inside\n");
+      await writeFile(join(outside, "secret.txt"), "outside\n");
+      await mkdir(join(folderRoot, "docs"));
+      await writeFile(join(folderRoot, "docs", "real.md"), "real\n");
+      await symlink(join(outside, "secret.txt"), join(folderRoot, "link.txt"));
+      await symlink(outside, join(folderRoot, "escape"));
+      await symlink(join(folderRoot, "docs"), join(folderRoot, "alias"));
+      const identity = { spaceId: SPACE, userId: USER };
+      const folderId = "16161616-1616-4616-8616-161616161616";
+
+      await expect(repo.getFile(identity, PROJECT, folderId, "notes.md")).resolves.toMatchObject({ content: "inside\n" });
+      await expect(repo.getFile(identity, PROJECT, folderId, "link.txt")).rejects.toMatchObject({ statusCode: 403 });
+      await expect(repo.getFile(identity, PROJECT, folderId, "escape/secret.txt")).rejects.toMatchObject({ statusCode: 403 });
+      // Even a link that stays inside the root is refused: a later swap of
+      // its target could not be told apart from the original.
+      await expect(repo.getFile(identity, PROJECT, folderId, "alias/real.md")).rejects.toMatchObject({ statusCode: 403 });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+      await cleanup();
+    }
+  });
+
   it("does not inspect or delete drafts through a Folder id from another Project", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const folderId = "15151515-1515-4515-8515-151515151515";
