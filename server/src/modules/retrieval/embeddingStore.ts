@@ -20,6 +20,28 @@ export interface PendingChunk {
 
 const MAX_BATCH = 1000;
 
+/**
+ * What a blocked chunk was blocked under: the Space-wide egress frame plus the
+ * policy digest of each Source connection the chunk's object depends on. A
+ * chunk is passed over until that changes, so editing one connection re-checks
+ * only the chunks that depend on it. Digests are opaque to the engine; the
+ * app layer computes them (`$frame`, `$digests` = {connection id: digest}).
+ */
+function chunkPolicyGenerationSql(objectAlias: string, frameParam: string, digestsParam: string): string {
+  return `md5(${frameParam} || '|' || COALESCE((
+    SELECT string_agg(dependency.id || '=' || COALESCE(${digestsParam}::jsonb ->> dependency.id, 'missing'), '|' ORDER BY dependency.id)
+      FROM jsonb_array_elements_text(${objectAlias}.source_connection_ids_json) AS dependency(id)
+  ), ''))`;
+}
+
+/** The egress state a blocked chunk is re-checked against. */
+export interface EmbeddingPolicyGeneration {
+  /** Digest of the Space-wide egress switch and destination. */
+  frame: string;
+  /** Policy digest of every Source connection in the Space, by id. */
+  connectionDigests: Record<string, string>;
+}
+
 export class RetrievalEmbeddingStore {
   constructor(private readonly db: Queryable) {}
 
@@ -36,24 +58,29 @@ export class RetrievalEmbeddingStore {
     claimId: string,
     staleBefore: Date,
     maxAttempts: number,
-    /** Chunks found not sendable under this egress-policy generation are passed over. */
-    policyGeneration: string,
+    /** Chunks found not sendable are passed over until their own policy state changes. */
+    policyGeneration: EmbeddingPolicyGeneration,
   ): Promise<PendingChunk[]> {
     const result = await this.db.query<PendingChunk>(
       `WITH candidate AS (
-         SELECT id
-           FROM retrieval_chunks
-          WHERE space_id = $1
-            AND embedding IS NULL
-            AND embedding_attempts < $5
-            AND embedding_blocked_generation IS DISTINCT FROM $6
+         SELECT chunk.id
+           FROM retrieval_chunks chunk
+           JOIN retrieval_objects chunk_object
+             ON chunk_object.id = chunk.retrieval_object_id AND chunk_object.space_id = chunk.space_id
+          WHERE chunk.space_id = $1
+            AND chunk.embedding IS NULL
+            AND chunk.embedding_attempts < $5
             AND (
-              embedding_claim_id IS NULL
-              OR embedding_claimed_at IS NULL
-              OR embedding_claimed_at < $4
+              chunk.embedding_blocked_generation IS NULL
+              OR chunk.embedding_blocked_generation IS DISTINCT FROM ${chunkPolicyGenerationSql("chunk_object", "$6", "$7")}
             )
-          ORDER BY created_at ASC, id ASC
-          FOR UPDATE SKIP LOCKED
+            AND (
+              chunk.embedding_claim_id IS NULL
+              OR chunk.embedding_claimed_at IS NULL
+              OR chunk.embedding_claimed_at < $4
+            )
+          ORDER BY chunk.created_at ASC, chunk.id ASC
+          FOR UPDATE OF chunk SKIP LOCKED
           LIMIT $2
        )
        UPDATE retrieval_chunks
@@ -69,7 +96,10 @@ export class RetrievalEmbeddingStore {
                   retrieval_chunks.plain_text,
                   retrieval_chunks.embedding_claim_id,
                   ro.source_connection_ids_json`,
-      [spaceId, clampLimit(limit), claimId, staleBefore.toISOString(), Math.max(1, Math.floor(maxAttempts)), policyGeneration],
+      [
+        spaceId, clampLimit(limit), claimId, staleBefore.toISOString(), Math.max(1, Math.floor(maxAttempts)),
+        policyGeneration.frame, JSON.stringify(policyGeneration.connectionDigests),
+      ],
     );
     return result.rows;
   }
@@ -77,21 +107,30 @@ export class RetrievalEmbeddingStore {
   /**
    * Set aside claimed chunks the egress policy does not let reach the
    * provider: the claim is released and the chunk is passed over until the
-   * policy generation changes, so a run of blocked chunks at the head of the
-   * queue never holds back the sendable ones behind it. No attempt is spent.
+   * egress state it depends on changes (the Space switch, or one of its own
+   * Source connections), so a run of blocked chunks at the head of the queue
+   * never holds back the sendable ones behind it. No attempt is spent.
    */
-  async markEmbeddingBlocked(chunkIds: readonly string[], spaceId: string, claimId: string, policyGeneration: string): Promise<number> {
+  async markEmbeddingBlocked(
+    chunkIds: readonly string[],
+    spaceId: string,
+    claimId: string,
+    policyGeneration: EmbeddingPolicyGeneration,
+  ): Promise<number> {
     if (chunkIds.length === 0) return 0;
     const result = await this.db.query(
-      `UPDATE retrieval_chunks
-          SET embedding_blocked_generation = $4,
+      `UPDATE retrieval_chunks chunk
+          SET embedding_blocked_generation = ${chunkPolicyGenerationSql("chunk_object", "$4", "$5")},
               embedding_claim_id = NULL,
               embedding_claimed_at = NULL
-        WHERE id = ANY($1::varchar[])
-          AND space_id = $2
-          AND embedding_claim_id = $3
-          AND embedding IS NULL`,
-      [chunkIds, spaceId, claimId, policyGeneration],
+         FROM retrieval_objects chunk_object
+        WHERE chunk.id = ANY($1::varchar[])
+          AND chunk.space_id = $2
+          AND chunk.embedding_claim_id = $3
+          AND chunk.embedding IS NULL
+          AND chunk_object.id = chunk.retrieval_object_id
+          AND chunk_object.space_id = chunk.space_id`,
+      [chunkIds, spaceId, claimId, policyGeneration.frame, JSON.stringify(policyGeneration.connectionDigests)],
     );
     return result.rowCount ?? 0;
   }

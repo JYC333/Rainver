@@ -300,6 +300,22 @@ describe("reading eligibility across every reading path", () => {
     expect(await readable(OWNER, item)).toBe(false);
   });
 
+  it("ends the owner's direct reads too once the connection itself is archived", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const item = await seedItem();
+    // Only the owner path is under test: no consent exception for Space admins.
+    await db.pool.query(
+      `UPDATE source_connections SET status = 'archived', consent_json = consent_json || '{"allow_space_admins": false}'::jsonb WHERE id = $1`,
+      [CONNECTION],
+    );
+    const direct = await db.pool.query(
+      `SELECT 1 FROM source_items si WHERE si.space_id = $1 AND si.id = $2 AND ${sourceItemReadableClause("si", "$3", false)}`,
+      [SPACE, item, OWNER],
+    );
+    expect(direct.rowCount).toBe(0);
+    expect(await readerServes(OWNER, item)).toBe(false);
+  });
+
   it("serves a Source-derived artifact only while its item is readable", async (ctx) => {
     if (!db.available) return ctx.skip();
     const item = await seedItem();

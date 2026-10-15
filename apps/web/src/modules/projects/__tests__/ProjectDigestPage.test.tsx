@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { toast } from 'sonner'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { informationDigestsApi } from '../../../api/client'
 import ProjectDigestPage from '../ProjectDigestPage'
@@ -89,5 +89,56 @@ describe('ProjectDigestPage', () => {
     expect(await screen.findByText('No digest for Aug 6, 2026')).toBeInTheDocument()
     expect(screen.getByText(/No digest was generated for this day/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Backfill this day' })).not.toBeInTheDocument()
+  })
+
+  it('opens another Project at its own latest day, not the day picked in this one', async () => {
+    vi.mocked(informationDigestsApi.project).mockClear()
+    function SwitchProject() {
+      const navigate = useNavigate()
+      return <button type="button" onClick={() => navigate('/projects/project-2/digest')}>Go to project 2</button>
+    }
+    render(
+      <MemoryRouter initialEntries={['/projects/project-1/digest']}>
+        <SwitchProject />
+        <Routes><Route path="/projects/:projectId/digest" element={<ProjectDigestPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText('biology')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Previous day' }))
+    await waitFor(() => expect(informationDigestsApi.project).toHaveBeenLastCalledWith('space-1', 'project-1', '2026-08-05'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Go to project 2' }))
+    await waitFor(() => expect(informationDigestsApi.project).toHaveBeenLastCalledWith('space-1', 'project-2', undefined))
+  })
+
+  it('never lets a slow answer for the previous Project replace the open one', async () => {
+    const latest = await informationDigestsApi.project('space-1', 'project-1') as ReturnType<typeof available>
+    const forProject = (projectId: string, marker: string) => ({
+      ...latest,
+      digest: { ...latest.digest, project_id: projectId, team_blind_spot_domains: [marker] },
+    })
+    let answerProjectOne: (value: unknown) => void = () => undefined
+    vi.mocked(informationDigestsApi.project).mockReset()
+    vi.mocked(informationDigestsApi.project).mockImplementation((_space, projectId) => (
+      projectId === 'project-1'
+        ? new Promise(resolve => { answerProjectOne = resolve })
+        : Promise.resolve(forProject('project-2', 'project two domain'))
+    ) as never)
+    function SwitchProject() {
+      const navigate = useNavigate()
+      return <button type="button" onClick={() => navigate('/projects/project-2/digest')}>Go to project 2</button>
+    }
+    render(
+      <MemoryRouter initialEntries={['/projects/project-1/digest']}>
+        <SwitchProject />
+        <Routes><Route path="/projects/:projectId/digest" element={<ProjectDigestPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Go to project 2' }))
+    expect(await screen.findByText('project two domain')).toBeInTheDocument()
+    answerProjectOne(forProject('project-1', 'project one domain'))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(screen.getByText('project two domain')).toBeInTheDocument()
+    expect(screen.queryByText('project one domain')).not.toBeInTheDocument()
   })
 })

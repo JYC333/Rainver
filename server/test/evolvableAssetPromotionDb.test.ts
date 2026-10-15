@@ -11,6 +11,7 @@ import { resolveEvolvableAssetVersion } from "../src/modules/evolution/assetReso
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { proposalTitleParts } from "../src/modules/proposals/titleParts.js";
 
 // Real-Postgres coverage for evaluation-run metadata and the
 // evolvable_asset_version_promote proposal applier: approval is
@@ -144,7 +145,7 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
 
   it("creates a promotion proposal and rejects promoting without target_scope_id for project scope", async () => {
     if (!db.available) return;
-    const { assetId, versionId } = await createCandidateVersion();
+    const { assetId, versionId, assetKey } = await createCandidateVersion();
     await expect(
       evalRepo().createPromotionProposal(identity, assetId, versionId, { target_scope_type: "project" }),
     ).rejects.toMatchObject({ statusCode: 422 });
@@ -155,6 +156,22 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
       pin_after_approval: true,
     });
     expect(created).toMatchObject({ proposal_type: "evolvable_asset_version_promote", status: "pending" });
+
+    // The title's facts travel in the payload, so each reader's UI can word
+    // it in their own language; the stored title stays for everyone else.
+    const stored = await db.pool.query<{ title: string; proposal_type: string; payload_json: Record<string, unknown> }>(
+      `SELECT title, proposal_type, payload_json FROM proposals WHERE id = $1`,
+      [created.proposal_id],
+    );
+    const row = stored.rows[0]!;
+    expect(row.title).toBe(`Promote ${assetKey} v1 to project:${PROJECT}`);
+    expect(proposalTitleParts(row.proposal_type, row.payload_json)).toEqual({
+      kind: "asset_version_promote",
+      asset_key: assetKey,
+      version: 1,
+      target_scope_type: "project",
+      target_scope_id: PROJECT,
+    });
   });
 
   it("rejects space promotion proposals whose target_scope_id is not the active space", async () => {
@@ -387,5 +404,14 @@ describe("Evolvable asset evaluation runs + promotion applier (real Postgres)", 
         promoted_from_proposal_id: proposal.proposal_id,
       },
     ]);
+  });
+});
+
+describe("promotion proposal title facts", () => {
+  it("leaves a proposal without recorded facts, or of another type, to its stored title", () => {
+    expect(proposalTitleParts("evolvable_asset_version_promote", { asset_id: "a", candidate_version_id: "v", target_scope_type: "space" })).toBeNull();
+    expect(proposalTitleParts("memory_create", { asset_key: "k", candidate_version: 2, target_scope_type: "space" })).toBeNull();
+    expect(proposalTitleParts("evolvable_asset_version_promote", { asset_key: "k", candidate_version: 2, target_scope_type: "space", target_scope_id: null }))
+      .toEqual({ kind: "asset_version_promote", asset_key: "k", version: 2, target_scope_type: "space", target_scope_id: null });
   });
 });

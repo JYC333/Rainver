@@ -18,6 +18,7 @@ import { ContentAccessControl } from '../../components/ContentAccessControl'
 import { notifyReviewAttentionChanged } from '../../core/reviewAttention'
 import { MemoryRevisionEditor } from './MemoryRevisionEditor'
 import { formatDateTime } from '../../i18n/format'
+import { proposalTitle } from './proposalTitle'
 
 function fmt(dt: string | null | undefined) {
   return formatDateTime(dt)
@@ -150,7 +151,7 @@ export default function ProposalDetailPage() {
         <Card className="p-5 space-y-4">
           <div className="flex flex-wrap justify-between gap-3 items-start">
             <div>
-              <h1 className="text-lg font-semibold tracking-tight">{p.proposed_title}</h1>
+              <h1 className="text-lg font-semibold tracking-tight">{proposalTitle(p.proposed_title, p.title_parts)}</h1>
               <p className="text-xs text-muted-foreground">
                 Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}
               </p>

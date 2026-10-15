@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { RetrievalEmbeddingStore } from "../index.js";
+import type { EmbeddingPolicyGeneration } from "../embeddingStore.js";
 import type { Queryable } from "../../routeUtils/common.js";
 import {
   EMBED_CLAIM_TTL_MS,
@@ -213,22 +214,24 @@ export class RetrievalEmbeddingBackfillService {
  * every source connection's policy, consent, owner, and liveness. A chunk set
  * aside as not sendable is looked at again only when this changes.
  */
-async function embeddingPolicyGeneration(db: Queryable, spaceId: string, policy: RetrievalEgressPolicy): Promise<string> {
-  const sources = await db.query<{ digest: string | null }>(
-    `SELECT md5(string_agg(
-              concat_ws(':', id, owner_user_id, status, deleted_at::text, consent_json::text, policy_json::text),
-              '|' ORDER BY id)) AS digest
+/**
+ * The egress state embedding is gated on, in the opaque form the engine store
+ * compares: a digest of the Space-wide switch, and one digest per Source
+ * connection of the Space (its owner, status, deletion, consent and policy).
+ */
+async function embeddingPolicyGeneration(db: Queryable, spaceId: string, policy: RetrievalEgressPolicy): Promise<EmbeddingPolicyGeneration> {
+  const connections = await db.query<{ id: string; digest: string }>(
+    `SELECT id, md5(concat_ws(':', id, owner_user_id, status, deleted_at::text, consent_json::text, policy_json::text)) AS digest
        FROM source_connections
       WHERE space_id = $1`,
     [spaceId],
   );
-  return createHash("sha256")
-    .update(JSON.stringify({
-      external: policy.externalEgressEnabled,
-      destination: policy.destination ?? "external_provider",
-      sources: sources.rows[0]?.digest ?? null,
-    }))
-    .digest("hex");
+  return {
+    frame: createHash("sha256")
+      .update(JSON.stringify({ external: policy.externalEgressEnabled, destination: policy.destination ?? "external_provider" }))
+      .digest("hex"),
+    connectionDigests: Object.fromEntries(connections.rows.map((row) => [row.id, row.digest])),
+  };
 }
 
 function uniqueSourceConnectionIds(pending: readonly { source_connection_ids_json: unknown }[]): string[] {

@@ -268,8 +268,10 @@ Required checks:
   managed-run tool or context assembly path can use the content.
 - The source connection must belong to the same `space_id` as the requested
   retrieval/context operation.
-- Missing, deleted, or cross-space source connection refs fail closed for
-  connected/source-derived content.
+- Missing, deleted, archived, or cross-space source connection refs fail
+  closed for connected/source-derived content: once a connection is archived
+  or deleted, none of the paths above admits anyone, its owner included —
+  withdrawing a source ends access to what it delivered.
 
 The source gate must not emit hidden-source counts, hidden object IDs, hidden
 titles, hidden graph-neighbor counts, or near-miss hints. A denied source row is

@@ -27,7 +27,8 @@ import { Badge } from '../../components/ui/badge'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../../components/ui/table'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import { Pagination } from '../../components/ui/pagination'
-import { formatDateTime } from '../../i18n/format'
+import { formatDateTime, formatNumber } from '../../i18n/format'
+import { useAppTranslation } from '../../i18n'
 
 const TYPES:  MemoryType[]  = ['preference', 'semantic', 'episodic', 'procedural', 'project']
 function fmt(dt: string | null | undefined) { return formatDateTime(dt) }
@@ -46,6 +47,7 @@ const EMPTY_FORM: MemoryForm = {
 const MEMORY_PAGE_SIZE = 50
 
 export default function MemoriesPage() {
+  const { t } = useAppTranslation()
   const { activeSpaceId, activeSpaceName } = useSpace()
   const { currentUser } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -173,7 +175,7 @@ export default function MemoriesPage() {
   async function runSearch() {
     const q = query.trim()
     if (!activeSpaceId) {
-      toast.error('Select an operational space before searching memory')
+      toast.error(t('workspace_ui.memories.no_space_search'))
       return
     }
     if (!q) {
@@ -215,11 +217,11 @@ export default function MemoriesPage() {
 
   async function addMemory() {
     if (!activeSpaceId) {
-      toast.error('Select an operational space before proposing memory')
+      toast.error(t('workspace_ui.memories.no_space_propose'))
       return
     }
     if (!form.title.trim() || !form.content.trim()) {
-      toast.error('Title and content required'); return
+      toast.error(t('workspace_ui.memories.title_content_required')); return
     }
     try {
       await memoryApi.create({
@@ -227,7 +229,7 @@ export default function MemoriesPage() {
         project_id: projectFilter || null,
       })
       setForm(EMPTY_FORM)
-      toast.success('Memory proposal submitted')
+      toast.success(t('workspace_ui.memories.proposal_submitted'))
       await load()
     } catch (e) { toast.error(errMsg(e)) }
   }
@@ -246,7 +248,7 @@ export default function MemoriesPage() {
   async function deleteMemory(id: string) {
     try {
       const result = await memoryApi.delete(id)
-      toast(isMemory(result) ? 'Archived' : 'Archive proposal submitted')
+      toast(isMemory(result) ? t('workspace_ui.memories.archived_toast') : t('workspace_ui.memories.archive_proposal_submitted'))
       await load()
     } catch (e) { toast.error(errMsg(e)) }
   }
@@ -254,7 +256,7 @@ export default function MemoriesPage() {
   async function revertMemory(id: string) {
     try {
       await memoryApi.revert(id)
-      toast('Put the previous version back')
+      toast(t('workspace_ui.memories.reverted'))
       await load()
     } catch (e) { toast.error(errMsg(e)) }
   }
@@ -262,14 +264,14 @@ export default function MemoriesPage() {
   async function restoreMemory(id: string) {
     try {
       await memoryApi.restore(id)
-      toast('Restored')
+      toast(t('workspace_ui.memories.restored'))
       await load()
     } catch (e) { toast.error(errMsg(e)) }
   }
 
   async function runMaintenanceScan(cursorOverride?: string | null) {
     if (!activeSpaceId) {
-      toast.error('Select an operational space before scanning memory')
+      toast.error(t('workspace_ui.memories.no_space_scan'))
       return
     }
     const cursor = cursorOverride ?? (maintenanceScanMode === 'full' ? maintenanceCursor.trim() : '')
@@ -292,7 +294,7 @@ export default function MemoriesPage() {
       setMaintenanceNextCursor(report.next_cursor ?? null)
       setMaintenanceReportReviewScope(maintenanceReviewScope)
       setClaimPacketResult(null)
-      toast.success(report.proposal_id ? 'Memory maintenance report and packet created' : 'Memory maintenance report created')
+      toast.success(report.proposal_id ? t('workspace_ui.memories.report_and_packet_created') : t('workspace_ui.memories.report_created'))
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -302,7 +304,7 @@ export default function MemoriesPage() {
 
   async function createClaimCandidatePacket() {
     if (!maintenanceReport?.artifact_id) {
-      toast.error('Create a persisted maintenance report first')
+      toast.error(t('workspace_ui.memories.report_first'))
       return
     }
     setClaimPacketCreating(true)
@@ -312,7 +314,7 @@ export default function MemoriesPage() {
         review_scope: maintenanceReportReviewScope,
       })
       setClaimPacketResult(result)
-      toast.success(result.proposal_id ? 'Claim candidate packet created' : 'Claim candidate packet artifact created')
+      toast.success(result.proposal_id ? t('workspace_ui.memories.claim_packet_created') : t('workspace_ui.memories.claim_artifact_created'))
     } catch (e) {
       toast.error(errMsg(e))
     } finally {
@@ -340,14 +342,14 @@ export default function MemoriesPage() {
           <Activity className="size-5 text-accent-foreground" />
         </div>
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Memories</h1>
-          <p className="text-sm text-muted-foreground">Review-gated personal and project memories.</p>
-          <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}</p>
+          <h1 className="text-xl font-semibold tracking-tight">{t('workspace_ui.memories.title')}</h1>
+          <p className="text-sm text-muted-foreground">{t('workspace_ui.memories.subtitle')}</p>
+          <p className="text-xs text-muted-foreground">{t('workspace_ui.memories.viewing', { space: activeSpaceName ?? activeSpaceId ?? t('workspace_ui.memories.no_space') })}</p>
           {projectFilter && (
             <span className="inline-flex items-center gap-1 mt-0.5 px-2 py-0.5 rounded-full bg-accent/40 text-xs text-accent-foreground">
               <FolderKanban className="size-3" />
-              Filtered by project
-              <button onClick={() => setSearchParams(p => { p.delete('project_id'); return p })} className="ml-0.5 hover:text-foreground" aria-label="Clear project filter">
+              {t('workspace_ui.memories.filtered_by_project')}
+              <button onClick={() => setSearchParams(p => { p.delete('project_id'); return p })} className="ml-0.5 hover:text-foreground" aria-label={t('workspace_ui.memories.clear_project_filter')}>
                 <X className="size-3" />
               </button>
             </span>
@@ -356,30 +358,30 @@ export default function MemoriesPage() {
       </div>
 
       <Card>
-        <CardTitle>Propose memory</CardTitle>
+        <CardTitle>{t('workspace_ui.memories.propose_title')}</CardTitle>
         <div className="grid grid-cols-2 gap-3 mb-3">
           <div>
-            <Label>Title</Label>
-            <Input value={form.title} onChange={e => setField('title', e.target.value)} placeholder="Short title…" />
+            <Label>{t('workspace_ui.memories.field_title')}</Label>
+            <Input value={form.title} onChange={e => setField('title', e.target.value)} placeholder={t('workspace_ui.memories.title_placeholder')} />
           </div>
           <div>
-            <Label>Type</Label>
+            <Label>{t('workspace_ui.memories.field_type')}</Label>
             <Select
               value={form.type}
-              options={TYPES.map(t => ({ value: t, label: t }))}
+              options={TYPES.map(type => ({ value: type, label: type }))}
               onChange={v => setField('type', v as MemoryType)}
             />
           </div>
           <div>
-            <Label>Namespace</Label>
+            <Label>{t('workspace_ui.memories.field_namespace')}</Label>
             <Input value={form.namespace} onChange={e => setField('namespace', e.target.value)} />
           </div>
         </div>
         <div className="mb-3">
-          <Label>Content</Label>
-          <Textarea value={form.content} onChange={e => setField('content', e.target.value)} placeholder="Memory content…" />
+          <Label>{t('workspace_ui.memories.field_content')}</Label>
+          <Textarea value={form.content} onChange={e => setField('content', e.target.value)} placeholder={t('workspace_ui.memories.content_placeholder')} />
         </div>
-        <Button onClick={addMemory} disabled={!activeSpaceId}>Submit proposal</Button>
+        <Button onClick={addMemory} disabled={!activeSpaceId}>{t('workspace_ui.memories.submit_proposal')}</Button>
       </Card>
 
       <Card>
@@ -389,29 +391,28 @@ export default function MemoriesPage() {
               <Wrench className="size-4 text-accent-foreground" />
             </div>
             <div>
-              <CardTitle>Memory Maintenance</CardTitle>
+              <CardTitle>{t('workspace_ui.memories.maintenance_title')}</CardTitle>
               <p className="mt-1 text-sm text-muted-foreground">
-                Scan visible memories for duplicates, contradictions and external content without a source. Age and short content are shown as hints and never become review tasks.
-                Recent scans sample the newest window; full scans continue by cursor.
+                {t('workspace_ui.memories.maintenance_description')}
               </p>
-              {projectFilter && <p className="mt-1 text-xs text-muted-foreground">Project filter active: {projectFilter}</p>}
+              {projectFilter && <p className="mt-1 text-xs text-muted-foreground">{t('workspace_ui.memories.project_filter_active', { project: projectFilter })}</p>}
               {!spaceOpsReviewAllowed && (
-                <p className="mt-1 text-xs text-muted-foreground">space_ops review is disabled by retrieval settings; scans will create private reports.</p>
+                <p className="mt-1 text-xs text-muted-foreground">{t('workspace_ui.memories.space_ops_disabled')}</p>
               )}
             </div>
           </div>
           <div className="grid gap-2 md:grid-cols-[90px_90px_90px_90px_120px_minmax(180px,1fr)_130px_auto]">
-            <NumberField label="limit" value={maintenanceLimit} onChange={setMaintenanceLimit} />
-            <NumberField label="stale days" value={staleAfterDays} onChange={setStaleAfterDays} />
-            <NumberField label="thin chars" value={thinContentChars} onChange={setThinContentChars} />
-            <NumberField label="max findings" value={maxFindings} onChange={setMaxFindings} />
+            <NumberField label={t('workspace_ui.memories.field_limit')} value={maintenanceLimit} onChange={setMaintenanceLimit} />
+            <NumberField label={t('workspace_ui.memories.field_stale_days')} value={staleAfterDays} onChange={setStaleAfterDays} />
+            <NumberField label={t('workspace_ui.memories.field_thin_chars')} value={thinContentChars} onChange={setThinContentChars} />
+            <NumberField label={t('workspace_ui.memories.field_max_findings')} value={maxFindings} onChange={setMaxFindings} />
             <div className="space-y-1">
-              <Label className="text-xs">scan</Label>
+              <Label className="text-xs">{t('workspace_ui.memories.field_scan')}</Label>
               <Select
                 value={maintenanceScanMode}
                 options={[
-                  { value: 'recent', label: 'recent' },
-                  { value: 'full', label: 'full' },
+                  { value: 'recent', label: t('workspace_ui.memories.scan_recent') },
+                  { value: 'full', label: t('workspace_ui.memories.scan_full') },
                 ]}
                 onChange={value => {
                   setMaintenanceScanMode(value as 'recent' | 'full')
@@ -420,7 +421,7 @@ export default function MemoriesPage() {
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">cursor</Label>
+              <Label className="text-xs">{t('workspace_ui.memories.field_cursor')}</Label>
               <Input
                 value={maintenanceCursor}
                 onChange={event => setMaintenanceCursor(event.target.value)}
@@ -429,16 +430,16 @@ export default function MemoriesPage() {
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">review</Label>
+              <Label className="text-xs">{t('workspace_ui.memories.field_review')}</Label>
               <Select
                 value={maintenanceReviewScope}
                 options={[
-                  { value: 'private', label: 'private' },
-                  ...(spaceOpsReviewAllowed ? [{ value: 'space_ops', label: 'space_ops' }] : []),
+                  { value: 'private', label: t('workspace_ui.memories.review_private') },
+                  ...(spaceOpsReviewAllowed ? [{ value: 'space_ops', label: t('workspace_ui.memories.review_space_ops') }] : []),
                 ]}
                 onChange={value => {
                   if (value === 'space_ops' && !spaceOpsReviewAllowed) {
-                    toast.error('space_ops review is disabled in retrieval settings')
+                    toast.error(t('workspace_ui.memories.space_ops_disabled_toast'))
                     setMaintenanceReviewScope('private')
                     return
                   }
@@ -454,11 +455,11 @@ export default function MemoriesPage() {
                   onChange={event => setCreateMaintenancePacket(event.target.checked)}
                   className="accent-primary"
                 />
-                create packet
+                {t('workspace_ui.memories.create_packet')}
               </label>
               <Button size="sm" onClick={() => void runMaintenanceScan()} disabled={maintenanceRunning || !activeSpaceId}>
                 {maintenanceRunning ? <Loader2 className="size-3.5 animate-spin" /> : <FileText className="size-3.5" />}
-                Scan
+                {t('workspace_ui.memories.scan')}
               </Button>
             </div>
           </div>
@@ -466,9 +467,9 @@ export default function MemoriesPage() {
         {maintenanceReport && (
           <div className="mt-4 space-y-3">
             <div className="flex flex-wrap gap-3 text-sm">
-              <Badge variant="secondary">{maintenanceReport.scanned} scanned</Badge>
+              <Badge variant="secondary">{t('workspace_ui.memories.scanned', { count: maintenanceReport.scanned })}</Badge>
               <Badge variant={maintenanceReport.truncated ? 'warning' : 'success'}>
-                {maintenanceReport.truncated ? 'truncated' : 'complete'}
+                {maintenanceReport.truncated ? t('workspace_ui.memories.truncated') : t('workspace_ui.memories.complete')}
               </Badge>
               {maintenanceReport.scan_mode && <Badge variant="outline">{maintenanceReport.scan_mode}</Badge>}
               {Object.entries(maintenanceReport.counts).map(([kind, count]) => (
@@ -484,17 +485,17 @@ export default function MemoriesPage() {
                   disabled={maintenanceRunning || maintenanceScanMode !== 'full'}
                 >
                   <ChevronRight className="size-3.5" />
-                  Continue full scan
+                  {t('workspace_ui.memories.continue_scan')}
                 </Button>
               )}
               {maintenanceReport.artifact_id && (
                 <Link to={`/artifacts/${maintenanceReport.artifact_id}`} className="text-accent-foreground hover:underline">
-                  Open maintenance report
+                  {t('workspace_ui.memories.open_report')}
                 </Link>
               )}
               {maintenanceReport.proposal_id && (
                 <Link to={`/proposals/${maintenanceReport.proposal_id}`} className="text-accent-foreground hover:underline">
-                  Open maintenance packet
+                  {t('workspace_ui.memories.open_packet')}
                 </Link>
               )}
               {maintenanceReport.artifact_id && (
@@ -505,16 +506,16 @@ export default function MemoriesPage() {
                   disabled={claimPacketCreating}
                 >
                   {claimPacketCreating ? <Loader2 className="size-3.5 animate-spin" /> : <PackageCheck className="size-3.5" />}
-                  Claim packet
+                  {t('workspace_ui.memories.claim_packet')}
                 </Button>
               )}
               {claimPacketResult && (
                 <>
                   <Link to={`/artifacts/${claimPacketResult.artifact_id}`} className="text-accent-foreground hover:underline">
-                    Open claim packet artifact
+                    {t('workspace_ui.memories.open_claim_artifact')}
                   </Link>
                   <Link to={`/proposals/${claimPacketResult.proposal_id}`} className="text-accent-foreground hover:underline">
-                    Open claim packet proposal
+                    {t('workspace_ui.memories.open_claim_proposal')}
                   </Link>
                 </>
               )}
@@ -523,7 +524,7 @@ export default function MemoriesPage() {
               <div className="space-y-2">
                 {maintenanceReport.findings.length > 8 && (
                   <p className="text-xs text-muted-foreground">
-                    Showing first 8 of {maintenanceReport.findings.length} findings. Open the report artifact for the full list.
+                    {t('workspace_ui.memories.showing_findings', { count: maintenanceReport.findings.length })}
                   </p>
                 )}
                 <div className="divide-y divide-border rounded-md border border-border">
@@ -554,16 +555,16 @@ export default function MemoriesPage() {
           <div className="space-y-2">
             <CardTitle>
               {showingSearch
-                ? 'Search Results'
-                : statusFilter === 'archived' ? 'Archived Memories' : 'Active Memories'}
+                ? t('workspace_ui.memories.search_results')
+                : statusFilter === 'archived' ? t('workspace_ui.memories.archived_memories') : t('workspace_ui.memories.active_memories')}
               {' '}({showingSearch ? searchResults.length : memoryTotal})
             </CardTitle>
             {!showingSearch && (
               <div className="flex flex-wrap items-center gap-2 text-xs">
                 {([
-                  ['all', 'Everyone'],
-                  ['agent', 'Written by an Agent'],
-                  ['user', 'Written by a person'],
+                  ['all', t('workspace_ui.memories.written_by_all')],
+                  ['agent', t('workspace_ui.memories.written_by_agent')],
+                  ['user', t('workspace_ui.memories.written_by_person')],
                 ] as const).map(([value, label]) => (
                   <Button
                     key={value}
@@ -586,15 +587,15 @@ export default function MemoriesPage() {
                     }
                     return previous
                   })}
-                  title="What your Agents have learned about themselves and about a Room"
+                  title={t('workspace_ui.memories.agent_memory_hint')}
                 >
-                  Agent memory
+                  {t('workspace_ui.memories.agent_memory')}
                 </Button>
                 <div className="min-w-[180px]">
                   <Select
                     value={agentFilter}
                     options={[
-                      { value: '', label: 'All Agents' },
+                      { value: '', label: t('workspace_ui.memories.all_agents') },
                       ...agents.map(agent => ({ value: agent.id, label: agent.name })),
                     ]}
                     onChange={value => setSearchParams(previous => {
@@ -606,7 +607,7 @@ export default function MemoriesPage() {
                       }
                       return previous
                     })}
-                    ariaLabel="Filter memory by Agent"
+                    ariaLabel={t('workspace_ui.memories.filter_by_agent')}
                   />
                 </div>
                 <Button
@@ -617,24 +618,24 @@ export default function MemoriesPage() {
                     sinceFilter ? null : new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString(),
                   )}
                 >
-                  Last 7 days
+                  {t('workspace_ui.memories.last_7_days')}
                 </Button>
                 <Button
                   size="sm"
                   variant={statusFilter === 'archived' ? 'secondary' : 'ghost'}
                   onClick={() => setFilter('status', statusFilter === 'archived' ? null : 'archived')}
                 >
-                  Archived
+                  {t('workspace_ui.memories.archived_filter')}
                 </Button>
                 {([['session', sessionFilter], ['run', runFilter]] as const)
                   .filter(([, value]) => value)
                   .map(([key, value]) => (
                     <Badge key={key} variant="warning" className="gap-1">
-                      {key === 'session' ? 'Session' : 'Turn'} {value.slice(0, 8)}
+                      {key === 'session' ? t('workspace_ui.memories.session_chip', { id: value.slice(0, 8) }) : t('workspace_ui.memories.turn_chip', { id: value.slice(0, 8) })}
                       <button
                         type="button"
                         onClick={() => setFilter(key, null)}
-                        aria-label={`Clear ${key} filter`}
+                        aria-label={key === 'session' ? t('workspace_ui.memories.clear_session_filter') : t('workspace_ui.memories.clear_run_filter')}
                       >
                         <X className="size-3" />
                       </button>
@@ -653,15 +654,15 @@ export default function MemoriesPage() {
             <Input
               value={query}
               onChange={e => setQuery(e.target.value)}
-              placeholder="Search memory…"
+              placeholder={t('workspace_ui.memories.search_placeholder')}
               className="min-w-0 lg:w-72"
             />
             <Button type="submit" variant="outline" disabled={!activeSpaceId || searching}>
-              <Search className="size-4" /> Search
+              <Search className="size-4" /> {t('workspace_ui.memories.search')}
             </Button>
             {showingSearch && (
               <Button type="button" variant="ghost" onClick={clearSearch}>
-                <X className="size-4" /> Clear
+                <X className="size-4" /> {t('workspace_ui.memories.clear')}
               </Button>
             )}
           </form>
@@ -669,15 +670,15 @@ export default function MemoriesPage() {
         {(showingSearch ? searchResults.length : memories.length) === 0
           ? <p className="text-muted-foreground text-center py-10 text-sm">
               {activeSpaceId
-                ? showingSearch ? 'No memories matched this search.' : 'No active memories.'
-                : 'Select an operational space to browse memories.'}
+                ? showingSearch ? t('workspace_ui.memories.no_search_results') : statusFilter === 'archived' ? t('workspace_ui.memories.no_archived') : t('workspace_ui.memories.no_active')
+                : t('workspace_ui.memories.no_space_browse')}
             </p>
           : showingSearch ? (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Title</TableHead><TableHead>Evidence</TableHead>
-                  <TableHead>Score</TableHead><TableHead>Matched</TableHead>
+                  <TableHead>{t('workspace_ui.memories.col_title')}</TableHead><TableHead>{t('workspace_ui.memories.col_evidence')}</TableHead>
+                  <TableHead>{t('workspace_ui.memories.col_score')}</TableHead><TableHead>{t('workspace_ui.memories.col_matched')}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -689,7 +690,7 @@ export default function MemoriesPage() {
                         onClick={() => recordSearchOpen(result)}
                         className="font-medium text-accent-foreground hover:underline"
                       >
-                        {result.title || 'Untitled memory'}
+                        {result.title || t('workspace_ui.memories.untitled')}
                       </Link>
                       {result.object_profile_label && (
                         <div className="mt-1">
@@ -699,7 +700,7 @@ export default function MemoriesPage() {
                       {result.snippet && <p className="text-xs text-muted-foreground truncate mt-0.5">{result.snippet}</p>}
                     </TableCell>
                     <TableCell><Badge variant="secondary">{result.evidence.kind}</Badge></TableCell>
-                    <TableCell className="text-muted-foreground">{result.score.toFixed(4)}</TableCell>
+                    <TableCell className="text-muted-foreground">{formatNumber(result.score, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{result.matched_fields.join(', ') || '—'}</TableCell>
                   </TableRow>
                 ))}
@@ -709,9 +710,9 @@ export default function MemoriesPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Title</TableHead><TableHead>Type</TableHead>
-                  <TableHead>Scope</TableHead><TableHead>Visibility</TableHead><TableHead>Namespace</TableHead>
-                  <TableHead>Imp.</TableHead><TableHead>Created</TableHead>
+                  <TableHead>{t('workspace_ui.memories.col_title')}</TableHead><TableHead>{t('workspace_ui.memories.col_type')}</TableHead>
+                  <TableHead>{t('workspace_ui.memories.col_scope')}</TableHead><TableHead>{t('workspace_ui.memories.col_visibility')}</TableHead><TableHead>{t('workspace_ui.memories.col_namespace')}</TableHead>
+                  <TableHead>{t('workspace_ui.memories.col_importance')}</TableHead><TableHead>{t('workspace_ui.memories.col_created')}</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
@@ -723,11 +724,11 @@ export default function MemoriesPage() {
                         to={`/memory/${m.id}`}
                         className="font-medium text-accent-foreground hover:underline"
                       >
-                        {m.title || 'Untitled memory'}
+                        {m.title || t('workspace_ui.memories.untitled')}
                       </Link>
                       {m.created_by?.startsWith('agent:') && (
                         <Badge variant="outline" className="ml-2">
-                          {agents.find(agent => agent.id === m.agent_id)?.name ?? 'Agent'}
+                          {agents.find(agent => agent.id === m.agent_id)?.name ?? t('workspace_ui.memories.agent_fallback')}
                         </Badge>
                       )}
                       {m.content && <p className="text-xs text-muted-foreground truncate mt-0.5">{m.content}</p>}
@@ -742,16 +743,16 @@ export default function MemoriesPage() {
                         // contained (ADR 0003 §4).
                         <span className="block text-xs">
                           {m.type === 'persona'
-                            ? 'everywhere'
+                            ? t('workspace_ui.memories.reach_everywhere')
                             : m.origin_room_id
-                              ? 'one Room'
-                              : 'direct chat only'}
+                              ? t('workspace_ui.memories.reach_one_room')
+                              : t('workspace_ui.memories.reach_direct_only')}
                         </span>
                       )}
                     </TableCell>
                     <TableCell><ScopeBadge visibility={m.visibility} /></TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">{m.namespace ?? '—'}</TableCell>
-                    <TableCell className="text-muted-foreground">{m.importance.toFixed(1)}</TableCell>
+                    <TableCell className="text-muted-foreground">{formatNumber(m.importance, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</TableCell>
                     <TableCell className="text-muted-foreground text-xs">{fmt(m.created_at)}</TableCell>
                     <TableCell className="whitespace-nowrap">
                       {m.status === 'archived'
@@ -759,14 +760,14 @@ export default function MemoriesPage() {
                         // fallback the way archive does, so offering it on
                         // someone else's entry is a button that only 404s.
                         ? (m.owner_user_id === currentUser?.id
-                          ? <Button variant="outline" size="sm" onClick={() => restoreMemory(m.id)}>Restore</Button>
+                          ? <Button variant="outline" size="sm" onClick={() => restoreMemory(m.id)}>{t('workspace_ui.memories.restore')}</Button>
                           : null)
                         : m.type === 'persona' && m.supersedes_memory_id && m.owner_user_id === currentUser?.id
                           // An Agent must have some persona, so the reversal
                           // is one action: retire this version, bring back the
                           // one it replaced.
-                          ? <Button variant="outline" size="sm" onClick={() => revertMemory(m.id)}>Undo change</Button>
-                          : <Button variant="destructive" size="sm" onClick={() => deleteMemory(m.id)}>×</Button>}
+                          ? <Button variant="outline" size="sm" onClick={() => revertMemory(m.id)}>{t('workspace_ui.memories.undo_change')}</Button>
+                          : <Button variant="destructive" size="sm" onClick={() => deleteMemory(m.id)} aria-label={t('workspace_ui.memories.archive_aria', { title: m.title || t('workspace_ui.memories.untitled') })} title={t('workspace_ui.memories.archive')}>×</Button>}
                     </TableCell>
                   </TableRow>
                 ))}

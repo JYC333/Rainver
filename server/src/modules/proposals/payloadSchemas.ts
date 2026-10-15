@@ -352,7 +352,9 @@ const evolvableAssetVersionPromote = z
   .object({
     proposal_type: z.literal("evolvable_asset_version_promote"),
     asset_id: z.string().min(1),
+    asset_key: z.string().min(1).optional(),
     candidate_version_id: z.string().min(1),
+    candidate_version: z.number().int().optional(),
     target_scope_type: z.enum(["project", "space", "system", "user", "agent"]),
     target_scope_id: z.string().min(1).nullable().optional(),
     pin_after_approval: z.boolean().optional(),

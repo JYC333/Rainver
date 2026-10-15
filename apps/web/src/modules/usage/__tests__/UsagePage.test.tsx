@@ -12,6 +12,7 @@ import type {
 } from '@rainver/protocol'
 import UsagePage from '../UsagePage'
 import { usageApi } from '../../../api/client'
+import i18n from '../../../i18n'
 
 vi.mock('sonner', () => ({
   toast: {
@@ -335,4 +336,35 @@ describe('UsagePage', () => {
     expect((await screen.findAllByText('Provider')).length).toBeGreaterThan(0)
   })
 
+  it('counts events, runs and the budget window in the right plural form', async () => {
+    render(<UsagePage />)
+
+    expect(await screen.findByText('2 events')).toBeInTheDocument()
+    expect(screen.getByText('1 run')).toBeInTheDocument()
+    expect(screen.getByText('30 days')).toBeInTheDocument()
+    expect(screen.getAllByText('50.0% observed').length).toBeGreaterThan(0)
+  })
+
+  it('reads in Chinese, with dates, numbers and costs in Chinese form', async () => {
+    await i18n.changeLanguage('zh-CN')
+    try {
+      render(<UsagePage />)
+
+      expect(await screen.findByRole('heading', { name: 'Token 用量' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '空间内共享' })).toBeInTheDocument()
+      expect(screen.getByText('2 个事件')).toBeInTheDocument()
+      expect(screen.getByText('1 次运行')).toBeInTheDocument()
+      expect(screen.getByText('30 天')).toBeInTheDocument()
+      expect(screen.getAllByText('已观测 50.0%').length).toBeGreaterThan(0)
+      // The timeseries day is the stored day, written the Chinese way.
+      expect(screen.getByText('7月9日')).toBeInTheDocument()
+      expect(screen.getAllByText(/7月9日 \d{2}:\d{2}/).length).toBeGreaterThan(0)
+      expect(screen.getAllByText('US$12.50').length).toBeGreaterThan(0)
+      // Provider names and model ids are data, not copy.
+      expect(screen.getAllByText('OpenAI').length).toBeGreaterThan(0)
+      expect(screen.getByRole('cell', { name: '每个会话' })).toBeInTheDocument()
+    } finally {
+      await i18n.changeLanguage('en')
+    }
+  })
 })

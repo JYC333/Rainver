@@ -219,15 +219,21 @@ async function enforceConnectionReadConsent(
   connectionId: string,
   deliveredAt: string,
 ): Promise<void> {
-  const conn = await db.query<{ project_id: string | null; consent_json: unknown; policy_json: unknown; owner_user_id: string }>(
-    `SELECT project_id, consent_json, policy_json, owner_user_id
+  const conn = await db.query<{
+    project_id: string | null; consent_json: unknown; policy_json: unknown; owner_user_id: string;
+    status: string; deleted_at: unknown;
+  }>(
+    `SELECT project_id, consent_json, policy_json, owner_user_id, status, deleted_at
        FROM source_connections WHERE space_id = $1 AND id = $2`,
     [identity.spaceId, connectionId],
   );
-  // Intentionally omits deleted_at IS NULL: soft-deleted connections still carry
-  // consent_json and should continue to gate access to their derived snapshots.
-  // A missing row (hard-deleted or wrong space) is treated as fail-closed.
-  if (!conn.rows[0]) throw new HttpError(404, "Not found");
+  // A missing row (hard-deleted or wrong space) is fail-closed, and so is a
+  // withdrawn one: an archived or soft-deleted connection admits nobody — not
+  // its subscribers, its consent-listed readers or Space admins, nor its owner
+  // — exactly as the shared Source item gate decides.
+  if (!conn.rows[0] || conn.rows[0].status === "archived" || conn.rows[0].deleted_at) {
+    throw new HttpError(404, "Not found");
+  }
   const gov = normalizeSourceConnectionReadGovernance({
     ...conn.rows[0],
     id: connectionId,
@@ -252,6 +258,8 @@ async function enforceConnectionReadConsent(
     updated_at: null,
   });
   const consent = gov.consent;
+  // The owner reads directly while the connection is live, as the shared
+  // Source item gate decides (`sourceItemConnectionGateClause`).
   if (identity.userId === consent.owner_user_id) return;
   const subscriber = await db.query(
     `SELECT 1

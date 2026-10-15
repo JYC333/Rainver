@@ -16,6 +16,7 @@ import { EmptyState } from '../../components/ui/empty-state'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
 import { useAppTranslation } from '../../i18n'
 import { formatDateTime } from '../../i18n/format'
+import { proposalTitle } from '../memory/proposalTitle'
 
 export default function ActivityDetailPage() {
   const { activityId = '' } = useParams()
@@ -165,7 +166,7 @@ export default function ActivityDetailPage() {
                 <div key={p.id} className="flex items-center gap-2 text-sm">
                   <Badge variant="secondary" className="shrink-0">{p.proposal_type}</Badge>
                   <Link to={`/proposals/${p.id}`} className="text-accent-foreground hover:underline truncate">
-                    {p.proposed_title}
+                    {proposalTitle(p.proposed_title, p.title_parts)}
                   </Link>
                 </div>
               ))}

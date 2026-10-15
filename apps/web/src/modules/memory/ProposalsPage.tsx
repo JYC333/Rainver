@@ -24,6 +24,7 @@ import {
   type ProposalTypeFilter,
 } from './proposalFilters'
 import { useAppTranslation } from '../../i18n'
+import { proposalTitle } from './proposalTitle'
 
 function fmt(dt: string | null | undefined) { return dt ? new Date(dt).toLocaleString() : '—' }
 
@@ -275,7 +276,7 @@ export default function ProposalsPage() {
           <Card key={p.id}>
             <div className="flex items-start justify-between gap-4 mb-3 flex-wrap">
               <Link to={`/proposals/${p.id}`} className="font-medium text-sm text-accent-foreground hover:underline">
-                {p.proposed_title}
+                {proposalTitle(p.proposed_title, p.title_parts)}
               </Link>
               {canDecide(p) && (
                 <div className="flex gap-1.5 shrink-0">

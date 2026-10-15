@@ -49,7 +49,8 @@ export function sourceItemFullContentReadClause(itemAlias: string, userParam: st
  * to re-read what was delivered, while losing the connection itself
  * (archived, deleted, visibility or grants narrowed, membership gone, its
  * channel archived) ends both. The connection's owner reads its items
- * directly while it exists; only their Library listing follows subscriptions.
+ * directly while the connection is live, even with every monitor archived;
+ * only their Library listing follows subscriptions.
  */
 export function sourceItemConnectionGateClause(itemAlias: string, userParam: string, libraryOnly: boolean): string {
   return `(
@@ -69,12 +70,12 @@ export function sourceItemConnectionGateClause(itemAlias: string, userParam: str
 
 /**
  * The connection's owner reads its items directly (Reader, artifacts,
- * evidence) for as long as the connection exists, whatever happens to its
- * monitors — the same rule the Reader's consent check applies. What the
+ * evidence) while the connection is live (not deleted or archived),
+ * whatever happens to its monitors. What the
  * owner's Library lists still follows their own subscriptions.
  */
 function sourceConnectionOwnerClause(connectionAlias: string, userParam: string): string {
-  return `(${connectionAlias}.owner_user_id = ${userParam} AND ${connectionAlias}.deleted_at IS NULL)`;
+  return `(${connectionAlias}.owner_user_id = ${userParam} AND ${connectionAlias}.deleted_at IS NULL AND ${connectionAlias}.status <> 'archived')`;
 }
 
 /** The historical half of the gate above, on its own for callers that reason about it. */
@@ -145,6 +146,30 @@ export function sourceConnectionDeliveredToReaderClause(connectionAlias: string,
   )`;
 }
 
+/**
+ * Whether one Source item's own document (its Reader text, extracted or raw
+ * artifact, export) may be opened: the item is readable to the viewer and
+ * the connection's consent admits them — the same single-document rule the
+ * Reader applies (owner, named reader, live or historical subscriber, or a
+ * Space owner/admin reviewing where the consent allows). A personal Library
+ * listing is narrower and follows subscriptions only
+ * (`sourceItemReadableClause`).
+ */
+export function sourceItemDocumentReadableClause(itemAlias: string, userParam: string): string {
+  return `(
+    ${contentReadSql("source_item", itemAlias, userParam)}
+    AND (
+      ${itemAlias}.connection_id IS NULL
+      OR EXISTS (
+        SELECT 1 FROM source_connections document_connection
+         WHERE document_connection.space_id = ${itemAlias}.space_id
+           AND document_connection.id = ${itemAlias}.connection_id
+           AND ${sourceConnectionReaderConsentClause("document_connection", userParam, `${itemAlias}.first_seen_at`)}
+      )
+    )
+  )`;
+}
+
 /** Artifact types that carry a Source item's own text and stay behind its gate. */
 export const SOURCE_DERIVED_ARTIFACT_TYPES = ["source_reader_document", "source_raw_snapshot"] as const;
 
@@ -164,7 +189,7 @@ export function sourceDerivedArtifactReadableClause(artifactAlias: string, userP
        WHERE artifact_item.space_id = ${artifactAlias}.space_id
          AND artifact_item.deleted_at IS NULL
          AND ${artifactAlias}.id IN (artifact_item.raw_artifact_id, artifact_item.extracted_artifact_id)
-         AND ${sourceItemReadableClause("artifact_item", userParam, false)}
+         AND ${sourceItemDocumentReadableClause("artifact_item", userParam)}
     )
     OR EXISTS (
       SELECT 1
@@ -226,7 +251,12 @@ export function sourceItemProfileEvidenceClause(itemAlias: string, userParam: st
  * or a Space owner/admin when the consent allows them.
  */
 export function sourceConnectionReaderConsentClause(connectionAlias: string, userParam: string, deliveredAtExpr: string): string {
+  // A withdrawn connection (archived or soft-deleted) admits nobody through
+  // any of the branches below, its owner and consent-listed readers included.
   return `(
+    ${connectionAlias}.deleted_at IS NULL
+    AND ${connectionAlias}.status <> 'archived'
+    AND (
     ${connectionAlias}.owner_user_id = ${userParam}
     OR ${connectionAlias}.consent_json->>'owner_user_id' = ${userParam}
     OR ${connectionAlias}.consent_json->'allowed_reader_user_ids' @> to_jsonb(${userParam}::text)
@@ -241,6 +271,7 @@ export function sourceConnectionReaderConsentClause(connectionAlias: string, use
            AND consent_membership.status = 'active'
            AND consent_membership.role IN ('owner','admin')
       )
+    )
     )
   )`;
 }

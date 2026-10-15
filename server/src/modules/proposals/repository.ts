@@ -4,6 +4,7 @@ import { assertProjectInSpace } from "../projects/access.js";
 import type { ProposalOut, ProposalPage } from "@rainver/protocol";
 import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { isProvenanceSourceType } from "../ontology/entities.js";
+import { proposalTitleParts } from "./titleParts.js";
 
 export interface QueryResult<Row> {
   rows: Row[];
@@ -260,6 +261,7 @@ export function proposalToOut(row: ProposalRow, now: Date): ProposalOut {
     target_namespace: stringValue(payload.target_namespace) ?? "",
     memory_type: stringValue(payload.memory_type) ?? "",
     proposed_title: row.title,
+    title_parts: proposalTitleParts(row.proposal_type, payload),
     proposed_content: stringValue(payload.proposed_content) ?? "",
     rationale: row.rationale ?? "",
     status: row.status,

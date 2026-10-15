@@ -6,6 +6,7 @@ import { insertProposalRow } from "../proposals/reviewPackets.js";
 import type { ProposalTransactionResult } from "../proposals/applyService.js";
 import { lockEvolutionAssets } from "./assetLocks.js";
 import { stableJsonStringify } from "./hash.js";
+import { proposalTitleParts, proposalTitlePayloadSql } from "../proposals/titleParts.js";
 
 const RISK_ORDER = ["low", "medium", "high", "critical"] as const;
 
@@ -65,6 +66,7 @@ interface BundleMemberRow {
   proposal_status: string;
   proposal_risk_level: string;
   proposal_title: string;
+  title_payload: Record<string, unknown> | null;
   proposal_summary: string | null;
   proposal_created_at: unknown;
 }
@@ -358,7 +360,8 @@ export class EvolutionBundleRepository {
   ): Promise<BundleMemberRow | null> {
     const result = await db.query<BundleMemberRow>(
       `SELECT bm.*, p.proposal_type, p.status AS proposal_status, p.risk_level AS proposal_risk_level,
-              p.title AS proposal_title, p.summary AS proposal_summary, p.created_at AS proposal_created_at
+              p.title AS proposal_title, p.summary AS proposal_summary, p.created_at AS proposal_created_at,
+              ${proposalTitlePayloadSql("p")}
          FROM evolution_bundle_members bm
          JOIN evolution_bundles b ON b.id = bm.bundle_id AND b.space_id = $1
          JOIN proposals p ON p.id = bm.proposal_id AND p.space_id = b.space_id
@@ -615,7 +618,8 @@ export class EvolutionBundleRepository {
   private async memberRowsFromDb(db: Queryable, identity: SpaceUserIdentity, bundleId: string): Promise<BundleMemberRow[]> {
     const result = await db.query<BundleMemberRow>(
       `SELECT bm.*, p.proposal_type, p.status AS proposal_status, p.risk_level AS proposal_risk_level,
-              p.title AS proposal_title, p.summary AS proposal_summary, p.created_at AS proposal_created_at
+              p.title AS proposal_title, p.summary AS proposal_summary, p.created_at AS proposal_created_at,
+              ${proposalTitlePayloadSql("p")}
          FROM evolution_bundle_members bm
          JOIN evolution_bundles b ON b.id = bm.bundle_id AND b.id = $1 AND b.space_id = $2
          JOIN proposals p ON p.id = bm.proposal_id AND p.space_id = b.space_id
@@ -774,6 +778,7 @@ export class EvolutionBundleRepository {
         status: row.proposal_status,
         risk_level: row.proposal_risk_level,
         title: row.proposal_title,
+        title_parts: proposalTitleParts(row.proposal_type, row.title_payload ?? {}),
         summary: row.proposal_summary,
         created_at: dateOut(row.proposal_created_at),
       },
@@ -818,7 +823,8 @@ export async function applyEvolutionBundleRollback(
 
   const members = await db.query<BundleMemberRow>(
     `SELECT bm.*, p.proposal_type, p.status AS proposal_status, p.risk_level AS proposal_risk_level,
-            p.title AS proposal_title, p.summary AS proposal_summary, p.created_at AS proposal_created_at
+            p.title AS proposal_title, p.summary AS proposal_summary, p.created_at AS proposal_created_at,
+              ${proposalTitlePayloadSql("p")}
        FROM evolution_bundle_members bm
        JOIN proposals p ON p.id = bm.proposal_id AND p.space_id = $2
       WHERE bm.bundle_id = $1 AND bm.status = 'approved'

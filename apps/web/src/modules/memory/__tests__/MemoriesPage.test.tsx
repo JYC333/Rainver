@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 import MemoriesPage from '../MemoriesPage'
 import type { Memory } from '../../../types/api'
 import { agentsApi, knowledgeApi, memoryApi, spacesApi } from '../../../api/client'
+import i18n from '../../../i18n'
 
 const toastCalls: string[] = []
 vi.mock('sonner', () => {
@@ -91,7 +92,7 @@ describe('MemoriesPage, memory an Agent wrote', () => {
     vi.mocked(memoryApi.delete).mockResolvedValue(memoryRow({ status: 'archived' }) as never)
     renderPage()
 
-    fireEvent.click(await screen.findByRole('button', { name: '×' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Archive Meeting times' }))
     await waitFor(() => { expect(memoryApi.delete).toHaveBeenCalledWith('memory-1') })
     // Not "proposal submitted": the server archived it.
     expect(toastCalls).toContain('Archived')
@@ -119,11 +120,28 @@ describe('MemoriesPage, memory an Agent wrote', () => {
     expect(screen.getByText('Agent note')).toBeInTheDocument()
   })
 
+  it('reads in Chinese, keeping the entry itself as written', async () => {
+    await i18n.changeLanguage('zh-CN')
+    try {
+      renderPage()
+
+      expect(await screen.findByRole('heading', { name: '记忆' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '由智能体写入' })).toBeInTheDocument()
+      expect(await screen.findByText('Meeting times')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '归档《Meeting times》' })).toBeInTheDocument()
+      expect(screen.getByRole('columnheader', { name: '创建时间' })).toBeInTheDocument()
+      expect(screen.getByText(/2026年8月2[56]日/)).toBeInTheDocument()
+      expect(screen.getByText('0.5')).toBeInTheDocument()
+    } finally {
+      await i18n.changeLanguage('en')
+    }
+  })
+
   it('still says a proposal was submitted for someone else\'s entry', async () => {
     vi.mocked(memoryApi.delete).mockResolvedValue({ id: 'proposal-1', proposal_type: 'memory_archive' } as never)
     renderPage()
 
-    fireEvent.click(await screen.findByRole('button', { name: '×' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Archive Meeting times' }))
     await waitFor(() => { expect(toastCalls).toContain('Archive proposal submitted') })
   })
 })
@@ -305,6 +323,29 @@ describe('MemoriesPage maintenance UI', () => {
         project_id: 'project-1',
       })
     })
+  })
+
+  it('counts a scan in Chinese', async () => {
+    vi.mocked(memoryApi.maintenanceScan).mockResolvedValueOnce({
+      findings: [],
+      counts: { duplicate: 0, stale: 0, thin: 0, contradiction: 0 },
+      candidate_limit: 500,
+      candidates_examined: 3,
+      scanned: 3,
+      truncated: false,
+      artifact_id: 'report-artifact-1',
+      proposal_id: null,
+      access_safety: {},
+    } as never)
+    await i18n.changeLanguage('zh-CN')
+    try {
+      renderPage()
+      fireEvent.click(await screen.findByRole('button', { name: '扫描' }))
+      expect(await screen.findByText('已扫描 3 条')).toBeInTheDocument()
+      expect(screen.getByText('已完成')).toBeInTheDocument()
+    } finally {
+      await i18n.changeLanguage('en')
+    }
   })
 
   it('runs a project-filtered maintenance scan and creates a claim candidate packet from the report', async () => {

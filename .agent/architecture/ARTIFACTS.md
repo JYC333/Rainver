@@ -55,6 +55,10 @@ artifact's production context remains unchanged.
   `source_reader_document` artifacts use
   `canonical_format="reader_document_json"` and store structured Reader JSON
   with remote image references, not downloaded image binaries.
+  Both stay behind their Source item: get, list and export admit a viewer
+  only while the Reader would open that item (`sourceDerivedArtifactReadableClause`
+  in `sources/sourceItemAccess.ts`), not by the visibility copied onto the
+  artifact at capture.
 
 ## Storage Rules
 

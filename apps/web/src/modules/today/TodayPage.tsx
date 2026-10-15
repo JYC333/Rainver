@@ -16,6 +16,7 @@ import { EmptyState } from '../../components/ui/empty-state'
 import { codePatchAcceptOptions } from '../memory/codePatchConfirm'
 import { notifyReviewAttentionChanged } from '../../core/reviewAttention'
 import { formatDateParts, formatDateTime } from '../../i18n/format'
+import { proposalTitle } from '../memory/proposalTitle'
 
 /**
  * Space Today — the space-scoped dashboard for ONE concrete Space (the active Space).
@@ -108,7 +109,7 @@ function ProductLoopStrip({ runs, tasks, proposals }: { runs: HomeRunSummaryItem
             {proposals.map(p => (
               <li key={p.id}>
                 <button type="button" onClick={() => navigate(`/proposals/${p.id}`)} className="w-full text-left rounded-md px-1 py-1 hover:bg-accent transition-colors">
-                  <div className="text-[12px] text-foreground truncate">{p.title}</div>
+                  <div className="text-[12px] text-foreground truncate">{proposalTitle(p.title, p.title_parts)}</div>
                   <div className="flex flex-wrap gap-1 items-center mt-0.5">
                     <UrgencyBadge urgency={p.urgency} />
                     <ScopeBadge visibility={p.visibility} omitShared className="text-[9px] px-1 py-0" />
@@ -141,7 +142,7 @@ function ProposalStatusCard({ proposals, onDecide }: { proposals: HomePendingPro
               <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-[.05em] text-muted-foreground" style={{ background: 'var(--accent)', border: '1px solid var(--border)', fontFamily: 'var(--font-mono)' }}>
                 {p.proposal_type.slice(0, 4)}
               </span>
-              <Link to={`/proposals/${p.id}`} className="flex-1 min-w-0 text-[12px] text-foreground truncate hover:underline">{p.title}</Link>
+              <Link to={`/proposals/${p.id}`} className="flex-1 min-w-0 text-[12px] text-foreground truncate hover:underline">{proposalTitle(p.title, p.title_parts)}</Link>
               {canQuick(p) && (
                 <div className="flex gap-1 shrink-0">
                   <button type="button" onClick={() => onDecide(p, 'accept')} title="Accept" className="w-[22px] h-[22px] rounded flex items-center justify-center" style={{ background: 'color-mix(in oklch, var(--success) 15%, transparent)', border: '1px solid color-mix(in oklch, var(--success) 30%, transparent)', color: 'var(--success)' }}>

@@ -43,6 +43,7 @@ import {
   verificationResultToOut,
 } from "./runReadModel.js";
 import { resolveRunRemoteness } from "./runRemoteness.js";
+import { finalizedForPostRun } from "./finalizationOutcome.js";
 
 interface RunsCommandServices {
   orchestration: Pick<RunOrchestrationService, "executeRun" | "cancelRun">;
@@ -537,7 +538,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const result = await RunMaterializationService.fromConfig(
         context.config,
       ).finalizeRun(run);
-      if (result.status !== "succeeded") {
+      // Owed settlement is a durable finalization; the sweep settles the rest.
+      if (!finalizedForPostRun(result)) {
         throw new Error(
           result.error_message ?? "Run finalization reconciliation failed.",
         );

@@ -184,9 +184,12 @@ write pointer-only audit.
   let it reach the embedding provider is set aside under the current policy
   generation (`retrieval_chunks.embedding_blocked_generation`). The claim passes
   over it, so blocked chunks never hold the head of the queue, and spends no
-  attempt on it. The generation names the space switch and every source
-  connection's policy, consent, owner, and liveness; when any of those changes,
-  the set-aside chunks are claimed again.
+  attempt on it. A chunk's generation names the space switch and the policy,
+  consent, owner, and liveness of only the source connections its object
+  depends on (`source_connection_ids_json`). It is claimed again when one of
+  those changes; editing an unrelated connection leaves it set aside. The app
+  layer computes the per-connection digests and the engine store only
+  compares them, so the store still reads no domain table.
 - **Query rewriter** — pre-recall, query-string-only. Rewrite results are returned
   in a **separate** `rewrite_items` list, never blended into or co-ranked with the
   primary (original-query) list, so the primary list is never biased by how many

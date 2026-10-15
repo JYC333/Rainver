@@ -43,6 +43,7 @@ import { registerRoomQueuedMessageReleaseHandler } from "../rooms/queuedMessageR
 import { registerResearchAcquisitionPipelineHandler } from "../projectResearch/pipeline/researchAcquisitionPipelineJob.js";
 import { registerResearchOperationFailureNotifyHandler } from "../projectResearch/pipeline/researchOperationFailureNotifyJob.js";
 import { registerResearchOperationCancelHandler } from "../projectResearch/pipeline/researchOperationCancelJob.js";
+import { finalizedForPostRun } from "../runs/finalizationOutcome.js";
 
 const POLL_INTERVAL_MS = 1_000;
 /**
@@ -247,7 +248,8 @@ export async function reconcileTerminalChatRuns(
     if (!run) continue;
     try {
       const finalization = await materializer.finalizeRun(run);
-      if (finalization.status !== "succeeded") {
+      // Owed settlement is finished for the chat turn: the sweep settles the rest.
+      if (!finalizedForPostRun(finalization)) {
         throw new Error(
           finalization.error_message ?? "Run finalization reconciliation failed.",
         );

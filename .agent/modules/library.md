@@ -48,7 +48,12 @@ source pipeline, subscription model, data model, and API.
   Both a live subscription and a closed period hold only while the
   connection still admits the reader: archiving or deleting the connection,
   archiving its channel, or narrowing its visibility/grants past them ends
-  both. Already-downloaded offline copies are outside this.
+  both. Already-downloaded offline copies are outside this. A single
+  document (the Reader, a Source-derived artifact and its export) follows the
+  connection's consent (`sourceItemDocumentReadableClause`): besides the
+  subscriber rules above, the connection owner, a named reader, and a Space
+  owner/admin reviewing where `allow_space_admins` is not false may open it.
+  The personal Library listing stays narrower: subscriptions only.
 - Today's reading counts (`pending_reading_items`, `new_items_today` in the
   home summary) are the viewer's own: items readable to them through the
   Library gate without Space-admin oversight, unread and not set aside by

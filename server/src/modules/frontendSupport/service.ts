@@ -27,6 +27,7 @@ import type {
   MeTimelineEntry,
   QueryParams,
 } from "./frontendSupportTypes.js";
+import { proposalTitleParts, proposalTitlePayloadSql } from "../proposals/titleParts.js";
 
 interface OperationInProgressRow {
   id: string;
@@ -300,6 +301,7 @@ export class PgFrontendSupportService {
           created_by_run_id: string | null;
           visibility: string;
           awaiting_revision: boolean;
+          title_payload: Record<string, unknown> | null;
         }> }
       : await this.db.query<{
           id: string;
@@ -314,6 +316,7 @@ export class PgFrontendSupportService {
           created_by_run_id: string | null;
           visibility: string;
           awaiting_revision: boolean;
+          title_payload: Record<string, unknown> | null;
         }>(
           `SELECT p.id, p.title, p.proposal_type, p.status, p.risk_level,
                   p.urgency, p.review_deadline, p.expires_at, p.preview,
@@ -322,7 +325,8 @@ export class PgFrontendSupportService {
                   -- accept is refused until they do (operator_revision).
                   (p.proposal_type = 'memory_update'
                     AND p.payload_json->>'requires_operator_edit' = 'true'
-                    AND p.payload_json->'operator_edit'->>'edited_by_user_id' IS NULL) AS awaiting_revision
+                    AND p.payload_json->'operator_edit'->>'edited_by_user_id' IS NULL) AS awaiting_revision,
+                  ${proposalTitlePayloadSql("p")}
              FROM proposals p
              LEFT JOIN runs run_for_instructed
                ON run_for_instructed.id = p.created_by_run_id
@@ -342,6 +346,7 @@ export class PgFrontendSupportService {
         return {
           id: row.id,
           title: row.title,
+          title_parts: proposalTitleParts(row.proposal_type, row.title_payload ?? {}),
           proposal_type: row.proposal_type,
           status: row.status,
           risk_level: row.risk_level,

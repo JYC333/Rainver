@@ -197,6 +197,7 @@ import type {
   SpaceRetrievalSettingsUpdate,
   ProjectFileDraft,
 } from '@rainver/protocol'
+import type { ProposalTitleParts } from '@rainver/protocol'
 export type {
   MemoryVersion,
   ConversationRetryResponse,
@@ -2243,6 +2244,7 @@ export interface EvolutionBundleMember {
     status: string
     risk_level: string
     title: string
+    title_parts?: ProposalTitleParts | null
     summary: string | null
     created_at: string | null
   }
@@ -2371,6 +2373,7 @@ export interface Proposal {
   target_namespace: string
   memory_type: string
   proposed_title: string
+  title_parts?: ProposalTitleParts | null
   proposed_content: string
   rationale: string
   status: string
@@ -3722,6 +3725,7 @@ export interface HomeRunSummaryItem {
 export interface HomePendingProposalItem {
   id: string
   title: string
+  title_parts?: ProposalTitleParts | null
   proposal_type: string
   status: string
   risk_level: string

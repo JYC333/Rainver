@@ -16,6 +16,7 @@ import {
   isRetrievalOnlyVendor,
 } from '../providerMetadata'
 import { ProviderCapabilityBadges, ProviderCapabilityNotice } from './ProviderCapability'
+import { useAppTranslation } from '../../../i18n'
 
 export default function ProviderCard({
   config,
@@ -32,6 +33,7 @@ export default function ProviderCard({
   spaces: SpaceWithMembership[]
   vendors: readonly ProviderVendorOut[]
 }) {
+  const { t } = useAppTranslation()
   const [deleting, setDeleting] = useState(false)
   const [testing, setTesting] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -55,7 +57,7 @@ export default function ProviderCard({
 
   async function handleSave() {
     if (!editBaseUrl.trim()) {
-      toast.error('Base URL is required')
+      toast.error(t('workspace_ui.providers.card.base_url_required'))
       return
     }
     setSaving(true)
@@ -75,7 +77,7 @@ export default function ProviderCard({
       onPatched(updated)
       setEditing(false)
       setEditApiKey('')
-      toast.success('Provider updated')
+      toast.success(t('workspace_ui.providers.card.updated'))
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
@@ -88,7 +90,7 @@ export default function ProviderCard({
     setGranting(true)
     try {
       await providersApi.grant(config.id, { space_id: grantSpaceId, enabled: true })
-      toast.success('Provider granted')
+      toast.success(t('workspace_ui.providers.card.granted'))
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
@@ -101,20 +103,20 @@ export default function ProviderCard({
       <Card>
         <div className="space-y-3 p-4">
           <ProviderCapabilityNotice providerType={config.provider_type} vendors={vendors} mode={inferredMode} />
-          <Input value={editName} onChange={event => setEditName(event.target.value)} placeholder="Name" />
-          <Input value={editBaseUrl} onChange={event => setEditBaseUrl(event.target.value)} placeholder="Base URL" className="font-mono text-sm" />
+          <Input value={editName} onChange={event => setEditName(event.target.value)} placeholder={t('workspace_ui.providers.card.name_placeholder')} />
+          <Input value={editBaseUrl} onChange={event => setEditBaseUrl(event.target.value)} placeholder={t('workspace_ui.providers.card.base_url_placeholder')} className="font-mono text-sm" />
           {showBridgeUrls && (
             <>
-              <Input value={editClaudeCompatibleBaseUrl} onChange={event => setEditClaudeCompatibleBaseUrl(event.target.value)} placeholder="Claude-compatible URL" className="font-mono text-sm" />
-              <Input value={editOpenAiCompatibleBaseUrl} onChange={event => setEditOpenAiCompatibleBaseUrl(event.target.value)} placeholder="OpenAI-compatible URL" className="font-mono text-sm" />
+              <Input value={editClaudeCompatibleBaseUrl} onChange={event => setEditClaudeCompatibleBaseUrl(event.target.value)} placeholder={t('workspace_ui.providers.card.claude_url_placeholder')} className="font-mono text-sm" />
+              <Input value={editOpenAiCompatibleBaseUrl} onChange={event => setEditOpenAiCompatibleBaseUrl(event.target.value)} placeholder={t('workspace_ui.providers.card.openai_url_placeholder')} className="font-mono text-sm" />
             </>
           )}
           <ProviderDeploymentSelect providerType={config.provider_type} vendors={vendors} value={editDeployment} onChange={setEditDeployment} />
           <div className="space-y-1.5">
-            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Network</label>
+            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{t('workspace_ui.providers.card.network_label')}</label>
             <NetworkProfileSelector value={editNetworkProfileId} onChange={setEditNetworkProfileId} />
           </div>
-          <Input type="password" value={editApiKey} onChange={event => setEditApiKey(event.target.value)} placeholder="Replace API key (optional)" className="font-mono text-sm" />
+          <Input type="password" value={editApiKey} onChange={event => setEditApiKey(event.target.value)} placeholder={t('workspace_ui.providers.card.api_key_placeholder')} className="font-mono text-sm" />
           <div className="space-y-1.5">
             <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{modelCopy.defaultLabel}</label>
             <Input value={editDefaultModel} onChange={event => setEditDefaultModel(event.target.value)} placeholder={modelCopy.defaultPlaceholder} className="font-mono text-sm" />
@@ -126,11 +128,11 @@ export default function ProviderCard({
           </div>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={editEnabled} onChange={event => setEditEnabled(event.target.checked)} />
-            Enabled
+            {t('workspace_ui.providers.card.enabled')}
           </label>
           <div className="flex gap-2">
-            <Button size="sm" onClick={handleSave} disabled={saving}>Save</Button>
-            <Button size="sm" variant="outline" onClick={() => setEditing(false)}>Cancel</Button>
+            <Button size="sm" onClick={handleSave} disabled={saving}>{t('workspace_ui.providers.card.save')}</Button>
+            <Button size="sm" variant="outline" onClick={() => setEditing(false)}>{t('workspace_ui.providers.card.cancel')}</Button>
           </div>
         </div>
       </Card>
@@ -142,15 +144,15 @@ export default function ProviderCard({
       <div className="flex items-start justify-between mb-2">
         <div className="flex items-center gap-2 flex-wrap">
           <CardTitle>{config.name}</CardTitle>
-          {config.is_default && <Badge variant="default" className="text-[10px]">Default</Badge>}
-          {config.manageable === false && <Badge variant="muted" className="text-[10px]">Granted</Badge>}
-          {!config.enabled && <Badge variant="muted" className="text-[10px]">Disabled</Badge>}
+          {config.is_default && <Badge variant="default" className="text-[10px]">{t('workspace_ui.providers.card.default_badge')}</Badge>}
+          {config.manageable === false && <Badge variant="muted" className="text-[10px]">{t('workspace_ui.providers.card.granted_badge')}</Badge>}
+          {!config.enabled && <Badge variant="muted" className="text-[10px]">{t('workspace_ui.providers.card.disabled_badge')}</Badge>}
           {config.has_subscription ? (
-            <Badge variant="muted" className="text-[10px]">Subscription OAuth</Badge>
+            <Badge variant="muted" className="text-[10px]">{t('workspace_ui.providers.card.subscription_badge')}</Badge>
           ) : config.has_api_key ? (
-            <Badge variant="muted" className="text-[10px]">API key set</Badge>
+            <Badge variant="muted" className="text-[10px]">{t('workspace_ui.providers.card.api_key_set')}</Badge>
           ) : (
-            <Badge variant="muted" className="text-[10px]">No API key</Badge>
+            <Badge variant="muted" className="text-[10px]">{t('workspace_ui.providers.card.no_api_key')}</Badge>
           )}
         </div>
         <span className="text-[10px] font-mono text-muted-foreground">{config.provider_type}</span>
@@ -162,14 +164,14 @@ export default function ProviderCard({
         <p className="text-xs font-mono text-muted-foreground mb-2 truncate">{config.base_url}</p>
       )}
       {config.claude_compatible_base_url && (
-        <p className="text-xs font-mono text-muted-foreground mb-2 truncate">Claude: {config.claude_compatible_base_url}</p>
+        <p className="text-xs font-mono text-muted-foreground mb-2 truncate">{t('workspace_ui.providers.card.claude_url', { url: config.claude_compatible_base_url })}</p>
       )}
       {config.openai_compatible_base_url && (
-        <p className="text-xs font-mono text-muted-foreground mb-2 truncate">OpenAI: {config.openai_compatible_base_url}</p>
+        <p className="text-xs font-mono text-muted-foreground mb-2 truncate">{t('workspace_ui.providers.card.openai_url', { url: config.openai_compatible_base_url })}</p>
       )}
       <p className="text-xs mb-2">
-        Network: <span className="font-mono">{config.network_profile_id ? `profile:${config.network_profile_id.slice(0, 8)}` : 'direct'}</span>
-        {config.deployment === 'trusted_local' && <span className="ml-2 font-mono">· trusted local</span>}
+        {t('workspace_ui.providers.card.network')} <span className="font-mono">{config.network_profile_id ? t('workspace_ui.providers.card.network_profile', { id: config.network_profile_id.slice(0, 8) }) : t('workspace_ui.providers.card.network_direct')}</span>
+        {config.deployment === 'trusted_local' && <span className="ml-2">· {t('workspace_ui.providers.card.trusted_local')}</span>}
       </p>
       {config.default_model && (
         <p className="text-xs mb-2">{modelCopy.defaultLabel}: <span className="font-mono">{config.default_model}</span></p>
@@ -190,12 +192,12 @@ export default function ProviderCard({
       )}
       <div className="flex gap-2">
         <Button size="sm" variant="outline" onClick={async () => { setTesting(true); try { setTestResult(await onTest(config.id)) } catch (error) { setTestResult({ success: false, message: errMsg(error) }) } finally { setTesting(false) } }} disabled={testing}>
-          {testing ? <Loader2 className="size-3.5 animate-spin" /> : 'Test'}
+          {testing ? <Loader2 className="size-3.5 animate-spin" /> : t('workspace_ui.providers.card.test')}
         </Button>
         {config.manageable !== false && (
           <>
-            <Button size="sm" variant="outline" onClick={() => setEditing(true)}>Edit</Button>
-            <Button size="sm" variant="outline" onClick={async () => { setDeleting(true); try { await onDelete(config.id) } catch (error) { toast.error(errMsg(error)) } finally { setDeleting(false) } }} disabled={deleting} className="text-red-500">
+            <Button size="sm" variant="outline" onClick={() => setEditing(true)}>{t('workspace_ui.providers.card.edit')}</Button>
+            <Button size="sm" variant="outline" onClick={async () => { setDeleting(true); try { await onDelete(config.id) } catch (error) { toast.error(errMsg(error)) } finally { setDeleting(false) } }} disabled={deleting} className="text-red-500" aria-label={t('workspace_ui.providers.card.delete')}>
               {deleting ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
             </Button>
           </>
@@ -208,13 +210,13 @@ export default function ProviderCard({
             onChange={event => setGrantSpaceId(event.target.value)}
             className="flex h-8 flex-1 rounded-md border border-border bg-input px-2 text-xs"
           >
-            <option value="">Grant to space…</option>
+            <option value="">{t('workspace_ui.providers.card.grant_placeholder')}</option>
             {spaces.map(space => (
               <option key={space.id} value={space.id}>{space.name}</option>
             ))}
           </select>
           <Button size="sm" variant="outline" onClick={grantProvider} disabled={!grantSpaceId || granting}>
-            {granting ? <Loader2 className="size-3.5 animate-spin" /> : 'Grant'}
+            {granting ? <Loader2 className="size-3.5 animate-spin" /> : t('workspace_ui.providers.card.grant')}
           </Button>
         </div>
       )}

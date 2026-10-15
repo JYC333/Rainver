@@ -177,6 +177,22 @@ describe("Retrieval egress governance (real Postgres)", () => {
     expect(Number(blocked.rows[0]!.n)).toBeGreaterThanOrEqual(2);
     await expect(run()).resolves.toMatchObject({ scanned: 0 });
 
+    // Editing a connection these chunks do not depend on leaves them parked.
+    const unrelated = "66666666-6666-4666-8666-666666666666";
+    await db.pool.query(
+      `INSERT INTO source_connections (id, space_id, provider_connector_id, owner_user_id, name, status, capture_policy, trust_level,
+         consent_json, policy_json, config_json, created_at, updated_at)
+       SELECT $2, space_id, provider_connector_id, owner_user_id, 'Unrelated', status, capture_policy, trust_level,
+              consent_json, policy_json, config_json, now(), now()
+         FROM source_connections WHERE id = $1`,
+      [connection, unrelated],
+    );
+    await db.pool.query(
+      `UPDATE source_connections SET policy_json='{"schema_version":1,"source_egress_class":"external_provider_allowed"}'::jsonb WHERE id=$1`,
+      [unrelated],
+    );
+    await expect(run()).resolves.toMatchObject({ scanned: 0 });
+
     // The source now allows external model egress: the set-aside chunks come back.
     await db.pool.query(
       `UPDATE source_connections SET policy_json='{"schema_version":1,"source_egress_class":"external_provider_allowed"}'::jsonb WHERE id=$1`,

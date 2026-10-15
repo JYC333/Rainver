@@ -11,6 +11,21 @@ import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 
 const JsonObjectSchema = z.record(z.unknown());
 
+/**
+ * The facts a proposal's title is made of, for types whose title the UI words
+ * in the reader's language. The stored title stays for every other reader.
+ */
+export const ProposalTitlePartsSchema = z
+  .object({
+    kind: z.literal("asset_version_promote"),
+    asset_key: z.string(),
+    version: z.number().int(),
+    target_scope_type: z.string(),
+    target_scope_id: z.string().nullable(),
+  })
+  .strict();
+export type ProposalTitleParts = z.infer<typeof ProposalTitlePartsSchema>;
+
 export const ProposalOutSchema = z
   .object({
     id: IdSchema,
@@ -26,6 +41,7 @@ export const ProposalOutSchema = z
     target_namespace: z.string(),
     memory_type: z.string(),
     proposed_title: z.string(),
+    title_parts: ProposalTitlePartsSchema.nullish(),
     proposed_content: z.string(),
     rationale: z.string(),
     status: z.string(),

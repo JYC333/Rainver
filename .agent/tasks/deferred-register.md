@@ -294,9 +294,12 @@ differ, which is what the trigger provides.
   task description turns out to be.
 
 - **`server/test/retrievalEvalGroup.test.ts` has failed intermittently** in
-  earlier full-suite runs. On 2026-10-14 it passed in six isolated runs and in
-  two full-suite runs, so no cause could be shown; the `dbGroup` isolation fix
-  may already have removed it, but there is no direct evidence. Do not change
+  earlier full-suite runs. By 2026-10-15 it had passed 31 isolated runs and
+  every full-suite run since (more than ten). Its ranking is deterministic:
+  every recall arm and the final merge break score ties by `updated_at` then
+  object id, and the fixture inserts rows one statement at a time. The
+  earlier failures most likely came from the shared-database interference
+  the `dbGroup` isolation fix removed, but there is no direct evidence. Do not change
   the tests on a guess. If it fails again, keep the failing run's output and
   the template-database and `dbGroup` assignment evidence, then fix the cause
   that output shows.

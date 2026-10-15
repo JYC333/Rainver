@@ -27,6 +27,7 @@ import { Label } from '../../components/ui/label'
 import { Textarea } from '../../components/ui/textarea'
 import { formatDateTime } from '../../i18n/format'
 import { useAppTranslation } from '../../i18n'
+import { proposalTitle } from '../memory/proposalTitle'
 
 type RunDetailTab = 'io' | 'activities' | 'artifacts' | 'proposals' | 'contract' | 'verification' | 'route' | 'attempts'
 type OptionalRunResource = 'io' | 'activities' | 'artifacts' | 'proposals' | 'authorization' | 'attempts' | 'evaluations' | 'verifications' | 'finalizations'
@@ -775,7 +776,7 @@ export default function RunDetailPage() {
                     to={`/proposals/${p.id}`}
                     className="font-medium text-sm text-accent-foreground hover:underline"
                   >
-                    {p.proposed_title}
+                    {proposalTitle(p.proposed_title, p.title_parts)}
                   </Link>
                   <Badge variant="outline">{p.proposal_type}</Badge>
                   <StatusBadge status={p.status} />

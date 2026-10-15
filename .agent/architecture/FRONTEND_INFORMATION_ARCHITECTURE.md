@@ -70,7 +70,9 @@ composer, turns, discussions, run controls, session config, retrieval switch),
 the Agent chat panel, Sessions, Publications, Prompts, Capabilities, Plugins,
 Project Files and Folder settings, Network Profiles, the Job Queue, Activity
 (queue, detail, inbox), the Knowledge notes tree and overview, focus areas,
-digests and daily reports, the error boundary, role gates, and the shared
+digests and daily reports, Token Usage, Memories (including maintenance scans),
+the provider card and its model fields, the information digest view, the error
+boundary, role gates, and the shared
 dialog, date picker, pagination, graph, editor and one-time link components.
 Other module copy is migrated by its owning page. Add page dictionaries under
 `apps/web/src/i18n/` with matching English and Chinese keys, then register them
@@ -91,7 +93,11 @@ its host's `DiaryWebHost.useLocale()` and keeps its own message table.
 Locale changes do not alter route identifiers, API contracts, server-authored
 data, or authorization. User-authored and server-authored text, and protocol
 codes shown as values, are displayed as they are; the UI words a server reason
-from its code.
+from its code. A proposal whose title the server composes from facts carries
+those facts as `title_parts` (today: `evolvable_asset_version_promote`), and
+`modules/memory/proposalTitle.ts` words that title in the reader's language on
+every proposal list, detail, Today and Evolution bundle view; any other proposal
+shows its stored title.
 
 The frontend should guide users through the product loop rather than act as an app gallery.
 The goal is a working system the user interacts with daily — not a navigation menu of features.

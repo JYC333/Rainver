@@ -291,7 +291,9 @@ export class EvolvableAssetEvaluationRepository {
     const payload = {
       proposal_type: "evolvable_asset_version_promote",
       asset_id: assetId,
+      asset_key: asset.asset_key,
       candidate_version_id: versionId,
+      candidate_version: version.version,
       candidate_content_hash: version.content_hash,
       target_scope_type: targetScopeType,
       target_scope_id: normalizedTargetScopeId,

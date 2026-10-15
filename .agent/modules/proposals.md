@@ -105,6 +105,12 @@ The public proposal review/apply surface is owned by the server:
   server public route does not fall back to any external proposal port.
 - Proposal creation entrypoints remain in their product modules
   (`memory`, `knowledge`, `agents`, `runs`, etc.).
+- The stored `title` is the text for API and non-web readers. A proposal type
+  whose title is composed from facts records them in its payload and exposes
+  them as `title_parts` (`proposals/titleParts.ts`), so the web words the title
+  per locale; `evolvable_asset_version_promote` records `asset_key` and
+  `candidate_version` for this. Proposals without those facts keep their
+  stored title everywhere.
 
 This is intentional: the user-facing proposal review API keeps non-registered
 proposal mutations fail-closed instead of silently no-oping.
