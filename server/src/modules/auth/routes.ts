@@ -1,16 +1,18 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
 import { PASSWORD_MAX_LENGTH, assertPasswordPolicy, hashOpaqueToken, normalizeAuthEmail, passwordMinimumLength } from "./securityPolicy.js";
 import { googleAuthConfigured } from "./betterAuth.js";
-import { authRepositoryFromConfig, createAuthRuntime, introspectIdentity, sessionCookieName, sessionTokenFromRequest, setAuthRuntimeForComposition, type AuthFailure } from "./identity.js";
-import { RegistrationService } from "./registration.js";
+import { authRepositoryFromConfig, createAuthRuntime, introspectIdentity, sessionCookieName, sessionRefreshSink, sessionTokenFromRequest, setAuthRuntimeForComposition, type AuthFailure } from "./identity.js";
+import { REGISTRATION_DISPLAY_NAME_MAX, RegistrationService } from "./registration.js";
 import { recordAuthSecurityEvent } from "./securityEvents.js";
 import { consumeManualResetLink } from "./recovery.js";
-import { clearReauthGrant, hasRecentReauth, recentReauthExpiresAt, setReauthGrant } from "./reauth.js";
-import { guardedHibpRangeTransport, isPasswordCompromised } from "./hibp.js";
-import { consumeGoogleReauth, issueGoogleReauth } from "./googleReauth.js";
+import { clearReauthCookie, consumeReauthGrant, issueReauthGrant, reauthGrantExpiresAt, revokeSessionReauthGrants, type ReauthOperation } from "./reauth.js";
+import { withTransaction } from "../../db/tx.js";
+import { guardedHibpRangeTransport, isPasswordCompromised, type HibpRangeTransport } from "./hibp.js";
+import { consumeGoogleReauth, issueGoogleReauth, markGoogleReauthVerified } from "./googleReauth.js";
 import { authCookieHeader } from "./authCookie.js";
 
 type LoginLimit = { failures: number; blockedUntil: number; lastSeen: number };
@@ -60,7 +62,10 @@ async function sendAuthResult(reply: FastifyReply, result: { status: number; bod
   const setCookie = authSetCookies(result.headers);
   if (setCookie.length) reply.header("set-cookie", setCookie);
   if (result.status === 204) { reply.code(204).send(); return; }
-  reply.code(result.status).send(result.body);
+  // Better Auth answers sign-in and change-password with the raw session
+  // token in the body as well as in the HttpOnly cookie. The browser needs
+  // only the cookie; handing the token to page script defeats HttpOnly.
+  reply.code(result.status).send({ ok: true, ...(result.body.user !== undefined ? { user: result.body.user } : {}) });
 }
 
 function body(request: FastifyRequest): Record<string, unknown> {
@@ -83,10 +88,36 @@ function runtimeOrError(context: ModuleContext, reply: FastifyReply): ModuleCont
   return null;
 }
 
-async function currentUser(context: ModuleContext, request: FastifyRequest): Promise<Awaited<ReturnType<NonNullable<ModuleContext["authRuntime"]>["repository"]["getCurrentUser"]>> | null> {
+async function currentUser(context: ModuleContext, request: FastifyRequest, reply: FastifyReply): Promise<Awaited<ReturnType<NonNullable<ModuleContext["authRuntime"]>["repository"]["getCurrentUser"]>> | null> {
   const repository = authRepositoryFromConfig(context.config);
   if (!repository) return null;
-  return repository.getCurrentUser(sessionTokenFromRequest(request));
+  return repository.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
+}
+
+/** The person and the session behind this request, for anything bound to the session itself. */
+async function currentSession(context: ModuleContext, request: FastifyRequest, reply: FastifyReply): Promise<{ id: string; user_id: string } | null> {
+  const repository = authRepositoryFromConfig(context.config);
+  if (!repository?.currentSession) return null;
+  return repository.currentSession(sessionTokenFromRequest(request), sessionRefreshSink(reply));
+}
+
+/**
+ * Spends the request's recent-authentication grant on `operation`, answering
+ * 403 `reauthentication_required` when there is none live for this person at
+ * this session. Run inside the mutation's transaction where the mutation is
+ * local (`db` is the transaction client), and before a mutation Better Auth
+ * performs itself.
+ */
+async function spendReauthGrant(
+  db: Parameters<typeof consumeReauthGrant>[0],
+  request: FastifyRequest,
+  reply: FastifyReply,
+  session: { id: string; user_id: string },
+  operation: ReauthOperation,
+): Promise<boolean> {
+  if (await consumeReauthGrant(db, request, { userId: session.user_id, sessionId: session.id, operation })) return true;
+  reply.code(403).send({ code: "reauthentication_required", message: "Recent reauthentication required" });
+  return false;
 }
 
 function routeParams(request: FastifyRequest): Record<string, unknown> { return (request.params ?? {}) as Record<string, unknown>; }
@@ -104,10 +135,16 @@ function genericAuthFailure(reply: FastifyReply, status = 400): FastifyReply {
   return reply.code(status).send({ code: "operation_unavailable", message: "The authentication operation could not be completed" });
 }
 
+let hibpTransportOverride: HibpRangeTransport | null = null;
+/** Test seam: the range check answers from this transport instead of the network. */
+export function __setHibpTransportForTests(transport: HibpRangeTransport | null): void {
+  hibpTransportOverride = transport;
+}
+
 async function passwordAllowed(runtime: NonNullable<ModuleContext["authRuntime"]>, request: FastifyRequest, password: string): Promise<boolean> {
   if (process.env.RAINVER_HIBP_DISABLED === "1") return true;
   try {
-    if (await isPasswordCompromised(password, guardedHibpRangeTransport())) {
+    if (await isPasswordCompromised(password, hibpTransportOverride ?? guardedHibpRangeTransport())) {
       await recordAuthSecurityEvent(runtime.pool, { eventType: "password_compromised", outcome: "failure", requestId: resolveRequestId(request), sourceIp: clientIp(request), details: { route: request.url, reason_code: "hibp_match" } }).catch(() => {});
       return false;
     }
@@ -117,18 +154,32 @@ async function passwordAllowed(runtime: NonNullable<ModuleContext["authRuntime"]
   return true;
 }
 
-async function forwardBetterAuth(runtime: NonNullable<ModuleContext["authRuntime"]>, request: FastifyRequest, reply: FastifyReply, path: string, method = request.method, overrideBody?: Record<string, unknown>): Promise<void> {
+/**
+ * Better Auth reads the client address from `x-forwarded-for` for its
+ * per-IP rate limit and the session's recorded `ip_address`. The inbound
+ * header is client-controlled (nginx appends to it rather than replacing
+ * it), so the internal request carries only the address Fastify resolved
+ * through the trusted-proxy policy.
+ */
+function setClientAddress(headers: Headers, request: FastifyRequest): void {
+  headers.delete("x-real-ip");
+  headers.set("x-forwarded-for", request.ip);
+}
+
+async function forwardBetterAuth(runtime: NonNullable<ModuleContext["authRuntime"]>, request: FastifyRequest, reply: FastifyReply, path: string, method = request.method, overrideBody?: Record<string, unknown>, onResponse?: (response: Response) => void, extraSetCookies: readonly string[] = []): Promise<void> {
   const headers = new Headers();
   for (const [key, value] of Object.entries(request.headers)) {
     if (value !== undefined && key.toLowerCase() !== "content-length") headers.set(key, Array.isArray(value) ? value[0]! : value);
   }
+  setClientAddress(headers, request);
   const payload = overrideBody ?? (request.body as Record<string, unknown> | undefined);
   const init: RequestInit = { method, headers, redirect: "manual" };
   if (payload !== undefined && method !== "GET" && method !== "HEAD") { headers.set("content-type", "application/json"); init.body = JSON.stringify(payload) }
   const response = await runtime.auth.handler(new Request(`${runtime.auth.options.baseURL}${runtime.auth.options.basePath}${path}`, init));
+  onResponse?.(response);
   reply.code(response.status);
-  const setCookie = (response.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.();
-  if (setCookie?.length) reply.header("set-cookie", setCookie); else if (response.headers.get("set-cookie")) reply.header("set-cookie", response.headers.get("set-cookie")!);
+  const setCookie = [...authSetCookies(response.headers), ...extraSetCookies];
+  if (setCookie.length) reply.header("set-cookie", setCookie);
   const contentType = response.headers.get("content-type"); if (contentType) reply.header("content-type", contentType);
   const location = response.headers.get("location"); if (location) reply.header("location", location);
   if (response.status === 204) { reply.send(); return }
@@ -138,6 +189,7 @@ async function forwardBetterAuth(runtime: NonNullable<ModuleContext["authRuntime
 async function authResponse(runtime: NonNullable<ModuleContext["authRuntime"]>, request: FastifyRequest, path: string, bodyValue?: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown>; headers: Headers }> {
   const headers = new Headers();
   for (const [key, value] of Object.entries(request.headers)) if (value !== undefined) headers.set(key, Array.isArray(value) ? value[0]! : value);
+  setClientAddress(headers, request);
   headers.set("content-type", "application/json");
   const response = await runtime.auth.handler(new Request(`${runtime.auth.options.baseURL}${runtime.auth.options.basePath}${path}`, { method: "POST", headers, body: JSON.stringify(bodyValue ?? body(request)) }));
   let parsed: Record<string, unknown> = {};
@@ -193,10 +245,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const repository = authRepositoryFromConfig(context.config);
       if (!repository) return runtimeOrError(context, reply);
       await repository.logout(sessionTokenFromRequest(request));
-      reply.header("set-cookie", authCookieHeader(context.config, { name: sessionCookieName(context.config), value: "", maxAgeSeconds: 0 }));
+      reply.header("set-cookie", [
+        authCookieHeader(context.config, { name: sessionCookieName(context.config), value: "", maxAgeSeconds: 0 }),
+        authCookieHeader(context.config, { name: "rainver.reauth", value: "", maxAgeSeconds: 0 }),
+      ]);
       return reply.code(204).send();
     }
-    return forwardBetterAuth(runtime, request, reply, "/sign-out", "POST", {});
+    // The grant goes with the session: revoked here before Better Auth
+    // deletes the session row, and its cookie cleared beside the session's.
+    const session = await currentSession(context, request, reply);
+    if (session) await revokeSessionReauthGrants(runtime.pool, session.id);
+    return forwardBetterAuth(runtime, request, reply, "/sign-out", "POST", {}, undefined, [
+      authCookieHeader(context.config, { name: "rainver.reauth", value: "", maxAgeSeconds: 0 }),
+    ]);
   });
 
   app.get("/api/v1/auth/google", async (request, reply) => {
@@ -214,7 +275,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const input = body(request); const intentId = typeof input.intent_id === "string" ? input.intent_id : ""; const claimSecret = typeof input.claim_secret === "string" ? input.claim_secret : "";
     const check = await runtime.pool.query("SELECT 1 FROM registration_intents WHERE id = $1 AND claim_secret_hash = $2 AND state IN ('issued', 'claimed', 'provisioning') AND expires_at > now()", [intentId, hashOpaqueToken(claimSecret)]);
     if (!check.rowCount) return reply.code(400).send({ code: "registration_invalid", message: "Registration authority is invalid" });
-    const result = await authResponse(runtime, request, "/sign-in/social", { provider: "google", requestSignUp: true, callbackURL: `${context.config.frontendUrl.replace(/\/$/, "")}/login?registration=${encodeURIComponent(intentId)}`, additionalData: { registration_intent_id: intentId, claim_secret: claimSecret } });
+    const result = await authResponse(runtime, request, "/sign-in/social", { provider: "google", requestSignUp: true, callbackURL: `${context.config.frontendUrl.replace(/\/$/, "")}/login?registration=${encodeURIComponent(intentId)}` });
     if (result.status >= 400 || typeof result.body.url !== "string") return reply.code(502).send({ code: "google_unavailable", message: "Google OAuth is unavailable" });
     reply.header("set-cookie", [
       ...authSetCookies(result.headers),
@@ -226,11 +287,20 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/auth/callback/google", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
     const queryString = new URLSearchParams(Object.entries(query(request)).filter((entry): entry is [string, string] => typeof entry[1] === "string")).toString();
-    return forwardBetterAuth(runtime, request, reply, `/callback/google${queryString ? `?${queryString}` : ""}`, "GET");
+    return forwardBetterAuth(runtime, request, reply, `/callback/google${queryString ? `?${queryString}` : ""}`, "GET", undefined, (response) => {
+      const reauthUrl = `${context.config.frontendUrl.replace(/\/$/, "")}/settings/security?google_reauth=1`;
+      if (response.status < 300 || response.status >= 400 || response.headers.get("location") !== reauthUrl) return;
+      const nonce = requestCookie(request, "rainver.google_reauth");
+      const cookieName = sessionCookieName(context.config);
+      const sessionCookie = authSetCookies(response.headers).find((cookie) => cookie.startsWith(`${cookieName}=`));
+      const encodedToken = sessionCookie?.slice(cookieName.length + 1).split(";", 1)[0];
+      if (!nonce || !encodedToken) return;
+      try { markGoogleReauthVerified(nonce, hashOpaqueToken(decodeURIComponent(encodedToken).split(".", 1)[0]!)); } catch { /* invalid cookie */ }
+    });
   });
 
   app.get("/api/v1/auth/introspect", async (request, reply) => {
-    const identity = await introspectIdentity(context.config, request);
+    const identity = await introspectIdentity(context.config, request, reply);
     if (identity.ok) return reply.send({ space_id: identity.spaceId, user_id: identity.userId });
     if (identity.reason === "denied") return reply.code(identity.statusCode).send(identity.body);
     return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity resolution failed", resolveRequestId(request)));
@@ -239,17 +309,17 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.get("/api/v1/me", async (request, reply) => {
     const requestId = resolveRequestId(request); reply.header(REQUEST_ID_HEADER, requestId);
     const repository = authRepositoryFromConfig(context.config); if (!repository) return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
-    const user = await repository.getCurrentUser(sessionTokenFromRequest(request)); if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
+    const user = await repository.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply)); if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     return reply.send(user);
   });
   app.get("/api/v1/me/spaces", async (request, reply) => {
     const requestId = resolveRequestId(request); reply.header(REQUEST_ID_HEADER, requestId);
     const repository = authRepositoryFromConfig(context.config); if (!repository) return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
-    const user = await repository.getCurrentUser(sessionTokenFromRequest(request)); if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
+    const user = await repository.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply)); if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     return reply.send(await repository.getUserSpaces(user.id));
   });
   app.get("/api/v1/auth/capabilities", async (request, reply) => {
-    const identity = await introspectIdentity(context.config, request);
+    const identity = await introspectIdentity(context.config, request, reply);
     if (!identity.ok) return reply.code(identity.statusCode).send(identity.body);
     const account = await runtime?.pool.query<{ has_password: boolean; has_google: boolean }>(
       "SELECT bool_or(password IS NOT NULL) AS has_password, bool_or(provider_id = 'google') AS has_google FROM auth_accounts WHERE user_id = $1",
@@ -260,32 +330,41 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   app.post("/api/v1/auth/reauth", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const user = await currentUser(context, request);
+    const user = await currentUser(context, request, reply);
     if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
     const input = body(request); const password = typeof input.password === "string" ? input.password : "";
     try { assertPasswordPolicy(password, minimumPasswordLength); } catch { return genericAuthFailure(reply, 401); }
     const result = await authResponse(runtime, request, "/verify-password", { password });
     if (result.status >= 400) return genericAuthFailure(reply, 401);
-    setReauthGrant(reply, context.config, user.id);
-    return reply.send({ ok: true, expires_in: 600 });
+    const session = await currentSession(context, request, reply);
+    if (!session || session.user_id !== user.id) return genericAuthFailure(reply, 401);
+    const grant = await issueReauthGrant(runtime.pool, reply, context.config, { userId: user.id, sessionId: session.id, method: "password" });
+    return reply.send({ ok: true, expires_in: 600, expires_at: grant.expiresAt.toISOString() });
   });
 
   app.get("/api/v1/auth/reauth/status", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const user = await currentUser(context, request);
-    if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
-    const expiresAt = recentReauthExpiresAt(request, context.config, user.id);
+    const session = await currentSession(context, request, reply);
+    if (!session) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
+    // Reads only: looking at the grant spends nothing.
+    const expiresAt = await reauthGrantExpiresAt(runtime.pool, request, { userId: session.user_id, sessionId: session.id });
     reply.header("Cache-Control", "no-store");
-    return reply.send({ expires_at: expiresAt === null ? null : new Date(expiresAt).toISOString() });
+    return reply.send({ expires_at: expiresAt === null ? null : expiresAt.toISOString() });
   });
 
   app.post("/api/v1/auth/reauth/google", async (request, reply) => {
     if (!runtime || !googleAuthConfigured(context.config)) return reply.code(501).send({ code: "google_unavailable", message: "Google OAuth is not configured" });
-    const user = await currentUser(context, request);
+    const user = await currentUser(context, request, reply);
     if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
-    const nonce = issueGoogleReauth(user.id);
+    const token = sessionTokenFromRequest(request);
+    if (!token) return genericAuthFailure(reply, 401);
+    const previous = await runtime.pool.query<{ id: string }>("SELECT id FROM user_sessions WHERE user_id = $1 AND token_hash = $2 AND expires_at > now() LIMIT 1", [user.id, hashOpaqueToken(token.split(".", 1)[0]!)]);
+    if (!previous.rows[0]) return genericAuthFailure(reply, 401);
     const result = await authResponse(runtime, request, "/sign-in/social", { provider: "google", callbackURL: `${context.config.frontendUrl.replace(/\/$/, "")}/settings/security?google_reauth=1` });
     if (result.status >= 400 || typeof result.body.url !== "string") return genericAuthFailure(reply, 400);
+    // Issue a nonce only after Better Auth accepts the flow, and bind it to
+    // the currently authenticated session that will be replaced.
+    const nonce = issueGoogleReauth(user.id, previous.rows[0].id);
     reply.header("set-cookie", [
       ...authSetCookies(result.headers),
       authCookieHeader(context.config, { name: "rainver.google_reauth", value: nonce, maxAgeSeconds: 600 }),
@@ -296,52 +375,75 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   app.post("/api/v1/auth/reauth/google/complete", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
     const nonce = requestCookie(request, "rainver.google_reauth"); const pendingReauth = nonce ? consumeGoogleReauth(nonce) : null;
-    if (!pendingReauth) return genericAuthFailure(reply, 401);
-    const session = await runtime.auth.api.getSession({ headers: new Headers({ cookie: `${sessionCookieName(context.config)}=${encodeURIComponent(sessionTokenFromRequest(request) ?? "")}` }) });
-    if (!session?.user?.id || session.user.id !== pendingReauth.userId || new Date(session.session.createdAt).getTime() < pendingReauth.issuedAt) return genericAuthFailure(reply, 401);
+    const currentToken = sessionTokenFromRequest(request);
+    if (!pendingReauth || !currentToken) return genericAuthFailure(reply, 401);
+    const session = await runtime.auth.api.getSession({ headers: new Headers({ cookie: `${sessionCookieName(context.config)}=${encodeURIComponent(currentToken)}` }) });
+    if (!session?.user?.id || session.user.id !== pendingReauth.userId || pendingReauth.verifiedSessionTokenHash !== hashOpaqueToken(currentToken.split(".", 1)[0]!)) return genericAuthFailure(reply, 401);
     const account = await runtime.pool.query("SELECT 1 FROM auth_accounts WHERE user_id = $1 AND provider_id = 'google' LIMIT 1", [session.user.id]);
     if (!account.rowCount) return genericAuthFailure(reply, 401);
-    setReauthGrant(reply, context.config, session.user.id);
-    return reply.send({ ok: true, expires_in: 600 });
+    await runtime.pool.query("DELETE FROM user_sessions WHERE id = $1 AND user_id = $2 AND id <> $3", [pendingReauth.previousSessionId, session.user.id, session.session.id]);
+    // Reauthentication rotated the session: the grant binds to the session
+    // the browser now holds, never to the one just revoked.
+    const grant = await issueReauthGrant(runtime.pool, reply, context.config, { userId: session.user.id, sessionId: session.session.id, method: "google" });
+    return reply.send({ ok: true, expires_in: 600, expires_at: grant.expiresAt.toISOString() });
   });
 
   app.post("/api/v1/auth/password/set", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const user = await currentUser(context, request);
+    const user = await currentUser(context, request, reply);
     if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
-    if (!hasRecentReauth(request, context.config, user.id)) return reply.code(403).send({ code: "reauthentication_required", message: "Recent reauthentication required" });
+    const session = await currentSession(context, request, reply);
+    if (!session || session.user_id !== user.id) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
     const input = body(request); const password = typeof input.new_password === "string" ? input.new_password : "";
     try { assertPasswordPolicy(password, minimumPasswordLength); } catch { return genericAuthFailure(reply, 400); }
     if (!await passwordAllowed(runtime, request, password)) return genericAuthFailure(reply, 400);
     try {
       const authContext = await runtime.auth.$context;
       const account = await authContext.internalAdapter.findCredentialAccount(user.id);
+      if (account?.password) return genericAuthFailure(reply, 409);
       const passwordHash = await authContext.password.hash(password);
-      if (!account) await authContext.internalAdapter.linkAccount({ userId: user.id, providerId: "credential", accountId: user.id, password: passwordHash });
-      else if (!account.password) await authContext.internalAdapter.updateAccount(account.id, { password: passwordHash });
-      else return genericAuthFailure(reply, 409);
-      clearReauthGrant(reply, context.config);
+      // The grant is spent in the same transaction as the credential write:
+      // either both happen or neither, and a second request finds it spent.
+      const outcome = await withTransaction(runtime.pool, async (tx) => {
+        if (!await consumeReauthGrant(tx, request, { userId: user.id, sessionId: session.id, operation: "password_set" })) return "no_grant" as const;
+        if (!account) {
+          await tx.query(
+            `INSERT INTO auth_accounts (id, user_id, provider_id, account_id, password, created_at, updated_at)
+             VALUES ($1, $2, 'credential', $2, $3, now(), now())`,
+            [randomUUID(), user.id, passwordHash],
+          );
+        } else {
+          await tx.query(`UPDATE auth_accounts SET password = $2, updated_at = now() WHERE id = $1`, [account.id, passwordHash]);
+        }
+        return "done" as const;
+      });
+      if (outcome === "no_grant") return reply.code(403).send({ code: "reauthentication_required", message: "Recent reauthentication required" });
+      clearReauthCookie(reply, context.config);
       return reply.send({ ok: true });
     } catch { return genericAuthFailure(reply, 400); }
   });
 
   app.post("/api/v1/auth/password/change", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const user = await currentUser(context, request);
+    const user = await currentUser(context, request, reply);
     if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
-    if (!hasRecentReauth(request, context.config, user.id)) return reply.code(403).send({ code: "reauthentication_required", message: "Recent reauthentication required" });
+    const session = await currentSession(context, request, reply);
+    if (!session || session.user_id !== user.id) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
     const input = body(request); const currentPassword = typeof input.current_password === "string" ? input.current_password : ""; const newPassword = typeof input.new_password === "string" ? input.new_password : "";
     try { assertPasswordPolicy(newPassword, minimumPasswordLength); } catch { return genericAuthFailure(reply, 400); }
     if (!await passwordAllowed(runtime, request, newPassword)) return genericAuthFailure(reply, 400);
+    // Better Auth performs this change, so the grant is spent first: a
+    // change that then fails costs a fresh verification, never a second use.
+    if (!await spendReauthGrant(runtime.pool, request, reply, session, "password_change")) return reply;
     const result = await authResponse(runtime, request, "/change-password", { currentPassword, newPassword, revokeOtherSessions: input.revoke_other_sessions !== false });
     if (result.status >= 400) return genericAuthFailure(reply, 400);
-    clearReauthGrant(reply, context.config);
+    clearReauthCookie(reply, context.config);
     return sendAuthResult(reply, result);
   });
 
   app.get("/api/v1/auth/accounts", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const user = await currentUser(context, request);
+    const user = await currentUser(context, request, reply);
     if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
     const accounts = await runtime.pool.query<{ id: string; provider_id: string; account_id: string; created_at: Date | string }>("SELECT id, provider_id, account_id, created_at FROM auth_accounts WHERE user_id = $1 ORDER BY created_at ASC", [user.id]);
     return reply.send(accounts.rows.map((account) => ({ id: account.id, provider: account.provider_id, account_id: account.account_id, created_at: new Date(account.created_at).toISOString() })));
@@ -349,7 +451,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   app.get("/api/v1/auth/sessions", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const user = await currentUser(context, request);
+    const user = await currentUser(context, request, reply);
     if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
     const current = sessionTokenFromRequest(request);
     const currentRow = current ? await runtime.pool.query<{ id: string }>("SELECT id FROM user_sessions WHERE token_hash = $1 LIMIT 1", [hashOpaqueToken(current.split(".", 1)[0]!)]) : { rows: [] };
@@ -359,7 +461,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   app.post("/api/v1/auth/sessions/:sessionId/revoke", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const user = await currentUser(context, request); if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
+    const user = await currentUser(context, request, reply); if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
     const id = typeof routeParams(request).sessionId === "string" ? routeParams(request).sessionId : "";
     await runtime.pool.query("DELETE FROM user_sessions WHERE id = $1 AND user_id = $2", [id, user.id]);
     return reply.send({ ok: true });
@@ -367,7 +469,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   app.post("/api/v1/auth/sessions/revoke-others", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const user = await currentUser(context, request); if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
+    const user = await currentUser(context, request, reply); if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
     const token = sessionTokenFromRequest(request); const current = token ? await runtime.pool.query<{ id: string }>("SELECT id FROM user_sessions WHERE token_hash = $1 LIMIT 1", [hashOpaqueToken(token.split(".", 1)[0]!)]) : { rows: [] };
     if (current.rows[0]) await runtime.pool.query("DELETE FROM user_sessions WHERE user_id = $1 AND id <> $2", [user.id, current.rows[0].id]);
     return reply.send({ ok: true });
@@ -375,8 +477,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   app.post("/api/v1/auth/google/link", async (request, reply) => {
     if (!runtime || !googleAuthConfigured(context.config)) return reply.code(501).send({ code: "google_unavailable", message: "Google OAuth is not configured" });
-    const user = await currentUser(context, request); if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
-    if (!hasRecentReauth(request, context.config, user.id)) return reply.code(403).send({ code: "reauthentication_required", message: "Recent reauthentication required" });
+    const user = await currentUser(context, request, reply); if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
+    const session = await currentSession(context, request, reply);
+    if (!session || session.user_id !== user.id) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
+    if (!await spendReauthGrant(runtime.pool, request, reply, session, "google_link")) return reply;
     const result = await authResponse(runtime, request, "/link-social", { provider: "google", disableRedirect: true, callbackURL: `${context.config.frontendUrl.replace(/\/$/, "")}/settings/security` });
     if (result.status >= 400 || typeof result.body.url !== "string") return genericAuthFailure(reply, 400);
     const setCookie = authSetCookies(result.headers);
@@ -386,13 +490,20 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   app.post("/api/v1/auth/google/unlink", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const user = await currentUser(context, request); if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
-    if (!hasRecentReauth(request, context.config, user.id)) return reply.code(403).send({ code: "reauthentication_required", message: "Recent reauthentication required" });
+    const user = await currentUser(context, request, reply); if (!user || isFailure(user)) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
+    const session = await currentSession(context, request, reply);
+    if (!session || session.user_id !== user.id) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
     const accountId = typeof body(request).account_id === "string" ? body(request).account_id : "";
-    const accounts = await runtime.pool.query<{ id: string; provider_id: string }>("SELECT id, provider_id FROM auth_accounts WHERE user_id = $1 ORDER BY created_at ASC", [user.id]);
-    if (accounts.rows.length <= 1 || !accounts.rows.some((account) => account.id === accountId && account.provider_id === "google")) return genericAuthFailure(reply, 400);
-    await runtime.pool.query("DELETE FROM auth_accounts WHERE id = $1 AND user_id = $2 AND provider_id = 'google'", [accountId, user.id]);
-    clearReauthGrant(reply, context.config);
+    const outcome = await withTransaction(runtime.pool, async (tx) => {
+      if (!await consumeReauthGrant(tx, request, { userId: user.id, sessionId: session.id, operation: "google_unlink" })) return "no_grant" as const;
+      const accounts = await tx.query<{ id: string; provider_id: string }>("SELECT id, provider_id FROM auth_accounts WHERE user_id = $1 ORDER BY created_at ASC FOR UPDATE", [user.id]);
+      if (accounts.rows.length <= 1 || !accounts.rows.some((account) => account.id === accountId && account.provider_id === "google")) return "refused" as const;
+      await tx.query("DELETE FROM auth_accounts WHERE id = $1 AND user_id = $2 AND provider_id = 'google'", [accountId, user.id]);
+      return "done" as const;
+    });
+    if (outcome === "no_grant") return reply.code(403).send({ code: "reauthentication_required", message: "Recent reauthentication required" });
+    if (outcome === "refused") return genericAuthFailure(reply, 400);
+    clearReauthCookie(reply, context.config);
     return reply.send({ ok: true });
   });
 
@@ -417,29 +528,39 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   app.get("/api/v1/auth/admin/users", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const user = await currentUser(context, request); if (!user || isFailure(user) || !user.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
+    const user = await currentUser(context, request, reply); if (!user || isFailure(user) || !user.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
     const users = await runtime.pool.query<{ id: string; email: string; display_name: string; status: string; registration_source: string; last_login_at: Date | string | null; account_count: string }>(`SELECT u.id, u.email, u.display_name, u.status, u.registration_source, u.last_login_at, count(a.id)::text AS account_count FROM users u LEFT JOIN auth_accounts a ON a.user_id = u.id GROUP BY u.id ORDER BY u.created_at ASC`);
     return reply.send(users.rows.map((row) => ({ ...row, account_count: Number(row.account_count) })));
   });
 
   app.post("/api/v1/auth/admin/users/:userId/disable", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const actor = await currentUser(context, request); if (!actor || isFailure(actor) || !actor.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
+    const actor = await currentUser(context, request, reply); if (!actor || isFailure(actor) || !actor.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
     const userId = typeof routeParams(request).userId === "string" ? routeParams(request).userId : ""; if (userId === actor.id) return genericAuthFailure(reply, 400);
-    await runtime.pool.query("UPDATE users SET status = 'disabled', updated_at = now() WHERE id = $1", [userId]); await runtime.pool.query("DELETE FROM user_sessions WHERE user_id = $1", [userId]);
+    // Only an admitted account can be disabled: a pending identity belongs to
+    // RegistrationService until it completes or the reconciler reclaims it,
+    // and reclaiming only looks for 'pending'.
+    const disabled = await runtime.pool.query("UPDATE users SET status = 'disabled', updated_at = now() WHERE id = $1 AND status IN ('active', 'disabled')", [userId]);
+    if (!disabled.rowCount) return genericAuthFailure(reply, 400);
+    await runtime.pool.query("DELETE FROM user_sessions WHERE user_id = $1", [userId]);
     return reply.send({ ok: true });
   });
 
   app.post("/api/v1/auth/admin/users/:userId/enable", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const actor = await currentUser(context, request); if (!actor || isFailure(actor) || !actor.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
+    const actor = await currentUser(context, request, reply); if (!actor || isFailure(actor) || !actor.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
     const userId = typeof routeParams(request).userId === "string" ? routeParams(request).userId : "";
-    await runtime.pool.query("UPDATE users SET status = 'active', updated_at = now() WHERE id = $1", [userId]); return reply.send({ ok: true });
+    // Enable reverses disable and nothing else. A pending identity becomes
+    // active only through RegistrationService.complete, which creates its
+    // Personal Space and consumes its intent in the same transaction.
+    const enabled = await runtime.pool.query("UPDATE users SET status = 'active', updated_at = now() WHERE id = $1 AND status IN ('active', 'disabled')", [userId]);
+    if (!enabled.rowCount) return genericAuthFailure(reply, 400);
+    return reply.send({ ok: true });
   });
 
   app.post("/api/v1/auth/admin/users/:userId/reset-link", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const actor = await currentUser(context, request); if (!actor || isFailure(actor) || !actor.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
+    const actor = await currentUser(context, request, reply); if (!actor || isFailure(actor) || !actor.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
     const userId = typeof routeParams(request).userId === "string" ? routeParams(request).userId : "";
     const target = await runtime.pool.query<{ email: string }>("SELECT email FROM users WHERE id = $1 AND status <> 'disabled'", [userId]); if (!target.rows[0]) return genericAuthFailure(reply, 404);
     const result = await authResponse(runtime, request, "/request-password-reset", { email: target.rows[0].email, redirectTo: `${context.config.frontendUrl.replace(/\/$/, "")}/reset-password` });
@@ -449,7 +570,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   app.get("/api/v1/auth/admin/registration-intents", async (request, reply) => {
     if (!runtime) return runtimeOrError(context, reply);
-    const actor = await currentUser(context, request); if (!actor || isFailure(actor) || !actor.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
+    const actor = await currentUser(context, request, reply); if (!actor || isFailure(actor) || !actor.is_instance_admin) return reply.code(403).send({ code: "forbidden", message: "Administrator access required" });
     const intents = await runtime.pool.query("SELECT id, email, authority, state, pending_user_id, created_at, last_activity_at, expires_at, completed_at FROM registration_intents ORDER BY created_at DESC LIMIT 100"); return reply.send(intents.rows);
   });
 
@@ -466,9 +587,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try { normalizedEmail = normalizeAuthEmail(email); assertPasswordPolicy(password, minimumPasswordLength) } catch { return reply.code(400).send({ code: "invalid_registration", message: "Registration details are invalid" }) }
     const requestedName = typeof input.name === "string" ? input.name.trim() : "";
     const name = requestedName || normalizedEmail.split("@", 1)[0] || "User";
-    if ([...name].length > 256) return reply.code(400).send({ code: "invalid_registration", message: "Registration details are invalid" });
+    if ([...name].length > REGISTRATION_DISPLAY_NAME_MAX) return reply.code(400).send({ code: "invalid_registration", message: "Registration details are invalid" });
     const intent = await runtime.pool.query<{ email: string; pending_user_id: string | null }>("SELECT email, pending_user_id FROM registration_intents WHERE id = $1 AND claim_secret_hash = $2 LIMIT 1", [intentId, hashOpaqueToken(claimSecret)]);
     if (!intent.rows[0] || normalizeAuthEmail(intent.rows[0].email) !== normalizedEmail) return reply.code(400).send({ code: "invalid_registration", message: "Registration details are invalid" });
+    // A candidate password is checked against HIBP wherever one is set; sign-up
+    // is where the first one is set. A pending identity resuming sign-in uses
+    // the password it already has.
+    if (!intent.rows[0].pending_user_id && !await passwordAllowed(runtime, request, password)) return reply.code(400).send({ code: "invalid_registration", message: "Registration details are invalid" });
     const result = await authResponse(runtime, request, intent.rows[0].pending_user_id ? "/sign-in/email" : "/sign-up/email", { email: normalizedEmail, password, name, rememberMe: input.remember_me !== false });
     if (result.status >= 400 && result.status !== 409) return reply.code(401).send({ code: "invalid_registration", message: "Registration could not be completed" });
     const sessionCookie = result.headers.get("set-cookie")?.match(/better-auth\.session_token=([^;]+)/)?.[1];
@@ -484,10 +609,11 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!runtime || !registration) return runtimeOrError(context, reply);
     const input = body(request); const intentId = typeof input.intent_id === "string" ? input.intent_id : ""; const claimCookie = requestCookie(request, "rainver.registration_claim"); const cookieParts = claimCookie?.split(".") ?? []; const claimSecret = typeof input.claim_secret === "string" && input.claim_secret ? input.claim_secret : cookieParts.length >= 2 && cookieParts[0] === intentId ? cookieParts.slice(1).join(".") : ""; const userId = await registration.sessionUserId(sessionTokenFromRequest(request));
     if (!userId) return reply.code(401).send({ code: "authentication_required", message: "Authentication required" });
+    if (typeof input.name === "string" && [...input.name.trim()].length > REGISTRATION_DISPLAY_NAME_MAX) return reply.code(400).send({ code: "registration_invalid", message: "Registration cannot be completed" });
     try { const result = await registration.complete({ intentId, claimSecret, userId, displayName: typeof input.name === "string" ? input.name : undefined }); reply.header("set-cookie", authCookieHeader(context.config, { name: "rainver.registration_claim", value: "", maxAgeSeconds: 0 })); return reply.send({ ok: true, ...result }); } catch { return reply.code(400).send({ code: "registration_invalid", message: "Registration cannot be completed" }) }
   });
 
-  app.post("/api/v1/auth/keys", async (request, reply) => { const identity = await introspectIdentity(context.config, request); if (!identity.ok) return reply.code(identity.statusCode).send(identity.body); return reply.code(501).send({ detail: "API key storage is not in the canonical schema (ApiKey is deferred)." }) });
-  app.get("/api/v1/auth/keys", async (request, reply) => { const identity = await introspectIdentity(context.config, request); if (!identity.ok) return reply.code(identity.statusCode).send(identity.body); return reply.code(501).send({ detail: "API key storage is not in the canonical schema (ApiKey is deferred)." }) });
-  app.delete("/api/v1/auth/keys/:keyId", async (request, reply) => { const identity = await introspectIdentity(context.config, request); if (!identity.ok) return reply.code(identity.statusCode).send(identity.body); return reply.code(501).send({ detail: "API key storage is not in the canonical schema (ApiKey is deferred)." }) });
+  app.post("/api/v1/auth/keys", async (request, reply) => { const identity = await introspectIdentity(context.config, request, reply); if (!identity.ok) return reply.code(identity.statusCode).send(identity.body); return reply.code(501).send({ detail: "API key storage is not in the canonical schema (ApiKey is deferred)." }) });
+  app.get("/api/v1/auth/keys", async (request, reply) => { const identity = await introspectIdentity(context.config, request, reply); if (!identity.ok) return reply.code(identity.statusCode).send(identity.body); return reply.code(501).send({ detail: "API key storage is not in the canonical schema (ApiKey is deferred)." }) });
+  app.delete("/api/v1/auth/keys/:keyId", async (request, reply) => { const identity = await introspectIdentity(context.config, request, reply); if (!identity.ok) return reply.code(identity.statusCode).send(identity.body); return reply.code(501).send({ detail: "API key storage is not in the canonical schema (ApiKey is deferred)." }) });
 }

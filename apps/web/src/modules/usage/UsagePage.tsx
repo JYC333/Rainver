@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   BarChart3,
   CheckCircle2,
@@ -41,6 +41,9 @@ import {
 } from '../../components/ui/table'
 import { useSpace } from '../../contexts/SpaceContext'
 import { cn, errMsg } from '../../lib/utils'
+import { Pagination } from '../../components/ui/pagination'
+import i18n, { useAppTranslation } from '../../i18n'
+import { formatCalendarDay, formatDateParts, formatNumber as formatLocaleNumber } from '../../i18n/format'
 
 type AccuracyFilter = UsageAccuracy | 'all'
 type ChannelFilter = UsageExecutionChannel | 'all'
@@ -57,6 +60,10 @@ interface DashboardData {
   dimensions: UsageDimensionsResponse | null
   subjects: UsageSubjectSummary[]
   sessions: UsageSessionSummary[]
+  /** Sessions matched by the filters; the list above holds at most one page. */
+  sessionTotal: number
+  /** Totals over those same sessions, at the same (full) access level as the count. */
+  sessionTotals: UsageTotals
   events: UsageEventDTO[]
   dimensionSummary: UsageSummaryResponse | null
   budgetPreview: UsageBudgetPreviewResponse | null
@@ -77,38 +84,22 @@ const EMPTY_TOTALS: UsageTotals = {
   observed_event_percentage: 0,
 }
 
-const ACCURACY_OPTIONS: SelectOption[] = [
-  { value: 'all', label: 'Any accuracy' },
-  { value: 'provider_reported', label: 'Provider reported' },
-  { value: 'proxy_observed', label: 'Proxy observed' },
-  { value: 'transcript_lower_bound', label: 'Transcript lower bound' },
-  { value: 'estimated', label: 'Estimated' },
-  { value: 'quota_snapshot', label: 'Quota snapshot' },
-  { value: 'unknown', label: 'Unknown' },
-]
+const ACCURACY_VALUES = ['all', 'provider_reported', 'proxy_observed', 'transcript_lower_bound', 'estimated', 'quota_snapshot', 'unknown'] as const
+const CHANNEL_VALUES = ['all', 'managed_api', 'provider_proxy', 'local_cli', 'local_cli_transcript', 'manual_import', 'cross_instance_import', 'unknown'] as const
+const GROUP_VALUES = ['provider', 'model', 'platform', 'session', 'session_path', 'subject', 'agent', 'task', 'custom_dimension'] as const
 
-const CHANNEL_OPTIONS: SelectOption[] = [
-  { value: 'all', label: 'Any platform' },
-  { value: 'managed_api', label: 'Managed API' },
-  { value: 'provider_proxy', label: 'Provider proxy' },
-  { value: 'local_cli', label: 'CLI run' },
-  { value: 'local_cli_transcript', label: 'CLI transcript' },
-  { value: 'manual_import', label: 'Manual import' },
-  { value: 'cross_instance_import', label: 'Cross-instance import' },
-  { value: 'unknown', label: 'Unknown' },
-]
+// Read at render time, so the labels follow the UI language.
+function accuracyOptions(): SelectOption[] {
+  return ACCURACY_VALUES.map(value => ({ value, label: i18n.t(`workspace_ui.usage.accuracy.${value}`) }))
+}
 
-const GROUP_OPTIONS: SelectOption[] = [
-  { value: 'provider', label: 'Provider' },
-  { value: 'model', label: 'Model' },
-  { value: 'platform', label: 'Platform' },
-  { value: 'session', label: 'Session' },
-  { value: 'session_path', label: 'Session path' },
-  { value: 'subject', label: 'Subject' },
-  { value: 'agent', label: 'Agent' },
-  { value: 'task', label: 'Task' },
-  { value: 'custom_dimension', label: 'Custom dimension' },
-]
+function channelOptions(): SelectOption[] {
+  return CHANNEL_VALUES.map(value => ({ value, label: i18n.t(`workspace_ui.usage.channel.${value}`) }))
+}
+
+function groupOptions(): SelectOption[] {
+  return GROUP_VALUES.map(value => ({ value, label: i18n.t(`workspace_ui.usage.group.${value}`) }))
+}
 
 const BAR_COLORS = [
   'bg-sky-500',
@@ -140,46 +131,39 @@ function dateEndIso(value: string): string | undefined {
 }
 
 function formatNumber(value: number | null | undefined): string {
-  return new Intl.NumberFormat().format(Math.max(0, Math.round(value ?? 0)))
+  return formatLocaleNumber(Math.max(0, Math.round(value ?? 0)))
 }
 
 function formatTokens(value: number | null | undefined): string {
   const n = Math.max(0, Math.round(value ?? 0))
-  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`
-  if (n >= 10_000) return `${(n / 1_000).toFixed(1)}K`
+  // Large counts in the locale's own compact form (1.2M, 120万).
+  if (n >= 10_000) return formatLocaleNumber(n, { notation: 'compact', maximumFractionDigits: n >= 1_000_000 ? 2 : 1 })
   return formatNumber(n)
 }
 
 function formatCost(value: number | null | undefined): string {
   if (value === null || value === undefined) return '-'
-  return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 }).format(value)
+  return formatLocaleNumber(value, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 })
 }
 
 function formatPercent(value: number | null | undefined): string {
-  return `${Math.max(0, Math.min(100, value ?? 0)).toFixed(1)}%`
+  return formatLocaleNumber(Math.max(0, Math.min(100, value ?? 0)) / 100, { style: 'percent', minimumFractionDigits: 1, maximumFractionDigits: 1 })
 }
 
 function formatDateTime(value: string | null | undefined): string {
-  if (!value) return '-'
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(value))
+  return formatDateParts(value, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }, '-')
 }
 
 function labelForAccuracy(value: string): string {
-  return ACCURACY_OPTIONS.find(option => option.value === value)?.label ?? value
+  return accuracyOptions().find(option => option.value === value)?.label ?? value
 }
 
 function labelForChannel(value: string): string {
-  return CHANNEL_OPTIONS.find(option => option.value === value)?.label ?? value
+  return channelOptions().find(option => option.value === value)?.label ?? value
 }
 
 function labelForGroupBy(value: string): string {
-  return GROUP_OPTIONS.find(option => option.value === value)?.label ?? value
+  return groupOptions().find(option => option.value === value)?.label ?? value
 }
 
 function eventTotalTokens(event: UsageEventDTO): number {
@@ -294,10 +278,11 @@ function ViewSelector({
   value: UsageView
   onChange: (value: UsageView) => void
 }) {
+  const { t } = useAppTranslation()
   const options: Array<{ value: UsageView; label: string }> = [
-    { value: 'mine', label: 'Mine' },
-    { value: 'shared', label: 'Shared in space' },
-    { value: 'all_visible', label: 'All visible' },
+    { value: 'mine', label: t('workspace_ui.usage.view.mine') },
+    { value: 'shared', label: t('workspace_ui.usage.view.shared') },
+    { value: 'all_visible', label: t('workspace_ui.usage.view.all_visible') },
   ]
   return (
     <div className="inline-flex max-w-full flex-nowrap gap-1 overflow-x-auto rounded-lg border border-border bg-muted/30 p-1">
@@ -321,6 +306,7 @@ function ViewSelector({
 }
 
 function AccuracyMix({ item }: { item: UsageBreakdownItem }) {
+  const { t } = useAppTranslation()
   const mix = item.accuracy_mix
   const total = Math.max(1, item.totals.event_count)
   const parts = [
@@ -342,19 +328,20 @@ function AccuracyMix({ item }: { item: UsageBreakdownItem }) {
               key={part.key}
               className={part.className}
               style={{ width: `${Math.max(3, (count / total) * 100)}%` }}
-              title={`${labelForAccuracy(part.key)}: ${count}`}
+              title={`${labelForAccuracy(part.key)}: ${formatNumber(count)}`}
             />
           )
         })}
       </div>
       <div className="text-[11px] text-muted-foreground">
-        {formatPercent(item.totals.observed_event_percentage)} observed
+        {t('workspace_ui.usage.observed', { percent: formatPercent(item.totals.observed_event_percentage) })}
       </div>
     </div>
   )
 }
 
 export default function UsagePage() {
+  const { t } = useAppTranslation()
   const { activeSpaceId, activeSpaceName } = useSpace()
   const initialRange = useMemo(initialDateRange, [])
   const [view, setView] = useState<UsageView>('mine')
@@ -378,12 +365,17 @@ export default function UsagePage() {
     dimensions: null,
     subjects: [],
     sessions: [],
+    sessionTotal: 0,
+    sessionTotals: EMPTY_TOTALS,
     events: [],
     dimensionSummary: null,
     budgetPreview: null,
   })
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+  // Every filter change starts eight requests; only the latest set may
+  // become the dashboard, or a slow earlier window answers over a fast one.
+  const dashboardRequest = useRef(0)
 
   const resolvedGroupBy = groupBy === 'custom_dimension'
     ? (customDimensionKey ? `dimension:${customDimensionKey}` : 'provider')
@@ -432,6 +424,19 @@ export default function UsagePage() {
   ])
 
   const queryKey = useMemo(() => JSON.stringify(query), [query])
+  // The group table pages through every matched group. Every summary read
+  // names its offset, page 1 included; a reload (new query or Refresh) starts
+  // again from the first page, and only the latest group read may land.
+  const [groupOffset, setGroupOffset] = useState(0)
+  const groupRequest = useRef(0)
+  function loadGroupPage(offset: number) {
+    if (!activeSpaceId) return
+    setGroupOffset(offset)
+    const request = ++groupRequest.current
+    usageApi.summary({ ...query, offset })
+      .then(summary => { if (request === groupRequest.current) setData(current => ({ ...current, summary })) })
+      .catch(error => { if (request === groupRequest.current) toast.error(errMsg(error)) })
+  }
 
   async function loadDashboard(nextQuery: UsageApiQuery = query) {
     if (!activeSpaceId) {
@@ -441,6 +446,8 @@ export default function UsagePage() {
         dimensions: null,
         subjects: [],
         sessions: [],
+        sessionTotal: 0,
+        sessionTotals: EMPTY_TOTALS,
         events: [],
         dimensionSummary: null,
         budgetPreview: null,
@@ -448,6 +455,9 @@ export default function UsagePage() {
       setLoading(false)
       return
     }
+    const request = ++dashboardRequest.current
+    const summaryRequest = ++groupRequest.current
+    setGroupOffset(0)
     setRefreshing(true)
     if (!data.summary) setLoading(true)
     try {
@@ -455,7 +465,7 @@ export default function UsagePage() {
         ? usageApi.summary({ ...nextQuery, group_by: `dimension:${customDimensionKey}`, limit: 50 })
         : Promise.resolve(null)
       const [summary, timeseries, dimensions, subjects, sessions, events, dimensionSummary, budgetPreview] = await Promise.all([
-        usageApi.summary(nextQuery),
+        usageApi.summary({ ...nextQuery, offset: 0 }),
         usageApi.timeseries({ ...nextQuery, granularity: 'day', limit: 20 }),
         usageApi.dimensions(nextQuery),
         usageApi.subjects({ ...nextQuery, limit: 100 }),
@@ -464,56 +474,63 @@ export default function UsagePage() {
         dimensionSummaryQuery,
         usageApi.budgetPreview({ ...nextQuery, projection_window_days: 30, limit: 8 }),
       ])
-      setData({
-        summary,
+      if (request !== dashboardRequest.current) return
+      setData(current => ({
+        summary: summaryRequest === groupRequest.current ? summary : current.summary,
         timeseries,
         dimensions,
         subjects: safeItems(subjects.items),
         sessions: safeItems(sessions.items),
+        sessionTotal: sessions.total,
+        sessionTotals: sessions.totals,
         events: safeItems(events.items),
         dimensionSummary,
         budgetPreview,
-      })
+      }))
     } catch (error) {
+      if (request !== dashboardRequest.current) return
       toast.error(errMsg(error))
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      if (request === dashboardRequest.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }
 
   useEffect(() => {
     void loadDashboard(query)
+    // queryKey stands in for query, so an equal query in a new object does not reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSpaceId, queryKey, customDimensionKey])
 
   const providerOptions = useMemo<SelectOption[]>(() => [
-    { value: 'all', label: 'All providers' },
+    { value: 'all', label: t('workspace_ui.usage.all_providers') },
     ...safeItems(data.dimensions?.providers)
       .filter(provider => provider.id)
       .map(provider => ({ value: provider.id as string, label: provider.label })),
-  ], [data.dimensions?.providers])
+  ], [data.dimensions?.providers, t])
 
   const modelOptions = useMemo<SelectOption[]>(() => [
-    { value: 'all', label: 'All models' },
+    { value: 'all', label: t('workspace_ui.usage.all_models') },
     ...safeItems(data.dimensions?.models).map(item => ({ value: item.model, label: item.model })),
-  ], [data.dimensions?.models])
+  ], [data.dimensions?.models, t])
 
   const taskOptions = useMemo<SelectOption[]>(() => [
-    { value: 'all', label: 'All tasks' },
+    { value: 'all', label: t('workspace_ui.usage.all_tasks') },
     ...safeItems(data.dimensions?.tasks).map(item => ({ value: item.task, label: item.task })),
-  ], [data.dimensions?.tasks])
+  ], [data.dimensions?.tasks, t])
 
   const subjectOptions = useMemo<SelectOption[]>(() => [
-    { value: 'all', label: 'All subjects' },
+    { value: 'all', label: t('workspace_ui.usage.all_subjects') },
     ...data.subjects.map(item => ({
       value: `${item.meter_subject_type}\u001f${item.meter_subject_id}`,
       label: `${item.meter_subject_type}: ${item.meter_subject_id}`,
     })),
-  ], [data.subjects])
+  ], [data.subjects, t])
 
   const sessionOptions = useMemo<SelectOption[]>(() => {
-    const options: SelectOption[] = [{ value: 'all', label: 'All sessions' }]
+    const options: SelectOption[] = [{ value: 'all', label: t('workspace_ui.usage.all_sessions') }]
     for (const session of data.sessions) {
       if (session.session_id) {
         options.push({
@@ -533,12 +550,12 @@ export default function UsagePage() {
       }
     }
     return options
-  }, [data.sessions])
+  }, [data.sessions, t])
 
   const dimensionKeyOptions = useMemo<SelectOption[]>(() => [
-    { value: '', label: 'No dimension key' },
+    { value: '', label: t('workspace_ui.usage.no_dimension_key') },
     ...safeItems(data.dimensions?.custom_dimension_keys).map(key => ({ value: key, label: key })),
-  ], [data.dimensions?.custom_dimension_keys])
+  ], [data.dimensions?.custom_dimension_keys, t])
 
   const timeBuckets = useMemo(
     () => buildTimeseriesBuckets(data.timeseries?.items ?? []),
@@ -552,8 +569,8 @@ export default function UsagePage() {
     return (
       <div className="p-6">
         <Card>
-          <CardTitle>Token Usage</CardTitle>
-          <p className="mt-2 text-sm text-muted-foreground">Select an operational space to view usage.</p>
+          <CardTitle>{t('workspace_ui.usage.title')}</CardTitle>
+          <p className="mt-2 text-sm text-muted-foreground">{t('workspace_ui.usage.no_space')}</p>
         </Card>
       </div>
     )
@@ -573,8 +590,8 @@ export default function UsagePage() {
             <BarChart3 className="size-5 text-accent-foreground" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold tracking-tight">Token Usage</h1>
-            <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? activeSpaceId}</p>
+            <h1 className="text-xl font-semibold tracking-tight">{t('workspace_ui.usage.title')}</h1>
+            <p className="text-xs text-muted-foreground">{t('workspace_ui.usage.viewing', { space: activeSpaceName ?? activeSpaceId })}</p>
           </div>
         </div>
         <Button
@@ -582,71 +599,71 @@ export default function UsagePage() {
           variant="outline"
           onClick={() => void loadDashboard(query)}
           disabled={refreshing}
-          aria-label="Refresh usage"
+          aria-label={t('workspace_ui.usage.refresh_aria')}
         >
           {refreshing ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
-          Refresh
+          {t('workspace_ui.usage.refresh')}
         </Button>
       </div>
 
       <section className="space-y-3">
         <div className="grid gap-3 md:grid-cols-[minmax(220px,0.8fr)_repeat(3,minmax(160px,1fr))] xl:grid-cols-[minmax(260px,0.9fr)_repeat(5,minmax(160px,1fr))]">
-          <Field label="View">
+          <Field label={t('workspace_ui.usage.field.view')}>
             <ViewSelector value={view} onChange={setView} />
           </Field>
-          <Field label="From">
-            <Input aria-label="From" type="date" value={fromDate} onChange={event => setFromDate(event.target.value)} />
+          <Field label={t('workspace_ui.usage.field.from')}>
+            <Input aria-label={t('workspace_ui.usage.field.from')} type="date" value={fromDate} onChange={event => setFromDate(event.target.value)} />
           </Field>
-          <Field label="To">
-            <Input aria-label="To" type="date" value={toDate} onChange={event => setToDate(event.target.value)} />
+          <Field label={t('workspace_ui.usage.field.to')}>
+            <Input aria-label={t('workspace_ui.usage.field.to')} type="date" value={toDate} onChange={event => setToDate(event.target.value)} />
           </Field>
-          <Field label="Group by">
-            <Select ariaLabel="Group by" options={GROUP_OPTIONS} value={groupBy} onChange={setGroupBy} />
+          <Field label={t('workspace_ui.usage.field.group_by')}>
+            <Select ariaLabel={t('workspace_ui.usage.field.group_by')} options={groupOptions()} value={groupBy} onChange={setGroupBy} />
           </Field>
-          <Field label="Accuracy">
-            <Select ariaLabel="Accuracy" options={ACCURACY_OPTIONS} value={accuracy} onChange={value => setAccuracy(value as AccuracyFilter)} />
+          <Field label={t('workspace_ui.usage.field.accuracy_label')}>
+            <Select ariaLabel={t('workspace_ui.usage.field.accuracy_label')} options={accuracyOptions()} value={accuracy} onChange={value => setAccuracy(value as AccuracyFilter)} />
           </Field>
-          <Field label="Platform">
-            <Select ariaLabel="Platform" options={CHANNEL_OPTIONS} value={channel} onChange={value => setChannel(value as ChannelFilter)} />
+          <Field label={t('workspace_ui.usage.field.platform')}>
+            <Select ariaLabel={t('workspace_ui.usage.field.platform')} options={channelOptions()} value={channel} onChange={value => setChannel(value as ChannelFilter)} />
           </Field>
         </div>
 
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-          <Field label="Provider">
-            <Select ariaLabel="Provider" options={providerOptions} value={providerId} onChange={setProviderId} />
+          <Field label={t('workspace_ui.usage.field.provider')}>
+            <Select ariaLabel={t('workspace_ui.usage.field.provider')} options={providerOptions} value={providerId} onChange={setProviderId} />
           </Field>
-          <Field label="Model">
-            <Select ariaLabel="Model" options={modelOptions} value={model} onChange={setModel} />
+          <Field label={t('workspace_ui.usage.field.model')}>
+            <Select ariaLabel={t('workspace_ui.usage.field.model')} options={modelOptions} value={model} onChange={setModel} />
           </Field>
-          <Field label="Task">
-            <Select ariaLabel="Task" options={taskOptions} value={task} onChange={setTask} />
+          <Field label={t('workspace_ui.usage.field.task')}>
+            <Select ariaLabel={t('workspace_ui.usage.field.task')} options={taskOptions} value={task} onChange={setTask} />
           </Field>
-          <Field label="Subject">
+          <Field label={t('workspace_ui.usage.field.subject')}>
             <Select
-              ariaLabel="Subject"
+              ariaLabel={t('workspace_ui.usage.field.subject')}
               options={subjectOptions}
               value={subjectFilterValue(subjectFilter)}
               onChange={value => setSubjectFilter(parseSubjectFilter(value))}
             />
           </Field>
-          <Field label="Session">
+          <Field label={t('workspace_ui.usage.field.session')}>
             <Select
-              ariaLabel="Session"
+              ariaLabel={t('workspace_ui.usage.field.session')}
               options={sessionOptions}
               value={sessionFilterValue(sessionFilter)}
               onChange={value => setSessionFilter(parseSessionFilter(value))}
             />
           </Field>
-          <Field label="Dimension filter">
-            <Select ariaLabel="Dimension filter" options={dimensionKeyOptions} value={dimensionFilterKey} onChange={setDimensionFilterKey} />
+          <Field label={t('workspace_ui.usage.field.dimension_filter')}>
+            <Select ariaLabel={t('workspace_ui.usage.field.dimension_filter')} options={dimensionKeyOptions} value={dimensionFilterKey} onChange={setDimensionFilterKey} />
           </Field>
         </div>
 
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div className="grid flex-1 gap-3 md:grid-cols-2">
-            <Field label="Custom dimension">
+            <Field label={t('workspace_ui.usage.field.custom_dimension')}>
               <Select
-                ariaLabel="Custom dimension"
+                ariaLabel={t('workspace_ui.usage.field.custom_dimension')}
                 options={dimensionKeyOptions}
                 value={customDimensionKey}
                 onChange={value => {
@@ -655,12 +672,12 @@ export default function UsagePage() {
                 }}
               />
             </Field>
-            <Field label="Dimension value">
+            <Field label={t('workspace_ui.usage.field.dimension_value')}>
               <Input
-                aria-label="Dimension value"
+                aria-label={t('workspace_ui.usage.field.dimension_value')}
                 value={dimensionFilterValue}
                 onChange={event => setDimensionFilterValue(event.target.value)}
-                placeholder="Exact value"
+                placeholder={t('workspace_ui.usage.exact_value')}
                 disabled={!dimensionFilterKey}
               />
             </Field>
@@ -673,7 +690,7 @@ export default function UsagePage() {
                 checked={includeImported}
                 onChange={event => setIncludeImported(event.target.checked)}
               />
-              Include imported
+              {t('workspace_ui.usage.include_imported')}
             </label>
           </div>
         </div>
@@ -681,39 +698,39 @@ export default function UsagePage() {
 
       {loading ? (
         <div className="flex items-center justify-center py-16 text-muted-foreground">
-          <Loader2 className="mr-2 size-5 animate-spin" /> Loading usage...
+          <Loader2 className="mr-2 size-5 animate-spin" /> {t('workspace_ui.usage.loading')}
         </div>
       ) : (
         <>
           <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
             <KpiTile
-              label="Total tokens"
+              label={t('workspace_ui.usage.kpi.total_tokens')}
               value={formatTokens(selectedTotals.total_tokens)}
-              detail={`${formatNumber(selectedTotals.event_count)} events`}
+              detail={t('workspace_ui.usage.kpi.events', { count: selectedTotals.event_count, formatted: formatNumber(selectedTotals.event_count) })}
               icon={<Database className="size-4" />}
             />
             <KpiTile
-              label="Input / output"
+              label={t('workspace_ui.usage.kpi.input_output')}
               value={`${formatTokens(selectedTotals.input_tokens)} / ${formatTokens(selectedTotals.output_tokens)}`}
-              detail={`${formatTokens(selectedTotals.cache_read_input_tokens)} cache read`}
+              detail={t('workspace_ui.usage.kpi.cache_read', { tokens: formatTokens(selectedTotals.cache_read_input_tokens) })}
               icon={<TableProperties className="size-4" />}
             />
             <KpiTile
-              label="Reasoning"
+              label={t('workspace_ui.usage.kpi.reasoning')}
               value={formatTokens(selectedTotals.reasoning_tokens)}
-              detail={`${formatTokens(selectedTotals.cache_creation_input_tokens)} cache create · ${formatTokens(selectedTotals.cache_creation_1h_input_tokens)} at 1h`}
+              detail={t('workspace_ui.usage.kpi.cache_create', { tokens: formatTokens(selectedTotals.cache_creation_input_tokens), hour: formatTokens(selectedTotals.cache_creation_1h_input_tokens) })}
               icon={<Filter className="size-4" />}
             />
             <KpiTile
-              label="Estimated cost"
+              label={t('workspace_ui.usage.kpi.estimated_cost')}
               value={formatCost(selectedTotals.estimated_cost_usd)}
               detail="USD"
               icon={<BarChart3 className="size-4" />}
             />
             <KpiTile
-              label="Requests"
+              label={t('workspace_ui.usage.kpi.requests')}
               value={formatNumber(selectedTotals.request_count)}
-              detail={`${formatPercent(selectedTotals.observed_event_percentage)} observed`}
+              detail={t('workspace_ui.usage.observed', { percent: formatPercent(selectedTotals.observed_event_percentage) })}
               icon={<CheckCircle2 className="size-4" />}
             />
           </section>
@@ -722,16 +739,16 @@ export default function UsagePage() {
             <div className="space-y-4">
               <Card>
                 <div className="mb-4 flex items-center justify-between gap-3">
-                  <CardTitle>Timeseries</CardTitle>
+                  <CardTitle>{t('workspace_ui.usage.timeseries')}</CardTitle>
                   <Badge variant="outline">{data.timeseries?.granularity ?? 'day'}</Badge>
                 </div>
                 {timeBuckets.length === 0 ? (
-                  <EmptyState title="No usage events in this range." />
+                  <EmptyState title={t('workspace_ui.usage.empty.events_in_range')} />
                 ) : (
                   <div className="space-y-3">
                     {timeBuckets.map(bucket => (
                       <div key={bucket.bucket} className="grid grid-cols-[84px_minmax(0,1fr)_76px] items-center gap-3 text-sm">
-                        <div className="font-mono text-xs text-muted-foreground">{bucket.bucket}</div>
+                        <div className="font-mono text-xs text-muted-foreground">{formatCalendarDay(bucket.bucket, { month: 'short', day: 'numeric' })}</div>
                         <div className="h-4 overflow-hidden rounded-full bg-muted">
                           <div className="flex h-full" style={{ width: `${Math.max(4, (bucket.total / maxBucketTokens) * 100)}%` }}>
                             {bucket.segments.map((segment, index) => (
@@ -753,19 +770,20 @@ export default function UsagePage() {
 
               <Card>
                 <div className="mb-4 flex items-center justify-between gap-3">
-                  <CardTitle>Breakdown</CardTitle>
+                  <CardTitle>{t('workspace_ui.usage.breakdown')}</CardTitle>
                   <Badge variant="secondary">{labelForGroupBy(data.summary?.group_by ?? resolvedGroupBy)}</Badge>
                 </div>
                 {data.summary?.items.length ? (
+                  <>
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Group</TableHead>
-                        <TableHead className="text-right">Tokens</TableHead>
-                        <TableHead className="text-right">Cost</TableHead>
-                        <TableHead className="text-right">Requests</TableHead>
-                        <TableHead>Accuracy</TableHead>
-                        <TableHead>Last seen</TableHead>
+                        <TableHead>{t('workspace_ui.usage.col.group')}</TableHead>
+                        <TableHead className="text-right">{t('workspace_ui.usage.col.tokens')}</TableHead>
+                        <TableHead className="text-right">{t('workspace_ui.usage.col.cost')}</TableHead>
+                        <TableHead className="text-right">{t('workspace_ui.usage.col.requests')}</TableHead>
+                        <TableHead>{t('workspace_ui.usage.col.accuracy')}</TableHead>
+                        <TableHead>{t('workspace_ui.usage.col.last_seen')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -784,26 +802,28 @@ export default function UsagePage() {
                       ))}
                     </TableBody>
                   </Table>
+                  <Pagination className="mt-3" total={data.summary.total} limit={data.summary.limit} offset={groupOffset} onChange={loadGroupPage} />
+                  </>
                 ) : (
-                  <EmptyState title="No grouped usage." />
+                  <EmptyState title={t('workspace_ui.usage.empty.grouped')} />
                 )}
               </Card>
 
               <Card>
                 <div className="mb-4 flex items-center justify-between gap-3">
-                  <CardTitle>Recent Events</CardTitle>
+                  <CardTitle>{t('workspace_ui.usage.recent_events')}</CardTitle>
                   <Badge variant="outline">{data.events.length}</Badge>
                 </div>
                 {data.events.length ? (
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Time</TableHead>
-                        <TableHead>Platform</TableHead>
-                        <TableHead>Provider / model</TableHead>
-                        <TableHead>Subject</TableHead>
-                        <TableHead className="text-right">Tokens</TableHead>
-                        <TableHead>Accuracy</TableHead>
+                        <TableHead>{t('workspace_ui.usage.col.time')}</TableHead>
+                        <TableHead>{t('workspace_ui.usage.col.platform')}</TableHead>
+                        <TableHead>{t('workspace_ui.usage.col.provider_model')}</TableHead>
+                        <TableHead>{t('workspace_ui.usage.col.subject')}</TableHead>
+                        <TableHead className="text-right">{t('workspace_ui.usage.col.tokens')}</TableHead>
+                        <TableHead>{t('workspace_ui.usage.col.accuracy')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -812,8 +832,8 @@ export default function UsagePage() {
                           <TableCell className="text-xs text-muted-foreground">{formatDateTime(event.occurred_at)}</TableCell>
                           <TableCell>{labelForChannel(event.execution_channel)}</TableCell>
                           <TableCell>
-                            <div className="max-w-[220px] truncate">{event.provider_name_snapshot ?? event.provider_type ?? 'Unknown provider'}</div>
-                            <div className="max-w-[220px] truncate font-mono text-[11px] text-muted-foreground">{event.model ?? 'unknown model'}</div>
+                            <div className="max-w-[220px] truncate">{event.provider_name_snapshot ?? event.provider_type ?? t('workspace_ui.usage.unknown_provider')}</div>
+                            <div className="max-w-[220px] truncate font-mono text-[11px] text-muted-foreground">{event.model ?? t('workspace_ui.usage.unknown_model')}</div>
                           </TableCell>
                           <TableCell>
                             <div className="max-w-[180px] truncate">{event.meter_subject_type}</div>
@@ -826,14 +846,14 @@ export default function UsagePage() {
                     </TableBody>
                   </Table>
                 ) : (
-                  <EmptyState title="No events." />
+                  <EmptyState title={t('workspace_ui.usage.empty.events')} />
                 )}
               </Card>
             </div>
 
             <div className="space-y-4">
               <Card>
-                <CardTitle className="mb-4">Platform</CardTitle>
+                <CardTitle className="mb-4">{t('workspace_ui.usage.platform_title')}</CardTitle>
                 <div className="space-y-3">
                   {safeItems(data.dimensions?.execution_channels).length ? data.dimensions!.execution_channels.map(item => {
                     const pct = selectedTotals.total_tokens > 0 ? (item.total_tokens / selectedTotals.total_tokens) * 100 : 0
@@ -849,18 +869,18 @@ export default function UsagePage() {
                       </div>
                     )
                   }) : (
-                    <EmptyState title="No platform data." />
+                    <EmptyState title={t('workspace_ui.usage.empty.platform')} />
                   )}
                 </div>
               </Card>
 
               <Card>
                 <div className="mb-4 flex items-center justify-between gap-3">
-                  <CardTitle>Session Drilldown</CardTitle>
+                  <CardTitle>{t('workspace_ui.usage.session_drilldown')}</CardTitle>
                   <Badge variant="outline">{data.sessions.length}</Badge>
                 </div>
                 {data.sessions.length === 0 ? (
-                  <EmptyState title="No sessions." />
+                  <EmptyState title={t('workspace_ui.usage.empty.sessions')} />
                 ) : (
                   <div className="space-y-3">
                     {data.sessions.slice(0, 8).map(session => (
@@ -868,16 +888,16 @@ export default function UsagePage() {
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="truncate text-sm font-medium">
-                              {session.session_name ?? session.session_path ?? session.session_id ?? session.external_session_id ?? 'Unknown session'}
+                              {session.session_name ?? session.session_path ?? session.session_id ?? session.external_session_id ?? t('workspace_ui.usage.unknown_session')}
                             </div>
                             <div className="truncate font-mono text-[11px] text-muted-foreground">
-                              {session.session_path ?? session.external_session_id ?? session.session_id ?? 'no session id'}
+                              {session.session_path ?? session.external_session_id ?? session.session_id ?? t('workspace_ui.usage.no_session_id')}
                             </div>
                           </div>
                           <div className="text-right font-mono text-xs">{formatTokens(session.totals.total_tokens)}</div>
                         </div>
                         <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                          <Badge variant="muted">{formatNumber(session.run_ids.length)} runs</Badge>
+                          <Badge variant="muted">{t('workspace_ui.usage.runs', { count: session.run_ids.length, formatted: formatNumber(session.run_ids.length) })}</Badge>
                           <span>{formatDateTime(session.last_seen_at)}</span>
                         </div>
                       </div>
@@ -887,29 +907,31 @@ export default function UsagePage() {
               </Card>
 
               <Card>
-                <CardTitle className="mb-4">Unit Economics</CardTitle>
+                <CardTitle className="mb-4">{t('workspace_ui.usage.unit_economics')}</CardTitle>
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Unit</TableHead>
-                      <TableHead className="text-right">Avg tokens</TableHead>
-                      <TableHead className="text-right">Avg cost</TableHead>
+                      <TableHead>{t('workspace_ui.usage.col.unit')}</TableHead>
+                      <TableHead className="text-right">{t('workspace_ui.usage.col.avg_tokens')}</TableHead>
+                      <TableHead className="text-right">{t('workspace_ui.usage.col.avg_cost')}</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {[
-                      { label: 'Request', divisor: selectedTotals.request_count },
-                      { label: 'Event', divisor: selectedTotals.event_count },
-                      { label: 'Session', divisor: data.sessions.length },
-                      { label: labelForGroupBy(data.summary?.group_by ?? 'Group'), divisor: data.summary?.items.length ?? 0 },
+                      { label: t('workspace_ui.usage.unit.request'), totals: selectedTotals, divisor: selectedTotals.request_count },
+                      { label: t('workspace_ui.usage.unit.event'), totals: selectedTotals, divisor: selectedTotals.event_count },
+                      // Sessions are listed only at full access, so their
+                      // average divides their own totals, not the summary's.
+                      { label: t('workspace_ui.usage.unit.session'), totals: data.sessionTotals, divisor: data.sessionTotal },
+                      { label: data.summary?.group_by ? labelForGroupBy(data.summary.group_by) : t('workspace_ui.usage.col.group'), totals: selectedTotals, divisor: data.summary?.total ?? 0 },
                     ].map(row => {
                       const divisor = Math.max(0, row.divisor)
-                      const cost = selectedTotals.estimated_cost_usd
+                      const cost = row.totals.estimated_cost_usd
                       return (
                         <TableRow key={row.label}>
                           <TableCell>{row.label}</TableCell>
                           <TableCell className="text-right font-mono">
-                            {divisor > 0 ? formatTokens(selectedTotals.total_tokens / divisor) : '-'}
+                            {divisor > 0 ? formatTokens(row.totals.total_tokens / divisor) : '-'}
                           </TableCell>
                           <TableCell className="text-right font-mono">
                             {divisor > 0 && cost !== null ? formatCost(cost / divisor) : '-'}
@@ -923,16 +945,16 @@ export default function UsagePage() {
 
               <Card>
                 <div className="mb-4 flex items-center justify-between gap-3">
-                  <CardTitle>Budget Preview</CardTitle>
-                  <Badge variant="outline">{data.budgetPreview?.projection_window_days ?? 30} days</Badge>
+                  <CardTitle>{t('workspace_ui.usage.budget_preview')}</CardTitle>
+                  <Badge variant="outline">{t('workspace_ui.usage.days', { count: data.budgetPreview?.projection_window_days ?? 30 })}</Badge>
                 </div>
                 {data.budgetPreview?.items.length ? (
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Subject</TableHead>
-                        <TableHead className="text-right">Projected</TableHead>
-                        <TableHead className="text-right">Costed</TableHead>
+                        <TableHead>{t('workspace_ui.usage.col.subject')}</TableHead>
+                        <TableHead className="text-right">{t('workspace_ui.usage.col.projected')}</TableHead>
+                        <TableHead className="text-right">{t('workspace_ui.usage.col.costed')}</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -949,11 +971,11 @@ export default function UsagePage() {
                     </TableBody>
                   </Table>
                 ) : (
-                  <EmptyState title="No costed subjects." />
+                  <EmptyState title={t('workspace_ui.usage.empty.costed')} />
                 )}
                 {data.budgetPreview && data.budgetPreview.total_projected_estimated_cost_usd !== null && (
                   <div className="mt-3 flex items-center justify-between border-t border-border pt-3 text-sm">
-                    <span className="text-muted-foreground">Projected total</span>
+                    <span className="text-muted-foreground">{t('workspace_ui.usage.projected_total')}</span>
                     <span className="font-mono">{formatCost(data.budgetPreview.total_projected_estimated_cost_usd)}</span>
                   </div>
                 )}
@@ -961,20 +983,20 @@ export default function UsagePage() {
 
               <Card>
                 <div className="mb-4 flex items-center justify-between gap-3">
-                  <CardTitle>Dimensions</CardTitle>
+                  <CardTitle>{t('workspace_ui.usage.dimensions')}</CardTitle>
                   <Badge variant="outline">{safeItems(data.dimensions?.custom_dimension_keys).length}</Badge>
                 </div>
                 <div className="space-y-3">
-                  <Select ariaLabel="Dimension explorer key" options={dimensionKeyOptions} value={customDimensionKey} onChange={setCustomDimensionKey} />
+                  <Select ariaLabel={t('workspace_ui.usage.dimension_explorer_key')} options={dimensionKeyOptions} value={customDimensionKey} onChange={setCustomDimensionKey} />
                   {customDimensionKey && (
                     dimensionRows.length === 0 ? (
-                      <EmptyState title="No dimension values." />
+                      <EmptyState title={t('workspace_ui.usage.empty.dimension_values')} />
                     ) : (
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead>Value</TableHead>
-                            <TableHead className="text-right">Tokens</TableHead>
+                            <TableHead>{t('workspace_ui.usage.col.value')}</TableHead>
+                            <TableHead className="text-right">{t('workspace_ui.usage.col.tokens')}</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -990,7 +1012,7 @@ export default function UsagePage() {
                   )}
                   {customDimensionKey && missingDimensionRow && (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-                      Missing {customDimensionKey}: {formatTokens(missingDimensionRow.totals.total_tokens)} tokens
+                      {t('workspace_ui.usage.missing_dimension', { key: customDimensionKey, tokens: formatTokens(missingDimensionRow.totals.total_tokens) })}
                     </div>
                   )}
                 </div>

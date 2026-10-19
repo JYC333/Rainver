@@ -28,10 +28,6 @@ import { ResearchResultCard } from './ResearchResultCard'
 import { researchResultState, savedSetupDiffersFromOperation, type ResearchResultAction } from './researchResultState'
 import { ResearchScanTimeline } from './ResearchScanTimeline'
 
-export function activeResearchWorkflowFrom(workflows: ProjectResearchWorkflow[]): ProjectResearchWorkflow | null {
-  return workflows.find(workflow => workflow.status === 'active') ?? null
-}
-
 function historyCoverageRanges(workflow: ProjectResearchWorkflow | null): Array<{ from: string; to: string; operation_id: string; status: string }> {
   const value = workflow?.state_json.coverage_ranges
   if (!Array.isArray(value)) return []
@@ -69,11 +65,10 @@ function isEmptySearchOperation(operation: ProjectOperation | null): boolean {
 }
 
 /**
- * Whether a source failed to contribute at all. The operation records this, but
- * the completion wording ignored it — so "no relevant evidence" was reported
- * with equal confidence whether every provider had been read or one of them had
- * never answered. Those are different claims and the reader has to be able to
- * tell them apart before acting on the suggestion to broaden the query.
+ * Whether a source failed to contribute at all. The operation records this.
+ * "No relevant evidence" after every provider was read is a different claim
+ * from the same words when one of them never answered. The reader has to
+ * tell them apart before acting on a suggestion to broaden the query.
  */
 function coverageIncomplete(operation: ProjectOperation): boolean {
   if (operation.progress_json.coverage_degraded === true) return true
@@ -283,8 +278,9 @@ export function researchOperationSteps(operation: ProjectOperation): Array<{ tit
   const currentIndex = researchStageIndex(stage)
   return fallback.map((fallbackTitle, index) => {
     const persisted = operation.steps?.find(step => step.seq === index)
-    // Classification is model work, not yet the human screening review.
-    // Keep legacy persisted step titles, but clarify the live phase.
+    // The screening step is model work until a person is waiting to review.
+    // A persisted title stays, except that live screening step, which reads
+    // "Screen materials".
     const title = index === 2 && stage === 'screening' && operation.status !== 'waiting_review'
       ? 'Screen materials'
       : persisted?.title ?? fallbackTitle
@@ -464,10 +460,10 @@ export function FocusResearchWorkbench({
   )
   const initialIntakeDraft = objectValue(displayWorkflow?.state_json.draft)
   const initialIntakeSaved = initialIntakeDraft.status === 'saved' || emptyInitialSearchOperation !== null
-  // An "all available" baseline used to be excluded as having nothing
-  // earlier to reach. The acquisition is bounded now — it buys the newest N
-  // matches and stops — so earlier history is exactly what it left, and the
-  // server decides on coverage rather than on the history mode's name.
+  // An "all available" baseline can still have earlier history. The acquisition
+  // buys the newest N matches and stops. The server decides on coverage, not
+  // on the history mode's name. Do not refuse the baseline for having nothing
+  // earlier.
   const canExtendHistory = Boolean(activeWorkflow && !historicalBackfillActive && initialSearchOperation?.status === 'completed' && monitoring.active === true && earliestCoverage)
   const pinnedThread = Array.isArray(activeWorkflow?.state_json.thread_scope)
     ? activeWorkflow?.state_json.thread_scope[0] as Record<string, unknown> | undefined
@@ -522,10 +518,8 @@ export function FocusResearchWorkbench({
     savedSetupDiffers: emptyInitialSearchOperation !== null
       && savedSetupDiffersFromOperation(serializeResearchSetupDraft(researchSetupDraft), emptyInitialSearchOperation),
   })
-  // The search-setup Modal now always targets a specific, already-defined
-  // Inquiry Thread — without one linked yet there is nothing valid to
-  // configure inside it, so every entry point that used to open it routes to
-  // Inquiry instead, the same way a missing question already did.
+  // The search-setup modal targets a specific Inquiry Thread. Without one
+  // linked there is nothing to configure, so entry points go to Inquiry.
   function openSetup() {
     if (!currentThread) onEditQuestion()
     else setResearchSetupOpen(true)

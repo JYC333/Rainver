@@ -4,7 +4,10 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DecisionAreaPage from '../DecisionAreaPage'
 import KnowledgeReviewPage from '../KnowledgeReviewPage'
+import { toast } from 'sonner'
 import { agentsApi, decisionCasesApi, experimentsApi, inquiryApi, knowledgeApi, knowledgePromotionApi, notesApi } from '../../../api/client'
+
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
 
 vi.mock('../../../api/client', () => ({
   decisionCasesApi: {
@@ -79,6 +82,35 @@ describe('Decision and Knowledge Review Project surfaces', () => {
       framing: '',
       source_thread_ids: ['thread-1'],
     }))
+  })
+
+  it('stays on the Case the person switched to after acting on it, even when ?open= named another', async () => {
+    const caseRow = (id: string, title: string) => ({
+      id, title, framing: '', status: 'open', options: [], criteria: [], scores: [], commitments: [], source_thread_ids: [],
+    })
+    vi.mocked(decisionCasesApi.list).mockResolvedValue([caseRow('case-x', 'Case X'), caseRow('case-y', 'Case Y')] as never)
+    vi.mocked(decisionCasesApi.get).mockImplementation(async (_projectId, id) => caseRow(id, id === 'case-x' ? 'Case X' : 'Case Y') as never)
+    vi.mocked(decisionCasesApi.addOption).mockResolvedValue({} as never)
+    renderPage('/projects/project-1/decisions?open=case-x', <DecisionAreaPage />)
+
+    expect(await screen.findByRole('heading', { name: 'Case X' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Case Y/ }))
+    expect(await screen.findByRole('heading', { name: 'Case Y' })).toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText('Add option'), { target: { value: 'Option one' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add option' }))
+    await waitFor(() => expect(decisionCasesApi.addOption).toHaveBeenCalledWith('project-1', 'case-y', { title: 'Option one' }))
+    // The reload after the action follows the selection, not the deep link.
+    await waitFor(() => expect(decisionCasesApi.get).toHaveBeenLastCalledWith('project-1', 'case-y'))
+    expect(screen.getByRole('heading', { name: 'Case Y' })).toBeInTheDocument()
+  })
+
+  it('reports a Next checkpoint that could not be closed instead of doing nothing', async () => {
+    vi.mocked(knowledgePromotionApi.closePacket).mockRejectedValue(new Error('This checkpoint was already closed'))
+    renderPage('/projects/project-1/knowledge-review', <KnowledgeReviewPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Next checkpoint' }))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('This checkpoint was already closed'))
   })
 
   it('opens a bounded Knowledge review checkpoint and renders its summary', async () => {

@@ -26,7 +26,10 @@ export const RUN_TRIGGER_ORIGIN_VALUES = [
   "job",
   "system",
   "delegation",
-  // Read-side compatibility values emitted by older/API-derived records.
+  // A turn the system started to report on earlier work (a delegated result,
+  // a research outcome, a discussion wave). Its authority is its cause's.
+  "continuation",
+  // Accepted on read so existing rows still parse. Do not write these as a new trigger origin.
   "user",
   "api",
   "workflow",
@@ -40,9 +43,9 @@ export type Id = z.infer<typeof IdSchema>;
 
 /**
  * ISO-8601 datetime string as emitted by the API
- * (e.g. `"2026-06-09T12:00:00.123456+00:00"`). Kept as a permissive string so a
- * valid server timestamp is never rejected; treat it as an instant, not a
- * structurally-validated value.
+ * (e.g. `"2026-06-09T12:00:00.123456+00:00"`). A permissive string, so a
+ * valid server timestamp is never rejected. Treat it as an instant, not a
+ * structurally validated value.
  */
 export const ISODateTimeSchema = z.string();
 

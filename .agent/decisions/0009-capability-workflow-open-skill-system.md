@@ -27,7 +27,8 @@ packages, and runtime skill bindings and delivery.
 
 ### 2. External skills are untrusted source material
 
-Imports are disabled by default; scripts are not executed; dependencies are
+`POST /api/v1/skill-sources/import` stores a package at status `imported` and
+has no instance switch. Scripts are not executed; dependencies are
 not installed; vendor permission declarations are permission **requests**
 only. A skill is a procedure, not callable authority: package declarations of
 tools, hooks, scripts, dependencies, or MCP servers install nothing, execute

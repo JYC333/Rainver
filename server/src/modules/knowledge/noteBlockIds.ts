@@ -23,11 +23,10 @@ export const BLOCK_ID_ATTR = "blockId";
  * Stamp an id on every top-level block that has none, leaving existing ids
  * untouched.
  *
- * Absence is legal and stays legal: notes written before this existed keep
- * loading, and their blocks acquire ids the next time the note is written
- * rather than through a migration that would rewrite history. `note_revisions`
- * rows are never rewritten — an old revision restored by rollback simply
- * arrives without ids and is stamped by the write that restores it.
+ * A note without ids still loads. Blocks acquire ids the next time the note
+ * is written. Do not rewrite `note_revisions` to backfill them. A revision
+ * restored by rollback arrives without ids and is stamped by the write that
+ * restores it.
  */
 export function withBlockIds(doc: unknown): PmNode {
   const source = objectValue(doc);
@@ -67,7 +66,7 @@ export function addedBlockIds(previous: unknown, next: unknown): string[] {
   return blockIds(next).filter((id): id is string => id !== null && !before.has(id));
 }
 
-export interface NoteBlock {
+interface NoteBlock {
   id: string | null;
   type: string;
   text: string;

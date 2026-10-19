@@ -7,8 +7,8 @@ subscription** — a Claude Pro/Max or OpenAI Codex OAuth grant an instance admi
 completed here, stored as an encrypted database credential and spent through
 the in-process provider channel (ADR 0008).
 
-A vendor CLI's login is **not** one of them. Since ADR 0016 a CLI runs only on
-an execution host, and its login lives with the copy on that host — the
+A vendor CLI's login is **not** one of them. A CLI runs only on an execution
+host (ADR 0016), and its login lives with the copy on that host — the
 built-in host inside `sandbox-runner`, or a paired machine. Nothing is copied,
 brokered, or mounted from here, so there is nothing here to broker.
 
@@ -37,7 +37,7 @@ One copy on one host, logged in on that host:
 - The Command Center's host card installs a managed copy, opens its login
   terminal, and reports whether it is logged in and which accounts it holds.
 - The login state lives inside that copy's own `HOME`
-  (`packages/host-daemon/src/tools.ts`), which is why keeping the previous
+  (`packages/host-daemon/src/tools.ts`). Keeping the previous
   version directory makes a rollback a step rather than a re-login.
 - The control plane never sees the credential, its path, or its contents
   (BOUNDARIES B64). What crosses the wire about it is: logged in or not,
@@ -65,17 +65,6 @@ learns nothing. Only numbers, reset times and a reason come back. The control
 plane caches them (`hosts/usageService.ts`), refreshes on a schedule, folds in
 the live reading a finished Run carries, and shows the result beside the copy
 on the host card.
-
-## Retired in ADR 0016
-
-`cli_credential_profiles`, `cli_credential_space_grants`,
-`cli_credential_events`, the `CredentialBroker`, the server-side login engine
-and its adapters, `runtime_tool_bindings`, `space_runtime_tool_policies` and
-`cli_usage_import_cursors` are gone, dropped by the `0002` maintenance
-migration. `runtime-tools/` and `secrets/cli-credentials/` under
-`$RAINVER_HOME` are no longer read; `start.sh` names them after migrating and
-leaves them alone, because a script that deletes a secrets directory is a
-script nobody can trust.
 
 ## Related
 

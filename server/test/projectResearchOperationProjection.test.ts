@@ -23,8 +23,6 @@ function state(current_stage: ResearchStage, stage_state: ResearchOperationState
     channel_ids: [],
     project_source_binding_ids: [],
     source_post_processing_rule_ids: [],
-    project_source_binding_id: null,
-    source_post_processing_rule_id: null,
     source_backfill_plan_id: null,
     source_backfill_plan_ids: [],
     query: { source_channel_ids: [], fingerprint: "", sort_by: "submittedDate", history_mode: null, from: null, to: null },

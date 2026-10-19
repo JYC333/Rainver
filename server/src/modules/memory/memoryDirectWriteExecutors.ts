@@ -24,11 +24,10 @@ import { PgMemoryProposalRepository } from "./proposalRepository.js";
  * Memory's Agent tool surface — `memory.remember` and `memory.revise`
  * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §2).
  *
- * Until these existed no Agent could write memory from a conversation at all:
- * the surface carried only `memory.retrieval.*`, and the pipelines that draft
- * memory proposals have produced none on this instance. The person was never
- * the bottleneck on what an Agent remembers — nothing was, and it did not
- * learn.
+ * These two actions are how an Agent writes memory from a conversation.
+ * `memory.retrieval.*` does not write, and the pipelines that draft memory
+ * proposals produce none on their own. Do not leave the Agent with only
+ * retrieval. Nothing would write what it learned.
  *
  * A write that stays private, normal-sensitivity and about the person in the
  * turn applies directly, as a new version carrying its run and rationale. A
@@ -271,10 +270,9 @@ export function registerMemoryDirectWriteExecutors(
    * applied provenance and pending proposals. A manual Run must not evade the
    * bound merely because its first change is waiting for the owner.
    *
-   * Not a variable: a host-bound conversation builds a fresh dispatcher for
-   * every tool call (`runs/cliToolTransport.ts`), so anything held in this
-   * closure resets between calls and the bound never fired on the one surface
-   * this whole plan is about.
+   * Count it in the database. Do not hold the count in this closure. A
+   * host-bound conversation builds a fresh dispatcher for every tool call
+   * (`runs/cliToolTransport.ts`), so a closure counter resets between calls.
    */
   const personaWritesInThisRun = async (queryable: Queryable): Promise<number> => {
     const row = await queryable.query<{ total: string }>(
@@ -459,15 +457,15 @@ async function assertSessionNotLooping(
 ): Promise<void> {
   // A conversation with no Room has no session — a group carrying one without
   // a Room is refused — so counting only by session would leave the surface
-  // that reaches those Agents unbounded, which is the one thing this exists to
-  // prevent. Where there is no session the Run is the loop's boundary.
+  // that reaches those Agents unbounded. Do not count only by session. Where
+  // there is no session the Run is the loop's boundary.
   const scope = run.session_id
     ? { column: "p.evidence_json->>'session_id'", value: run.session_id, sessions: true }
     : { column: "p.source_id", value: run.id, sessions: false };
   // Both branches count. A loop that asks for space-shared memory, or one
   // running under a `requires_proposal` Agent, produces proposals instead of
-  // entries — and an unbounded pile of those is the hundred rows to approve
-  // this exists to prevent, not an escape from it.
+  // entries. Do not leave that pile unbounded. Counting proposals is the
+  // limit, not an escape from it.
   //
   // Only what still stands is counted: a revision supersedes the version it
   // replaced, so ordinary correction does not walk toward the limit, and

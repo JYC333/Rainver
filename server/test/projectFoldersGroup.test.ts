@@ -9,6 +9,7 @@ import { projectFoldersModule } from "../src/modules/projectFolders/index.js";
 import { PgProjectFolderRepository } from "../src/modules/projectFolders/repository.js";
 import { projectsModule } from "../src/modules/projects/index.js";
 import { buildModuleServer } from "./support/moduleServer.js";
+import { assertRemoteRepositoryUrl, redactRepositoryUrlCredentials } from "../src/modules/projectFolders/repositoryUrl.js";
 
 describe("projectFoldersRoutes", () => {
   let app: FastifyInstance | undefined;
@@ -56,7 +57,7 @@ describe("projectFoldersRoutes", () => {
         id: "revision-1", path: "README.md", status: "available",
       }]);
       await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/git/status", {
-        is_repo: false, branch: null, files: [],
+        is_repo: false, branch: null, files: [], truncated: false,
       });
       await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/git/diff", {
         diff: "", path: null, truncated: false, redacted: false,
@@ -149,7 +150,7 @@ describe("projectFoldersRoutes", () => {
         return { used_bytes: 0, limit_bytes: 50 * 1024 * 1024 };
       },
       async getGitStatus() {
-        return { is_repo: false, branch: null, files: [] };
+        return { is_repo: false, branch: null, files: [], truncated: false };
       },
       async getGitDiff() {
         return { diff: "", path: null, truncated: false, redacted: false };
@@ -177,6 +178,32 @@ describe("projectFoldersRoutes", () => {
 });
 
 describe("projectFoldersSecurity", () => {
+  it("clones only over HTTPS, never a path on the server or a transport the guard cannot judge", () => {
+    for (const remote of [
+      "https://github.com/example/repo.git",
+      "https://user:token@gitlab.example.com/group/repo.git",
+      "https://codeberg.org/example/repo",
+    ]) {
+      expect(() => assertRemoteRepositoryUrl(remote)).not.toThrow();
+    }
+    for (const refused of [
+      "/srv/rainver/other-space/repo",
+      "../repo",
+      "file:///etc",
+      "ext::sh -c id",
+      "C:\\repo",
+      "http://github.com/example/repo.git",
+      "ssh://git@example.com/repo.git",
+      "git://example.com/repo.git",
+      "git@github.com:example/repo.git",
+      "https://",
+    ]) {
+      expect(() => assertRemoteRepositoryUrl(refused), refused).toThrow(expect.objectContaining({ statusCode: 422 }));
+    }
+    expect(redactRepositoryUrlCredentials("fatal: unable to access 'https://alice:ghp_secret@github.com/x/y.git/'"))
+      .toBe("fatal: unable to access 'https://***@github.com/x/y.git/'");
+  });
+
   type QueryResult = { rows: Record<string, unknown>[]; rowCount: number };
 
   class SecurityDb {
@@ -310,6 +337,28 @@ describe("projectFoldersSecurity", () => {
 });
 
 describe("server-side git on a built-in Location", () => {
+  it("records no branch or head for a repository that has no commit yet, rather than the literal HEAD", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { PgWorkspaceLocationRepository } = await import("../src/modules/projectFolders/workspaceLocations.js");
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "rainver-location-unborn-"));
+    try {
+      const root = join(workspaceRoot, "location-1");
+      await mkdir(root);
+      // What a new managed Folder is: `git init`, nothing committed.
+      execFileSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+      const writes: unknown[][] = [];
+      const db = { query: async (_sql: string, params: unknown[]) => { writes.push(params); return { rows: [], rowCount: 1 }; } };
+      await new PgWorkspaceLocationRepository(db as never).refreshGitStatus(
+        { id: "location-1", root_path: null, execution_host_kind: "server" },
+        workspaceRoot,
+      );
+      expect(writes[0]).toEqual(["location-1", null, null, false, expect.any(String)]);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+
   it("refreshes a checkout's status without running anything a Run planted in its .git", async () => {
     const { execFileSync } = await import("node:child_process");
     const { existsSync } = await import("node:fs");

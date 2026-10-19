@@ -8,7 +8,7 @@ export const DEFAULT_GRAPH_VIEW_STATE: GraphViewState = {
   focusedNodeId: null,
   expandedClusterIds: [],
   hiddenKinds: [],
-  activeEdgeKinds: [],
+  hiddenEdgeKinds: [],
   currentLayout: 'force',
   layoutSource: 'default',
   pinnedNodes: {},
@@ -26,9 +26,7 @@ export function graphViewReducer(state: GraphViewState, action: GraphViewAction)
     case 'toggle-kind':
       return toggleListValue(state, 'hiddenKinds', action.kind)
     case 'set-edge-kind-active':
-      return setListMembership(state, 'activeEdgeKinds', action.kind, action.active)
-    case 'set-active-edge-kinds':
-      return { ...state, activeEdgeKinds: Array.from(new Set(action.kinds)).sort() }
+      return setListMembership(state, 'hiddenEdgeKinds', action.kind, !action.active)
     case 'set-layout':
       return { ...state, currentLayout: action.layout, layoutSource: 'user' }
     case 'set-renderer':
@@ -70,7 +68,7 @@ export function normalizeGraphViewState(state: Partial<GraphViewState> = {}): Gr
     focusedNodeId: nullableString(source.focusedNodeId),
     expandedClusterIds: stringList(source.expandedClusterIds, DEFAULT_GRAPH_VIEW_STATE.expandedClusterIds),
     hiddenKinds: stringList(source.hiddenKinds, DEFAULT_GRAPH_VIEW_STATE.hiddenKinds),
-    activeEdgeKinds: stringList(source.activeEdgeKinds, DEFAULT_GRAPH_VIEW_STATE.activeEdgeKinds),
+    hiddenEdgeKinds: stringList(source.hiddenEdgeKinds, DEFAULT_GRAPH_VIEW_STATE.hiddenEdgeKinds),
     currentLayout: layout ?? DEFAULT_GRAPH_VIEW_STATE.currentLayout,
     layoutSource: graphLayoutSource(source.layoutSource, layout),
     pinnedNodes: pinnedNodes(source.pinnedNodes, DEFAULT_GRAPH_VIEW_STATE.pinnedNodes),
@@ -80,12 +78,12 @@ export function normalizeGraphViewState(state: Partial<GraphViewState> = {}): Gr
 
 export function persistentGraphViewState(state: GraphViewState): Pick<
   GraphViewState,
-  'expandedClusterIds' | 'hiddenKinds' | 'activeEdgeKinds' | 'currentLayout' | 'layoutSource' | 'pinnedNodes' | 'rendererMode'
+  'expandedClusterIds' | 'hiddenKinds' | 'hiddenEdgeKinds' | 'currentLayout' | 'layoutSource' | 'pinnedNodes' | 'rendererMode'
 > {
   return {
     expandedClusterIds: state.expandedClusterIds,
     hiddenKinds: state.hiddenKinds,
-    activeEdgeKinds: state.activeEdgeKinds,
+    hiddenEdgeKinds: state.hiddenEdgeKinds,
     currentLayout: state.currentLayout,
     layoutSource: state.layoutSource,
     pinnedNodes: state.pinnedNodes,
@@ -104,16 +102,16 @@ function toggleListValue<K extends 'hiddenKinds' | 'expandedClusterIds'>(
   return { ...state, [key]: Array.from(values) }
 }
 
-function setListMembership<K extends 'activeEdgeKinds'>(
+function setListMembership<K extends 'hiddenEdgeKinds'>(
   state: GraphViewState,
   key: K,
   value: string,
-  active: boolean,
+  member: boolean,
 ): GraphViewState {
   const values = new Set(state[key])
-  if (active) values.add(value)
+  if (member) values.add(value)
   else values.delete(value)
-  return { ...state, [key]: Array.from(values) }
+  return { ...state, [key]: Array.from(values).sort() }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

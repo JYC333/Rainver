@@ -5,7 +5,7 @@ export interface CliExecutionResult {
   stdout: string;
   stderr: string;
   timed_out: boolean;
-  failure_code?: "timeout" | "stall_timeout" | "sandbox_runner_unavailable" | "sandbox_namespace_unavailable" | "output_limit_exceeded";
+  failure_code?: "timeout" | "launch_wait_timeout" | "stall_timeout" | "sandbox_runner_unavailable" | "sandbox_namespace_unavailable" | "output_limit_exceeded";
   /**
    * How long the runtime had been silent when the run was given up on. Set on
    * a timeout or stall so the failure can say whether the runtime was working
@@ -76,8 +76,7 @@ export interface CliRawStdioController {
 export interface CliStdioController {
   start(send: (message: Record<string, unknown>) => void): void;
   /**
-   * Async by contract (execution-topology-and-project-control-plane-plan.md
-   * P0.2): an SDK-backed implementation's next `send()` can depend on a
+   * Async by contract. An SDK-backed implementation's next `send()` can depend on a
    * Promise resolving, which never happens synchronously within this call.
    * The remote CLI adapter's own controller stays synchronous in effect by
    * resolving immediately.
@@ -106,7 +105,7 @@ export interface CliStdioController {
   };
 }
 
-/** Tracks remote Runner executions without ever signalling a local application-server PID. */
+/** Tracks a daemon Run's stop callbacks. Do not register an application-server process. */
 export class LocalCliProcessRegistry implements CliProcessRegistry {
   private readonly processes = new Map<string, { terminate: () => void; forceTerminate: () => void; lastActivityAt: number }>();
   private readonly exitWaiters = new Map<string, Set<(exited: boolean) => void>>();

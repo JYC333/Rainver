@@ -4,7 +4,8 @@
  * Every `/api/` response is somebody's private content answered against their
  * session cookie. Without an explicit directive a shared proxy, or the
  * browser's own back/forward cache, may keep it and hand it to whoever asks
- * next on that machine — which is the residue logout exists to clear.
+ * next on that machine. Do not omit the directive. That leftover is what
+ * logout has to clear.
  *
  * Its own module because two places need it and neither should import the
  * other: the `onSend` hook in `appShell.ts`, and the SSE streams that hijack

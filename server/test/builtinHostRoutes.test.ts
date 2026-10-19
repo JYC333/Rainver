@@ -16,8 +16,8 @@ import { PgHostRepository } from "../src/modules/hosts/repository.js";
  * (installing a runtime, logging a copy in) is instance-admin work; being told
  * what is installed on it is not, because that is what says whether a member's
  * Run can run at all. And two things it must keep refusing: being revoked, and
- * being handed an existing directory on the machine (plan decision 12 — a
- * server Location is always a managed workspace).
+ * being handed an existing directory on the machine. A server Location is
+ * always a managed workspace.
  */
 const ADMIN = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const MEMBER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
@@ -37,7 +37,7 @@ function user(id: string, email: string | null, admin: boolean): CurrentUser {
     avatar_url: null,
     is_instance_admin: admin,
     created_at: new Date().toISOString(),
-    last_login_at: null,
+    default_space_id: null, last_login_at: null,
   };
 }
 
@@ -157,8 +157,8 @@ describe("the built-in host's management surface", () => {
 
   it("does not accept an existing directory on the machine as a workspace", async () => {
     asUser(ADMIN, ADMIN_TOKEN);
-    // Plan decision 12: a server Location is always a managed workspace under
-    // the instance's own root. Attaching a directory that is already there is
+    // A server Location is always a managed workspace under the instance's
+    // own root. Do not attach a directory that is already there. That is
     // the trusted host's job.
     const response = await post(`/api/v1/hosts/${builtinHostId}/workspaces`, ADMIN_TOKEN, {
       project_id: "11111111-1111-4111-8111-111111111111",

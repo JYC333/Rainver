@@ -26,7 +26,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "space_memberships", "users", "spaces"],
+    ["prompt_deployment_refs", "evolvable_asset_pins", "evolvable_asset_versions", "evolvable_assets", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -84,6 +84,62 @@ async function approvedVersion(assetId: string, content: Record<string, unknown>
 }
 
 describe("Prompt registry facade (real Postgres)", () => {
+  it("keeps the current staging ref when a deployment names a proposal that does not exist", async () => {
+    if (!db.available) return;
+    const asset = await createPromptAsset("test.staging_proposal", "text");
+    const v1 = await approvedVersion(asset.id as string, { schema_version: "prompt_asset.v1", prompt_type: "text", template: "v1" });
+    const v2 = await approvedVersion(asset.id as string, { schema_version: "prompt_asset.v1", prompt_type: "text", template: "v2" });
+    await repo().setDeployment(identity, "test.staging_proposal", "staging", { scope_type: "space", version_id: v1 });
+
+    await expect(repo().setDeployment(identity, "test.staging_proposal", "staging", {
+      scope_type: "space", version_id: v2, promoted_from_proposal_id: randomUUID(),
+    })).rejects.toMatchObject({ statusCode: 422 });
+
+    const active = await repo().listDeployments(identity, "test.staging_proposal");
+    expect(active.map((ref) => [ref.label, ref.version_id])).toEqual([["staging", v1]]);
+  });
+
+  it("rolls back once by default, then asks which version instead of swapping back", async () => {
+    if (!db.available) return;
+    const key = "test.rollback_once";
+    const asset = await createPromptAsset(key, "text");
+    const v1 = await approvedVersion(asset.id as string, { schema_version: "prompt_asset.v1", prompt_type: "text", template: "v1" });
+    const v2 = await approvedVersion(asset.id as string, { schema_version: "prompt_asset.v1", prompt_type: "text", template: "v2" });
+    const v3 = await approvedVersion(asset.id as string, { schema_version: "prompt_asset.v1", prompt_type: "text", template: "v3" });
+    for (const version of [v1, v2, v3]) {
+      await repo().setDeployment(identity, key, "staging", { scope_type: "space", version_id: version });
+    }
+
+    const back = await repo().rollbackDeployment(identity, key, { label: "staging", scope_type: "space" });
+    expect(back).toMatchObject({ version_id: v2, rolled_back_from_ref_id: expect.any(String) });
+    // A second default rollback would return to v3, the version just left.
+    await expect(repo().rollbackDeployment(identity, key, { label: "staging", scope_type: "space" }))
+      .rejects.toMatchObject({ statusCode: 409 });
+    const named = await repo().rollbackDeployment(identity, key, { label: "staging", scope_type: "space", version_id: v1 });
+    expect(named).toMatchObject({ version_id: v1 });
+  });
+
+  it("stages the built-in version for the Space, never as the global baseline", async () => {
+    if (!db.available) return;
+    const key = "test.builtin_stage";
+    const assetId = randomUUID();
+    const versionId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO evolvable_assets (id, space_id, asset_type, asset_key, display_name, owner_scope_type, status, metadata_json, created_at, updated_at)
+       VALUES ($1, NULL, 'prompt_template', $2, $2, 'system', 'active', '{"prompt_type":"text"}'::jsonb, now(), now())`,
+      [assetId, key],
+    );
+    await db.pool.query(
+      `INSERT INTO evolvable_asset_versions (id, asset_id, space_id, scope_type, scope_id, version, status, source, content_hash, content_json, created_at, updated_at)
+       VALUES ($1, $2, NULL, 'system', NULL, 1, 'approved', 'built_in', 'h', '{"schema_version":"prompt_asset.v1","prompt_type":"text","template":"builtin"}'::jsonb, now(), now())`,
+      [versionId, assetId],
+    );
+    await expect(repo().setDeployment(identity, key, "staging", { scope_type: "system", version_id: versionId }))
+      .rejects.toMatchObject({ statusCode: 403 });
+    await expect(repo().setDeployment(identity, key, "staging", { scope_type: "space", version_id: versionId }))
+      .resolves.toMatchObject({ scope_type: "space", scope_id: SPACE, version_id: versionId });
+  });
+
   it("hides generic evolvable_assets rows that have no prompt_type marker", async () => {
     if (!db.available) return;
     await evolvableRepo().createAsset(identity, {
@@ -142,6 +198,32 @@ describe("Prompt registry facade (real Postgres)", () => {
     await createPromptAsset("custom.private", "text");
     const otherIdentity: SpaceUserIdentity = { spaceId: OTHER_SPACE, userId: OWNER };
     await expect(repo().getAsset(otherIdentity, "custom.private")).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("previews a shared prompt with the latest version the caller may see, not another Space's", async () => {
+    if (!db.available) return;
+    const assetId = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO evolvable_assets (
+         id, space_id, asset_type, asset_key, display_name, description, owner_scope_type, owner_scope_id,
+         status, metadata_json, created_at, updated_at
+       ) VALUES ($1, NULL, 'prompt_template', 'shared.preview', 'shared.preview', NULL, 'system', NULL, 'active', '{"prompt_type":"text"}'::jsonb, $2, $2)`,
+      [assetId, now],
+    );
+    const insertVersion = (spaceId: string | null, scopeType: string, version: number, template: string) =>
+      db.pool.query(
+        `INSERT INTO evolvable_asset_versions (
+           id, asset_id, space_id, scope_type, scope_id, version, status, source, content_json, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $3, $5, 'approved', 'built_in', $6::jsonb, $7, $7)`,
+        [randomUUID(), assetId, spaceId, scopeType, version,
+          JSON.stringify({ schema_version: "prompt_asset.v1", prompt_type: "text", template }), now],
+      );
+    await insertVersion(null, "system", 1, "Built-in text");
+    await insertVersion(OTHER_SPACE, "space", 2, "Other Space's customisation");
+
+    const preview = await repo().renderPreview(identity, "shared.preview", {});
+    expect(preview.rendered_text).toBe("Built-in text");
   });
 
   it("does not expose user-owned prompt assets to other users in the same space", async () => {

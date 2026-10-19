@@ -2,8 +2,7 @@ import { pgTable, index, foreignKey, varchar, timestamp, type PgTableExtraConfig
 import { users } from "./auth.js";
 
 /**
- * execution-topology-and-project-control-plane-plan.md P1 / D1: a physical
- * device's identity — nothing else. Answers "which device?", never "which
+ * A physical device's identity, and nothing else. Answers "which device?", never "which
  * execution environment?" (that's `hosts`/ExecutionHost) or "which checkout?"
  * (that's `workspace_locations`). Carries no filesystem path, runtime
  * availability, CLI login state, or capability data — those stay on the

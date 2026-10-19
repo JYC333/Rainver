@@ -29,8 +29,7 @@ export function memorySensitivityReadSql(alias: string, userExpr: string): strin
  * reached ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md)
  * §4, ADR 0018); Space oversight is not that audience, and reading the note on
  * the Memory page would cross the Room the delivery path refuses to cross.
- * Oversight keeps `user` and `project` scope, where the accountability it
- * exists for actually lives.
+ * Oversight keeps `user` and `project` scope.
  *
  * Must accompany `contentReadSql` on every query that can return an
  * agent-scope row. Queries that exclude the scope outright (the retrieval

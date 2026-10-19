@@ -9,7 +9,7 @@ import {
   sanitizeEvidenceJson,
 } from "./evidenceRedaction.js";
 import { assertProjectInSpace } from "../projects/access.js";
-import { contentAccessLevelSql, contentReadSql, projectReadAccessSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
+import { artifactReadSql, contentAccessLevelSql, contentReadSql, projectReadAccessSql, proposalReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 
@@ -113,6 +113,16 @@ interface RuntimeProfileForRun {
   created_at: string;
   updated_at: string;
 }
+
+/**
+ * What started one turn of an Agent group: a person's message (`manual`), or
+ * the system reporting back on earlier work (`continuation`) with the Run that
+ * work came from. A continuation's cause is null when its lineage cannot be
+ * verified or it ran past its budget, and it is then unattended.
+ */
+export type GroupedRunTrigger =
+  | { origin: "manual" }
+  | { origin: "continuation"; cause_run_id: string | null };
 
 export class PgRunRepository {
   private readonly usageRepository: PgUsageRepository;
@@ -235,13 +245,27 @@ export class PgRunRepository {
     return result.rows;
   }
 
+  /**
+   * Orphaned Runs whose current attempt has no finalization yet. A Run the
+   * supervisor leaves orphaned keeps that status after it is finalized, so
+   * without the finalization filter a backlog of finished ones would fill
+   * every page and starve a newly orphaned Task Run of its only sweep.
+   */
   async listOrphanedRunIds(limit = 100): Promise<Array<{ id: string; space_id: string }>> {
     const result = await this.db.query<{ id: string; space_id: string }>(
-      `SELECT id, space_id
-         FROM runs
-        WHERE status = 'orphaned'
-          AND error_json->>'error_code' = 'orphaned'
-        ORDER BY updated_at ASC, id ASC
+      `SELECT r.id, r.space_id
+         FROM runs r
+        WHERE r.status = 'orphaned'
+          AND r.error_json->>'error_code' = 'orphaned'
+          AND NOT EXISTS (
+            SELECT 1 FROM run_finalizations f
+             WHERE f.space_id = r.space_id AND f.run_id = r.id
+               AND f.attempt_number = COALESCE((
+                 SELECT max(a.attempt_number) FROM run_attempts a
+                  WHERE a.space_id = r.space_id AND a.run_id = r.id
+               ), 1)
+          )
+        ORDER BY r.updated_at ASC, r.id ASC
         LIMIT $1`,
       [Math.max(1, Math.min(500, Math.trunc(limit)))],
     );
@@ -542,6 +566,8 @@ export class PgRunRepository {
     agent_id: string;
     space_id: string;
     user_id: string;
+    /** The turn's own trigger: the person's message, or a system continuation and its cause. */
+    trigger: GroupedRunTrigger;
     parent_run_id: string;
     root_run_id: string;
     run_group_id: string;
@@ -575,7 +601,8 @@ export class PgRunRepository {
         user_id: input.user_id,
         mode: "live",
         run_type: "agent",
-        trigger_origin: "manual",
+        trigger_origin: input.trigger.origin,
+        cause_run_id: input.trigger.origin === "continuation" ? input.trigger.cause_run_id : null,
         session_id: input.session_id ?? null,
         project_folder_id: input.project_folder_id ?? null,
         workspace_location_id: input.workspace_location_id ?? null,
@@ -766,14 +793,14 @@ export class PgRunRepository {
                   required_sandbox_level, owner_user_id, visibility, access_level, project_id,
                   contract_snapshot_json, workflow_version_id, source, runtime_profile_selection_source,
                   permission_snapshot_json, workspace_location_id, trust_mode, host_task_thread_id,
-                  execution_kind
+                  execution_kind, cause_run_id
        )
        VALUES (
           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
           $11, $12, $13, $14, $15, $16, $17, 'queued', $18, $19, $20, $21, $22, $22,
           $23, $24, $25::jsonb, $26, $27::jsonb, $28::jsonb, $29,
           $14, $30, $31, $32, $33::jsonb, $34, 'managed', $35,
-          $36::jsonb, $37, $38, $39, $40
+          $36::jsonb, $37, $38, $39, $40, $41
        )
        RETURNING id, space_id, agent_id, agent_version_id, run_role,
                  requested_runtime_profile_id, runtime_profile_id,
@@ -832,6 +859,7 @@ export class PgRunRepository {
         input.trust_mode ?? null,
         input.host_task_thread_id ?? null,
         input.execution_kind,
+        input.trigger_origin === "continuation" ? input.cause_run_id ?? null : null,
       ],
     );
     const row = result.rows[0];
@@ -1026,11 +1054,27 @@ export class PgRunRepository {
    * The Room rule and the content rule, in the shape a single-row read needs:
    * a non-member gets a 404 rather than a silently filtered row.
    *
-   * It calls `roomRunReadAccessSql` rather than restating it. This method used
-   * to hand-write the equivalent join, and `listRuns` carried no Room rule at
-   * all — so the list showed Runs this path then denied. One definition is
-   * what stops that recurring.
+   * It calls `roomRunReadAccessSql` rather than restating it. Do not
+   * hand-write the join, and do not omit the Room rule from `listRuns`.
+   * One definition is what keeps the list and this path in agreement.
    */
+  /**
+   * The Tasks a Run worked on, by their canonical TaskRun links, limited to
+   * those the viewer may read: a link never reveals a Task.
+   */
+  async linkedTasksForViewer(spaceId: string, runId: string, userId: string): Promise<Array<{ id: string; title: string }>> {
+    const result = await this.db.query<{ id: string; title: string }>(
+      `SELECT t.id, t.title
+         FROM task_runs tr
+         JOIN tasks t ON t.id = tr.task_id AND t.space_id = tr.space_id
+        WHERE tr.space_id = $1 AND tr.run_id = $2
+          AND ${contentReadSql("task", "t", "$3")}
+        ORDER BY tr.created_at ASC, t.id ASC`,
+      [spaceId, runId, userId],
+    );
+    return result.rows;
+  }
+
   async getVisibleRun(spaceId: string, userId: string, runId: string): Promise<VisibleRunRecord | null> {
     const roomReadable = await this.db.query<{ allowed: boolean }>(
       `SELECT ${roomRunReadAccessSql("$2", "$1", "$3")} AS allowed`,
@@ -1055,9 +1099,9 @@ export class PgRunRepository {
       contentReadSql("run", "runs", "$2"),
       // A Room is a visibility boundary (ADR 0018 decision 3), and the content
       // predicate alone does not enforce it: its oversight branch admits a
-      // Space owner or admin who is inside the Project but not the Room. The
-      // detail path has always carried this rule, so without it here the list
-      // showed Runs the detail page then 404'd on. Same predicate the Proposal
+      // Space owner or admin who is inside the Project but not the Room.
+      // The list uses the same Room rule as the detail path. Do not show a
+      // Run the detail page then 404s on. Same predicate the Proposal
       // and Artifact reads use, so there is one definition of it.
       roomRunReadAccessSql("runs.id", "runs.space_id", "$2"),
     ];
@@ -1214,24 +1258,29 @@ export class PgRunRepository {
     };
   }
 
+  /** The Artifacts a Run produced that this viewer can read; the rest are not listed. */
   async listArtifactSummaries(
     spaceId: string,
     runId: string,
+    viewerUserId: string,
   ): Promise<ArtifactSummaryRecord[]> {
     const result = await this.db.query<ArtifactSummaryRecord>(
-      `SELECT id, space_id, run_id, proposal_id, artifact_type, title,
-              mime_type, visibility, created_at
-         FROM artifacts
-        WHERE space_id = $1 AND run_id = $2
-        ORDER BY created_at ASC, id ASC`,
-      [spaceId, runId],
+      `SELECT a.id, a.space_id, a.run_id, a.proposal_id, a.artifact_type, a.title,
+              a.mime_type, a.visibility, a.created_at
+         FROM artifacts a
+        WHERE a.space_id = $1 AND a.run_id = $2
+          AND ${artifactReadSql("$3", "a")}
+        ORDER BY a.created_at ASC, a.id ASC`,
+      [spaceId, runId, viewerUserId],
     );
     return result.rows;
   }
 
+  /** The Proposals a finished Run created that this viewer can read. */
   async listProposalSummaries(
     spaceId: string,
     runId: string,
+    viewerUserId: string,
   ): Promise<ProposalSummaryRecord[]> {
     const result = await this.db.query<ProposalSummaryRecord>(
       `SELECT proposal.id, proposal.space_id, proposal.proposal_type,
@@ -1247,8 +1296,9 @@ export class PgRunRepository {
           AND proposal.created_by_run_id = $2
           AND proposal.status <> 'staged'
           AND run.status IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned')
+          AND ${proposalReadSql("$3", "proposal")}
         ORDER BY proposal.created_at ASC, proposal.id ASC`,
-      [spaceId, runId],
+      [spaceId, runId, viewerUserId],
     );
     return result.rows;
   }
@@ -1421,7 +1471,7 @@ export class PgRunRepository {
               run_evaluation_id, task_evaluation_id, outcome_status,
               failure_layer, failure_reason_code, trajectory_status,
               skipped_reasons_json, error_json, metadata_json, finalized_at,
-              created_at
+              created_at, settled_at, settlement_attempts, settlement_json
          FROM run_finalizations
         WHERE space_id = $1 AND run_id = $2
         ORDER BY finalized_at DESC, id DESC
@@ -1449,23 +1499,57 @@ export class PgRunRepository {
       fn(lockedDb === this.db ? this : new PgRunRepository(lockedDb)));
   }
 
-  async markRunFinalizationGateCommitted(
+  /**
+   * Records one settlement pass: the reconcilers completed so far, and either
+   * the completion gate (every one completed: `settled_at`) or the failure that
+   * leaves it owed, with when the sweep may try again. The Agent and its output
+   * are not part of settlement and are never redone by it.
+   */
+  async recordRunSettlement(
     spaceId: string,
     finalizationId: string,
-    committedAt: string,
+    input: {
+      completed: readonly string[];
+      failure: { key: string; error_code: string; message: string } | null;
+      at: string;
+    },
   ): Promise<void> {
     await this.db.query(
       `UPDATE run_finalizations
-          SET metadata_json = COALESCE(metadata_json, '{}'::jsonb)
-                || jsonb_build_object(
-                  'completion_gate_committed', true,
-                  'completion_gate_committed_at', $3::text
-                )
-        WHERE space_id = $1
-          AND id = $2
-          AND status = 'completed'`,
-      [spaceId, finalizationId, committedAt],
+          SET settlement_attempts = settlement_attempts + 1,
+              settled_at = CASE WHEN $4::jsonb IS NULL THEN $5::timestamptz ELSE NULL END,
+              settlement_json = jsonb_build_object('completed', $3::jsonb)
+                || CASE WHEN $4::jsonb IS NULL THEN '{}'::jsonb ELSE jsonb_build_object(
+                     'last_failure', $4::jsonb || jsonb_build_object('at', $5::text),
+                     -- Backs off with each failed pass, to at most an hour.
+                     'next_attempt_at', ($5::timestamptz + make_interval(mins => LEAST(60, power(2, settlement_attempts)::int)))::text
+                   ) END
+        WHERE space_id = $1 AND id = $2 AND status = 'completed' AND settled_at IS NULL`,
+      [spaceId, finalizationId, JSON.stringify(input.completed), input.failure ? JSON.stringify(input.failure) : null, input.at],
     );
+  }
+
+  /**
+   * Completed finalizations of a Run's current attempt whose settlement is still
+   * owed and due another try. An earlier attempt's is moot once the Run was
+   * retried: that attempt's own finalization settles the Run.
+   */
+  async listUnsettledFinalizations(limit = 50): Promise<Array<{ run_id: string; space_id: string }>> {
+    const result = await this.db.query<{ run_id: string; space_id: string }>(
+      `SELECT f.run_id, f.space_id
+         FROM run_finalizations f
+         JOIN runs r ON r.id = f.run_id AND r.space_id = f.space_id
+        WHERE f.status = 'completed' AND f.settled_at IS NULL
+          AND COALESCE((f.settlement_json->>'next_attempt_at')::timestamptz, f.finalized_at) <= now()
+          AND r.status IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned')
+          AND f.attempt_number = COALESCE((
+            SELECT max(a.attempt_number) FROM run_attempts a WHERE a.space_id = f.space_id AND a.run_id = f.run_id
+          ), 1)
+        ORDER BY f.finalized_at ASC, f.id ASC
+        LIMIT $1`,
+      [Math.max(1, Math.min(500, Math.trunc(limit)))],
+    );
+    return result.rows;
   }
 
   async getRunFinalizationByVersion(
@@ -1479,7 +1563,7 @@ export class PgRunRepository {
               run_evaluation_id, task_evaluation_id, outcome_status,
               failure_layer, failure_reason_code, trajectory_status,
               skipped_reasons_json, error_json, metadata_json, finalized_at,
-              created_at
+              created_at, settled_at, settlement_attempts, settlement_json
          FROM run_finalizations
         WHERE space_id = $1 AND run_id = $2 AND attempt_number = $3 AND finalizer_version = $4
         LIMIT 1`,
@@ -1497,7 +1581,7 @@ export class PgRunRepository {
               run_evaluation_id, task_evaluation_id, outcome_status,
               failure_layer, failure_reason_code, trajectory_status,
               skipped_reasons_json, error_json, metadata_json, finalized_at,
-              created_at
+              created_at, settled_at, settlement_attempts, settlement_json
          FROM run_finalizations
         WHERE space_id = $1 AND run_id = $2
         ORDER BY finalized_at DESC, id DESC`,
@@ -1552,6 +1636,30 @@ export class PgRunRepository {
     return row;
   }
 
+  /** The harness evaluation already written for one attempt, if a finalization pass got that far. */
+  async getRunEvaluationForAttempt(
+    spaceId: string,
+    runId: string,
+    attemptNumber: number,
+    evaluatorVersion = "harness_eval.v1",
+  ): Promise<RunEvaluationRecord | null> {
+    const result = await this.db.query<RunEvaluationRecord>(
+      `SELECT id, space_id, run_id, evaluator_type, evaluator_version,
+              outcome_status, failure_layer, failure_reason_code,
+              trajectory_status, evidence_json, rule_trace_json, notes,
+              evaluated_at
+         FROM run_evaluations
+        WHERE space_id = $1
+          AND run_id = $2
+          AND evaluator_version = $3
+          AND evidence_json->>'attempt_number' = $4::text
+        ORDER BY evaluated_at DESC
+        LIMIT 1`,
+      [spaceId, runId, evaluatorVersion, String(attemptNumber)],
+    );
+    return result.rows[0] ?? null;
+  }
+
   async insertRunFinalization(input: {
     space_id: string;
     run_id: string;
@@ -1583,7 +1691,7 @@ export class PgRunRepository {
                  run_evaluation_id, task_evaluation_id, outcome_status,
                  failure_layer, failure_reason_code, trajectory_status,
                  skipped_reasons_json, error_json, metadata_json, finalized_at,
-                 created_at`,
+                 created_at, settled_at, settlement_attempts, settlement_json`,
       [
         randomUUID(),
         input.space_id,
@@ -1633,9 +1741,9 @@ export class PgRunRepository {
     space_id: string;
     started_at: string;
     required_sandbox_level?: string | null;
-  }): Promise<AgentRunRecord | null> {
+  }): Promise<(AgentRunRecord & { attempt_number: number }) | null> {
     const attemptId = randomUUID();
-    const result = await this.db.query<AgentRunRecord>(
+    const result = await this.db.query<AgentRunRecord & { attempt_number: number }>(
       `WITH updated AS (
          UPDATE runs
             SET status = 'running',
@@ -1668,7 +1776,7 @@ export class PgRunRepository {
                 FROM run_attempts candidate
                WHERE candidate.space_id = u.space_id AND candidate.run_id = u.id
             )
-         RETURNING a.id
+         RETURNING a.id, a.attempt_number
        ), inserted_attempt AS (
          INSERT INTO run_attempts (
            id, space_id, run_id, attempt_number, status,
@@ -1684,12 +1792,14 @@ export class PgRunRepository {
            FROM updated u
           WHERE NOT EXISTS (SELECT 1 FROM updated_attempt)
          ON CONFLICT (space_id, run_id, attempt_number) DO NOTHING
-         RETURNING id
+         RETURNING id, attempt_number
        )
        SELECT u.*,
               a.name AS agent_name,
               av.system_prompt AS system_prompt,
-              COALESCE(u.runtime_profile_snapshot_json->'runtime_config_json', '{}'::jsonb) AS runtime_config_json
+              COALESCE(u.runtime_profile_snapshot_json->'runtime_config_json', '{}'::jsonb) AS runtime_config_json,
+              -- The attempt this dispatch runs: what its events are tagged with.
+              COALESCE((SELECT attempt_number FROM updated_attempt), (SELECT attempt_number FROM inserted_attempt)) AS attempt_number
          FROM updated u
          LEFT JOIN agent_versions av
            ON av.id = u.agent_version_id
@@ -2058,12 +2168,38 @@ export class PgRunRepository {
     });
   }
 
+  /**
+   * Records the launch nonce on the Run's current attempt before the launch
+   * frame leaves. A host's later diff/output upload names this nonce and is
+   * accepted only against the attempt it is written on, so there is no
+   * attempt to bind to means no launch: the dispatch fails here rather than
+   * sending work whose outputs could never be attributed.
+   */
+  async bindAttemptLaunch(input: { space_id: string; run_id: string; launch_id: string }): Promise<void> {
+    const result = await this.db.query<{ id: string }>(
+      `UPDATE run_attempts a
+          SET launch_id = $3, updated_at = now()
+        WHERE a.space_id = $1 AND a.run_id = $2
+          AND a.status IN ('queued', 'running')
+          AND a.attempt_number = (
+            SELECT max(candidate.attempt_number)
+              FROM run_attempts candidate
+             WHERE candidate.space_id = $1 AND candidate.run_id = $2
+          )
+        RETURNING a.id`,
+      [input.space_id, input.run_id, input.launch_id],
+    );
+    if (result.rowCount !== 1) {
+      throw new Error(`Run '${input.run_id}' has no open attempt to bind launch '${input.launch_id}' to`);
+    }
+  }
+
   async getLatestRunAttempt(spaceId: string, runId: string): Promise<RunAttemptRecord | null> {
     const result = await this.db.query<RunAttemptRecord>(
       `SELECT id, space_id, run_id, attempt_number, status,
               started_at, ended_at, last_activity_at,
               cancel_requested_at, cancel_confirmed_at, exit_code,
-              error_code, error_json, created_at, updated_at
+              error_code, error_json, launch_id, created_at, updated_at
          FROM run_attempts
         WHERE space_id = $1 AND run_id = $2
         ORDER BY attempt_number DESC
@@ -2245,7 +2381,9 @@ export class PgRunRepository {
          UPDATE run_attempts a
             SET status = 'waiting_for_review',
                 error_code = $6,
-                error_json = $3::jsonb,
+                -- The outcome this attempt had before the hold, so the resume
+                -- that opens the next attempt can give it back.
+                error_json = $3::jsonb || jsonb_build_object('held_from_status', a.status),
                 last_activity_at = $5,
                 updated_at = $5
            FROM updated u
@@ -2339,7 +2477,7 @@ export class PgRunRepository {
     depends_on_run_ids: string[];
     paused_at: string;
   }): Promise<{
-    status: "waiting" | "ready" | "run_not_running" | "dependencies_changed";
+    status: "waiting" | "ready" | "run_not_running" | "dependencies_changed" | "dependency_cycle";
     dependency_statuses: Array<{ id: string; status: string }>;
     current_status?: string;
   }> {
@@ -2350,8 +2488,8 @@ export class PgRunRepository {
     return withQueryableTransaction(this.db, async (db) => {
       // Lock dependency rows before changing the waiter. A completion either
       // commits first (and is observed below as terminal), or waits until the
-      // waiter is durable and its lifecycle projector can see it. This closes
-      // the lost-wakeup window between reading child status and parking.
+      // waiter is durable and its lifecycle projector can see it. Do not read
+      // child status and then park before taking the lock. The wakeup would be lost.
       const lockedDependencies = await db.query<{ id: string; status: string }>(
         `SELECT id, status
            FROM runs
@@ -2386,6 +2524,31 @@ export class PgRunRepository {
       }
       if (lockedDependencies.rows.every((dependency) => isHardTerminalRunStatus(dependency.status))) {
         return { status: "ready", dependency_statuses: lockedDependencies.rows };
+      }
+      // A dependency already waiting, directly or through others, for this Run
+      // would never be woken: each waits for the other to end. A later
+      // recipient of the same message is parked behind the first at creation,
+      // so the first waiting on `current_turn` closes exactly that loop.
+      const cycle = await db.query<{ waits_on_waiter: boolean }>(
+        `WITH RECURSIVE waits(id) AS (
+           SELECT unnest($3::varchar[])
+           UNION
+           SELECT next.id
+             FROM waits
+             JOIN runs r ON r.space_id = $1 AND r.id = waits.id
+             CROSS JOIN LATERAL jsonb_array_elements_text(
+               CASE WHEN jsonb_typeof(r.output_json->'waiting_for_results'->'depends_on_run_ids') = 'array'
+                    THEN r.output_json->'waiting_for_results'->'depends_on_run_ids'
+                    ELSE '[]'::jsonb END
+             ) AS next(id)
+            WHERE r.status = 'waiting_for_dependency'
+              AND r.output_json->'waiting_for_results'->>'status' = 'waiting'
+         )
+         SELECT EXISTS (SELECT 1 FROM waits WHERE id = $2) AS waits_on_waiter`,
+        [input.space_id, input.run_id, dependsOnRunIds],
+      );
+      if (cycle.rows[0]?.waits_on_waiter) {
+        return { status: "dependency_cycle", dependency_statuses: lockedDependencies.rows };
       }
       const runningAttempt = await db.query<{ id: string }>(
         `SELECT id
@@ -2601,6 +2764,13 @@ export class PgRunRepository {
         WHERE space_id = $1
           AND id = $2
           AND status = 'waiting_for_review'
+          -- The pause is written while its executor still owns the Run. A job
+          -- queued before that lock goes would find it, end as a duplicate,
+          -- and leave the Run queued with nothing left to run it.
+          AND NOT EXISTS (
+            SELECT 1 FROM run_execution_locks execution_lock
+             WHERE execution_lock.run_id = runs.id
+          )
         RETURNING id, space_id, agent_id, agent_version_id, run_type, status, mode,
                   prompt, instruction, project_folder_id, session_id, project_id,
                   parent_run_id, root_run_id, run_group_id, delegation_id,
@@ -2674,6 +2844,11 @@ export class PgRunRepository {
           WHERE attempt.run_id = updated.id
             AND attempt.space_id = updated.space_id
             AND attempt.status = 'waiting_for_review'
+            AND attempt.attempt_number = (
+              SELECT max(candidate.attempt_number)
+                FROM run_attempts candidate
+               WHERE candidate.space_id = updated.space_id AND candidate.run_id = updated.id
+            )
        )
        SELECT * FROM updated`,
       [
@@ -2712,6 +2887,16 @@ export class PgRunRepository {
                     error_message, error_json, started_at, ended_at,
                     owner_user_id, visibility, access_level,
                     contract_snapshot_json, workflow_version_id
+       ), released_attempt AS (
+         -- The review is over; the held attempt returns to the terminal
+         -- outcome it had, so only the new attempt is open on this Run.
+         UPDATE run_attempts a
+            SET status = COALESCE(a.error_json->>'held_from_status', 'failed'),
+                updated_at = $4::timestamptz
+           FROM updated u
+          WHERE a.space_id = u.space_id
+            AND a.run_id = u.id
+            AND a.status = 'waiting_for_review'
        ), inserted_attempt AS (
          INSERT INTO run_attempts (
            id, space_id, run_id, attempt_number, status,
@@ -2777,27 +2962,46 @@ export class PgRunRepository {
     });
   }
 
-  async appendRunEvent(input: RunEventInput): Promise<RunEventRecord> {
+  /**
+   * Appends one Run event. Returns null only for an event of an attempt a
+   * retry has superseded (`input.attempt_number`), which is dropped.
+   */
+  async appendRunEvent(input: RunEventInput): Promise<RunEventRecord | null> {
+    // Two writers append to one Run at once — the runtime event sink and a
+    // tool call's own HTTP request — and MAX()+1 computed on two connections
+    // collides on `uq_run_events_space_run_event_index`, dropping one event.
+    // Serialize the index allocation per Run; inside a caller's transaction
+    // the lock is simply held to its commit.
+    return withQueryableTransaction(this.db, async (db) => {
+    await db.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended('run_events:' || $1::text, 0))`,
+      [input.run_id],
+    );
     // $1/$2 appear both as inserted values (deduced as the varchar column
     // type) and in the scalar subquery comparison (deduced as text via the
     // text equality operator). Without the explicit ::varchar casts PostgreSQL
     // fails with "inconsistent types deduced for parameter".
-    const result = await this.db.query<RunEventRecord>(
+    const result = await db.query<RunEventRecord>(
       `INSERT INTO run_events (
           id, space_id, run_id, attempt_number, event_index, step_id, actor_id, event_type,
           status, summary, error_code, error_message, project_folder_id,
           artifact_id, proposal_id, data_exposure_level,
           trust_level, metadata_json, created_at
        )
-       VALUES ($3, $1, $2,
-               (SELECT MAX(attempt_number)
-                  FROM run_attempts
-                 WHERE space_id = $1::varchar AND run_id = $2::varchar),
-               (SELECT COALESCE(MAX(event_index) + 1, 0)
-                  FROM run_events
-                 WHERE space_id = $1::varchar AND run_id = $2::varchar),
-               $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-               $16::jsonb, $17)
+       SELECT $3, $1, $2,
+              current_attempt.attempt_number,
+              (SELECT COALESCE(MAX(event_index) + 1, 0)
+                 FROM run_events
+                WHERE space_id = $1::varchar AND run_id = $2::varchar),
+              $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+              $16::jsonb, $17
+         FROM (SELECT MAX(attempt_number) AS attempt_number
+                 FROM run_attempts
+                WHERE space_id = $1::varchar AND run_id = $2::varchar) current_attempt
+        -- An event an attempt produced is that attempt's: once a retry has
+        -- superseded it, its late writes are dropped rather than landing in
+        -- the newer attempt's turn. Run-level events name no attempt.
+        WHERE $18::int IS NULL OR current_attempt.attempt_number = $18::int
        ON CONFLICT (space_id, run_id)
          WHERE event_type = 'chat_completed'
        DO NOTHING
@@ -2820,12 +3024,13 @@ export class PgRunRepository {
         input.trust_level ?? null,
         JSON.stringify(sanitizeEvidenceJson(input.metadata_json ?? {})),
         new Date().toISOString(),
+        input.attempt_number ?? null,
       ],
     );
     const row = result.rows[0];
     if (row) return row;
     if (input.event_type === "chat_completed") {
-      const existing = await this.db.query<RunEventRecord>(
+      const existing = await db.query<RunEventRecord>(
         `SELECT id, space_id, run_id, event_index, event_type, status
            FROM run_events
           WHERE space_id = $1
@@ -2836,7 +3041,10 @@ export class PgRunRepository {
       );
       if (existing.rows[0]) return existing.rows[0];
     }
+    // A superseded attempt's event, dropped by the guard above.
+    if (input.attempt_number != null) return null;
     throw new Error("RunEvent append returned no row");
+    });
   }
 
   async createRunStep(input: RunStepInput): Promise<RunStepRecord> {

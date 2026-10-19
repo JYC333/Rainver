@@ -14,6 +14,9 @@ export const proposals = pgTable("proposals", {
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	createdByRunId: varchar("created_by_run_id", { length: 36 }),
 	actionIdempotencyKey: varchar("action_idempotency_key",{length:256}),
+	// A person's repeated request for the same operation on the same subject
+	// while one is still pending returns that proposal instead of a second.
+	pendingOperationKey: varchar("pending_operation_key", { length: 256 }),
 	proposalType: varchar("proposal_type", { length: 64 }).notNull(),
 	status: varchar({ length: 32 }).notNull(),
 	riskLevel: varchar("risk_level", { length: 32 }).notNull(),
@@ -49,6 +52,7 @@ export const proposals = pgTable("proposals", {
 	index("ix_proposals_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	unique("uq_proposals_id_space_id").on(table.id, table.spaceId),
 	uniqueIndex("uq_proposals_run_action_idempotency").on(table.createdByRunId,table.proposalType,table.actionIdempotencyKey).where(sql`action_idempotency_key IS NOT NULL`),
+	uniqueIndex("uq_proposals_pending_operation").on(table.spaceId, table.proposalType, table.pendingOperationKey).where(sql`status='pending' AND pending_operation_key IS NOT NULL`),
 	uniqueIndex("uq_proposals_pending_research_query_strategy").on(table.spaceId, table.projectId, table.proposalType).where(sql`status='pending' AND proposal_type='research_query_strategy_activation'`),
 	foreignKey({
 			columns: [table.projectId],

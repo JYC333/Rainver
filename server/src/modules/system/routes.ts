@@ -7,8 +7,8 @@
  * - GET /api/v1/server/features   server-side feature advertisement
  * - GET /api/v1/features                 product-shaped feature list
  *
- * Read-only descriptors of the server itself. As real server-side features ship as server modules, they
- * should be advertised in the features route.
+ * Read-only descriptors of the server itself. Infrastructure features of this
+ * binary are named in `computeFeatures`. Do not list an optional plugin there.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";

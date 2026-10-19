@@ -56,7 +56,7 @@ export interface NormalizedSourceItem {
   metadata: Record<string, unknown>;
 }
 
-export class SourceConnectorRegistry {
+class SourceConnectorRegistry {
   private readonly handlers = new Map<string, SourceConnectorHandler>();
 
   register(handler: SourceConnectorHandler): void {
@@ -117,10 +117,10 @@ class ArxivConnectorHandler implements SourceConnectorHandler {
       sort_order: "ascending",
     });
     const pageSize = Math.min(100, Math.max(1, Number(window.max_items ?? window.page_size ?? query.max_results ?? 100)));
-    // Offset is counted in items, not pages. Deriving it as `cursor * 100`
-    // silently skipped or repeated results whenever the page was smaller than
-    // 100 — which is the normal case on the last page of a budget, and the
-    // permanent case once a page size is narrowed after a provider failure.
+    // Offset is counted in items, not pages. Do not derive it as
+    // `cursor * 100`. That skips or repeats results whenever the page is
+    // smaller than 100 — the normal case on the last page of a budget, and
+    // the permanent case once a page size is narrowed after a provider failure.
     const startOffset = Number.isInteger(window.offset)
       ? Number(window.offset)
       : Number.isInteger(window.consumed_items)
@@ -144,10 +144,16 @@ class ArxivConnectorHandler implements SourceConnectorHandler {
       occurredAt: paper.published_at,
       excerpt: paper.summary,
       metadata: {
+        academic_provider: "arxiv",
         arxiv_id: paper.arxiv_id,
         arxiv_version: paper.arxiv_version,
         doi: paper.doi,
+        authors: paper.authors,
+        published_at: paper.published_at,
         updated_at: paper.updated_at,
+        journal_ref: paper.journal_ref,
+        comment: paper.comment,
+        abs_url: paper.abs_url,
         categories: paper.categories,
         primary_category: paper.primary_category,
         pdf_url: paper.pdf_url,

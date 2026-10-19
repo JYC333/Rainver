@@ -3,9 +3,9 @@ import type { PromptResolveResult } from "@rainver/protocol";
 /**
  * The provenance shape runtime records (e.g. run_steps.metadata_json) should
  * store by default: references and hashes only. Deliberately excludes
- * rendered_messages/rendered_text — the plan requires raw rendered prompt
- * text to stay out of low-level logs; a full snapshot, if ever needed, is a
- * separately access-controlled artifact, not run metadata.
+ * rendered_messages/rendered_text. Do not store raw rendered prompt text in
+ * low-level logs. A full snapshot, if needed, is a separately
+ * access-controlled artifact, not run metadata.
  */
 export interface PromptProvenance {
   asset_key: string;

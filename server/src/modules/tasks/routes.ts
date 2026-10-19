@@ -172,7 +172,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const plan = await new PgPlanRepository(dbPool(context.config)).getPlanForTask(identity, params(request).taskId ?? "");
+      const plan = await new PgPlanRepository(dbPool(context.config), context.config).getPlanForTask(identity, params(request).taskId ?? "");
       return reply.send(plan);
     } catch (error) {
       return sendRouteError(reply, error);

@@ -5,22 +5,11 @@ import { runOutputResult } from "../runs/orchestrationResults.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 
 /**
- * control-center-phase2-plan.md P1: moved out of the (now-async) dispatch
- * route handler into the `agent_run` job handler, which is the only place
- * that still sees the run reach a terminal state — mirrors the
- * `finalizeChatTurn` precedent of a generic post-terminal hook gated on a
- * run shape (`agentRunHandler.ts`).
- *
- * It records the vendor session the run came back with, and says so in the
- * Room when a resume was attempted and came back empty — a context reset is
- * something the person needs to know about, because the Agent has forgotten
- * what they were doing.
- *
- * It used to drive a per-thread message queue from here as well. That queue
- * existed for the Command Center's thread page; with the page gone nothing
- * could resume a paused one, so a remote Task run whose predecessor failed
- * would have sat queued forever. A remote Task run is admitted like a server
- * one now — one Run, created synchronously.
+ * Post-terminal hook for a host-thread Run, called from the `agent_run` job
+ * handler. It records the vendor session the run came back with, and says so
+ * in the Room when a resume was attempted and came back empty — a context
+ * reset is something the person needs to know about, because the Agent has
+ * forgotten what they were doing.
  */
 export async function recordHostThreadOutcome(
   config: ServerConfig,
@@ -86,13 +75,17 @@ export async function recordHostThreadOutcome(
     );
     const owner = conversation.rows[0];
     if (owner?.session_id) {
+      // Said once per Run that proved the reset, not once per thread: the
+      // thread keeps its id across resets, and the explicit reset writes the
+      // same event, so a thread-wide check would swallow every later reset.
       const existing = await pool.query(
         `SELECT 1 FROM messages
           WHERE space_id = $1 AND session_id = $2
             AND metadata_json->>'host_thread_id' = $3
             AND metadata_json->>'host_thread_event' = 'session_reset'
+            AND metadata_json->>'host_thread_run_id' = $4
           LIMIT 1`,
-        [owner.space_id, owner.session_id, threadId],
+        [owner.space_id, owner.session_id, threadId, completedRun.id],
       );
       if (!existing.rows[0]) {
         await new PgSessionRepository(pool).addRoomSystemNotice(
@@ -105,6 +98,7 @@ export async function recordHostThreadOutcome(
             metadata: {
               host_thread_id: threadId,
               host_thread_event: "session_reset",
+              host_thread_run_id: completedRun.id,
             },
           },
         );

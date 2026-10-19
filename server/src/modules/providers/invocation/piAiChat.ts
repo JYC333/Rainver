@@ -184,9 +184,8 @@ async function piModel(
     (provider.provider_type === "openai_compatible" || provider.provider_type === "ollama")
       ? {
           // Custom and older OpenAI-compatible servers commonly implement the
-          // original Chat Completions fields only. Preserve the request shape
-          // rainver used before Pi instead of auto-detecting modern OpenAI
-          // features from an arbitrary URL.
+          // original Chat Completions fields only. Keep that request shape.
+          // Do not auto-detect modern OpenAI features from an arbitrary URL.
           compat: {
             supportsStore: false,
             supportsDeveloperRole: false,
@@ -252,9 +251,9 @@ function structuredTool(output: ProviderStructuredOutput): Tool {
     name: output.schema_id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64) || "structured_output",
     description: `Return the ${output.schema_id} structured result.`,
     parameters: output.schema as Tool["parameters"],
-    // `strict` remains an output-validation contract at rainver's
-    // boundary. Provider-side strict tools are best-effort so vendors without
-    // that capability can still reach the text scavenger and be validated.
+    // `strict` is an output-validation contract at rainver's boundary.
+    // Provider-side strict tools are best-effort so vendors without that
+    // capability can reach the text scavenger and be validated.
     constrainedSampling: { type: "json_schema", strict: "prefer" },
   };
 }
@@ -329,11 +328,9 @@ function providerFinishReason(protocol: string, message: AssistantMessage): stri
  * The status line is only a verdict when the provider actually reached one.
  * Once 2xx headers have arrived, the response is committed and a failure while
  * reading the body is the transport dropping it — undici surfaces exactly that
- * as a bare `terminated`. Classifying it from the 200 already in hand filed it
- * as `permanent`, which fails immediately with no same-key retry and no
- * provider fallback; the longest single generation on the platform (a whole
- * research report in one structured response) therefore died for good every
- * time its socket was cut.
+ * as a bare `terminated`. Do not classify that from the 200 already in hand.
+ * A permanent decision fails immediately, with no same-key retry and no
+ * provider fallback.
  *
  * It is deliberately not `provider_network_error`: that code carries the
  * larger retry budget meant for failures that cost nothing because no response

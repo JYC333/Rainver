@@ -10,12 +10,10 @@ import {
 import type { RevalidatedObject } from "../types.js";
 
 /**
- * Retrieval maintenance scan — the "context review cycle" review-candidate generator (W7).
+ * Retrieval maintenance scan (the read-only context review cycle).
  *
- * The maintenance loop dedups pages, fixes links, flags contradictions, etc.
- * rainver implements the low-risk, derived-only half as a READ-ONLY scan
- * over the retrieval projection that emits BATCHED review candidates. Hard rules
- * (invariant 6):
+ * A read-only scan over the retrieval projection that emits batched review
+ * candidates. Hard rules (invariant 6):
  *
  *  - **Never a canonical write.** The scan reads only the derived `retrieval_*`
  *    tables and returns findings; it never touches knowledge/memory tables. Acting
@@ -33,8 +31,8 @@ import type { RevalidatedObject } from "../types.js";
  * Stale detection uses `retrieval_objects.source_updated_at` — the CANONICAL
  * object's last-update time projected by the adapters — so "stale" means the
  * content is genuinely old, not just that the index was rebuilt a while ago.
- * Memory is not scanned here (private-row exposure is a separate design); the
- * scan is Knowledge-registry only.
+ * Memory is not scanned here. Callers pass `knowledgeRetrievalRegistry`.
+ * Memory maintenance is `MemoryMaintenanceService`.
  */
 export type MaintenanceFindingKind = "duplicate" | "orphan" | "thin" | "stale" | "relation_suggestion";
 
@@ -116,7 +114,7 @@ export class RetrievalMaintenanceService {
   async scan(spaceId: string, viewerUserId: string): Promise<MaintenanceReport> {
     const objectTypes = this.registry.objectTypes();
     const limit = this.config.perKindLimit;
-    // Over-fetch by one so we can report truncation without a second count query.
+    // Over-fetch by one so truncation is visible without a second count query.
     const fetch = limit + 1;
 
     const [duplicates, orphans, thin, stale, relations] = await Promise.all([

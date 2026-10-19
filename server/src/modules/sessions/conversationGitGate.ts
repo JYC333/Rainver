@@ -23,7 +23,7 @@ export function headMovedByConversationRun(
     && (current.branch ?? null) === (context.last_run_git_branch ?? null);
 }
 
-export interface GitPosition {
+interface GitPosition {
   branch: string | null;
   head: string;
 }
@@ -39,7 +39,7 @@ export interface GitPosition {
  *   so the move started from a HEAD it knows; and,
  * - when the move is a Run's (`byRun`), that Run may write and is still
  *   running: a `read_only` Run holds no lease, and a late report for a
- *   finished Run is not that Run's exit any more.
+ *   finished Run is not that Run's exit.
  *
  * A Conversation Run's `git_after` and a done Task's fast-forward of the
  * checkout both land here. Returns whether the Conversation took the move.

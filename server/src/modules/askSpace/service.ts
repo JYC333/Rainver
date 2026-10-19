@@ -30,7 +30,7 @@ import { buildClaimTrajectory } from "../knowledge/claimReviewLoop.js";
 import { persistAskSpaceSessionArtifact } from "./sessionArtifact.js";
 import { aggregateGaps, buildFollowUps, collectProvenance, dedupeDomains } from "./aggregate.js";
 
-export interface AskSpaceInput {
+interface AskSpaceInput {
   spaceId: string;
   userId: string;
   query: string;
@@ -79,7 +79,7 @@ const DOMAIN_CONFIG: Record<AskSpaceDomain, DomainConfig> = {
 };
 
 /**
- * Think / Ask Space orchestrator (Slice A). Runs each requested domain's own
+ * Think / Ask Space orchestrator. Runs each requested domain's own
  * Context Brief pipeline (reusing the per-domain registry + read gate; the
  * domains are never merged into one retrieval pass), then rolls the per-domain
  * cited answers into one gap summary + provenance + proposal-first follow-ups.
@@ -112,7 +112,7 @@ interface DomainBriefArgs {
  * failure, follow-up gating — can be unit-tested without a live retrieval index
  * or provider. Production wiring uses the defaults.
  */
-export interface AskSpaceDeps {
+interface AskSpaceDeps {
   runDomainBrief?: (args: DomainBriefArgs) => Promise<RetrievalBriefResponse>;
   runCombinedSynthesis?: (args: {
     spaceId: string;
@@ -241,7 +241,7 @@ export class AskSpaceService {
 
   /**
    * Advisory claim trajectory for each distinct claim the answer cited. Uses the
-   * Slice E read gate (only viewer-visible sibling claims) and dedupes by claim
+   * read gate (only viewer-visible sibling claims) and dedupes by claim
    * id; no canonical writes. A per-claim failure is swallowed so trajectory never
    * sinks the answer.
    */

@@ -7,8 +7,8 @@ import { Plugin, PluginKey } from '@tiptap/pm/state'
  *
  * Two jobs, and the first is the one that is easy to miss: Tiptap parses
  * incoming JSON through its schema and **drops attributes the schema does not
- * declare**. Without this extension, opening a note the server had stamped and
- * saving it again would silently strip every id — so declaring the attribute is
+ * declare**. Do not omit the attribute. Opening a note the server stamped and
+ * saving it again would silently strip every id. Declaring the attribute is
  * a correctness requirement, not just the price of generating ids here.
  *
  * The second job is the split guard below.
@@ -16,7 +16,7 @@ import { Plugin, PluginKey } from '@tiptap/pm/state'
 export const BLOCK_ID_ATTR = 'blockId'
 
 /** Top-level block types. Ids identify what relocation can extract whole. */
-export const BLOCK_ID_TYPES = [
+const BLOCK_ID_TYPES = [
   'paragraph',
   'heading',
   'blockquote',
@@ -103,8 +103,8 @@ export const BlockIds = Extension.create({
          *
          * This runs after every transaction that changed the document and gives
          * a fresh id to any block sharing one with an earlier block, plus one to
-         * any block that has none (typed from scratch, or loaded from a note
-         * written before ids existed).
+         * any block that has none (typed from scratch, or loaded from a note that
+         * has no ids yet).
          *
          * Which of two claimants keeps the id is decided by content, not by
          * position. Position alone is wrong at the one boundary that matters:
@@ -114,7 +114,7 @@ export const BlockIds = Extension.create({
          * first-wins rule would anchor the capture on the empty block and
          * relocation would extract nothing. A non-empty claimant therefore
          * outranks an empty one; between two non-empty blocks the earlier keeps
-         * it, which is the mid-text split the naive rule already handled.
+         * it.
          *
          * The rewrite stays **in** the history, and that is the half of this
          * that is easy to get wrong. Undo reverts a split by merging the two
@@ -126,8 +126,7 @@ export const BlockIds = Extension.create({
          * together with the split it answered; ProseMirror folds it into the
          * same history event, so one undo still reverts one user gesture.
          *
-         * One accepted consequence: undoing on a note written before ids
-         * existed hands the block a *different* fresh id rather than restoring
+         * One accepted consequence: undoing on a note that has no ids hands the block a *different* fresh id rather than restoring
          * the `null` it had. Nothing anchors on those blocks yet, which is the
          * only reason it is acceptable.
          */
@@ -142,8 +141,8 @@ export const BlockIds = Extension.create({
           // at the top level of a doc that is already the child's position, but
           // only because the doc node itself is not counted. Resolving through
           // `child(index)` and accumulating `nodeSize` is the arithmetic that
-          // stays correct, and `setNodeMarkup` on a wrong position throws
-          // rather than misbehaving quietly — which is how this was caught.
+          // stays correct. `setNodeMarkup` on a wrong position throws rather
+          // than misbehaving quietly.
           let pos = 0
           for (let index = 0; index < newState.doc.childCount; index += 1) {
             const node = newState.doc.child(index)
@@ -181,7 +180,7 @@ export const BlockIds = Extension.create({
             // node and re-validates its content, so a document the reader can
             // display but the schema considers irregular — markdown that put an
             // image where a paragraph expects inline content, say — would throw
-            // here purely because we wanted to add an attribute to it.
+            // on an attribute write. Do not use `setNodeMarkup` for this.
             try {
               transaction.setNodeAttribute(entry.pos, BLOCK_ID_ATTR, entry.id)
             } catch {

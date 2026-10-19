@@ -17,8 +17,6 @@ source support are backend-only (no dedicated frontend). Rate limiting,
 artifact retention, and an observability read model exist. There is no
 browser or Python handler evaluation.
 
-Unimplemented Custom Source UI/sandbox ideas:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11.
 
 ## Purpose
 
@@ -94,7 +92,15 @@ for jobs, rules, and troubleshooting.
   creates only `pending` recommendations for active space-shared channels;
   `GET /api/v1/sources/recommendations` and the Sources page let the reader
   explicitly Follow, Dismiss, or Mute them. Pending is never treated as a
-  subscription. An explicit Information Digest "Never this direction again"
+  subscription. `GET /api/v1/sources/followed` lists other members' channels
+  the person follows or has left, and
+  `POST /api/v1/sources/channels/:channelId/subscription` leaves (`muted`) or
+  follows again (`subscribed`); every transition opens or closes a
+  `source_channel_subscription_windows` period, which historical reading
+  eligibility reads (`modules/library.md`). A personal item is unique per
+  owner: extraction, custom-source and external-discovery materialization
+  reuse only the writer's own personal copy of a URL (or the Project's copy),
+  never another member's. An explicit Information Digest "Never this direction again"
   block may dismiss only still-pending system recommendations linked to that
   blocked domain; it never changes an accepted subscription.
 - Materialization of bounded external-discovery samples as owner-private,
@@ -104,7 +110,7 @@ for jobs, rules, and troubleshooting.
 - Per-user source item read state (`source_item_user_states`), used by Library
   and the reader.
 - Custom Source handler versions, handler runs, backend create/test/activate
-  flow, and first scan-job integration.
+  flow, and scan-job scheduling.
 - Source Recipe versions, deterministic planning, dry-run preview,
   activation/proposal flow, and recipe scan-job integration.
 
@@ -134,8 +140,26 @@ idempotent per space. Starting a plan is proposal-gated, and segment execution
 reuses ordinary `extraction_jobs`, so existing item/evidence dedupe and the
 Projects routing hook remain the only materialization path. Quota exhaustion
 pauses a plan until `next_eligible_at`; the Sources scheduler reconciles
-completed extraction jobs and resumes eligible plans. Project-initiated plans
+completed extraction jobs and resumes eligible plans, one plan at a time: a
+plan whose reconcile fails is moved to the back of the `updated_at` order and
+the rest of the pass continues, then the pass reports the failure.
+Project-initiated plans
 may link to a ProjectOperation for product-level progress.
+
+The item budget is reserved page by page. A Project Research operation owns one
+total shared by its sibling monitor plans; a standalone plan owns its own.
+Every plan mutation (dispatch, reconcile, start, retry, continuation) takes the
+operation row first, then segment rows, then the plan row, so a reconcile and
+a page continuation finishing together never deadlock.
+Under the operation (or plan) lock, used budget is every segment's imported
+items, including the pages a still-running segment has read
+(`window.consumed_items`), and each other running segment reserves its current
+page. Dispatch sizes a segment from what is left, and the extraction worker
+reserves each continuation page the same way, inside one transaction, before
+queuing it. A page the shared budget no longer covers is not fetched: the
+segment stops partial at that page, and a continuation resumes from it.
+Concurrent segments therefore never import more than the operation's
+`max_items`.
 
 History-import fetches retry a transient network failure or upstream 5xx once
 inside the same extraction job, with the connector's normal request preparation
@@ -167,7 +191,9 @@ connectors declaring `supports_page_size_narrowing` (offset is counted in
 items: arXiv, Semantic Scholar); a page-numbered API such as OpenAlex cannot
 express "same position, fewer rows", so narrowing it would skip results. A
 width that succeeds is carried into subsequent pages rather than re-testing the
-full width each time.
+full width each time. For the same reason, the last page of a budget is
+shrunk to the remaining items only for item-offset connectors; a page-numbered
+API keeps its width and only the first remaining items of that page are kept.
 
 Backfill offsets are **item-based**, taken from `window.offset` /
 `consumed_items`. Deriving the offset as page index times a fixed width skipped
@@ -290,7 +316,7 @@ page-size differences cannot create false incremental runs.
 
 arXiv-specific parsing lives in `connectors/arxiv.ts` (query URL building, Atom
 response parsing, and id/URL normalization for abs/pdf/html URLs, `arXiv:`
-prefixes, versioned ids, and legacy slash ids), deliberately outside the generic
+prefixes, versioned ids, and slash ids), deliberately outside the generic
 feed parser. `connectors/arxivThrottle.ts` is a best-effort process-local polite throttle
 (default 3s minimum interval, injectable clock/sleep for tests) that wraps
 only arXiv network calls.
@@ -312,7 +338,7 @@ document), then the original URL if distinct. Snapshots store the raw content
 actually used. Created snapshots/reader artifacts record
 `content_source_format`, `content_source_url`, `arxiv_id`, and
 `fallback_from`/`fallback_reason` when PDF fallback occurred. Non-arXiv URLs
-keep the existing single-fetch behavior.
+fetch once.
 
 The main `/sources` Create Source dialog is provider-neutral. It loads the
 provider catalog, renders provider-owned setup fields (including the arXiv
@@ -342,9 +368,11 @@ can be retried, rather than becoming a generic runtime supervisor review.
 
 Scheduled source connections use frequency-specific rules rather than a raw
 "next run" picker. Hourly schedules choose a minute, daily schedules choose
-hour/minute, and weekly schedules choose weekday/hour/minute. The API stores
-the normalized UTC rule in `source_channels.schedule_rule_json` and returns
-it as `schedule_rule_json` alongside the computed `next_check_at`.
+hour/minute, and weekly schedules choose weekday/hour/minute. The web form
+takes local times and converts every frequency, the hourly minute included,
+into the UTC rule it submits, and reads a rule back as local time. The API
+stores the normalized UTC rule in `source_channels.schedule_rule_json` and
+returns it as `schedule_rule_json` alongside the computed `next_check_at`.
 After each scheduled scan, the next run is recomputed from the rule so schedules
 do not drift based on job completion time. The scheduler task owns only runtime
 cursor/state (`next_run_at`, `last_run_at`, status, and operational metadata),
@@ -365,8 +393,8 @@ Custom Source backend support is implemented for draft connection creation,
 deterministic handler generation, fixture testing, inside-envelope activation,
 manual and scheduled scan queueing, handler-run history, and trusted endpoint
 fetching into the handler input. `typescript_node` remains the generated-code
-Level 3 fallback. Existing `declarative_pipeline_v1` handler versions remain
-readable and executable for compatibility; operators can explicitly bridge one
+Level 3 fallback. `declarative_pipeline_v1` handler versions stay
+readable and executable. An operator can explicitly bridge one
 into a new paused Level 2 recipe source and draft `source_recipe_versions`
 row. New normal source creation uses Source Recipes, not pipeline-as-handler
 rows.
@@ -502,7 +530,9 @@ Projects-owned `ProjectSourceRoutingService` then creates active
 `context_candidate` `evidence_links` targeting that project. Item links are idempotent
 through `uq_project_source_item_links_binding_item`; evidence links remain
 idempotent through `uq_evidence_links_active_dedupe` and are what run-context
-evidence selection reads for project-bound agent runs.
+evidence selection reads for project-bound agent runs. When a binding is paused
+or removed, or its filters come to exclude an item, its item links are archived
+together with the evidence links it created for those items.
 
 The same materialization pass syncs Project corpus rows in
 `project_corpus_items`: SourceItem rows, Reference-object rows when a
@@ -549,16 +579,20 @@ After a scan materializes new items, the scan paths emit a best-effort
 owns that job, the rule cursor, and the run audit rows:
 
 - `source_post_processing_rules` bind one source connection to one reusable
-  agent and define trigger, input window, and actions.
+  agent and define trigger, input window, and actions. Listing a channel's
+  rules, runs, backlog, briefings or source runs takes the connection's read
+  decision; creating, updating or running a rule takes authority over the
+  connection (`sourceConnectionAccess.ts`), an Agent the author can read, and
+  Project writer authority for a bound `project_id`.
 - `source_post_processing_runs` record each rule/manual execution, input item
   and evidence ids, associated agent run, output artifacts/proposals/jobs,
   cursor before/after, status, and errors.
   These rows are operational/audit state and are not shown as a normal Sources
   page run-history feed.
 - When a run finishes with `status='succeeded'`, Sources upserts one Activity
-  Inbox pointer row for the run's source connection and rule-local date:
+  Inbox pointer row for the run's source channel and rule-local date:
   `activity_records.aggregate_key =
-  source:briefing:<source_connection_id>:<local_date>`. The Activity row
+  source:briefing:<source_channel_id>:<local_date>`. The Activity row
   stores counts, run ids, artifact ids, and a short preview only; the full
   digest and per-item content remain in the Library read model. The
   `source_connections.config_json.daily_inbox_briefing` boolean disables or
@@ -566,6 +600,13 @@ owns that job, the rule cursor, and the run audit rows:
   an active post-processing rule. This is the sanctioned cross-domain
   notification write under BOUNDARIES B24A.
 - Supported triggers are `items_materialized`, `schedule`, and `manual`.
+- A rule runs once at a time. A run holds the rule's claim, a PostgreSQL
+  session advisory lock on its own connection, for its whole length, so a
+  person's manual run, a scheduled fire, and a source-event drain never read
+  the same cursor window into two LLM passes. Each re-reads the rule under the
+  claim. A manual run of a rule already running is refused with 409; a
+  scheduled fire or an event drain skips it as `run_in_flight`. A crashed
+  process releases its claim with its connection.
 - Supported actions are `batch_digest`, `per_item_summary`, `extract_evidence`,
   `create_proposals`, and `mark_items`; the default is artifact-only
   `batch_digest`. `mark_items` means the run must produce item relevance
@@ -585,7 +626,9 @@ owns that job, the rule cursor, and the run audit rows:
   providers, fails the post-processing run before source content leaves Sources.
 - Post-processing agent output is consumed as structured
   `source_post_processing.result.v1`; invalid structure fails the run and does
-  not advance the rule cursor. `item_decisions_json` records
+  not advance the rule cursor. A run's outputs (digest and summary artifacts,
+  Evidence, follow-up jobs, proposals, item decisions) and its cursor advance
+  commit in one transaction, so a run that fails part-way leaves none of them. `item_decisions_json` records
   `relevant`/`maybe`/`not_relevant` decisions. Relevance lives in
   `source_post_processing_item_decisions`; item reading state lives per user in
   `source_item_user_states`. List/get/action on those decisions reuses
@@ -673,6 +716,58 @@ Automations `event` trigger and does not use Automations cursors. `DailyCaptureR
 remains separate: it summarizes a user's daily captured activity, not one
 source connection's post-source processing.
 
+### Annotation failure and recovery
+
+`sourceAnnotation` annotates pending items in batches, one job per Space at a
+time (a per-Space session advisory lock; a second job answers
+`already_running`). A row that is not running says why in `wait_reason`:
+
+| `wait_reason` | Status | Meaning | `next_retry_at` |
+| --- | --- | --- | --- |
+| `retry_scheduled` | pending | a temporary failure; the next automatic attempt is due | set |
+| `provider_unavailable` | pending | the Space has no usable annotator Provider or runtime profile | none |
+| `egress_denied` | pending | the Space turned external model egress off | none |
+| `consent_missing` | pending | the item's Source has not consented to the destination | none |
+| `budget_exhausted` | failed | the episode's attempts are spent; paused until a person retries | none |
+
+The retry schedule lives in `sourceAnnotation/retryPolicy.ts`: three initial
+attempts (the second one minute and the third five minutes after a failure),
+then one automatic recovery round of three more at thirty minutes, two hours
+and six hours, so at most six attempts per failure episode. Rows failing
+together share an `episode_id`; `attempt_count` is cumulative within it. A
+success or a skip ends the wait: the row leaves its retry schedule and episode
+(`wait_reason`, `next_retry_at` and `episode_id` cleared), so a retry that
+succeeds is saved once and never offered again. A condition wait spends no
+attempt and has no countdown. The egress gate
+(`assertSourcePromptEgressAllowed`) names its refusal with a stable `code`, so
+a Space-wide egress refusal and a missing Source consent wait separately.
+
+Consent and egress are rechecked on every execution. The annotation sweep calls
+`recoverWaiting` for Spaces with condition waits, a bounded batch per sweep
+taken in Space-id order after the previous batch (wrapping round), so every
+waiting Space is visited in turn however many are stuck: it resolves the annotator and
+re-runs the egress gate per waiting connection without a model call, and
+`requeueParked` reopens only the rows whose condition now holds, filtered by
+reason, item, connection, episode and responsible person, and bounded by a
+count limit. A person's retry (`POST
+/api/v1/spaces/:spaceId/source-annotation/retry`, optional `episode_id` and
+`connection_id`) runs the same recheck for their own items, reopens their
+scheduled and paused rows (a paused row starts a fresh episode, the only way
+the count restarts), at most `ANNOTATION_MANUAL_RETRY_LIMIT` rows, and queues
+one annotation job.
+
+`SourceAnnotationRecoveryNotifier` keeps one updatable private operational
+alert (`source_annotation_recovery`) per episode, wait reason and responsible
+person, the connection owner or else the item owner. Every sweep re-syncs it,
+but it returns to unread only when what it says changed (count, reason, next
+retry); a notice the person read or dismissed stays so while the episode is
+unchanged. It carries the reason, the count of
+that person's affected items, the next absolute retry time only while one is
+scheduled, and the manual retry pointer; it is archived once the episode has
+no waiting rows. `GET /api/v1/spaces/:spaceId/source-annotation/episodes`
+returns the caller's own episodes in the same shape. Neither ever counts or
+names another person's items.
+
 ### Retrieval projection
 
 Sources is a retrieval domain through `source_item` and `extracted_evidence`
@@ -706,7 +801,7 @@ output, not a way to mutate core product state.
 Generated/template handler expansion (`typescript_node`) is frozen as the
 Level 3 advanced fallback — no new handler languages or arbitrary code
 execution features; bug/safety fixes only. See
-[Sources Custom Source Handlers](../architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md#level-3-freeze-2026-07-01)
+[Sources Custom Source Handlers](../architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md#level-3-generated-handlers)
 for the Level 1/2/3 split.
 
 Handler code may only read `input.json`, write `output.json`, write files under
@@ -726,6 +821,13 @@ egress, retention, derived writes, trust, and allowed import targets.
 Custom Source policy adds a handler policy envelope for network origins,
 credentials, runtime language, browser automation, shell, dependency
 installation, resource limits, output limits, and log retention.
+
+Authority over an existing connection (`sources/sourceConnectionAccess.ts`):
+reading what hangs off it — Custom Source handler versions, runs and summary,
+recipe versions, history imports — takes the connection's own
+`source_connection` read decision; changing it — generating, testing,
+activating, repairing or rolling back a handler, managing a history import —
+takes its owner or a Space owner/admin who reads it without oversight.
 
 Space Settings owns product policy such as who can create custom sources,
 default source policy, allowed domains, per-space download cap, credentialed

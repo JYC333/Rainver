@@ -35,7 +35,7 @@ import {
   type InvocationDeliveryAuthorizer,
 } from "./invocationSnapshotService.js";
 import type { RuntimeContextPlanningService } from "./planningService.js";
-import { estimateModelTokens, trimTextToModelTokens } from "../usage/modelCatalog.js";
+import { estimateModelTokens } from "../usage/modelCatalog.js";
 import { loadConversationContinuityThroughMessage } from "./conversationContinuity.js";
 import { contextItemText } from "./itemNormalizer.js";
 import {
@@ -51,12 +51,14 @@ import {
   RuntimeContextCliContinuityService,
   authorizeCliDeltaItem,
 } from "./continuity/cliContinuity.js";
-import { ContextWindowPlanner } from "./windowPlanner.js";
+import { ContextWindowPlanner, trimContextText } from "./windowPlanner.js";
 import { PgRuntimeContextAcquisitionRepository } from "./acquisitionRepository.js";
 import { PgRuntimeSkillProvider, renderRuntimeSkillCandidate } from "../capabilities/runtimeSkillProvider.js";
 import { enforce } from "../policy/service.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
+import { effectiveRunProviderModel } from "../runs/remoteProviderBinding.js";
+import { availableModels } from "../providers/dbReader.js";
 
 const deliverySourceRegistry = new RetrievalRegistry();
 for (const adapter of [
@@ -153,6 +155,7 @@ export class RuntimeContextInvocationGateway implements RuntimeContextInvocation
           cursor_through: cliState.target_cursor,
           generation: cliState.generation,
           rotation_reason: cliState.rotation_reason,
+          lease_generation: cliState.lease_generation,
         }
       : null;
     const attempt = await this.snapshots.createAttempt({
@@ -286,6 +289,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       run_group_id: string | null;
       session_id: string | null;
       model_override_json: unknown;
+      runtime_profile_snapshot_json: unknown;
       agent_id: string | null;
       project_id: string | null;
       capability_id: string | null;
@@ -293,7 +297,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     }>(
       `SELECT run.runtime_key,run.model_provider_id,run.owner_user_id,run.instructed_by_user_id,
               run.prompt,run.instruction,run.error_json,run.run_group_id,
-              run.session_id,run.model_override_json,run.agent_id,run.project_id,
+              run.session_id,run.model_override_json,run.runtime_profile_snapshot_json,run.agent_id,run.project_id,
               run.capability_id,run.capabilities_json
          FROM execution_control_snapshots control_row
          JOIN runs run ON run.id=control_row.run_id AND run.space_id=control_row.space_id
@@ -447,7 +451,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     db: Queryable,
     input: InvocationAttemptInput,
     control: ExecutionControlSnapshot,
-    run: { runtime_key: string | null; model_provider_id: string | null },
+    run: { runtime_key: string | null; model_provider_id: string | null; model_override_json: unknown; runtime_profile_snapshot_json: unknown },
   ): Promise<{ destination: RetrievalEgressDestination; externalEgressEnabled: boolean }> {
     let external = isVendorCliAdapter(run.runtime_key);
     let destination: RetrievalEgressDestination = external ? "external_provider" : "internal_process";
@@ -457,8 +461,8 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       throw new HttpError(409, "Invocation Delivery CLI egress authority no longer matches the adapter");
     }
     if (run.model_provider_id) {
-      const providerResult = await db.query<{ provider_type: string; base_url: string | null; config_json: unknown }>(
-        `SELECT provider.provider_type,provider.base_url,provider.config_json
+      const providerResult = await db.query<{ space_id: string; provider_type: string; base_url: string | null; config_json: unknown; default_model: string | null; capabilities_json: unknown }>(
+        `SELECT provider.space_id,provider.provider_type,provider.base_url,provider.config_json,provider.default_model,provider.capabilities_json
            FROM model_provider_space_grants provider_grant
            JOIN model_providers provider ON provider.id=provider_grant.provider_id
           WHERE provider_grant.space_id=$1 AND provider_grant.provider_id=$2
@@ -471,7 +475,11 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
         || !control.egress.allowed_provider_ids.includes(run.model_provider_id)) {
         throw new HttpError(409, "Invocation Delivery provider grant is no longer active");
       }
-      destination = runtimeProviderEgressDestination(run.runtime_key, provider);
+      destination = runtimeProviderEgressDestination(
+        run.runtime_key,
+        { ...provider, model: effectiveRunProviderModel(run, { ...provider, available_models: availableModels(provider.capabilities_json) }) },
+        input.spaceId,
+      );
       external = destination === "external_provider";
     }
     if (!external) return { destination, externalEgressEnabled: true };
@@ -902,7 +910,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     const decision = input.envelope.window_plan.decisions.find((entry) => entry.item_id === item.id);
     const canonicalTokens = rendered ? estimateModelTokens(rendered.text) : 0;
     const expectedText = rendered && decision?.decision === "trimmed"
-      ? trimTextToModelTokens(rendered.text, decision.planned_tokens)
+      ? trimContextText(rendered.text, item.acquisition, decision.planned_tokens)
       : rendered?.text;
     const trimIsCanonical = decision?.decision !== "trimmed"
       || (item.payload.trimmed_from_tokens === canonicalTokens
@@ -1066,6 +1074,18 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     projectId: string,
     viewerUserId: string,
   ): Promise<void> {
+    if (!await this.lockReadableProject(db, spaceId, projectId, viewerUserId)) {
+      throw new HttpError(404, "Invocation Delivery referenced Project is no longer readable");
+    }
+  }
+
+  /** Locks the Project and the viewer's membership in it; true when the viewer may read it. */
+  private async lockReadableProject(
+    db: Queryable,
+    spaceId: string,
+    projectId: string,
+    viewerUserId: string,
+  ): Promise<boolean> {
     const project = await db.query<{ owner_user_id: string | null; space_type: string }>(
       `SELECT project.owner_user_id,space.type AS space_type
          FROM projects project JOIN spaces space ON space.id=project.space_id
@@ -1074,14 +1094,14 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       [projectId, spaceId],
     );
     const row = project.rows[0];
-    if (!row) throw new HttpError(404, "Invocation Delivery referenced Project is no longer readable");
-    if (row.space_type === "personal" || row.owner_user_id === viewerUserId) return;
+    if (!row) return false;
+    if (row.space_type === "personal" || row.owner_user_id === viewerUserId) return true;
     const member = await db.query(
       `SELECT 1 FROM project_members
         WHERE space_id=$1 AND project_id=$2 AND user_id=$3 AND status='active' FOR SHARE`,
       [spaceId, projectId, viewerUserId],
     );
-    if (!member.rows[0]) throw new HttpError(404, "Invocation Delivery referenced Project is no longer readable");
+    return Boolean(member.rows[0]);
   }
 
   private async lockContentAclDependencies(
@@ -1114,7 +1134,28 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     );
     const row = scope.rows[0];
     if (!row) throw new HttpError(409, "Invocation Delivery content authority no longer exists");
-    if (row.project_id) await this.authorizeReferencedProject(db, spaceId, row.project_id, viewerUserId);
+    // The read rule's Project scope is an OR: no Project, the object's own
+    // Project, or any Project it is shared to. The share rows are locked
+    // either way; one readable Project is enough.
+    const sharedProjectIds = definition.projectShare
+      ? (await db.query<{ project_id: string }>(
+          `SELECT ${definition.projectShare.projectColumn} AS project_id FROM ${definition.projectShare.tableName}
+            WHERE space_id=$1 AND ${definition.projectShare.resourceColumn}=$2 AND ${definition.projectShare.revokedColumn} IS NULL
+            ORDER BY ${definition.projectShare.projectColumn}
+            FOR SHARE`,
+          [spaceId, resourceId],
+        )).rows.map((share) => share.project_id)
+      : [];
+    if (row.project_id) {
+      let readable = false;
+      for (const projectId of [row.project_id, ...sharedProjectIds]) {
+        if (await this.lockReadableProject(db, spaceId, projectId, viewerUserId)) {
+          readable = true;
+          break;
+        }
+      }
+      if (!readable) throw new HttpError(404, "Invocation Delivery referenced Project is no longer readable");
+    }
     if (row.project_folder_id) {
       const folder = await db.query<{ project_id: string | null }>(
         `SELECT folder.project_id FROM project_folders folder
@@ -1126,18 +1167,6 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       if (!folder.rows[0]) throw new HttpError(409, "Invocation Delivery content Folder is no longer readable");
       if (folder.rows[0].project_id) {
         await this.authorizeReferencedProject(db, spaceId, folder.rows[0].project_id, viewerUserId);
-      }
-    }
-    if (definition.projectShare) {
-      const share = definition.projectShare;
-      const shares = await db.query<{ project_id: string }>(
-        `SELECT ${share.projectColumn} AS project_id FROM ${share.tableName}
-          WHERE space_id=$1 AND ${share.resourceColumn}=$2 AND ${share.revokedColumn} IS NULL
-          FOR SHARE`,
-        [spaceId, resourceId],
-      );
-      for (const activeShare of shares.rows) {
-        await this.authorizeReferencedProject(db, spaceId, activeShare.project_id, viewerUserId);
       }
     }
   }
@@ -1336,7 +1365,7 @@ async function lockRetrievalAuthority(
     source: "SELECT source.object_id FROM sources source JOIN space_objects object ON object.id=source.object_id AND object.space_id=source.space_id WHERE source.space_id=$1 AND source.object_id=$2 FOR SHARE OF source,object",
     claim: "SELECT claim.object_id FROM claims claim JOIN space_objects object ON object.id=claim.object_id AND object.space_id=claim.space_id WHERE claim.space_id=$1 AND claim.object_id=$2 FOR SHARE OF claim,object",
     memory_entry: "SELECT id FROM memory_entries WHERE space_id=$1 AND id=$2 FOR SHARE",
-    project_public_summary: "SELECT summary.project_id FROM project_public_summaries summary JOIN projects project ON project.id=summary.project_id AND project.space_id=summary.space_id WHERE summary.space_id=$1 AND summary.project_id=$2 FOR SHARE OF summary,project",
+    project_public_summary: "SELECT summary.project_id FROM project_public_summary_publications summary JOIN projects project ON project.id=summary.project_id AND project.space_id=summary.space_id WHERE summary.space_id=$1 AND summary.project_id=$2 FOR SHARE OF summary,project",
     source_item: "SELECT id FROM source_items WHERE space_id=$1 AND id=$2 FOR SHARE",
     extracted_evidence: "SELECT id FROM extracted_evidence WHERE space_id=$1 AND id=$2 FOR SHARE",
     inquiry_thread: "SELECT thread.object_id FROM inquiry_threads thread JOIN projects project ON project.id=thread.project_id AND project.space_id=thread.space_id WHERE thread.space_id=$1 AND thread.object_id=$2 FOR SHARE OF thread,project",
@@ -1352,7 +1381,7 @@ async function lockRetrievalAuthority(
     // on the nullable side of an outer join, and a non-member has no row to
     // pin anyway — an outer join could only ever have produced a NULL that
     // locks nothing. Zero rows is therefore the correct, unremarkable result
-    // for a non-member, which is why nothing is asserted about the result.
+    // for a non-member. Do not assert about the result.
     await db.query(
       `SELECT member.user_id FROM inquiry_threads thread
         JOIN project_members member ON member.space_id=thread.space_id AND member.project_id=thread.project_id

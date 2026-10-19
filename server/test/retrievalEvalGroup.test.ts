@@ -14,9 +14,9 @@ import { type RecallCase, runRecallCases } from "./support/retrievalEval.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("retrievalEvalDb", () => {
-  // Golden recall@k eval over the deterministic recall arms (exact alias / lexical
-  // / graph). This is the Phase-2 gate: a future ranking change (vector arm,
-  // source-tier boost, reranker) must keep these golden results in the top-k.
+  // Golden recall@k over the deterministic recall arms (exact alias / lexical
+  // / graph). A ranking change (vector arm, source-tier boost, reranker) must
+  // keep these golden results in the top-k.
 
   const SPACE = "11111111-1111-4111-8111-111111111111";
   const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

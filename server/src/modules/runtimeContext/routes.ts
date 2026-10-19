@@ -31,6 +31,32 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  app.get("/api/v1/runtime-context/work-contexts/:scopeId/retrieval", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const state = await workContexts().getRetrievalSwitch(identity, requiredString(params(request).scopeId, "scope_id"));
+      return reply.send(protocol.WorkRetrievalSwitchSchema.parse(state));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
+  app.put("/api/v1/runtime-context/work-contexts/:scopeId/retrieval", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      const state = await workContexts().setRetrievalSwitch(
+        identity,
+        requiredString(params(request).scopeId, "scope_id"),
+        jsonBody(request),
+      );
+      return reply.send(protocol.WorkRetrievalSwitchSchema.parse(state));
+    } catch (error) {
+      return sendRouteError(reply, error);
+    }
+  });
+
   app.post("/api/v1/runtime-context/work-contexts", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -47,7 +73,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       const parsed = protocol.TurnContextRequestSchema.safeParse(jsonBody(request));
-      if (!parsed.success) return reply.code(422).send({ error: "Invalid Turn Context Request" });
+      if (!parsed.success) return reply.code(422).send({ detail: "Invalid Turn Context Request" });
       const envelope = await createProductionRuntimeContextPlanningService(dbPool(context.config), context.config).preview({
         identity,
         turn: parsed.data,

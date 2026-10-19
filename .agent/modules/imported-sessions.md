@@ -4,12 +4,7 @@ Ambient CLI history: the sessions a person had with their own Claude Code,
 Codex, or OpenCode inside a folder, outside Rainver, on a machine they paired
 as an execution host ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)).
 This module brings that history into the Project the folder is bound to, and
-turns what it holds into proposals.
-
-The rollout plan (`ambient-session-import-plan.md`, both phases shipped
-2026-08-28 in `293023c3`, `d162aabf` and `178bd9a8`) is retired; its execution
-ledger is in git history and its remaining citation-link item is in
-[`plans/backlog.md`](../plans/backlog.md) §9. **This document describes the
+turns what it holds into proposals. **This document describes the
 system as it stands.**
 
 ## Why it exists
@@ -38,7 +33,7 @@ three of them to maintain forever.
 A runtime that does not advertise both `list` and `load` is not offered.
 
 The daemon runs the ACP conversation and returns trimmed, redacted records; the
-server never sees the raw replay. That division exists because both trimming
+server never sees the raw replay. Both trimming
 and redaction must happen before anything crosses the network:
 
 | Update kind | Kept |
@@ -51,9 +46,8 @@ and redaction must happen before anything crosses the network:
 | `agent_thought_chunk` | dropped |
 | `usage_update` | forwarded to the usage ledger, not stored as a record |
 
-Measured on a real machine: conversation text is 2.6–4.5 % of a session's
-on-disk bytes and tool output is 13–41 %. Trimming output is what makes import
-viable at all, and it is also where a printed key would be.
+Trim output, not conversation text. Output is most of a session's on-disk
+bytes. It is also where a printed key would be.
 
 Daemon-side modules: `ambientSessions.ts` (ACP client, enumeration, replay),
 `ambientRecords.ts` (updates → records), `ambientRedaction.ts` (secret patterns
@@ -81,8 +75,10 @@ bookmark is wrong the first time someone uses their own CLI normally.
   window or cap) is kept separate from `selected` (what this sync will replay),
   and an enumeration that returned rows of which none matched the folder is
   reported inconclusive rather than as evidence the folder is empty.
-- **Nothing is mirrored.** A vanished source sets `source_state = 'gone'`;
-  unbinding a Location, unregistering a Folder, or unpairing a host sets the
+- **Nothing is mirrored.** A vanished source sets `source_state = 'gone'`, and
+  a host that lists that session again sets it back to `present` from the
+  same enumeration (an unchanged session is never replayed, so nothing else
+  would); unbinding a Location, unregistering a Folder, or unpairing a host sets the
   owning columns null and deletes nothing. Re-binding the same folder re-adopts
   the orphaned rows instead of importing a second copy.
 
@@ -97,7 +93,7 @@ decision.
 - **The visibility picker is the only gate**, and it states the consequence at
   the point of choice: *Project shared* is readable by members and is what
   extraction reads; *only me* is a read-only archive that extraction never
-  touches. There is deliberately no second confirmation later, which is why the
+  touches. There is no second confirmation later. The
   choice is persisted to the Location's policy rather than held in the page —
   a background sync reads the stored default.
 - **Standing consent per (Location, runtime)** is what lets a later heartbeat
@@ -120,8 +116,9 @@ relation and is only ever cited as provenance.
 
 `imported_session_records` holds the trimmed records. `extracted_in` carries
 `claim:<id>` while an extraction holds a batch and the bare id once its
-proposals exist — the two are distinguishable so a batch left behind by a
-process that died can be swept back, which the pending count does before
+proposals exist — written in the proposals' own transaction, so a claim never
+outlives committed proposals — the two are distinguishable so a batch left
+behind by a process that died can be swept back, which the pending count does before
 reporting, because that count is what decides whether the button that would
 have swept it is shown at all.
 
@@ -227,9 +224,9 @@ being present, and attended consent does not stand in for unattended spending
   a private session, and equally `selected_users` or a `summary`-level share:
   both name a narrower audience than the Project's readers, so landing them in
   the mainline would be a disclosure the server refuses without a confirmation
-  the UI cannot yet show. The button is no longer withheld from a private
-  session, because the destination now protects it by construction — which is
-  what withholding it was protecting.
+  the UI does not show. A private session still gets the button. The
+  destination protects it by construction. Do not withhold the button to
+  protect it.
 
   What is held for the composer is the reference, keyed by Room and the
   explicitly opened Conversation draft, not seed text. The reference is
@@ -242,8 +239,8 @@ being present, and attended consent does not stand in for unattended spending
   ([`rooms.md`](rooms.md) §Thread References).
   A *whole* session can be too: that grain carries the session's
   `imported_history_summaries` row, written on demand if it has none. The 409
-  naming the records as the alternative is now reserved for a session that
-  cannot be summarized at all — no readable records — rather than one whose
+  naming the records as the alternative is for a session that cannot be
+  summarized at all — no readable records. Do not use it for a session whose
   turn has not come. Either way it is refused rather than silently shipping a
   truncated transcript under the name "the session".
 
@@ -257,9 +254,8 @@ being present, and attended consent does not stand in for unattended spending
   and wrong for a caller that copies the transcript where other people read
   it. Oversight is audit, not a route to publish.
 
-  The live explicit-reference wiring that briefly existed — resolver,
-  context-authority read, delivery re-authorization — is gone. It re-resolved
-  a pointer every turn, which is the shape a reference deliberately is not.
+  There is no live wiring that re-resolves a reference every turn. A reference
+  is not that shape. Do not re-resolve it on each turn.
 
   Carrying a session into a thread is what a thread reference is for; a
   per-conversation Work Context Setup, which would pin one, stays on the

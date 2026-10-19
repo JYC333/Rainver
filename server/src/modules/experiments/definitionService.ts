@@ -60,16 +60,13 @@ function versionToOut(row: VersionRow): Record<string, unknown> {
 
 /**
  * Experiment Definition + Version. The stable identity of an
- * Experiment and its immutable, versioned execution configuration —
- * `managed_code_comparison` is one `executor_type` this domain supports, not
- * a second top-level Experiment concept (the old
- * project_experiment_campaigns/runs/provenance model is retired in the same
- * change; see experiments/runService.ts for the managed_code_comparison
- * config shape it replaces).
+ * Experiment and its immutable, versioned execution configuration.
+ * `managed_code_comparison` is one `executor_type`, not a second top-level
+ * Experiment concept. See experiments/runService.ts for that config shape.
  */
 
-// An Experiment Definition is an ontology object (ADR 0012): the former `name`
-// is the root's `title`, and ownership, provenance, and timestamps come from
+// An Experiment Definition is an ontology object (ADR 0012). The displayed
+// name is the root's `title`. Ownership, provenance, and timestamps come from
 // `space_objects`.
 const DEFINITION_FROM = `experiment_definitions d
      JOIN space_objects so ON so.id = d.object_id AND so.space_id = d.space_id`;
@@ -162,7 +159,7 @@ export class ExperimentDefinitionService {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const rows = await this.db.query<DefinitionRow>(
       // Same reason as Decision Cases: the root's visibility is what decides
-      // who sees an Experiment now that it is an ontology object.
+      // who sees an Experiment. It is an ontology object.
       `SELECT ${DEFINITION_COLUMNS} FROM ${DEFINITION_FROM}
         WHERE d.space_id=$1 AND d.project_id=$2
           AND ${contentReadSql("space_object", "so", "$3")}

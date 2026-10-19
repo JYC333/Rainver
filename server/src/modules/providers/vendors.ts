@@ -6,10 +6,10 @@
  * described to whichever chat implementation is in use is that adapter's
  * concern and lives with it.
  *
- * `model_providers.provider_type` used to hold a wire protocol — MiniMax was
- * stored as `anthropic` because it speaks the Anthropic protocol. That loses
- * the fact a credential actually carries: an API key is issued by a vendor,
- * and the base URL is a routing detail a gateway or mirror may change.
+ * `provider_type` is vendor identity, not the wire protocol. MiniMax speaks
+ * the Anthropic protocol and is still MiniMax: an API key is issued by a
+ * vendor, and the base URL is a routing detail a gateway or mirror may change.
+ * Do not store the protocol in this column.
  *
  * Vendor identity is what selects a capability profile, and what the chat
  * adapter resolves its own rate table from, so it has to be recorded rather
@@ -47,6 +47,12 @@ export interface VendorDescriptor {
   /** Whether configuring this vendor requires a credential at all. */
   apiKeyRequired: boolean;
   /**
+   * Whether the vendor's service can run on the operator's own machine or
+   * network, and so may be declared a trusted local deployment. A hosted
+   * vendor is the cloud whatever endpoint it is reached through.
+   */
+  selfHostable: boolean;
+  /**
    * Whether the only way to reach this vendor is a managed subscription
    * credential. Such a provider is owner-scoped, so it cannot back a
    * space-wide provider task policy — see `provider-policy.md`. Anthropic is
@@ -66,6 +72,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "https://api.openai.com/v1",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
   {
@@ -78,6 +85,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "https://chatgpt.com/backend-api",
     apiKeyRequired: false,
+    selfHostable: false,
     subscriptionOnly: true,
   },
   {
@@ -90,15 +98,15 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "https://api.anthropic.com",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
   {
     id: "minimax",
     displayName: "MiniMax",
-    // MiniMax publishes both an Anthropic-compatible and an OpenAI-compatible
-    // endpoint. The Anthropic one is the vendor's own protocol here; the
-    // OpenAI-compatible gateway is the one whose forced tool-call arguments
-    // arrive corrupted, which `structuredOutputCapabilities` still guards.
+    // MiniMax publishes an Anthropic endpoint and an OpenAI-compatible one.
+    // This row uses the Anthropic endpoint. Do not point MiniMax at the
+    // OpenAI-compatible gateway: its forced tool-call arguments arrive corrupted.
     protocol: "anthropic_messages",
     supportsChat: true,
     supportsStructuredOutput: true,
@@ -106,6 +114,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "https://api.minimaxi.com/anthropic",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
   {
@@ -118,6 +127,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "https://openrouter.ai/api/v1",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
   {
@@ -130,6 +140,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "https://api.deepseek.com",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
   {
@@ -144,6 +155,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: "http://localhost:11434",
     apiKeyRequired: false,
+    selfHostable: true,
     subscriptionOnly: false,
   },
   {
@@ -158,6 +170,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: false,
     defaultBaseUrl: null,
     apiKeyRequired: false,
+    selfHostable: true,
     subscriptionOnly: false,
   },
   {
@@ -170,6 +183,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: true,
     defaultBaseUrl: "https://api.cohere.com",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
   {
@@ -182,6 +196,7 @@ const VENDORS: readonly VendorDescriptor[] = [
     supportsRerank: true,
     defaultBaseUrl: "https://api.zeroentropy.dev/v1",
     apiKeyRequired: true,
+    selfHostable: false,
     subscriptionOnly: false,
   },
 ];
@@ -208,10 +223,8 @@ export function providerCanRunWithoutCredential(id: string): boolean {
 }
 
 /**
- * Resolution is deliberately strict. A row whose vendor is unknown cannot have
- * its protocol guessed — that guess is what the base-URL heuristic would have
- * been, and it breaks on exactly the gateways and mirrors a configurable base
- * URL exists to support.
+ * Resolution is deliberately strict. Do not guess a protocol from the base
+ * URL. That breaks on the gateways and mirrors a configurable base URL is for.
  */
 export function requireProviderVendor(id: string): VendorDescriptor {
   const vendor = BY_ID.get(id);

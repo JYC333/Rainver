@@ -161,6 +161,39 @@ describe("skill import preview", () => {
     expect(preview.normalized_skill.resources[1]?.content_hash).toMatch(/^[a-f0-9]{64}$/);
   });
 
+  it("fetches a package file whose name holds URL-significant characters by its encoded path", async () => {
+    const fetchedUrls: string[] = [];
+    const preview = await previewSkillImport(
+      { url: "https://github.com/org/repo/blob/main/skills/demo/SKILL.md" },
+      {
+        commitResolver: null,
+        packageLister: async () => [
+          { path: "skills/demo/SKILL.md", type: "blob", size: 96, sha: "skill-sha" },
+          { path: "skills/demo/references/c#-guide 100%.md", type: "blob", size: 29, sha: "guide-sha" },
+        ],
+        fetcher: async (url) => {
+          fetchedUrls.push(url);
+          if (url.endsWith("/skills/demo/SKILL.md")) {
+            return {
+              contentType: "text/markdown",
+              body: "---\nname: Encoded Skill\ndescription: Has an awkward file name.\n---\n\nRead the guide.",
+            };
+          }
+          if (url.endsWith("/skills/demo/references/c%23-guide%20100%25.md")) {
+            return { contentType: "text/markdown", body: "# Guide\n\nUse bounded context." };
+          }
+          throw new Error(`unexpected fetch ${url}`);
+        },
+      },
+    );
+
+    expect(fetchedUrls).toEqual([
+      "https://raw.githubusercontent.com/org/repo/main/skills/demo/SKILL.md",
+      "https://raw.githubusercontent.com/org/repo/main/skills/demo/references/c%23-guide%20100%25.md",
+    ]);
+    expect(preview.files_detected).toContain("skills/demo/references/c#-guide 100%.md");
+  });
+
   it("treats GitHub tree URLs as skill package roots and flags scripts", async () => {
     const commit = "a".repeat(40);
     const preview = await previewSkillImport(

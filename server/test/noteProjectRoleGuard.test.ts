@@ -10,15 +10,12 @@ import {
 } from "../src/modules/knowledge/noteProjectRoles.js";
 
 /**
- * The guardrail the plan asks for: nothing may resolve a project's baseline
- * note by matching its title.
+ * Nothing may resolve a project's baseline note by matching its title.
  *
- * The failure this prevents is specific and was live. `notebookNotes.ts`
- * selected `WHERE so.title = 'Current understanding'`, so renaming that note
- * removed the research comparison's baseline and the comparison degraded
- * silently. A single re-introduced literal is enough to bring the whole defect
- * back, which is why this is a source scan rather than a behaviour test — a
- * behaviour test only covers the call path someone remembered to write one for.
+ * Do not select `WHERE so.title = 'Current understanding'`. Renaming that
+ * note would drop the research comparison's baseline and the comparison
+ * would degrade with no error. This is a source scan. A behaviour test
+ * only covers the call path it is written for.
  */
 
 const srcDir = join(import.meta.dirname, "..", "src");
@@ -28,9 +25,8 @@ const AREA_SERVICE = join("src", "modules", "projectResearch", "areaService.ts")
 /**
  * The two methods in `areaService` that may legitimately name a note.
  *
- * `adoptStarterNotesByTitle` reconciles projects seeded before the role marker
- * existed — it reconstructs the binding the old resolver created rather than
- * being a binding of its own, and stops once every role is filled.
+ * `adoptStarterNotesByTitle` binds starter notes by title until every role
+ * is filled. It is not itself a role binding.
  * `resolveProjectNoteByExactTitle` serves the ad-hoc caller that names a note
  * instead of a role: the title there is the user's own input, so matching it is
  * what they asked for, and it creates the note when it finds none.
@@ -76,11 +72,9 @@ describe("project note role guardrail", () => {
   });
 
   it("selects no note by title against a project scope outside the adoption", () => {
-    // The literal check above misses the shape the code actually regressed
-    // into last time: the title moved into `SECTION_LABELS[key]` and was still
-    // passed as a bind parameter to a `so.title = $n` query scoped by
-    // `primary_project_id`. That pairing — a project-scoped note query keyed on
-    // title — is the defect, whether or not a literal is visible.
+    // Do not select a note by title inside a project scope. A title in
+    // `SECTION_LABELS[key]`, bound to `so.title = $n` and scoped by
+    // `primary_project_id`, is that query whether or not a literal is visible.
     const offenders: string[] = [];
     for (const file of listTsFiles(srcDir)) {
       const relative = file.slice(join(import.meta.dirname, "..").length + 1);
@@ -107,9 +101,8 @@ describe("project note role guardrail", () => {
   it("keeps the server registry and the shared protocol vocabulary identical", async () => {
     // The server list is a deliberate copy: the server registry is the
     // authority and the protocol package carries the client-facing vocabulary.
-    // A copy without a check is how gap 3 happened — the editor's target-kind
-    // list drifted from the backend's accepted set with nothing to notice.
-    // This is that check.
+    // Do not leave the copy unchecked. The editor's target-kind list would
+    // drift from the backend's accepted set with nothing to notice.
     expect([...NOTE_PROJECT_ROLES]).toEqual([...NOTE_PROJECT_ROLE_VALUES]);
   });
 

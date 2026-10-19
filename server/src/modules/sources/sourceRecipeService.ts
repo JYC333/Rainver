@@ -1,6 +1,7 @@
 import type { ServerConfig } from "../../config.js";
 import type { Pool, SpaceUserIdentity } from "../routeUtils/common.js";
 import { page } from "../routeUtils/common.js";
+import { assertSourceConnectionReadable } from "./sourceConnectionAccess.js";
 import { SourceRecipePipelineBridgeService } from "./sourceRecipes/pipelineBridgeService.js";
 import { listSourceRecipePrimitives } from "./sourceRecipes/primitiveRegistry.js";
 import { SourceRecipeCreateService } from "./sourceRecipes/recipeCreateService.js";
@@ -47,13 +48,15 @@ export class SourceRecipeService {
     return this.dryRunService.dryRunRecipeVersion(identity, connectionId, body);
   }
 
-  async listVersions(spaceId: string, connectionId: string, pagination: { limit: number; offset: number }) {
-    const listed = await listSourceRecipeVersions(this.db, spaceId, connectionId, pagination);
+  async listVersions(identity: SpaceUserIdentity, connectionId: string, pagination: { limit: number; offset: number }) {
+    await assertSourceConnectionReadable(this.db, identity, connectionId);
+    const listed = await listSourceRecipeVersions(this.db, identity.spaceId, connectionId, pagination);
     return page(listed.rows.map(recipeVersionOut), listed.total, pagination.limit, pagination.offset);
   }
 
-  async getVersion(spaceId: string, connectionId: string, versionId: string) {
-    const version = await getSourceRecipeVersion(this.db, spaceId, connectionId, versionId);
+  async getVersion(identity: SpaceUserIdentity, connectionId: string, versionId: string) {
+    await assertSourceConnectionReadable(this.db, identity, connectionId);
+    const version = await getSourceRecipeVersion(this.db, identity.spaceId, connectionId, versionId);
     return version ? recipeVersionOut(version) : null;
   }
 }

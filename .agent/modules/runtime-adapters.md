@@ -26,6 +26,12 @@ keep in step.
 | `claude_code` | implemented | managed `claude-agent-acp` distribution | Host-native login |
 | `codex_cli` | implemented | managed `codex-acp` distribution | Host-native login |
 
+Beside these builtins, each ACP registry agent an instance admin enables in
+`modules/acpAgents` is published as a dynamic adapter `acp_<id>`
+(`runtimeAdapters/dynamicSpecs.ts`): implemented, ACP, `remote_host_only`, and
+`credential_mode: cli_profile`, so it is a selectable runtime with Host-native
+login only.
+
 Gemini CLI, generic `custom`, and `capability` entries are not selectable ACP
 Agent runtimes. In particular, `model_api` and `ts_agent_host` are not runtime
 definitions.
@@ -51,7 +57,7 @@ vendor session keeps its working state for the answer, which is the person's
 next message. A vendor CLI's own interactive question is translated into that
 shape rather than approved or treated as a failure. A
 `session/request_permission` is a tool permission and is pre-authorized
-through `runPermissionPolicy.ts` as before, unless the runtime's
+through `runPermissionPolicy.ts`, unless the runtime's
 `RuntimeAdapterSpec.interaction.question_detector` says that shape is a
 question (Claude Code: a request naming no `toolCall`). A question — that, an
 `elicitation/create` form, or any other interactive method except the
@@ -64,7 +70,7 @@ reads the form). The Run succeeds; see CONVERSATION.md for the reply. The
 detector's `form_elicitation` also makes the controller advertise
 `clientCapabilities.elicitation.form`, which is what makes Claude Code offer
 AskUserQuestion and Codex's `request_user_input` reach the client at all
-(claude-agent-acp 0.70 and codex-acp 1.12, read 2026-09-24); OpenCode declares
+(claude-agent-acp 0.70 and codex-acp 1.12); OpenCode declares
 nothing and is not offered it. Room execution rules tell the Agent to ask by
 replying instead (`ASK_THE_PERSON_POLICY`). Per-runtime question shapes on a
 real host are an open acceptance item in `tasks/deferred-register.md`.
@@ -116,7 +122,7 @@ same question (B58). **Today that is OpenCode alone.** Claude Code and
 Codex CLI declare `cli_profile`, so their definitions report
 `supports_model_provider: false` and `assertBackendModeBinding` answers a
 `model_provider` Profile for them with 422 — they run on the Host's own vendor
-login. A `model_provider` Profile must name an enabled same-Space Provider, an
+login. A `model_provider` Profile must name an enabled Provider granted to the Space, an
 explicit model, and an execution Host with an installation; either Host kind
 qualifies, because the daemon receives a proxy lease address rather than a key
 (`assertProviderExecutionTarget`, `hostProviderProxyBaseUrl`). The Server
@@ -136,10 +142,10 @@ its `openai_compatible_base_url` with an `openai`-route lease as
 (`provider_protocol_unsupported`) before a lease is minted. The OpenCode
 provider id is `rainver_provider` either way. Retrieval egress classification
 (`runtimeProviderEgressDestination`) reads the same resolution. An OpenCode
-profile bound, before this rule, to an Anthropic-protocol Provider that has
-only an OpenAI-compatible URL now fails its dispatch with
+profile bound to an Anthropic-protocol Provider that has
+only an OpenAI-compatible URL fails its dispatch with
 `claude_compatible_base_url_required` and is greyed out in the Provider
-selector; the fix is to add the Provider's Claude-compatible URL or bind a
+selector; add the Provider's Claude-compatible URL or bind a
 different Provider. Nothing rewrites such a binding automatically.
 
 Provider authorization, credential spend, network policy and lease lifecycle
@@ -160,9 +166,9 @@ authorization can narrow execution; runtime selection never grants tools.
 The registry declares ACP command/distribution, credential mode, sandbox and
 workspace requirements, model/backend support, cancellation and observation
 facts. Its subagent-disable declarations describe runtime capabilities only:
-the current Host-daemon launch skips the legacy server-local deny-config
-writer, so these declarations are not applied to a Run and do not raise its
-effective trust above the low baseline. Do not treat declarative capability as
+the Host-daemon launch sets `skip_subagent_disable_check`, so these
+declarations are not applied to a Run and do not raise its effective trust
+above the low baseline. Do not treat declarative capability as
 enforcement evidence. External permissions are mediated by Rainver's controller
 and policy/tool gateways, not delegated to an independent server-side Agent
 loop.

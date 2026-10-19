@@ -1,6 +1,7 @@
 import { Inbox } from 'lucide-react'
 import { useSpace } from '../../contexts/SpaceContext'
 import { ActivityQueue } from './ActivityQueue'
+import { useAppTranslation } from '../../i18n'
 
 /**
  * The Space's raw-review queue. The queue itself lives in {@link ActivityQueue}
@@ -9,6 +10,7 @@ import { ActivityQueue } from './ActivityQueue'
  */
 export default function ActivityInboxPage() {
   const { activeSpaceId, activeSpaceName } = useSpace()
+  const { t } = useAppTranslation()
 
   return (
     <div className="p-6 space-y-6">
@@ -24,9 +26,9 @@ export default function ActivityInboxPage() {
             <Inbox className="size-5 text-accent-foreground" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold tracking-tight">Activity Inbox</h1>
-            <p className="text-sm text-muted-foreground">Saved as activity first. Nothing becomes memory or changes files without review.</p>
-            <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}</p>
+            <h1 className="text-xl font-semibold tracking-tight">{t('activity_ui.inbox.title')}</h1>
+            <p className="text-sm text-muted-foreground">{t('activity_ui.inbox.subtitle')}</p>
+            <p className="text-xs text-muted-foreground">{t('activity_ui.detail.viewing', { space: activeSpaceName ?? activeSpaceId ?? t('activity_ui.detail.no_space_selected') })}</p>
           </div>
         </div>
       </div>

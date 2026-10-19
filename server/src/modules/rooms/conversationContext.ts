@@ -12,7 +12,7 @@ export const ROOM_RECENT_TOKEN_BUDGET = 6_000;
 /** Keep each provider task bounded even when the uncaptured archive is large. */
 export const ROOM_SUMMARY_SOURCE_TOKEN_BUDGET = 12_000;
 
-export type RoomTokenEstimator = (text: string) => number;
+type RoomTokenEstimator = (text: string) => number;
 
 /** A Room turn's context budgets, derived from the pinned model's window. */
 export interface RoomContextBudgets {
@@ -36,9 +36,9 @@ export const ROOM_SESSION_ROTATE_SHARE = 0.6;
 /**
  * Budgets as shares of the model's context window — summary 3 %, recent 15 %,
  * summary source 30 %, rotation at 60 % — never below the floors, so a small
- * or unknown model is no worse off than with the fixed constants these
- * replaced. The caller resolves the window from the Conversation × Agent pin;
- * the assembler receives numbers and never looks a model up.
+ * or unknown model stays at the floor. The caller resolves the window from
+ * the Conversation × Agent pin; the assembler receives numbers and never
+ * looks a model up.
  */
 export function roomContextBudgets(
   contextWindowTokens: number,
@@ -61,7 +61,7 @@ export interface RoomSummaryCoverage {
   covered_through_created_at: string;
 }
 
-export interface RoomConversationContext {
+interface RoomConversationContext {
   summary: RoomSummaryCoverage | null;
   recent_messages: MessageOut[];
   recent_token_estimate: number;
@@ -95,7 +95,7 @@ export interface RoomCompactionBatch {
  *
  * `summaryUnavailable` says no summary is coming for the prefix — the Room
  * owner has no eligible provider, or summarizing stopped — so the tail widens
- * by what one summary batch would have covered instead of dropping it, up to
+ * by one summary batch's coverage instead of dropping it, up to
  * half the share at which the session rotates.
  */
 export function assembleRoomConversationContext(input: {

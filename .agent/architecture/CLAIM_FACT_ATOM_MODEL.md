@@ -1,22 +1,19 @@
 # Claim / Fact Atom And Core Object Model
 
-Status: current-state architecture. The Phase 1-5 backend foundation is
-implemented in the baseline schema/backend. Claims are global
+Status: current-state architecture. Claims are global
 `space_objects`-backed atoms, and FK-backed `object_relations` is the canonical
 relation graph for Knowledge, Claims, Sources, and Notes.
 
-Deferred product work: frontend claim workspaces, full source monitoring /
-source-drift evaluation, richer Context Brief claim-review UX beyond the
-implemented Claim Candidate Packet, Memory-derived claim extraction, and future
-domain modules such as people/assets/events/tasks.
+There is no frontend claim workspace. Knowledge proposal apply does not run
+source-drift evaluation. Context Brief claim review is the Claim Candidate
+Packet. There is no Memory-derived claim extraction.
 
-This document replaces the earlier Knowledge-only claim table sketch. The audit
-found that Rainver already uses `knowledge_items` as the canonical Wiki
-model, not as a generic root object table. The implemented backend shape is now:
+`knowledge_items` is the canonical Wiki model, not a generic root object
+table. The implemented backend shape is:
 
 ```
 space_objects
--> knowledge_items / notes / sources / future people/assets/events/tasks...
+-> knowledge_items / notes / sources / people / organizations / and the other registered subtypes
 -> global claims
 -> claim_sources / object_relations
 ```
@@ -28,14 +25,14 @@ atoms, but claims are not Knowledge-owned rows.
 
 ### Current database model
 
-There is no current `knowledge` table to rename. The existing canonical Wiki
-table is already `knowledge_items`.
+The canonical Wiki table is `knowledge_items`. Do not look for a `knowledge`
+table.
 
 Current Knowledge-adjacent tables:
 
 | Table | Current role |
 |---|---|
-| `space_objects` | Common identity/visibility/provenance root for Knowledge items, Notes, Sources, and future core objects. Domain status belongs to the extension tables (B12D). |
+| `space_objects` | Common identity/visibility/provenance root. Domain status belongs to the extension tables (B12D). |
 | `knowledge_items` | Proposal-gated canonical Wiki page extension. Uses `knowledge_kind`; `claim` is not a valid kind. |
 | `knowledge_item_sources` | Wiki item-to-source evidence links. |
 | `notes` | Direct-CRUD working knowledge extension attached to `space_objects`, intentionally separate from governed Wiki items. |
@@ -43,7 +40,7 @@ Current Knowledge-adjacent tables:
 | `provenance_links` / `evidence_links` | Provenance lineage and candidate/context evidence links. Evidence links are not accepted object lineage. |
 | `claims` / `claim_sources` | Proposal-gated global semantic atoms and curated evidence/source paths. |
 | `object_relations` | Proposal-gated FK-backed object graph edges over `space_objects`; the only canonical relation graph. |
-| `retrieval_objects` | Derived retrieval index with closed object types: `knowledge_item`, `note`, `source`, `claim`, `memory_entry`, `project_public_summary`. |
+| `retrieval_objects` | Derived retrieval index with closed object types: `knowledge_item`, `note`, `source`, `claim`, `memory_entry`, `project_public_summary`, `source_item`, `extracted_evidence`, `inquiry_thread`. |
 
 Current independent roots that should not be folded into Knowledge include
 `projects`, `project_folders`, `activity_records`, `runs`, `artifacts`, `proposals`,
@@ -67,10 +64,7 @@ Knowledge is already a first-level product module:
 - Maintenance and Context Brief flows should create review packets/proposals,
   not direct canonical Knowledge or claim writes.
 
-Refactoring the internal object root was therefore a schema/API/protocol/backend
-coordination task. Since there is no production data requirement, the
-implementation is a clean coordinated baseline change, not a
-legacy-compatibility layer.
+There is no compatibility layer beside the current object root.
 
 ## Model Boundaries
 
@@ -80,8 +74,7 @@ The current model does not force Projects, Memory, Artifacts, Activities, Runs,
 or Proposals into Knowledge. Knowledge is acting as true knowledge: Notes,
 governed Wiki items, Sources, and their relations/evidence.
 
-The earlier conceptual leak was `knowledge_items.item_type='claim'`. Phase 1
-removed that value and renamed the field to `knowledge_kind`. A Wiki page can
+Claims are not a Knowledge item kind. The field is `knowledge_kind`. A Wiki page can
 still describe a claim, but a durable fact/claim atom needs different behavior:
 
 - smaller unit than a page,
@@ -94,10 +87,14 @@ still describe a claim, but a durable fact/claim atom needs different behavior:
 
 ### `object_relations` is the relation root
 
-`object_relations` replaced the older polymorphic and per-domain relation tables.
+`object_relations` is the relation root. Do not add a polymorphic or
+per-domain relation table beside it.
 Relation proposals resolve to FK-backed `space_objects` endpoints, and retrieval
 uses `retrieval_edges` only as a rebuildable projection of active
-`object_relations` plus curated source links.
+`object_relations` plus curated source links. A relation proposal names both
+endpoints, so it takes the source endpoint's visibility only when the target is
+`space_shared` in no other Project or Folder; otherwise it is private to its
+proposer.
 
 ### Constraint Lessons Apply Only At The Constraint Layer
 
@@ -116,12 +113,11 @@ schema packs.
 There is no `knowledge` table. `knowledge_items` already exists and should keep
 representing governed Wiki content.
 
-### 2. Introduce `space_objects` before broad new domains
+### 2. Durable domain objects are not KnowledgeItem subtypes
 
-Future People, Assets, Events, Tasks, Documents, and similar durable domain
-objects should not be modeled as KnowledgeItem subtypes. They should share a
-common identity/permission layer and then attach domain-specific
-extension tables, each owning its own status (ADR 0012).
+People, organizations, and the other registered `space_objects` subtypes
+attach their own extension tables. Each owns its own status (ADR 0012). Do
+not model them as KnowledgeItem subtypes.
 
 ### 3. Claims must be global, not `knowledge_claims`
 
@@ -130,9 +126,9 @@ Use `claims`, `claim_sources`, and `object_relations`, not
 claim may be about a project, person, task, event, asset, source, artifact,
 memory-derived summary, or Wiki item.
 
-### 4. Remove `claim` from `KnowledgeItem.knowledge_kind`
+### 4. `claim` is not a `KnowledgeItem.knowledge_kind`
 
-`claim` is no longer a valid Knowledge item kind. Page-level assertions should
+`claim` is not a Knowledge item kind. Page-level assertions should
 be represented as:
 
 - `claims` rows for atom-level facts/takes;
@@ -168,22 +164,23 @@ relations, retrieval identity, citations, permissions, or cross-domain claims.
 
 Implemented fields:
 
-- `object_id` (the claim id; PK/FK to `space_objects(id, space_id)`)
+- `id` (PK; extension tables reference it as `object_id`)
 - `space_id`
-- `object_type`: fixed enum. The implemented `ck_space_objects_object_type`
-  values are `knowledge_item`, `note`, `source`, `person`, `organization`,
-  `claim`, `inquiry_thread`, `decision_case`, and `experiment`. The CHECK and
-  the entity registry are asserted to agree by `test/ontologyRegistry.test.ts`
-  — `relationship` was dropped when that test was added, because it had no
-  extension table, no entity, and no writer. `project` and `project_folder` are
-  registered *entities* without being `space_objects` rows (B12G). Types not in
-  the enum are listed in
-  [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §19.
+- `object_type`: the only CHECK is `ck_space_objects_object_type_format`
+  (token shape); subtype membership is validated by the entity registry
+  (`modules/ontology/entities.ts`) at the only root writer. The registered
+  `space_objects` subtypes are `knowledge_item`, `note`, `source`, `person`,
+  `organization`, `claim`, `inquiry_thread`, `decision_case`, `experiment`, and
+  `research_workflow`; `test/ontologyRegistry.test.ts` asserts the CHECK stays
+  open and every registered subtype is valid. `project` and `project_folder` are
+  registered *entities* without being `space_objects` rows (B12G).
 - `title` (a projection of the domain's own label, truncated by the writer)
 - `summary` or `excerpt`
 - `visibility`, `access_level`
 - `owner_user_id`
 - `primary_project_id`
+- `focus_area_id` (classification only; never read by the content access
+  predicate)
 - `project_folder_id`
 - `created_by_user_id`
 - `created_by_agent_id`
@@ -194,14 +191,18 @@ Keep the taxonomy small. Aliases, subtypes, or metadata can live on extension
 tables until a repeated product need justifies promotion.
 
 Domain status is **not** on `space_objects` (ADR 0012 / B12D, B12E). Each
-extension table owns its own `status` column and constraint; the former shared
-column, its index, and its `object_type`-branching CHECK are gone. The six
+extension table owns its own `status` column and constraint. Do not put a
+status column, index, or `object_type`-branching CHECK on `space_objects`. The ten
 extension tables that own a status are `knowledge_items`
 (`draft|active|superseded|archived|deleted`), `notes`
 (`active|archived|deleted`), `sources`
 (`raw|processing|processed|archived|error`), `claims`
-(`active|disputed|superseded|rejected|archived`), and `relation_people` /
-`relation_organizations` (`active|archived|deleted`).
+(`active|disputed|superseded|rejected|archived`), `relation_people` /
+`relation_organizations` (`active|archived|deleted`), `inquiry_threads`
+(`lifecycle_status`: `active|resolved|rejected|superseded|archived`),
+`decision_cases` (`open|decided|archived`), `experiment_definitions`
+(`draft|active|paused|completed|archived`), and `project_research_workflows`
+(`not_started|active|paused|completed|archived`).
 
 A reader that knows its object type reads the extension column directly. A
 polymorphic reader uses `db/objectStatusSql.ts`, whose table/column list is
@@ -252,7 +253,7 @@ Global semantic assertions. Claims are proposal-gated for canonical writes.
 
 Implemented fields:
 
-- `id`
+- `object_id` (PK; FK to `space_objects(id, space_id)`)
 - `space_id`
 - `subject_object_id`: nullable FK to `space_objects(id)` when the claim is
   about an app-owned object
@@ -273,8 +274,9 @@ Implemented fields:
 - `resolution_state`: `unreviewed`, `confirmed`, `contradicted`, `stale`,
   `needs_source`
 - `valid_from`, `valid_until`, `observed_at`
-- `created_from_proposal_id`
-- `created_at`, `updated_at`, `archived_at`
+- `metadata_json`
+- `created_from_proposal_id`, `approved_by_user_id`
+- `created_at`, `updated_at`, `archived_at` live on the `space_objects` root
 
 Candidate claims should live in proposal payloads or private review artifacts
 until accepted. Do not index rejected or unaccepted candidates as context facts.
@@ -328,9 +330,11 @@ Implemented fields:
   `cites`, `summarizes`
 - `source_trust`
 - `confidence`
+- `metadata_json`
+- `created_by_user_id`
 - `created_at`
 
-`provenance_links` and `evidence_links` can still exist for generic provenance,
+`provenance_links` and `evidence_links` exist for generic provenance,
 but claim truth/evidence semantics should be represented here.
 
 ### `object_relations`
@@ -347,9 +351,12 @@ Implemented fields:
 - `link_type`
 - `confidence`
 - `status`: `candidate`, `active`, `rejected`, `archived`
+- `evidence_summary`
 - `source_claim_id`
 - `source_object_id`
 - `source_proposal_id`
+- `metadata_json`: its `relation_role = primary_inquiry_thread` discriminator
+  backs the one-to-one Workflow/Inquiry Thread `about` unique indexes
 - API response field `retrieval_projected`: derived boolean; true only when
   both endpoints are object types currently indexed by the Knowledge retrieval
   adapter.
@@ -363,7 +370,7 @@ move accepted rows out of the active graph.
 
 `object_relations` intentionally keeps the wider `space_objects` endpoint model
 instead of limiting writes to Knowledge-retrieval object types. Relations that
-touch future or non-indexed object types are still canonical graph rows, but
+touch object types with no retrieval adapter are canonical graph rows, but
 they do not become retrieval graph edges until both endpoint types have a
 registered retrieval adapter/projection path. Read APIs expose this as
 `retrieval_projected` rather than silently implying every canonical relation is
@@ -461,11 +468,9 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
   provenance behind `include_claim_trajectory`.
 - `scanClaimContradictions` runs a deterministic judge (negation / numeric
   opposition) over source-policy-filtered visible active claims, groups by
-  subject, and emits batched, clustered, confidence-tiered findings. It also has
-  a request-gated LLM judge hook for future provider wiring. Until the ADR 0008
-  provider adapter is connected, the public HTTP route rejects
-  `llm_judge_enabled=true` with 422; the service-level hook remains injectable
-  for tests and internal callers. Any enabled implementation receives only
+  subject, and emits batched, clustered, confidence-tiered findings. The public
+  HTTP route rejects `llm_judge_enabled=true` with 422. The service-level hook
+  stays injectable for tests and internal callers. Any enabled implementation receives only
   source-policy-allowed visible claims plus current source-policy snapshots. `POST
   /api/v1/knowledge/claims/contradiction-scan` (Context Ops scan-gated) persists an
   owner-private or `space_ops` `claim_contradiction_report` artifact. That report
@@ -474,61 +479,13 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
   an `object_relation_create` (contradicts) candidate. There is no new claim
   proposal type — the only canonical-write path stays the proposal-gated packet.
 
-## Implementation Record
+## Current constraints
 
-### Phase 1: clean Knowledge typing
-
-- Implemented: removed `claim` from Knowledge item typing.
-- Implemented: renamed the field to `knowledge_kind`.
-- Keep Notes and Sources as separate lifecycle models.
-- Do not create compatibility aliases for removed item types.
-
-### Phase 2: introduce `space_objects`
-
-- Implemented: added `space_objects` as the common identity/visibility table; status later moved to the extension tables (ADR 0012).
-- Implemented: attached `knowledge_items` to it with `object_id` as PK/FK.
-- Implemented: attached `notes` and `sources`,
-  because retrieval and citations already treat them as object-like rows.
-- Keep public Knowledge routes stable unless a separate product rename is
-  intentionally chosen.
-
-### Phase 3: move common fields out of Knowledge extensions
-
-- Implemented: moved shared fields such as title, summary/excerpt, status, visibility, owner,
-  project/Project Folder refs, created-by fields, timestamps, archive/delete fields
-  to `space_objects`.
-- Keep content, slug, aliases, tags, verification/reflection, versioning, and
-  Knowledge provenance fields in `knowledge_items`.
-- Implemented: updated repositories, DTOs, tests, and retrieval adapters in one coordinated
-  change.
-- Superseded by ADR 0012: status moved to the extension tables and the root's
-  type-branching constraint was removed. Kept
-  note collection parent/member links same-space through composite foreign keys.
-
-### Phase 4: add global claims
-
-- Implemented: added `claims`, `claim_sources`, and canonical `object_relations`.
-- Implemented: added proposal packet types and appliers for claim writes.
-- Implemented: claim proposal creation and apply enforce the claim status
-  transition rules, terminal archive semantics, and supersession successor
-  requirement.
-- Implemented: added retrieval projection type `claim`.
-- Implemented: claim projection carries direct `source_connection_id` values
-  and source-object metadata-derived connection ids for source-policy
-  revalidation. Pure `source_ref_type/source_ref_id` rows must carry
-  `source_connection_id`; otherwise repository, proposal apply, and the baseline
-  schema reject them fail-closed.
-
-### Phase 5: replace or scope generic relations
-
-- Implemented: introduced `object_relations` for FK-backed object graph edges.
-- Implemented decision: retire the separate direct-CRUD relation tables and use
-  `object_relations` for governed FK-backed cross-object graph writes.
-- Implemented: object relation read/apply results expose `retrieval_projected`
-  so callers can distinguish canonical wide graph rows from relations currently
-  projected into the Knowledge retrieval graph.
-- A new domain root belongs on `space_objects`, not under Knowledge.
-  `asset` / `event` / `task` / `document` are not in the enum.
+- Notes and Sources stay separate lifecycle models. Do not create compatibility aliases for removed item types.
+- `space_objects` is the common identity and visibility table. Status lives on the extension tables (ADR 0012). `knowledge_items`, `notes`, and `sources` attach with `object_id` as PK/FK. Public Knowledge routes stay stable unless a product rename is chosen.
+- Shared fields — title, summary/excerpt, visibility, owner, project refs, timestamps, archive and delete — live on `space_objects`. Content, slug, aliases, tags, verification, versioning, and Knowledge provenance stay on `knowledge_items`. Note collection parent/member links stay same-space through composite foreign keys.
+- `claims`, `claim_sources`, and canonical `object_relations` are the fact graph. Claim writes go through proposal packets and enforce status transitions, terminal archive, and a successor on supersession. Retrieval projects type `claim`. A pure `source_ref_type`/`source_ref_id` row must carry `source_connection_id`; repository, proposal apply, and the baseline schema reject it otherwise.
+- Governed cross-object graph writes use `object_relations`. Read and apply results expose `retrieval_projected`. A new domain root belongs on `space_objects`, not under Knowledge. `asset`, `event`, `task`, and `document` are not in the enum.
 
 ## Decision Record
 
@@ -545,7 +502,7 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
   are implemented (see
   [`CONTEXT_AND_RETRIEVAL_LAYER.md`](CONTEXT_AND_RETRIEVAL_LAYER.md)).
   Canonical claim writes stay proposal-gated.
-- Runtime read/egress revalidation exists for claim evidence. There is no
+- Runtime read/egress revalidation covers claim evidence. There is no
   source-policy change detector or scheduled claim-source review.
 - Structured proposal packets exist. There is no separate claim workspace or
   productized Context Brief claim-review workflow.
@@ -553,5 +510,3 @@ leak hidden claim existence, counts, or text, and neither writes canonical state
 - There is no legacy-data compatibility path; tests and seeds assume a clean
   break.
 
-Unimplemented claim follow-ups:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §19 and §24.

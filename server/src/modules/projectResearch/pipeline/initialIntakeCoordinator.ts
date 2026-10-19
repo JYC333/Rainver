@@ -12,7 +12,7 @@ import { hasProjectScreeningCriteria, loadProjectScreeningCriteria } from "../sc
 import { ProjectResearchDiscoveryBridge } from "./researchDiscoveryBridge.js";
 import type { ResearchThreadScopeRef } from "../threadScope.js";
 
-export interface InitialIntakeRuleInput {
+interface InitialIntakeRuleInput {
   researchQuestion: string;
   threadScope: ResearchThreadScopeRef[];
   agentId: string;
@@ -20,7 +20,7 @@ export interface InitialIntakeRuleInput {
   researchScope: ResearchScopeContext;
 }
 
-export interface InitialIntakeProvisionInput extends InitialIntakeRuleInput {
+interface InitialIntakeProvisionInput extends InitialIntakeRuleInput {
   historyMode: "bounded_range" | "all_available";
   from: string | null;
   to: string | null;
@@ -29,7 +29,7 @@ export interface InitialIntakeProvisionInput extends InitialIntakeRuleInput {
   idempotencyKey: string;
 }
 
-export interface InitialIntakeProvisionResult {
+interface InitialIntakeProvisionResult {
   channels: Record<string, unknown>[];
   bindings: Record<string, unknown>[];
   rules: Record<string, unknown>[];
@@ -165,12 +165,24 @@ export class ProjectResearchInitialIntakeCoordinator {
       [identity.spaceId, projectId, channelId, ruleName],
     );
     if (existing.rows[0]) {
+      // A restart after an empty intake may carry another model and a revised
+      // Thread: the reused rule takes them, as a new rule would.
       const inputConfig = objectValue(existing.rows[0].input_config_json);
       await new SourcePostProcessingService(this.db, requiredConfig(this.config)).updateRule(
         identity,
         channelId,
         String(existing.rows[0].id),
-        { input_config_json: { ...inputConfig, relevance_profile: relevanceProfile } },
+        {
+          agent_id: input.agentId,
+          input_config_json: {
+            ...inputConfig,
+            runtime_profile_id: input.runtimeProfileId,
+            content_profile: contentProfileForProvider(providerKey),
+            summary_goal: input.researchQuestion,
+            retrieval_context: { ...objectValue(inputConfig.retrieval_context), query: input.researchQuestion },
+            relevance_profile: relevanceProfile,
+          },
+        },
       );
       await this.ensureProcessingBatchSize(identity, [String(existing.rows[0].id)]);
       const refreshed = await this.db.query<Record<string, unknown>>(

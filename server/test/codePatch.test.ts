@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   __codePatchTestHooks,
   collectWorktreeChanges,
 } from "../src/modules/projectFolders/codePatch.js";
+import { withCodePatchTarget } from "../src/modules/projectFolders/codePatchTarget.js";
 
 const execFileAsync = promisify(execFile);
 const tmpRoots: string[] = [];
@@ -74,6 +75,55 @@ describe("code patch workspace collection", () => {
 });
 
 describe("code patch file transaction", () => {
+  it("preserves executable permissions through apply and rollback", async () => {
+    const root = await tmpRoot();
+    await writeFile(join(root, "script.sh"), "old");
+    await chmod(join(root, "script.sh"), 0o755);
+    const tx = new __codePatchTestHooks.CodePatchFileTransaction(root, false);
+    await tx.apply([{ type: "replace_file", path: "script.sh", content: "new", preimage_exists: true, preimage_sha256: sha256("old") }]);
+    expect((await stat(join(root, "script.sh"))).mode & 0o777).toBe(0o755);
+    await tx.rollback();
+    expect(await readFile(join(root, "script.sh"), "utf8")).toBe("old");
+    expect((await stat(join(root, "script.sh"))).mode & 0o777).toBe(0o755);
+  });
+  it("keeps file operations on the opened directory when its path is replaced by a link", async () => {
+    const root = await tmpRoot();
+    const outside = await tmpRoot();
+    await mkdir(join(root, "child"));
+    await writeFile(join(root, "child", "file.txt"), "old");
+    await writeFile(join(outside, "file.txt"), "outside");
+    await withCodePatchTarget(root, "child/file.txt", false, async (target) => {
+      await rename(join(root, "child"), join(root, "original"));
+      await symlink(outside, join(root, "child"));
+      expect((await target.read())?.toString()).toBe("old");
+      await target.write("new");
+    });
+    expect(await readFile(join(outside, "file.txt"), "utf8")).toBe("outside");
+    expect(await readFile(join(root, "original", "file.txt"), "utf8")).toBe("new");
+  });
+
+  it("refuses to roll back through a parent link planted after apply", async () => {
+    const root = await tmpRoot();
+    const outside = await tmpRoot();
+    await mkdir(join(root, "child"));
+    await writeFile(join(root, "child", "file.txt"), "old");
+    await writeFile(join(outside, "file.txt"), "outside");
+    const tx = new __codePatchTestHooks.CodePatchFileTransaction(root, false);
+    await tx.apply([{ type: "replace_file", path: "child/file.txt", content: "new", preimage_exists: true, preimage_sha256: sha256("old") }]);
+    await rename(join(root, "child"), join(root, "original"));
+    await symlink(outside, join(root, "child"));
+    await expect(tx.rollback()).rejects.toMatchObject({ statusCode: 422 });
+    expect(await readFile(join(outside, "file.txt"), "utf8")).toBe("outside");
+  });
+
+  it("refuses a final-component link without reading or overwriting its referent", async () => {
+    const root = await tmpRoot();
+    const outside = await tmpRoot();
+    await writeFile(join(outside, "file.txt"), "outside");
+    await symlink(join(outside, "file.txt"), join(root, "file.txt"));
+    await expect(withCodePatchTarget(root, "file.txt", false, (file) => file.read())).rejects.toMatchObject({ statusCode: 422 });
+    expect(await readFile(join(outside, "file.txt"), "utf8")).toBe("outside");
+  });
   it("rolls back already-written files when a later operation fails", async () => {
     const root = await tmpRoot();
     await writeFile(join(root, "a.txt"), "old a\n", "utf8");
@@ -101,5 +151,44 @@ describe("code patch file transaction", () => {
 
     await expect(readFile(join(root, "a.txt"), "utf8")).resolves.toBe("old a\n");
     await expect(readFile(join(root, "b.txt"), "utf8")).resolves.toBe("old b\n");
+  });
+
+  it("puts the applied content back when restoring a snapshot fails part way", async () => {
+    const root = await tmpRoot();
+    await writeFile(join(root, "a.txt"), "new a\n", "utf8");
+    await writeFile(join(root, "added.txt"), "added\n", "utf8");
+    await writeFile(join(root, "blocker"), "a file where a folder was\n", "utf8");
+    const tx = new __codePatchTestHooks.CodePatchFileTransaction(root, false);
+
+    await expect(tx.restore([
+      { path: "a.txt", existed: true, content: "old a\n" },
+      { path: "added.txt", existed: false, content: null },
+      { path: "blocker/b.txt", existed: true, content: "old b\n" },
+    ])).rejects.toThrow();
+
+    await tx.rollback();
+
+    await expect(readFile(join(root, "a.txt"), "utf8")).resolves.toBe("new a\n");
+    await expect(readFile(join(root, "added.txt"), "utf8")).resolves.toBe("added\n");
+  });
+
+  it("refuses to write through a directory link that leaves the Folder", async () => {
+    const root = await tmpRoot();
+    const outside = await tmpRoot();
+    await symlink(outside, join(root, "out"));
+    const tx = new __codePatchTestHooks.CodePatchFileTransaction(root, false);
+    const newFile = (path: string) => ({
+      type: "replace_file" as const, path, content: "planted\n", preimage_exists: false, preimage_sha256: null,
+    });
+
+    await expect(tx.apply([newFile("out/config.yaml")])).rejects.toMatchObject({ statusCode: 422 });
+    await expect(tx.apply([newFile("out/nested/deeper/config.yaml")])).rejects.toMatchObject({ statusCode: 422 });
+    await expect(stat(join(outside, "config.yaml"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(outside, "nested"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    // A new file under directories that do not exist yet is still allowed.
+    await mkdir(join(root, "src"));
+    await tx.apply([newFile("src/new/dir/file.txt")]);
+    await expect(readFile(join(root, "src/new/dir/file.txt"), "utf8")).resolves.toBe("planted\n");
   });
 });

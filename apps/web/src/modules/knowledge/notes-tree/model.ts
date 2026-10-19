@@ -62,9 +62,8 @@ export function groupNotesByCollection(notes: NoteSummary[]) {
   for (const bucket of map.values()) {
     // sort_order is only meaningful once a note has been created into or
     // dragged within a folder at least once (see noteWriter's
-    // insertNotePlacement) — notes that still tie at the same value (e.g.
-    // both never moved) fall back to newest-updated-first, matching the
-    // prior behavior before manual ordering existed.
+    // insertNotePlacement). Notes that still tie at the same value fall
+    // back to newest-updated-first.
     bucket.sort((a, b) => a.sortOrder - b.sortOrder
       || (b.note.updated_at ?? '').localeCompare(a.note.updated_at ?? ''))
   }
@@ -198,10 +197,10 @@ export interface CollectionMove { id: string; parentId: string | null; sortOrder
 /** A placement's new position. `fromCollectionId` identifies which one moves. */
 export interface NoteMove { noteId: string; fromCollectionId: string; collectionId: string; sortOrder: number }
 
-export type ResolvedTreeDrop =
+type ResolvedTreeDrop =
   | { kind: 'move-collections'; updates: CollectionMove[] }
   | { kind: 'move-notes'; updates: NoteMove[] }
-  /** An additive drop (U5): the note gains a placement instead of moving. */
+  /** An additive drop: the note gains a placement instead of moving. */
   | { kind: 'place-note'; noteId: string; collectionId: string }
 
 function applyMoves<T extends { id: string }, U extends { id: string }>(
@@ -245,17 +244,35 @@ export function upsertCollection(
   return collections.map(item => item.id === collection.id ? collection : item)
 }
 
-/** Mirrors the database's ON DELETE SET NULL relationship for direct child
- * folders, while removing the deleted folder itself. */
+/** Mirrors the server's folder delete: direct child folders move up to the
+ * deleted folder's parent (so they stay inside the same Project subtree),
+ * and the deleted folder itself is gone. */
 export function removeCollection(
   collections: NoteCollection[],
   collectionId: string,
 ): NoteCollection[] {
+  const parentId = collections.find(collection => collection.id === collectionId)?.parent_id ?? null
   return collections
     .filter(collection => collection.id !== collectionId)
     .map(collection => collection.parent_id === collectionId
-      ? { ...collection, parent_id: null }
+      ? { ...collection, parent_id: parentId }
       : collection)
+}
+
+/** The Project owning a folder: the nearest ancestor (itself included) that is
+ * a Project's notes folder, or null outside every Project subtree. */
+export function owningProjectOf(
+  collectionId: string,
+  collectionById: Map<string, NoteCollection>,
+): string | null {
+  const visited = new Set<string>()
+  let current = collectionById.get(collectionId)
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id)
+    if (current.project_id) return current.project_id
+    current = current.parent_id ? collectionById.get(current.parent_id) : undefined
+  }
+  return null
 }
 
 /** Applies a server-shaped reorder plan to local note summaries. Used for the
@@ -311,18 +328,34 @@ export function planCollectionMove(
 ): CollectionMove[] {
   const dragged = allCollections.find(collection => collection.id === draggedId)
   if (!dragged) return []
+  const known = new Set(allCollections.map(collection => collection.id))
+  // The layer a folder is drawn in (buildCollectionTree): under its parent,
+  // or at the root when that parent is not in the list — a hidden parent's
+  // children appear there, and a drop into the gap beside one names it.
+  const inLayer = (collection: NoteCollection, parentId: string | null) => parentId === null
+    ? collection.parent_id == null || !known.has(collection.parent_id)
+    : collection.parent_id === parentId
   const sourceParentId = dragged.parent_id ?? null
+  const byLayerOrder = (a: NoteCollection, b: NoteCollection) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)
+  // A sibling that is only drawn in this layer keeps its own parent; the one
+  // being dragged takes the target's.
+  const placed = (collection: NoteCollection, parentId: string | null, sortOrder: number) => ({
+    id: collection.id,
+    parentId: collection.id === draggedId ? parentId : collection.parent_id ?? null,
+    sortOrder,
+  })
   const targetSiblings = allCollections
-    .filter(c => c.id === draggedId || (c.id !== draggedId && (c.parent_id ?? null) === targetParentId))
-    .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
+    .filter(c => c.id === draggedId || inLayer(c, targetParentId))
+    .sort(byLayerOrder)
+  const byId = new Map(allCollections.map(collection => [collection.id, collection]))
   const orderedTargetIds = reorderedSiblingIds(targetSiblings.map(c => c.id), draggedId, beforeId)
-  const targetUpdates = orderedTargetIds.map((id, sortOrder) => ({ id, parentId: targetParentId, sortOrder }))
+  const targetUpdates = orderedTargetIds.map((id, sortOrder) => placed(byId.get(id)!, targetParentId, sortOrder))
   if (sourceParentId === targetParentId) return targetUpdates
 
   const sourceUpdates = allCollections
-    .filter(c => c.id !== draggedId && (c.parent_id ?? null) === sourceParentId)
-    .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
-    .map((collection, sortOrder) => ({ id: collection.id, parentId: sourceParentId, sortOrder }))
+    .filter(c => c.id !== draggedId && inLayer(c, sourceParentId))
+    .sort(byLayerOrder)
+    .map((collection, sortOrder) => placed(collection, sourceParentId, sortOrder))
   return [...sourceUpdates, ...targetUpdates]
 }
 

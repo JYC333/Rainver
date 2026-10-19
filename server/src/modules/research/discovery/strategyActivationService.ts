@@ -145,11 +145,17 @@ export class ResearchStrategyActivationService {
                 '{source_channel_ids}',$5::jsonb,true
               )
         WHERE space_id=$1 AND project_id=$2 AND status='active'
-          AND ($3::text IS NULL OR state_json->>'query_strategy_id'=$3 OR NOT (state_json ? 'query_strategy_id'))
+          -- Only workflows already running on this research context move to
+          -- its new strategy: another Thread's workflow, or a draft that has
+          -- not chosen one, keeps its own.
+          AND state_json->>'query_strategy_id' IN (
+            SELECT id FROM research_query_strategies
+             WHERE space_id=$1 AND research_context_version_id=$3
+          )
         RETURNING object_id,space_id)
        UPDATE space_objects object SET updated_at=$6 FROM changed
         WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
-      [identity.spaceId, strategy.project_id, previousStrategyId, strategy.id, JSON.stringify(channels), now],
+      [identity.spaceId, strategy.project_id, strategy.research_context_version_id, strategy.id, JSON.stringify(channels), now],
     );
     return { strategy_id: strategy.id, previous_strategy_id: previousStrategyId, sequence, channel_ids: channels };
   }

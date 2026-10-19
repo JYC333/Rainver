@@ -35,10 +35,9 @@ export type AmbientRecordKind = (typeof AMBIENT_RECORD_KINDS)[number];
 /**
  * Trim limits, applied on the daemon before anything leaves the machine.
  *
- * Measured on a real machine: conversation text is 2.6–4.5 % of a session's
- * bytes and tool output is 13–41 %, so trimming output is what makes import
- * viable at all. It is also the usual home of a leaked key, which is why the
- * cap is small enough to be a label rather than a copy of the result.
+ * Trim output, not conversation text. Output is most of a session's bytes.
+ * It is also the usual home of a leaked key, so the cap is small enough to
+ * be a label rather than a copy of the result.
  */
 export const AMBIENT_TEXT_MAX_BYTES = 64_000;
 export const AMBIENT_TOOL_INPUT_MAX_BYTES = 512;
@@ -183,11 +182,9 @@ export type AmbientImportPolicy = z.infer<typeof AmbientImportPolicySchema>;
  * What the product reads back: one imported session and one of its records.
  *
  * Here rather than only in the web's own types because these are wire shapes
- * with rows behind them, and a second declaration drifts — as it already had:
- * the location and host columns are nullable by design (a folder can be
- * unbound and a host unpaired without destroying the history), and a client
- * copy that typed them non-null would have been wrong the first time either
- * happened.
+ * with rows behind them. Do not keep a second declaration. It drifts. The
+ * location and host columns are nullable: a folder can be unbound and a host
+ * unpaired without destroying the history. Do not type them non-null.
  */
 export const ImportedSessionSchema = z.object({
   id: z.string(),
@@ -285,8 +282,8 @@ export type ExtractionOutcome = z.infer<typeof ExtractionOutcomeSchema>;
  *
  * Deterministic on purpose: it needs no model, it is right the moment an
  * import lands, and it can invent nothing. Two callers need exactly this — the
- * session page's header and the summarizer's input, which is why it lives with
- * the contract rather than being written out twice.
+ * session page's header and the summarizer's input. It lives with the
+ * contract. Do not write it out twice.
  *
  * Structurally typed on the fields it reads, so both the server's row shape
  * and the wire record satisfy it without either importing the other's.

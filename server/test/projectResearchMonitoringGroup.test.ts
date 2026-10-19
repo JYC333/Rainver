@@ -34,8 +34,8 @@ describe("projectResearchMonitoring", () => {
     it("ignores source_item_id entirely for a solo retry — there is only one candidate, so nothing to disambiguate", () => {
       // A one-paper request is always a retry for a single, already-known
       // paper (see ProjectResearchMonitoringCoordinator's failed pool).
-      // Requiring the model to also echo back the right id only ever cost the
-      // retry over a relabeling it didn't need to get right.
+      // Do not require the model to echo the id. A wrong label would fail
+      // a retry that only needed the comparison.
       expect(parseMonitorComparisons({ comparisons: [
         { source_item_id: "some-other-id-the-model-made-up", stance: "supports", detail: "Replicates the effect.", affected_sections: ["understanding"] },
       ] }, ["paper-1"])).toEqual([

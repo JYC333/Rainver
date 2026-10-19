@@ -40,8 +40,11 @@ The generated baseline contains the final authentication schema directly:
 `auth_action_tokens` or a compatibility view, alias, backfill, or dual-read
 path.
 
-The new baseline is frozen after this change. Later schema changes append new
-numbered migrations under B59.
+The new baseline was frozen after this change; the 2026-09-26
+host-thread-tool-field epoch and then the 2026-10-15 epoch
+([ADR 0024](0024-access-reading-and-execution-integrity-schema-epoch.md)) have
+since replaced it with regenerated baselines (BOUNDARIES B59). Later schema changes append new numbered migrations under
+B59.
 
 ## Operational consequences
 
@@ -51,8 +54,8 @@ numbered migrations under B59.
 - Backup preflight continues to reject a migration identity or checksum that
   is absent from the current chain.
 - No running database is reset as part of the repository change.
-- Fresh-instance and schema-drift tests pin the single-file chain and the new
-  baseline checksum.
+- Fresh-instance and schema-drift tests pin the single-file chain and the
+  current epoch's baseline checksum.
 
 ## Revision history
 

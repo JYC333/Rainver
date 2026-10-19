@@ -15,8 +15,7 @@ import type {
  * to derive. The engine owns the generic substrate: aliases, chunks, extracted
  * links, search arms, fusion, and evidence.
  *
- * This is the seam that lets Knowledge be the first consumer while Memory (or
- * any later domain) can register its own adapter without forking the engine.
+ * Do not fork the engine for a domain. Register an adapter.
  */
 export interface RetrievalDomainAdapter {
   readonly objectTypes: readonly RetrievalObjectType[];

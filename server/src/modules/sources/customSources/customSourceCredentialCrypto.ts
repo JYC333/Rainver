@@ -8,25 +8,22 @@
  * since both live in that one table and the master key already protects it
  * as a whole.
  *
- * Deliberately not layered on top of `secretRefCrypto.ts`'s ModelProvider
- * functions — that module is explicitly a compatibility-pinned format for
- * one existing credential class (see its own header comment); duplicating
- * ~15 lines of AES-256-GCM here with a distinct `secret_ref` prefix keeps
- * each credential class's at-rest format independently readable and
- * independently versionable, rather than introducing a shared abstraction
- * two call sites don't yet need.
+ * Deliberately not layered on `secretRefCrypto.ts`. That module owns the
+ * model-provider `secret_ref` format. The AES-256-GCM here uses a distinct
+ * `secret_ref` prefix, so each credential class stays independently readable
+ * and independently versionable. Do not introduce a shared abstraction.
  */
 
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
-export const CUSTOM_SOURCE_FETCH_CREDENTIAL_SECRET_REF_V1_PREFIX = "custom_source_fetch_credential:v1:" as const;
+const CUSTOM_SOURCE_FETCH_CREDENTIAL_SECRET_REF_V1_PREFIX = "custom_source_fetch_credential:v1:" as const;
 const MASTER_KEY_BYTES = 32;
 const NONCE_BYTES = 12;
 const AUTH_TAG_BYTES = 16;
 
 const BASE64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 
-export class CustomSourceCredentialCryptoError extends Error {
+class CustomSourceCredentialCryptoError extends Error {
   constructor(
     readonly code: "malformed_secret_ref" | "invalid_base64" | "invalid_master_key" | "invalid_nonce" | "invalid_ciphertext" | "decryption_failed",
   ) {

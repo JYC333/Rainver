@@ -278,7 +278,7 @@ export type ProjectConversation = z.infer<typeof ProjectConversationSchema>;
  *
  * Listing conversations would hide it entirely, and a Room becomes reachable
  * only through a conversation in it — so opening one and walking away before
- * saying anything left it with no way back. It is named by its audience like
+ * saying anything would have no way back. It is named by its audience like
  * any other section.
  */
 export const ProjectEmptyRoomSchema = z.object({
@@ -408,8 +408,8 @@ export const RoomDetailSchema = z.object({
   /**
    * Who else is in it, and how many Agents — the same definition the Project
    * conversation list uses, so one Room is never described two ways. Computed
-   * here rather than on the client from the roster: the client's copy sorted
-   * differently and named people the catalog had not loaded yet "Someone".
+   * here. Do not sort a client-side roster copy. It names people the catalog
+   * has not loaded yet "Someone".
    */
   other_member_names: z.array(z.string()),
   agent_count: z.number().int().nonnegative(),
@@ -417,8 +417,26 @@ export const RoomDetailSchema = z.object({
 }).strict();
 export type RoomDetail = z.infer<typeof RoomDetailSchema>;
 
+/** What the execution Host reported for a managed-workspace restore or archive. */
+export const RoomManagedWorkspaceOutcomeSchema = z.object({
+  agent_id: IdSchema,
+  ok: z.boolean(),
+  changed: z.boolean(),
+  /** `host_offline`, `host_timeout`, or the Host's own reason; null on success. */
+  error: z.string().nullable(),
+}).strict();
+export type RoomManagedWorkspaceOutcome = z.infer<typeof RoomManagedWorkspaceOutcomeSchema>;
+
 export const RoomAgentMutationResponseSchema = RoomDetailSchema.extend({
   revoked_grant_count: z.number().int().nonnegative().default(0),
+  /**
+   * Present when re-adding an Agent asked to restore its host state. The Agent
+   * is added either way; `ok: false` or `changed: false` means nothing came
+   * back, which the person has to be told.
+   */
+  managed_workspace_restore: RoomManagedWorkspaceOutcomeSchema.optional(),
+  /** One entry per host thread archived when an Agent left the Room. */
+  managed_workspace_archive: z.array(RoomManagedWorkspaceOutcomeSchema).optional(),
 }).strict();
 export type RoomAgentMutationResponse = z.infer<typeof RoomAgentMutationResponseSchema>;
 
@@ -430,29 +448,19 @@ export type RoomAgentMutationResponse = z.infer<typeof RoomAgentMutationResponse
 export const CreateRoomResponseSchema = RoomDetailSchema;
 export type CreateRoomResponse = z.infer<typeof CreateRoomResponseSchema>;
 
-/** Where a Space with no usable backend can get one. A CLI is logged in on an execution host (ADR 0016); Rainver brokers none. */
-export const RoomBackendSetupTargetSchema = z.enum(["model_providers", "execution_hosts"]);
-export const RoomBackendRequiredErrorSchema = z.object({
-  code: z.literal("conversation_backend_required"),
-  detail: z.string().trim().min(1),
-  setup_targets: z.array(RoomBackendSetupTargetSchema).min(1),
-}).strict();
-export type RoomBackendRequiredError = z.infer<typeof RoomBackendRequiredErrorSchema>;
 
 /**
  * What the person is looking at while they type.
  *
- * A focus hint, never a boundary: retrieval keeps its Project scope and the
- * Agent can still reach anything it could before. It exists so "is this one
- * done?" resolves without the person restating which Task they mean — the
- * highest-frequency friction in talking to an Agent about work you are
- * already looking at.
+ * A focus hint, never a boundary: retrieval keeps its Project scope, and the
+ * hint does not narrow what the Agent can reach. "is this one done?" resolves
+ * without the person restating which Task they mean.
  */
 export const RoomMessageFocusRefSchema = z.object({
-  // Task only. The Room is already bound to one Project, so a `project` focus
-  // said nothing the turn did not already carry — it was accepted here and
-  // then silently discarded on the way in, which is worse than not offering
-  // it. Widen the enum when a second subject can actually be focused.
+  // Task only. The Room is already bound to one Project. Do not accept a
+  // `project` focus. It says nothing the turn does not already carry, and
+  // discarding it on the way in is worse than not offering it. Widen the
+  // enum when a second subject can actually be focused.
   type: z.literal("task"),
   id: IdSchema,
 }).strict();

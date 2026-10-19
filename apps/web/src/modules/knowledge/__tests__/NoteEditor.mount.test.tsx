@@ -100,11 +100,9 @@ beforeEach(() => {
 })
 
 /**
- * S1's structural guarantee. The editor used to read its note from
- * `useParams()` and its callback from `useOutletContext()`, which pinned it to
- * one route and is why the Project notebook grew a second, weaker editor
- * instead of reusing this one. Mounting it here with neither a matched route
- * nor an Outlet is the test that the coupling is gone.
+ * The editor takes its note and callback as props. Do not read `useParams()`
+ * or `useOutletContext()` here: that pins it to one route. Mounting it with
+ * neither a matched route nor an Outlet is the check.
  */
 describe('NoteEditor is route-agnostic', () => {
   it('files the open note from its editor and shows its current Domain', async () => {
@@ -179,6 +177,31 @@ describe('NoteEditor is route-agnostic', () => {
  * The open note has to show a capture that was written into it from the
  * composer, without the user reloading and without the editor polling for it.
  */
+describe('NoteEditor link target search', () => {
+  it('stops saying Searching… once the search was cleared before it answered', async () => {
+    vi.mocked(notesApi.get).mockResolvedValue(makeNote())
+    render(
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <NoteEditor noteId="note-1" onNoteResolved={vi.fn()} />
+      </MemoryRouter>,
+    )
+    await screen.findByDisplayValue('Portable note')
+    fireEvent.click(screen.getByRole('button', { name: /Links/ }))
+    // Kind: Source (a searched kind).
+    fireEvent.click(screen.getByRole('button', { name: 'Note' }))
+    fireEvent.click(await screen.findByRole('option', { name: 'Source' }))
+    const search = await screen.findByLabelText('Search sources')
+
+    fireEvent.change(search, { target: { value: 'a' } })
+    expect(screen.getByText('Searching…')).toBeInTheDocument()
+    // Cleared before the debounced request went out: there is nothing being
+    // searched for, and the placeholder has to say so again.
+    fireEvent.change(search, { target: { value: '' } })
+    expect(screen.getByText('Type to search')).toBeInTheDocument()
+    expect(screen.queryByText('Searching…')).not.toBeInTheDocument()
+  })
+})
+
 describe('NoteEditor picks up an external write', () => {
   it('re-reads the note it is showing when that note is announced as changed', async () => {
     vi.mocked(notesApi.get)
@@ -211,5 +234,56 @@ describe('NoteEditor picks up an external write', () => {
     publishNoteChanged({ noteId: 'note-2', projectId: null, reason: 'capture' })
 
     await waitFor(() => expect(notesApi.get).toHaveBeenCalledTimes(1))
+  })
+})
+
+describe('NoteEditor keeps one save and one note in flight', () => {
+  function renderEditor(noteId: string) {
+    return (
+      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+        <NoteEditor noteId={noteId} onNoteResolved={vi.fn()} />
+      </MemoryRouter>
+    )
+  }
+
+  it('sends a save made while another is in flight after it, on the version it produced', async () => {
+    vi.mocked(notesApi.get).mockResolvedValue(makeNote())
+    let finishFirst: (note: Note) => void = () => {}
+    vi.mocked(notesApi.update)
+      .mockImplementationOnce(() => new Promise<Note>(resolve => { finishFirst = resolve }))
+      .mockImplementationOnce(async () => makeNote({ title: 'Second', version: 3 }))
+    render(renderEditor('note-1'))
+    const title = await screen.findByDisplayValue('Portable note')
+
+    fireEvent.change(title, { target: { value: 'First' } })
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true })
+    fireEvent.change(title, { target: { value: 'Second' } })
+    fireEvent.keyDown(document, { key: 's', ctrlKey: true })
+    await waitFor(() => expect(notesApi.update).toHaveBeenCalledTimes(1))
+    expect(notesApi.update).toHaveBeenLastCalledWith('note-1', expect.objectContaining({ title: 'First', expect_version: 1 }))
+
+    finishFirst(makeNote({ title: 'First', version: 2 }))
+    await waitFor(() => expect(notesApi.update).toHaveBeenCalledTimes(2))
+    expect(notesApi.update).toHaveBeenLastCalledWith('note-1', expect.objectContaining({ title: 'Second', expect_version: 2 }))
+  })
+
+  it('keeps the note switched to when an earlier note read answers late', async () => {
+    let finishA: (note: Note) => void = () => {}
+    vi.mocked(notesApi.get).mockImplementation(id => id === 'note-a'
+      ? new Promise<Note>(resolve => { finishA = resolve })
+      : Promise.resolve(makeNote({ id, title: `Note ${id}` })))
+    const { rerender } = render(renderEditor('note-b'))
+    expect(await screen.findByDisplayValue('Note note-b')).toBeInTheDocument()
+
+    rerender(renderEditor('note-a'))
+    await waitFor(() => expect(notesApi.get).toHaveBeenCalledWith('note-a'))
+    rerender(renderEditor('note-b'))
+    expect(await screen.findByDisplayValue('Note note-b')).toBeInTheDocument()
+
+    finishA(makeNote({ id: 'note-a', title: 'Note note-a' }))
+    await waitFor(() => expect(notesApi.links).toHaveBeenCalledWith('note-b'))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(screen.getByDisplayValue('Note note-b')).toBeInTheDocument()
+    expect(notesApi.links).not.toHaveBeenCalledWith('note-a')
   })
 })

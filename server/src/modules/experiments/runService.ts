@@ -13,6 +13,7 @@ import { assertProjectReadable, assertProjectWriter, assertProjectFolderInProjec
 import { ExperimentDefinitionService } from "./definitionService.js";
 import { enumValue, managedScopeViolation, stringArray } from "./common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
+import { canReadAgent } from "../agents/agentAccess.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 
@@ -163,6 +164,7 @@ export class ExperimentRunService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const agentId = optionalString(body.agent_id);
     if (!agentId) throw new HttpError(422, "agent_id is required");
+    if (!(await canReadAgent(this.db, identity, agentId))) throw new HttpError(404, "Agent not found");
     return withQueryableTransaction(this.db, async db => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const definition = await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
@@ -369,10 +371,9 @@ export class ExperimentRunService {
 
   /**
    * Terminal update for a Run: final status, recorded Observations, and
-   * optionally naming it the Experiment's baseline/best Run — the
-   * `decideRun`-equivalent step, minus the "keep/discard/crash" vocabulary
-   * (a Run's technical outcome and its interpreted verdict are no longer
-   * conflated; see interpretationService.ts for the verdict).
+   * optionally naming it the Experiment's baseline/best Run. A Run's technical
+   * outcome and its interpreted verdict are separate; see
+   * interpretationService.ts for the verdict.
    */
   async completeRun(
     identity: SpaceUserIdentity,
@@ -387,7 +388,7 @@ export class ExperimentRunService {
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
-      const run = await this.runRowForDefinition(db, identity.spaceId, definitionId, runId);
+      const run = await this.runRowForDefinition(db, identity.spaceId, definitionId, runId, { forUpdate: true });
       if (!run) throw new HttpError(404, "Experiment Run not found");
       if (TERMINAL_RUN_STATUSES.has(run.status)) {
         throw new HttpError(409, `Experiment Run is already ${run.status}`);
@@ -437,7 +438,7 @@ export class ExperimentRunService {
     return withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, definitionId, identity.userId, db);
-      const run = await this.runRowForDefinition(db, identity.spaceId, definitionId, runId);
+      const run = await this.runRowForDefinition(db, identity.spaceId, definitionId, runId, { forUpdate: true });
       if (!run) throw new HttpError(404, "Experiment Run not found");
       if (TERMINAL_RUN_STATUSES.has(run.status)) {
         throw new HttpError(409, `Experiment Run is already ${run.status}`);
@@ -498,11 +499,19 @@ export class ExperimentRunService {
     return result.rows[0] ?? null;
   }
 
-  private async runRowForDefinition(db: Queryable, spaceId: string, definitionId: string, runId: string): Promise<RunRow | null> {
+  /**
+   * `forUpdate` locks the Run row for a write that depends on its status:
+   * `reconcileManagedRun` locks only this row, not the Project, so a terminal
+   * check read without the lock could pass while a reconcile is committing
+   * the Run's failure, and the write that followed would overwrite it.
+   */
+  private async runRowForDefinition(
+    db: Queryable, spaceId: string, definitionId: string, runId: string, options: { forUpdate?: boolean } = {},
+  ): Promise<RunRow | null> {
     const result = await db.query<RunRow>(
       `SELECT r.* FROM experiment_runs r
          JOIN experiment_versions v ON v.id = r.version_id AND v.space_id = r.space_id
-        WHERE r.id=$1 AND r.space_id=$2 AND v.definition_id=$3`,
+        WHERE r.id=$1 AND r.space_id=$2 AND v.definition_id=$3${options.forUpdate ? " FOR UPDATE OF r" : ""}`,
       [runId, spaceId, definitionId],
     );
     return result.rows[0] ?? null;

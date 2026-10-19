@@ -14,9 +14,12 @@ import {
   type Queryable,
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
-import { proposalToOut } from "../proposals/repository.js";
+import { proposalToOut, type ProposalRow } from "../proposals/repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { getBuiltInCapabilityDefinition } from "./registry.js";
+import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { canReadProject, canWriteProject } from "../projects/access.js";
+import { canChangeAgent, canConfigureAssistant, canReadAgent } from "../agents/agentAccess.js";
 import type {
   CapabilityDefinition,
   CapabilityRuntimeBinding,
@@ -60,6 +63,7 @@ interface CapabilityVersionRow {
 }
 
 interface SkillPackageWithSourceRow extends SkillPackageRow {
+  pending_proposal?: unknown;
   source_type: string;
   url: string | null;
   repo: string | null;
@@ -105,6 +109,42 @@ const SKILL_PACKAGE_COLUMNS = `
 `;
 
 const SKILL_PACKAGE_COLUMNS_SP = prefixedColumns(SKILL_PACKAGE_COLUMNS, "sp");
+
+export type SkillPackageProposalOperation = "skill_import_approve" | "install_from_skill_package";
+
+export interface SkillPackageProposalResult {
+  proposal: ProposalOut;
+  /** False when the person's pending proposal for the same snapshot and operation was returned. */
+  created: boolean;
+}
+
+function skillPackageOperationKey(
+  userId: string,
+  skillPackageId: string,
+  packageHash: string | null,
+  operation: SkillPackageProposalOperation,
+): string {
+  return `skill_package:${skillPackageId}:${packageHash ?? ""}:${operation}:${userId}`;
+}
+
+/**
+ * The caller's pending Review/Convert proposal for the package's current
+ * snapshot, as `{id, operation}`, or null. `sp` is the package row, `$2` the
+ * caller.
+ */
+const PENDING_PROPOSAL_FOR_PACKAGE_SQL = `(
+  SELECT json_build_object('id', p.id, 'operation', p.payload_json->>'operation')
+    FROM proposals p
+   WHERE p.space_id = sp.space_id
+     AND p.status = 'pending'
+     AND p.proposal_type IN ('skill_import_approve', 'capability_install')
+     AND p.pending_operation_key IN (
+       'skill_package:' || sp.id || ':' || COALESCE(sp.manifest_json->>'package_hash', '') || ':skill_import_approve:' || $2,
+       'skill_package:' || sp.id || ':' || COALESCE(sp.manifest_json->>'package_hash', '') || ':install_from_skill_package:' || $2
+     )
+   ORDER BY p.created_at DESC, p.id DESC
+   LIMIT 1
+) AS pending_proposal`;
 
 const SKILL_PACKAGE_FILE_COLUMNS = `
   id, skill_package_id, path, kind, content_hash, content_type, byte_length,
@@ -158,15 +198,20 @@ export class PgCapabilitiesRepository {
         WHERE space_id = $1`,
       [identity.spaceId],
     );
-    const rows = await this.db.query<SkillPackageRow>(
-      `SELECT ${SKILL_PACKAGE_COLUMNS}
-         FROM skill_packages
-        WHERE space_id = $1
-        ORDER BY updated_at DESC, created_at DESC, id DESC
-        LIMIT $2 OFFSET $3`,
-      [identity.spaceId, filters.limit, filters.offset],
+    const rows = await this.db.query<SkillPackageRow & { pending_proposal: unknown }>(
+      `SELECT ${SKILL_PACKAGE_COLUMNS_SP}, ${PENDING_PROPOSAL_FOR_PACKAGE_SQL}
+         FROM skill_packages sp
+        WHERE sp.space_id = $1
+        ORDER BY sp.updated_at DESC, sp.created_at DESC, sp.id DESC
+        LIMIT $3 OFFSET $4`,
+      [identity.spaceId, identity.userId, filters.limit, filters.offset],
     );
-    return page(rows.rows.map(skillPackageOut), countFromRow(total.rows[0]), filters.limit, filters.offset);
+    return page(
+      rows.rows.map((row) => ({ ...skillPackageOut(row), pending_proposal: pendingProposalOut(row.pending_proposal) })),
+      countFromRow(total.rows[0]),
+      filters.limit,
+      filters.offset,
+    );
   }
 
   async getSkillPackage(
@@ -180,15 +225,16 @@ export class PgCapabilitiesRepository {
               sp.risk_level, sp.status, sp.created_at, sp.updated_at,
               ss.id AS source_row_id, ss.source_type, ss.url, ss.repo, ss.path,
               ss.ref, ss.commit_sha, ss.content_hash, ss.fetched_at,
-              ss.metadata_json AS source_metadata_json, ss.created_at AS source_created_at
+              ss.metadata_json AS source_metadata_json, ss.created_at AS source_created_at,
+              ${PENDING_PROPOSAL_FOR_PACKAGE_SQL}
          FROM skill_packages sp
          JOIN skill_sources ss ON ss.id = sp.source_id
-        WHERE sp.id = $1 AND sp.space_id = $2`,
-      [skillPackageId, identity.spaceId],
+        WHERE sp.id = $1 AND sp.space_id = $3`,
+      [skillPackageId, identity.userId, identity.spaceId],
     );
     const row = rows.rows[0];
     if (!row) return null;
-    const pkg = skillPackageOut(row);
+    const pkg = { ...skillPackageOut(row), pending_proposal: pendingProposalOut(row.pending_proposal) };
     const packageFiles = await listSkillPackageFilesWithDb(db, skillPackageId);
     return {
       ...pkg,
@@ -209,10 +255,11 @@ export class PgCapabilitiesRepository {
   }
 
   async listSkillLibraryIndex(identity: SpaceUserIdentity): Promise<SkillLibraryIndexResponse> {
-    const rows = await this.db.query<SkillPackageRow & { overlay_json: unknown; overlay_id: string | null }>(
+    const rows = await this.db.query<SkillPackageRow & { overlay_json: unknown; overlay_id: string | null; pending_proposal: unknown }>(
       `SELECT ${SKILL_PACKAGE_COLUMNS_SP},
               slo.id AS overlay_id,
-              slo.overlay_json
+              slo.overlay_json,
+              ${PENDING_PROPOSAL_FOR_PACKAGE_SQL}
          FROM skill_packages sp
          LEFT JOIN skill_local_overlays slo
            ON slo.skill_package_id = sp.id
@@ -223,10 +270,13 @@ export class PgCapabilitiesRepository {
         WHERE sp.space_id = $1
         ORDER BY sp.updated_at DESC, sp.created_at DESC, sp.id DESC
         LIMIT 200`,
-      [identity.spaceId],
+      [identity.spaceId, identity.userId],
     );
     const items = await Promise.all(rows.rows.map(async (row) => {
-      const pkg = skillPackageOut(row) as SkillLibraryIndexResponse["items"][number]["skill_package"];
+      const pkg = {
+        ...skillPackageOut(row),
+        pending_proposal: pendingProposalOut(row.pending_proposal),
+      } as SkillLibraryIndexResponse["items"][number]["skill_package"];
       const overlay = row.overlay_id
         ? await this.getSkillLocalOverlay(identity, row.id, { scope_type: "space", scope_id: null })
         : null;
@@ -255,7 +305,7 @@ export class PgCapabilitiesRepository {
     await this.requireSkillPackage(identity, skillPackageId);
     const scopeType = ensureOverlayScope(input.scope_type ?? "space");
     const scopeId = normalizeOverlayScopeId(scopeType, input.scope_id ?? null, identity.userId);
-    await this.ensureOverlayScopeExists(identity, scopeType, scopeId);
+    await this.assertOverlayScopeAuthority(identity, scopeType, scopeId, "read");
     const row = await this.db.query<SkillLocalOverlayRow>(
       `SELECT ${SKILL_LOCAL_OVERLAY_COLUMNS}
          FROM skill_local_overlays
@@ -283,7 +333,7 @@ export class PgCapabilitiesRepository {
     await this.requireSkillPackage(identity, skillPackageId);
     const scopeType = ensureOverlayScope(body.scope_type);
     const scopeId = normalizeOverlayScopeId(scopeType, body.scope_id ?? null, identity.userId);
-    await this.ensureOverlayScopeExists(identity, scopeType, scopeId);
+    await this.assertOverlayScopeAuthority(identity, scopeType, scopeId, "write");
     const status = ensureOverlayStatus(body.status);
     const now = new Date().toISOString();
     if (status === "archived") {
@@ -299,18 +349,11 @@ export class PgCapabilitiesRepository {
       if (!archived.rows[0]) throw new HttpError(404, "Active skill overlay not found");
       return skillLocalOverlayOut(archived.rows[0]);
     }
-    const updated = await this.db.query<SkillLocalOverlayRow>(
-      `UPDATE skill_local_overlays
-          SET overlay_json = $5::jsonb,
-              updated_at = $6
-        WHERE space_id = $1 AND skill_package_id = $2 AND scope_type = $3
-          AND COALESCE(scope_id, '') = COALESCE($4::varchar, '')
-          AND status = 'active'
-        RETURNING ${SKILL_LOCAL_OVERLAY_COLUMNS}`,
-      [identity.spaceId, skillPackageId, scopeType, scopeId, JSON.stringify(body.overlay_json ?? {}), now],
-    );
-    if (updated.rows[0]) return skillLocalOverlayOut(updated.rows[0]);
-    const inserted = await this.db.query<SkillLocalOverlayRow>(
+    // One statement against the active-scope partial unique index: two first
+    // saves at once would both find no row to update and the second insert
+    // would fail on the index; the conflict clause lets the later writer
+    // update what the earlier one inserted instead.
+    const saved = await this.db.query<SkillLocalOverlayRow>(
       `INSERT INTO skill_local_overlays (
          id, space_id, skill_package_id, scope_type, scope_id, overlay_json,
          status, created_by_user_id, created_at, updated_at
@@ -318,6 +361,10 @@ export class PgCapabilitiesRepository {
          $1, $2, $3, $4, $5, $6::jsonb,
          'active', $7, $8, $8
        )
+       ON CONFLICT (space_id, skill_package_id, scope_type, COALESCE(scope_id, ''::character varying))
+         WHERE status = 'active'
+       DO UPDATE SET overlay_json = EXCLUDED.overlay_json,
+                     updated_at = EXCLUDED.updated_at
        RETURNING ${SKILL_LOCAL_OVERLAY_COLUMNS}`,
       [
         randomUUID(),
@@ -330,7 +377,7 @@ export class PgCapabilitiesRepository {
         now,
       ],
     );
-    return skillLocalOverlayOut(inserted.rows[0]!);
+    return skillLocalOverlayOut(saved.rows[0]!);
   }
 
   async saveImportedSkill(
@@ -397,6 +444,7 @@ export class PgCapabilitiesRepository {
       });
       return {
         ...skillPackageOut(rows.rows[0]!),
+        pending_proposal: null,
         package_files: preview.package_files,
       };
     });
@@ -405,13 +453,17 @@ export class PgCapabilitiesRepository {
   async createSkillImportApprovalProposal(input: {
     identity: SpaceUserIdentity;
     skillPackageId: string;
-  }): Promise<ProposalOut> {
+  }): Promise<SkillPackageProposalResult> {
     const packageRecord = await this.getSkillPackage(input.identity, input.skillPackageId);
     if (!packageRecord) throw new HttpError(404, "Skill package not found");
     if (packageRecord.status !== "imported") {
       throw new HttpError(409, "Skill package is not awaiting import review");
     }
-    return this.insertProposal(input.identity, {
+    return this.insertSkillPackageProposalOnce(input.identity, {
+      operation: "skill_import_approve",
+      skillPackageId: input.skillPackageId,
+      packageHash: optionalString(objectValue(packageRecord.manifest_json).package_hash),
+    }, {
       proposal_type: "skill_import_approve",
       title: `Review imported skill: ${packageRecord.package_name}`,
       summary: "Approve this imported Open Skill package as reviewed source material.",
@@ -438,7 +490,7 @@ export class PgCapabilitiesRepository {
     identity: SpaceUserIdentity;
     skillPackageId: string;
     body: Record<string, unknown>;
-  }): Promise<ProposalOut> {
+  }): Promise<SkillPackageProposalResult> {
     if (optionalString(input.body.enable_for_project_id)) {
       throw new HttpError(422, "capability_enablement_requires_proposal_review");
     }
@@ -459,7 +511,11 @@ export class PgCapabilitiesRepository {
     if (getBuiltInCapabilityDefinition(capabilityId)) {
       throw new HttpError(409, "Imported capability id conflicts with a built-in capability");
     }
-    return this.insertProposal(input.identity, {
+    return this.insertSkillPackageProposalOnce(input.identity, {
+      operation: "install_from_skill_package",
+      skillPackageId: input.skillPackageId,
+      packageHash: optionalString(objectValue(packageRecord.manifest_json).package_hash),
+    }, {
       proposal_type: "capability_install",
       title: `Install capability: ${capabilityId}`,
       summary: "Convert a reviewed Open Skill package into a disabled draft capability.",
@@ -576,6 +632,48 @@ export class PgCapabilitiesRepository {
     };
   }
 
+  /**
+   * One pending proposal per person, package snapshot and operation. Review
+   * and Convert are idempotent: asking again while that person's proposal is
+   * still pending returns it instead of filing a duplicate. The identity is
+   * the proposal's `pending_operation_key`, unique among pending proposals
+   * of its type (`uq_proposals_pending_operation`), so two concurrent
+   * requests cannot both file one: the loser reads the winner's. Once the
+   * proposal is decided, a new request files a new one.
+   */
+  private async insertSkillPackageProposalOnce(
+    identity: SpaceUserIdentity,
+    key: { operation: SkillPackageProposalOperation; skillPackageId: string; packageHash: string | null },
+    input: Parameters<PgCapabilitiesRepository["insertProposal"]>[1],
+  ): Promise<SkillPackageProposalResult> {
+    const operationKey = skillPackageOperationKey(identity.userId, key.skillPackageId, key.packageHash, key.operation);
+    const pending = async () => {
+      const existing = await this.db.query<ProposalRow>(
+        `SELECT id, space_id, created_by_user_id, project_folder_id,
+                created_by_run_id, proposal_type, status, risk_level, urgency,
+                preview, title, payload_json, rationale, visibility,
+                review_deadline, expires_at, created_at, reviewed_at,
+                project_id,
+                NULL::varchar AS egress_approval_id,
+                NULL::varchar AS egress_approval_status
+           FROM proposals
+          WHERE space_id = $1 AND proposal_type = $2 AND pending_operation_key = $3 AND status = 'pending'`,
+        [identity.spaceId, input.proposal_type, operationKey],
+      );
+      return existing.rows[0] ? proposalToOut(existing.rows[0], new Date()) : null;
+    };
+    const found = await pending();
+    if (found) return { proposal: found, created: false };
+    try {
+      return { proposal: await this.insertProposal(identity, input, operationKey), created: true };
+    } catch (error) {
+      if ((error as { code?: string; constraint?: string }).constraint !== "uq_proposals_pending_operation") throw error;
+      const winner = await pending();
+      if (!winner) throw error;
+      return { proposal: winner, created: false };
+    }
+  }
+
   private async insertProposal(
     identity: SpaceUserIdentity,
     input: {
@@ -588,6 +686,7 @@ export class PgCapabilitiesRepository {
       payload_json: Record<string, unknown>;
       project_id?: string | null;
     },
+    pendingOperationKey: string | null = null,
   ): Promise<ProposalOut> {
     const now = new Date();
     const row = await insertProposalRow(this.db, {
@@ -603,6 +702,7 @@ export class PgCapabilitiesRepository {
       createdByUserId: identity.userId,
       visibility: "space_shared",
       requiredApproverRole: "owner",
+      pendingOperationKey,
     });
     return proposalToOut(row, now);
   }
@@ -623,37 +723,79 @@ export class PgCapabilitiesRepository {
     if (!rows.rows[0]) throw new HttpError(404, "Skill package not found");
   }
 
-  private async ensureOverlayScopeExists(
+  /**
+   * Who may read and who may write an overlay, by the scope it configures.
+   * Reading the object the scope names comes first, and an unreadable one is
+   * answered as absent rather than as forbidden, so the overlay surface never
+   * confirms an id its caller cannot see. Then the write authority of that
+   * object: a Space overlay is the Space owner's or admin's; a Project or
+   * Folder overlay is a Project writer's (read + write); a user overlay is
+   * that person's; an ordinary Agent overlay is its manager's
+   * (`canChangeAgent`); a managed Assistant's overlay follows the Assistant's
+   * own configuration rule (`canConfigureAssistant`) — a Space admin's
+   * general overlay authority does not reach the creator's Assistant.
+   *
+   * An overlay is configuration only: it grants no capability trust, no
+   * egress, and no credential use; those are decided where they are spent.
+   */
+  private async assertOverlayScopeAuthority(
     identity: SpaceUserIdentity,
     scopeType: SkillLocalOverlayScope,
     scopeId: string | null,
+    mode: "read" | "write",
   ): Promise<void> {
-    if (scopeType === "space") return;
+    if (scopeType === "space") {
+      if (mode === "read") return;
+      const role = await this.membershipRole(identity);
+      if (!isSpaceOwnerOrAdmin(role)) throw new HttpError(403, "Space skill overlays are set by a Space owner or admin");
+      return;
+    }
     if (!scopeId) throw new HttpError(422, "scope_id is required for this scope_type");
     if (scopeType === "user") {
       if (scopeId !== identity.userId) throw new HttpError(403, "skill overlay user scope must be the current user");
       return;
     }
-    const table =
-      scopeType === "project_folder"
-        ? "project_folders"
-        : scopeType === "project"
-          ? "projects"
-          : scopeType === "agent"
-            ? "agents"
-            : null;
-    if (!table) throw new HttpError(422, "unsupported scope_type");
-    const found = await this.db.query<{ id: string }>(
-      `SELECT id FROM ${table}
-        WHERE id = $1 AND space_id = $2
-        LIMIT 1`,
+    if (scopeType === "project" || scopeType === "project_folder") {
+      const projectId = scopeType === "project" ? scopeId : await this.folderProjectId(identity.spaceId, scopeId);
+      if (!projectId || !(await canReadProject(this.db, identity.spaceId, projectId, identity.userId))) {
+        throw new HttpError(404, `${scopeType} not found`);
+      }
+      if (mode === "write" && !(await canWriteProject(this.db, identity.spaceId, projectId, identity.userId))) {
+        throw new HttpError(403, `${scopeType} skill overlays are set by a Project writer`);
+      }
+      return;
+    }
+    const agent = await this.db.query<{ agent_kind: string; project_id: string | null }>(
+      `SELECT agent_kind, project_id FROM agents WHERE id = $1 AND space_id = $2 LIMIT 1`,
       [scopeId, identity.spaceId],
     );
-    if (!found.rows[0]) throw new HttpError(404, `${scopeType} not found`);
+    const row = agent.rows[0];
+    if (!row || !(await canReadAgent(this.db, identity, scopeId))) throw new HttpError(404, "agent not found");
+    if (mode === "read") return;
+    const allowed = row.agent_kind === "system_assistant"
+      ? await canConfigureAssistant(this.db, identity, { projectId: row.project_id })
+      : await canChangeAgent(this.db, identity, scopeId);
+    if (!allowed) throw new HttpError(403, "agent skill overlays are set by the Agent's manager");
+  }
+
+  private async membershipRole(identity: SpaceUserIdentity): Promise<string | null> {
+    const result = await this.db.query<{ role: string }>(
+      `SELECT role FROM space_memberships WHERE space_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+      [identity.spaceId, identity.userId],
+    );
+    return result.rows[0]?.role ?? null;
+  }
+
+  private async folderProjectId(spaceId: string, folderId: string): Promise<string | null> {
+    const result = await this.db.query<{ project_id: string }>(
+      `SELECT project_id FROM project_folders WHERE id = $1 AND space_id = $2 LIMIT 1`,
+      [folderId, spaceId],
+    );
+    return result.rows[0]?.project_id ?? null;
   }
 }
 
-export interface SkillConversionApplyResult {
+interface SkillConversionApplyResult {
   skill_package: SkillPackage;
   capability_definition: CapabilityDefinition;
   capability_version_id: string;
@@ -673,8 +815,8 @@ export async function approveSkillImportInTransaction(input: {
   const rows = await input.db.query<SkillPackageRow>(
     `UPDATE skill_packages
         SET status = 'reviewed',
-            manifest_json = manifest_json || $5::jsonb,
-            updated_at = $4
+            manifest_json = manifest_json || $4::jsonb,
+            updated_at = $3
       WHERE id = $1
         AND space_id = $2
         AND status = 'imported'
@@ -682,7 +824,6 @@ export async function approveSkillImportInTransaction(input: {
     [
       input.skillPackageId,
       input.spaceId,
-      input.userId,
       now,
       JSON.stringify({
         review: {
@@ -695,7 +836,8 @@ export async function approveSkillImportInTransaction(input: {
   );
   const row = rows.rows[0];
   if (!row) throw new HttpError(409, "Skill package is not awaiting import review");
-  return skillPackageOut(row) as unknown as SkillPackage;
+  // The review proposal being applied is the one that was pending.
+  return { ...skillPackageOut(row), pending_proposal: null } as unknown as SkillPackage;
 }
 
 export async function convertSkillPackageToCapabilityInTransaction(input: {
@@ -798,7 +940,7 @@ export async function convertSkillPackageToCapabilityInTransaction(input: {
   );
 
   return {
-    skill_package: skillPackageOut(updated.rows[0]!) as unknown as SkillPackage,
+    skill_package: { ...skillPackageOut(updated.rows[0]!), pending_proposal: null } as unknown as SkillPackage,
     capability_definition: definition,
     capability_version_id: versionId,
     runtime_bindings: runtimeBindings,
@@ -1015,6 +1157,14 @@ function packageFileSummary(value: unknown): Record<string, unknown>[] {
       executable: item.executable === true,
       risk_flags_json: objectValue(item.risk_flags_json),
     }));
+}
+
+function pendingProposalOut(value: unknown): { id: string; operation: SkillPackageProposalOperation } | null {
+  const record = objectValue(value);
+  const id = optionalString(record.id);
+  const operation = optionalString(record.operation);
+  if (!id || (operation !== "skill_import_approve" && operation !== "install_from_skill_package")) return null;
+  return { id, operation };
 }
 
 function skillPackageOut(row: SkillPackageRow): Record<string, unknown> {

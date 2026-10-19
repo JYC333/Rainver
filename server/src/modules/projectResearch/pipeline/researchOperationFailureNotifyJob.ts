@@ -8,7 +8,7 @@ import {
   type JobHandlerRegistry,
   type JobHandlerResult,
 } from "../../jobs/handlerRegistry.js";
-import { RoomService } from "../../rooms/service.js";
+import { RoomService, UNATTRIBUTED_CONTINUATION } from "../../rooms/service.js";
 import { isConversationTurnInProgressError } from "../../sessions/conversationRuntimeSessionRepository.js";
 
 export const RESEARCH_OPERATION_FAILURE_NOTIFY_JOB = "research_operation_failure_notify";
@@ -16,21 +16,20 @@ export const RESEARCH_OPERATION_FAILURE_NOTIFY_JOB = "research_operation_failure
 const TURN_BUSY_RETRY_DELAY_MS = 2_000;
 
 /** The statuses `notifyRoomOfOperationStatus` reports. `waiting_review` is
- * not terminal — the operation is paused and will report again — which is
- * why the Room event key carries the status (and, for `failed`, the pass
- * generation as `episode`). */
+ * not terminal — the operation is paused and will report again. The Room
+ * event key carries the status (and, for `failed`, the pass generation as
+ * `episode`). */
 const NOTIFIABLE_STATUSES = ["failed", "completed", "waiting_review"];
 
 /**
  * Posts a `research_workflow_terminal` Room continuation for a research
- * Operation's status change. Split into its own job — enqueued via
+ * Operation's status change. This is its own job, enqueued via
  * `ProjectResearchOrchestrator.notifyRoomOfOperationStatus` through
- * whichever `Queryable` the reporting write is already using — specifically
- * so the enqueue shares the same commit/rollback fate as the state write it
- * reports on (see that method's doc comment for why a direct,
- * independently-committing Room call is unsafe here). This file has no
- * dependency on `projectResearch/orchestrator.ts`, so importing the job type
- * constant from there does not create an import cycle.
+ * whichever `Queryable` the reporting write is already using. The enqueue
+ * shares the same commit/rollback fate as the state write it reports on.
+ * Do not call the Room on a connection that commits on its own. This file
+ * has no dependency on `projectResearch/orchestrator.ts`, so importing the
+ * job type constant from there does not create an import cycle.
  */
 export function registerResearchOperationFailureNotifyHandler(registry: JobHandlerRegistry, config: ServerConfig): void {
   if (!config.databaseUrl) return;
@@ -40,8 +39,8 @@ export function registerResearchOperationFailureNotifyHandler(registry: JobHandl
     const roomId = optionalString(job.payload.room_id);
     const sessionId = optionalString(job.payload.session_id);
     const reason = optionalString(job.payload.reason) ?? "The research operation failed.";
-    // Jobs enqueued before the checkpoint reform carry no status and were all
-    // failures, so an absent status still means `failed`.
+    // A job with no status is a failure. Do not treat an absent status as
+    // anything else.
     const status = optionalString(job.payload.status) ?? "failed";
     const episode = typeof job.payload.episode === "number" ? job.payload.episode : null;
     const originGroupId = optionalString(job.payload.origin_group_id);
@@ -70,7 +69,9 @@ export function registerResearchOperationFailureNotifyHandler(registry: JobHandl
             key: episode === null ? `${operationId}:${status}` : `${operationId}:${status}:${episode}`,
             payload: { status, operation_id: operationId, reason },
             // Started by an Agent's turn: charged to that turn's container.
-            ...(originGroupId ? await agentOriginContinuation(client, job.space_id, originGroupId) : {}),
+            // With no originating turn there is nothing to inherit: it reports
+            // as unattended work.
+            ...(originGroupId ? await agentOriginContinuation(client, job.space_id, originGroupId) : { cause: UNATTRIBUTED_CONTINUATION }),
           },
         ),
       );

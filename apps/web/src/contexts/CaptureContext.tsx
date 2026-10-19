@@ -7,7 +7,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
  * shell knows which Project is open, and only each Area knows what it is
  * currently *about* — a Thread being worked, material being read. The capture
  * affordance itself lives above both (it is reachable from every page, inside a
- * Project or not), which is why this is a context rather than a prop chain.
+ * Project or not). This is a context. Do not thread it through props.
  *
  * An Area with no single focused object simply never declares one, and capture
  * from there offers the Project-level destinations only.
@@ -16,14 +16,14 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
  * because the shell reads it, and B36 keeps module code out of the shell's
  * chunk.
  */
-export interface ProjectCaptureTarget {
+interface ProjectCaptureTarget {
   /** A `space_objects` row id. Anything else cannot be a `note_links` endpoint. */
   objectId: string
   /** Shown in the composer so the user can see what they are attaching to. */
   title: string
 }
 
-export interface ProjectCaptureContext {
+interface ProjectCaptureContext {
   projectId: string | null
   target: ProjectCaptureTarget | null
 }

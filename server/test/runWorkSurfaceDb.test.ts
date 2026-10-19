@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgRunToolIdentityRepository } from "../src/modules/runs/runToolIdentityRepository.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
 import {
   applyRunArtifactDeclarations,
   declareRunArtifact,
@@ -166,6 +167,19 @@ beforeEach(async () => {
   await ensureDefaultRuntimeProfile(db.pool!, { agent: AGENT, space: SPACE });
 });
 
+describe("a Run's linked Tasks", () => {
+  it("names the Task a Run worked on to someone who can read it, and to nobody else", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const taskId = randomUUID();
+    const runId = randomUUID();
+    await makeTask(taskId);
+    await makeRun(runId, taskId);
+    const runs = new PgRunRepository(db.pool!);
+    await expect(runs.linkedTasksForViewer(SPACE, runId, USER)).resolves.toEqual([{ id: taskId, title: "Write the report" }]);
+    await expect(runs.linkedTasksForViewer(SPACE, runId, randomUUID())).resolves.toEqual([]);
+  });
+});
+
 describe("run tool identity", () => {
   it("resolves a live token for its own Run and refuses it for another", async (ctx) => {
     if (!db.available) return ctx.skip();
@@ -281,8 +295,8 @@ describe("artifact declarations", () => {
 
   it("leaves the same Task waiting when nothing was declared", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The gap this whole surface exists to close: an uploaded file typed
-    // `remote_output` matches no declared required output, so a finished Run
+    // An uploaded file typed `remote_output` matches no declared required
+    // output. Do not treat that file as the declared output. A finished Run
     // parks its Task however well the work went.
     const task = randomUUID();
     const run = randomUUID();
@@ -386,7 +400,7 @@ describe("artifact declarations", () => {
 describe("declaring against a Task the Run may not write", () => {
   it("refuses when the instructing person is not a member of the Project", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The Agent's reach is the instructing person's. Without this check an
+    // The Agent's reach is the instructing person's. Do not skip the check. An
     // Agent in any Run could name a private Task's id and attach an artifact
     // to it, reading its Project back out of the failure.
     const task = randomUUID();
@@ -436,9 +450,8 @@ describe("the dispatched Run's tool surface", () => {
   });
 
   it("withholds artifact.submit where no path applies a declaration", async () => {
-    // A server-host Run's artifacts come through materialization, which does
-    // not consume declarations yet. Offering the action there would tell an
-    // agent its deliverable was recorded when nothing would act on it.
+    // `sandboxed` does not include `artifact.submit`. Do not grant it on
+    // that trust mode.
     const granted = await grantedActionIds("sandboxed");
 
     expect(granted).not.toContain("artifact.submit");
@@ -463,9 +476,8 @@ describe("the Work Skill", () => {
   });
 
   it("carries the shared judgement rules verbatim rather than a second copy", () => {
-    // The drift this arrangement exists to prevent: the managed loop assembles
-    // these same constants, so an edit to one must not leave the other
-    // instructing an agent differently.
+    // The managed loop assembles these same constants. Do not let an edit to
+    // one leave the other instructing an agent differently.
     const skill = renderWorkSkill();
 
     expect(skill).toContain(IDENTIFIER_POLICY);

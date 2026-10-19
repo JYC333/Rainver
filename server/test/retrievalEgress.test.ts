@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   retrievalEgressAllowed,
   ALLOW_ALL_EGRESS,
-  retrievalProviderEgressDestination,
+  providerEgressDestination,
+  runtimeProviderEgressDestination,
 } from "../src/modules/retrieval/egress/egressPolicy.js";
 import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
 import {
@@ -19,9 +20,9 @@ function __setProviderHttpClientForTests(client: ProviderHttpClient | null): voi
   setRawProviderHttpClientForTests(client ? piAiHttpClient(client) : null);
 }
 
-// W9 egress governance. The per-space switch is enforced at the shared seam:
-// when external egress is disabled, external model providers are blocked, while
-// local providers and in-process handling can still be used.
+// The per-space switch is enforced at the shared seam. When external egress is
+// disabled, external model providers are blocked, while local providers and
+// in-process handling can still be used.
 
 // A store that fails the test if any provider interaction is attempted.
 const throwingStore = new Proxy({ resolveUsageAttribution: resolveTestUsageAttribution }, {
@@ -50,8 +51,10 @@ afterEach(() => {
   __setProviderHttpClientForTests(null);
 });
 
+const HOME = "home-space";
+
 describe("retrievalEgressAllowed", () => {
-  it("allows by default (no policy ⇒ pre-W9 behavior)", () => {
+  it("allows by default when no policy is passed", () => {
     expect(retrievalEgressAllowed({ object_type: "knowledge_item", object_id: "x" })).toBe(true);
     expect(retrievalEgressAllowed({ object_type: "memory_entry", object_id: "x" }, ALLOW_ALL_EGRESS)).toBe(true);
   });
@@ -81,15 +84,47 @@ describe("retrievalEgressAllowed", () => {
     ).toBe(true);
   });
 
-  it("classifies local provider destinations by provider type or localhost URL", () => {
-    expect(retrievalProviderEgressDestination({ provider_type: "ollama", base_url: null })).toBe("local_provider");
-    expect(
-      retrievalProviderEgressDestination({
-        provider_type: "openai_compatible",
-        base_url: "http://127.0.0.1:8080/v1",
-      }),
-    ).toBe("local_provider");
-    expect(retrievalProviderEgressDestination({ provider_type: "openai", base_url: null })).toBe("external_provider");
+  it("classifies a Provider as local only when declared trusted, reached inside the network, and running a non-cloud model", () => {
+    const declared = { deployment: "trusted_local" };
+    // A vendor name proves nothing: Ollama forwards `-cloud` models to its hosted service.
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "ollama", base_url: "http://localhost:11434" }, HOME)).toBe("external_provider");
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "ollama", base_url: "http://localhost:11434", config_json: declared }, HOME)).toBe("local_provider");
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "ollama", base_url: "http://localhost:11434", config_json: declared, default_model: "gpt-oss:120b-cloud" }, HOME)).toBe("external_provider");
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "ollama", base_url: "http://localhost:11434", config_json: declared, default_model: "llama3", model: "qwen3-coder:480b-cloud" }, HOME)).toBe("external_provider");
+    // A loopback URL proves nothing without the declaration.
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "openai_compatible", base_url: "http://127.0.0.1:8080/v1" }, HOME)).toBe("external_provider");
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "openai_compatible", base_url: "http://127.0.0.1:8080/v1", config_json: declared }, HOME)).toBe("local_provider");
+    // Trusted LAN and Compose-sibling services.
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "openai_compatible", base_url: "http://192.168.1.20:8000/v1", config_json: declared }, HOME)).toBe("local_provider");
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "openai_compatible", base_url: "http://ollama:11434/v1", config_json: declared }, HOME)).toBe("local_provider");
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "openai_compatible", base_url: "http://gpu-box.lan:8000/v1", config_json: declared }, HOME)).toBe("local_provider");
+    // A public remote stays external however it is declared.
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "ollama", base_url: "https://ollama.example.com", config_json: declared }, HOME)).toBe("external_provider");
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "openai_compatible", base_url: "http://93.184.216.34:8000/v1", config_json: declared }, HOME)).toBe("external_provider");
+    // A hosted vendor cannot be recorded as trusted local (the command store
+    // refuses it); an undeclared one is external like any other.
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "openai", base_url: null }, HOME)).toBe("external_provider");
+    // Loopback is judged as an address: a hostname that merely starts with
+    // "127." is somebody else's machine, and an IPv6 literal keeps its brackets.
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "openai_compatible", base_url: "http://127.evil.com/v1", config_json: declared }, HOME)).toBe("external_provider");
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "openai_compatible", base_url: "http://[::1]:8080/v1", config_json: declared }, HOME)).toBe("local_provider");
+    expect(providerEgressDestination({ space_id: HOME, provider_type: "openai_compatible", base_url: "not a url", config_json: declared }, HOME)).toBe("external_provider");
+  });
+
+  it("honours a trusted-local declaration only in the Space that made it", () => {
+    const declared = { deployment: "trusted_local" };
+    const local = { space_id: HOME, provider_type: "ollama", base_url: "http://localhost:11434", config_json: declared };
+    expect(providerEgressDestination(local, HOME)).toBe("local_provider");
+    // Granted into another Space, nobody there vouched for it: it is a cloud service there.
+    expect(providerEgressDestination(local, "another-space")).toBe("external_provider");
+  });
+
+  it("classifies a CLI runtime by the compatible endpoint it will reach, under the same declaration", () => {
+    const declared = { deployment: "trusted_local", claude_compatible_base_url: "http://localhost:4000/anthropic" };
+    expect(runtimeProviderEgressDestination("claude_code", { space_id: HOME, provider_type: "openai_compatible", base_url: "http://localhost:8080/v1", config_json: declared }, HOME)).toBe("local_provider");
+    expect(runtimeProviderEgressDestination("claude_code", { space_id: HOME, provider_type: "openai_compatible", base_url: "http://localhost:8080/v1", config_json: { ...declared, claude_compatible_base_url: "https://gateway.example.com/anthropic" } }, HOME)).toBe("external_provider");
+    expect(runtimeProviderEgressDestination("claude_code", { space_id: HOME, provider_type: "openai_compatible", base_url: "http://localhost:8080/v1", config_json: { claude_compatible_base_url: "http://localhost:4000/anthropic" } }, HOME)).toBe("external_provider");
+    expect(runtimeProviderEgressDestination("claude_code", { space_id: HOME, provider_type: "openai_compatible", base_url: "http://localhost:8080/v1", config_json: { deployment: "trusted_local" } }, HOME)).toBe("external_provider");
   });
 
   it("fails closed when source-derived content lacks a source policy snapshot", () => {
@@ -166,6 +201,7 @@ describe("egress-disabled provider stages", () => {
         provider_type: "ollama",
         base_url: "http://localhost:11434",
         api_key: null,
+        deployment: "trusted_local",
       },
     });
     __setProviderHttpClientForTests({
@@ -204,7 +240,7 @@ describe("egress-disabled provider stages", () => {
 });
 
 function providerStoreFor(
-  providers: Record<string, { id: string; provider_type: string; base_url: string | null; api_key: string | null }>,
+  providers: Record<string, { id: string; provider_type: string; base_url: string | null; api_key: string | null; deployment?: "cloud" | "trusted_local" }>,
 ): ProviderCommandStore {
   return {
     async getTaskChain() {
@@ -220,9 +256,12 @@ function providerStoreFor(
         provider: {
           id: provider.id,
           space_id: "space-1",
+          // Owned by the Space it is used in, where a trusted-local declaration counts.
+          home_space_id: "space-1",
           name: provider.id,
           provider_type: provider.provider_type,
           base_url: provider.base_url,
+          deployment: provider.deployment ?? "cloud",
           network_profile_id: null,
           default_model: provider.provider_type === "ollama" ? "llama3" : "gpt-4o-mini",
           available_models: [],

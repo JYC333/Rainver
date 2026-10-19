@@ -13,6 +13,10 @@ another space lets eligible members of that space use it in runs, but only the
 provider owner can edit provider metadata or replace secret material. Active
 space default selection and provider `network_profile_id` are grant-level
 fields.
+`GET /api/v1/providers` lists a disabled provider (or a disabled grant) only
+to the provider's owner, so they can enable it again; nobody else sees it, a
+run never resolves it, and pickers use the client's `providersApi.usable()`,
+which keeps only enabled providers with an enabled grant.
 
 Auxiliary system tasks can bind to provider/model chains through
 `provider_task_policies`. The retrieval settings UI surfaces the retrieval
@@ -21,7 +25,10 @@ tasks `retrieval_embedding`, `retrieval_rerank`, and
 users edit these policies, while invocation still resolves credentials through
 the provider command store and pool/fallback path. Retrieval embedding dimension
 is a normalized space setting; provider adapters map it to request parameters
-where supported and validate the returned vector length.
+where supported and validate the returned vector length. Vectors are matched
+to inputs by position, so a batched adapter (Cohere) also refuses a batch that
+returns fewer vectors than it was sent rather than shifting every later vector
+onto the neighbouring chunk.
 
 Retrieval task policies are capability-filtered. `retrieval_embedding` accepts
 embedding-capable providers (OpenAI, OpenRouter, OpenAI-compatible endpoints,
@@ -127,15 +134,15 @@ be Provider-backed is a registry fact, not a Host fact. A Profile may choose
 `AgentRuntimeDefinition` reports `supports_model_provider`, which comes from
 the spec's `credentials.credential_mode`
 (`runtimeAdapters/runtimeDefinitions.ts`). **Only OpenCode declares
-`cli_profile_or_model_provider` today.** Claude Code and Codex CLI declare
+`cli_profile_or_model_provider`.** Claude Code and Codex CLI declare
 `cli_profile`: they run on the execution Host's own vendor login, and
 `assertBackendModeBinding` refuses a `model_provider` Profile for them with
 422. `server/test/runtimeAuthority.test.ts` pins the registry fact that refusal
 reads — `supportsRuntimeBackendMode("claude_code", "model_provider")` is
-`false` — not the route's status code. The frames that
-would render an Anthropic or Codex provider binding still exist in
-`runs/remoteProviderBinding.ts`, but no Profile can select the mode that
-reaches them.
+`false` — not the route's status code. The frame builders for an Anthropic
+or Codex provider binding are in `runs/remoteProviderBinding.ts`. No Profile
+can select the mode that reaches them. Do not treat those builders as a live
+path.
 
 For an OpenCode `model_provider` Profile the Provider row remains the source of
 truth, and its vendor protocol picks the endpoint: an `anthropic_messages`
@@ -169,10 +176,11 @@ excluded. See `docs/TOKEN_USAGE_METERING.md`.
 ## Agent Runtime Profile model binding
 
 `AgentVersion` contains no provider/model deployment binding. An
-`AgentRuntimeProfile` may select a same-Space ModelProvider and explicit model
-when the runtime supports that protocol and the Profile executes on the built-in
-Server Runtime. Native mode instead uses the runtime's login on the selected
-Host. The Profile snapshot is frozen into each Run, so changing a live Profile
+`AgentRuntimeProfile` may select a ModelProvider granted to the Space and explicit model
+when the runtime supports that protocol (`backend_mode = model_provider`) and
+the Profile names an execution Host and installation — the built-in Server
+Runtime or a paired Host. Native mode instead uses the runtime's login on the
+selected Host. The Profile snapshot is frozen into each Run, so changing a live Profile
 does not rebind an existing Run or conversation.
 
 The optional Space provisioning template is a separate choice for future
@@ -193,8 +201,6 @@ ledger cover the implemented personal/family operational model: keys are
 encrypted, user-owned, Space-granted, policy-gated, and never injected as broad
 process environment.
 
-Unimplemented commercial provider surfaces:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §18.
 
 ## Provider Risks to Document
 
@@ -203,7 +209,49 @@ Unimplemented commercial provider surfaces:
 | Anthropic (Claude) | Data sent to Anthropic servers; not for private/sensitive enterprise data without a data processing agreement |
 | OpenAI (Codex) | Same; OpenAI API terms apply |
 | Any cloud LLM | Accepted Runtime Context Delivery may include Memory and Project data. Review egress policy and sensitivity ceilings before using a third-party provider |
-| Ollama / local | No external data transmission; safe for private data |
+| Trusted local deployment | No external data transmission when the declaration holds; see "Local deployments" below |
+
+## Local deployments
+
+Whether a Provider call is a *local* egress (allowed while a Space's
+`external_egress_enabled` is off, and for Sources whose class is
+`local_provider_allowed`) is decided by `providerEgressDestination`
+(`retrieval/egress/egressPolicy.ts`) from three facts that must all hold:
+
+1. The Provider is declared `deployment: "trusted_local"` (stored in
+   `model_providers.config_json`, exposed as `deployment` on the DTO). Only a
+   self-hostable vendor (`VendorDescriptor.selfHostable`: `ollama`,
+   `openai_compatible`) may carry the declaration, and only a Space owner or
+   admin may make it (`ProviderCommandStore.requireSpaceOwnerOrAdmin`); the
+   Provider owner alone cannot. The same vouch is required again whenever a
+   declared Provider is pointed at another endpoint (`base_url` or either
+   compatible bridge URL), changes vendor, or is re-declared. The declaration
+   counts only in the Provider's home Space (`model_providers.space_id`),
+   where it was vouched: granted into another Space, nobody there vouched for
+   it, so there it is external.
+2. The endpoint the call will reach is inside this instance's network
+   (`isInstanceNetworkUrl`): `localhost`/loopback, a private, link-local or
+   otherwise non-public address, a single-label name such as a Compose
+   service, or a `.local`/`.lan`/`.internal`/`.home.arpa` style suffix. A
+   public address or public-looking name is external however it is declared.
+   For a CLI runtime bound to the Provider, the endpoint judged is the
+   compatible bridge URL the runtime will actually use.
+3. The model the call will run is not one the vendor serves from the cloud:
+   Ollama's `-cloud`/`:cloud` models are forwarded by a local daemon to the
+   vendor's hosted service and are external.
+
+The vendor name proves nothing (the same Ollama daemon serves hosted models),
+and a loopback URL proves nothing (a local gateway may forward anywhere), so
+an undeclared Provider is external. A Run's model override or a runtime's own
+configuration cannot change the classification: the declaration and the
+endpoint are the Provider's, and a cloud model chosen at run time is judged as
+such. Every judgement uses the model the call will actually run: for a Run,
+`effectiveRunProviderModel` (`runs/remoteProviderBinding.ts`) — the frozen
+Runtime Profile's model, then the Run's override, then the Provider default,
+then its first listed model, the order the binding uses — never the default
+alone. A proxy lease issued for a destination judged local carries that model
+(`pinned_model`), and the provider proxy refuses a request naming any other
+model (`403 provider_proxy_model_not_leased`).
 
 ## When Adding a New Provider
 

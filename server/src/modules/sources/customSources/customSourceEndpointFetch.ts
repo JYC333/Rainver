@@ -27,7 +27,7 @@ export interface CustomSourceFetchCredential {
   header_value: string;
 }
 
-export interface CustomSourceFetchOptions {
+interface CustomSourceFetchOptions {
   signal?: AbortSignal;
   credential?: CustomSourceFetchCredential | null;
   /** Hard ceiling on the body; the rest is cancelled rather than buffered. */
@@ -80,10 +80,10 @@ export async function fetchAllowedOriginResponse(
 /**
  * The envelope's origin allowlist, expressed as an outbound guard.
  *
- * A guard is consulted once per hop, which is exactly where this check belongs:
- * wrapping it here means a redirect cannot land on an origin the handler was
- * never allowed to reach, and there is no second code path where one of the two
- * checks could be forgotten.
+ * A guard is consulted once per hop. This check belongs there. Wrapping it
+ * here means a redirect cannot land on an origin the handler was never
+ * allowed to reach. Do not keep a second path where one of the two checks
+ * could be forgotten.
  */
 function allowedOriginGuard(allowedNetworkOrigins: string[], inner: OutboundGuard): OutboundGuard {
   return {
@@ -99,7 +99,7 @@ export function guardedResponseText(response: GuardedResponse): string {
   return decodeTruncatedUtf8(response.bytes);
 }
 
-export function assertAllowedOrigin(url: string, allowedNetworkOrigins: string[]): void {
+function assertAllowedOrigin(url: string, allowedNetworkOrigins: string[]): void {
   let origin: string;
   try {
     const parsed = new URL(url);

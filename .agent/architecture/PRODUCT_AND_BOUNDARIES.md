@@ -8,8 +8,8 @@ projects, recurring workflows, automation, and code work—through auditable hum
 collaboration. It captures inputs, runs agents, produces reviewable artifacts and proposals,
 and governs what becomes durable memory or action.
 
-Personal, household, and small-team use are first-order contexts from the start; collaboration
-is not a later enterprise add-on. Memory and context are foundational substrate for the
+Personal, household, and small-team use are first-order contexts. Collaboration
+is not an enterprise add-on. Memory and context are foundational substrate for the
 workbench, not the complete product identity. Reviewable Evolution workflows are supporting
 cast and always execute through an explicitly selected ordinary Agent.
 
@@ -71,10 +71,14 @@ capture / trigger
 
 ### Sandbox and path policy boundary
 
-- The control plane's Project Folder operations use `PgProjectFolderRepository` / `PgRunSandboxManager` and `PathPolicy`; ACP subprocesses access their mounted workspace directly. The built-in strict Host limits that access with a per-Run namespace, while a trusted paired Host runs natively under the owner's OS permissions. **Amended 2026-08-21 ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):** the control plane holds no path to a remote Folder and `PathPolicy` is never invoked for that Location; see [SECURITY_AND_ACCESS_BOUNDARIES.md](SECURITY_AND_ACCESS_BOUNDARIES.md) §10.
-- Server-host file access for managed/code-patch paths still uses worktree
-  helpers. CLI Runs execute on a host daemon (ADR 0016). `one_shot_docker` is
-  not a product CLI path; high/critical-risk work that requires it fails closed.
+- The control plane's Project Folder operations use `PgProjectFolderRepository` / `PgRunSandboxManager` and `PathPolicy`; ACP subprocesses access their mounted workspace directly. The built-in strict Host limits that access with a per-Run namespace, while a trusted paired Host runs natively under the owner's OS permissions. The control plane holds no path to a remote Folder and `PathPolicy` is never invoked for that Location ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md); see [SECURITY_AND_ACCESS_BOUNDARIES.md](SECURITY_AND_ACCESS_BOUNDARIES.md) §10).
+- Server-host file access for managed and code-patch paths uses the worktree
+  helpers. CLI Runs execute on a host daemon (ADR 0016). A critical-risk vendor
+  CLI run is labeled `one_shot_docker`. That label does not start a container:
+  `workingDirScopeForLevel` maps it to `worktree`, and a daemon run carries the
+  level on its isolation policy. Only `read_only` changes what that daemon run
+  is given. An adapter spec that does not set `supports_one_shot_docker` fails
+  preparation with `docker_sandbox_not_supported`.
 - Server-side adapters must not resolve arbitrary host paths. ACP subprocesses
   access the workspace mounted by their execution Host, under that Host's
   trust-mode boundary.
@@ -90,7 +94,7 @@ capture / trigger
 
 - Memory is agent context. Knowledge is human-browsable, reviewable, relational long-term content.
 - Knowledge items must not automatically enter an accepted Runtime Context Delivery.
-- Promoting Knowledge into Memory must be a separate future proposal flow, not an implicit side effect.
+- A Knowledge write does not create Memory. Do not promote a Knowledge item into Memory as a side effect.
 - Activity, Run, and Artifact are source inputs for Knowledge proposals.
 - Project and Project Folder are contextual associations for Knowledge, not Knowledge content types.
 - Knowledge reads use the canonical content-access policy: active members may
@@ -102,11 +106,11 @@ capture / trigger
   restrictions remain separate deny gates.
 - Knowledge relations are database-backed and relation reads omit any row whose endpoints are not both readable by the viewer.
 
-### PolicyEngine evaluates built-in runtime rules; persisted policy enforcement is domain-specific
+### `engineCheck` evaluates built-in runtime rules; persisted policy rows are not read
 
-- `PolicyEngine` evaluates stateless built-in rules. It does not load persisted Policy rows.
-- Domain-specific persisted-policy enforcement (e.g. `memory.private_placement`, `run.user_private_scope`) lives in `server/src/modules/policy/`.
-- Accepted policy proposals create active `Policy` rows that affect real enforcement decisions.
+- `engineCheck` (`policy/decisionCore.ts`) evaluates stateless built-in rules. It does not load persisted Policy rows.
+- There is no generic persisted-policy proposal: `policy_change` has no applier and fails closed, and there is no `policies` table. Runtime Context Policy versions are the persisted policy that governs runs.
+- Cross-space memory denial is the hard invariant `hard_invariant_cross_space_memory` in `policy/decisionCore.ts`, not a persisted policy domain.
 
 ### App runtime must not self-deploy with arbitrary host authority
 
@@ -118,9 +122,9 @@ capture / trigger
 
 ### External tools are adapters, not product foundations
 
-- Claude Code, Codex, Cursor, LangGraph, OpenAI Agents SDK are runtime adapters.
+- Claude Code, Codex CLI, OpenCode, Gemini CLI, and ACP-registry agents (`acp_<id>`) are runtime adapters.
 - Memory, context, policy, proposals, audit, and Project Folder governance live in Rainver's database, not in vendor CLIs.
-- OpenCode is a third optional CLI runtime alongside Claude Code and Codex CLI, not a
+- OpenCode is an optional CLI runtime alongside Claude Code, Codex CLI, and Gemini CLI, not a
   universal or preferred execution layer. User-initiated/supervised heavy work may use CLI
   subscription allowance; managed API work keeps its existing direct adapters. Claude
   Pro/Max stays on native Claude Code while OpenCode's provider documentation records that
@@ -141,11 +145,11 @@ capture / trigger
 | Runtime credential use | Credential resolver + secret redaction | Active |
 | Project Folder file read | `project_folder.read` route check + `PathPolicy` | Active |
 | ACP workspace filesystem access | Direct access to the workspace assigned by the execution Host; strict-host namespace or trusted-host OS permissions, not a per-file Proposal/PathPolicy gate | Active |
-| Canonical `code_patch` apply | Approved `code_patch` Proposal gate + `PathPolicy` | Active |
+| Canonical `code_patch` apply | Approved `code_patch` Proposal gate + `PathPolicy` + `realpath` containment on apply and rollback, so a directory link cannot carry a write out of the Folder | Active |
 | Project Folder human File-page save | Draft-backed Save to Folder + `project_folder.apply_patch` audit + `PathPolicy` + optimistic draft/Host precondition; history is restore-as-draft only | Active |
 | Sandbox path access | Execution Project Folder boundary, worktree root validation | Active |
 | Deployment / deployer calls | Instance-admin job records + internal-token pull channel; operator-only deployer socket allowlist | Active |
-| Automatic system self-evolution | Removed; Evolution runs require an explicit Agent | Removed |
+| Automatic system self-evolution | No privileged Evolver Agent. An Evolution run names an explicit Agent | Absent |
 | Automation fire | Manual and scheduled Automations plus native targets; no external webhook marketplace | Active |
 | Connector marketplace | Not present; Sources connections/recipes are the ingestion path | Absent |
 

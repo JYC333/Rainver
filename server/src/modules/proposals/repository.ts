@@ -4,6 +4,7 @@ import { assertProjectInSpace } from "../projects/access.js";
 import type { ProposalOut, ProposalPage } from "@rainver/protocol";
 import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { isProvenanceSourceType } from "../ontology/entities.js";
+import { proposalTitleParts } from "./titleParts.js";
 
 export interface QueryResult<Row> {
   rows: Row[];
@@ -233,7 +234,11 @@ function proposalOrderSql(): string {
            END DESC,
            p.review_deadline ASC NULLS LAST,
            p.expires_at ASC NULLS LAST,
-           p.created_at DESC`;
+           p.created_at DESC,
+           -- A unique last key: a packet's children share every key above to
+           -- the millisecond, and OFFSET pages over an undefined order repeat
+           -- one row and skip another.
+           p.id DESC`;
 }
 
 export function proposalToOut(row: ProposalRow, now: Date): ProposalOut {
@@ -256,6 +261,7 @@ export function proposalToOut(row: ProposalRow, now: Date): ProposalOut {
     target_namespace: stringValue(payload.target_namespace) ?? "",
     memory_type: stringValue(payload.memory_type) ?? "",
     proposed_title: row.title,
+    title_parts: proposalTitleParts(row.proposal_type, payload),
     proposed_content: stringValue(payload.proposed_content) ?? "",
     rationale: row.rationale ?? "",
     status: row.status,
@@ -286,7 +292,24 @@ export function proposalToOut(row: ProposalRow, now: Date): ProposalOut {
     egress_approval_status: row.egress_approval_status,
     egress_approval_id: row.egress_approval_id,
     project_id: row.project_id,
+    target_memory_id: stringValue(payload.target_memory_id),
+    ...operatorRevision(row.proposal_type, payload),
     ...codePatchFields,
+  };
+}
+
+/** Whether a maintenance update still waits for the person's revision. */
+function operatorRevision(
+  proposalType: string,
+  payload: Record<string, unknown>,
+): Pick<ProposalOut, "operator_revision"> {
+  if (proposalType !== "memory_update" || payload.requires_operator_edit !== true) return {};
+  const edit = recordValue(payload.operator_edit);
+  return {
+    operator_revision: {
+      edited_by_user_id: stringValue(edit.edited_by_user_id),
+      edited_at: stringValue(edit.edited_at),
+    },
   };
 }
 

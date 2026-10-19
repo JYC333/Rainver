@@ -25,7 +25,7 @@ const TASK_BRANCH_REPLIES = {
   task_merge_finish: "task_merge_finish_result",
 } as const;
 type TaskBranchRequestType = keyof typeof TASK_BRANCH_REPLIES;
-export type TaskBranchReplyType = (typeof TASK_BRANCH_REPLIES)[TaskBranchRequestType];
+type TaskBranchReplyType = (typeof TASK_BRANCH_REPLIES)[TaskBranchRequestType];
 export type TaskBranchReply<T extends TaskBranchRequestType> =
   Omit<HostDaemonFrameOf<(typeof TASK_BRANCH_REPLIES)[T]>, "type" | "request_id">;
 type ReplyOf<F> = F extends unknown ? Omit<F, "type" | "request_id"> : never;
@@ -62,29 +62,21 @@ function failedHostAction(type: HostActionType, error: string): AnyHostActionRes
       : { ok: false, changed: false, error };
 }
 /**
- * ADR 0016 P3: tracks which hosts currently hold a live WebSocket connection
- * and lets server code (the dispatch path, `RemoteWsCliCommandExecutor`)
- * push job frames to a specific daemon and correlate its replies back to the
- * run that triggered them. A process-wide singleton, same reasoning as
- * `sharedCliProcessRegistry` (`server/src/modules/runs/processRegistry.ts`):
- * it must be the same instance across every request path in this process,
- * since the connection lives only in this process's memory (audit report
- * §5.6's accepted single-process assumption for phase 1).
+ * Tracks which hosts currently hold a live WebSocket connection and lets
+ * server code push job frames to a specific daemon and correlate its replies
+ * back to the run that triggered them. One instance for this process: the
+ * connection lives only in this process's memory, so every request path must
+ * share it.
  *
  * Pending runs are tracked by run_id, not nested inside the connection
- * object, and survive a reconnect within `RECONNECT_GRACE_MS`
- * (control-center-plan.md §5: "an interrupted connection while a run is
- * active keeps the process alive"). A brief WS blip — laptop sleep/wake, a
- * flaky network — must not permanently fail a run whose daemon-side process
- * is still running and will report its real outcome once reconnected.
+ * object, and survive a reconnect within `RECONNECT_GRACE_MS`. A brief
+ * disconnect must not fail a run whose daemon-side process is still running
+ * and will report its real outcome once reconnected.
  *
- * Narrower than the plan's full "interruption semantics" bullet: a
- * disconnect that outlasts the grace window still resolves the pending run
- * as a normal failure (`host_disconnected`), not a distinct `interrupted`
- * run status with its own reconciliation-on-reconnect lifecycle — adding a
- * new terminal run status would touch retry policy, the supervisor, and
- * finalization across the whole run subsystem, out of proportion for this
- * phase. See `.agent/tasks/deferred-register.md`.
+ * A disconnect that outlasts the grace window resolves the pending run as
+ * `host_disconnected`. Do not add a distinct `interrupted` run status for
+ * that. Retry policy, the supervisor, and finalization key off the existing
+ * terminal statuses.
  */
 
 export interface HostFrameSink {
@@ -103,26 +95,18 @@ interface PendingRun {
   onOutput?: (chunk: string) => void;
   onStderr?: (chunk: string) => void;
   /**
-   * ACP runtime replatform P2: fires once the daemon confirms the run is
-   * registered and its child process spawned. A bidirectional-protocol
-   * caller must wait for this before sending the first `stdin` frame — see
-   * the `launched` frame's doc comment in `packages/host-daemon/src/execution.ts`.
+   * Fires once the daemon confirms the run is registered and its child
+   * process spawned. A bidirectional-protocol caller must wait for this
+   * before sending the first `stdin` frame.
    */
   onLaunched?: () => void;
   resolveComplete: (result: HostRunCompletion) => void;
   graceTimer: ReturnType<typeof setTimeout> | null;
   /**
-   * ACP runtime replatform P2 (discovery review fix): a controller-driven
-   * run depends on live outbound `stdin`/`stdin_close` traffic for the
-   * entire run, unlike the one-shot launch path this registry's grace-period
-   * tolerance was originally built for. Without this queue, a `stdin` frame
-   * sent during the same brief blip the grace timer already tolerates for
-   * `output`/`complete` would be silently dropped — the daemon-side agent
-   * and the controller would each wait on a message that never arrives,
-   * stalling the run until its full timeout instead of a few seconds.
-   * Queued frames are redelivered in order once `registerConnection` sees
-   * this host reconnect, mirroring the same "a blip must not lose this run's
-   * state" tolerance already applied to the grace timer above.
+   * A controller-driven run needs live `stdin` / `stdin_close` for the whole
+   * run. A frame sent while the host is briefly offline is queued and
+   * redelivered in order when it reconnects. Do not drop it: the daemon and
+   * the controller would each wait on a message that never arrives.
    */
   pendingStdin: Array<{ type: "stdin"; value: string } | { type: "stdin_close" }>;
   /**
@@ -139,7 +123,7 @@ interface HostConnection {
 
 /** What the daemon reports back for one `install_tool` / `uninstall_tool` request. */
 /** Terminal report of one ambient-session import; sessions arrive before it, one frame each. */
-export interface AmbientImportResult {
+interface AmbientImportResult {
   ok: boolean;
   error: string | null;
   session_count: number;
@@ -157,7 +141,7 @@ export interface AmbientImportResult {
  * a command that failed and a host that never replied are different facts and
  * a verifier has to be able to say which.
  */
-export interface HostCommandOutcome {
+interface HostCommandOutcome {
   ok: boolean;
   exit_code: number;
   stdout: string;
@@ -168,7 +152,7 @@ export interface HostCommandOutcome {
   entries?: string[];
 }
 
-export interface ToolInstallResult {
+interface ToolInstallResult {
   ok: boolean;
   error: string | null;
   /** The installation id (`managed:<version>`) the action produced or removed. */
@@ -176,7 +160,7 @@ export interface ToolInstallResult {
 }
 
 export type FolderReadKind = "tree" | "file" | "git_status" | "git_diff";
-export type FolderReadFailureCode = "host_offline" | "host_timeout" | "location_unknown" | "path_forbidden" | "not_found" | "is_directory" | "too_large" | "read_failed";
+export type FolderReadFailureCode = "host_offline" | "host_timeout" | "location_unknown" | "path_forbidden" | "not_found" | "is_directory" | "too_large" | "read_failed" | "unsupported_platform";
 /** What each `folder_read` kind returns, so callers keep the type the daemon produced. */
 export interface FolderReadPayload {
   tree: FileNode;
@@ -200,13 +184,13 @@ export type FolderWriteSuccess = {
 };
 export type FolderWriteResult = FolderWriteSuccess | { ok: false; error: FolderWriteFailureCode; message?: string };
 
-export interface ManagedWorkspaceResult {
+interface ManagedWorkspaceResult {
   ok: boolean;
   changed: boolean;
   error: string | null;
 }
 
-export interface HostDirectoryListing {
+interface HostDirectoryListing {
   ok: boolean;
   path: string | null;
   parent: string | null;
@@ -215,7 +199,7 @@ export interface HostDirectoryListing {
   error: string | null;
 }
 
-export interface HostWorkspaceRegistration {
+interface HostWorkspaceRegistration {
   ok: boolean;
   workspace_id: string | null;
   display_path: string | null;
@@ -223,7 +207,7 @@ export interface HostWorkspaceRegistration {
 }
 
 /** What a daemon's login terminal sends back, frame by frame. */
-export type LoginSessionEvent =
+type LoginSessionEvent =
   | { type: "output"; data: string }
   | { type: "exit"; exit_code: number; logged_in: boolean | null };
 
@@ -243,9 +227,9 @@ const HOST_COMMAND_GRACE_MS = 30 * 1000;
  * bound normal work.
  */
 const AMBIENT_IMPORT_TIMEOUT_MS = 20 * 60 * 1000;
-export const FOLDER_READ_TIMEOUT_MS = 15_000;
-export const FOLDER_WRITE_TIMEOUT_MS = 15_000;
-export const HOST_ACTION_TIMEOUT_MS = 15_000;
+const FOLDER_READ_TIMEOUT_MS = 15_000;
+const FOLDER_WRITE_TIMEOUT_MS = 15_000;
+const HOST_ACTION_TIMEOUT_MS = 15_000;
 const MANAGED_WORKSPACE_TIMEOUT_MS = 15_000;
 /**
  * Long enough for Codex to start its app-server and answer, short enough that
@@ -377,7 +361,7 @@ export class HostConnectionRegistry {
   }
   private readonly logins = new Map<string, PendingLogin>();
   /**
-   * Stops this process owes a host that was offline when they were due, by
+   * Undelivered stops this process owes a host that was offline when they were due, one per
    * launch attempt: a `terminate` that could not be sent, and every dispatch
    * given up as `host_disconnected` after the reconnect grace window. The
    * daemon may still be running such an attempt — or still have it queued
@@ -410,7 +394,15 @@ export class HostConnectionRegistry {
     this.undeliveredStops.set(hostId, stops);
   }
 
-  registerConnection(hostId: string, sink: HostFrameSink): void {
+  registerConnection(hostId: string, sink: HostFrameSink): boolean {
+    // Revoked after its hello authenticated but before it got here: the
+    // revoke's `closeConnection` found nothing to close, and the token is
+    // already gone, so this socket must not become the host's live
+    // connection — `isOnline` would otherwise dispatch Runs to a revoked host.
+    if (this.revokedHosts.has(hostId)) {
+      sink.close(1008, "host_revoked");
+      return false;
+    }
     // A second connection from the same host (e.g. daemon restart racing its
     // own reconnect) replaces the stale one rather than stacking silently.
     this.connections.get(hostId)?.sink?.close(1000, "superseded_by_new_connection");
@@ -437,11 +429,17 @@ export class HostConnectionRegistry {
     for (const [launchId, stop] of stops ?? []) {
       sink.send({ type: "terminate", run_id: stop.runId, launch_id: launchId, force: stop.force });
     }
+    return true;
   }
 
-  unregisterConnection(hostId: string, sink: HostFrameSink): void {
+  /**
+   * Returns whether `sink` was the host's live connection. A superseded or
+   * never-registered sink changes nothing and reports false, so the caller
+   * can tell a host that went offline from a host that merely reconnected.
+   */
+  unregisterConnection(hostId: string, sink: HostFrameSink): boolean {
     const connection = this.connections.get(hostId);
-    if (!connection || connection.sink !== sink) return;
+    if (!connection || connection.sink !== sink) return false;
     connection.sink = null;
     for (const [runId, pendingRun] of this.pending) {
       if (pendingRun.hostId !== hostId || pendingRun.graceTimer) continue;
@@ -454,6 +452,7 @@ export class HostConnectionRegistry {
       pendingRun.graceTimer.unref?.();
     }
     this.failPendingRequests(hostId);
+    return true;
   }
 
   isOnline(hostId: string): boolean {
@@ -506,15 +505,17 @@ export class HostConnectionRegistry {
     onStderr?: (chunk: string) => void,
     onLaunched?: () => void,
     maxConcurrentRuns: number | null = null,
+    /** The attempt's recorded launch nonce; the registry mints one only for callers that recorded none. */
+    launchId: string = randomUUID(),
   ): Promise<HostRunCompletion> {
     if (!maxConcurrentRuns || this.inFlightFor(hostId) < maxConcurrentRuns) {
-      return this.sendLaunch(hostId, runId, frame, onOutput, onStderr, onLaunched);
+      return this.sendLaunch(hostId, runId, frame, launchId, onOutput, onStderr, onLaunched);
     }
     return new Promise((resolve) => {
       const waiters = this.launchWaiters.get(hostId) ?? [];
       waiters.push({
         runId,
-        start: () => { resolve(this.sendLaunch(hostId, runId, frame, onOutput, onStderr, onLaunched)); },
+        start: () => { resolve(this.sendLaunch(hostId, runId, frame, launchId, onOutput, onStderr, onLaunched)); },
         cancel: () => resolve({ exit_code: -1, timed_out: false, error: "run_abandoned_before_launch" }),
       });
       this.launchWaiters.set(hostId, waiters);
@@ -525,6 +526,7 @@ export class HostConnectionRegistry {
     hostId: string,
     runId: string,
     frame: HostLaunchPayload,
+    launchId: string,
     onOutput?: (chunk: string) => void,
     onStderr?: (chunk: string) => void,
     onLaunched?: () => void,
@@ -535,7 +537,16 @@ export class HostConnectionRegistry {
       return Promise.resolve({ exit_code: -1, timed_out: false, error: "host_offline" });
     }
     const sink = connection.sink;
-    const launchId = randomUUID();
+    // A retry of the same Run before its earlier attempt reported (the
+    // supervisor reuses the run id within seconds of a timed-out attempt's
+    // kill). The earlier dispatch is settled here rather than replaced in
+    // place: its promise is what releases the slot it held, and a slot whose
+    // release never fires stays idle while other Runs wait for it.
+    const previous = this.pending.get(runId);
+    if (previous) {
+      if (previous.graceTimer) clearTimeout(previous.graceTimer);
+      previous.resolveComplete({ exit_code: -1, timed_out: false, error: "superseded_by_retry" });
+    }
     const completion = new Promise<HostRunCompletion>((resolve) => {
       this.pending.set(runId, { hostId, launchId, onOutput, onStderr, onLaunched, resolveComplete: resolve, graceTimer: null, pendingStdin: [], waitingForWorkspace: false });
     });
@@ -1079,7 +1090,7 @@ export class HostConnectionRegistry {
     this.currentDispatch(hostId, runId, launchId)?.onOutput?.(chunk);
   }
 
-  /** Routes a daemon's `stderr` frame the same way `receiveOutput` routes `output` (C5: full live stream, not just a failure tail). */
+  /** Routes a daemon's `stderr` frame the same way `receiveOutput` routes `output`: the live stream, not only a failure tail. */
   receiveStderr(hostId: string, runId: string, chunk: string, launchId: string): void {
     this.currentDispatch(hostId, runId, launchId)?.onStderr?.(chunk);
   }

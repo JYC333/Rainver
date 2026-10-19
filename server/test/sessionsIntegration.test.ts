@@ -5,16 +5,17 @@ import { resetTables } from "./support/resetTables.js";
 import { seedRun } from "./support/domainSeeds.js";
 import { ROOT_BRANCH_PATH, childBranchPath, visibleMessagePathSql } from "../src/modules/sessions/messagePath.js";
 import { PgSessionRepository } from "../src/modules/sessions/repository.js";
+import { PgProposalRepository } from "../src/modules/proposals/repository.js";
 
 // Real-PostgreSQL integration tests for the server sessions repository. The unit
-// suites use a fake that records arguments but never runs SQL, so they cannot
-// catch the defects that only surface on the real stack: the required
+// suites use a fake that records arguments but never runs SQL. These lock what
+// the real schema enforces: the required
 // default columns (id/status/created_at/updated_at) a raw INSERT must supply,
 // the ck_messages_role CHECK, jsonb param binding, varchar lengths, and the
-// add-message + session-touch CTE. These run the actual SQL against a throwaway
+// add-message + session-touch CTE. They run through `useTestDatabase`.
 //
-// The suite skips gracefully when Docker is unavailable so `pnpm test` still runs
-// everywhere; where Docker is present (dev, CI) it always runs.
+// The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 let repo: PgSessionRepository | undefined;
 
@@ -309,9 +310,9 @@ describe("PgSessionRepository against real Postgres", () => {
     expect(page).toHaveLength(20);
     expect(page!.at(-1)!.content).toBe("body 4999");
 
-    // The cost of a page must not scale with the conversation. A read that
-    // walked `parent_message_id` per page touched ~15000 buffers here; the
-    // materialized path answers the same page from the index.
+    // The cost of a page must not scale with the conversation. Do not walk
+    // `parent_message_id` per page. The materialized path answers the same
+    // page from the index.
     const plan = await db.pool.query<{ "QUERY PLAN": string }>(
       `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
        SELECT m.id FROM messages m
@@ -351,6 +352,51 @@ describe("PgSessionRepository against real Postgres", () => {
         content: "x",
       }),
     ).rejects.toThrow();
+  });
+
+  it("keeps a reflection of a private chat private to the person who had it", async () => {
+    if (!db.available || !repo) return;
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES (gen_random_uuid()::text, $1, 'user-1', 'owner', 'active', now(), now()),
+              (gen_random_uuid()::text, $1, 'user-2', 'member', 'active', now(), now())`,
+      [SPACE],
+    );
+    const session = await repo.createSession(SPACE, USER, { title: "private chat" });
+    await repo.addMessage(SPACE, USER, session.id, { role: "user", content: "Something only I should see." });
+
+    expect(await repo.reflectSession(SPACE, USER, session.id)).toMatchObject({ proposals_created: 1 });
+    const { rows } = await db.pool.query<{ id: string }>(`SELECT id FROM proposals WHERE space_id = $1`, [SPACE]);
+    const proposals = new PgProposalRepository(db.pool);
+    expect(await proposals.getVisible(SPACE, USER, rows[0]!.id)).toMatchObject({
+      proposed_content: expect.stringContaining("Something only I should see."),
+    });
+    expect(await proposals.getVisible(SPACE, "user-2", rows[0]!.id)).toBeNull();
+  });
+
+  it("reflects the newest messages when the chat outgrows the proposal, and names only those", async () => {
+    if (!db.available || !repo) return;
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES (gen_random_uuid()::text, $1, 'user-1', 'owner', 'active', now(), now())`,
+      [SPACE],
+    );
+    const session = await repo.createSession(SPACE, USER, { title: "long chat" });
+    const oldest = await repo.addMessage(SPACE, USER, session.id, { role: "user", content: `OLDEST ${"o".repeat(7_000)}` });
+    const middle = await repo.addMessage(SPACE, USER, session.id, { role: "assistant", content: `MIDDLE ${"m".repeat(7_000)}` });
+    const newest = await repo.addMessage(SPACE, USER, session.id, { role: "user", content: "NEWEST and what matters most" });
+
+    expect(await repo.reflectSession(SPACE, USER, session.id)).toMatchObject({ proposals_created: 1 });
+    const { rows } = await db.pool.query<{ payload_json: Record<string, unknown> }>(
+      `SELECT payload_json FROM proposals WHERE space_id = $1`, [SPACE],
+    );
+    const payload = rows[0]!.payload_json;
+    expect(payload.proposed_content).toContain("NEWEST");
+    expect(payload.proposed_content).toContain("MIDDLE");
+    expect(payload.proposed_content).not.toContain("OLDEST");
+    expect(payload.source_message_ids).toEqual([middle!.id, newest!.id]);
+    expect((payload.provenance_entries as Array<{ evidence_json: { message_count: number } }>)[0]!.evidence_json.message_count).toBe(2);
+    expect(payload.source_message_ids).not.toContain(oldest!.id);
   });
 
   it("404s message listing for a session the user cannot see", async () => {

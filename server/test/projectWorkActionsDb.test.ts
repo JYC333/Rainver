@@ -23,6 +23,7 @@ import {
 import { HttpError } from "../src/modules/routeUtils/common.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 
 /**
  * The Agent's Project write surface.
@@ -163,9 +164,9 @@ beforeEach(async () => {
 });
 
 describe("origin gate", () => {
-  // The whole Project-internal write class (ADR 0017 §2), not only Tasks:
-  // removing the proposal gate from Inquiry did not widen who may act, it
-  // moved the question from who wrote it to whether anybody asked.
+  // The whole Project-internal write class (ADR 0017 §2), not only Tasks.
+  // Who may act is whether anybody asked, not who wrote it. Do not treat
+  // the absence of a proposal gate as a wider set of actors.
   const gated = [
     "task.create",
     "task.stage.advance",
@@ -350,6 +351,40 @@ describe("task.complete", () => {
     const kinds = (await events(task)).map((event) => event.kind);
     expect(kinds).toContain("task.flow_changed");
     expect(kinds).toContain("task.reported");
+  });
+
+  it("stamps completed_at when the Agent closes the Task, as the Board and settlement do", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask(task);
+
+    await completeTask(db.pool!, await agentContext(), { task_id: task, summary: "done" });
+
+    const row = await db.pool!.query<{ completed_at: string | null }>(`SELECT completed_at FROM tasks WHERE id = $1`, [task]);
+    expect(row.rows[0]?.completed_at).not.toBeNull();
+  });
+
+  it("does not overwrite a cancel made while the Agent was completing the Task", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask(task);
+    const person = await db.pool!.connect();
+    try {
+      await person.query("BEGIN");
+      await person.query(`UPDATE tasks SET status = 'cancelled', cancelled_at = now() WHERE id = $1`, [task]);
+      let settled = false;
+      const closing = completeTask(db.pool!, await agentContext(), { task_id: task, summary: "finished" })
+        .finally(() => { settled = true; });
+      await waitForLockWaiter(db.pool!, { settled: () => settled });
+      await person.query("COMMIT");
+      await expect(closing).rejects.toMatchObject({ statusCode: 409 });
+    } finally {
+      await person.query("ROLLBACK").catch(() => undefined);
+      person.release();
+    }
+    const row = await db.pool!.query<{ status: string }>(`SELECT status FROM tasks WHERE id = $1`, [task]);
+    expect(row.rows[0]?.status).toBe("cancelled");
+    expect((await events(task)).map((event) => event.kind)).not.toContain("task.flow_changed");
   });
 
   it("refuses a Task that is already closed rather than writing the move twice", async (ctx) => {
@@ -588,10 +623,9 @@ describe("the origin gate at the dispatch path", () => {
   /**
    * The band the decision-table cases above cannot reach.
    *
-   * `engineCheck` with a hand-built ctx proves the rule; it says nothing about
-   * whether anything ever supplies `trigger_origin`. The first version of this
-   * phase did not, so the gate was inert at every real dispatch while its unit
-   * cases passed — the same shape of gap P1 and P2 each hit once.
+   * `engineCheck` with a hand-built ctx proves the rule. The dispatch path
+   * must also supply `trigger_origin`. A gate whose unit cases pass while no
+   * caller supplies the origin does nothing.
    */
   async function enforceFor(runOverrides: Partial<AgentRunRecord> & { trigger_origin: string }, actionId: string) {
     const registry = await loadSystemActionRegistry();
@@ -644,7 +678,7 @@ describe("the origin gate at the dispatch path", () => {
       `INSERT INTO runs (id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type, trigger_origin, status, mode, owner_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $6, $4, 'sandboxed', 'agent', 'autonomous', 'running', 'live', $5, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [root, SPACE, AGENT, PROJECT, OWNER, VERSION],
     );
-    const decision = await enforceFor({ trigger_origin: "delegation", root_run_id: root }, "task.create");
+    const decision = await enforceFor({ trigger_origin: "delegation", root_run_id: root, parent_run_id: root }, "task.create");
     expect(decision.allowed).toBe(false);
   });
 
@@ -655,7 +689,7 @@ describe("the origin gate at the dispatch path", () => {
       `INSERT INTO runs (id, space_id, agent_id, agent_version_id, project_id, trust_mode, run_type, trigger_origin, status, mode, owner_user_id, created_at, updated_at, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json) VALUES ($1, $2, $3, $6, $4, 'sandboxed', 'agent', 'manual', 'running', 'live', $5, now(), now(), 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [root, SPACE, AGENT, PROJECT, OWNER, VERSION],
     );
-    const decision = await enforceFor({ trigger_origin: "delegation", root_run_id: root }, "task.create");
+    const decision = await enforceFor({ trigger_origin: "delegation", root_run_id: root, parent_run_id: root }, "task.create");
     expect(decision.allowed).toBe(true);
   });
 
@@ -686,7 +720,7 @@ describe("the executor band", () => {
    *
    * The cases above prove the rule and the domain writes; the executors are
    * where the Project scope, the actor, and the idempotency key are actually
-   * composed, and every P3 blocker but one lived exactly here.
+   * composed. Do not compose them anywhere else.
    */
   function executorsFor(overrides: Record<string, unknown> = {}) {
     const executors = new Map<SystemActionId, SystemActionExecutor>();
@@ -736,8 +770,8 @@ describe("the executor band", () => {
 
   it("answers an invented task_id with the ids that exist", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The failure a composed id used to produce said only "Task not found",
-    // which left the model no way to correct itself.
+    // An invented task_id answers with the ids that exist. Do not say only
+    // "Task not found": the model then has no way to correct itself.
     const real = randomUUID();
     await makeTask(real);
     const { executors } = executorsFor();
@@ -771,8 +805,8 @@ describe("the executor band", () => {
 
   it("refuses a Project the model named that is not the Run's", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // Taking the Project from the input let an Agent write into one the person
-    // it acts for is not a member of.
+    // Do not take the Project from the input. An Agent could write into one
+    // the person it acts for is not a member of.
     const { executors } = executorsFor();
     await expect(executors.get("task.create" as SystemActionId)!(
       { project_id: OTHER_PROJECT, title: "Elsewhere" },
@@ -820,8 +854,8 @@ describe("the executor band", () => {
   it("keys events per attempt, so a Supervisor retry is not swallowed", async (ctx) => {
     if (!db.available) return ctx.skip();
     // A retry re-executes the same run id in a fresh process whose tool-call
-    // counter restarts at 1. Keyed on the Run alone, attempt 2's first report
-    // resolved to attempt 1's event and answered ok.
+    // counter restarts at 1. Do not key the event on the Run alone. Attempt
+    // 2's first report would resolve to attempt 1's event and answer ok.
     const taskA = randomUUID();
     const taskB = randomUUID();
     await makeTask(taskA);

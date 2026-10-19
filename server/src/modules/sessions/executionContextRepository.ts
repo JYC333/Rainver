@@ -47,7 +47,7 @@ export interface ExecutionContextRow {
   updated_at: string;
 }
 
-export interface ExecutionAttachmentRow {
+interface ExecutionAttachmentRow {
   id: string;
   space_id: string;
   session_id: string;
@@ -106,7 +106,7 @@ export interface RuntimeProfileRow {
   is_default: boolean;
 }
 
-export interface ConversationRuntimeThreadRow {
+interface ConversationRuntimeThreadRow {
   agent_id: string;
   execution_host_id: string;
   workspace_mode: "managed" | "location";
@@ -647,8 +647,8 @@ export class PgConversationExecutionContextRepository {
 /**
  * Whether this host is actually reachable right now.
  *
- * The built-in host is not exempt: its daemon runs in a container that can be
- * stopped, and reporting it online regardless showed "Server" as a usable
+ * The built-in host is not exempt. Its daemon runs in a container that can be
+ * stopped. Do not report it online regardless: "Server" would be a usable
  * backend with nothing running behind it. What does not apply to it is
  * *ownership* — it has no owner (ADR 0016 §3) — which is a different check.
  */
@@ -667,7 +667,7 @@ export function hostSummary(host: ExecutionHostRow, sessionId: string): Conversa
   };
 }
 
-export function hasConversationWorkspace(value: unknown, sessionId: string): boolean {
+function hasConversationWorkspace(value: unknown, sessionId: string): boolean {
   if (!Array.isArray(value)) return false;
   return value.some((item) => item && typeof item === "object"
     && (item as Record<string, unknown>).container_kind === "conversation"

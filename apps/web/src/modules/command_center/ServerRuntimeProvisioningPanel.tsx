@@ -96,8 +96,7 @@ export default function ServerRuntimeProvisioningPanel({
           <p className="text-xs text-muted-foreground">
             Native account {nativeAccountLabel(status.native_account.logged_in)}. ACP models may still work without an account; ModelProvider Profiles use Rainver&apos;s proxy.
           </p>
-          {/* Plan Phase 4 §8: said where the login actually happens, not only
-              on the Agent surfaces that consume it. */}
+          {/* Where the login happens, not only on the Agent surfaces that consume it. */}
           <p className="text-xs text-muted-foreground">
             If signed in, this account is instance-wide: every person authorized to run Agents on the Server Runtime can use it.
           </p>

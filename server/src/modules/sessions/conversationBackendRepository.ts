@@ -73,7 +73,7 @@ interface BindingRow {
 }
 
 export interface ResolvedConversationBackend extends ConversationBackendBinding {
-  /** Present on persisted bindings; optional for legacy test/adaptor ports. */
+  /** Present on a persisted binding. A constructed value may omit it. */
   agent_kind?: string;
   binding_id: string;
   runtime_state_key: string;
@@ -250,8 +250,8 @@ export class PgConversationBackendRepository {
       const hostBound = Boolean(
         profile.execution_host_id && profile.workspace_mode && profile.runtime_installation,
       );
-      // A CLI profile that names no execution host runs nowhere: since ADR
-      // 0016 there is no server-side copy of a vendor CLI to fall back to.
+      // A CLI profile that names no execution host runs nowhere. There is no
+      // server-side copy of a vendor CLI to fall back to.
       if (!hostBound && isLocalCliRuntimeAdapter(profile.runtime_key)) return [];
       const providerAvailable =
         profile.model_provider_id !== null &&
@@ -264,11 +264,10 @@ export class PgConversationBackendRepository {
         return [];
       }
       // The built-in host is a daemon like any other: it can be stopped, and
-      // its container can be down while the control plane is up. Waiving the
-      // liveness check for it showed "Server" as usable with nothing running,
-      // and the person found out at send time from the one gate that is
-      // honest. Ownership is the only thing that does not apply to it — there
-      // is no owner to be (ADR 0016 §3).
+      // its container can be down while the control plane is up. Do not waive
+      // the liveness check. "Server" would look usable with nothing running,
+      // and the person would find out at send time. Ownership is the only
+      // thing that does not apply to it — there is no owner to be (ADR 0016 §3).
       const hostOnline = hostBound
         && profile.host_status === "online"
         && !isStale(profile.host_last_heartbeat_at);
@@ -337,14 +336,7 @@ export class PgConversationBackendRepository {
     agent_id: string;
     requested?: { runtime_profile_id: string } | null;
   }): Promise<ResolvedConversationBackend> {
-    const executionContext = await this.db.query<{ state: string }>(
-      `SELECT state
-         FROM conversation_execution_contexts
-        WHERE space_id = $1 AND session_id = $2
-        LIMIT 1`,
-      [input.space_id, input.session_id],
-    );
-    const initialized = executionContext.rows[0]?.state === "initialized";
+    const initialized = await this.isInitialized(input.space_id, input.session_id);
     // Once initialized, the Conversation-scoped binding is authoritative.
     // Never let a member's user-scoped Room binding shadow the pinned runtime.
     const existing = initialized
@@ -439,10 +431,25 @@ export class PgConversationBackendRepository {
     sessionId: string,
     agentId: string,
   ): Promise<ConversationBackendBinding | null> {
-    const binding = await this.findResolvedBinding(spaceId, userId, sessionId, agentId);
+    // Like resolveBinding: once the Conversation is initialized, its one
+    // pinned binding answers for every member, not only the one who bound it.
+    const binding = await this.isInitialized(spaceId, sessionId)
+      ? await this.findConversationResolvedBinding(spaceId, sessionId, agentId)
+      : await this.findResolvedBinding(spaceId, userId, sessionId, agentId);
     return binding
       ? { runtime_profile_id: binding.runtime_profile_id, runtime_key: binding.runtime_key }
       : null;
+  }
+
+  private async isInitialized(spaceId: string, sessionId: string): Promise<boolean> {
+    const executionContext = await this.db.query<{ state: string }>(
+      `SELECT state
+         FROM conversation_execution_contexts
+        WHERE space_id = $1 AND session_id = $2
+        LIMIT 1`,
+      [spaceId, sessionId],
+    );
+    return executionContext.rows[0]?.state === "initialized";
   }
 
   private async findResolvedBinding(

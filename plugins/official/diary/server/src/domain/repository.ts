@@ -108,7 +108,13 @@ export const diaryRepository = {
     return result.rows;
   },
 
-  async insertReflection(
+  /**
+   * One reflection per entry and day: every save of the entry enqueues a
+   * reflection job, and two workers may run the same one at once. The unique
+   * key on `(entry_id, reflection_date)` makes the second writer update the
+   * row the first one made instead of adding a copy.
+   */
+  async saveReflection(
     db: Queryable,
     entryId: string,
     reflectionDate: string,
@@ -118,6 +124,9 @@ export const diaryRepository = {
     const result = await db.query<DiaryReflectionRow>(
       `INSERT INTO diary_reflections (entry_id, reflection_date, content, ai_model)
        VALUES ($1, $2::date, $3, $4)
+       ON CONFLICT (entry_id, reflection_date) DO UPDATE
+         SET content = EXCLUDED.content,
+             ai_model = EXCLUDED.ai_model
        RETURNING id, entry_id, reflection_date::text, content, ai_model, created_at::text`,
       [entryId, reflectionDate, content, aiModel ?? null],
     );

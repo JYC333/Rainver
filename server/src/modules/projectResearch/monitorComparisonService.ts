@@ -13,7 +13,7 @@ import {
   resolveProjectResearchMonitorComparePrompt,
 } from "./promptRegistry.js";
 
-export const MONITOR_COMPARISON_OUTPUT_CONTRACT = {
+const MONITOR_COMPARISON_OUTPUT_CONTRACT = {
   type: "json_schema",
   schema_id: "project_research.monitor_compare.v1",
   strict: true,
@@ -62,11 +62,11 @@ export const COMPARISON_BATCH_SIZE = 6;
  * Why `queue` reports three outcomes rather than returning `null` twice: "no
  * eligible material in this batch" is routine and the coordinator moves on, while
  * "this project has no note in the `understanding` role" means the comparison
- * has no baseline to compare against. Collapsing them is what let the old
- * title-string binding fail in silence — the comparison ran with an empty
- * current understanding and every item looked like a new direction.
+ * has no baseline to compare against. Do not collapse them. The comparison
+ * would run with an empty current understanding and every item would look
+ * like a new direction.
  */
-export type MonitorComparisonQueueResult =
+type MonitorComparisonQueueResult =
   | { readonly outcome: "queued"; readonly runId: string; readonly jobId: string; readonly sourceItemIds: string[] }
   | { readonly outcome: "no_eligible_material" }
   | { readonly outcome: "no_baseline"; readonly role: NoteProjectRole };
@@ -252,6 +252,8 @@ export class ProjectResearchMonitorComparisonService {
 
   private async eligibleMaterial(spaceId: string, projectId: string, sourceItemIds: string[]) {
     if (sourceItemIds.length === 0) return [];
+    // `relevance` keeps the AI's verdict after a person triages the item, so
+    // an exclusion has to be checked on its own or it would be compared anyway.
     const rows = await this.db.query<{
       source_item_id: string; title: string | null; excerpt: string | null;
       why_md: string | null; how_md: string | null; what_md: string | null;
@@ -263,7 +265,8 @@ export class ProjectResearchMonitorComparisonService {
          JOIN source_items si ON si.id=pcis.source_item_id AND si.space_id=pcis.space_id AND si.deleted_at IS NULL
          LEFT JOIN research_evidence_cards pc ON pc.space_id=pci.space_id AND pc.project_id=pci.project_id AND pc.source_item_id=pcis.source_item_id
         WHERE pci.space_id=$1 AND pci.project_id=$2 AND pcis.source_item_id=ANY($3::text[])
-          AND pci.status='active' AND (pci.triage_status IN ('relevant','included','maybe') OR pci.relevance IN ('relevant','maybe'))
+          AND pci.status='active' AND pci.triage_status<>'excluded'
+          AND (pci.triage_status IN ('relevant','included','maybe') OR pci.relevance IN ('relevant','maybe'))
         ORDER BY pcis.source_item_id,pci.updated_at DESC`,
       [spaceId, projectId, sourceItemIds],
     );
@@ -274,11 +277,10 @@ export class ProjectResearchMonitorComparisonService {
 /**
  * Extracts whatever valid, matching comparisons the model actually produced
  * — it never throws for content problems. A model occasionally drops,
- * duplicates, or invents a source_item_id (observed: a run fabricating 8
- * comparisons for material that was never sent and does not exist); discarding
- * an entire batch's worth of otherwise-good analysis over one bad entry, or
- * failing the whole monitoring operation over it, is worse than the
- * problem. The caller (see ProjectResearchMonitoringCoordinator) is
+ * duplicates, or invents a source_item_id for material that was never sent
+ * and does not exist. Do not discard an entire batch's otherwise-good
+ * analysis over one bad entry, and do not fail the whole monitoring
+ * operation over it. The caller (see ProjectResearchMonitoringCoordinator) is
  * responsible for noticing which of `expectedSourceItemIds` didn't get a
  * match and routing those to a one-at-a-time retry.
  */
@@ -300,11 +302,10 @@ export function parseMonitorComparisons(output: unknown, expectedSourceItemIds: 
   const values = objectValue(output).comparisons;
   if (!Array.isArray(values)) return [];
 
-  // With exactly one candidate there's nothing to disambiguate — matching
-  // source_item_id only ever cost a solo retry over the model relabeling or
-  // omitting an id it didn't need to get right in the first place. Accept
-  // the first structurally valid entry and attach it to the one item
-  // actually asked about, regardless of what id (if any) it echoed back.
+  // With exactly one candidate there is nothing to disambiguate. Accept the
+  // first structurally valid entry and attach it to the one item asked
+  // about, regardless of what id it echoed. Do not retry because the model
+  // relabeled or omitted an id.
   if (expectedSourceItemIds.length === 1) {
     for (const raw of values) {
       const fields = parseComparisonFields(raw);

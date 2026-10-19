@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+import type { ServerResponse } from "node:http";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CredentialSpendAuthorization } from "../src/modules/policy/credentialSpend.js";
 import { loadConfig } from "../src/config.js";
 import { ProviderProxyLeaseRegistry } from "../src/modules/providers/proxy/lease.js";
-import { startProviderProxyServer, type ProviderProxyServerHandle } from "../src/modules/providers/proxy/server.js";
+import { pipeReaderToResponse, startProviderProxyServer, type ProviderProxyServerHandle } from "../src/modules/providers/proxy/server.js";
 import type { UsageAttribution, UsageObservation } from "../src/modules/usage/index.js";
 import { startMockUpstream, type MockUpstream } from "./support/mockUpstream.js";
 
@@ -120,6 +122,41 @@ describe("provider proxy server", () => {
     expect(upstream.requests[0].headers["accept-encoding"]).toBe("identity");
   });
 
+  it("holds a lease judged local to its model, so a request cannot switch to one the server forwards to the cloud", async () => {
+    const upstream = await startMockUpstream();
+    upstreams.push(upstream);
+    const leases = new ProviderProxyLeaseRegistry();
+    const proxy = await startProviderProxyServer(config(), {
+      leaseRegistry: leases,
+      commandStore: { async resolveProviderApiKey() { return "provider-secret"; } },
+      resolveUsageAttribution: testUsageAttribution,
+      async recordUsageObservation() {},
+    });
+    handles.push(proxy);
+    const lease = leases.create(authorizedFor("space-1", "run-local", "provider-local"), {
+      run_id: "run-local",
+      space_id: "space-1",
+      provider_id: "provider-local",
+      route: "openai",
+      upstream_base_url: `${upstream.baseUrl}/v1`,
+      model: "llama3.1",
+      pinned_model: "llama3.1",
+      ttl_ms: 60_000,
+    });
+    const send = (model: string) => fetch(`${proxy.baseUrl}/openai/${lease.id}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${lease.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ model, messages: [] }),
+    });
+
+    const refused = await send("gpt-oss:120b-cloud");
+    expect(refused.status).toBe(403);
+    await expect(refused.json()).resolves.toEqual({ error: "provider_proxy_model_not_leased" });
+    expect(upstream.requests).toHaveLength(0);
+    expect((await send("llama3.1")).status).toBe(200);
+    expect(upstream.requests).toHaveLength(1);
+  });
+
   it("does not forward upstream encoding metadata after fetch decodes the body", async () => {
     const leases = new ProviderProxyLeaseRegistry();
     const proxy = await startProviderProxyServer(config(), {
@@ -163,6 +200,76 @@ describe("provider proxy server", () => {
     await expect(response.json()).resolves.toEqual({ ok: true });
     expect(response.headers.get("content-encoding")).toBeNull();
     expect(response.headers.get("content-length")).not.toBe("999");
+  });
+
+  it("ends a stream the provider breaks without taking the proxy down", async () => {
+    const leases = new ProviderProxyLeaseRegistry();
+    let calls = 0;
+    const proxy = await startProviderProxyServer(config(), {
+      leaseRegistry: leases,
+      commandStore: { async resolveProviderApiKey() { return "provider-secret"; } },
+      resolveUsageAttribution: testUsageAttribution,
+      async recordUsageObservation() {},
+      fetch: async () => {
+        calls += 1;
+        const broken = calls === 1;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(broken ? "data: one\n\n" : "data: two\n\n"));
+            if (!broken) controller.close();
+          },
+          pull(controller) {
+            if (broken) controller.error(new Error("terminated"));
+          },
+        });
+        return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+      },
+    });
+    handles.push(proxy);
+    const lease = leases.create(authorizedFor("space-1", "run-stream", "provider-stream"), {
+      run_id: "run-stream",
+      space_id: "space-1",
+      provider_id: "provider-stream",
+      route: "openai",
+      upstream_base_url: "https://provider.example",
+      ttl_ms: 60_000,
+    });
+    const request = () => fetch(`${proxy.baseUrl}/openai/${lease.id}/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${lease.token}`, "content-type": "application/json" },
+      body: "{}",
+    });
+
+    // The broken request fails, at the headers or mid-body; the proxy lives on.
+    await expect(request().then((response) => response.text())).rejects.toThrow();
+    await expect((await request()).text()).resolves.toContain("data: two");
+  });
+
+  it("stops streaming and releases the upstream body when the client goes away under backpressure", async () => {
+    let cancelled = false;
+    const upstream = new ReadableStream<Uint8Array>({
+      pull(controller) { controller.enqueue(new Uint8Array(1024)); },
+      cancel() { cancelled = true; },
+    });
+    // A response whose socket buffer is full: write() says wait for 'drain'.
+    // The client then hangs up, which is 'close', never 'drain'.
+    class StalledResponse extends EventEmitter {
+      destroyed = false;
+      writableEnded = false;
+      writes = 0;
+      write(): boolean { this.writes += 1; return false; }
+      end(): void { this.writableEnded = true; }
+    }
+    const response = new StalledResponse();
+
+    const piping = pipeReaderToResponse(upstream.getReader(), response as unknown as ServerResponse, []);
+    await vi.waitUntil(() => response.writes === 1);
+    response.destroyed = true;
+    response.emit("close");
+
+    await piping;
+    expect(cancelled).toBe(true);
+    expect(response.writes).toBe(1);
   });
 
   it("rejects invalid lease tokens before reaching the upstream provider", async () => {

@@ -347,7 +347,7 @@ describe("deterministic routing against shared PostgreSQL", () => {
 
   it("counts a paired Host owner's own Run as medium trust", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
-    // ADR 0016 amendment (2026-09-21): a paired Host is the owner's own
+    // ADR 0016 owner-trust amendment: a paired Host is the owner's own
     // machine, so a Run the owner is responsible for carries the trust that
     // owner already extends to it. No explicit risk level here, so this is the
     // product-default `medium` Agent every ordinary Agent starts as.
@@ -510,9 +510,10 @@ describe("deterministic routing against shared PostgreSQL", () => {
   it("answers credential availability from the Conversation snapshot, not the Profile's current Provider", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     // The Profile was re-pointed at a Provider that is now disabled; the
-    // Conversation is still bound to the one it froze, which is usable. The
-    // candidate's own `credential_available` answered for the Profile, so
-    // inheriting it rejected a Run whose snapshot was perfectly routable.
+    // Conversation is still bound to the one it froze, which is usable.
+    // Do not inherit the candidate's `credential_available`. That flag
+    // answered for the Profile, and inheriting it would reject a Run whose
+    // snapshot is routable.
     const retiredProvider = randomUUID();
     const now = new Date().toISOString();
     await db.pool.query(

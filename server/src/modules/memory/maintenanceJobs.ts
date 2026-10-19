@@ -86,7 +86,9 @@ export async function runMemoryMaintenanceJobOnce(
 ): Promise<MemoryMaintenanceJobRunResponse | null> {
   const row = await loadVisibleJob(db, { ...input, forUpdate: true });
   if (!row) return null;
-  if (row.status === "completed" || row.status === "failed") {
+  // A failed page rolled back to the cursor it started from, so running the
+  // job again resumes there; only a scan that reached its end is finished.
+  if (row.status === "completed") {
     return { job: jobFromRow(row), report: null };
   }
   await db.query(
@@ -251,7 +253,7 @@ async function markJobFailed(
   const message = error instanceof Error ? error.message : String(error);
   const result = await db.query<MemoryMaintenanceJobRow>(
     `UPDATE memory_maintenance_jobs
-        SET status = 'failed', error_message = $3, updated_at = now(), completed_at = now()
+        SET status = 'failed', error_message = $3, updated_at = now()
       WHERE id = $1 AND space_id = $2
       RETURNING id, space_id, owner_user_id, status, review_scope, scan_options_json,
                 cursor, total_scanned, total_findings, last_report_artifact_id,
@@ -363,11 +365,4 @@ function record(value: unknown): Record<string, unknown> {
 
 function asIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
-}
-
-export class MemoryMaintenanceJobError extends Error {
-  constructor(message: string, readonly statusCode = 400) {
-    super(message);
-    this.name = "MemoryMaintenanceJobError";
-  }
 }

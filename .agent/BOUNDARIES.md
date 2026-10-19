@@ -13,11 +13,17 @@ Load this file for any task that changes structure, models, APIs, or agent behav
 **B3** — One deployment instance can host many spaces. Do not create one instance per user or one instance per space.
 
 **B4** — Space is the product-level isolation boundary. Data in space A must
-never be accessible to code running in the context of space B. The sole
-content-bearing exception is ADR 0013's enumerated, user-centred `/me/retrieval*`
-path: it has no request-Space authority, applies each source Space's read gate
-independently, persists retrieved content only as re-authorized pointers, and
-grants no write authority to another Space.
+never be accessible to code running in the context of space B. Two enumerated,
+user-centred exceptions carry content across it, both recorded in
+[SECURITY_AND_ACCESS_BOUNDARIES §8](architecture/SECURITY_AND_ACCESS_BOUNDARIES.md):
+ADR 0013's `/me/retrieval*` path, which has no request-Space authority, applies
+each source Space's read gate independently, persists retrieved content only as
+re-authorized pointers, and grants no write authority to another Space; and ADR
+0013 decision 9's capture relocation (`/captures/:activityId/relocation`),
+which reads a capture the caller can already read as an active member of its
+Space, without oversight, and writes it only where the caller holds Project
+write access, under the source Space's copy-out setting for another member's
+content.
 
 **B5** — `space_id` is required on every core data entity. Runtime Context acquisition and Delivery persistence require an explicit Space and reject cross-Space authority drift.
 
@@ -69,11 +75,10 @@ profile and the serendipity quota are two states that never write to each
 other. `server/src/modules/interestProfile/` must not read serendipity signals.
 
 **B55** — Serendipity gaps are computed against the code-owned domain skeleton,
-never against the reader's own coverage distribution. With their own history as
-the reference frame, "not yet encountered" can only be drawn from material their
-own sources already surfaced, and the source pool is itself a product of their
-interests — so the ceiling is the bubble the mechanism exists to break. The
-skeleton's independence from the reader is the property that makes it work, and
+never against the reader's own coverage distribution. Do not use that coverage
+as the reference frame. "Not yet encountered" would only be drawn from material
+their own sources already surfaced, and the source pool is itself a product of
+their interests. The skeleton's independence from the reader is the property that makes it work, and
 is also why cold start needs no special case.
 
 **B56** — Per-user reading state leaves the individual only as an anonymous
@@ -86,7 +91,7 @@ digest, or team report.
 
 | Link meaning | Canonical writer/table |
 |---|---|
-| Both endpoints are `space_objects` and the edge is part of the durable graph | `object_relations`, owned by the `ontology` module. Governance is declared per link type **and endpoint pair**, not per table: `supports` between two Threads is direct-write working structure, while `supports` between two Claims is a reviewed assertion ([ADR 0012](decisions/0012-ontology-ownership-and-language-alignment.md) decision 3, amended) |
+| Both endpoints are `space_objects` and the edge is part of the durable graph | `object_relations`, owned by the `ontology` module. Governance is declared per link type **and endpoint pair**, not per table: `supports` between two Threads is direct-write working structure, while `supports` between two Claims is a reviewed assertion ([ADR 0012](decisions/0012-ontology-ownership-and-language-alignment.md) decision 3) |
 | Curated KnowledgeItem/Claim citation or supporting evidence | `knowledge_item_sources` / `claim_sources`; citation lineage is not a canonical semantic graph edge |
 | Accepted asymmetric lineage with a non-object endpoint | `provenance_links`, or the owning domain's dedicated `*_sources` table |
 | MemoryEntry-to-MemoryEntry semantic relationship | `memory_relations`; its relation vocabulary is frozen and must not expand into general provenance |
@@ -112,8 +117,8 @@ the link as canonical object existence.
 
 These invariants are accepted in
 [ADR 0012](decisions/0012-ontology-ownership-and-language-alignment.md) and
-[ADR 0011](decisions/0011-inquiry-domain-model.md), and are enforced in code as
-of 2026-08-05 — the pre-migration shape is gone. `test/ontologyRegistry.test.ts`
+[ADR 0011](decisions/0011-inquiry-domain-model.md), and are enforced in code.
+`test/ontologyRegistry.test.ts`
 and the `space_objects` writer guard are what keep them enforced; a new domain
 joining the ontology registers into the same registries rather than
 re-implementing the rules.
@@ -155,8 +160,8 @@ validation is the registry's job; the database keeps only format constraints.
 `Graphable`, `Evidenceable`, `ContextIncludable`, `CardSourceable`,
 `ProvenanceSourceable`, `Governed`). Its subject is
 an **Entity** — `space_objects` subtypes and independent roots such as `run`,
-`proposal`, `artifact`, `activity_record`, and `task` alike; unification never
-requires a domain to become a `space_objects` row. Each interface states its
+`proposal`, `artifact`, `activity_record`, and `task` alike. A domain does not
+have to be a `space_objects` row. Each interface states its
 own declaration granularity: `ContentAccessible` is declared once for
 `space_object` and covers every subtype, `Retrievable` is declared per
 `object_type`. **Do not add a parallel per-mechanism type list.** Every
@@ -168,19 +173,23 @@ predicates), which the client-facing package must not import. The copy is
 allowed **only with a server-side test pinning it to the registry** —
 `NOTE_LINK_TARGET_TYPE_VALUES` and `NOTE_PROJECT_ROLE_VALUES` are the pattern.
 A copy without that test is a violation, not a shortcut: a hand-maintained list
-drifting from its backend is the defect this section exists to prevent, and the
+drifting from its backend. Do not ship a copy without that test. The
 test is the entire difference between a projection and a fork. Prefer no copy
 at all where protocol already owns the declaration — the Note selection bar
 reads `systemActionsForObjectType` directly and keeps only its own wording.
 
 **B12I** — The `ontology` module owns the ontology's own definitions and
 storage: the Object Type / Link Type / entity registries and their interface
-declarations, registry-backed validation, polymorphic status resolution, and
-the `space_objects` / `object_relations` / `space_object_profiles` reads and
-proposal writes. It does **not** own the tables of the domains that register
-into it — those modules register their own entities and supply their own
-implementations, as with `ProposalApplierRegistry`. `ontology` must never take
-ownership of a domain table merely because that domain is registered.
+declarations, registry-backed validation, polymorphic status resolution, the
+`space_objects` / `object_relations` / `space_object_profiles` tables, the
+shared endpoint and governance checks every write to them calls, and the
+creation of ontology-object proposals. Domains keep their own read and write
+sites on those tables and call the shared checks (ADR 0012 decision 3); the
+`object_relation_create` applier, for one, lives in `knowledge`. `ontology`
+does **not** own the tables of the domains that register into it — those
+modules register their own entities and supply their own implementations, as
+with `ProposalApplierRegistry`. `ontology` must never take ownership of a
+domain table merely because that domain is registered.
 
 Where a shared concern genuinely spans both — proposal creation, Claim lookup —
 it is passed in as an explicit seam rather than duplicated or absorbed, so the
@@ -215,17 +224,16 @@ then mutate what it cannot see.
 **B13** — Every file-capable runtime-adapter invocation crosses the typed host
 daemon boundary. Callers may send runtime/adapter/workspace identifiers, an
 argv the control plane rendered from an adapter spec, and an isolation policy —
-never a host path, an image, or an ambient environment map, and the daemon
-resolves the executable from the copy it installed rather than from the frame.
+never a host path, an image, or an ambient environment map. The daemon resolves
+the executable itself, never from a path in the frame: a managed installation
+from the manifest of the copy it installed, an `own` installation by the
+server-rendered command name through the child's own `PATH` (ADR 0016 §7).
 Deterministic Verification Engine checks use the
 separate `command_run` frame: it carries a server-defined command and one
 workspace identity, with no shell, no ambient environment, no provider channel
 and a minimal environment. Strict commands have no network; trusted commands
-retain native network access. The C3 conformance suite that also used this
-path is retired (2026-09-09): a one-shot behaviour probe of a vendor CLI,
-cached against a version key and blind to the model actually selected, was not
-evidence a dispatch gate could rest on, and what it stood in for — a Run that
-cannot reach past its workspace — ADR 0016 made structural.
+retain native network access. A Run that cannot reach past its workspace is
+the strict Host's namespace (ADR 0016), not a behavioural probe.
 
 **A verification recipe is code, and it runs on the host that holds the
 workspace.** Its argv comes from a `ValidationRecipe` or a Task's acceptance
@@ -242,9 +250,8 @@ an Agent Run. Every Agent Run — on the built-in Server Host as much as on a
 paired one — is authorized, planned and recorded by the server's Runtime
 Context Gateway before dispatch, and its semantic sections are projected into
 ACP's single user-prompt channel, which has no separate system-message role
-(ADR 0016's amendment of 2026-09-21, which supersedes the earlier daemon
-exception; a Run dispatched without that Delivery fails as
-`runtime_context_authority_missing`). The `rainver` work surface is a separate
+(ADR 0016). A Run dispatched without that Delivery fails as
+`runtime_context_authority_missing`. The `rainver` work surface is a separate
 reachability, not a second context channel: it is how a Run takes live
 governed actions, not where a runtime fetches its context from. Adapters may
 render an accepted Delivery at their invocation boundary but must not fetch,
@@ -295,9 +302,9 @@ callable or execution authority.
 ACP runtimes are generated artifacts, not a second content authority.
 Rainver owns package provenance and snapshot identity, trust and policy,
 scope/Agent binding, pinned-version selection, runtime compatibility, Runtime
-Context Delivery authorization, and audit. The current normalized conversion,
-CapabilityDefinition, profile, binding, and rendering paths are transitional
-implementation state and must not be extended as the target skill model.
+Context Delivery authorization, and audit. The normalized conversion,
+CapabilityDefinition, profile, binding, and rendering paths are not the skill
+model. Do not extend them as one.
 
 ---
 
@@ -332,9 +339,8 @@ sandbox is *intended* to be relaxed inside it so there is exactly one boundary,
 and the daemon does that for Codex by writing `sandbox_mode = "workspace-write"`
 into the copy's `config.toml` before spawn. `RAINVER_STRICT_SANDBOX=1` is still
 exported for anything downstream that reads it. A
-nested vendor sandbox does not fail — that was assumed, never tested, and is
-false; it stacks a read-only policy over the Run's own workspace instead
-(measured 2026-09-08, ADR 0016 §2) unless that config.toml switch is present. **Trusted** is a paired
+nested vendor sandbox does not fail. It stacks a read-only policy over the Run's own workspace
+(ADR 0016 §2) unless that config.toml switch is present. **Trusted** is a paired
 personal machine: native process spawn, no namespace, the machine's own login
 state (from B68, reached through the Agent's own runtime profile rather than
 the machine's `HOME`) unless the Run carries an explicit ModelProvider binding
@@ -342,11 +348,9 @@ the machine's `HOME`) unless the Run carries an explicit ModelProvider binding
 for the built-in host as much as a paired one — it is a daemon connection, not
 an in-process boundary, and must not be reported permanently online. Do not
 weaken strict isolation to make the two modes look uniform, and do not claim
-trusted execution carries guarantees it does not have. The daemon protocol is
-the only execution path and there is no other: the sandbox line
-(`sandbox/runner.mjs`, `modules/sandboxRunner/`, the server-side vendor CLI
-adapter) is deleted. Do not add a second one — an in-process CLI spawn, a
-per-runtime tunnel, a container-per-Run — without a decision superseding this.
+trusted execution carries guarantees it does not have. The daemon protocol is the only execution path. Do not add a second one — an
+in-process CLI spawn, a per-runtime tunnel, a container-per-Run — without a
+decision superseding this.
 
 **B63** — Two safety models, one per trust mode (ADR 0016 §3). A **paired**
 host accepts Runs and serves live Folder reads only for its own registered
@@ -397,17 +401,16 @@ how a CLI runtime picks a backend:
   (`HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_CONFIG_HOME`, and a
   runtime's settings file that can itself export environment). Pointing the
   run at a control-plane-provided profile directory is part of the binding,
-  not an optional extra, and since ADR 0016 there is exactly one place that
-  happens: **the daemon, on the host that runs it**. Nothing on the control
-  plane materializes a profile any more — there is no broker temp HOME and no
-  server-side sandbox cwd to write into, because a CLI does not execute here.
+  not an optional extra. Exactly one place does that: **the daemon, on the
+  host that runs it** (ADR 0016). Nothing on the control plane materializes a
+  profile. There is no broker temp HOME and no server-side sandbox cwd to
+  write into, because a CLI does not execute here.
   The daemon creates a per-(Agent × container × adapter × provider) profile
   directory (B68) and sets every state-root variable the runtime's login spec
   names so the vendor's config resolves inside it, for both host kinds alike.
-  The rule that made this necessary is unchanged: forwarding a path the control
-  plane knows satisfies nothing, because the control plane knows no host path
-  (B64) — profile isolation is established where the run executes or not at
-  all.
+  Forwarding a path the control plane knows satisfies nothing, because the
+  control plane knows no host path (B64) — profile isolation is established
+  where the run executes or not at all.
 
 Two failures this prevents, both silent: a selected provider shadowed by
 machine state, so the Run's recorded `model_provider_id` is a lie; and a
@@ -433,11 +436,10 @@ for a bound run the daemon rebuilds the environment from an allowlist and
 points the runtime at a control-plane-provided profile. A run with no binding
 still inherits the machine's environment — minus only the vendor prefixes that
 would move a runtime's state root back out of its profile or hand it a
-credential the control plane did not choose (B68) — which is the pre-existing
-behavior and the default. Neither path may be loosened into
+credential the control plane did not choose (B68). That is the default. Neither path may be loosened into
 a wholesale ambient inherit for a bound Run. See
 [ADR 0008](decisions/0008-credential-channel-isolation.md) for the channel
-isolation this protects and ADR 0016's 2026-08-24 amendment for the binding
+isolation this protects and [ADR 0016](decisions/0016-control-plane-execution-hosts.md) for the binding
 that makes it reachable remotely.
 
 **B68** — On an execution host, a vendor CLI's own state — its login, its
@@ -490,21 +492,21 @@ account instead of the subscription this profile was given.
 
 ## Resilience Boundaries
 
-**B-R1** — `Run.status` includes `degraded` in addition to `queued|running|succeeded|failed|cancelled|waiting_for_review`. A run is `degraded` when it completes but with partial or compromised quality — the output is accessible but flagged for user review.
+**B-R1** — `Run.status` includes `degraded` in addition to `queued|running|cancelling|succeeded|failed|cancelled|orphaned|waiting_for_review|waiting_for_dependency` (`RUN_STATUS_VALUES`). A run is `degraded` when it completes but with partial or compromised quality — the output is accessible but flagged for user review.
 
 **B-R2** — `Run.mode` includes `live` (real execution, persists changes) and `dry_run` (preview, no persistent changes, artifacts not saved).
 
-**B-R3** — Artifact export is explicit: every artifact has `path` and/or `content`; `GET /api/v1/artifacts/{id}/export` returns a file download. Artifact paths point to persistent storage (`~/.rainver-data/artifacts/`), not sandbox working directories.
+**B-R3** — Artifact export is explicit: every artifact has a relative `storage_path` and/or `content`; `GET /api/v1/artifacts/{id}/export` returns a file download. Artifact files live in persistent storage (`<RAINVER_HOME>/storage/artifacts`, overridable by `ARTIFACT_STORAGE_ROOT`), not sandbox working directories.
 
-**B-R4** — `Proposal` has explicit temporal fields: `created_at`, `decided_at`, `deadline` (soft, optional), and computed `expired` (true when deadline passed and status is still `pending`). `urgency` field (`low|normal|high|critical`) affects sort order.
+**B-R4** — `Proposal` has explicit temporal fields: `created_at`, `reviewed_at`, `review_deadline` (soft, optional), `expires_at`, and computed `expired` (true when `expires_at` passed and status is still `pending`). `urgency` field (`low|normal|high|critical`) affects sort order.
 
-**B-R5** — All temporal fields are explicit on Run: `created_at`, `started_at`, `completed_at`, `scheduled_at`. No derived timestamps.
+**B-R5** — All temporal fields are explicit on Run: `created_at`, `started_at`, `ended_at`, `scheduled_at`. No derived timestamps.
 
 ---
 
 ## Module / Plugin Boundaries
 
-**B33** — Server modules should prefer shared gateway/db/protocol helpers over direct cross-module coupling. Cross-domain imports are allowed only when they express an explicit product boundary recorded in the relevant architecture doc or ADR, and they must not bypass the owning module's public route/service boundary. A read predicate that more than one domain needs belongs in `modules/access/`, not in the domain the data is named after: `runReadSql` / `proposalReadSql` / `artifactReadSql` / `runInheritedReadSql` are read by tasks, projectWork, agentGroups, sources, plans and frontendSupport, and each of those importing them from `runs` would be exactly the coupling this rule exists to prevent. The canonical `runs`, `proposals`, `artifacts` and `projects` repositories still compose the same pair by hand beside their own predicates rather than calling these — recorded at the helpers' own definition, and the reason a term added to one of them does not yet reach every reader.
+**B33** — Server modules should prefer shared gateway/db/protocol helpers over direct cross-module coupling. Cross-domain imports are allowed only when they express an explicit product boundary recorded in the relevant architecture doc or ADR, and they must not bypass the owning module's public route/service boundary. A read predicate that more than one domain needs belongs in `modules/access/`, not in the domain the data is named after: `runReadSql` / `proposalReadSql` / `artifactReadSql` / `runInheritedReadSql` are read by tasks, projectWork, agentGroups, sources, plans and frontendSupport. Do not import them from `runs`. That is the coupling B33 forbids. The canonical `runs`, `proposals`, `artifacts` and `projects` repositories still compose the same pair by hand beside their own predicates rather than calling these — recorded at the helpers' own definition. A term added to one of them does not reach every reader.
 
 **B34** — Every server module's HTTP routes must live in `server/src/modules/<module>/routes.ts` and be mounted through `server/src/gateway/routeRegistry.ts`. Official plugin package routes live under `plugins/official/<plugin_id>/server/src/`, are compiled into `server/dist/official-plugins/<plugin_id>/`, and are mounted only through `PluginHost` after core `SERVER_MODULES` and before the catch-all. Routes must not be registered directly in `server.ts`, `index.ts`, or ad hoc shared API files.
 
@@ -516,14 +518,13 @@ account instead of the subscription this profile was given.
 
 **B51** — Official optional modules are gated at the route-handler/contribution level via the plugin guard (`requireOfficialPluginEnabled()` or `ctx.http.pluginGuard()`), not by conditionally registering core server modules. Backend routes for bundled official plugins are mounted by `PluginHost`; behavior is gated by DB-backed plugin enablement state. Plugin job handlers and proposal appliers must fail closed when disabled, and scheduled tasks must fan out only to enabled scopes. Frontend entries with `source: 'official_plugin'` must overlay their `enabled`/`visible` state from `GET /api/v1/plugins/effective`, not from static values.
 
-**B52** — Capability (`catalog/capabilities/`) and Official Optional Module (`/api/v1/plugins`) are distinct concepts and must not be conflated in code, comments, or API design. Capabilities are agent AI skill descriptors; Official Optional Modules are product feature packages. A module may use a capability internally, but they are not the same type.
+**B52** — Product capabilities (`server/src/modules/capabilities/`, `/api/v1/capability-definitions`) and Official Optional Modules (`/api/v1/plugins`) are distinct and must not be conflated in code, comments, or API design. Catalog YAML under `catalog/capabilities/` is diagnostic. Do not execute it. Official Optional Modules are product feature packages.
 
 **B52A** — Open Skill, Capability, Capability Pack, Runtime Skill, and Product
 Plugin are distinct concepts. External Open Skill packages can be normalized
 into capability candidates; Capability Packs group capabilities; Runtime Skills
 are generated runtime bindings; Product Plugins are optional product feature
-packages. Workflow Template was a sixth concept here until the
-capability-shrink plan deleted that layer; an enforced process is a Workflow Definition, which is
+packages. An enforced process is a Workflow Definition, which is
 execution-engine data rather than a capability grouping.
 
 **B53** — Plugin settings and enablement state must be scoped exactly as declared in the descriptor's `scope` field: `space` uses `(plugin_id, space_id)` and requires space owner/admin for writes; `user` uses `(plugin_id, user_id)` and follows the user across spaces. Space-scoped plugin state for space A must never be readable or writable in the context of space B, and user-scoped plugin state must never be readable or writable by another user. The plugin guard must check both plugin existence and descriptor scope.
@@ -532,7 +533,7 @@ execution-engine data rather than a capability grouping.
 
 ## Runtime Adapter Boundaries
 
-**B38** — The Rainver core is runtime-agnostic. OpenCode, Claude Code, Codex, Cursor, and any other vendor CLI are optional runtime adapters, not the foundation. Core features (memory, knowledge, flashcards, activity capture, proposals, assistant chat) must work without any coding-agent runtime installed.
+**B38** — The Rainver core is runtime-agnostic. OpenCode, Claude Code, Codex, Cursor, and any other vendor CLI are optional runtime adapters, not the foundation. Core features (memory, knowledge, flashcards, activity capture, proposals) must work without any coding-agent runtime installed. Assistant chat is an `agent` Run and, like every autonomous multi-turn turn, executes through the ACP runtime on an execution host (ADR 0022): it needs a logged-in CLI copy on some host the person can reach — the built-in Server Host's managed OpenCode by default — but depends on no vendor in particular, and the server keeps no in-process Agent loop to fall back to.
 
 **B39** — No vendor CLI or external runtime is the source of truth for memory, policy, permissions, or audit records. These always live in the Rainver database regardless of which runtime adapter is active.
 
@@ -576,24 +577,22 @@ and what its subscription has left. Nothing else about either crosses an API.
 
 **B50** — `server/` is the TypeScript backend source root. The Compose/API
 entrypoint service name remains `server` for web, dev, test, and prod.
-The permanent gateway module owns routing and request context; unknown
-`/api/v1/*` routes fail closed with the local 404 catch-all. Schema authoring
+The gateway module owns routing and request context. Do not add a second
+entry layer. Unknown `/api/v1/*` routes fail closed with the local 404 catch-all. Schema authoring
 goes through Drizzle definitions under `server/src/db/schema/`; generated SQL
 artifacts live under `server/migrations/` and are applied only through the
 explicit server migration runner. Do not hand-edit migration SQL for schema
 changes. The server service process does not auto-migrate on startup.
-DB-persisted API-key storage remains disabled/deferred until the canonical
-schema adds that table.
+DB-persisted API-key storage is disabled. There is no `api_keys` table.
 
-**B66** — A new Agent entry point (HTTP route, tool surface, managed-loop
-surface, or any future host) is a thin adapter over `SystemActionDispatcher`
+**B66** — A new Agent entry point (HTTP route, tool surface, or any future
+host) is a thin adapter over `SystemActionDispatcher`
 (`server/src/modules/systemActions/systemActionDispatcher.ts`). It may
 translate transport-specific request/response shapes and assemble which
 actions to expose, but it must not itself decide grants, evaluate policy,
 mutate a domain table, or otherwise define action semantics — that belongs to
 the single `SystemActionGateway`/`SystemActionDispatcher` path
-(`CliAgentToolTransport`'s Run-scoped REST tool surface and
-`ManagedAgentToolSurface`'s managed model loop both call it directly).
+(`CliAgentToolTransport`'s Run-scoped REST tool surface calls it directly).
 Runtime delegation materialization
 (`AgentGroupRuntimeDelegationMaterializer`) is a documented exception, not a
 model to copy: it runs after the Run has already terminated and so cannot go
@@ -627,8 +626,8 @@ completion pair.
 
 **B58** — Do not introduce compatibility aliases or dual authorities. When a
 concept is renamed or replaced, the old name is removed in the same change. Two
-names for one thing, or two documents claiming the same authority, is the defect
-this rule exists to prevent — not a migration convenience.
+names for one thing, or two documents claiming the same authority. Do not
+leave that as a migration convenience.
 
 **B59** — `server/migrations/` is an append-only chain. `0000_baseline.sql`
 is frozen, and every schema change after it is a new numbered file appended by
@@ -644,18 +643,13 @@ previous build — expand in the release that needs the new shape, contract in a
 later one. That is a constraint on what a single release may drop or rename, not
 a licence for compatibility code: B58 still applies to the application.
 
-The chain has three explicitly authorized schema-epoch replacements. The
-**2026-09-21 ACP runtime-authority schema epoch**
-([ADR 0022](decisions/0022-acp-runtime-authority-and-schema-epoch.md) §5)
-first replaced the preceding chain. The **2026-09-23 authentication-foundation
-schema epoch**
-([ADR 0023](decisions/0023-authentication-foundation-schema-epoch.md)) then
-folded the provisional authentication add/correct/drop migrations into the
-then-current Drizzle-generated `0000_baseline.sql`, after the operator confirmed
-that no schema history or user data needed preservation. The **2026-09-26
-host-thread-tool-field schema epoch** folded the applied `0001` widening into
-a new baseline after the operator explicitly accepted recreating affected
-databases. A database from before the current
+The chain has four explicitly authorized schema-epoch replacements: the ACP
+runtime-authority epoch
+([ADR 0022](decisions/0022-acp-runtime-authority-and-schema-epoch.md) §5), the
+authentication-foundation epoch
+([ADR 0023](decisions/0023-authentication-foundation-schema-epoch.md)), the
+host-thread-tool-field epoch, and the access, reading and execution integrity
+epoch ([ADR 0024](decisions/0024-access-reading-and-execution-integrity-schema-epoch.md)). A database from before the current
 epoch has no upgrade path or compatible backup restore: it must be recreated
 from the baseline. None of these decisions itself authorizes deleting a
 running database.
@@ -692,6 +686,6 @@ code.
 
 ## Open-Source Boundary
 
-**B70** — (ADR 0017) A write is gated behind per-instance human approval only when it is self-modification, a long-term belief that widens reach, a real-checkout change, an exposure change, money above a bounded default, a credential or deployment change, or the Project's direction — and the action's registration names which. Every other Project-internal write is governed by trigger origin (`manual` executes; anything unattended is `require_approval`), with one exception — an Agent writing its own persona on an `agent`-scope entry, a first one as much as a revision, which is governed instead by ADR 0003 §5 and named in B10 — and by bounds set before the work runs (fan-out ≤ 5 per turn as an execution ceiling, with the narrower conversational pacing of ADR 0019; spend at the pipeline's bounded default, the remainder offered once), with review-after: every such write is in Updates with undo, and attention carries only what a person must decide. A default may flip from proposal to direct only after the review it displaces exists.
+**B70** — (ADR 0017) A write is gated behind per-instance human approval only when it is self-modification, a long-term belief that widens reach, a real-checkout change, an exposure change, money above a bounded default, a credential or deployment change, or the Project's direction — and the action's registration names which. Every other Project-internal write is governed by trigger origin — the Run's verified root origin through delegation, graph and continuation hops (`effectiveRunTrigger`; a continuation inherits only within its cause's budget, an unverifiable chain is never `manual`) — (`manual` executes; anything unattended is `require_approval`), with one exception — an Agent writing its own persona on an `agent`-scope entry, a first one as much as a revision, which is governed instead by ADR 0003 §5 and named in B10 — and by bounds set before the work runs (fan-out ≤ 5 per turn as an execution ceiling, follow-up Tasks applied for the turn included, with the narrower conversational pacing of ADR 0019; spend at the pipeline's bounded default, the remainder offered once), with review-after: every such write is in Updates with undo, and attention carries only what a person must decide. A default may flip from proposal to direct only after the review it displaces exists.
 
 **B22** — The project is open source. Do not put private data, real user memory, or non-shareable credentials into the source repository; see B1/B2.

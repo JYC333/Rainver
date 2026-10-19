@@ -23,7 +23,7 @@ import {
   type StoredResearchQueryStrategy,
 } from "./repository.js";
 
-export interface AdaptiveResearchQueryInput {
+interface AdaptiveResearchQueryInput {
   projectId: string;
   researchContextVersionId: string;
   providers: ResearchProviderKey[];
@@ -33,7 +33,7 @@ export interface AdaptiveResearchQueryInput {
   operationId?: string | null;
 }
 
-export interface AdaptiveResearchQueryVersionInput {
+interface AdaptiveResearchQueryVersionInput {
   projectId: string;
   sourceStrategyId: string;
   direction: "broaden" | "narrow";
@@ -41,7 +41,7 @@ export interface AdaptiveResearchQueryVersionInput {
   credentials?: Partial<Record<ResearchProviderKey, string>>;
 }
 
-export interface AdaptiveResearchQueryProviderRetryInput {
+interface AdaptiveResearchQueryProviderRetryInput {
   projectId: string;
   strategyId: string;
   providerKey: ResearchProviderKey;
@@ -52,6 +52,7 @@ export interface AdaptiveResearchQueryProviderRetryInput {
 interface ResearchQueryStore {
   createStrategy: ResearchQueryRepository["createStrategy"];
   markStrategyEvaluating: ResearchQueryRepository["markStrategyEvaluating"];
+  recordSemanticIntent: ResearchQueryRepository["recordSemanticIntent"];
   createAttempt: ResearchQueryRepository["createAttempt"];
   completeAttempt: ResearchQueryRepository["completeAttempt"];
   selectAttempt: ResearchQueryRepository["selectAttempt"];
@@ -134,6 +135,7 @@ export class AdaptiveQueryOrchestrator {
       await this.repository.finalizeStrategy(identity.spaceId, strategy.id);
       throw error;
     }
+    await this.repository.recordSemanticIntent(identity.spaceId, strategy.id, intent);
 
     await Promise.all(strategy.provider_plans.map((plan) => this.evaluateProvider(
       identity,
@@ -150,7 +152,8 @@ export class AdaptiveQueryOrchestrator {
   /** Builds an immutable replacement version from the semantic intent already
    * stored on the active strategy. Monitoring adaptation therefore never sends
    * the long research question back to a provider or requires a second LLM
-   * interpretation of the same approved context. */
+   * interpretation of the same approved context. Each provider steps from the
+   * exact query it monitors with, taking new terms from the original intent. */
   async evaluateVersion(identity: SpaceUserIdentity, input: AdaptiveResearchQueryVersionInput): Promise<StoredResearchQueryStrategy> {
     if (!Number.isInteger(input.candidateBudget) || input.candidateBudget < 1 || input.candidateBudget > 10_000) {
       throw new HttpError(422, "candidateBudget must be an integer between 1 and 10000");
@@ -159,11 +162,21 @@ export class AdaptiveQueryOrchestrator {
     if (!source || source.status !== "materialized") throw new HttpError(409, "Only a materialized query strategy can be adapted");
     const selected = source.provider_plans.flatMap((plan) => {
       const attempt = plan.attempts.find((candidate) => candidate.id === plan.selected_attempt_id);
-      return attempt ? [{ provider: plan.provider_key, intent: attempt.semantic_query }] : [];
+      return attempt ? [{ provider: plan.provider_key, query: attempt.semantic_query }] : [];
     });
     if (selected.length === 0) throw new HttpError(409, "The active query strategy has no selected provider query");
     const contextVersion = await this.contextRepository.get(identity.spaceId, input.projectId, source.research_context_version_id);
     if (!contextVersion) throw new HttpError(404, "Research context version not found");
+    // The monitored query is a trimmed step of the original intent; the terms
+    // it left out are what a broaden or narrow step can add back.
+    const intent = source.semantic_intent ?? await this.intentPlanner!.plan(identity, contextVersion.context);
+    const startingSteps = new Map(selected.map((item) => [item.provider, {
+      sequence: 1, direction: "initial" as const, semanticQuery: item.query,
+    }]));
+    const changes = selected.some((item) => JSON.stringify(
+      this.ladder.next(startingSteps.get(item.provider)!, intent, input.direction, item.provider).semanticQuery,
+    ) !== JSON.stringify(item.query));
+    if (!changes) throw new HttpError(409, `The monitored queries cannot ${input.direction} any further within the research intent`);
     const providerBudget = Math.max(1, Math.ceil(input.candidateBudget / selected.length));
     const strategy = await this.repository.createStrategy(identity, {
       projectId: input.projectId,
@@ -174,9 +187,9 @@ export class AdaptiveQueryOrchestrator {
       executionBudget: { candidate_budget: input.candidateBudget, provider_candidate_budget: providerBudget },
       parentStrategyId: source.id,
       adaptationDirection: input.direction,
+      semanticIntent: intent,
     });
     await this.repository.markStrategyEvaluating(identity.spaceId, strategy.id);
-    const intents = new Map(selected.map((item) => [item.provider, item.intent]));
     await Promise.all(strategy.provider_plans.map((plan) => this.evaluateProvider(
       identity,
       {
@@ -188,9 +201,11 @@ export class AdaptiveQueryOrchestrator {
       },
       contextVersion,
       plan,
-      intents.get(plan.provider_key)!,
+      intent,
       providerBudget,
       input.direction,
+      0,
+      startingSteps.get(plan.provider_key),
     )));
     await this.repository.finalizeStrategy(identity.spaceId, strategy.id);
     return (await this.repository.getStrategy(identity.spaceId, input.projectId, strategy.id))!;
@@ -215,16 +230,28 @@ export class AdaptiveQueryOrchestrator {
 
     const { nextRound } = await this.repository.resetProviderPlan(identity.spaceId, plan.id);
 
-    const lastAttempt = plan.attempts[plan.attempts.length - 1];
-    const intent = lastAttempt
-      ? lastAttempt.semantic_query
-      : await this.intentPlanner!.plan(identity, contextVersion.context, input.execution);
-    // Seed the new round with the last attempt's exact compiled combination
-    // (not ladder.initial(intent), which re-ranks and truncates core/
-    // expansions/qualifiers/exclusions from scratch and would silently
-    // discard adaptations a prior narrow()/broaden() step already made).
-    const startingStep: ResearchQueryLadderStep | undefined = lastAttempt
-      ? { sequence: 1, direction: "initial", semanticQuery: lastAttempt.semantic_query }
+    // The retry starts from the combination the plan stood on: the selected
+    // attempt when one was selected (the last attempt may be a later,
+    // unverified step that failed its preview), otherwise the last attempt
+    // that was actually observed, otherwise the last attempt at all.
+    const baseAttempt = (plan.selected_attempt_id
+      ? plan.attempts.find((attempt) => attempt.id === plan.selected_attempt_id)
+      : undefined)
+      ?? [...plan.attempts].reverse().find((attempt) => attempt.observation !== null)
+      ?? plan.attempts[plan.attempts.length - 1];
+    // The ladder takes new terms from the strategy's original intent; the
+    // attempt query below is only where this round starts.
+    let intent = strategy.semantic_intent;
+    if (!intent) {
+      intent = await this.intentPlanner!.plan(identity, contextVersion.context, input.execution);
+      await this.repository.recordSemanticIntent(identity.spaceId, strategy.id, intent);
+    }
+    // Seed the new round with that attempt's exact compiled combination (not
+    // ladder.initial(intent), which re-ranks and truncates core/expansions/
+    // qualifiers/exclusions from scratch and would silently discard
+    // adaptations a prior narrow()/broaden() step already made).
+    const startingStep: ResearchQueryLadderStep | undefined = baseAttempt
+      ? { sequence: 1, direction: "initial", semanticQuery: baseAttempt.semantic_query }
       : undefined;
     const providerBudget = Math.max(1, Math.trunc(Number(strategy.execution_budget.provider_candidate_budget) || 1));
 
@@ -354,12 +381,10 @@ export class AdaptiveQueryOrchestrator {
    * import will actually request.
    *
    * Evaluation previews 15 results; the import asks for 100. Those are
-   * different requests to the provider, and a query can pass one while failing
-   * the other — a broad boolean arXiv query answered 200 at 15 rows and 5xx at
-   * 100, so a plan validated here imported nothing, and Research went on to
-   * report "no relevant sources" over a corpus that was missing that provider
-   * entirely. Verifying the shape that will be used is the only way the gap is
-   * visible before the import runs.
+   * different requests to the provider, and a query can pass the preview
+   * while the import fails. Do not treat a passing preview as a successful
+   * import. The page size the import will request is what has to be checked
+   * before the import runs.
    *
    * A failure here is recorded, not fatal: the import narrows its page size on
    * exactly this failure and may still succeed. The warning exists so the

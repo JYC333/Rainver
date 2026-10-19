@@ -11,7 +11,7 @@ import { runLocationGit } from "@rainver/folder-read";
  * Every git call goes through `runLocationGit`: the repository is one an
  * Agent may have written.
  */
-export interface MainBranch {
+interface MainBranch {
   /** Short branch name (`main`), or null for a detached checkout. */
   branch: string | null;
   commit: string;

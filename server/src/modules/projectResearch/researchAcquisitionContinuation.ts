@@ -2,8 +2,8 @@ import type { ConversationContinuationRegistry, ProposalContinuation } from "../
 import type { Queryable } from "../routeUtils/common.js";
 
 /**
- * Room continuations for the `research.start_acquisition` pipeline
- * (room-advancement-reliability-plan Phase 4). Two event kinds:
+ * Room continuations for the `research.start_acquisition` pipeline.
+ * Two event kinds:
  *
  * - `research_pipeline_outcome` (key = `<thread id>:<pipeline job id>`, so a
  *   retry reports its own outcome instead of being answered with the previous
@@ -25,12 +25,10 @@ export function registerResearchAcquisitionContinuation(registry: ConversationCo
     if (status === "started") {
       const cap = typeof event.payload.screening_cap === "number" ? event.payload.screening_cap : null;
       const matched = typeof event.payload.matched_estimate === "number" ? event.payload.matched_estimate : null;
-      // Size first. "Acquisition is underway" was the whole of what the user
-      // was told while nine hundred documents went through a model, and the
-      // only number they ever saw was in the failure four hours later.
-      // Cap first, match size second, and the match size labelled as the
-      // loose upper bound it is. Leading with the larger number read as the
-      // scope having grown when it had in fact just been bounded.
+      // Size first. Cap first, match size second, and the match size labelled
+      // as the loose upper bound it is. Do not lead with the larger number:
+      // that reads as the scope having grown when it has just been bounded.
+      // Do not say only that acquisition is underway.
       const size = cap === null
         ? ""
         : matched === null
@@ -72,11 +70,9 @@ export function registerResearchAcquisitionContinuation(registry: ConversationCo
     }
     if (status === "completed") {
       const reason = typeof event.payload.reason === "string" ? event.payload.reason : "The research operation finished.";
-      // The system works out a next step the moment a search finishes and
-      // writes it to inquiry_thread_advice. Without it here the Agent ends a
-      // four-hour search by inventing a question of its own, which is both
-      // worse than the recorded advice and disagrees with what the Project's
-      // attention list is simultaneously telling the user.
+      // The system writes the next step to inquiry_thread_advice when a search
+      // finishes. Do not omit it here. The Agent would invent a question of
+      // its own, and that would disagree with the Project's attention list.
       const advice = await nextStepAdvice(db, event.payload.operation_id);
       const next = advice
         ? ` The system's recorded next step for this Thread is ${advice.recommended_focus_kind.replace(/_/g, " ")}, because: ${advice.rationale} Put that to the user as the suggested next step — it is the same one the Project's attention list is showing them — and offer to adopt it with inquiry.adopt_next_step if they agree. Do not substitute a next step of your own invention; if you disagree with it, say why and let them choose.`

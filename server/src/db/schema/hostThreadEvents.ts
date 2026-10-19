@@ -5,15 +5,14 @@ import { runs } from "./runs.js";
 import { projects } from "./projects.js";
 
 /**
- * control-center-phase2-plan.md P1 (C2): the normalized conversation event
- * log for a remote task thread. Deliberately not a new `run_events.event_type`
- * value — that table's CHECK constraint is a closed vocabulary designed
- * around the server-host semantic-event stream (tool_call_started, etc.),
- * has no `assistant_text`/`diagnostic` concept, and was never wired for
- * incremental per-remote-run writes. This is a sibling table with its own,
+ * Conversation event log for a host thread, on the built-in host or a paired
+ * machine. Do not store these as `run_events.event_type`. That table's CHECK
+ * constraint is a closed vocabulary (`tool_call_started` and the rest) and
+ * has no `assistant_text` or `diagnostic`. A daemon Run does not write that
+ * table incrementally. This sibling has its own
  * smaller vocabulary and its own per-thread (not per-run) monotonic cursor,
- * since the read model is "everything said in this conversation", spanning
- * every run/turn dispatched into the thread.
+ * since the read model is everything said in this conversation, spanning
+ * every run dispatched into the thread.
  *
  * Reasoning has its own `assistant_thought` type and follows ACP's explicit
  * agent-thought channel; message text is never reclassified by inspecting it.
@@ -21,8 +20,7 @@ import { projects } from "./projects.js";
 export const hostThreadEvents = pgTable("host_thread_events", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	hostTaskThreadId: varchar("host_task_thread_id", { length: 36 }).notNull(),
-	// execution-topology-and-project-control-plane-plan.md P1: write-once,
-	// denormalized from the thread's Location's Folder's Project at the
+	// Write-once, denormalized from the thread's Location's Folder's Project at the
 	// moment this event is written — a thread's Project never changes, so
 	// this cannot drift. Without it, the Project timeline (which scans this
 	// table, not `host_threads`, since this is the higher-volume one)
@@ -31,6 +29,11 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	// so no Project — its events belong to the Room or direct chat instead.
 	projectId: varchar("project_id", { length: 36 }),
 	runId: varchar("run_id", { length: 36 }).notNull(),
+	// The Run attempt that wrote the event, the Run's latest at write time,
+	// as `run_events.attempt_number` is. A retried Run's turn is read from
+	// its latest attempt, so an earlier attempt's unfinished tool calls are
+	// not shown as still running.
+	attemptNumber: integer("attempt_number"),
 	eventIndex: integer("event_index").notNull(),
 	eventType: varchar("event_type", { length: 32 }).notNull(),
 	// assistant_text: the coalesced text segment. assistant_thought: the same,
@@ -42,17 +45,16 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	// Vendor correlation ids are opaque and must remain byte-for-byte intact;
 	// truncating them would split one lifecycle into several tool rows.
 	toolCallId: text("tool_call_id"),
-	// Normalizers redact and bound this display label, while text storage keeps
-	// a future provider title from turning event persistence into a Run failure.
+	// Normalizers redact and bound this display label. Do not length-limit this
+	// column: a long provider title would then fail the Run.
 	toolName: text("tool_name"),
 	toolInputSummary: text("tool_input_summary"),
-	// ACP runtime replatform P3 (A9): tool_call.kind (execute/edit/read/...),
+	// tool_call.kind (execute/edit/read/...),
 	// initially set on tool_activity_started and patchable by finished updates.
 	toolKind: varchar("tool_kind", { length: 32 }),
-	// ACP runtime replatform P3 (A9): bounded tool-result content, set on
-	// tool_activity_finished only. Populated for claude and opencode;
-	// codex-acp currently reports no result content (a known adapter asymmetry,
-	// not a bug — see the ACP runtime replatform plan §4).
+	// Bounded tool-result content, set on
+	// tool_activity_finished only. Populated for claude and opencode.
+	// codex-acp reports no result content. That is an adapter difference.
 	toolResultSummary: text("tool_result_summary"),
 	// tool activity: 'pending' | 'succeeded' | 'failed' | 'in_progress' (ACP's
 	// non-terminal status, absorbed as a same-shaped update — not a new

@@ -52,12 +52,27 @@ export interface PersistedDigestItem extends DigestCandidate {
   anonymous_read_count: number | null;
 }
 
+/** The calendar day a snapshot covers: a local date, its timezone, and its half-open UTC interval. */
+export interface DigestPeriod {
+  date: string;
+  timezone: string;
+  startUtc: string;
+  endUtc: string;
+}
+
+export type DigestGenerationKind = "scheduled" | "backfill";
+
 export interface PersistedDigest {
   id: string;
   digest_type: "personal" | "project";
   owner_user_id: string | null;
   project_id: string | null;
   digest_date: string;
+  timezone: string;
+  period_start_utc: string;
+  period_end_utc: string;
+  generation_kind: DigestGenerationKind;
+  generated_at: string;
   profile_maturity: "cold" | "warming" | "warm" | null;
   status: "ready" | "empty" | "failed";
   generated_by_automation_run_id: string | null;
@@ -72,7 +87,7 @@ export interface PersistedDigest {
 export class PgInformationDigestRepository {
   constructor(readonly db: Queryable) {}
 
-  async personalCandidates(spaceId: string, userId: string, date: string): Promise<DigestCandidate[]> {
+  async personalCandidates(spaceId: string, userId: string, period: DigestPeriod): Promise<DigestCandidate[]> {
     const result = await this.db.query<DigestCandidateRow>(
       `SELECT DISTINCT ON (i.id)
               i.id AS source_item_id, i.connection_id, i.title, i.source_uri,
@@ -96,16 +111,16 @@ export class PgInformationDigestRepository {
           AND sub.status = 'subscribed' AND sub.digest_enabled = true
           AND c.status = 'active'
           AND COALESCE(state.library_status, 'new') <> 'ignored'
-          AND COALESCE(i.occurred_at, i.first_seen_at) >= ($3::date::timestamp AT TIME ZONE 'UTC')
-          AND COALESCE(i.occurred_at, i.first_seen_at) < (($3::date + 1)::timestamp AT TIME ZONE 'UTC')
+          AND COALESCE(i.occurred_at, i.first_seen_at) >= $3::timestamptz
+          AND COALESCE(i.occurred_at, i.first_seen_at) < $4::timestamptz
           AND ${sourceItemReadableClause("i", "$2", false)}
         ORDER BY i.id, COALESCE(i.occurred_at, i.first_seen_at) DESC`,
-      [spaceId, userId, date],
+      [spaceId, userId, period.startUtc, period.endUtc],
     );
     return result.rows.map(hydrateCandidate);
   }
 
-  async projectCandidates(spaceId: string, projectId: string, date: string): Promise<DigestCandidate[]> {
+  async projectCandidates(spaceId: string, projectId: string, period: DigestPeriod): Promise<DigestCandidate[]> {
     const result = await this.db.query<DigestCandidateRow>(
       `SELECT DISTINCT ON (i.id)
               i.id AS source_item_id, i.connection_id, i.title, i.source_uri,
@@ -124,8 +139,8 @@ export class PgInformationDigestRepository {
            ON a.source_item_id = i.id AND a.space_id = i.space_id AND a.status = 'succeeded'
         WHERE pci.space_id = $1 AND pci.project_id = $2 AND pci.status = 'active'
           AND pci.triage_status <> 'excluded'
-          AND pci.created_at >= ($3::date::timestamp AT TIME ZONE 'UTC')
-          AND pci.created_at < (($3::date + 1)::timestamp AT TIME ZONE 'UTC')
+          AND pci.created_at >= $3::timestamptz
+          AND pci.created_at < $4::timestamptz
           AND NOT EXISTS (
             SELECT 1
               FROM (
@@ -150,7 +165,7 @@ export class PgInformationDigestRepository {
              )
           )
         ORDER BY i.id, pci.updated_at DESC`,
-      [spaceId, projectId, date],
+      [spaceId, projectId, period.startUtc, period.endUtc],
     );
     return result.rows.map(hydrateCandidate);
   }
@@ -181,12 +196,18 @@ export class PgInformationDigestRepository {
     return result.rows.map((row) => ({ ...row, aliases: stringArray(row.aliases_json) }));
   }
 
-  async replace(input: {
+  /**
+   * Writes a new snapshot. A snapshot is never rewritten: the caller holds the
+   * scope/day lock and has checked there is none, and the scope/day unique
+   * indexes refuse a second one regardless.
+   */
+  async create(input: {
     spaceId: string;
     type: "personal" | "project";
     ownerUserId?: string;
     projectId?: string;
-    date: string;
+    period: DigestPeriod;
+    generationKind: DigestGenerationKind;
     maturity: "cold" | "warming" | "warm" | null;
     automationRunId?: string | null;
     settings: Record<string, unknown>;
@@ -202,31 +223,19 @@ export class PgInformationDigestRepository {
       rationale: string;
     }>;
   }): Promise<string> {
-    const scopeKey = input.type === "personal" ? input.ownerUserId! : input.projectId!;
-    await this.lockScope(input.spaceId, input.type, scopeKey, input.date);
-    const existing = await this.db.query<{ id: string }>(
-      `SELECT id FROM information_digests
-        WHERE space_id = $1 AND digest_type = $2 AND digest_date = $3
-          AND (($2 = 'personal' AND owner_user_id = $4) OR ($2 = 'project' AND project_id = $4))`,
-      [input.spaceId, input.type, input.date, scopeKey],
-    );
-    const digestId = existing.rows[0]?.id ?? randomUUID();
+    const digestId = randomUUID();
     const now = new Date().toISOString();
     await this.db.query(
       `INSERT INTO information_digests
-         (id, space_id, digest_type, owner_user_id, project_id, digest_date,
+         (id, space_id, digest_type, owner_user_id, project_id, digest_date, timezone,
+          period_start_utc, period_end_utc, generation_kind, generated_at,
           profile_maturity, status, generated_by_automation_run_id, settings_json, created_at, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$11)
-       ON CONFLICT (id) DO UPDATE SET
-         profile_maturity = EXCLUDED.profile_maturity,
-         status = EXCLUDED.status,
-         generated_by_automation_run_id = COALESCE(EXCLUDED.generated_by_automation_run_id, information_digests.generated_by_automation_run_id),
-         settings_json = EXCLUDED.settings_json, updated_at = EXCLUDED.updated_at`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$11,$11)`,
       [digestId, input.spaceId, input.type, input.ownerUserId ?? null, input.projectId ?? null,
-        input.date, input.maturity, input.items.length ? "ready" : "empty", input.automationRunId ?? null,
-        JSON.stringify(input.settings), now],
+        input.period.date, input.period.timezone, input.period.startUtc, input.period.endUtc,
+        input.generationKind, now, input.maturity, input.items.length ? "ready" : "empty",
+        input.automationRunId ?? null, JSON.stringify(input.settings)],
     );
-    await this.db.query(`DELETE FROM information_digest_items WHERE digest_id = $1`, [digestId]);
     for (const item of input.items) {
       await this.db.query(
         `INSERT INTO information_digest_items
@@ -249,7 +258,8 @@ export class PgInformationDigestRepository {
 
   async get(spaceId: string, digestId: string, readerUserId: string): Promise<PersistedDigest | null> {
     const roots = await this.db.query<Omit<PersistedDigest, "items" | "settings"> & { settings_json: unknown }>(
-      `SELECT id, digest_type, owner_user_id, project_id, digest_date, profile_maturity,
+      `SELECT id, digest_type, owner_user_id, project_id, digest_date, timezone,
+              period_start_utc, period_end_utc, generation_kind, generated_at, profile_maturity,
               status, generated_by_automation_run_id, settings_json, created_at, updated_at
          FROM information_digests WHERE space_id = $1 AND id = $2`,
       [spaceId, digestId],
@@ -305,6 +315,9 @@ export class PgInformationDigestRepository {
       : { available: false, blindSpots: [] as string[] };
     return {
       ...root,
+      period_start_utc: isoString(root.period_start_utc),
+      period_end_utc: isoString(root.period_end_utc),
+      generated_at: isoString(root.generated_at),
       settings: recordValue(root.settings_json),
       team_aggregates_available: teamInsights.available,
       team_blind_spot_domains: teamInsights.blindSpots,
@@ -347,9 +360,9 @@ export class PgInformationDigestRepository {
     return { available: true, blindSpots: result.rows.map((row) => row.domain_key) };
   }
 
-  async findByScope(spaceId: string, type: "personal" | "project", scopeId: string, date: string): Promise<{ id: string; generated_by_automation_run_id: string | null } | null> {
-    const result = await this.db.query<{ id: string; generated_by_automation_run_id: string | null }>(
-      `SELECT id, generated_by_automation_run_id FROM information_digests
+  async findByScope(spaceId: string, type: "personal" | "project", scopeId: string, date: string): Promise<{ id: string } | null> {
+    const result = await this.db.query<{ id: string }>(
+      `SELECT id FROM information_digests
         WHERE space_id = $1 AND digest_type = $2 AND digest_date = $4
           AND (($2 = 'personal' AND owner_user_id = $3) OR ($2 = 'project' AND project_id = $3))`,
       [spaceId, type, scopeId, date],
@@ -383,6 +396,10 @@ function hydratePersistedItem(
     topic_candidates: stringArray(topic_candidates_json),
     component_scores: numberRecord(component_scores_json),
   };
+}
+
+function isoString(value: unknown): string {
+  return value instanceof Date ? value.toISOString() : new Date(String(value)).toISOString();
 }
 
 function stringArray(value: unknown): string[] {

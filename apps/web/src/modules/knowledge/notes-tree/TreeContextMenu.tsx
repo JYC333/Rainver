@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { Archive, FolderMinus, Trash2 } from 'lucide-react'
+import { useAppTranslation } from '../../../i18n'
 
 export interface TreeContextMenuPosition {
   x: number
@@ -24,9 +25,10 @@ interface TreeContextMenuProps {
 }
 
 export function TreeContextMenu({
-  label, archiveLabel = 'Archive', deleteLabel = 'Delete', position, onClose, onArchive, onDelete,
-  onRemovePlacement, removePlacementLabel = 'Remove from this folder',
+  label, archiveLabel, deleteLabel, position, onClose, onArchive, onDelete,
+  onRemovePlacement, removePlacementLabel,
 }: TreeContextMenuProps) {
+  const { t } = useAppTranslation()
   useEffect(() => {
     if (!position) return
 
@@ -61,7 +63,7 @@ export function TreeContextMenu({
   return (
     <div
       role="menu"
-      aria-label={`${label} actions`}
+      aria-label={t('knowledge_ui.tree.menu_actions', { label })}
       onMouseDown={event => event.stopPropagation()}
       className="fixed z-50 min-w-[9rem] rounded-lg border border-border bg-card p-1 shadow-lg"
       style={{ left: position.x, top: position.y }}
@@ -73,7 +75,7 @@ export function TreeContextMenu({
           onClick={archiveFromMenu}
           className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-accent focus:bg-accent focus:outline-none"
         >
-          <Archive className="size-4" /> {archiveLabel}
+          <Archive className="size-4" /> {archiveLabel ?? t('knowledge_ui.tree.archive')}
         </button>
       )}
       {onRemovePlacement && (
@@ -83,7 +85,7 @@ export function TreeContextMenu({
           onClick={() => { onClose(); onRemovePlacement() }}
           className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-foreground transition-colors hover:bg-accent focus:bg-accent focus:outline-none"
         >
-          <FolderMinus className="size-4" /> {removePlacementLabel}
+          <FolderMinus className="size-4" /> {removePlacementLabel ?? t('knowledge_ui.tree.remove_from_folder')}
         </button>
       )}
       <button
@@ -92,7 +94,7 @@ export function TreeContextMenu({
         onClick={deleteFromMenu}
         className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-destructive transition-colors hover:bg-accent focus:bg-accent focus:outline-none"
       >
-        <Trash2 className="size-4" /> {deleteLabel}
+        <Trash2 className="size-4" /> {deleteLabel ?? t('knowledge_ui.tree.delete')}
       </button>
     </div>
   )

@@ -207,6 +207,7 @@ describe("RuntimeContextInvocationGateway", () => {
             acknowledged_item_ids: [stable.id],
             generation: 2,
             rotation_reason: null,
+            lease_generation: 1,
             mode: "delta" as const,
             target_cursor: 9,
             delta_item: null,

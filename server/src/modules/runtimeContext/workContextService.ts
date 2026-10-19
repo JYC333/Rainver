@@ -119,7 +119,14 @@ export class WorkContextService {
   async create(identity: SpaceUserIdentity, raw: unknown): Promise<Record<string, unknown>> {
     const parsed = protocol.WorkContextSetupWriteRequestSchema.safeParse(raw);
     if (!parsed.success) throw new HttpError(422, "Invalid Work Context Setup: only typed object references and preferences are accepted");
-    const requested = parsed.data;
+    // One entry per reference. The planner hashes an explicit item from its
+    // reference and refuses a duplicate id. Do not store the same object
+    // twice: every execution in that scope fails.
+    const requested = {
+      ...parsed.data,
+      pinned_refs: uniqueRefs(parsed.data.pinned_refs),
+      excluded_refs: uniqueRefs(parsed.data.excluded_refs),
+    };
     const scopeBindings = await resolveWorkContextScopeBindings(this.db, identity, requested.scope_kind, requested.work_context_scope_id);
     const input = bindSetupToScope(requested, scopeBindings);
     await assertSetupReferences(this.db, identity, input);
@@ -175,6 +182,50 @@ export class WorkContextService {
     });
   }
 
+  /** The conversation's knowledge-retrieval switch as this person last set it. */
+  async getRetrievalSwitch(identity: SpaceUserIdentity, scopeId: string): Promise<protocol.WorkRetrievalSwitch> {
+    const active = await this.getActive(identity, scopeId);
+    const scopeKind = typeof active?.scope_kind === "string"
+      ? active.scope_kind
+      : await inferWorkContextScopeKind(this.db, identity, scopeId);
+    return retrievalSwitchOut(scopeId, scopeKind, active?.retrieval_preferences, active ? Number(active.version) : null);
+  }
+
+  /**
+   * Turns the conversation's knowledge retrieval on or off for this person,
+   * as the next version of its Work Context Setup. Every other part of the
+   * setup carries over; a Run already planned keeps the version it was
+   * planned under.
+   */
+  async setRetrievalSwitch(identity: SpaceUserIdentity, scopeId: string, raw: unknown): Promise<protocol.WorkRetrievalSwitch> {
+    const parsed = protocol.WorkRetrievalSwitchRequestSchema.safeParse(raw);
+    if (!parsed.success) throw new HttpError(422, "Invalid knowledge retrieval switch");
+    const current = await readActiveWorkContext(this.db, identity, scopeId, false);
+    const scopeKind = typeof current?.scope_kind === "string"
+      ? current.scope_kind as WorkContextSetupWriteRequest["scope_kind"]
+      : await inferWorkContextScopeKind(this.db, identity, scopeId);
+    const preferences = {
+      ...(recordValue(current?.retrieval_preferences)),
+      enabled: parsed.data.enabled,
+      ...(parsed.data.preferred_domains ? { preferred_domains: parsed.data.preferred_domains } : {}),
+    };
+    const created = await this.create(identity, {
+      work_context_scope_id: scopeId,
+      scope_kind: scopeKind,
+      project_id: current?.project_id ?? null,
+      project_folder_id: current?.project_folder_id ?? null,
+      agent_id: current?.agent_id ?? null,
+      runtime_ref: current?.runtime_ref ?? null,
+      pinned_refs: current?.pinned_refs ?? [],
+      excluded_refs: current?.excluded_refs ?? [],
+      retrieval_preferences: preferences,
+      continuity_preferences: current?.continuity_preferences ?? {},
+      base_version: current ? Number(current.version) : null,
+      reason: parsed.data.enabled ? "Turn conversation knowledge retrieval on" : "Turn conversation knowledge retrieval off",
+    });
+    return retrievalSwitchOut(scopeId, scopeKind, created.retrieval_preferences, Number(created.version));
+  }
+
   async resolveExplicit(
     identity: SpaceUserIdentity,
     projectId: string | null,
@@ -182,6 +233,52 @@ export class WorkContextService {
   ): Promise<Record<string, unknown>[]> {
     return resolveExplicitReferences(this.db, identity, refs, projectId);
   }
+}
+
+/**
+ * Whether a Work Context searches the knowledge base on its own for each turn.
+ *
+ * A conversation (a direct chat, or one recipient of a Room) does so only
+ * when its person turned the switch on: a new conversation starts with it
+ * off, and the choice is kept per person and conversation on the setup. Other
+ * scopes (a root task, a workflow) retrieve unless their setup turned it off.
+ * Either way the governing policy can still forbid it. The switch decides
+ * automatic retrieval only: material a person attaches or pins reaches the
+ * turn whatever it says.
+ */
+export function workContextRetrievalSwitchedOn(scopeKind: string, preferences: Record<string, unknown>): boolean {
+  return scopeKind === "direct_session" || scopeKind === "room_recipient"
+    ? preferences.enabled === true
+    : preferences.enabled !== false;
+}
+
+/**
+ * The knowledge-retrieval choice a Run was planned under, as frozen in its
+ * execution control snapshot's Work Context Setup version: whether retrieval
+ * is on, and the domains it is narrowed to (empty: every domain). A
+ * conversation Run planned without any setup version is a conversation
+ * nobody switched on, so it is off like a new conversation; a Run outside
+ * any conversation keeps the default of its scope (on, every domain).
+ */
+export async function runRetrievalChoice(
+  db: Queryable,
+  run: { id: string; space_id: string; session_id: string | null },
+): Promise<{ switchedOn: boolean; domains: readonly protocol.WorkRetrievalDomain[] }> {
+  const result = await db.query<{ scope_kind: string; retrieval_preferences_json: unknown }>(
+    `SELECT setup.scope_kind, setup.retrieval_preferences_json
+       FROM execution_control_snapshots control
+       JOIN work_context_setups setup
+         ON setup.space_id = control.space_id
+        AND setup.id = control.snapshot_json->'work_context_setup_ref'->>'id'
+      WHERE control.space_id = $1 AND control.run_id = $2
+      ORDER BY control.created_at DESC
+      LIMIT 1`,
+    [run.space_id, run.id],
+  );
+  const row = result.rows[0];
+  if (!row) return { switchedOn: run.session_id === null, domains: [] };
+  const choice = retrievalSwitchOut(run.id, row.scope_kind, row.retrieval_preferences_json, null);
+  return { switchedOn: choice.enabled, domains: choice.preferred_domains };
 }
 
 /** Transactional authority check for mutations against an active Work Context. */
@@ -467,11 +564,8 @@ export function roomScopedAgentReadSql(agentAlias: string, userExpr: string, sco
 /**
  * Every explicit reference type, in one place.
  *
- * Three sites used to enumerate these independently — this resolver, the
- * context-authority read's filter, and the delivery re-authorization — and
- * adding a member to one of them left the other two silently disagreeing: a
- * pinned reference the resolver accepted was dropped by the filter and
- * rejected at delivery.
+ * Every explicit reference type, in one place. Adding a type only at a call
+ * site drops a pinned reference at delivery.
  */
 const EXPLICIT_REFERENCE_TYPES = [
   "project_brief_version",
@@ -525,7 +619,7 @@ export async function resolveExplicitReferences(
       } else {
         // Exhaustive over `EXPLICIT_REFERENCE_TYPES`: adding a member to that
         // list without a branch here is a compile error, which is what stops
-        // the three sites from drifting apart again.
+        // the three sites from drifting apart.
         assertNoUnhandledReferenceType(type);
       }
     }
@@ -560,16 +654,7 @@ function projectBriefReference(row: Record<string, unknown>): Record<string, unk
   };
 }
 
-export async function resolveWorkContextScopeProject(
-  db: Queryable,
-  identity: SpaceUserIdentity,
-  scopeKind: WorkContextSetupWriteRequest["scope_kind"],
-  scopeId: string,
-): Promise<string | null> {
-  return (await resolveWorkContextScopeBindings(db, identity, scopeKind, scopeId)).project_id;
-}
-
-export interface WorkContextScopeBindings {
+interface WorkContextScopeBindings {
   project_id: string | null;
   project_folder_id: string | null;
   agent_id: string | null;
@@ -644,6 +729,16 @@ export async function resolveWorkContextScopeBindings(
   }
   if (!result.rows[0]) throw new HttpError(404, "Work Context scope not found");
   return result.rows[0];
+}
+
+function uniqueRefs<Ref extends { type: string; id: string }>(refs: Ref[]): Ref[] {
+  const seen = new Set<string>();
+  return refs.filter((ref) => {
+    const key = `${ref.type}:${ref.id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function bindSetupToScope(
@@ -787,6 +882,29 @@ function setupTypedDiff(previous: SetupRow | null, next: Record<string, unknown>
     }
   }
   return diff;
+}
+
+function retrievalSwitchOut(
+  scopeId: string,
+  scopeKind: string,
+  rawPreferences: unknown,
+  version: number | null,
+): protocol.WorkRetrievalSwitch {
+  const preferences = recordValue(rawPreferences);
+  const domains = Array.isArray(preferences.preferred_domains)
+    ? preferences.preferred_domains.filter((domain): domain is protocol.WorkRetrievalDomain =>
+        (protocol.WORK_RETRIEVAL_DOMAINS as readonly string[]).includes(domain as string))
+    : [];
+  return {
+    work_context_scope_id: scopeId,
+    enabled: workContextRetrievalSwitchedOn(scopeKind, preferences),
+    preferred_domains: domains,
+    setup_version: version,
+  };
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function toOut(row: SetupRow): Record<string, unknown> { return { id: row.id, space_id: row.space_id, work_context_scope_id: row.work_context_scope_id, scope_kind: row.scope_kind, version: row.version, user_id: row.user_id, project_id: row.project_id, project_folder_id: row.project_folder_id, agent_id: row.agent_id, runtime_ref: row.runtime_ref_json, pinned_refs: row.pinned_refs_json, excluded_refs: row.excluded_refs_json, retrieval_preferences: row.retrieval_preferences_json, continuity_preferences: row.continuity_preferences_json, project_brief_version_id: row.project_brief_version_id, project_instruction_version_id: row.project_instruction_version_id, project_instruction_enabled: row.project_instruction_enabled, governing_policy_refs: row.governing_policy_refs_json, setup_fingerprint: row.setup_fingerprint, base_version: row.base_version, typed_diff: row.typed_diff_json, reason: row.reason, policy_decision_ref: { type: "policy_decision_record", id: row.policy_decision_record_id }, created_by_user_id: row.created_by_user_id, created_at: dateIso(row.created_at) ?? new Date(0).toISOString() }; }

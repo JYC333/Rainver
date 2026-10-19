@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { ListTodo, Plus } from 'lucide-react'
 import { toast } from 'sonner'
@@ -47,11 +47,14 @@ export default function TasksPage() {
   const navigate = useNavigate()
   const { activeSpaceId, activeSpaceName, personalSpaceId } = useSpace()
   const [boards, setBoards] = useState<Board[]>([])
-  const [agents, setAgents] = useState<AgentOut[]>([])
+  // What the New task form offers: the Personal Space's own Boards and
+  // Agents, since that is where a context-free Task is written.
+  const [createChoices, setCreateChoices] = useState<{ boards: Board[]; agents: AgentOut[] }>({ boards: [], agents: [] })
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [boardId, setBoardId] = useState<string>('')
   const [mineOnly, setMineOnly] = useState(true)
+  const listRequest = useRef(0)
   const [fStatus, setFStatus] = useState<string>('')
   const [fPriority, setFPriority] = useState<string>('')
   const [fRisk, setFRisk] = useState<string>('')
@@ -77,6 +80,7 @@ export default function TasksPage() {
       setLoading(false)
       return
     }
+    const request = ++listRequest.current
     setLoading(true)
     try {
       const params: Record<string, string> = { limit: '200' }
@@ -87,20 +91,34 @@ export default function TasksPage() {
       // agree on whose Task it is.
       if (mineOnly) params.assigned_to_me = 'true'
       const p = await tasksApi.list(params)
+      // Only the latest request's page: Mine/Everyone, Board and Space change
+      // faster than the list answers.
+      if (request !== listRequest.current) return
       setTasks(p.items)
     } catch (e) {
+      if (request !== listRequest.current) return
       toast.error(errMsg(e))
       setTasks([])
     } finally {
-      setLoading(false)
+      if (request === listRequest.current) setLoading(false)
     }
   }, [boardId, activeSpaceId, mineOnly])
 
   useEffect(() => { loadBoards() }, [loadBoards])
   useEffect(() => {
-    if (!activeSpaceId) { setAgents([]); return }
-    void agentsApi.list({ limit: '100' }).then(setAgents).catch(error => toast.error(errMsg(error)))
-  }, [activeSpaceId])
+    if (!createOpen || !personalSpaceId) return
+    let current = true
+    setCreateChoices({ boards: [], agents: [] })
+    void Promise.all([
+      boardsApi.list({ limit: '100' }, { spaceId: personalSpaceId }),
+      agentsApi.list({ limit: '100' }, { spaceId: personalSpaceId }),
+    ])
+      .then(([personalBoards, personalAgents]) => {
+        if (current) setCreateChoices({ boards: personalBoards.items, agents: personalAgents })
+      })
+      .catch(error => { if (current) toast.error(errMsg(error)) })
+    return () => { current = false }
+  }, [createOpen, personalSpaceId])
   useEffect(() => { loadTasks() }, [loadTasks])
 
   const filtered = useMemo(() => {
@@ -230,7 +248,7 @@ export default function TasksPage() {
               <Card
                 key={task.id}
                 className="p-4 cursor-pointer hover:bg-accent/30 transition-colors"
-                onClick={() => navigate(`/tasks/${task.id}`)}
+                onClick={() => navigate(spacePath(task.space_id, `/tasks/${task.id}`))}
               >
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <span className="font-medium text-sm leading-snug">{task.title}</span>
@@ -283,7 +301,7 @@ export default function TasksPage() {
             <DialogTitle>New task</DialogTitle>
             <DialogDescription>Start with the goal. This context-free task is private in your Personal Space; create from a Project to share it there.</DialogDescription>
           </DialogHeader>
-          <TaskCreateForm boards={boards} agents={agents} submitLabel="Create task" onSubmit={createTask} onCancel={() => setCreateOpen(false)} />
+          <TaskCreateForm boards={createChoices.boards} agents={createChoices.agents} submitLabel="Create task" onSubmit={createTask} onCancel={() => setCreateOpen(false)} />
         </DialogContent>
       </Dialog>
     </div>

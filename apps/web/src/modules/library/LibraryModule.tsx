@@ -35,8 +35,8 @@ export default function LibraryModule() {
         <Route path="items/pdfs" element={<Suspense fallback={<PageFallback />}><LibraryPdfsPage /></Suspense>} />
         <Route path="digests" element={<Suspense fallback={<PageFallback />}><LibraryDigestsPage /></Suspense>} />
       </Route>
-      {/* Standalone reader: items reached outside a specific day's digest
-          (project pages, direct links, legacy redirects) — no prev/next. */}
+      {/* Standalone reader: items reached outside a day's digest
+          (project pages and direct links) have no prev/next. */}
       <Route path="items/:itemId" element={<Suspense fallback={<PageFallback />}><LibraryItemReaderPage /></Suspense>} />
       <Route path="digests/:connectionId/:date" element={<Suspense fallback={<PageFallback />}><LibraryDetailPage /></Suspense>} />
       {/* Day-scoped reader: gains prev/next across that day's briefing items. */}

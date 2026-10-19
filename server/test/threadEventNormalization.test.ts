@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createThreadEventNormalizer } from "../src/modules/hosts/threadEventNormalization.js";
 
-describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; ACP runtime replatform P1-P5)", () => {
+describe("createThreadEventNormalizer", () => {
   it("streams stderr lines as diagnostic events, one per line", () => {
     const normalizer = createThreadEventNormalizer();
     const drafts = normalizer.pushStderr("permission denied\nretrying\n");
@@ -28,7 +28,7 @@ describe("createThreadEventNormalizer (control-center-phase2-plan.md P1, C2/C5; 
     expect(normalizer.pushAcpTextDelta("ld\n")).toEqual([{ event_type: "assistant_text", text: "Hello world\n" }]);
   });
 
-  it("emits tool_activity_started with tool_kind from an ACP tool_call update (ACP runtime replatform P3, A9)", () => {
+  it("emits tool_activity_started with tool_kind from an ACP tool_call update", () => {
     const normalizer = createThreadEventNormalizer();
     const drafts = normalizer.pushAcpProtocolEvent({
       method: "session/update",

@@ -7,14 +7,12 @@ import { RetrievalSearchService } from "../src/modules/retrieval/searchService.j
 import { memoryRetrievalRegistry } from "../src/modules/memory/retrievalAdapter.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
-// Real-PostgreSQL round-trip for the Memory create-safety retrieval slice. The
-// focused memoryRetrieval.test.ts uses an in-memory fake, which cannot catch SQL
-// bugs (the new memory_entry object_type CHECK constraint on retrieval_objects /
-// _aliases / _chunks, to_tsvector / ts_rank_cd, the revalidate SQL, the
-// create_safety_hit access_type, FK-backed owner gating). This test applies the
-// committed baseline to a throwaway Postgres and exercises projection writes +
-// create-safety + read-trace against canonical memory_entries for real. Skips
-// gracefully when Docker is unavailable.
+// Real-PostgreSQL round-trip for the Memory create-safety retrieval slice.
+// The focused memoryRetrieval.test.ts uses an in-memory fake. These lock the
+// memory_entry object_type CHECK on retrieval_objects, aliases, and chunks,
+// to_tsvector / ts_rank_cd, the revalidate SQL, the create_safety_hit
+// access_type, and FK-backed owner gating, through `useTestDatabase`.
+// Skips when that database is unavailable.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

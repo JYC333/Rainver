@@ -11,7 +11,7 @@ import type { ServerConfig } from "../src/config.js";
  *   - a fail-closed ALLOW whose audit write fails returns `error`;
  *   - an allow that is NOT audit-required never touches the DB and returns allow.
  *
- * Real DB persistence is covered by integration tests once the P4 grants land.
+ * Durable audit persistence is covered by the integration tests, not here.
  */
 
 // Unreachable DB so writePolicyAudit rejects fast.

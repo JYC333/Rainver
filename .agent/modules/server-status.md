@@ -3,7 +3,7 @@
 ## Status
 **API ONLY** — `GET /api/v1/status` reports database, scheduler, per-task
 liveness, jobs worker, and queue depth. There is no `RuntimeStatusBar` in
-the shell and no provider/adapter/capability/sandbox probes.
+the shell and no provider, adapter, or capability probes.
 
 ## Purpose
 Operational health of the components the server can observe from its own
@@ -13,7 +13,6 @@ process. This is not an external monitoring dashboard.
 - `GET /api/v1/status`
 - The checks listed below
 
-Unimplemented chrome: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §8.
 
 ## Does Not Own
 - Alerting or paging (not in scope)
@@ -28,18 +27,31 @@ Implemented:
 |---|---|---|---|---|
 | `database` | `SELECT 1` | reachable | — | unreachable |
 | `scheduler` | worst per-task health | all tasks healthy | some task `failing` | some task `stalled`, or background services not running |
-| `jobs_worker` | live worker id in this process | running | not running, nothing queued | not running while jobs are pending |
+| `jobs_worker` | live worker id in this process | running | not running, nothing queued (or depth unreadable) | not running while jobs are pending |
 | `jobs_queue` | instance-wide pending/running counts | counted | depth unreadable | pending work with no worker |
+
+The production source reads queue depth through the worker
+(`scheduler/backgroundServices.ts`), so with no worker the depth is `null`:
+`jobs_worker` reports `degraded` ("No jobs worker running") and `jobs_queue`
+`degraded` ("Queue depth unavailable"). The `error` cells are reachable only
+from a source that can count the queue without a worker.
 
 Not implemented — deliberately absent rather than reported healthy on no
 evidence: LLM Provider reachability, per-adapter runtime tools
-(`claude_code` / `codex_cli`), capability load results, sandbox runner.
+(`claude_code` / `codex_cli`), and capability load results.
 
 ## Scheduled-task liveness
 
 `scheduler_tasks[]` reports each task's `health`, `state`, `last_started_at`,
-`last_success_at`, `last_failure_at`, `last_error`, `consecutive_failures`,
-`timeouts_total`, and `seconds_since_completion`.
+`last_success_at`, `last_failure_at`, `last_error_kind` (`timeout` or
+`exception`), `last_error_reference`, `consecutive_failures`,
+`timeouts_total`, and `seconds_since_completion`. The exception's text is
+never in the body: the status route is read by Space owners/admins, and a
+task's error can quote a URL with a credential, a path on this machine or
+another Space's content. The server log line
+`[scheduler:<task>] ref=<reference> kind=<kind> <message>` carries it under
+the reference, and the `scheduler_task_failed` operational alert names the
+task, the kind and the reference the same way.
 
 `health` is:
 
@@ -50,7 +62,7 @@ evidence: LLM Provider reachability, per-adapter runtime tools
   `max(interval × 3, timeout + interval)`.
 
 The distinction matters: `failing` is loud (it raises, alerts, and is visible),
-`stalled` is the silent failure this surface exists for — a task whose `run()`
+`stalled` is a silent failure: a task whose `run()`
 never settles stops forever while the process stays healthy.
 
 Each task has a reporting deadline (`DEFAULT_TASK_TIMEOUT_SECONDS`, 600s, or
@@ -96,7 +108,8 @@ a scheduled task is stalled — that is why `/api/v1/status` exists.
 - **Degraded**: a non-critical observed component is unhealthy (scheduler
   task `failing`, jobs worker absent with an empty queue).
 - **Error**: a critical observed component is down (database unreachable,
-  jobs pending with no worker, a scheduler task `stalled`).
+  jobs pending with no worker when the depth is readable, a scheduler task
+  `stalled`).
 
 The API does not probe LLM keys, adapters, or Docker. Those absences are
 omitted, not reported as `ok` or `error`.
@@ -107,7 +120,8 @@ omitted, not reported as `ok` or `error`.
 - `overall` is the worst component status — if any component is `error`, overall is `error`
 - A component the server has no evidence about is omitted, never reported `ok`
 - Absence of a background component is a condition of its own: no jobs worker
-  is `degraded` when nothing is queued and `error` when work is waiting
+  is `degraded` when nothing is queued or the depth is unreadable, and `error`
+  when the source can see work waiting
 
 ## Related Files
 - `server/src/modules/system/routes.ts` — `/health`, `/api/v1/status`, features
@@ -117,4 +131,4 @@ omitted, not reported as `ok` or `error`.
 - `server/src/config.ts` — settings and diagnostics
 
 ## Related Modules
-- [product-shell.md](product-shell.md) — shell has no status bar today
+- [product-shell.md](product-shell.md) — the shell has no status bar

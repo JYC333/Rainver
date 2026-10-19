@@ -25,6 +25,8 @@ import { ProviderSynthesizer } from "../retrieval/synthesisProvider/providerSynt
 import { RetrievalToolService } from "../retrieval/tool/service.js";
 import type { RetrievalToolPolicyAction } from "../retrieval/tool/policy.js";
 import type { RunRecord } from "./repository.js";
+import { runRetrievalChoice } from "../runtimeContext/workContextService.js";
+import type { WorkRetrievalDomain } from "@rainver/protocol";
 
 export interface RetrievalToolDeps {
   retrievalToolService?: RetrievalToolService | null;
@@ -40,8 +42,8 @@ export interface ResolvedRetrievalToolBinding {
   settingsSnapshot: Record<string, unknown>;
 }
 
-// The Knowledge domain's own retrieval types, not a second copy of them: this
-// list was character-for-character identical and would have drifted silently.
+// The Knowledge domain's own retrieval types, not a second copy. Do not
+// duplicate the list. It would drift with nothing to notice.
 const RETRIEVAL_TOOL_OBJECT_TYPES = KNOWLEDGE_RETRIEVAL_OBJECT_TYPES;
 const MEMORY_RETRIEVAL_TOOL_OBJECT_TYPES = ["memory_entry"] as const;
 const PROJECT_RETRIEVAL_TOOL_OBJECT_TYPES = ["project_public_summary"] as const;
@@ -50,7 +52,7 @@ const RETRIEVAL_TOOL_MODES = ["exact", "lexical", "hybrid", "hybrid_rerank"] as 
 const MAX_MODEL_RESULT_ITEMS = 8;
 const MAX_MODEL_SNIPPET_CHARS = 500;
 
-type RetrievalToolDomain = "knowledge" | "memory" | "project_public_summary" | "source";
+export type RetrievalToolDomain = "knowledge" | "memory" | "project_public_summary" | "source";
 
 interface RetrievalToolDomainSpec {
   domain: RetrievalToolDomain;
@@ -136,7 +138,7 @@ export async function resolveRetrievalToolBinding(
   if (runMode === "off") return null;
   if (deps.retrievalToolService) {
     // The test-injected path has no DB to read the space setting from, so it
-    // still requires explicit run-level opt-in. It intentionally models only
+    // requires explicit run-level opt-in. It models only
     // the Knowledge surface; Memory/Project domain tests use the DB-backed path
     // so registry-specific revalidation and artifact trimming are exercised.
     if (!runMode) return null;
@@ -156,7 +158,14 @@ export async function resolveRetrievalToolBinding(
   const settings = await readSpaceRetrievalSettings(pool, run.space_id);
   const effectiveMode = runMode ?? (settings.retrievalToolMode === "off" ? null : settings.retrievalToolMode);
   if (!effectiveMode) return null;
-  const enabledSpecs = enabledToolSpecs(run);
+  // A conversation whose person left knowledge retrieval off gets no search
+  // tools either, and one narrowed to some domains gets only those domains'
+  // tools: the switch governs real retrieval, not only the planner's.
+  const choice = await runRetrievalChoice(pool, run);
+  if (!choice.switchedOn) return null;
+  const allowedDomains = new Set(retrievalToolDomainsForChoice(enabledToolSpecs(run).map((spec) => spec.domain), choice.domains));
+  const enabledSpecs = enabledToolSpecs(run).filter((spec) => allowedDomains.has(spec.domain));
+  if (enabledSpecs.length === 0) return null;
   const store = resolveProviderCommandStore(config);
   const egressPolicy = { externalEgressEnabled: settings.externalEgressEnabled };
   const services = Object.fromEntries(
@@ -280,13 +289,11 @@ export async function runRetrievalToolCall(
     }
     const service = binding.services[spec.domain];
     if (!service) {
-      // Structurally unreachable today: `enforcePolicyForAction`'s own
-      // `domainEnabled` check (`systemActionDispatcher.ts`) derives the same
-      // domain from the same action id and denies before the gateway ever
-      // calls this executor, so a second policy decision here would only
-      // ever duplicate the one already recorded for that denial. Kept as a
-      // defensive guard for this exported function's contract, not as a
-      // second enforcement point — no policy call, no second audit row.
+      // `enforcePolicyForAction`'s `domainEnabled` check
+      // (`systemActionDispatcher.ts`) derives the same domain from the same
+      // action id and denies before the gateway calls this executor. Do not
+      // add a second policy decision here. This guard is the exported
+      // function's contract: no policy call, no second audit row.
       return {
         modelResult: {
           ok: false,
@@ -452,6 +459,25 @@ function toolSpecForName(name: string): RetrievalToolDomainSpec | null {
     if (name === spec.searchTool || name === spec.briefTool) return spec;
   }
   return null;
+}
+
+/** The conversation domain each search tool reads; inquiry has no tool of its own. */
+const TOOL_WORK_DOMAIN: Record<RetrievalToolDomain, WorkRetrievalDomain> = {
+  knowledge: "knowledge",
+  memory: "memory",
+  project_public_summary: "projects",
+  source: "sources",
+};
+
+/**
+ * The tool domains a conversation's retrieval choice keeps: every one when
+ * it names no domain, otherwise only the chosen domains' tools.
+ */
+export function retrievalToolDomainsForChoice(
+  toolDomains: readonly RetrievalToolDomain[],
+  chosen: readonly WorkRetrievalDomain[],
+): RetrievalToolDomain[] {
+  return toolDomains.filter((domain) => chosen.length === 0 || chosen.includes(TOOL_WORK_DOMAIN[domain]));
 }
 
 function enabledToolSpecs(run: RunRecord): RetrievalToolDomainSpec[] {

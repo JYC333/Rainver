@@ -9,7 +9,7 @@ import { pinnedResearchThreadId } from "../projectResearch/workflowOntology.js";
 import { InquiryAdviceService, type AdviceTriggerKind } from "./adviceService.js";
 import { completeBackgroundStep } from "./stepService.js";
 
-export const INQUIRY_ADVICE_JOB_TYPE = "inquiry_next_step_advice";
+const INQUIRY_ADVICE_JOB_TYPE = "inquiry_next_step_advice";
 
 /**
  * Automatic advice is queued, never generated inline: the commands that
@@ -39,9 +39,10 @@ export async function queueAdviceForFocusedThread(
     const invalidatedAt = new Date().toISOString();
     // Lock every active job before touching advice. The worker's claim uses
     // FOR UPDATE SKIP LOCKED, so it either claimed before this statement (and
-    // we see its new status) or skips the row until we cancel it. Generation's
-    // persistence guard takes the same job-then-advice lock order, preventing
-    // the former job/advice deadlock.
+    // its new status is visible) or skips the row until this transaction
+    // cancels it. Generation's persistence guard takes the same
+    // job-then-advice lock order. Do not lock advice before the job. That
+    // order deadlocks.
     await tx.query(
       `SELECT id FROM jobs
         WHERE job_type = $1 AND space_id = $2
@@ -77,8 +78,9 @@ export async function queueAdviceForFocusedThread(
 
     // A relevant domain event makes the existing recommendation unsafe to keep
     // presenting immediately. This follows job locking to preserve the shared
-    // lock order with automatic generation. `dismissed` is the existing retired
-    // state; the row is the latest suggestion, not an advice audit log.
+    // lock order with automatic generation. `dismissed` is the stored state
+    // for a suggestion that must not be shown; the row is the latest
+    // suggestion, not an advice audit log.
     await tx.query(
       `UPDATE inquiry_thread_advice
           SET status = 'dismissed', updated_at = $4
@@ -180,10 +182,22 @@ export async function tryQueueAdviceForFocusedThread(
   db: Queryable,
   input: Parameters<typeof queueAdviceForFocusedThread>[1],
 ): Promise<void> {
+  // Some callers reach this inside their own transaction (a Candidate
+  // decision records its Iteration on the decision's client). Swallowing a
+  // failed statement there is not enough: PostgreSQL has already aborted the
+  // transaction, and the command's next statement would fail with it. A
+  // savepoint makes the queue step the only thing that is undone.
+  const inCallerTransaction = typeof (db as { release?: unknown }).release === "function";
+  if (inCallerTransaction) await db.query("SAVEPOINT inquiry_advice_queue");
   try {
     await queueAdviceForFocusedThread(db, input);
+    if (inCallerTransaction) await db.query("RELEASE SAVEPOINT inquiry_advice_queue");
   } catch {
     // Intentionally swallowed — see the doc comment above.
+    if (inCallerTransaction) {
+      await db.query("ROLLBACK TO SAVEPOINT inquiry_advice_queue").catch(() => undefined);
+      await db.query("RELEASE SAVEPOINT inquiry_advice_queue").catch(() => undefined);
+    }
   }
 }
 
@@ -191,8 +205,8 @@ export async function tryQueueAdviceForFocusedThread(
  * Marks a Thread's evidence-gathering step finished because its search
  * actually finished.
  *
- * This is why a step is a record rather than a label: the search knows it is
- * done, so the user should never have to come back and say so. Best-effort and
+ * A step is a record, not a label. The search knows it is done, so the user
+ * should never have to come back and say so. Best-effort and
  * post-commit like the advice queue beside it — a completion that fails must
  * not fail the search that triggered it.
  */

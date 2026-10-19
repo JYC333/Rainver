@@ -3,19 +3,15 @@ import { cardSourceTypes, contextIncludableItemTypes, entityDefinition } from ".
 import { linkTypeDefinition } from "./linkTypes.js";
 
 /**
- * Registry-backed validation for the closed sets that used to be database
- * CHECK constraints.
+ * Registry-backed validation for the closed sets the database only format-checks.
  *
- * P2 demoted those CHECKs to format constraints on the grounds that the
- * registry owns the vocabulary (B12F). That is only true once something
- * actually asks the registry — a demoted constraint with no replacement is
- * strictly worse than the constraint it replaced. This module is that
- * replacement, and it is why the interface declarations are load-bearing
- * rather than documentation.
+ * B12F says the registry owns the vocabulary. A format constraint with nothing
+ * asking the registry is not that ownership. This module asks the registry.
+ * The interface declarations are the check.
  */
 
 /** Endpoint-aware link type check, also enforcing the declared governance. */
-export interface LinkTypeCheck {
+interface LinkTypeCheck {
   linkType: string;
   fromObjectType?: string | null;
   toObjectType?: string | null;
@@ -75,11 +71,9 @@ export function assertContextItemType(itemType: string): void {
 }
 
 /**
- * `CardSourceable` — replaces `ck_cards_source_type`.
- *
- * No caller yet: `cards` has no write path in `src/`, so demoting that CHECK
- * removed protection from nothing. This exists so the first writer has the
- * replacement already in place rather than inheriting a format-only column.
+ * `CardSourceable`. The column CHECK only checks the token shape.
+ * `cards` has no write path in `src/`. A writer must call this so a
+ * format-valid token outside the vocabulary is refused.
  */
 export function assertCardSourceType(sourceType: string | null | undefined): void {
   if (sourceType === null || sourceType === undefined) return;

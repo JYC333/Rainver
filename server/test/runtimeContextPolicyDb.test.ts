@@ -531,6 +531,71 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
     });
   });
 
+  it("drops a Work Context Setup's Project Instruction and Brief once policy disallows them", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString();
+    const instructionId = randomUUID();
+    const briefId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO project_instruction_versions (
+         id,space_id,project_id,version,title,instruction_text,status,
+         reviewed_by_user_id,reviewed_at,published_by_user_id,published_at,
+         created_by_user_id,created_at
+       ) VALUES ($1,$2,$3,'v1','Rules','Follow the rules.','published',$4,$5,$4,$5,$4,$5)`,
+      [instructionId, SPACE, PROJECT, OWNER, now],
+    );
+    await db.pool.query(
+      `INSERT INTO project_brief_versions (
+         id,space_id,project_id,version,goal,project_status,status,published_by_user_id,published_at,created_by_user_id,created_at
+       ) VALUES ($1,$2,$3,'v1','Goal','active','published',$4,$5,$4,$5)`,
+      [briefId, SPACE, PROJECT, OWNER, now],
+    );
+    const setupId = randomUUID();
+    const decisionId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO policy_decision_records (
+         id,space_id,actor_type,actor_id,action,resource_type,resource_id,
+         decision,risk_level,policy_source,metadata_json,created_at
+       ) VALUES ($1,$2,'user',$3,'work_context_setup.change','work_context_setup',$4,
+                 'allow','medium','test','{}',$5)`,
+      [decisionId, SPACE, OWNER, setupId, now],
+    );
+    await db.pool.query(
+      `INSERT INTO work_context_setups (
+         id,space_id,work_context_scope_id,scope_kind,version,user_id,
+         project_id,project_folder_id,agent_id,runtime_ref_json,pinned_refs_json,
+         excluded_refs_json,retrieval_preferences_json,continuity_preferences_json,
+         project_brief_version_id,project_instruction_version_id,project_instruction_enabled,
+         governing_policy_refs_json,setup_fingerprint,base_version,typed_diff_json,reason,policy_decision_record_id,
+         created_by_user_id,created_at
+       ) VALUES ($1,$2,$3,'root_task',1,$4,$5,$6,$7,NULL,'[]','[]','{}','{}',
+                 $8,$9,TRUE,'[]'::jsonb,'setup-before-policy',NULL,'{}','test setup',$10,$4,$11)`,
+      [setupId, SPACE, RUN, OWNER, PROJECT, FOLDER, AGENT, briefId, instructionId, decisionId, now],
+    );
+    await repository().write({ spaceId: SPACE, userId: OWNER }, "space", SPACE, {
+      base_version_id: null,
+      policy: { constraints: { allow_project_brief: false, allow_project_instructions: false }, preferences: {} },
+      reason,
+    });
+    const run = {
+      id: RUN, space_id: SPACE, agent_id: AGENT, agent_version_id: AGENT_VERSION, status: "running",
+      mode: "live", prompt: "test", instruction: null, project_folder_id: FOLDER, session_id: null,
+      project_id: PROJECT, runtime_key: "codex_cli", model_provider_id: null,
+      required_sandbox_level: "ephemeral", trigger_origin: "manual", instructed_by_user_id: OWNER,
+      permission_snapshot_json: {}, contract_snapshot_json: {}, started_at: null, ended_at: null,
+    } as unknown as RunRecord;
+    const snapshots = new ExecutionControlSnapshotRepository(db.pool);
+    const bindings = await snapshots.resolveEffectiveBindingsForRun(run);
+    expect(bindings.workContextSetupRef).toMatchObject({ id: setupId });
+    const policy = await repository().resolveForExecution({
+      spaceId: SPACE, projectId: PROJECT, projectFolderId: FOLDER, agentId: AGENT, userId: OWNER,
+    });
+
+    const snapshot = await snapshots.createForRun(run, policy, {}, bindings);
+
+    expect(snapshot).toMatchObject({ project_brief_ref: null, project_instruction_ref: null });
+  });
+
   it("records a model-provider destination for a provider-bound local CLI", async () => {
     if (!db.available) return;
     const resolved = await repository().write({ spaceId: SPACE, userId: OWNER }, "space", SPACE, {
@@ -543,19 +608,30 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
        VALUES ($1, 'Provider Home', 'personal', now(), now())`,
       [PROVIDER_HOME_SPACE],
     );
+    // Declared local in this Space, where it is used.
     await db.pool.query(
       `INSERT INTO model_providers (
          id, space_id, owner_user_id, name, provider_type, base_url, enabled,
          capabilities_json, config_json, created_at, updated_at
-       ) VALUES ('provider-1',$1,$2,'Shared','openai','https://api.example.test/v1',TRUE,
-         '{}'::jsonb,'{"openai_compatible_base_url":"http://localhost:8080/v1"}'::jsonb,now(),now())`,
+       ) VALUES ('provider-1',$1,$2,'Local','openai_compatible','https://api.example.test/v1',TRUE,
+         '{}'::jsonb,'{"deployment":"trusted_local","openai_compatible_base_url":"http://localhost:8080/v1"}'::jsonb,now(),now())`,
+      [SPACE, OWNER],
+    );
+    // The same declaration made in another Space and granted in here.
+    await db.pool.query(
+      `INSERT INTO model_providers (
+         id, space_id, owner_user_id, name, provider_type, base_url, enabled,
+         capabilities_json, config_json, created_at, updated_at
+       ) VALUES ('provider-2',$1,$2,'Elsewhere','openai_compatible','https://api.example.test/v1',TRUE,
+         '{}'::jsonb,'{"deployment":"trusted_local","openai_compatible_base_url":"http://localhost:8080/v1"}'::jsonb,now(),now())`,
       [PROVIDER_HOME_SPACE, OWNER],
     );
     await db.pool.query(
       `INSERT INTO model_provider_space_grants (
          id, provider_id, space_id, owner_user_id, granted_by_user_id,
          enabled, is_default, created_at, updated_at
-       ) VALUES ('provider-grant-1','provider-1',$1,$2,$2,TRUE,FALSE,now(),now())`,
+       ) VALUES ('provider-grant-1','provider-1',$1,$2,$2,TRUE,FALSE,now(),now()),
+                ('provider-grant-2','provider-2',$1,$2,$2,TRUE,FALSE,now(),now())`,
       [SPACE, OWNER],
     );
     await updateSpaceRetrievalSettings(db.pool, SPACE, { external_egress_enabled: false }, {
@@ -600,6 +676,12 @@ describe("Runtime Context Policy persistence and ACL (real Postgres)", () => {
       type: "provider_credential_channel",
       id: "provider-1",
     });
+    // Nobody in this Space vouched for the granted one: with external egress
+    // off, running on it is refused.
+    await expect(new ExecutionControlSnapshotRepository(db.pool).createForRun({
+      ...run,
+      runtime_profile_snapshot_json: { ...run.runtime_profile_snapshot_json as Record<string, unknown>, model_provider_id: "provider-2" },
+    } as RunRecord, resolved)).rejects.toThrow(/external model egress/);
   });
 
   it("fails subscription CLI preflight when Space external egress is disabled", async () => {

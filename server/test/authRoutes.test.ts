@@ -30,6 +30,7 @@ function fakeRepo(overrides: Partial<AuthRepository> = {}): AuthRepository {
         created_at: "2026-06-15T12:00:00.000Z",
         last_login_at: null,
         is_instance_admin: false,
+        default_space_id: "space-1",
       };
     },
     async getUserSpaces() {
@@ -287,7 +288,8 @@ describe("native server auth routes", () => {
     expect(response.json()).toMatchObject({ password_min_length: 8, password_max_length: 128 });
   });
 
-  it("does not expose the retired hand-written Google callback", async () => {
+  it("returns 404 for GET /api/v1/auth/google/callback", async () => {
+    // Google sign-in belongs to Better Auth. Do not add a hand-written callback.
     app = server({
       GOOGLE_CLIENT_ID: "google-client",
       GOOGLE_CLIENT_SECRET: "google-secret",
@@ -306,7 +308,8 @@ describe("native server auth routes", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("does not keep the retired OAuth callback CSRF surface", async () => {
+  it("returns 404 for that callback when an oauth_state cookie is present", async () => {
+    // Do not add a CSRF check on a callback this server does not own.
     app = server({
       GOOGLE_CLIENT_ID: "google-client",
       GOOGLE_CLIENT_SECRET: "google-secret",

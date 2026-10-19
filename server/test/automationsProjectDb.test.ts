@@ -49,6 +49,9 @@ import { WorkflowExecutionService } from "../src/modules/automations/workflowExe
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { seedMainlineRoomsForAllProjects, seedServerHost } from "./support/domainSeeds.js";
 import { decidePersonaWrite } from "../src/modules/memory/memoryApplyRepository.js";
+import { registerWorkflowExecutionProposalAppliers } from "../src/modules/automations/workflowExecutionProposalApplier.js";
+import type { ProposalApplierRegistry, ProposalApplyContext } from "../src/modules/proposals/applierRegistry.js";
+import { withTransaction } from "../src/db/tx.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
@@ -280,6 +283,31 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     expect(rebound.project_id).toBe(PROJECT);
   });
 
+  it("does not let a member pull someone else's Automation into their own Project", async () => {
+    if (!db.available) return;
+    const personal = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: { name: "Owner's own", agent_id: AGENT, trigger_type: "manual", config_json: { target_type: "agent_run" } },
+    });
+    const theirProject = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO projects (id, space_id, owner_user_id, name, status, created_at, updated_at)
+       VALUES ($1,$2,$3,'Member project','active',$4,$4)`,
+      [theirProject, SPACE, MEMBER, now],
+    );
+    await seedMainlineRoomsForAllProjects(db.pool);
+
+    await expect(service().update({
+      spaceId: SPACE,
+      automationId: personal.id,
+      actorUserId: MEMBER,
+      body: { project_id: theirProject, config_json: { target_type: "agent_run", prompt: "Do my bidding." } },
+    })).rejects.toMatchObject({ statusCode: 404 });
+    expect((await new PgAutomationRepository(db.pool).get(SPACE, personal.id))?.project_id).toBeNull();
+  });
+
   it("lists automations filtered by project_id", async () => {
     if (!db.available) return;
     const bound = await createAutomation({
@@ -311,6 +339,130 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     await expect(repo.list(SPACE, { projectId: null })).resolves.toMatchObject([
       { id: unbound.id, project_id: null },
     ]);
+  });
+
+  it("reads an Automation only where its Project and owner allow", async () => {
+    if (!db.available) return;
+    // A team Space, so Project membership decides who reads the Project.
+    await db.pool.query(`UPDATE spaces SET type = 'team' WHERE id = $1`, [SPACE]);
+    const bound = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: {
+        name: "Project digest",
+        agent_id: AGENT,
+        project_id: PROJECT,
+        trigger_type: "manual",
+        config_json: { target_type: "agent_run", prompt: "Summarize the Project's private notes" },
+      },
+    });
+    const unbound = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: { name: "General digest", agent_id: AGENT, trigger_type: "manual", config_json: { target_type: "agent_run" } },
+    });
+    const tick = await new PgAutomationRepository(db.pool).upsertAutonomyAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      agentId: AGENT,
+      name: "Always-on",
+      configJson: { target_type: "autonomous_tick", project_ids: [PROJECT], cron: "0 * * * *", timezone: "UTC" },
+      preflightSnapshot: {},
+    });
+
+    const repo = new PgAutomationRepository(db.pool);
+    const ids = async (userId: string) =>
+      (await repo.list(SPACE, { readableBy: userId })).map((row) => row.id).sort();
+    // A personal Automation, a tick included, is its owner's content; a
+    // Project-bound one is its Project readers'. The Space owner here is also
+    // the Project owner.
+    expect(await ids(MEMBER)).toEqual([]);
+    await expect(repo.get(SPACE, bound.id, { readableBy: MEMBER })).resolves.toBeNull();
+    await expect(repo.get(SPACE, unbound.id, { readableBy: MEMBER })).resolves.toBeNull();
+    await expect(repo.get(SPACE, tick.id, { readableBy: MEMBER })).resolves.toBeNull();
+    await expect(repo.listWorkflowExecutions(SPACE, bound.id, { readableBy: MEMBER })).rejects.toMatchObject({ statusCode: 404 });
+    // A Space admin reads none of them by role…
+    expect(await ids(ADMIN)).toEqual([]);
+    expect(await ids(OWNER)).toEqual([bound.id, unbound.id, tick.id].sort());
+    // …and gets the operations view instead: enough to stop each one, none
+    // of its content.
+    const opsView = await repo.list(SPACE, { readableBy: ADMIN, includeOpsView: true });
+    expect(opsView.map((row) => row.id).sort()).toEqual([bound.id, unbound.id, tick.id].sort());
+    for (const row of opsView) {
+      expect(row).toMatchObject({ access: "ops", name: null, description: null, preflight_snapshot_json: null });
+      expect(Object.keys(row.config_json ?? {})).toEqual(["target_type"]);
+    }
+    expect(JSON.stringify(opsView)).not.toContain("private notes");
+    // A plain member gets no operations view at all.
+    expect(await repo.list(SPACE, { readableBy: MEMBER, includeOpsView: true })).toEqual([]);
+    const ownView = await repo.get(SPACE, bound.id, { readableBy: OWNER, includeOpsView: true });
+    expect(ownView).toMatchObject({ access: "full", name: "Project digest" });
+  });
+
+  it("lets only the owner change an Automation; an admin may pause or archive it, never re-enable or rewrite it", async () => {
+    if (!db.available) return;
+    await db.pool.query(`UPDATE spaces SET type = 'team' WHERE id = $1`, [SPACE]);
+    const personal = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: { name: "Owner's prompt", agent_id: AGENT, trigger_type: "manual", config_json: { target_type: "agent_run", prompt: "Mine" } },
+    });
+    // The admin cannot read it, cannot rewrite it, cannot fire it…
+    await expect(service().update({
+      spaceId: SPACE, automationId: personal.id, actorUserId: ADMIN,
+      body: { config_json: { target_type: "agent_run", prompt: "Theirs now" } },
+    })).rejects.toMatchObject({ statusCode: 403 });
+    await expect(service().update({
+      spaceId: SPACE, automationId: personal.id, actorUserId: ADMIN, body: { name: "Renamed" },
+    })).rejects.toMatchObject({ statusCode: 403 });
+    await expect(service().fire({ spaceId: SPACE, automationId: personal.id, actorUserId: ADMIN }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    // …but may stop it, and the answer is the operations view.
+    const paused = await service().update({
+      spaceId: SPACE, automationId: personal.id, actorUserId: ADMIN, body: { status: "paused" },
+    });
+    expect(paused).toMatchObject({ status: "paused", access: "ops", name: null });
+    // Re-enabling is the owner's decision.
+    await expect(service().update({
+      spaceId: SPACE, automationId: personal.id, actorUserId: ADMIN, body: { status: "active" },
+    })).rejects.toMatchObject({ statusCode: 403 });
+    // A plain member cannot even stop it; it is absent to them.
+    await expect(service().update({
+      spaceId: SPACE, automationId: personal.id, actorUserId: MEMBER, body: { status: "archived" },
+    })).rejects.toMatchObject({ statusCode: 404 });
+    const resumed = await service().update({
+      spaceId: SPACE, automationId: personal.id, actorUserId: OWNER, body: { status: "active", name: "Owner's prompt, renamed" },
+    });
+    expect(resumed).toMatchObject({ status: "active", name: "Owner's prompt, renamed" });
+    const archived = await service().update({
+      spaceId: SPACE, automationId: personal.id, actorUserId: ADMIN, body: { status: "archived" },
+    });
+    expect(archived.status).toBe("archived");
+    const stored = await db.pool.query<{ config_json: { prompt?: string } }>(`SELECT config_json FROM automations WHERE id = $1`, [personal.id]);
+    expect(stored.rows[0]!.config_json.prompt).toBe("Mine");
+  });
+
+  it("does not let a Project writer rewrite another member's Project Automation", async () => {
+    if (!db.available) return;
+    await db.pool.query(`UPDATE spaces SET type = 'team' WHERE id = $1`, [SPACE]);
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,'member','active',$5,$5)`,
+      [randomUUID(), SPACE, PROJECT, MEMBER, now],
+    );
+    const bound = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: { name: "Project prompt", agent_id: AGENT, project_id: PROJECT, trigger_type: "manual", config_json: { target_type: "agent_run", prompt: "Owner's" } },
+    });
+    // A Project reader sees it…
+    expect(await new PgAutomationRepository(db.pool).get(SPACE, bound.id, { readableBy: MEMBER })).toMatchObject({ access: "full" });
+    // …and still cannot change what it runs.
+    await expect(service().update({
+      spaceId: SPACE, automationId: bound.id, actorUserId: MEMBER,
+      body: { config_json: { target_type: "agent_run", prompt: "Mine" } },
+    })).rejects.toMatchObject({ statusCode: 403 });
   });
 
   it("rejects project binding for non-agent_run targets with 422", async () => {
@@ -424,6 +576,47 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     expect(run.rows[0]?.project_id).toBe(PROJECT);
     expect(run.rows[0]?.trigger_origin).toBe("manual");
     expect(run.rows[0]?.instructed_by_user_id).toBe(OWNER);
+  });
+
+  it("does not fire, or re-arm, a scheduled Automation paused after the scan read it", async () => {
+    if (!db.available) return;
+    const created = await createAutomation({
+      spaceId: SPACE,
+      ownerUserId: OWNER,
+      body: {
+        name: "Nightly digest",
+        agent_id: AGENT,
+        project_id: PROJECT,
+        trigger_type: "schedule",
+        config_json: { target_type: "agent_run", prompt: "Digest", cron: "0 9 * * *", timezone: "UTC" },
+      },
+    });
+    await db.pool.query(
+      `UPDATE scheduler_tasks SET next_run_at = now() - interval '1 minute'
+        WHERE task_type = 'automation' AND task_key = $1`,
+      [created.id],
+    );
+    const repo = new PgAutomationRepository(db.pool);
+    const scanner = new AutomationService(config, repo);
+    // The scan holds the row it read while it works through the batch; the
+    // person pauses it in that window.
+    const listDue = repo.listDue.bind(repo);
+    vi.spyOn(repo, "listDue").mockImplementation(async (nowIso) => {
+      const due = await listDue(nowIso);
+      await service().update({
+        spaceId: SPACE, automationId: created.id, actorUserId: OWNER, body: { status: "paused" },
+      });
+      return due;
+    });
+
+    await expect(scanner.scanAndFire()).resolves.toBe(0);
+    const runs = await db.pool.query(`SELECT id FROM automation_runs WHERE automation_id = $1`, [created.id]);
+    expect(runs.rows).toEqual([]);
+    const task = await db.pool.query<{ status: string; next_run_at: Date | null }>(
+      `SELECT status, next_run_at FROM scheduler_tasks WHERE task_type = 'automation' AND task_key = $1`,
+      [created.id],
+    );
+    expect(task.rows[0]).toEqual({ status: "paused", next_run_at: null });
   });
 
   it("runs the configured prompt as the automation's own work, whoever pressed fire", async () => {
@@ -579,8 +772,8 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
 
   /**
    * A Room is a visibility boundary and `task_runs` is read through the Task,
-   * so a Task Run may not be attached to a Room conversation. Nothing writes
-   * such a row today; this is what keeps it that way.
+   * so a Task Run may not be attached to a Room conversation. Do not write
+   * such a row.
    */
   it("refuses to dispatch a Task Run into a Room conversation", async () => {
     if (!db.available) return;
@@ -680,13 +873,12 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       { source: { kind: "workflow", id: WORKFLOW_VERSION }, max_runs: 1 },
     ])).rejects.toMatchObject({ code: "budget_source_not_found" });
     await db.pool.query(`UPDATE evolvable_assets SET status = 'active' WHERE id = $1`, [WORKFLOW_ASSET]);
-    await db.pool.query(
+    // A catalog version cannot become a Space's version in place: the
+    // database refuses a Space scope with no Space.
+    await expect(db.pool.query(
       `UPDATE evolvable_asset_versions SET scope_type = 'space', scope_id = $2 WHERE id = $1`,
       [WORKFLOW_VERSION, SPACE],
-    );
-    await expect(assertBudgetSourcesAvailable(db.pool, SPACE, [
-      { source: { kind: "workflow", id: WORKFLOW_VERSION }, max_runs: 1 },
-    ])).rejects.toMatchObject({ code: "budget_source_not_found" });
+    )).rejects.toMatchObject({ code: "23514", constraint: "ck_evolvable_asset_versions_system_scope_placement" });
   });
 
   it("rejects a space-scoped Workflow budget source that belongs to another space", async () => {
@@ -720,15 +912,13 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       { source: { kind: "workflow", id: otherVersion }, max_runs: 1 },
     ])).resolves.toBeUndefined();
 
-    await db.pool.query(
+    // A Space's version is never the system baseline.
+    await expect(db.pool.query(
       `UPDATE evolvable_asset_versions
           SET scope_type = 'system', scope_id = NULL
         WHERE id = $1`,
       [otherVersion],
-    );
-    await expect(assertBudgetSourcesAvailable(db.pool, OTHER_SPACE, [
-      { source: { kind: "workflow", id: otherVersion }, max_runs: 1 },
-    ])).resolves.toBeUndefined();
+    )).rejects.toMatchObject({ code: "23514", constraint: "ck_evolvable_asset_versions_system_scope_placement" });
   });
 
   it("rejects a Workflow Version whose scope is forbidden by its parent Asset ownership", async () => {
@@ -875,11 +1065,12 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
       workflow_version_id: WORKFLOW_VERSION,
       trigger_origin: "automation",
     });
-    const execution = await db.pool.query<{ status: string; input_json: Record<string, unknown> }>(
-      `SELECT status, input_json FROM workflow_executions WHERE id = $1`,
+    const execution = await db.pool.query<{ status: string; input_json: Record<string, unknown>; responsible_user_id: string }>(
+      `SELECT status, input_json, responsible_user_id FROM workflow_executions WHERE id = $1`,
       [String(fired.workflow_execution_id)],
     );
     expect(execution.rows[0]?.status).toBe("running");
+    expect(execution.rows[0]?.responsible_user_id).toBe(OWNER);
     expect(execution.rows[0]?.input_json).toMatchObject({ query: "bounded" });
     const root = await db.pool.query<{
       trigger_origin: string; instructed_by_user_id: string; workflow_input_json: Record<string, unknown>;
@@ -902,6 +1093,47 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     for (const child of children.rows) {
       expect(child).toMatchObject({ trigger_origin: "job", instructed_by_user_id: OWNER });
     }
+
+    // An approval checkpoint decided by the admin is the admin's approval and
+    // nothing more: it is recorded on the node, and the execution keeps its
+    // responsible person for everything it schedules afterwards (D10).
+    const checkpointProposal = randomUUID();
+    const checkpointNode = randomUUID();
+    await db.pool.query(
+      `INSERT INTO proposals (id, space_id, proposal_type, status, risk_level, urgency, title, summary, payload_json,
+         created_at, updated_at, created_by_user_id, owner_user_id, project_id, project_folder_id)
+       VALUES ($1,$2,'workflow_execution_checkpoint','pending','medium','normal','Approve','Checkpoint',$3::jsonb,$4,$4,$5,$5,$6,$7)`,
+      [checkpointProposal, SPACE, JSON.stringify({ workflow_execution_id: String(fired.workflow_execution_id), node_id: checkpointNode }),
+        now, OWNER, PROJECT, PROJECT_FOLDER],
+    );
+    await db.pool.query(
+      `INSERT INTO workflow_execution_nodes (id, space_id, execution_id, node_key, node_kind, title, status,
+         approval_proposal_id, risk_level, contract_json, input_bindings_json, metadata_json, created_at, updated_at)
+       VALUES ($1,$2,$3,'checkpoint','approval_checkpoint','Checkpoint','waiting_for_review',$4,'low','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,$5,$5)`,
+      [checkpointNode, SPACE, String(fired.workflow_execution_id), checkpointProposal, now],
+    );
+    let applyCheckpoint: ((context: ProposalApplyContext) => Promise<unknown>) | undefined;
+    registerWorkflowExecutionProposalAppliers({
+      register: (_type: string, applier: (context: ProposalApplyContext) => Promise<unknown>) => { applyCheckpoint = applier; },
+    } as unknown as ProposalApplierRegistry);
+    await withTransaction(db.pool, async (client) => {
+      const proposal = await client.query(`SELECT * FROM proposals WHERE id = $1`, [checkpointProposal]);
+      await applyCheckpoint!({ config, db: client, proposal: proposal.rows[0], userId: ADMIN });
+    });
+    const decided = await db.pool.query<{ status: string; metadata_json: Record<string, unknown> }>(
+      `SELECT status, metadata_json FROM workflow_execution_nodes WHERE id = $1`, [checkpointNode],
+    );
+    expect(decided.rows[0]).toMatchObject({ status: "done", metadata_json: { approved_by_user_id: ADMIN, approval_proposal_id: checkpointProposal } });
+    const afterApproval = await db.pool.query<{ responsible_user_id: string }>(
+      `SELECT responsible_user_id FROM workflow_executions WHERE id = $1`, [String(fired.workflow_execution_id)],
+    );
+    expect(afterApproval.rows[0]?.responsible_user_id).toBe(OWNER);
+    const childrenAfter = await db.pool.query<{ instructed_by_user_id: string }>(
+      `SELECT instructed_by_user_id FROM runs WHERE parent_run_id = $1`, [String(fired.root_run_id)],
+    );
+    expect(childrenAfter.rows.every((row) => row.instructed_by_user_id === OWNER)).toBe(true);
+    // The checkpoint was this assertion's fixture, not part of the workflow.
+    await db.pool.query(`DELETE FROM workflow_execution_nodes WHERE id = $1`, [checkpointNode]);
 
     // The same workflow fired with a prompt of the person's own is that person
     // asking. The coordinator Run has to say so: the preflight admitted it as
@@ -948,7 +1180,7 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
     );
     await new PgProjectRepository(db.pool).archive({ spaceId: SPACE, userId: OWNER }, PROJECT);
     await expect(new WorkflowExecutionService(config).reconcile(
-      db.pool, SPACE, String(fired.workflow_execution_id), OWNER,
+      db.pool, SPACE, String(fired.workflow_execution_id),
     )).rejects.toMatchObject({ statusCode: 409 });
     const stopped = await db.pool.query<{ execution_status: string; linked_runs: number }>(
       `SELECT execution.status AS execution_status,
@@ -1046,8 +1278,9 @@ describeWithPostgres("Automation × Project binding (real Postgres)", () => {
         trigger_type: "manual",
       },
     });
-    // Routing refuses this copy, so a preflight that only checked the runtime
-    // key reported `executable: true` and the fire died `route_no_candidate`.
+    // Routing refuses this copy. Do not let preflight check only the runtime
+    // key. That would report `executable: true` and the fire would die
+    // `route_no_candidate`.
     await db.pool.query(
       `UPDATE agent_runtime_profiles SET runtime_installation = 'managed:pending'
         WHERE space_id = $1 AND agent_id = $2`,

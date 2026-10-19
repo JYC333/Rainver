@@ -4,8 +4,9 @@ import { defineConfig } from "vitest/config";
 
 // Files that `vi.mock()` a module must run in their own worker: without
 // isolation a mock stays registered for every file that follows in that
-// worker. Everything else shares one module graph per worker, which is the
-// difference between ~520s and ~60s of module evaluation across the suite.
+// worker. Everything else shares one module graph per worker. Do not isolate
+// the files that do not mock. Module evaluation across the suite would
+// dominate the run.
 function listTestFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
@@ -31,9 +32,9 @@ export default defineConfig({
     setupFiles: ["./test/support/sqlCapture.ts"],
     // The real-Postgres suites create a database per file and run in parallel,
     // so an individual test can sit behind heavy contention for far longer than
-    // it takes in isolation. Vitest's 5s default was failing a different handful
-    // of files on every run — starvation reported as failure, which made "the
-    // suite is green" a coin flip and hid real breakage in the noise.
+    // it takes in isolation. Do not use Vitest's 5s default. Starvation would
+    // be reported as failure, "the suite is green" would be a coin flip, and
+    // real breakage would hide in the noise.
     testTimeout: 30_000,
     hookTimeout: 180_000,
     // Per-package cache path: the default resolves to the workspace-root

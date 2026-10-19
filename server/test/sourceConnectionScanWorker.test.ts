@@ -86,6 +86,11 @@ class ScanDb implements Queryable {
     if (sql.includes("SELECT window_json,status FROM source_backfill_segments")) {
       return { rows: [] as Row[], rowCount: 0 };
     }
+    // The continuation takes the plan's budget lock before the segment row;
+    // a plan outside a research operation has no operation row to lock.
+    if (sql.includes("SELECT p.project_operation_id") && sql.includes("FROM source_backfill_plans")) {
+      return { rows: [] as Row[], rowCount: 0 };
+    }
     if (sql.includes("FROM settings")) {
       return { rows: [] as Row[], rowCount: 0 };
     }
@@ -107,6 +112,14 @@ class ScanDb implements Queryable {
         updated_at: params[11],
       };
       return { rows: [this.schedulerTask as Row], rowCount: 1 };
+    }
+    if (sql.includes("FROM source_channels ch WHERE ch.id = $1")) {
+      // The worker re-reads the channel as it is when the scan ends.
+      const connection = this.connection() as unknown as { status: string; fetch_frequency: string; schedule_rule_json: unknown };
+      return {
+        rows: [{ status: connection.status, fetch_frequency: connection.fetch_frequency, schedule_rule_json: connection.schedule_rule_json }] as Row[],
+        rowCount: 1,
+      };
     }
     if (sql.includes("FROM source_connections")) {
       return { rows: [this.connection()] as Row[], rowCount: 1 };
@@ -643,7 +656,7 @@ describe("SourceExtractionWorker connection_scan", () => {
     await expect(new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1"))
       .resolves.toMatchObject({ status: "failed" });
 
-    // A provider 5xx is now worth a narrower ask before the segment is failed:
+    // A provider 5xx asks a narrower page before the segment is failed:
     // three rungs of the page ladder, each retried once inside the fetch.
     expect(fetchMock).toHaveBeenCalledTimes(6);
     const requestedPageSizes = fetchMock.mock.calls.map(call =>
@@ -690,6 +703,22 @@ describe("SourceExtractionWorker connection_scan", () => {
       .resolves.toMatchObject({ status: "failed" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the channel's monitoring schedule alone when a backfill page fails", async () => {
+    __setArxivThrottleForTests({ sleep: async () => {} });
+    const db = new ScanDb({
+      connectorKey: "arxiv_api",
+      capturePolicy: "reference_only",
+      policyRetention: "metadata_only",
+      backfill: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, { status: 400 }));
+
+    await expect(new SourceExtractionWorker(db, config(), publicAddressGuard).runPendingJob("job-1", "space-1"))
+      .resolves.toMatchObject({ status: "failed" });
+
+    expect(db.calls.some(call => call.sql.includes("INSERT INTO scheduler_tasks"))).toBe(false);
   });
 
   it("fails closed before fetch when a search channel has no executable Search Spec", async () => {

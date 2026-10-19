@@ -4,7 +4,7 @@ import { withDbTransaction, type Pool } from "../../routeUtils/common.js";
 import { resolveStoredArtifactPath } from "./artifactStoragePath.js";
 
 /**
- * Phase 12 hardening: bounds unbounded growth of stored `typescript_node`
+ * Bounds growth of stored `typescript_node`
  * handler source artifacts (`artifact_type = 'source_custom_source_handler_code'`)
  * across repeated repair cycles. `declarative_pipeline_v1` versions never
  * have a `handler_artifact_id` (their pipeline definition lives in
@@ -14,10 +14,9 @@ import { resolveStoredArtifactPath } from "./artifactStoragePath.js";
  * version — `rollbackHandler`'s default target (`customSourceRepairService.ts`)
  * — so a no-argument rollback is never broken by this job. An explicit
  * `target_version_id` pointing at an older, pruned version will still fail,
- * but with the same pre-existing, clear "Handler source artifact is missing
+ * but with the same "Handler source artifact is missing
  * its stored file" error `executeCustomSourceHandler` already raises for a
- * version whose artifact went missing for any other reason — not a new
- * failure mode, just a new way to reach an existing one.
+ * version whose artifact is missing for any other reason.
  *
  * Only prunes the artifact (file + row) and clears
  * `handler_artifact_id` — the `source_handler_versions` row itself is kept

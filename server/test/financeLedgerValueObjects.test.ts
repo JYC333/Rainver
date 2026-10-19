@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime.js";
 
 const {
-  decimal: { addDecimal, compareDecimal, parseDecimal },
+  decimal: { addDecimal, compareDecimal, multiplyDecimal, parseDecimal },
   amount: { Amount, isCommoditySymbol },
   booking: { Booking, parseBooking },
   inventory: { Inventory },
@@ -22,6 +22,18 @@ describe("finance ledger decimal values", () => {
   it("compares decimals independent of display scale", () => {
     expect(compareDecimal(parseDecimal("1.0"), parseDecimal("1.00"))).toBe(0);
     expect(compareDecimal(parseDecimal("-1.01"), parseDecimal("-1.00"))).toBe(-1);
+  });
+
+  it("multiplies decimals without binary floating point", () => {
+    const result = multiplyDecimal(parseDecimal("0.10"), parseDecimal("0.20"));
+    expect(result.decimal).toBe("0.0200");
+    expect(result.coefficient).toBe(200n);
+    expect(result.scale).toBe(4);
+  });
+
+  it("rejects a value that is not a decimal literal", () => {
+    expect(() => parseDecimal("1e2")).toThrow(/Invalid decimal value/);
+    expect(() => parseDecimal("")).toThrow(/Invalid decimal value/);
   });
 });
 

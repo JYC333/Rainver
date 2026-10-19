@@ -4,14 +4,10 @@
 import { describe, expect, it } from 'vitest'
 
 /**
- * The structural answer to the divergence this whole effort existed to fix.
- *
- * A previous plan decided both note surfaces would have an identical editor,
- * action set and linking. Only the editor was made identical, and the Project's
- * own note card quietly stayed a subset — no selection actions, no link panel —
- * so everything the shared editor grew stopped at the Project's edge. The defect
- * was not that someone wrote a worse editor; it was that *there was somewhere to
- * write one*.
+ * One editor for both note surfaces, with the same actions and linking. Do
+ * not keep a second note card on the Project: selection actions and the link
+ * panel then stop at the Project's edge. The failure is a second surface,
+ * not a worse editor.
  *
  * A source scan rather than a behaviour test, for the same reason the note-role
  * guard is one: a behaviour test only covers the surface someone remembered to

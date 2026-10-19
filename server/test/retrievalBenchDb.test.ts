@@ -18,8 +18,7 @@ import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 // gate (retrievalEvalDb), these track graded quality (MRR / nDCG), entity recall
 // under distractor pressure (NamedThing), relational recall, recency/staleness,
 // per-mode precision↔recall tradeoff, and — as a hard gate — that no cross-space
-// or non-readable object ever leaks. Thresholds are conservative baselines; the
-// recall-depth workstreams (per-page max-db.pool, intent, typed-graph) tighten them.
+// or non-readable object ever leaks. Thresholds are conservative baselines.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OTHER_SPACE = "22222222-2222-4222-8222-222222222222";
@@ -187,11 +186,10 @@ describe("Retrieval bench: NamedThing entity recall (real Postgres)", () => {
 
     // Query the shared term only ("helios"), NOT the full title — so the named
     // page wins on its single dense chunk, while each distractor brings many weak
-    // chunks. Before per-page max-db.pool (W2), fusion summed RRF across an object's
-    // chunks, so distractor chunk-count inflated their score and pushed the named
-    // entity down (baseline MRR ≈ 0.33). With per-arm max-db.pool + the title-phrase
-    // boost (the query term is in the named entity's title), the named entity
-    // ranks first and the distractors fall in behind it.
+    // chunks. Fusion keeps the per-arm max pool. Do not sum RRF across an object's
+    // chunks: distractor chunk-count inflates the score. The title-phrase
+    // boost applies when the query term is in the named entity's title, so
+    // that entity ranks first and the distractors fall in behind it.
     const cases: EvalCase[] = [
       { query: "helios", expected: ["named"], graded: { named: 3, "distractor-1": 1, "distractor-2": 1 } },
     ];
@@ -295,7 +293,7 @@ describe("Retrieval bench: relational recall (real Postgres)", () => {
     });
   });
 
-  it("walks two hops: a neighbor-of-a-neighbor is recalled (W4 multi-hop)", async () => {
+  it("walks two hops: a neighbor-of-a-neighbor is recalled", async () => {
     if (!db.available) return;
     // anchor → mid → far. Only anchor matches lexically; "far" is reachable only
     // by a 2-hop traversal through "mid".
@@ -321,10 +319,11 @@ describe("Retrieval bench: relational recall (real Postgres)", () => {
     expect((result.trace as { graph?: { hops: number } }).graph?.hops).toBe(2);
   });
 
-  it("seeds the graph from a lexical match, not just an exact title (W4)", async () => {
+  it("seeds the graph from a lexical match, not just an exact title", async () => {
     if (!db.available) return;
-    // The query matches "anchor" only LEXICALLY (no exact title / alias). Before
-    // W4 the graph arm seeded from exact hits only, so the neighbor was missed.
+    // The query matches "anchor" only lexically. Seed the graph from that
+    // hit. Do not seed from exact title hits only. The neighbor would be
+    // missed.
     await seed({ id: "anchor", title: "Distributed Tracing", content: "Observability via jaeger spans." });
     await seed({ id: "neighbor", title: "Span Sampling", content: "Tail based sampling notes." });
     await relate("anchor", "neighbor", "related_to");
@@ -375,10 +374,10 @@ describe("Retrieval bench: recency / staleness (real Postgres)", () => {
     if (!db.available) return;
     const old = new Date(Date.now() - 400 * 86_400_000).toISOString();
     const fresh = new Date().toISOString();
-    // Adversarial ids: the FRESH page sorts alphabetically LAST, so the lexical
-    // arm's object_id tiebreak puts the STALE page first. Only the recency signal
-    // — which now reads the CANONICAL source_updated_at, not projection time — can
-    // lift the fresh page above it. This fails if recency keys off reindex time.
+    // Adversarial ids: the fresh page sorts alphabetically last, so the lexical
+    // arm's object_id tiebreak puts the stale page first. Only the recency
+    // signal, which reads the canonical source_updated_at, can lift the fresh
+    // page above it. Do not key recency off reindex time.
     await seed({ id: "aaa-stale-onboarding", title: "Onboarding guide", content: "Team onboarding checklist and links.", updatedAt: old });
     await seed({ id: "zzz-fresh-onboarding", title: "Onboarding guide", content: "Team onboarding checklist and links.", updatedAt: fresh });
     await reindex();

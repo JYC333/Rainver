@@ -96,10 +96,15 @@ export default function HostsPanel() {
     return provisioningInFlight.current
   }, [])
 
+  // The 3s tick and a refresh after an action can overlap, and answers do not
+  // arrive in order; only the latest request's list is kept.
+  const hostsRequest = useRef(0)
   const load = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true)
+    const request = ++hostsRequest.current
     try {
       const result = await hostsApi.list()
+      if (request !== hostsRequest.current) return
       setHosts(result.items)
       await loadProvisioning(result.items.filter(host => host.kind === 'server'))
     } catch (error) {
@@ -237,11 +242,11 @@ export default function HostsPanel() {
                   onRefresh={() => load()}
                 />
               )}
-              {/* Every runtime definition, not only the dispatch-eligible ones: a
+              {/* Every runtime definition, not only the dispatch-eligible ones. A
                   registry agent is installable and managed here even while
-                  `remote_eligible` is false (hosts.md, profile isolation), and
-                  filtering it out hid the copy that had just been installed.
-                  Eligibility gates dispatch, not installation visibility. */}
+                  `remote_eligible` is false (hosts.md, profile isolation).
+                  Do not filter it out. The copy would disappear right after
+                  install. Eligibility gates dispatch, not installation visibility. */}
               {host.status !== 'revoked' && (
                 <HostAgents
                   host={host}

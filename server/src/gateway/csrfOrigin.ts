@@ -7,12 +7,12 @@
  * cross-site POST and `Sec-Fetch-Site` on everything; inject tests and host
  * daemons send neither.
  *
- * There is no same-host fallback: behind the frontend proxy the Host header
- * carries no port and the scheme is the proxy's, so a derived origin never
- * matched a real browser origin, and a request-derived allowlist is exactly
- * what `FRONTEND_URL` exists to replace.
+ * There is no same-host fallback. Behind the frontend proxy the Host header
+ * carries no port and the scheme is the proxy's, so a derived origin does not
+ * match a real browser origin. Do not allow a request-derived allowlist.
+ * `FRONTEND_URL` is the allowlist.
  *
- * Requiring `application/json` on writes was considered and not adopted. The
+ * Do not require `application/json` on writes. The
  * property it would buy — that a cross-origin HTML form cannot send the body,
  * since forms are limited to `x-www-form-urlencoded`, `multipart/form-data`
  * and `text/plain` — is what `Sec-Fetch-Site` already decides, and decides
@@ -75,10 +75,9 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
  * top-level navigation from any host under the same registrable domain sends
  * exactly that, with no `Origin` and with the `SameSite=Lax` cookie attached.
  *
- * And a request carrying neither header, plus none of this client's own, is
- * refused rather than allowed: a top-level cross-site navigation in a browser
- * that sends no `Sec-Fetch-Site` carries no `Origin` either, and allowing that
- * case is exactly the hole this closes.
+ * A request carrying neither header, plus none of this client's own, is
+ * refused. Do not allow it. A top-level cross-site navigation that sends no
+ * `Sec-Fetch-Site` also carries no `Origin`.
  *
  * A route whose only effect is its response must not use this — it would refuse
  * an ordinary cross-origin read for no reason.

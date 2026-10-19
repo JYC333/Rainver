@@ -2,11 +2,11 @@ import '@testing-library/jest-dom/vitest'
 import { afterEach } from 'vitest'
 import { cleanup, configure } from '@testing-library/react'
 
-// The rotating full-suite failures were all this timeout, not vitest's: the
-// page under test was still showing its Suspense fallback because the lazy
-// chunk had not finished transforming. Under parallel load that can take well
-// over five seconds for a page that renders instantly on its own. vitest's own
-// 30s testTimeout still bounds a test that is genuinely stuck.
+// A page can still be on its Suspense fallback because the lazy chunk has
+// not finished transforming. Under parallel load that can take well over
+// five seconds for a page that renders instantly on its own. Do not treat
+// that wait as a stuck test. vitest's own 30s testTimeout still bounds a
+// test that is genuinely stuck.
 // Keep this below `maxTestMs` in src/test/perf-budget.json: a test allowed to
 // wait this long for the DOM cannot also be budgeted at the same number.
 configure({ asyncUtilTimeout: 15000 })
@@ -35,8 +35,8 @@ if (typeof document !== 'undefined') {
   }
 
   // jsdom has no ResizeObserver, and the conversation view's stick-to-bottom
-  // scrolling constructs one on mount — without this, every conversation
-  // surface fails to render at all.
+  // scrolling constructs one on mount. Do not leave it undefined. Every
+  // conversation surface fails to render.
   //
   // It reports once on `observe`, rather than never, so a component that
   // sizes itself from the observer sees the same first callback it would in a

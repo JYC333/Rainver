@@ -7,15 +7,13 @@ export const PLAN_GRAPH_VERSION = "plan_graph.v1" as const;
 export const PLAN_GRAPH_LIMITS = {
   maxNodes: 30,
   maxAutoApproveNodes: 8,
-  /** @deprecated Use maxAutoApproveNodes; the cap applies to total nodes. */
-  maxInitialNodes: 8,
   // Keep decomposition bounded to three execution layers. A deeper graph is
   // difficult to review and makes budget/verification ownership ambiguous.
   maxDepth: 3,
 } as const;
 
-export type PlanNodeKind = "leaf" | "integration" | "approval_checkpoint" | "exploratory" | "action";
-export type PlanApprovalMode = "auto_approved" | "proposal_required";
+type PlanNodeKind = "leaf" | "integration" | "approval_checkpoint" | "exploratory" | "action";
+type PlanApprovalMode = "auto_approved" | "proposal_required";
 
 export interface PlanNodeRecord {
   key: string;
@@ -48,13 +46,13 @@ export interface MaterializedPlanGraph {
   leaves: string[];
 }
 
-export interface PlanApprovalDecision {
+interface PlanApprovalDecision {
   mode: PlanApprovalMode;
   reasons: string[];
   aggregateMaxCost: number | null;
 }
 
-export interface PlanAtomicityEvaluation {
+interface PlanAtomicityEvaluation {
   valid: boolean;
   reasons: string[];
 }
@@ -238,9 +236,8 @@ function nodeContract(node: WorkflowNode): Record<string, unknown> {
   const declared = record(raw.contract_json);
   const contract: Record<string, unknown> = { ...declared };
   const metadata = record(raw.metadata_json);
-  // WorkflowNode keeps passthrough fields for forward-compatible definitions.
-  // Accept contract fields at the node level as well, but let the explicit
-  // contract_json object win when both forms are present.
+  // A node may carry these contract fields beside `contract_json`.
+  // The explicit `contract_json` object wins when both forms are present.
   for (const key of [
     "acceptance_criteria_json",
     "definition_of_done",

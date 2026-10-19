@@ -365,8 +365,8 @@ describe("core version integrity", () => {
 
     // ADR 0022 §1 puts no Host-kind restriction on provider mode, and the
     // remote path implements it: `hostProviderProxyBaseUrl` derives a lease
-    // address for `kind = 'remote'`, and the daemon's bound-run environment
-    // filter exists for exactly this case.
+    // address for `kind = 'remote'`. The daemon's bound-run environment
+    // filter keeps a paired machine's vendor keys from displacing the binding.
     const profile = await repository.createRuntimeProfile(SPACE, created.id, {
       name: "Paired provider",
       runtimeKey: "opencode",

@@ -1,7 +1,7 @@
 /**
- * Compatibility helpers for the model-provider API-key secret_ref format.
+ * Helpers for the model-provider API-key `secret_ref` format.
  *
- * Keeps the at-rest representation stable so credential rows do not need a
+ * The at-rest representation stays stable. Credential rows do not need a
  * rewrite when credential-store internals change.
  */
 
@@ -34,7 +34,7 @@ export class SecretRefCompatibilityError extends Error {
   }
 }
 
-export type ParsedModelProviderSecretRefV1 = {
+type ParsedModelProviderSecretRefV1 = {
   encryptedKeyWithTag: Buffer;
   nonce: Buffer;
 };
@@ -121,7 +121,16 @@ export async function loadOrCreateModelProviderApiKeyMasterKey(
 
   const key = randomBytes(MODEL_PROVIDER_API_KEY_MASTER_KEY_BYTES);
   await mkdir(join(rainverHome, "secrets"), { recursive: true });
-  await writeFile(keyPath, key, { mode: 0o600 });
+  try {
+    // Exclusive create. Two first writers must end with one key. Do not use a
+    // plain write: the second overwrites the first's key after the first has
+    // encrypted with it, and that ciphertext cannot be decrypted. The loser
+    // reads the winner's.
+    await writeFile(keyPath, key, { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    if ((error as { code?: string }).code !== "EEXIST") throw error;
+    return loadOrCreateModelProviderApiKeyMasterKey(rainverHome);
+  }
   await chmod(keyPath, 0o600);
   return key;
 }

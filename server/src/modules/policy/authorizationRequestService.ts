@@ -29,7 +29,7 @@ interface RunRow {
   project_id: string | null;
 }
 
-export interface AuthorizationRequestOut {
+interface AuthorizationRequestOut {
   id: string;
   space_id: string;
   run_id: string;

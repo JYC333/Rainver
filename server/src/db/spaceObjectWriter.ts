@@ -1,11 +1,7 @@
 /**
- * The single place that knows the `space_objects` column list.
- *
- * Before this existed there were 11 hand-written `INSERT INTO space_objects`
- * across 7 modules and 10 hand-written `UPDATE space_objects` across 5, each
- * assembling its own column list and its own defaults. Every new domain that
- * joins the ontology would have added another one, and each copy is a place to
- * forget a governance column (B12H).
+ * The single place that knows the `space_objects` column list. Do not
+ * hand-write `INSERT` or `UPDATE` column lists in callers: each copy is a
+ * place to forget a governance column (B12H).
  *
  * It builds a **SQL fragment plus its parameters** rather than executing a
  * query, because several callers embed the insert in a CTE
@@ -13,10 +9,9 @@
  * so that the root row and its extension row are written in one statement.
  * Turning those into two round trips would trade atomicity for tidiness.
  *
- * P2.7 added the B12H rules. They live here rather than at each call site
- * because a rule enforced in eleven places is a rule that will be missed in the
- * twelfth — and the miss is silent, producing an object that is readable by the
- * wrong people or untraceable to whoever made it.
+ * The B12H rules live here rather than at each call site. A copy is missed
+ * at the next caller, and the miss is silent, producing an object that is
+ * readable by the wrong people or untraceable to whoever made it.
  */
 
 import { entityDefinition } from "../modules/ontology/entities.js";
@@ -27,7 +22,7 @@ const ACCESS_LEVELS = new Set(["full", "summary"]);
 
 export class SpaceObjectWriteError extends Error {}
 
-export interface SpaceObjectInsert {
+interface SpaceObjectInsert {
   id: string;
   spaceId: string;
   objectType: string;
@@ -48,7 +43,7 @@ export interface SpaceObjectInsert {
   deletedAt?: string | null;
 }
 
-export interface SqlFragment {
+interface SqlFragment {
   sql: string;
   params: unknown[];
 }
@@ -87,9 +82,8 @@ export function buildSpaceObjectInsert(input: SpaceObjectInsert, paramOffset = 0
   }
 
   // The root title is a projection of the domain's label, so truncating it is
-  // correct where failing the insert is not. Callers used to slice at their
-  // own widths — one of them at 1024, past this column's 512 — which turned a
-  // long label into a write error instead of a shortened display string.
+  // correct where failing the insert is not. Slice at this column's width.
+  // A caller that slices past 512 turns a long label into a write error.
   const title = input.title.trim();
   if (!title) throw new SpaceObjectWriteError("A space object requires a non-empty title");
   const projectedTitle = title.length > TITLE_MAX_LENGTH ? title.slice(0, TITLE_MAX_LENGTH) : title;

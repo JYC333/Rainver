@@ -25,8 +25,8 @@ class AgentGroupServiceDb {
     // First, because a query's own FROM identifies it no matter what
     // predicates it embeds. The delegation reads carry the Run predicate
     // inline, which names `room_read_run` and `runs` — so the arms below,
-    // which key on those, answered the delegation queries with a row of the
-    // wrong shape once the Room term was added to them.
+    // which key on those, would answer the delegation queries with a row of the
+    // wrong shape. Match `FROM run_delegations` first.
     if (sql.includes("FROM run_delegations")) {
       return { rows: [], rowCount: 0 };
     }
@@ -85,10 +85,10 @@ class AgentGroupServiceDb {
         rowCount: this.rootRunId ? 1 : 0,
       };
     }
-    // Before the `room_read_run` arm for the same reason the `FROM runs r` arm
-    // is after it: the timeline's message read now carries the Run predicate,
-    // so its SQL mentions `room_read_run` too and would otherwise be answered
-    // with an `allowed` row instead of a message list.
+    // The timeline's message read carries the Run predicate, so its SQL mentions
+    // `room_read_run` too. Do not answer it with an `allowed` row. This arm
+    // stays ahead of the `room_read_run` arm, and the `FROM runs r` arm stays
+    // after it, for that reason.
     if (sql.includes("FROM agent_run_messages")) {
       return { rows: [], rowCount: 0 };
     }
@@ -104,9 +104,9 @@ class AgentGroupServiceDb {
       // two unrelated queries also end in, so an unmodelled path still reaches
       // the fallback that throws instead of being silently allowed; and it
       // must not answer for a query that merely *embeds* the predicate. The
-      // delegation reads now carry the Room term inline, and this arm answered
-      // them with `{ allowed: true }`, which their callers read as one row of
-      // their own shape — a policy-record list of `[undefined]`.
+      // delegation reads carry the Room term inline. Do not answer them with
+      // `{ allowed: true }`. Their callers would read that as one row of their
+      // own shape — a policy-record list of `[undefined]`.
       return { rows: [{ allowed: true } as Row], rowCount: 1 };
     }
     if (sql.includes("FROM runs r")) {
@@ -603,8 +603,8 @@ describe("AgentGroupRunService", () => {
 
   // ADR 0003 §2. A conversation with no Room is still a conversation with a
   // person, and remembering what they said writes nothing anyone else reads.
-  // Before this the group declared no capabilities at all, so its Agent could
-  // call nothing whatever its own permissions said.
+  // A group with no Room still gets the memory writes. Do not leave its
+  // allowance empty.
   it("gives a group with no Room the memory writes, and nothing that touches a Project", async () => {
     const db = new AgentGroupServiceDb(null);
     const service = new AgentGroupRunService(

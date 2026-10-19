@@ -2,6 +2,7 @@ import type { GraphProjection } from '@rainver/protocol'
 import { resolveEdgeStyle, resolveNodeStyle } from './core/graphTheme'
 import type { GraphTheme, GraphViewState } from './types'
 import { cn } from '../../lib/utils'
+import { useAppTranslation } from '../../i18n'
 
 interface GraphLegendProps {
   projection: GraphProjection
@@ -18,14 +19,15 @@ export function GraphLegend({
   onToggleKind,
   onToggleEdgeKind,
 }: GraphLegendProps) {
+  const { t } = useAppTranslation()
   const nodeKinds = uniqueSorted(projection.nodes.map((node) => node.kind))
   const edgeKinds = uniqueSorted(projection.edges.map((edge) => edge.kind))
-  const activeEdgeKinds = new Set(viewState.activeEdgeKinds)
+  const hiddenEdgeKinds = new Set(viewState.hiddenEdgeKinds)
 
   return (
     <div className="flex max-h-full w-48 flex-col gap-3 overflow-auto border-l border-border bg-background/90 p-3 text-xs">
       <div className="space-y-1">
-        <div className="text-[11px] font-medium uppercase text-muted-foreground">Nodes</div>
+        <div className="text-[11px] font-medium uppercase text-muted-foreground">{t('core_ui.graph.nodes')}</div>
         {nodeKinds.map((kind) => {
           const sample = projection.nodes.find((node) => node.kind === kind)
           const style = sample ? resolveNodeStyle(sample, theme) : theme.fallbackNode
@@ -48,11 +50,11 @@ export function GraphLegend({
       </div>
       {edgeKinds.length > 0 && (
         <div className="space-y-1">
-          <div className="text-[11px] font-medium uppercase text-muted-foreground">Edges</div>
+          <div className="text-[11px] font-medium uppercase text-muted-foreground">{t('core_ui.graph.edges')}</div>
           {edgeKinds.map((kind) => {
             const sample = projection.edges.find((edge) => edge.kind === kind)
             const style = sample ? resolveEdgeStyle(sample, theme) : theme.fallbackEdge
-            const active = activeEdgeKinds.size === 0 || activeEdgeKinds.has(kind)
+            const active = !hiddenEdgeKinds.has(kind)
             return (
               <button
                 key={kind}

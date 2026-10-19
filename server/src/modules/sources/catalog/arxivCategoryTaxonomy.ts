@@ -2,14 +2,13 @@
  * arXiv category taxonomy.
  *
  * Source: https://arxiv.org/category_taxonomy
- * Checked: 2026-07-03.
  */
-export interface ArxivCategoryOption {
+interface ArxivCategoryOption {
   value: string;
   label: string;
 }
 
-export interface ArxivCategoryGroup {
+interface ArxivCategoryGroup {
   group: string;
   options: readonly ArxivCategoryOption[];
 }
@@ -251,9 +250,3 @@ export const ARXIV_CATEGORY_GROUPS: readonly ArxivCategoryGroup[] = [
     ],
   },
 ];
-
-export const ARXIV_CATEGORY_IDS: readonly string[] = ARXIV_CATEGORY_GROUPS.flatMap((group) =>
-  group.options.map((option) => option.value),
-);
-
-export const ARXIV_CATEGORY_ID_SET: ReadonlySet<string> = new Set(ARXIV_CATEGORY_IDS);

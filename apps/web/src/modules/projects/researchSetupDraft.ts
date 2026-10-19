@@ -75,7 +75,7 @@ export function researchSetupDraftFromWorkflow(
  * messages and model context are server-authoritative and never restored from
  * this object.
  */
-export interface ResearchSetupSession {
+interface ResearchSetupSession {
   base_fingerprint: string
   draft: ResearchSetupDraft
   step?: number

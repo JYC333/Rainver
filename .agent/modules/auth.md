@@ -1,6 +1,6 @@
 # Authentication and registration
 
-Rainver authentication is a clean Better Auth cutover. Better Auth owns
+Rainver authentication uses Better Auth. Better Auth owns
 password hashing, OAuth state/callback handling, verification values and the
 durable session model; the Rainver facade owns active-user status, bootstrap /
 invitation admission, registration provisioning, Space membership, audit facts,
@@ -14,12 +14,25 @@ Better Auth factory; `server/src/db/betterAuthPgAdapter.ts` is the typed custom
 PostgreSQL adapter. Runtime auth code does not import the Drizzle query adapter.
 Better Auth names the session cookie `better-auth.session_token` on HTTP and
 `__Secure-better-auth.session_token` on HTTPS. Rainver reads and clears the name
-issued by Better Auth; there is no legacy `session_id` cookie or handwritten
-OAuth/session writer. Rainver-owned cookies add
+issued by Better Auth. There is no `session_id` cookie. Do not add a second
+OAuth or session writer. Rainver-owned cookies add
 `Secure` whenever `FRONTEND_URL` is HTTPS and remain usable on loopback HTTP.
 The auth facade forwards Better Auth's `Set-Cookie` headers from every Google
 OAuth start response, including login, registration, reauthentication and account
-linking. Its OAuth errors return to `/login?error=...` rather than an unmounted
+linking. Sign-in and password-change responses carry the session only in the
+cookie: the facade answers `{ ok, user }` and drops Better Auth's `token` body
+field. Better Auth is the sole judge of its own cookie — one whose signature it
+rejects is not a session — and the request it receives names the client only by
+the `request.ip` Fastify resolved. It is also the sole writer of a session's
+lifetime: sessions expire after `SESSION_EXPIRE_DAYS` and Better Auth refreshes
+one it validates once a day of its window has passed (`session.updateAge`).
+The facade validates every session with `getSession({ returnHeaders: true })`
+and forwards whatever `Set-Cookie` headers come back — the refreshed session
+cookie with Better Auth's own `Max-Age`, `Secure`, `HttpOnly` and `SameSite`,
+and no `Max-Age` for a sign-in that asked not to be remembered — on the
+response that resolved identity (`resolveIdentity`, `introspectIdentity(…,
+reply)`, `getCurrentUser(…, sessionRefreshSink(reply))`). Rainver never
+computes a session expiry or issues a second session cookie of its own. Its OAuth errors return to `/login?error=...` rather than an unmounted
 Better Auth error endpoint.
 
 ## Admission and registration
@@ -29,7 +42,10 @@ The first intent is admitted only when its normalized email matches
 requires an unexpired `available` invitation to a non-Personal Space; Space
 owners/admins may create one for a specific email, and it expires after seven
 days. Email normalization is trim plus lowercase only, without provider-specific
-alias rules. Display name is optional and defaults to the part before `@`.
+alias rules. Display name is optional and defaults to the part before `@`;
+it is bounded (`REGISTRATION_DISPLAY_NAME_MAX`) so that both
+`users.display_name` and the derived `<name>'s Personal Space` fit their
+columns, and a longer name is refused at the route before any identity exists.
 An invitation admits
 registration but does not verify ownership of that email address. Intent claim
 secrets and invitation tokens are stored only as SHA-256 digests. A pending
@@ -44,11 +60,13 @@ timestamp alone does not extend that deadline. The five-minute reconciliation
 job and a new admission attempt expire stale intents and release invitation
 reservations. Cleanup revokes incomplete sessions and accounts and deletes the
 now-unreferenced pending identity so the email can retry while the invitation
-remains valid.
+remains valid. The same cleanup deletes a pending identity that no active intent
+binds or names once it is 30 minutes old, such as one created when a different
+Google account was chosen, so it cannot hold the bootstrap user slot.
 
 Invitation links are `/invitations/claim#token=...`. The web page removes the
 fragment with `history.replaceState` before any network request, so the token is
-not sent in a URL or Referer. The old path and old accept endpoint do not exist.
+not sent in a URL or Referer. There is no other claim path or accept endpoint.
 An active account with the invited email can instead accept the same link via
 authenticated `POST /api/v1/invitations/accept`; the Space repository locks and
 consumes the available invitation while activating the membership in one
@@ -70,9 +88,10 @@ Email/password uses an 8–128 Unicode-code-point policy in explicit
 `dev`/`test` instances and a 15–128 policy everywhere else. The public auth
 configuration endpoint exposes the active bounds. Spaces are allowed, with no
 character-class composition or periodic-rotation rule. Passwords are hashed
-with Argon2id. Candidate passwords use the guarded HIBP range check, which sends
-only a SHA-1 prefix; an unavailable check allows the operation and records a
-degraded security event. Login errors are generic and combine Better Auth
+with Argon2id. Candidate passwords — on registration sign-up as on set, change
+and recovery — use the guarded HIBP range check, which sends only a SHA-1
+prefix; an unavailable check allows the operation and records a degraded
+security event. Login errors are generic and combine Better Auth
 path/IP limits with a bounded normalized-email/IP progressive limiter. Safe
 success/failure/throttled and degraded HIBP events use the allowlisted
 `auth_security_events` details.
@@ -80,15 +99,41 @@ Google provider access, refresh and ID tokens are scrubbed before persistence;
 linking Google requires an explicit authenticated action, and unlinking cannot
 remove the last remaining login account. Later Google sign-ins do not overwrite
 the Rainver profile. Every Better Auth session creation records `last_login_at`.
-A Google reauthentication nonce is one-time and bound to the user who initiated
-it before a recent-auth grant can be issued.
+`GET /api/v1/me` returns `default_space_id`: the Space a session lands in
+when a request names none (`selectDefaultSpace`). It is the personal Space the
+person owns, else their oldest active membership; a personal Space they only
+belong to is never their default. The web shell uses it after the URL's and
+the last visited Space.
+A Google reauthentication nonce is one-time and bound to the user and session
+that initiated it. Successful reauthentication replaces the browser's session;
+Rainver records the session issued by a successful Google callback, then revokes
+only the prior session after the browser presents that exact new session and
+issues the recent-auth grant. It is issued only after Better Auth accepts the
+flow, and the pending table is bounded (oldest dropped past 2048) like the login
+limiter's.
+
+A recent-authentication grant (`auth_reauth_grants`, `auth/reauth.ts`) is
+what a sensitive mutation spends. Verifying a password or completing a Google
+reauthentication inserts one: an unpredictable token, stored only as its
+digest, bound to the user and to the session the browser holds (after a
+Google reauthentication, the newly issued session), valid for ten minutes,
+sent to the browser as the HttpOnly `rainver.reauth` cookie.
+`GET /api/v1/auth/reauth/status` only reads it. Password set/change and
+Google link/unlink *consume* it with one conditional update — unconsumed,
+unexpired, this user, this session — inside the mutation's own transaction
+where the mutation is local, and before the call where Better Auth performs
+it, so a replayed cookie, another session's cookie and two concurrent uses of
+one grant all answer 403 `reauthentication_required`. The grant goes with its
+session: logout revokes it and clears the cookie, and session revocation,
+revoke-others, reauthentication's own session replacement and account
+disabling delete session rows, which cascade to their grants.
 
 `/settings/security` wraps recent password or Google reauthentication, password setup/change,
 Google link/unlink and safe session list/revoke operations. Session responses
 contain a server-owned session id and metadata only, never a raw cookie or
 stored digest. The page fetches the authenticated, no-store
 `GET /api/v1/auth/reauth/status` result and hides login methods, password
-settings and sessions until the signed 10-minute grant is valid; it relocks at
+settings and sessions until the 10-minute grant is valid; it relocks at
 expiry or after a mutation consumes the grant. Google-only accounts can use
 Google reauthentication instead of a password. Password recovery delegates
 issuance/consumption to Better Auth's hashed, single-use verification path;
@@ -97,17 +142,17 @@ an authenticated instance administrator can retrieve a reset link exactly
 once; unauthenticated recovery responses never reveal it. `pnpm
 auth:recovery` is the sole-admin local CLI path.
 
-## Administration and future delivery
+## Administration
 
-Instance admins can list users, disable/enable accounts (which invalidates
-sessions), issue a one-time reset link and inspect pending intents. No
+Instance admins can list users, disable/enable admitted accounts (disable
+invalidates sessions; a `pending` identity belongs to `RegistrationService`
+and both routes answer 400 for it), issue a one-time reset link and inspect
+pending intents. No
 impersonation, arbitrary email editing, Space-admin recovery or open signup is
-implemented. The recovery and registration lifecycles expose stable link
-boundaries so a future mail adapter can deliver the same links without adding a
-second token issuer or changing token semantics.
+implemented. The recovery and registration lifecycles expose one link
+boundary. Do not add a second token issuer or change token semantics.
 
 See [SECURITY_AND_ACCESS_BOUNDARIES.md](../architecture/SECURITY_AND_ACCESS_BOUNDARIES.md),
 [DATABASE_AND_TRANSACTIONS.md](../architecture/DATABASE_AND_TRANSACTIONS.md),
 and [ADR 0023](../decisions/0023-authentication-foundation-schema-epoch.md)
-for the current access, transaction, and schema-epoch boundaries. The completed
-implementation's phase history remains in Git.
+for the current access, transaction, and schema-epoch boundaries.

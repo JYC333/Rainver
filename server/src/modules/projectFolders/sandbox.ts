@@ -71,7 +71,7 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
     if (!folder) {
       throw new HttpError(404, "Project Folder not found");
     }
-    // ADR 0016 P1: sandbox provisioning (worktree/read-only/managed dir) is
+    // ADR 0016: sandbox provisioning (worktree/read-only/managed dir) is
     // server-host-only. Resolve the Run-bound Location, not the Folder's
     // mutable active Location; remote-host Runs are rejected before any
     // local filesystem path is resolved.
@@ -111,9 +111,9 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
     await this.removeExistingSandbox(sandboxCwd, folderRoot, "git_worktree");
     await mkdir(resolve(this.config.sandboxRoot, WORKTREE_ROOT_DIR, run.space_id), { recursive: true });
     // A detached standalone clone keeps the isolated workspace's Git object
-    // database inside the selected sandbox. Mounting the source repository's
-    // absolute `.git/worktrees/*` backing path into a runtime namespace would
-    // otherwise widen the Runner authority boundary.
+    // database inside the selected sandbox. Do not mount the source
+    // repository's absolute `.git/worktrees/*` path into the runtime
+    // namespace. That would widen what the runtime can read.
     await locationGitOutput(["clone", "--no-local", "--no-checkout", folderRoot, sandboxCwd], dirname(sandboxCwd), 60_000);
     await locationGitOutput(["checkout", "--detach", baseCommitSha], sandboxCwd, 60_000);
     await this.setRunSandboxPath(run.space_id, run.id, sandboxCwd);
@@ -218,11 +218,10 @@ export class PgRunSandboxManager implements RunSandboxManagerPort {
     if (!info?.isDirectory()) {
       throw new HttpError(404, "Project Folder directory not found on disk");
     }
-    // No exception any more (ADR 0016 §4): a server Location is always under
-    // the instance's own workspace root. Attaching a directory that already
-    // exists on a machine is what a paired host is for — the built-in host has
-    // managed workspaces only, and an escape hatch that let a Folder point
-    // anywhere on the server was the one thing making that untrue.
+    // A server Location is always under the instance's own workspace root
+    // (ADR 0016 §4). Attaching a directory that already exists on a machine is
+    // what a paired host is for. The built-in host has managed workspaces only.
+    // Do not let a Folder point anywhere on the server.
     if (!isInside(root, this.config.workspaceRoot)) {
       throw new HttpError(403, "Project Folder root is outside WORKSPACE_ROOT");
     }

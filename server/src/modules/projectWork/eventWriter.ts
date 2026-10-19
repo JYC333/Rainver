@@ -13,8 +13,7 @@ import { workEventKindDefinition } from "./eventKinds.js";
  * summarise, and nothing afterwards can say which of the two was right — so
  * the event goes first, in the same transaction, through here.
  *
- * `spaceObjectWriter.ts` established the shape of this guard for
- * `space_objects` after eleven hand-written inserts had drifted apart. A test
+ * `spaceObjectWriter.ts` is the shape of this guard. A test
  * asserts no second writer appears here either, and it is asserted before any
  * of the rules below, because hardening a choke point is worthless if a domain
  * can hand-roll the insert next to it.
@@ -39,9 +38,9 @@ export interface WorkEventInput {
    * Written into `data_json.run_id` as well as the correlation column, because
    * that is what the read predicate looks at: an event carries the Run's own
    * words — a `task.reported` summary is whatever the Agent wrote — and is
-   * readable only while that Run is. A writer that set the correlation id alone
-   * left the event ungated, so naming the Run is one field here rather than a
-   * convention each caller has to remember inside `data`.
+   * readable only while that Run is. Do not set the correlation id alone.
+   * The event would be ungated. Naming the Run is one field here rather than
+   * a convention each caller has to remember inside `data`.
    */
   runId?: string | null;
   /** The event that caused this one. */

@@ -3,8 +3,8 @@ import type { Queryable } from "../routeUtils/common.js";
 import { objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 
-export type ResearchIntegrityEventType = "retraction" | "correction" | "expression_of_concern" | "reinstatement";
-export type ResearchIntegrityAlert = {
+type ResearchIntegrityEventType = "retraction" | "correction" | "expression_of_concern" | "reinstatement";
+type ResearchIntegrityAlert = {
   doi: string;
   source_item_id: string | null;
   event_key: string;
@@ -95,10 +95,8 @@ export class ProjectResearchIntegrityMonitorService {
     const sourceRefs = new Set<string>();
     const evidenceRefs = new Set<string>();
     const directDois = new Set<string>();
-    // Refs come from each note's latest revision. They used to come from
-    // `notes.refs_json`, a duplicate of the same list that `note_revisions`
-    // already keeps per version; N8 removed the copy, so this reads the
-    // surviving one. DISTINCT ON picks the newest revision per note.
+    // Refs come from each note's latest revision. DISTINCT ON picks the newest
+    // revision per note. Do not read a second copy off `notes`.
     const sections = await this.db.query<{ refs_json: unknown }>(
       `SELECT DISTINCT ON (nr.note_id) nr.refs_json
          FROM note_revisions nr

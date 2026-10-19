@@ -55,10 +55,9 @@ describe("run evidence redaction", () => {
   });
 
   /**
-   * One negative case per shape that used to get through. Each of these was a
-   * real miss: `\b` does not fire between `_` and a letter, a quoted JSON key
-   * puts a `"` between the name and the colon, and a URL's `?key=` has no
-   * `api` in front of it.
+   * One negative case per shape the scanner must catch. `\b` does not fire
+   * between `_` and a letter, a quoted JSON key puts a `"` between the name
+   * and the colon, and a URL's `?key=` has no `api` in front of it.
    */
   it.each([
     ["an underscore-prefixed name", "access_token=abcdefghijklmnop"],
@@ -105,11 +104,11 @@ describe("run evidence redaction", () => {
   });
 
   /**
-   * The name-anchored pattern was quadratic: written with a leading `[\w.-]*`
-   * it consumed to end-of-line and backtracked one character at a time from
-   * every start position, so 64 KiB on one line — which a Custom Source handler
-   * can print, and which `customSourceRunner` hands here whole — took 8.6
-   * seconds on the single event loop.
+   * Do not anchor the name pattern with a leading `[\w.-]*`. That form is
+   * quadratic: it consumes to end-of-line and backtracks one character at a
+   * time from every start position, so 64 KiB on one line — which a Custom
+   * Source handler can print, and which `customSourceRunner` hands here whole
+   * — takes seconds on the single event loop.
    */
   it("scans a long single line in linear time", () => {
     const started = Date.now();
@@ -130,18 +129,23 @@ describe("run evidence redaction", () => {
   });
 
   it("truncates only after the expanded evidence limit", () => {
-    const value = "x".repeat(MAX_EVIDENCE_TEXT_CHARS + 1);
+    expect(redactEvidenceText("x".repeat(MAX_EVIDENCE_TEXT_CHARS))).toBe("x".repeat(MAX_EVIDENCE_TEXT_CHARS));
 
-    expect(redactEvidenceText(value)).toBe(
-      `${"x".repeat(MAX_EVIDENCE_TEXT_CHARS)}...[truncated]`,
-    );
+    const redacted = redactEvidenceText("x".repeat(MAX_EVIDENCE_TEXT_CHARS + 1))!;
+    expect(redacted.endsWith("...[truncated]")).toBe(true);
+    // The cap backs off through an unbroken token-like run, by at most the
+    // overscan, the way the window's far edge does.
+    const kept = redacted.length - "...[truncated]".length;
+    expect(kept).toBeGreaterThanOrEqual(MAX_EVIDENCE_TEXT_CHARS - 256);
+    expect(kept).toBeLessThanOrEqual(MAX_EVIDENCE_TEXT_CHARS);
+    expect(redacted.slice(0, kept)).toBe("x".repeat(kept));
   });
 
   it("redacts a secret that straddles the truncation point", () => {
-    // Scanning was moved before truncation so a 1MiB error is not matched in
-    // full. Cutting first put the boundary inside a credential and left its
-    // head, which no pattern is long enough to recognise; the scan reads a
-    // little past the cut for exactly that reason.
+    // Scan before truncation. Do not match a 1MiB error in full, and do not
+    // cut first. The boundary would fall inside a credential and leave its
+    // head, which no pattern is long enough to recognise. The scan reads a
+    // little past the cut.
     const head = `${"x".repeat(MAX_EVIDENCE_TEXT_CHARS - 10)} `;
     const redacted = redactEvidenceText(`${head}sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ trailing`)!;
     expect(redacted).not.toMatch(/sk-A/);
@@ -149,13 +153,12 @@ describe("run evidence redaction", () => {
   });
 
   it('leaves no half a credential at either truncation boundary', () => {
-    // Two boundaries can fall inside a secret, and each one hid the next.
-    // Cutting at the cap before scanning left the head of a secret straddling
-    // the cap — the overscan answered that. But redaction *shrinks* the text,
-    // so a window that comes back under the cap is kept whole and its far edge
-    // becomes a second boundary of the same kind. Measured at the time: a JWT
-    // cut four characters into its signature kept a payload that decodes to
-    // the subject's identity.
+    // Two boundaries can fall inside a secret, and each one hides the next.
+    // Cutting at the cap before scanning leaves the head of a secret straddling
+    // the cap. The overscan covers that. But redaction shrinks the text, so a
+    // window that comes back under the cap is kept whole and its far edge is a
+    // second boundary of the same kind. A JWT cut four characters into its
+    // signature keeps a payload that decodes to the subject's identity.
     const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTQyIiwiZW1haWwiOiJ2aWN0aW1AZXhhbXBsZS5jb20ifQ.SIGNATURE_TAIL';
     const shrinking = ` api_key="${'S'.repeat(200)}" `.repeat(3);
     for (let nudge = -8; nudge <= 48; nudge += 4) {
@@ -163,6 +166,18 @@ describe("run evidence redaction", () => {
       const value = `${shrinking}${'z'.repeat(Math.max(0, padding))} ${jwt} trailing${'y'.repeat(4000)}`;
       expect(redactEvidenceText(value)!, `nudge ${nudge}`).not.toMatch(/eyJ[A-Za-z0-9_-]{6,}/);
     }
+  });
+
+  it("leaves no decodable JWT head when a bare token straddles the cap itself", () => {
+    // The cap is a boundary of the same kind as the window's far edge. A JWT
+    // is matched only whole. One whose second dot lies past the overscan is
+    // not redacted, and cutting at the cap keeps its header and payload.
+    // Do not cut a straddling token at the cap.
+    const jwt = `eyJhbGciOiJIUzI1NiJ9.eyJ${"A".repeat(600)}.SIGNATURE_TAIL_abcdef`;
+    const value = `${"x".repeat(MAX_EVIDENCE_TEXT_CHARS - 120)} ${jwt} trailing${"y".repeat(4000)}`;
+    const redacted = redactEvidenceText(value)!;
+    expect(redacted).not.toMatch(/eyJ[A-Za-z0-9_-]{6,}/);
+    expect(redacted.endsWith("...[truncated]")).toBe(true);
   });
 
   it("leaves usage counts alone", () => {

@@ -6,8 +6,9 @@ import type { LinkType } from "@rainver/protocol";
  * ADR 0012 decision 3 — governance is a property of the **edge**, not of the
  * table. `Thread decomposes_into Thread` is a structural action a user takes
  * directly; `Claim contradicts Claim` is a semantic assertion that needs
- * review. Expressing that as "which table the row lives in" is what produced
- * the duplicate `inquiry_thread_relations` table in the first place.
+ * review. Governance is a property of the edge. Do not express it as which
+ * table the row lives in. That produces a second `inquiry_thread_relations`
+ * table.
  *
  * B12F — this lives in code, not in per-space data, because each declaration
  * has to be honoured by an implementation: a `proposal` link type needs an
@@ -16,17 +17,16 @@ import type { LinkType } from "@rainver/protocol";
  * "definitions in code" from meaning "only the core team can extend".
  */
 
-export type LinkGovernance =
+type LinkGovernance =
   /** Written directly by the owning domain service. */
   | "direct"
   /** Canonical write goes through the proposal flow. */
   | "proposal";
 
-export interface LinkTypeDefinition {
+interface LinkTypeDefinition {
   linkType: LinkType;
   /**
-   * Object types allowed at each end. `"any"` means any registered entity —
-   * used by the generic association types that predate this registry.
+   * Object types allowed at each end. `"any"` means any registered entity.
    */
   from: readonly string[] | "any";
   to: readonly string[] | "any";
@@ -58,9 +58,8 @@ export function registerLinkType(definition: LinkTypeDefinition): void {
       return;
     }
     // Two declarations that can both match the same edge would make governance
-    // depend on registration order, which is exactly the ambiguity this
-    // registry exists to remove. Specific-versus-`any` is fine; the resolver
-    // prefers the specific one.
+    // depend on registration order. Do not allow that overlap.
+    // Specific-versus-`any` is allowed; the resolver prefers the specific one.
     const bothSpecific = definition.from !== "any" && definition.to !== "any"
       && other.from !== "any" && other.to !== "any";
     if (bothSpecific && endpointsOverlap(definition, other)) {
@@ -103,10 +102,10 @@ export function registeredLinkTypes(): readonly LinkTypeDefinition[] {
 
 
 /**
- * Core declarations. Governance follows the pre-existing behaviour: everything
- * that `object_relations` already gated behind a proposal stays gated, and the
- * two types recovered from `inquiry_thread_relations` keep the direct writes
- * they had as a domain table.
+ * Core declarations. `object_relations` types stay proposal-gated.
+ * Thread-to-thread structure, a thread's note `references`, a decision's
+ * `derived_from`, and a workflow's `about` its pinned thread are direct
+ * writes. Do not route those through proposals.
  */
 function registerCoreLinkTypes(): void {
   const proposalGated: readonly LinkType[] = [
@@ -141,9 +140,8 @@ function registerCoreLinkTypes(): void {
     });
   }
 
-  // Endpoint constraints that used to be hardcoded in the proposal applier.
-  // Declaring them here is what makes the registry authoritative rather than
-  // advisory — the applier now asks instead of re-stating them.
+  // Endpoint constraints live on the registry. The applier asks rather than
+  // restating them.
   registerLinkType({
     linkType: "affiliated_with",
     from: ["person"],
@@ -161,11 +159,10 @@ function registerCoreLinkTypes(): void {
     owner: "relations",
   });
 
-  // Recovered from `inquiry_thread_relations` (ADR 0011 decision 3). Thread
-  // structure is a direct user action at editing frequency; routing it through
-  // proposals would be a behaviour change, not a refactor. Five of these words
-  // are also Knowledge/Claim link types where they are reviewed assertions —
-  // the endpoint-specific declaration is what lets both keep their behaviour.
+  // Thread structure is a direct user action at editing frequency (ADR 0011
+  // decision 3). Do not route it through proposals. Five of these words
+  // are also Knowledge/Claim link types where they are reviewed assertions.
+  // The endpoint-specific declaration is what lets both keep their behaviour.
   for (const linkType of [
     "decomposes_into",
     "proposes",
@@ -185,10 +182,9 @@ function registerCoreLinkTypes(): void {
     });
   }
 
-  // Recovered from `decision_case_sources`: a cross-aggregate reference between
-  // Project-owned objects, direct-write like the domain table it replaces.
-  // `experiment_definitions.primary_hypothesis_thread_id` stays a column — it
-  // is a single required pointer with its own FK, not a set of links.
+  // A cross-aggregate reference between Project-owned objects, written
+  // directly. `experiment_definitions.primary_hypothesis_thread_id` stays a
+  // column — it is a single required pointer with its own FK, not a set of links.
   registerLinkType({
     linkType: "derived_from",
     from: ["decision_case"],
@@ -210,7 +206,7 @@ function registerCoreLinkTypes(): void {
     owner: "projectResearch",
   });
 
-  // Thread-to-Note working links, recovered from `inquiry_thread_note_links`.
+  // Thread-to-Note working links, written directly.
   registerLinkType({
     linkType: "references",
     from: ["inquiry_thread"],

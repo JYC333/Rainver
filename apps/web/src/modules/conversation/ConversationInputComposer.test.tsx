@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { sha256Utf8 } from '../project_files/draftController'
 import * as React from 'react'
 import type { ConversationInputMediaOut, RuntimePromptCapabilities } from '@rainver/protocol'
 import { ConversationComposer } from './ConversationComposer'
@@ -73,6 +74,18 @@ describe('shared conversation input composer', () => {
     expect(JSON.parse(screen.getByTestId('parts').textContent ?? '[]')).toMatchObject([{ kind: 'image', media_id: 'media-1' }])
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     expect(screen.getByTestId('sent')).toHaveTextContent('1')
+  })
+
+  it('uploads only as many images from one drop as the cap leaves room for', async () => {
+    vi.mocked(conversationInputApi.uploadImage).mockImplementation(() => new Promise(() => undefined))
+    render(<Harness />)
+    const files = Array.from({ length: 6 }, (_, index) => imageFile(`shot-${index}.png`))
+    fireEvent.drop(screen.getByLabelText('Message'), { dataTransfer: { files } })
+    await screen.findByRole('progressbar', { name: 'Uploading shot-0.png' })
+    expect(conversationInputApi.uploadImage).toHaveBeenCalledTimes(4)
+    // A second batch while the first is still uploading finds no slot left.
+    fireEvent.drop(screen.getByLabelText('Message'), { dataTransfer: { files: [imageFile('late.png')] } })
+    expect(conversationInputApi.uploadImage).toHaveBeenCalledTimes(4)
   })
 
   it('accepts a dropped image and keeps send disabled while upload is unresolved', async () => {
@@ -151,6 +164,9 @@ describe('shared conversation input composer', () => {
     await waitFor(() => expect(screen.getByText('src/App.tsx')).toBeInTheDocument())
     const parts = JSON.parse(screen.getByTestId('parts').textContent ?? '[]')
     expect(parts).toMatchObject([{ kind: 'file_reference', relative_path: 'src/App.tsx', workspace_location_id: 'location-1' }])
+    // The server admits the decoded body, so the part carries the body's digest,
+    // not `file.sha256`, which hashes the bytes on disk (a BOM included).
+    expect(parts[0]).toMatchObject({ byte_size: 20, sha256: await sha256Utf8('export const App = 1') })
     expect(screen.getByLabelText('Message').parentElement).toContainElement(screen.getByLabelText('Referenced files'))
     expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled()
   })

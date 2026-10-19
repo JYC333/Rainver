@@ -7,9 +7,8 @@ import {
 /**
  * Project-level access gate for memory reads.
  *
- * Memory keeps this import path for module ownership stability, but the
- * canonical ACL lives in projects/access.ts so project-scoped read surfaces use
- * one definition.
+ * Callers in this module use this function. The ACL is `projects/access.ts`.
+ * Do not copy a second definition here.
  * Memory with `project_id = null` is not project-gated and should not call this.
  */
 export async function canAccessProject(

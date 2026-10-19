@@ -6,8 +6,8 @@ import type { RuntimeKey } from "../../src/modules/runtimeAdapters/specs.js";
 /**
  * The rows almost every Project-domain test needs before it can do anything:
  * a Space, its owner, the owner's membership, and one Project. Column lists
- * and literals match what the files used to inline, so assertions on names
- * and types are unchanged; pass the option when a test needs a different one.
+ * and literals are the names assertions check. Pass the option when a test
+ * needs a different one.
  */
 export async function seedSpaceOwnerProject(
   pool: Pool,
@@ -55,9 +55,9 @@ export async function seedSpaceOwnerProject(
  * The mainline Room a Project is created with (ADR 0018 decision 4).
  *
  * Part of the Project seed rather than an opt-in, because in production a
- * Project without one cannot exist — a fixture that omitted it would be
- * testing a state the system no longer has, and `getProjectMainline` now
- * reports its absence as a broken invariant rather than an empty Project.
+ * Project without one cannot exist. A fixture that omitted it would not be
+ * a state the product has, and `getProjectMainline` reports its absence as
+ * a broken invariant.
  *
  * No conversation and no manager Agent: both arrive with the first message.
  */
@@ -82,8 +82,8 @@ export async function seedProjectMainlineRoom(
 }
 
 /**
- * Give every Project that lacks one the mainline Room it would have been
- * created with (ADR 0018 decision 4), plus its owner's membership.
+ * Give every Project that lacks one the mainline Room production creates
+ * with it (ADR 0018 decision 4), plus its owner's membership.
  *
  * For tests that insert `projects` rows directly. Production has one creation
  * path and it writes the Room in the same transaction; a fixture that inserts
@@ -125,7 +125,6 @@ export async function seedMainlineRoomsForAllProjects(pool: Pool, now = new Date
  * Every Room has exactly one active manager and it is always the system
  * Assistant; production seats it on the first message. A test that wants a
  * Room ready to speak in without going through that path seats one here.
- * Promoted once its third copy appeared.
  */
 export async function seedRoomManager(
   pool: Pool,
@@ -169,10 +168,9 @@ export async function seedRoomManager(
  * Server Host and installation provisioning path is included as well.
  *
  * `runtimeKey` is a registered runtime and is checked against the registry
- * before the insert: nothing in the schema rejects a retired key such as
- * `model_api`, so a seed naming one produced a Profile production can no
- * longer select, and whatever read it fed then failed somewhere far from the
- * fixture. Fail where the wrong key was written instead.
+ * before the insert. Do not seed a key the schema still accepts, such as
+ * `model_api`. Production cannot select that Profile, and the read that uses
+ * it fails far from the fixture. Fail where the wrong key is written.
  */
 export async function ensureDefaultRuntimeProfile(
   pool: Pool,
@@ -365,7 +363,7 @@ export async function seedRun(
  * The unowned built-in host (machine + host rows).
  *
  * Reports a live heartbeat and a logged-in copy of each CLI, because that is
- * what a running built-in host looks like and every check now asks it the same
+ * what a running built-in host looks like. Every check asks it the same
  * questions it asks a paired machine — it is a daemon in a container that can
  * be stopped, and only *ownership* does not apply to it (ADR 0016 §3). Pass
  * `installations: {}` for a host that is up with nothing installed.

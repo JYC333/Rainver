@@ -8,10 +8,9 @@ import ProjectDigestPage from './ProjectDigestPage'
  * One Area for the source → corpus pipeline.
  *
  * Sources (what is bound and how it is read), Raw material (what arrived and
- * has not been looked at), and Digest (what was extracted) were three sidebar
- * entries reading one pipeline at three points. Three doors to one room made
- * the list longer without making anything easier to find; the tab carries the
- * same three points of view.
+ * has not been looked at), and Digest (what was extracted) are three points
+ * of view on one pipeline, carried as tabs. Do not give each its own sidebar
+ * entry.
  */
 const TABS = ['sources', 'raw', 'digest'] as const
 type Tab = typeof TABS[number]

@@ -1,5 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { RetrievalEmbeddingStore } from "../index.js";
+import type { EmbeddingPolicyGeneration } from "../embeddingStore.js";
 import type { Queryable } from "../../routeUtils/common.js";
 import {
   EMBED_CLAIM_TTL_MS,
@@ -28,7 +29,7 @@ export interface RetrievalEmbedder {
   ): Promise<{ vectors: number[][]; model: string }>;
 }
 
-export interface BackfillResult {
+interface BackfillResult {
   scanned: number;
   embedded: number;
   skipped: number;
@@ -45,7 +46,7 @@ export interface RetrievalEmbeddingAuditEvent {
   skipped: number;
 }
 
-export type RetrievalEmbeddingAudit = (event: RetrievalEmbeddingAuditEvent) => Promise<void>;
+type RetrievalEmbeddingAudit = (event: RetrievalEmbeddingAuditEvent) => Promise<void>;
 
 /**
  * Async embedding backfill over `retrieval_chunks`. Selects chunks with no
@@ -65,11 +66,10 @@ export class RetrievalEmbeddingBackfillService {
     opts: { batchLimit?: number; embeddingDimensions?: number; externalEgressEnabled?: boolean } = {},
   ): Promise<BackfillResult> {
     const embeddingDimensions = opts.embeddingDimensions ?? DEFAULT_EMBED_DIMENSIONS;
-    // W9 egress gate: if the space disables external egress, embedding (which
-    // sends chunk text to a provider) is skipped entirely — no chunks are even
-    // claimed, and the vector arm degrades to the deterministic arms. The caller
-    // (the job handler) resolves the space switch; default-allow keeps the
-    // service decoupled and matches the pre-W9 behavior for direct callers.
+    // If the space disables external egress, embedding (which sends chunk text
+    // to a provider) is skipped entirely. No chunks are claimed, and the
+    // vector arm degrades to the deterministic arms. The job handler resolves
+    // the space switch. A direct caller that omits it allows egress.
     const egressPolicy: RetrievalEgressPolicy = { externalEgressEnabled: opts.externalEgressEnabled ?? true };
     if (!egressPolicy.externalEgressEnabled) {
       return { scanned: 0, embedded: 0, skipped: 0, model: null };
@@ -77,12 +77,14 @@ export class RetrievalEmbeddingBackfillService {
     const store = new RetrievalEmbeddingStore(this.db);
     const claimId = randomUUID();
     const staleBefore = new Date(Date.now() - EMBED_CLAIM_TTL_MS);
+    const policyGeneration = await embeddingPolicyGeneration(this.db, spaceId, egressPolicy);
     const pending = await store.claimPendingChunks(
       spaceId,
       opts.batchLimit ?? DEFAULT_EMBED_BATCH,
       claimId,
       staleBefore,
       EMBED_MAX_ATTEMPTS,
+      policyGeneration,
     );
     const egressPolicyWithSources = await this.egressPolicyForPendingChunks(spaceId, pending, egressPolicy);
     const eligible = pending.filter((chunk) =>
@@ -91,6 +93,13 @@ export class RetrievalEmbeddingBackfillService {
         object_id: chunk.object_id,
         source_connection_ids: sourceConnectionIdsFromJson(chunk.source_connection_ids_json),
       }, egressPolicyWithSources),
+    );
+    const eligibleIds = new Set(eligible.map((chunk) => chunk.id));
+    await store.markEmbeddingBlocked(
+      pending.filter((chunk) => !eligibleIds.has(chunk.id)).map((chunk) => chunk.id),
+      spaceId,
+      claimId,
+      policyGeneration,
     );
     if (eligible.length === 0) {
       return { scanned: pending.length, embedded: 0, skipped: pending.length, model: null };
@@ -175,10 +184,13 @@ export class RetrievalEmbeddingBackfillService {
     const sourceIds = uniqueSourceConnectionIds(pending);
     if (sourceIds.length === 0) return base;
     const snapshots = await loadSourcePolicySnapshots(this.db, spaceId, sourceIds);
+    // No `payloadSourceConnectionIds`: this policy filters chunk by chunk, so
+    // each chunk is judged on its own sources. Naming the whole claimed batch
+    // as every chunk's payload would let one restricted source withhold all of
+    // them.
     return {
       ...base,
       sourcePolicies: sourceEgressPoliciesForSnapshots(snapshots),
-      payloadSourceConnectionIds: sourceIds,
     };
   }
 
@@ -195,6 +207,31 @@ export class RetrievalEmbeddingBackfillService {
       );
     }
   }
+}
+
+/**
+ * Names everything the per-chunk egress decision reads: the space switch and
+ * every source connection's policy, consent, owner, and liveness. A chunk set
+ * aside as not sendable is looked at again only when this changes.
+ */
+/**
+ * The egress state embedding is gated on, in the opaque form the engine store
+ * compares: a digest of the Space-wide switch, and one digest per Source
+ * connection of the Space (its owner, status, deletion, consent and policy).
+ */
+async function embeddingPolicyGeneration(db: Queryable, spaceId: string, policy: RetrievalEgressPolicy): Promise<EmbeddingPolicyGeneration> {
+  const connections = await db.query<{ id: string; digest: string }>(
+    `SELECT id, md5(concat_ws(':', id, owner_user_id, status, deleted_at::text, consent_json::text, policy_json::text)) AS digest
+       FROM source_connections
+      WHERE space_id = $1`,
+    [spaceId],
+  );
+  return {
+    frame: createHash("sha256")
+      .update(JSON.stringify({ external: policy.externalEgressEnabled, destination: policy.destination ?? "external_provider" }))
+      .digest("hex"),
+    connectionDigests: Object.fromEntries(connections.rows.map((row) => [row.id, row.digest])),
+  };
 }
 
 function uniqueSourceConnectionIds(pending: readonly { source_connection_ids_json: unknown }[]): string[] {

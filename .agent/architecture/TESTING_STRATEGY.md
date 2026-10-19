@@ -5,7 +5,7 @@ them fast. Commands are in [`../COMMANDS.md`](../COMMANDS.md).
 
 ## Scope
 
-Five Vitest suites, one per package, each run from its package root:
+Seven Vitest suites, one per package, each run from its package root:
 
 | Package | Tests | Notes |
 |---|---|---|
@@ -13,6 +13,8 @@ Five Vitest suites, one per package, each run from its package root:
 | `packages/protocol/` | `test/**/*.test.ts` | Schema parsing and frozen registry fixtures |
 | `packages/host-daemon/` | `test/**/*.test.ts` | Pure node |
 | `packages/agent-cli/` | `test/**/*.test.ts` | Spawns the command as a real child process against a stub control plane |
+| `packages/folder-read/` | `test/**/*.test.ts` | Path policy, reads, and git |
+| `packages/outbound-guard/` | `test/**/*.test.ts` | Outbound block list and fetch guard |
 | `apps/web/` | `src/**/*.test.{ts,tsx}` | jsdom by default; pure-logic files opt out |
 
 Tests are unit-style (deterministic rules, parsers, state transitions, no
@@ -191,8 +193,8 @@ before it in that worker.
 The web suite runs at full parallelism and starts a jsdom environment per file.
 Test files that touch no DOM declare `// @vitest-environment node` on their
 first line; `src/test/setup.ts` installs its DOM shims and per-test cleanup only
-where a DOM exists. `asyncUtilTimeout` is 15s there because `findBy*` used to
-give up while a lazy chunk was still transforming under load.
+where a DOM exists. `asyncUtilTimeout` is 15s so `findBy*` waits out a lazy
+chunk that is still transforming under load.
 
 Two Vitest 4 behaviors to write for: a `vi.fn()` used as a class needs a
 `function` implementation (arrow functions are not constructible), and
@@ -202,10 +204,9 @@ files that spy on the same method in several tests restore mocks in
 
 ## Time Budgets Are Enforced
 
-The suites blew up twice without anyone writing a slow test: the cost of old,
-reasonable tests grew with the schema (`TRUNCATE ... CASCADE` across 300 tables)
-and with the module graph (building the whole server to test one module). Rules
-cannot catch a cost that appears retroactively, so every run is measured and
+Per-call cost grows with the schema (`TRUNCATE ... CASCADE` across the tables)
+and with the module graph (building the whole server to test one module). A
+rule that only looks at new tests misses that, so every run is measured and
 fails on a doubling:
 
 1. Vitest's `experimental.importDurations` with `failOnDanger` fails a run when
@@ -218,9 +219,9 @@ fails on a doubling:
    so the tolerance is 2x: the gate catches doublings and the ten slowest files
    it prints every run make drift visible. Raising a limit is an edit to the
    budget file, reviewed with the change that needed it.
-3. `testHygiene.test.ts` in each suite fails on the patterns behind past
-   blow-ups (the rules in the two sections above, plus real-time sleeps and
-   bare `userEvent.setup()`), with exemptions listed per file.
+3. `testHygiene.test.ts` in each suite fails on the rules in the two sections
+   above, plus real-time sleeps and bare `userEvent.setup()`, with exemptions
+   listed per file.
 
 ## Product Rules Tests Protect
 
@@ -250,12 +251,17 @@ rule out a regression. Re-run only the failing file first. If baseline compariso
 is needed, use an isolated checkout and preserve the current uncommitted work;
 do not automatically stash or reset it. A file that passes alone but times out
 under full fan-out needs concurrency and timing investigation before attribution.
-Two patterns have produced such flakes here: assuming the order in which
-concurrent fakes are reached, and attaching a
+Four patterns have produced such flakes here: assuming the order in which
+concurrent fakes are reached; attaching a
 rejection handler one event-loop turn after the commit that triggers the
-rejection (Vitest 4 counts that as an unhandled error).
+rejection (Vitest 4 counts that as an unhandled error); querying a
+server-wide catalog view such as `pg_locks` or `pg_stat_activity` without
+limiting it to the file's own database, which reaches into other files sharing
+the container; and acting on a web page after its first render but before its
+start-up loads have run, which a later reset then undoes — wait for the request
+or the loaded element, not only for the first visible text.
 
-There are no hand-written subset schemas any more: every real-Postgres file
-clones the migrated baseline, so a test that seeds rows the real constraints
-refuse fails for a real reason. Request `{ empty: true }` only to test the
+Every real-Postgres file clones the migrated baseline. Do not load a
+hand-written subset schema: a test that seeds rows the real constraints
+refuse must fail for a real reason. Request `{ empty: true }` only to test the
 migration runner or a plugin's own migrations.

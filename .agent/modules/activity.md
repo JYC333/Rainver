@@ -8,7 +8,7 @@ Raw input boundary for raw inputs. Nothing bypasses this layer into active memor
 
 ## Owns
 - `ActivityRecord` model
-- `ActivityService`
+- `PgActivityRepository` (`repository.ts`), consolidation (`consolidationRepository.ts`, `consolidationJob.ts`), and notification pointer rows (`notificationPointers.ts`)
 - `/api/v1/activity` routes
 - Activity → proposal pipeline
 
@@ -17,9 +17,9 @@ Raw input boundary for raw inputs. Nothing bypasses this layer into active memor
 ```
 ActivityRecord:
   id, space_id, user_id, project_folder_id, agent_id
-  source_kind/source_type, source_trust
+  activity_type, source_kind, source_trust
   title, content
-  source_run_id, source_task_id, source_session_id, source_url
+  source_run_id, source_task_id, session_id (API: source_session_id), source_url
   visibility, access_level, owner_user_id
   subject_user_id, project_id
   aggregate_key
@@ -37,16 +37,32 @@ proposal generation becomes `proposals_generated`, and worker errors become
 - Raw input always creates an ActivityRecord first
 - ActivityRecords go through the proposal workflow before becoming memory
 - Activity-derived proposals carry Activity provenance in `provenance_entries`
-  and may include `source_activity_id` as a pending-proposal compatibility
-  shortcut; accepted Memory provenance is written to `provenance_links`
+  and set `source_activity_id` on the pending payload. Readers fold that id
+  into the provenance list. Accepted Memory provenance is written to
+  `provenance_links`. Do not treat `source_activity_id` as the accepted
+  provenance record.
 - Activity-derived proposals inherit the source Activity's visibility because
   the proposed content is the Activity's own text.
 - `access_level=summary` withholds `content` and `metadata_json` from
-  non-owners on list/detail. Consolidation requires effective `full`.
+  non-owners on list/detail. Consolidation requires effective `full` and is
+  the record owner's alone (`owner_user_id`, else `user_id`): a reader of a
+  shared capture, a Space owner/admin included, is refused with 403 rather
+  than turning someone else's record into their own Memory.
 - The Inbox holds pointers, never content (BOUNDARIES B24A) — see
   `modules/activity-inbox.md` for the full rule
 - Pointer/aggregate Activity rows set `aggregate_key` and are not eligible for
   Activity-to-Memory consolidation
+- What a record becomes is decided by where it is
+  (`activity/activityMemoryProposal.ts`, shared by the capture endpoint and
+  the batch run): a personal record becomes the owner's private Memory; a
+  Project's record becomes Project Memory, proposed with `space_shared`
+  visibility under that Project so its reviewers can decide it. There is no
+  private Memory under a Project. A Project record becomes Project Memory only
+  when every Project reader can already read it: otherwise the capture
+  endpoint answers `409 activity_share_required`, and the batch run leaves the
+  record `raw` and lists it under `activities_awaiting_share` — the owner
+  shares it with the Project first. The Memory applier asks the same question
+  again when the proposal is accepted
 
 ## Related Files
 - `server/src/modules/activity/`

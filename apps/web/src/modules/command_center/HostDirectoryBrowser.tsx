@@ -50,6 +50,7 @@ export default function HostDirectoryBrowser({
     // First open: the home-ish root the daemon resolves for "/" is too broad a
     // default, so start from the previously selected path or the filesystem root.
     void openPath(value ?? '/')
+    // Only a new host restarts browsing; `value` changes come from browsing itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hostId])
 

@@ -1,7 +1,5 @@
 # Capability, Workflow, And Open Skill System
 
-Date: 2026-06-20
-
 This document defines the capability/workflow/open-skill control-plane model.
 It describes the framework, not a fully active capability executor.
 
@@ -25,14 +23,12 @@ gateway. A package's tool, hook, script, dependency, or MCP declaration is a
 request only and grants no callable or execution authority. A Workflow is a
 third concept: an enforced process definition, not a soft instruction package.
 
-The current implementation is transitional: it still contains canonical
-capability definitions, packs, `NormalizedSkill`, imported skill conversion,
-capability runtime bindings, and renderers built from the normalized
-representation. The workflow template layer that this list also named was
-deleted by the capability-shrink plan. Those paths remain subject to all existing
-proposal, policy, Delivery, and audit checks until the plan's remaining items
-replace them; this document does not treat them as the target authority model or invite
-new callers to extend them. The native `capability` runtime remains disabled.
+The current paths are canonical capability definitions, packs,
+`NormalizedSkill`, imported skill conversion, capability runtime bindings,
+and renderers built from the normalized representation. They stay under the
+existing proposal, policy, Delivery, and audit checks. Do not treat them as
+the authority model, and do not add callers that extend them. The native
+`capability` runtime remains disabled.
 
 Terminology for runtime binaries, adapters, extensions, tool bindings, skill
 bindings, and product plugins is defined in
@@ -46,9 +42,9 @@ permission grant.
 
 The Rainver Work Skill (`capabilities/workSkill.ts`) is the harness contract a
 dispatched agent works under: how to reach the tool surface, when to report,
-how to hand a decision back. It is builtin in the sense `SkillSourceType`'s
-`"builtin"` already means — content Rainver owns and versions with the server,
-with no provenance, risk or approval state, because there is no third party to
+how to hand a decision back. It is a builtin skill: `SkillSourceType`
+`"builtin"` is content Rainver owns and versions with the server,
+with no provenance, risk, or approval state, because there is no third party to
 trust. It is not an enablement: a Run that has tool grants gets it, with nothing to
 turn on and nothing that can turn it off, because a Run that can act and
 cannot report is an error state rather than a configuration. A Run with no
@@ -58,9 +54,9 @@ grants gets no Skill and no surface, which is the same fail-closed answer
 Its judgement rules come from `systemActions/conversationPolicy.ts`, the same
 constants the conversational surfaces assemble — `IDENTIFIER_POLICY`,
 `DURABLE_ACTION_CLAIM_POLICY` and `ACTION_RESULT_REPORTING_POLICY`, which is
-the set the Room dispatch prompt uses (`agentGroups/service.ts`); the managed
-loop assembles an overlapping subset. Editing one of those constants changes
-what every surface that includes it tells an agent, which is the point. What
+the set the Room dispatch prompt uses (`agentGroups/roomStandingContext.ts`).
+Editing one of those constants changes
+what every surface that includes it tells an agent. What
 is Skill-specific and hand-written is the command mechanics and the ADR 0017
 §2 paragraph on direct writes and bounds — the latter restates substance
 `QUESTION_DECOMPOSITION_ACTION_POLICY` also carries, and is the one place this
@@ -70,17 +66,15 @@ unchanged by it — the Run's
 points at `list` rather than naming a fixed set. Each Run records the content
 hash of the Skill it was given.
 
-It is delivered as a file, which nothing else in this module does yet: an
-imported Open Skill is still flattened into prompt text by the Runtime Context
-gateway. Modelling it as a `SkillPackage` with a `runtime`-scoped
-`SkillBinding` is carried in [`plans/capability-shrink-plan.md`](../plans/capability-shrink-plan.md),
-whose target shape it was written against.
+It is delivered as a file. An imported Open Skill is flattened into prompt
+text by the Runtime Context gateway.
 
 ### Open Skill
 
-An Open Skill is an external, portable skill source package. It may come from
-GitHub, future registries, a local workspace, an upload, or an official catalog.
-It usually contains `SKILL.md` plus optional references, assets, scripts, and
+An Open Skill is an external, portable skill source package. Import fetches
+GitHub only. A `source_type` other than `github`, or a fetch host other than
+`raw.githubusercontent.com`, is rejected as `unsupported_skill_source`. It
+usually contains `SKILL.md` plus optional references, assets, scripts, and
 vendor metadata.
 
 An Open Skill is not trusted by default, but its approved package snapshot
@@ -91,8 +85,8 @@ whether and where the content may be delivered, not whether Rainver owns it.
 
 ### NormalizedSkill
 
-`NormalizedSkill` is a transitional internal intermediate representation still
-used by the current importer and conversion path. It captures:
+`NormalizedSkill` is an internal representation used by the importer and the
+conversion path. Do not extend it. It captures:
 
 - instructions
 - package-root-relative resource inventory
@@ -102,9 +96,7 @@ used by the current importer and conversion path. It captures:
 - vendor extensions
 - deterministic risk analysis
 
-It is not a content authority and must not gain new consumers. Capability-shrink
-item 4 removes it so policy metadata is extracted alongside the immutable
-package snapshot without regenerating the skill's instructions. Vendor
+It is not a content authority and must not gain new consumers. Vendor
 declarations such as `allowed-tools` remain permission requests, not grants.
 
 ### SkillPackageFile
@@ -142,6 +134,25 @@ API:
   archives the local overlay. It does not mutate `normalized_json` and does not
   create/enable capabilities.
 
+Overlay authority follows the scope it configures
+(`PgCapabilitiesRepository.assertOverlayScopeAuthority`). Reading needs read
+access to the scope's object, and an unreadable one is answered 404. Writing a
+`space` overlay needs a Space owner/admin; a `project` or `project_folder`
+overlay a Project writer who also reads the Project; a `user` overlay is that
+person's; an ordinary `agent` overlay its manager's (`canChangeAgent`); a
+managed Assistant's overlay its configurer's (`canConfigureAssistant`), so a
+Space admin's general overlay authority does not reach a creator's or Project
+owner's Assistant. An overlay grants no capability trust, egress or credential
+use.
+
+Capability proposal approval follows the scope its effect lands in. A Skill
+import review, an installation, a shared version update and a shared runtime
+binding change the Space and are refused at apply when filed under a Project
+(a Project owner could otherwise approve them); a capability enablement's
+payload `project_id` must equal the proposal's own `project_id`, so a
+Space-wide enablement cannot be approved under a Project's authority nor a
+Project enablement at Space level.
+
 ### CapabilityDefinition
 
 `CapabilityDefinition` is the current Rainver ability object. It defines
@@ -150,8 +161,8 @@ proposal policy, supported execution modes, runtime support, and lifecycle
 status.
 
 Definitions may currently be built in, official, generated, or converted from
-an imported skill. Imported-skill conversion is transitional and must not be
-extended: an external Skill remains a `SkillPackage`, while rainver-owned
+an imported skill. Do not extend imported-skill conversion: an external Skill
+remains a `SkillPackage`, while rainver-owned
 System Actions retain their own registry and gateway. Users do not directly
 mutate definitions.
 
@@ -162,8 +173,7 @@ for a capability. It can store runtime preference, prompt overrides, source
 mode, output policy, budget, and review policy.
 
 The implementation stores capability enablement configuration. Broader
-profile surfaces are not implemented
-([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §12).
+profile surfaces are not implemented.
 
 ### CapabilityPack
 
@@ -171,8 +181,8 @@ profile surfaces are not implemented
 capabilities, docs/tests/examples, artifact types, and possibly artifact
 renderer mappings.
 
-The first version supports static built-in packs and imported skill-derived
-capability candidates. It is not a full marketplace.
+Packs are static built-in packs and imported skill-derived capability
+candidates. There is no marketplace.
 
 ### WorkflowDefinition v1
 
@@ -187,22 +197,17 @@ Project Research does not publish built-in workflow presets from its capability
 pack. Its internal immutable execution-per-pass definitions are created under
 `project_research.*` asset keys when a managed pass needs them; they are
 execution provenance, not user-selectable domain Templates. User or space
-workflow versions still use the existing draft → evaluation →
+workflow versions use the draft → evaluation →
 promotion-proposal → approval path; the generic evolvable asset APIs do not
 grant approval directly.
 
 ### RuntimeSkillBinding
 
-`RuntimeSkillBinding` is the transitional implementation name for the governed
-selection of skill content for a runtime. Its target responsibility is to bind
-an approved, pinned `SkillPackage` to an allowed scope/Agent and record runtime
-compatibility, not to own or regenerate that package's content. Current rows
-still map capability versions to these runtime-specific forms:
+`RuntimeSkillBinding` selects skill content for a runtime. Rows map
+capability versions to these runtime-specific forms:
 
 - Claude Code skill layout
 - Codex skill layout
-- future ACP runtime projections
-- future MCP tool binding
 
 Runtime skill files are generated adapter files. They are not source of truth.
 Built-in capabilities can use their default runtime bindings after an enabled
@@ -216,13 +221,13 @@ version never rewrites other scopes' pins. A null version pin is reserved for
 the matching built-in definition and never selects persisted imported runtime
 bindings; imported conversion also rejects ids that collide with built-in keys.
 
-### RuntimeSkillRenderer
+### Runtime skill render
 
-`RuntimeSkillRenderer` currently renders canonical capability data, normalized
-skill data, and profile configuration into runtime target content. This is
-transitional adapter glue. Its target input is the approved package snapshot
-plus binding/policy metadata, without a canonical content representation. The
-MVP renderers are pure functions that produce deterministic:
+`renderClaudeSkill` and `renderCodexSkill` (`capabilities/runtimeRenderers.ts`),
+reached through `renderRuntimeSkillCandidate`, render canonical capability
+data, normalized skill data, and profile configuration into runtime target
+content. That input is not a canonical content representation. The
+renderers are pure functions that produce deterministic:
 
 - Claude Code generated skill directory suggestions with `SKILL.md`
 - Codex generated skill directory suggestions with `SKILL.md` and optional
@@ -243,8 +248,7 @@ The framework is exposed through existing product areas rather than a separate
 plugin boundary:
 
 - Project Research uses its own governed standing and Thread-scoped focus
-  services. It does not expose the deleted zero-difference research workflow
-  presets. Internal passes still execute through immutable Workflow Executions,
+  services. Internal passes still execute through immutable Workflow Executions,
   while user-facing Project Research controls call the domain application
   service rather than constructing generic run drafts in the browser.
 - The Capabilities page remains the control-plane inspection surface. It shows
@@ -276,17 +280,11 @@ The built-in `research` pack includes:
 - `research.brief_synthesize`
 - `research.idea_generate`
 
-It declares no workflow presets. The four former label-only research templates
-were removed because a preset is admitted only when it changes concrete
-behaviour or configuration, and the whole workflow template layer was deleted
-by the capability-shrink plan.
+It declares no workflow presets. A preset is admitted only when it changes
+concrete behaviour or configuration.
 
 The synthesis output artifact type is `research_report.archive.v1`; the
 user-facing report is the corresponding `project_research_reports` row.
-
-This model allows future Research Lab product surfaces to consume the same
-capabilities and profiles without making Research a plugin boundary from day
-one.
 
 ## Security And Governance
 
@@ -300,6 +298,22 @@ one.
   time, package hash, package root, and bounded same-repository file inventory.
 - GitHub imports must pin a commit SHA when available or at least record source
   ref plus content hash.
+- Import is bound to the preview the person looked at. Preview returns
+  `package_hash`, the hash of the package inventory with each fetched file's
+  SHA-256. `POST /api/v1/skill-sources/import` must carry that
+  `package_hash`, re-fetches the source, and saves the snapshot only when the
+  bytes it fetched hash to it. Otherwise it answers 409
+  `skill_package_changed`, and the Capabilities page withdraws the preview and
+  asks for a new one. Approval of one preview never applies to other content.
+- An imported Skill's capability version carries its reviewed snapshot in
+  `metadata_json`: `normalized_skill`, the `capability_definition` derived
+  from it, `skill_package_id` and `created_from_proposal_id`. `content_ref` and
+  `content_hash` name the package and its hash. Runtime rendering reads these
+  keys. `capability_update` refuses to change any of them on a
+  `source = 'imported_skill'` version (422
+  `imported_skill_snapshot_immutable`); new content comes only from a new
+  import, which produces a new snapshot and hash. Status and other metadata
+  remain updatable.
 - GitHub package imports are limited to files under the detected skill root.
   Text files are fetched with size/type caps and traversal checks. Non-text
   assets remain inventory metadata unless a later storage path is explicitly
@@ -314,8 +328,18 @@ one.
   appliers.
 - Skill local overlays are configuration, not capability trust grants. They do
   not approve a skill, convert a skill, enable a capability, or bypass proposal
-  review. Capability conversion and enablement continue through existing
-  `capability_overlays` / proposal boundaries.
+  review. Capability conversion and enablement continue through
+  `capability_enablements` and proposal boundaries.
+- Review (`skill_import_approve`) and Convert (`capability_install`) are
+  idempotent per person, package snapshot and operation. The proposal's
+  `pending_operation_key` is `skill_package:<package>:<package_hash>:<operation>:<person>`,
+  unique among pending proposals of its type in a Space
+  (`uq_proposals_pending_operation`). Asking again while that proposal is
+  pending returns it with 200 instead of 201, and two concurrent requests
+  file one proposal. Once it is decided, a new request files a new one.
+  Skill package reads include the caller's `pending_proposal`
+  (`{id, operation}` or null). The Capabilities page shows it as pending and
+  disables the matching action.
 - Conversion requests create a `capability_install` proposal. Applying it
   produces a disabled draft capability version plus disabled runtime bindings;
   requesting direct enablement during conversion (`enable_for_project_id`) fails
@@ -331,8 +355,8 @@ one.
   without enablement proof fall back to registry approval.
 - Safe Invocation Snapshots record the selected binding/version source ref and
   delivered content hash, not raw rendered instructions.
-- Unsupported source hosts fail closed in the MVP.
-- Private-network URL import is rejected in the MVP.
+- Unsupported source hosts fail closed.
+- Private-network URL import is rejected.
 
 ## Proposal And Policy Integration
 
@@ -378,20 +402,20 @@ a native execution path exists.
 - Import preview supports safe GitHub `blob`/`tree` package roots and
   `raw.githubusercontent.com` URLs that resolve to `SKILL.md`.
 - Registry, local workspace, upload, and official-catalog skill source types
-  are modeled and not implemented
-  ([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §12).
+  are modeled and not implemented.
 - Binary asset storage is not implemented; binary/non-text assets are kept as
   package inventory metadata where GitHub exposes blob metadata.
 - No native web search service is implemented.
-- Workflow drafts set one primary `runs.capability_id` for compatibility and
+- Workflow drafts set one primary `runs.capability_id` and
   persist the full workflow capability list in `runs.capabilities_json`.
 - Native runtime skill execution is not implemented; rendering only supplies
   adapter-specific instructions or prompt blocks.
 - `RuntimeAdapterSpec` entries declare the executor family consumed by runs
-  orchestration. Adapter capability and trust declarations are conservative;
-  conformance-backed route enforcement remains scoped to C3.
+  orchestration. Adapter capability and trust declarations are conservative.
+  There is no conformance-backed route gate. Do not treat a static declaration
+  as one.
 - Runtime-internal CLI subagents are not represented uniformly by the current
   capability model. Managed API delegation remains group-scoped and
   policy-gated. Claude runs render and verify a run-scoped settings file that
-  denies the `Task` tool; Codex remains `unknown` until C3 verifies an
-  equivalent control, and planned runtimes are not executable by declaration.
+  denies the `Task` tool. Codex has no equivalent verified control, so it stays
+  `unknown`. Planned runtimes are not executable by declaration.

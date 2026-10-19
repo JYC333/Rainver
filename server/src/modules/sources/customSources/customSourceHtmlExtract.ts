@@ -1,13 +1,12 @@
 import { sha256 } from "../sourceRepositoryMappers.js";
 
 /**
- * Real TypeScript port of the string-processing heuristics embedded as a
- * text template in `customSourceHandlerTemplate.ts` (the `typescript_node`
- * generation mode's generated `.cjs` handler). The declarative pipeline
- * interpreter (`customSourcePipelineInterpreter.ts`) calls these directly —
- * it runs trusted, in-process code, so there is no need to serialize this
- * logic into a string executed by a spawned child process the way the
- * code-template mode must.
+ * The string-processing heuristics the `typescript_node` handler template
+ * embeds (`customSourceHandlerTemplate.ts`, the generated `.cjs` handler).
+ * The declarative pipeline interpreter (`customSourcePipelineInterpreter.ts`)
+ * calls these directly. It runs trusted, in-process code, so there is no need
+ * to serialize this logic into a string executed by a spawned child process
+ * the way the code-template mode must.
  *
  * Deliberately the same shallow heuristics as the code-template mode for
  * parity: one CSS class name identifies repeated list items, not a full CSS
@@ -56,7 +55,7 @@ export function extractTagText(html: string, tag: string): string | null {
   return match ? stripTags(match[1]!).trim() : null;
 }
 
-export function extractHref(html: string): string | null {
+function extractHref(html: string): string | null {
   const match = html.match(/href\s*=\s*["']([^"']+)["']/i);
   return match ? match[1]! : null;
 }
@@ -124,12 +123,17 @@ export function buildListItems(input: {
   const blocks = splitBlocksByClass(input.html, input.cssClass).slice(0, Math.max(1, input.maxItems));
   return blocks.map((block, index) => {
     const href = extractHref(block);
-    const link = resolveUrl(href, input.baseUrl) || input.baseUrl || `item-${index}`;
+    const resolved = resolveUrl(href, input.baseUrl);
+    // resolveUrl falls back to the page itself, which names no one item.
+    const ownLink = href && resolved && resolved !== input.baseUrl ? resolved : null;
+    const link = resolved || input.baseUrl || `item-${index}`;
     const title =
       extractTagText(block, "a") || extractTagText(block, "h2") || extractTagText(block, "h3") || `Item ${index + 1}`;
     const excerpt = stripTags(block).slice(0, 2000) || null;
     return {
-      external_id: sha256(`${link}#${index}`),
+      // An item's identity is its own link, so it survives the list moving.
+      // Only a block with no link falls back to the page plus its position.
+      external_id: sha256(ownLink || `${link}#${index}`),
       title: title.slice(0, 512),
       source_uri: link,
       excerpt,

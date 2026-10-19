@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 const { evolutionApiMock, runsApiMock } = vi.hoisted(() => ({
@@ -20,6 +20,7 @@ vi.mock('../../../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpac
 vi.mock('../../../core/spaceNav', () => ({ useSpaceNavigate: () => vi.fn() }))
 
 import AssetLifecyclePanel from '../AssetLifecyclePanel'
+import i18n from '../../../i18n'
 
 const asset = {
   id: 'asset-1', space_id: 'space-1', asset_type: 'workflow_template', asset_key: 'workflow.alpha',
@@ -43,5 +44,42 @@ describe('AssetLifecyclePanel', () => {
       source: 'user_authored',
       content_json: {},
     })
+  })
+
+  it('preselects the version whose Promote button was pressed', async () => {
+    const user = userEvent.setup({ delay: null })
+    evolutionApiMock.evaluationCases.mockResolvedValue([])
+    const version = (id: string, number: number, status: string) => ({
+      id, asset_id: 'asset-1', version: number, status, source: 'user_authored', parent_version_id: null,
+      scope_type: 'space', scope_id: null, content_ref: null, stale_parent: false,
+      created_at: '2026-07-12T00:00:00Z', updated_at: '2026-07-12T00:00:00Z',
+    })
+    render(<AssetLifecyclePanel
+      asset={asset}
+      versions={[version('v2', 2, 'candidate'), version('v3', 3, 'testing')] as never}
+      evaluations={[]}
+      onReload={vi.fn()}
+    />)
+
+    await user.click(screen.getAllByRole('button', { name: 'Promote' })[1]!)
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('v3 · testing')).toBeInTheDocument()
+    expect(within(dialog).queryByText('v2 · candidate')).not.toBeInTheDocument()
+  })
+
+  it('reads in Chinese, counting evaluation cases in the Chinese plural', async () => {
+    await i18n.changeLanguage('zh-CN')
+    try {
+      evolutionApiMock.evaluationCases.mockResolvedValue([{
+        id: 'case-1', name: 'Smoke', status: 'active', baseline_version_id: 'version-base-1', source_run_id: null,
+        input_json: {}, expectation_json: {}, baseline_output_json: {},
+      }])
+      render(<AssetLifecyclePanel asset={asset} versions={[]} evaluations={[]} onReload={vi.fn()} />)
+      expect(screen.getByRole('button', { name: /创建候选版本/ })).toBeInTheDocument()
+      expect(screen.getByText('版本生命周期')).toBeInTheDocument()
+      expect(await screen.findByText('1 个用例')).toBeInTheDocument()
+    } finally {
+      await i18n.changeLanguage('en')
+    }
   })
 })

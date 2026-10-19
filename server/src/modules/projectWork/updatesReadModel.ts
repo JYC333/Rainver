@@ -7,9 +7,9 @@ import { assertProjectReadable, canWriteProject } from "../projects/access.js";
  * The readable account of how a Project has been going.
  *
  * A filter over the same append-only stream everything else folds from, so the
- * story and the record cannot disagree. A separate `project_updates` table was
- * the alternative and would have allowed exactly that, with no way afterwards
- * to say which was right.
+ * story and the record cannot disagree. Do not add a separate
+ * `project_updates` table. It could disagree, with no way afterwards to say
+ * which was right.
  */
 
 const PAGE_SIZE = 30;
@@ -17,15 +17,15 @@ const PAGE_SIZE = 30;
 // the readable account belongs to whoever wrote one — so the acceptance is
 // rendered as itself rather than given invented words.
 //
-// The Inquiry kinds are here because an Agent now advances a Thread directly
-// (ADR 0017 §2): this is where the person sees what it did, so it is also
-// where they undo it. Task lifecycle kinds stay out — Board state is not a
+// The Inquiry kinds belong here. An Agent advances a Thread directly
+// (ADR 0017 §2): this is where the person sees what it did, and where they
+// undo it. Task lifecycle kinds stay out — Board state is not a
 // readable account, and it has its own surface.
 const UPDATE_KINDS = [
   "task.reported",
   "project.reported",
   "task.accepted",
-  // What became of a done Task's change: on the main branch, or stopped on
+  // A done Task's change on the main branch, or stopped on
   // something a person has to see (ADR 0016 §11).
   "task.merged",
   "task.merge_blocked",
@@ -92,8 +92,8 @@ function threadUndoStillApplies(
  *
  * The tiebreak is `seq`, the stream's own insert sequence, not the row id:
  * `project_work_events.id` is a v4 UUID with no time component, so ordering on
- * it put same-millisecond events — two events of one advancement chain, written
- * in one transaction — in a random order, and a keyset predicate on it cuts the
+ * it would put same-millisecond events — two events of one advancement chain, written
+ * in one transaction — in a random order, and a keyset predicate on it would cut the
  * stream at a random point: half of the page just read comes back, and
  * everything older whose id sorts above the cursor becomes unreachable for good.
  */
@@ -218,9 +218,9 @@ function toUpdate(row: UpdateRow): Omit<ProjectWorkUpdate, "members"> {
       && (row.thread_id === null || threadUndoStillApplies(undoAction, row.thread_lifecycle))
       ? { action: undoAction, target_id: row.subject_id }
       : null,
-    // What it replaced, when the writer recorded one. Only an Agent's persona
-    // does today: deciding whether to put the previous version back needs both
-    // sides in front of the person, not one side and a link.
+    // What it replaced, when the writer recorded one. A persona revision is
+    // the row that carries it: deciding whether to put the previous version
+    // back needs both sides in front of the person, not one side and a link.
     previous_summary: str(row.data_json?.previous_summary),
     undone_by_event_id: row.undone_by_event_id,
   };
@@ -229,9 +229,9 @@ function toUpdate(row: UpdateRow): Omit<ProjectWorkUpdate, "members"> {
 /**
  * One turn's writes of one kind, collapsed into one update.
  *
- * A decomposition the person asked for is one thing that happened; six rows of
- * it is the per-item ceremony ADR 0017 removed from the approval queue
- * arriving again in the feed. Members keep their own undo so any single one
+ * A decomposition the person asked for is one thing that happened. Do not
+ * emit one row per item. That is the per-item ceremony the feed must not
+ * repeat. Members keep their own undo so any single one
  * can still be reversed; the fold itself offers none: undoing the whole batch
  * and undoing the one that was wrong are different decisions.
  *
@@ -300,10 +300,10 @@ export async function getProjectUpdates(
 
   const rows = await db.query<UpdateRow>(
     `SELECT e.id, e.event_kind, e.subject_type, e.subject_id, e.occurred_at,
-            -- The cursor must carry the column's own precision. Round-tripping
-            -- through a JS Date truncates to milliseconds, and a writer using
-            -- SQL now() would then make every row inside the truncated window
-            -- unreachable — the same failure the composite key exists to fix.
+            -- The cursor must carry the column's own precision. Do not
+            -- round-trip it through a JS Date. That truncates to milliseconds,
+            -- and a writer using SQL now() would then make every row inside
+            -- the truncated window unreachable.
             e.occurred_at::text AS cursor_at, e.seq::text AS seq, e.data_json,
             a.user_id AS actor_user_id, a.agent_id AS actor_agent_id,
             au.display_name AS actor_user_name, ag.name AS actor_agent_name,

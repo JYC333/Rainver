@@ -19,12 +19,12 @@ storage shapes:
   full Entities (they declare interfaces, pass the read gate, appear in
   retrieval) but they do not carry semantic edges.
 
-Registered today:
+Registered:
 
 | Shape | Entities |
 |---|---|
-| Ontology objects | `space_object` (root) and its subtypes: knowledge item, note, source, claim, `inquiry_thread`, `experiment`, `decision_case`, `research_workflow`, `project_public_summary` |
-| Independent roots | `task`, `run`, `proposal`, `artifact`, `activity`, `memory_entry`, `project`, `project_folder`, `agent`, `user`, `source_connection`, `source_item`, `source_snapshot`, `extracted_evidence`, `reader_annotation`, `token_usage_event`, `imported_session` |
+| Ontology objects | `space_object` (root) and its subtypes: knowledge item, note, source, claim, `person`, `organization`, `inquiry_thread`, `experiment`, `decision_case`, `research_workflow` |
+| Independent roots | `task`, `run`, `proposal`, `artifact`, `activity`, `memory_entry`, `project`, `project_folder`, `agent`, `user`, `source_connection`, `source_item`, `source_snapshot`, `extracted_evidence`, `reader_annotation`, `token_usage_event`, `imported_session`, and the retrieval-only `project_public_summary` (no content-access row of its own; its owning Project gates it) |
 
 `ontologyRegistry.test.ts` asserts that every registered Entity implements
 every interface it declares, and that no per-mechanism type list exists in
@@ -32,8 +32,7 @@ every interface it declares, and that no per-mechanism type list exists in
 
 ## 2. Which domains join the ontology
 
-Two questions, in order. The first was left implicit until 2026-08-27 and is
-the one that decides whether `task` is an ontology object.
+Two questions, in order. The first decides whether `task` is an ontology object.
 
 **Does the domain join the ontology at all?** Only if its objects need to
 participate in **cross-domain semantic relations** — `about`,
@@ -123,8 +122,8 @@ Closed-set validation is in the application layer, not in database CHECK
 constraints. The database keeps **format** constraints only
 (`^[a-z][a-z0-9_]{0,63}$` on `link_type`, an open `object_type`). This is safe
 only because something actually asks the registry: `ontology/validation.ts` is
-that replacement, and `ontologyRegistry.test.ts` asserts it rejects everything
-the demoted CHECKs used to reject.
+that replacement, and `ontologyRegistry.test.ts` asserts it rejects values
+outside the registry.
 
 The code/data boundary:
 
@@ -146,8 +145,8 @@ because adapters genuinely differ.
 `ContextIncludable` · `CardSourceable` · `ProvenanceSourceable` · `Governed`
 
 Two further per-type declarations exist for the same reason the interfaces do
-— a polymorphic mechanism needs to know something per type, and the
-alternative was another hardcoded list:
+— a polymorphic mechanism needs to know something per type. Do not replace
+them with another hardcoded list:
 
 - `requiresProjectScope` — the entity is Project-owned, so the writer enforces
   its Project scope instead of each caller remembering (see §7).
@@ -162,8 +161,7 @@ these declarations.
 ## 7. Write path and its guards
 
 `server/src/db/spaceObjectWriter.ts` is the **only** place that builds
-`INSERT INTO space_objects`. It was introduced to consolidate 11 hand-written
-inserts. It enforces:
+`INSERT INTO space_objects`. Do not insert that row from a second caller. It enforces:
 
 - the object type is registered, and is the root or extends it
 - `requiresProjectScope` entities carry a non-null `primary_project_id`
@@ -179,7 +177,9 @@ twelfth, and the miss is silent (B12H).
 `(project IS NULL OR projectReadAccess)`. A null Project on a Project-owned
 object does not narrow access — it removes the Project gate entirely and
 leaves only visibility. A forgotten `primary_project_id` is a silent
-disclosure, not a stricter default.
+disclosure, not a stricter default. The one later write of that column, a
+content-access policy update, refuses to clear it for a `requiresProjectScope`
+type for the same reason.
 
 This is enforced by the single writer plus a source-scanning test, **not** by
 a database constraint, because such a constraint would have to name subtypes
@@ -197,21 +197,19 @@ edges into one table concentrates that requirement in one layer.
 ## 8. Known debt
 
 **`memory_relations` is outside the ontology and outside the registry.**
-Audited 2026-08-27, found untouched by the ADR 0012 audit:
 
-- `relation_type` has a live 8-value CHECK whose vocabulary overlaps
+- `relation_type` has an 8-value CHECK whose vocabulary overlaps
   `object_relations` in five values (`supersedes`, `contradicts`,
-  `related_to`, `supports`, `applies_to`), and which was never demoted
+  `related_to`, `supports`, `applies_to`). Do not treat that overlap as one vocabulary.
 - `source_type` / `target_type` are unconstrained `varchar(64)` — a
   polymorphic endpoint vocabulary with no registry behind it
 - one writer in `src/` (`memoryApplyProvenance`, hardcoded `'supersedes'`),
-  **no reader**; seven of the eight allowed values have never been written
+  **no reader**; the other seven values have no writer
 
 It is not absorbed: `memory_entries` is an independent root, not a
-`space_objects` row, so its edges cannot live in `object_relations` today.
+`space_objects` row, so its edges cannot live in `object_relations`.
 The disposition (shrink to what is written, or declare a link-type set if
 Memory joins the ontology) is not decided.
-See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §24.
 
 ## Non-goals
 

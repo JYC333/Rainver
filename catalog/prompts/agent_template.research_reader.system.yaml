@@ -1,8 +1,6 @@
 asset_key: agent_template.research_reader.system
 display_name: Research Reader Template System Prompt
-description: >
-  Registry-managed system prompt for the research_reader agent template,
-  migrated from the legacy template manifest.
+description: Registry-managed system prompt for the research_reader agent template.
 content:
   schema_version: prompt_asset.v1
   prompt_type: agent_system

@@ -42,9 +42,31 @@ in the Space — the same reachability rule manual Run creation already applies
 (Space membership plus `agent_id` existing in-Space; no extra per-Agent
 ownership check). It is a per-`(space_id, owner_user_id)` singleton: enabling
 twice reconfigures the same row rather than creating a second one. The
-`ruleAutomation` policy rule's `autonomous_tick`-and-`actor_is_owner` branch is
-the only place a non-admin/owner role is allowed to create, update, or fire an
-Automation, and it cannot reach another member's tick.
+`ruleAutomation` policy rule allows a non-admin/owner role in three branches
+only: a Project writer on an `agent_run` target in that Project, the
+`autonomous_tick`-and-`actor_is_owner` branch (`role >= member`), and the
+`information_digest`-and-`actor_is_owner` branch (`role >= member`; the
+Project form also needs Project writer). The tick branch cannot reach another
+member's tick.
+
+The generic reads (`GET .../automations`, `GET .../automations/:automationId`,
+`GET .../automations/:automationId/workflow-executions`) apply a read rule: a
+personal (non-Project) Automation, an `autonomous_tick` included, is read by
+its owner alone; a Project-bound one by a reader of its Project (its
+`project_id` is not a read grant). A Space owner/admin reads none of another
+member's personal Automations by role: the list and detail answer them the
+**operations view** instead (`access: "ops"`, `automationOpsView`) — identity,
+owner, target type, status and schedule, with `name`, `description`, the
+prompt and the rest of `config_json`, the preflight snapshot and executions
+withheld.
+
+Only the owner changes an Automation's prompt, target, configuration, Project
+binding, name or enablement (`PATCH`), because it runs as their work. Anyone
+else is refused (404 when they cannot read it, 403 when they can), except
+that a Space owner/admin may set `status` to `paused` or `archived` as a
+stop-loss — never back to `active`, which is the owner's decision. Firing runs
+the Automation's content, so it needs reading it: a personal Automation is
+fired by its owner, a Project one by a Project reader who also writes there.
 
 ## Purpose
 
@@ -84,7 +106,17 @@ continue to require their own explicit pre-authorization.
   (`task_type='automation'`, `next_run_at`/`last_run_at`); the
   `automation_scheduler` heartbeat sweeps `listDue` and fires. There is no
   per-automation registration into the scheduler — it is a poll/sweep model.
+  A fire re-reads the Automation's status under its row lock in the
+  transaction that creates its work, so a pause or archive committed after
+  the sweep (or a manual fire) read the row stops it; schedule advancement
+  re-reads the row too and leaves a no-longer-active schedule as the pause or
+  archive wrote it.
 There is no external or webhook trigger kind.
+
+An update runs the target preflight only when the Automation will be active
+and its runnable shape changes (config, Project, or the status turning
+active). Pausing, archiving, or renaming never preflights, so an Automation
+whose target stopped being runnable can always be stopped.
 
 `trigger_type` is not the Run's `trigger_origin`. `fireResponsibility`
 (`targetSupport.ts`) decides the origin and the instructing person from what
@@ -105,9 +137,8 @@ The `agent_run` and `workflow` targets stamp their Runs from that decision.
 The retrieval-maintenance, context-ops and information-digest targets do not:
 they stamp the firing person and a literal `automation`. Those Runs complete in
 process, queue no agent turn and write no memory, and the person they name owns
-the owner-private output — an attribution leftover, not a gate.
+the owner-private output. That stamp is not a gate.
 
-Unimplemented trigger kinds: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §16.
 
 ## Native target authority
 

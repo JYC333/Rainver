@@ -8,7 +8,7 @@ Raw-input layer (L0). Everything entering the system lands as an `ActivityRecord
 
 ## Owns
 - `ActivityRecord` model
-- `ActivityService` (CRUD, status transitions, source trust inference)
+- `PgActivityRepository` (`repository.ts`: CRUD, review/archive status transitions, source trust inference) and `PgActivityConsolidationRepository` (consolidation)
 - Activity API routes
 - Activity inbox UI (`ActivityInboxPage.tsx`)
 
@@ -16,9 +16,10 @@ Raw-input layer (L0). Everything entering the system lands as an `ActivityRecord
 
 Canonical `source_kind` / `activity_type` values: `user_capture`,
 `chat_message`, `external_chat`, `file_import`, `web_capture`, `run_event`,
-`project_folder_event`, `system_event`, `external_source`, and `source`. Legacy input
+`project_folder_event`, `system_event`, `external_source`, and `source`. Input
 aliases such as `user_input`, `manual`, `agent_run`, `task_log`,
-`imported_chat`, `file_capture`, and `voice_capture` are normalized at ingest.
+`workspace_event`, `imported_chat`, `file_capture`, and `voice_capture` are
+normalized at ingest (`task_log` and `workspace_event` to `project_folder_event`).
 
 Default `source_trust` by kind:
 - `user_capture`, `chat_message`, `external_chat`, `file_import` → `user_confirmed`
@@ -70,24 +71,31 @@ Daily Sources post-processing also emits pointer rows into Activity:
 
 ```
 source_post_processing_run succeeded
-    → upsert ActivityRecord(activity_type=source, aggregate_key=source:briefing:<source_connection_id>:<local_date>)
-    → Inbox row opens /library/digests/:connectionId/:date
+    → upsert ActivityRecord(activity_type=source, aggregate_key=source:briefing:<source_channel_id>:<local_date>)
+    → Inbox row opens /library/digests/<source_channel_id>/<local_date>
     → review/archive clears the notification without deleting Library content
 ```
 
 These rows are notification pointers only. `payload_json` carries
-`briefing_date`, `source_connection_id`, `post_processing_run_ids`,
-`artifact_ids`, and `decision_counts`; `content` is a short preview, never the
-full digest body. The per-source toggle is
+`briefing_date`, `source_channel_id`, `source_connection_name`,
+`post_processing_run_ids`, `artifact_ids`, `decision_counts`, and `run_count`;
+`content` states the decision counts and that the briefing is read in
+Library — never digest or run-summary text. A private connection's briefing is
+`private` to its owner. Any other briefing is `selected_users`, granted to the
+channel's current digest subscribers whom the connection still admits; each
+re-surface re-grants it and revokes it from anyone who has since left, so a
+person who unsubscribed keeps what was delivered but is not told about new
+briefings. Opening it re-checks the connection's read gate in Library. The per-source toggle is
 `source_connections.config_json.daily_inbox_briefing`; when absent, emission is
-enabled if the connection currently has at least one active post-processing
-rule. Existing reviewed rows are re-surfaced to `raw` when a new run lands for
+enabled if the source channel currently has at least one active
+post-processing rule. Existing reviewed rows are re-surfaced to `raw` when a new run lands for
 the same source local day.
 
 Project source bindings emit the same shape, one row per Project per local day:
 
 ```
 source item matches an active project_source_binding
+  and its Project link is created or reactivated
     → upsert ActivityRecord(activity_type=project_source_collection,
                             aggregate_key=project_source_collection:<project_id>:<local_date>)
     → Inbox row opens /projects/:projectId/sources
@@ -95,7 +103,9 @@ source item matches an active project_source_binding
 
 The individual `source_items` never enter the Inbox. Emission is gated per
 binding by `project_source_bindings.collection_notifications_enabled` (default
-true).
+true). A known item routed again (a connection re-scan, extraction finishing)
+does not re-surface a handled or discarded row to `raw`: only a new or
+reactivated link counts as collected.
 
 Source recommendation rows are also pointers only: they open
 `/sources?view=pending&connection_id=...`. Reviewing or archiving the pointer
@@ -117,7 +127,7 @@ a hand-typed capture are equally raw, and they belong in different places.
 Both directions of getting this wrong are silent failures. Admitting source
 items row by row buries the user's own captures under machine volume and the
 queue stops being reviewable at all. Aggregating user captures into "3 things
-captured today" deletes the per-record decision the queue exists to collect.
+captured today" drops the per-record decision the queue collects.
 
 Project-owned raw material stays in **the Space's one queue** — but that queue
 has two mountings, because checking on a capture is something done from inside
@@ -127,7 +137,7 @@ place every time:
 | Surface | Scope |
 |---|---|
 | `/activity` (Activity Inbox) | the whole Space; a Project filter the reader can set and clear |
-| `/projects/:projectId/raw` (Raw material) | pinned to that Project |
+| `/projects/:projectId/sources?tab=raw` (Raw material; `/projects/:projectId/raw` redirects here) | pinned to that Project |
 
 One queue, one implementation: both render `ActivityQueue`, which owns the
 filters, the records and the review/archive actions. A second implementation
@@ -146,10 +156,16 @@ mounting drops it, since every row would repeat it.
 - ActivityRecords become memory only through the Proposal → ProposalApplyService path
 - `agent_inferred` activities cannot produce active semantic memory or policy without explicit user accept
 - Activity-derived proposals carry Activity provenance in `provenance_entries`
-  and may include `source_activity_id` as a pending-proposal compatibility
-  shortcut
+  and set `source_activity_id` on the pending payload. Readers fold that id
+  into the provenance list. Accepted Memory provenance is `provenance_links`.
+  Do not treat `source_activity_id` as the accepted provenance record.
 - Consolidation is idempotent: visible Memory duplicate checks run before proposal
   creation, and duplicate proposals are blocked by `proposal_dedupe_key`
+- Direct and batch consolidation lock the same Activity row and recheck its
+  eligibility inside a transaction. Proposal insertion and status change commit
+  together. A retrieval pre-dedupe failure is contained by the existing
+  `bestEffortStep` savepoint and still permits proposal creation; failure
+  reporting never overwrites a concurrent archive or successful consolidation.
 - The Inbox holds pointers, never content (BOUNDARIES B24A). A module that
   wants user attention delivers a clearable notification row here; the
   content itself lives in that module's own reading surface (e.g. the
@@ -169,7 +185,7 @@ mounting drops it, since every row would repeat it.
 - `server/src/modules/memory/`
 - `apps/web/src/modules/activity/ActivityQueue.tsx` (the queue itself)
 - `apps/web/src/modules/activity/ActivityInboxPage.tsx` (Space-wide mounting)
-- `apps/web/src/modules/projects/ProjectRawMaterialPage.tsx` (pinned mounting)
+- `apps/web/src/modules/projects/ProjectRawMaterialPage.tsx` (pinned mounting, rendered as the `raw` tab of `SourcesAreaPage.tsx`)
 
 ## Related Decisions
 - [0003-memory-proposal-flow.md](../decisions/0003-memory-proposal-flow.md)

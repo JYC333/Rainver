@@ -12,6 +12,7 @@ const { automationsApiMock, agentsApiMock, evolutionApiMock, projectsApiMock } =
 
 vi.mock('../../api/client', () => ({ automationsApi: automationsApiMock, agentsApi: agentsApiMock, evolutionApi: evolutionApiMock, projectsApi: projectsApiMock }))
 vi.mock('../../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpaceId: 'space-1', activeSpaceName: 'Test Space' }) }))
+vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ currentUser: { id: 'user-1' } }) }))
 
 import AutomationsPage from './AutomationsPage'
 
@@ -57,6 +58,41 @@ describe('AutomationsPage', () => {
       }),
     })))
     expect(automationsApiMock.list).toHaveBeenCalledTimes(1)
+  })
+
+  it('pins a workflow again when its trigger returns to a schedule after following', async () => {
+    const user = userEvent.setup({ delay: null })
+    automationsApiMock.list.mockResolvedValue([])
+    automationsApiMock.create.mockResolvedValue({
+      id: 'automation-2', agent_id: 'agent-1', project_id: null, name: 'Workflow automation', trigger_type: 'schedule', status: 'active',
+      config_json: { target_type: 'workflow', workflow_asset_key: 'workflow.alpha', workflow_resolution: 'pin', workflow_version_id: 'version-1', input_json: {} },
+    })
+    automationsApiMock.workflowExecutions.mockResolvedValue([])
+    agentsApiMock.list.mockResolvedValue([{ id: 'agent-1', name: 'Agent One' }])
+    projectsApiMock.list.mockResolvedValue({ items: [] })
+    evolutionApiMock.assets.mockResolvedValue([{
+      id: 'asset-1', asset_key: 'workflow.alpha', display_name: 'Workflow Alpha', asset_type: 'workflow_template',
+    }])
+    evolutionApiMock.assetVersions.mockResolvedValue([{ id: 'version-1', version: 1, status: 'approved' }])
+    render(<AutomationsPage />)
+
+    await user.click(await screen.findByRole('button', { name: /New automation/ }))
+    const selects = screen.getAllByRole('combobox')
+    await user.selectOptions(selects[0], 'agent-1')
+    await user.selectOptions(selects[1], 'workflow')
+    await user.selectOptions(screen.getAllByRole('combobox')[3], 'workflow.alpha')
+    await waitFor(() => expect(evolutionApiMock.assetVersions).toHaveBeenCalledWith('asset-1'))
+    await user.selectOptions(screen.getByDisplayValue('Schedule (cron)'), 'manual')
+    await user.selectOptions(screen.getByDisplayValue('Pin version'), 'follow')
+    await user.selectOptions(screen.getByDisplayValue('Manual only'), 'schedule')
+
+    expect(screen.getByDisplayValue('Pin version')).toBeDisabled()
+    await user.selectOptions(screen.getByDisplayValue('Select version…'), 'version-1')
+    await user.click(screen.getByRole('button', { name: 'Create' }))
+
+    await waitFor(() => expect(automationsApiMock.create).toHaveBeenCalledWith(expect.objectContaining({
+      config_json: expect.objectContaining({ workflow_resolution: 'pin', workflow_version_id: 'version-1' }),
+    })))
   })
 
   it('keeps a workflow root-run link inside the current Space', async () => {
@@ -106,7 +142,7 @@ describe('AutomationsPage', () => {
   })
 
   it('runs an automation on its own configured prompt, not one this person supplied', async () => {
-    // ADR 0003 §5 / D1: the server reads the configured prompt itself, and a
+    // ADR 0003 §5: the server reads the configured prompt itself, and a
     // fire that carries a prompt is stamped as the firing person asking.
     // Echoing the owner's configured text back would make every "Run now"
     // read as this person's request and take the persona write with it.
@@ -144,5 +180,62 @@ describe('AutomationsPage', () => {
 
     await user.click(await screen.findByRole('button', { name: /Run now/ }))
     await waitFor(() => expect(automationsApiMock.fire).toHaveBeenCalledWith('automation-1'))
+  })
+
+  it("shows another member's automation as stop-only, without its content", async () => {
+    automationsApiMock.list.mockResolvedValue([{
+      id: 'automation-ops', space_id: 'space-1', access: 'ops', owner_user_id: 'user-2', agent_id: 'agent-1',
+      project_folder_id: null, project_id: null, name: null, description: null, trigger_type: 'manual',
+      status: 'active', preflight_snapshot_json: null, config_json: { target_type: 'agent_run' },
+      next_run_at: null, last_fired_at: null, created_at: '2026-10-14T00:00:00.000Z', updated_at: '2026-10-14T00:00:00.000Z',
+    }])
+    automationsApiMock.workflowExecutions.mockResolvedValue([])
+    agentsApiMock.list.mockResolvedValue([{ id: 'agent-1', name: 'Agent One' }])
+    projectsApiMock.list.mockResolvedValue({ items: [] })
+    evolutionApiMock.assets.mockResolvedValue([])
+    render(<MemoryRouter><AutomationsPage /></MemoryRouter>)
+
+    expect(await screen.findByText("Another member's automation")).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Run now/ })).toBeNull()
+    expect(screen.queryByText('Project binding')).toBeNull()
+    expect(screen.getByRole('button', { name: /Pause/ })).toBeTruthy()
+  })
+
+  it('names a system-managed digest for what it is and offers no Project binding the server would refuse', async () => {
+    const automation = {
+      id: 'automation-digest',
+      space_id: 'space-1',
+      owner_user_id: 'user-1',
+      agent_id: 'agent-digest',
+      project_folder_id: null,
+      project_id: null,
+      name: 'Daily digest',
+      description: null,
+      trigger_type: 'schedule',
+      status: 'active',
+      access: 'full',
+      preflight_snapshot_json: null,
+      config_json: { target_type: 'information_digest' },
+      next_run_at: null,
+      last_fired_at: null,
+      created_at: '2026-09-01T00:00:00.000Z',
+      updated_at: '2026-09-01T00:00:00.000Z',
+    }
+    automationsApiMock.list.mockResolvedValue([automation])
+    automationsApiMock.get.mockResolvedValue(automation)
+    agentsApiMock.list.mockResolvedValue([{ id: 'agent-digest', name: 'Digest builder' }])
+    projectsApiMock.list.mockResolvedValue({ items: [{ id: 'project-1', name: 'Project One' }] })
+    evolutionApiMock.assets.mockResolvedValue([])
+
+    render(
+      <MemoryRouter>
+        <AutomationsPage />
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText(/Daily digest for its owner/)).toBeInTheDocument()
+    expect(screen.getAllByText(/daily digest/).length).toBeGreaterThan(0)
+    expect(screen.queryByText('agent run')).not.toBeInTheDocument()
+    expect(screen.queryByText('Project binding')).not.toBeInTheDocument()
   })
 })

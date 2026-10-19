@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -91,12 +92,46 @@ describe("academic module (real Postgres)", () => {
     expect(sourceTypeResult.rows[0].source_type).toBe("paper");
   });
 
+  it("does not rewrite a non-paper object its owner names through the paper route", async () => {
+    if (!db.available) return;
+    const noteId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO space_objects (id, space_id, object_type, title, visibility, owner_user_id, created_at, updated_at)
+       VALUES ($1, $2, 'note', 'Keep this title', 'private', $3, now(), now())`,
+      [noteId, SPACE, USER],
+    );
+    await expect(service().updatePaper(identity, noteId, { title: "Rewritten", summary: "through the paper route" }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    await expect(db.pool.query<{ title: string; summary: string | null }>(`SELECT title, summary FROM space_objects WHERE id = $1`, [noteId]))
+      .resolves.toMatchObject({ rows: [{ title: "Keep this title", summary: null }] });
+  });
+
   it("rejects creating a duplicate paper by arxiv_id in the same space", async () => {
     if (!db.available) return;
     await service().createPaper(identity, { title: "Paper One", arxiv_id: "1111.11111" });
     await expect(service().createPaper(identity, { title: "Paper One Duplicate", arxiv_id: "1111.11111" })).rejects.toMatchObject({
       statusCode: 409,
     });
+  });
+
+  it("answers a duplicate the pre-check cannot see as a conflict, not a server error", async () => {
+    if (!db.available) return;
+    // openalex_id is unique per Space but not among the identifiers the
+    // pre-check looks at; the index refuses it.
+    await service().createPaper(identity, { title: "Paper One", openalex_id: "W1" });
+    await expect(service().createPaper(identity, { title: "Paper One Again", openalex_id: "W1" })).rejects.toMatchObject({
+      statusCode: 409,
+    });
+  });
+
+  it("leaves a paper untouched when one half of an update is refused", async () => {
+    if (!db.available) return;
+    const paper = await service().createPaper(identity, { title: "Original title", venue: "Venue" });
+    // Title lives on space_objects and the citation count on academic_papers;
+    // the second write is refused by the integer column, and the first must not stay.
+    await expect(service().updatePaper(identity, paper.object_id as string, { title: "Renamed", cited_by_count: 1.5 }))
+      .rejects.toThrow();
+    expect(await service().getPaper(identity, paper.object_id as string)).toMatchObject({ title: "Original title", venue: "Venue" });
   });
 
   it("allows the same arxiv_id in different spaces", async () => {

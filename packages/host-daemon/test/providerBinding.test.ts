@@ -9,9 +9,9 @@ import type { ProviderBindingFrame } from "../src/execution.js";
 // and on its disk, right next to the run. These are the assertions that keep
 // it out of a run the control plane bound to a specific backend.
 //
-// The daemon knows nothing about what a Codex or OpenCode config looks like —
-// it writes the bytes the server generated. Those shapes are asserted on the
-// server side, against the same builders the server-host path uses.
+// The daemon knows nothing about what a Codex or OpenCode config looks like.
+// It writes the bytes the server generated. Those shapes are asserted on the
+// server, against the builders in `remoteProviderBinding.ts`.
 
 const dirs: string[] = [];
 
@@ -44,7 +44,7 @@ describe("ambient environment for a bound run", () => {
       LC_ALL: "C",
       HOME: "/home/someone",
       ANTHROPIC_API_KEY: "sk-machine",
-      // The three a denylist of vendor prefixes would have missed:
+      // Names a vendor-prefix denylist would still pass:
       CLAUDE_CODE_OAUTH_TOKEN: "oauth-from-this-machine",
       XDG_DATA_HOME: "/home/someone/.local/share",
       NODE_OPTIONS: "--require /home/someone/inject.js",
@@ -147,9 +147,9 @@ describe("materializing a provider binding", () => {
       null,
     );
     // Stands in for a Claude Code session transcript: written by the runtime,
-    // not by the binding, and the thing the next turn resumes from. Wiping the
-    // profile between runs is what made every turn after the first fail with
-    // the runtime reporting no such conversation.
+    // not by the binding, and the thing the next turn resumes from. Do not
+    // wipe the profile between runs. The next turn would resume a conversation
+    // the runtime no longer has.
     await writeFile(join(root, "session.jsonl"), "turn one");
 
     await materializeProviderBinding(
@@ -384,8 +384,8 @@ describe("environment for a run on this machine's own login", () => {
     // toolchains a paired machine needs are all still there. Two things must
     // not survive. A variable that relocates the state root the profile just
     // established — OpenCode reads `XDG_DATA_HOME` before falling back to
-    // `HOME`. And a credential lying around on the machine: this run exists to
-    // spend the owner's subscription, linked into the profile, and a runtime
+    // `HOME`. And a credential lying around on the machine. This run spends
+    // the owner's subscription, linked into the profile, and a runtime
     // that prefers an ambient key over it bills an API account instead — B67's
     // "subscription login converted into API billing by a leftover key".
     const ambient = {
@@ -404,8 +404,8 @@ describe("environment for a run on this machine's own login", () => {
       CODEX_HOME: "/home/someone/.codex",
       // The XDG *roots* go by name, not by prefix: a git credential helper
       // reaches the keyring through `XDG_RUNTIME_DIR` and rootless podman
-      // finds its socket there, so dropping it would break a Task run that
-      // pushes or builds — the same regression as moving `HOME`.
+      // finds its socket there. Do not drop it. A Task run that pushes or
+      // builds would break, the same way moving `HOME` breaks them.
       XDG_RUNTIME_DIR: "/run/user/1000",
     };
     const machine = {
@@ -419,8 +419,8 @@ describe("environment for a run on this machine's own login", () => {
 
     // Per launched runtime: Claude Code reads none of the OpenAI or Google
     // variables, and `GOOGLE_APPLICATION_CREDENTIALS` is how gcloud and a GCS
-    // toolchain authenticate in a Task run — dropping it takes a tool away
-    // from exactly the run this rule exists to leave the machine's.
+    // toolchain authenticate in a Task run. Do not drop it. That takes a tool
+    // away from the run that keeps the machine's environment.
     expect(clearStateRootEnv(ambient, "claude_code")).toEqual({
       ...machine,
       OPENAI_API_KEY: "sk-openai",
@@ -596,9 +596,8 @@ describe("environment for a daemon-side helper process", () => {
   });
 
   it("drops the named runtime's own credentials, by prefix rather than by a two-key denylist", () => {
-    // The defect: each call site deleted `ANTHROPIC_API_KEY` and
-    // `CLAUDE_CODE_OAUTH_TOKEN` beside a whole `process.env` spread, so any
-    // other key under the same prefix went straight through.
+    // Drop credentials by prefix. Do not delete two named keys beside a
+    // `process.env` spread: any other key under the same prefix goes through.
     const env = helperProcessEnv({ ...ambient, ANTHROPIC_AUTH_TOKEN: "other", CLAUDE_API_KEY: "another" }, "claude_code");
     for (const key of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) {
       expect(env, key).not.toHaveProperty(key);

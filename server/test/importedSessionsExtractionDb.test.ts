@@ -190,6 +190,36 @@ describe("imported history extraction", () => {
     expect(second.brief_proposal_id).toBeNull();
   });
 
+  it("leaves no proposal behind when marking the records read fails, so nothing is proposed twice", async () => {
+    await seedSession("space_shared", [record("m1", "we decided to use ACP")]);
+    stubExtractor((ids) => ({
+      ...extraction(),
+      decisions: [{ id: randomUUID(), text: "Use ACP", confirmation_state: "candidate", source_refs: [{ type: "imported_session_record", id: ids[0] }] }],
+    }));
+    // A connection that drops exactly the statement which marks the batch
+    // read; everything else reaches the database.
+    const finalize = /SET extracted_in = \$2 WHERE extracted_in = \$1/;
+    const failingClient = (client: { query: (...args: unknown[]) => Promise<unknown>; release: () => void }) => ({
+      query: (sql: string, ...rest: unknown[]) => finalize.test(sql)
+        ? Promise.reject(new Error("connection reset"))
+        : client.query(sql, ...rest),
+      release: () => client.release(),
+    });
+    const flaky = {
+      query: (sql: string, ...rest: unknown[]) => finalize.test(sql)
+        ? Promise.reject(new Error("connection reset"))
+        : (db.pool.query as (...args: unknown[]) => Promise<unknown>)(sql, ...rest),
+      connect: async () => failingClient(await db.pool.connect()),
+    };
+
+    await expect(new ImportedHistoryExtractionService(flaky as never, serverConfig()).extract(identity, PROJECT, attended))
+      .rejects.toThrow("connection reset");
+
+    expect((await db.pool.query(`SELECT count(*)::int AS n FROM proposals WHERE space_id = $1`, [SPACE])).rows[0]!.n).toBe(0);
+    // The claim is released: the records are read again next time, once.
+    expect(await service().pending(identity, PROJECT)).toEqual({ records: 1, sessions: 1 });
+  });
+
   it("proposes rather than writes: the active Brief is unchanged until the proposal is accepted", async () => {
     await seedSession("space_shared", [record("m1", "the control group was wrong")]);
     stubExtractor((ids) => ({
@@ -293,7 +323,7 @@ describe("imported history extraction", () => {
     expect(payload.source_refs.map((ref) => ref.id)).toContain(citedRecordId);
     expect(sessionId).toBeTruthy();
 
-    // The proposal must actually be acceptable — the whole point of it.
+    // The proposal must actually be acceptable.
     const registry = new ProposalApplierRegistry();
     registerProjectDefinitionProposalAppliers(registry);
     const applied = await withQueryableTransaction(db.pool, (tx) => registry.apply({
@@ -426,7 +456,7 @@ describe("imported history extraction", () => {
     );
     expect(children.rows).toHaveLength(1);
 
-    // The half the packet exists for: a child that cannot be applied would
+    // A child that cannot be applied would
     // make the whole memory path produce nothing, and the packet's own
     // acceptance would still look like a success.
     // In a transaction, because the apply path takes a savepoint around its

@@ -18,8 +18,8 @@ import { getProjectUpdates } from "../src/modules/projectWork/updatesReadModel.j
 import { THREAD_FAN_OUT_PER_TURN } from "../src/modules/inquiry/threadFanOut.js";
 import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher.js";
 
-// Real-Postgres coverage for the two Inquiry writes that stopped being
-// proposals (ADR 0017 §2), and the one that did not. A person asking in the
+// Real-Postgres coverage for the two Inquiry writes that are not proposals
+// (ADR 0017 §2), and the one that is. A person asking in the
 // turn is the authorization: opening a question and recording a conclusion
 // happen immediately, bounded per turn, deduped, and undoable from the
 // Project's updates. `project.propose_definition` is still a proposal — the
@@ -115,10 +115,9 @@ async function proposalRowToApplyProposal(proposalId: string): Promise<ApplyProp
 
 describe("inquiry.create_thread, direct (real Postgres)", () => {
   // ADR 0017 §2. Splitting a question into sub-questions is one judgement a
-  // person made when they asked; drafting it into N proposals they approve one
-  // by one is that judgement taken N times, and one Room turn once produced
-  // six pending cards for it. What replaces the gate is the trigger origin,
-  // the per-turn bound, and Updates.
+  // person made when they asked. Do not draft it into N proposals they
+  // approve one by one. The limit is the trigger origin, the per-turn bound,
+  // and Updates.
   it("opens the Thread in the turn, with no proposal, and records it for the person", async () => {
     if (!db.available) return;
     const run = await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID);
@@ -206,9 +205,8 @@ describe("inquiry.create_thread, direct (real Postgres)", () => {
   it("reopens the same question when the statement repeats under a fresh call id", async () => {
     if (!db.available) return;
     // The case a re-planned or re-sampled turn actually produces: the same
-    // question worded identically, under a new tool-call id. The retired
-    // proposal path coalesced this under an advisory lock; without it the
-    // duplicate is durable and the person has to archive it.
+    // question worded identically, under a new tool-call id. Do not leave the
+    // duplicate durable. The person would have to archive it.
     const dispatcher = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
       (await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID))!
@@ -236,9 +234,8 @@ describe("inquiry.create_thread, direct (real Postgres)", () => {
 
   it("reopens the same question when one tool call is retried", async () => {
     if (!db.available) return;
-    // The retired proposal path deduped on the run's idempotency key. Without
-    // a replacement a re-issued tool call — or a resumed Run — opened a second
-    // identical question and spent the bound on it.
+    // A re-issued tool call must not open a second identical question. Do not
+    // rely on a proposal-path idempotency key for that.
     const dispatcher = await SystemActionDispatcher.create(
       loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
       (await new PgRunRepository(db.pool).getAgentRun(SPACE, RUN_ID))!
@@ -335,7 +332,7 @@ describe("project.propose_definition Proposal (real Postgres)", () => {
       });
   });
 
-  it("coalesces a retry that does not reuse an idempotency key (room-advancement-reliability-plan Phase 1)", async () => {
+  it("coalesces a retry that does not reuse an idempotency key", async () => {
     if (!db.available) return;
     const service = new ProjectDefinitionProposalService(db.pool);
     const first = await service.proposeDefinition(ownerIdentity(), PROJECT, {

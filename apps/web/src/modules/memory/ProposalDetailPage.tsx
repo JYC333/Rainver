@@ -16,9 +16,12 @@ import { EgressReviewNotice, isGrantDerivedProposal } from './EgressReviewNotice
 import { codePatchAcceptOptions } from './codePatchConfirm'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
 import { notifyReviewAttentionChanged } from '../../core/reviewAttention'
+import { MemoryRevisionEditor } from './MemoryRevisionEditor'
+import { formatDateTime } from '../../i18n/format'
+import { proposalTitle } from './proposalTitle'
 
 function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString() : '—'
+  return formatDateTime(dt)
 }
 
 export default function ProposalDetailPage() {
@@ -53,19 +56,12 @@ export default function ProposalDetailPage() {
     return () => { cancelled = true }
   }, [proposalId, activeSpaceId])
 
-  const canDecide =
-    p &&
-    p.status === 'pending' &&
-    (
-      p.proposal_type.startsWith('memory_') ||
-      p.proposal_type.startsWith('knowledge_') ||
-      p.proposal_type.startsWith('claim_') ||
-      p.proposal_type.startsWith('object_relation_') ||
-      p.proposal_type === 'code_patch' ||
-      p.proposal_type === 'egress_review' ||
-      p.proposal_type === 'retrieval_maintenance_packet' ||
-      p.proposal_type === 'claim_candidate_packet'
-    )
+  // Every pending proposal, as on the list: plan reviews, capability installs
+  // and the rest are sent here to be decided, and a type the server cannot
+  // apply yet is reported by `decide`.
+  const canDecide = p?.status === 'pending'
+  // A maintenance update waits for the person's revision before it can be accepted.
+  const awaitingRevision = Boolean(p?.operator_revision && !p.operator_revision.edited_by_user_id)
 
   async function decide(action: 'accept' | 'reject') {
     if (!p) return
@@ -155,7 +151,7 @@ export default function ProposalDetailPage() {
         <Card className="p-5 space-y-4">
           <div className="flex flex-wrap justify-between gap-3 items-start">
             <div>
-              <h1 className="text-lg font-semibold tracking-tight">{p.proposed_title}</h1>
+              <h1 className="text-lg font-semibold tracking-tight">{proposalTitle(p.proposed_title, p.title_parts)}</h1>
               <p className="text-xs text-muted-foreground">
                 Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}
               </p>
@@ -164,7 +160,7 @@ export default function ProposalDetailPage() {
               <ContentAccessControl resourceType="proposal" resourceId={p.id} ownerUserId={p.user_id || null} />
               {canDecide && (
                 <>
-                <Button size="sm" variant="success" disabled={busy} onClick={() => decide('accept')}>Accept</Button>
+                <Button size="sm" variant="success" disabled={busy || awaitingRevision} onClick={() => decide('accept')}>Accept</Button>
                 <Button size="sm" variant="destructive" disabled={busy} onClick={() => decide('reject')}>Reject</Button>
                 </>
               )}
@@ -196,7 +192,9 @@ export default function ProposalDetailPage() {
           <p className="text-xs text-muted-foreground">
             review_deadline {fmt(p.review_deadline)} · expires {fmt(p.expires_at)}
           </p>
-          <p className="text-sm whitespace-pre-wrap">{p.proposed_content}</p>
+          {p.operator_revision
+            ? <MemoryRevisionEditor proposal={p} onRevised={setP} />
+            : <p className="text-sm whitespace-pre-wrap">{p.proposed_content}</p>}
           {p.proposal_type === 'retrieval_maintenance_packet' && (
             <div className="rounded-md border border-border bg-muted/30 p-3 text-sm">
               <p className="font-medium">Maintenance packet</p>

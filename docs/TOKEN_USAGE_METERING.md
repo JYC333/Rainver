@@ -15,8 +15,8 @@ is the only code that inserts `token_usage_events`.
 
 Attribution is resolved before normalization:
 
-- direct authenticated user calls and CLI history imports become owner-private
-  events;
+- direct authenticated user calls and ambient session imports become
+  owner-private events;
 - Run/Agent calls snapshot the source content owner, workspace/project scope,
   visibility, disclosure level, and active grants at call time;
 - active `selected_users` grants and `space_shared` disclosure-upgrade grants
@@ -30,16 +30,18 @@ Provider retries and provider fallback do not create events for failed
 attempts. A successful provider response creates one event with an idempotency
 key. Managed provider invocations record each observable call; provider-proxy
 leases record bounded usage metadata from compatible upstream responses without
-persisting request or response bodies. CLI history imports use stable
-transcript-derived idempotency keys and are marked as transcript lower bounds.
+persisting request or response bodies. Ambient session imports
+(`importedSessions/service.ts`) write `source_type = ambient_host_history`
+events marked `provider_reported`, keyed `ambient:<session id>:<usage
+fingerprint>` so re-syncing a session does not count it twice. The
+`cli_history_import` source type is declared but has no writer.
 
 ## Read Path
 
-All future usage checks, summaries, budget decisions, thresholds, routing
-history, and monitoring must read `token_usage_events` through the usage
-repository. Run- or attempt-level rows are lifecycle records only; do not add
+Usage checks, summaries, budget decisions, thresholds, routing history, and
+monitoring read `token_usage_events` through the usage repository. Run- or attempt-level rows are lifecycle records only; do not add
 token accounting fields to them, read accounting from `output_json`, or issue
-feature-local queries against a legacy snapshot. A new run-scoped projection
+feature-local queries against a snapshot. A new run-scoped projection
 belongs in `PgUsageRepository` so normalization, null handling, and ledger
 semantics stay centralized.
 
@@ -81,28 +83,24 @@ remain immutable accounting facts. Anthropic's
 `cache_creation_input_tokens`; it is exposed in event and aggregate DTOs but is
 not added again when deriving total tokens. The dashboard's budget preview is read-only
 projection; usage recording remains fail-closed for managed provider calls.
-Routing and budget SQL currently aggregate `estimated_cost_usd` with `sum()` and
-therefore still swallow the known/unknown distinction. The intended consumer is
-funding-aware routing, deferred in
-[deferred-register.md](../.agent/tasks/deferred-register.md); this phase records
-the provenance without changing routing decisions.
+Routing and budget SQL aggregate `estimated_cost_usd` with `sum()` and drop the
+known/unknown distinction. Usage recording stores the provenance. There is no
+funding-aware routing.
 
-CLI history import from a server-side profile directory is retired with the
-profiles themselves (ADR 0016); past CLI work reaches the ledger through
-ambient session import from an execution host instead. Uploaded archives,
-server-path imports, scanner
-manifests, generic/manual event imports, and cross-instance bundle ingestion are
-reserved by protocol/schema contracts but do not have active product endpoints.
-Imported event types are therefore representable without making those future
-ingestion paths available today. Aggregations currently query the append-only
-ledger directly; there is no persisted daily/monthly rollup table.
+Past CLI work reaches the ledger through ambient session import from an
+execution host. Uploaded archives, server-path imports, scanner manifests,
+generic/manual event imports, and cross-instance bundle ingestion are reserved
+by protocol and schema and have no product endpoint. Aggregations query the
+append-only ledger directly. There is no persisted daily or monthly rollup
+table.
 
 Current user-facing routes include summary, timeseries, event, dimension,
-subject, session, budget-preview, and managed CLI history import endpoints.
+subject, session, and budget-preview; historical usage arrives through ambient
+session import, not an import endpoint.
 Instance operations have only the de-identified totals route.
 
 ## Database Schema
 
 Schema authoring lives in `server/src/db/schema/usage.ts`. A change is appended
 to `server/migrations/` with `pnpm run schema:generate -- --name <name>` from
-`server/`; the usage tables were created by the frozen `0000_baseline.sql`.
+`server/`; the usage tables are in `0000_baseline.sql`.

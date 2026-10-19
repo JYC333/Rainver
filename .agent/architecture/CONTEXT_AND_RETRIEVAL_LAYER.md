@@ -1,8 +1,6 @@
 # Context & Retrieval Layer
 
 Status: implemented. This is a current-state architecture doc.
-Unimplemented retrieval ideas live in
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9 and §23.
 
 Rainver's knowledge retrieval is a deterministic recall **substrate** plus a
 **context layer** layered on top: hybrid recall,
@@ -84,9 +82,9 @@ then produces a `context_observation_report.v1` shape:
 
 When `persist_report=true`, the scan writes one private
 `context_observation_report` artifact. It never writes active Memory,
-Knowledge, Capability, Assistant preference, or Proposal rows. Any future
-promotion from observation to Memory/Knowledge/Capability/Preference must go
-through the existing proposal/review packet boundaries.
+Knowledge, Capability, Assistant preference, or Proposal rows. Promotion from
+an observation to Memory, Knowledge, Capability, or Preference goes through
+the existing proposal/review packet boundaries.
 
 ## Engine & domain adapters
 
@@ -96,8 +94,9 @@ domain-agnostic mechanics (arms, fusion, ranking, evidence, create-safety,
 embeddings, rerank/rewrite/synthesis seams, maintenance). Per-domain adapters own
 canonical loading, edge projection, and the single `revalidate` read gate:
 Knowledge (`knowledge_item` / `note` / `source` / `claim`), Memory
-(`memory_entry`), Projects (`project_public_summary`), and Sources
-(`source_item` / `extracted_evidence`). Sources projections index titles,
+(`memory_entry`), Projects (`project_public_summary`), Sources
+(`source_item` / `extracted_evidence`), and Inquiry (`inquiry_thread`, behind
+the Project read gate). Sources projections index titles,
 excerpts, source metadata, preset metadata, and evidence excerpts; raw snapshots
 and full extracted reader text are not indexed by default. The boundary is
 strict — domains depend on the engine, never the reverse (`BOUNDARIES.md`
@@ -156,7 +155,7 @@ second-stage post-processing pass over those candidate items only.
   `mode: "exact"` stays exact alias/identity matching only, and unsupported
   relation wording falls back to ordinary recall.
 - **ANN.** Baseline is exact pgvector scan; at the default embedding dimension
-  (2560) `0001` ships `ix_retrieval_chunks_embedding_hnsw_2560`, a partial HNSW
+  (2560) `db/schema/retrieval.ts` (generated into `0000_baseline`) defines `ix_retrieval_chunks_embedding_hnsw_2560`, a partial HNSW
   index over `embedding::halfvec(2560)`, and the vector arm emits a matching
   constant-dimension halfvec query for dims in `ANN_HALFVEC_DIMENSIONS` (kept in
   sync with the migration); other dims keep the exact scan.
@@ -173,9 +172,24 @@ write pointer-only audit.
 
 - **Reranker** — post-fusion relevance judge over the visible top-N; space-setting
   gated; native rerank endpoint with a chat-prompt fallback. The payload is bounded
-  by a **token (char-proxy) budget** — per-candidate text is truncated and the
-  running total is capped — so a few long revalidated texts cannot blow the
-  payload; `trace.rerank.moved` / `.truncated` record the aggregate outcome.
+  by a **token (char-proxy) budget** shared across the whole window
+  (`boundRerankTexts`): titles count first, and the rest is divided shortest-text
+  first, each text getting at most an equal share of what remains and at most the
+  per-candidate cap. A cut text becomes an excerpt around the query. A window of
+  24 or more long texts therefore sends every candidate a comparable excerpt
+  instead of spending the budget on the first few and leaving the rest
+  title-only. The chat-prompt fallback cuts each excerpt further to its own
+  snippet cap. `trace.rerank.moved` / `.truncated` record the aggregate outcome.
+- **Embedding backfill** — a claimed chunk whose sources' egress policy does not
+  let it reach the embedding provider is set aside under the current policy
+  generation (`retrieval_chunks.embedding_blocked_generation`). The claim passes
+  over it, so blocked chunks never hold the head of the queue, and spends no
+  attempt on it. A chunk's generation names the space switch and the policy,
+  consent, owner, and liveness of only the source connections its object
+  depends on (`source_connection_ids_json`). It is claimed again when one of
+  those changes; editing an unrelated connection leaves it set aside. The app
+  layer computes the per-connection digests and the engine store only
+  compares them, so the store still reads no domain table.
 - **Query rewriter** — pre-recall, query-string-only. Rewrite results are returned
   in a **separate** `rewrite_items` list, never blended into or co-ranked with the
   primary (original-query) list, so the primary list is never biased by how many
@@ -219,17 +233,22 @@ for the instructing user and exact work scope before an accepted Delivery is
 persisted. The planner alone decides precedence, deduplication, and window
 budgeting. Adapters never call retrieval directly.
 
-The retired `/context/build` route, Context Preview page, manual artifact picker,
-artifact revocation table, Context Snapshot evidence packs, and route-owned chat
-candidate bundle have been deleted. Retrieval artifacts remain reviewable
+A conversation retrieves only when its person turned knowledge retrieval on
+(`modules/runtime-context.md`, "Knowledge retrieval switch"); a new conversation
+starts with it off. That switch controls real retrieval, and retrieval is not
+ingestion (B24): a retrieved candidate is read for one Delivery and creates no
+Memory, no KnowledgeItem, and no accepted Delivery of its own. Material a person
+attaches or pins reaches the turn whatever the switch says.
+
+Retrieval artifacts remain reviewable
 product outputs and proposal inputs; their existence does not make them
-model-visible. Any future product flow that promotes an artifact into an
-invocation must enter as a typed owning-domain acquisition with the same live
-read, source-policy, egress, and Delivery authorization gates.
+model-visible. An invocation acquires one only as a typed owning-domain
+acquisition, with the same live read, source-policy, egress, and Delivery
+authorization gates.
 
 ## Maintenance scan (read-only "context review cycle")
 
-`retrieval/maintenance.ts` (`RetrievalMaintenanceService.scan`, route
+`retrieval/maintenance/service.ts` (`RetrievalMaintenanceService.scan`, route
 `POST /api/v1/knowledge/retrieval/maintenance/scan`, owner/admin) is a READ-ONLY
 scan over the projection emitting one batched, clustered report: **duplicates**
 (by shared normalized name), **orphans** (no edges), **thin** pages, **stale**
@@ -277,9 +296,9 @@ Context Ops scan-gated) is the proposal-gated graph review path. It reads
 viewer-visible Knowledge item / Note text plus visible Activity
 and inline Artifact text. Source-connected Knowledge and Artifact rows also pass
 the source read gate; missing or denied source-policy snapshots fail closed.
-Activity records currently have no canonical source-connection field, so they
-are gated by Activity visibility until that source-linkage model exists. The
-deterministic pass extracts wikilinks plus typed hints such as
+Activity records have no canonical source-connection field. They are gated by
+Activity visibility. Do not invent a source-connection field on Activity to
+satisfy the source read gate. The deterministic pass extracts wikilinks plus typed hints such as
 `[[relation::Target]]`, `[[relation: Target]]`, `[[Target#relation]]`, and
 `link_type -> [[Target]]`, then resolves each target against
 viewer-visible Knowledge items (exact title/slug = high tier, alias = medium;
@@ -294,14 +313,14 @@ owner-private (or `space_ops`) `relation_discovery_report` artifact plus a
 in the policy action registry + gateway risk map at `medium`). Accepting the
 packet is creator-owned (same Context Ops packet rule) and only creates child
 pending `object_relation_create` / `knowledge_create`
-proposals — never a direct edge or item write (invariants 6, 9). A note source
+proposals — never a direct edge or item write (invariant 6). A note source
 and a Knowledge item source both propose FK-backed `object_relation` edges over
 `space_objects`. Activity and Artifact anchors emit `relation_review_candidate` rows with
 no child write action because they are evidence surfaces, not governed graph
 endpoints. Optional LLM extraction is request-gated and injectable; without a
 provider adapter the public HTTP route rejects `llm_extraction_enabled=true`
 with 422 rather than producing a misleading empty LLM pass. The service hook
-remains injectable for tests and future ADR 0008 provider wiring. Any enabled
+remains injectable for tests and internal callers. Any enabled
 extractor receives only the already-visible/source-policy-allowed source set
 plus source-policy snapshots and returns review-packet candidates, not canonical
 writes. Scan responses and packets distinguish `candidate_count` from
@@ -359,8 +378,10 @@ can load a `space_shared` calibration artifact for the same mechanic, with an
 `adopt` decision, enough visible evidence refs for
 `required_evidence_artifacts`, and a primary aggregate `eval_delta` that meets
 `min_primary_metric_delta`. The server writes the per-mechanic eval gate result
-back into the resolved settings response. `semantic_results_cache` is forced
-disabled and failed by policy. Shipped mechanics are applied only after the
+back into the resolved settings response. The gate runs only for an update that
+carries `ranking_config`; an update of any other field keeps the stored ranking
+config unchanged and does not re-check its artifacts. `semantic_results_cache` is forced
+disabled and failed by policy. These mechanics are applied only after the
 visible candidate set is collected and revalidated: candidate-owned salience can
 boost from the candidate's own evidence/confidence/matched fields/vector
 similarity; visible-edge backlink can boost from edges whose endpoints are both
@@ -417,7 +438,7 @@ same page has an owner/admin operator entry point for targeted explain reports
 and a calibration-decision entry point for saving access-safety-backed
 adopt/defer/reject decisions;
 Knowledge Home exposes a domain-labeled Context Brief panel for Knowledge,
-Memory, and Project public summaries; saving a brief still uses the separate
+Memory, and Project public summaries; saving a brief uses the separate
 backend routes above and persists owner-private artifacts.
 
 `GET /api/v1/context-ops/summary` is the current Context Ops read model. It returns
@@ -495,7 +516,7 @@ supports them.
 Object-level drill-downs are restricted to the injected Knowledge retrieval
 registry and revalidate every listed object through the adapter read gate **and**
 the source-connection read policy — the same two gates as search — so a finding
-never exposes a canonical-invisible or source-restricted title (invariant 3/7);
+never exposes a canonical-invisible or source-restricted title (invariants 2/3);
 `truncated` reflects readable findings only. Source-warning details list active
 source connections the operator owns (owners/admins see all) with policy posture
 labels only, never consent/credential payloads. The page also offers
@@ -510,7 +531,6 @@ history is queried per resource through
 `GET /api/v1/content-access/:resourceType/:resourceId/access-logs`; only the
 resource owner may query it by default. There is no finding-row follow-up
 proposal authoring UI.
-See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9.
 
 ## Governance
 
@@ -519,9 +539,11 @@ See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9.
   (default true) is enforced through the `retrievalEgressAllowed(ref, policy)`
   seam at every content-egress point. The policy distinguishes
   `external_provider`, `local_provider`, and `internal_process`: external
-  providers are blocked when the switch is off, while local providers (Ollama or
-  loopback/localhost URLs) can still serve query embedding, query rewrite,
-  rerank, and synthesis.
+  providers are blocked when the switch is off, while local providers — a
+  Provider a Space owner/admin declared a trusted local deployment, reached at
+  an instance-network endpoint, running a non-cloud model
+  (`modules/provider-policy.md`, "Local deployments") — can still serve query
+  embedding, query rewrite, rerank, and synthesis.
   Source-derived retrieval payloads add source policy snapshots and payload
   source ids to the same egress policy before rerank/synthesis provider calls;
   provider invocation evaluates them against the actual provider destination.
@@ -557,7 +579,7 @@ See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9.
   (`retrievalSourcePolicyDb.test.ts`). There is no activity-record source
   linkage consumer and no chat-turn artifact or Evidence Pack attachment.
   See [`SOURCE_CONNECTOR_CONSENT.md`](SOURCE_CONNECTOR_CONSENT.md).
-- **Product UI first pass.** Sources exposes source consent/policy controls for
+- **Product UI.** Sources exposes source consent/policy controls for
   the normalized JSON fields, Source Detail exposes post-processing retrieval
   context controls, Agent create/detail exposes Memory, Project public-summary,
   and Sources retrieval tool opt-in, Ask Space exposes Sources as a non-default
@@ -586,7 +608,7 @@ See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9.
   `project.summary.brief`, `source.retrieval.search`, and
   `source.retrieval.brief`. Preflight modes remain Knowledge-only and run
   one governed retrieval call before a no-tool model turn, appending the compact
-  result as explicit evidence. Each tool invocation now passes through a
+  result as explicit evidence. Each tool invocation passes through a
   policy-gateway action before search/brief execution:
   `retrieval.search`, `retrieval.brief`, `memory.retrieval.search`,
   `memory.retrieval.brief`, `project.summary.search`, or
@@ -611,8 +633,8 @@ See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9.
 
 Object types stay fixed (`knowledge_item` / `note` / `source` / `claim` /
 `memory_entry` / `project_public_summary` / `source_item` /
-`extracted_evidence`), encoded as a closed protocol enum and the
-`public.retrieval_object_type` SQL domain used by retrieval/object-schema
+`extracted_evidence` / `inquiry_thread`), encoded as a closed protocol enum and
+the `public.retrieval_object_type` Postgres enum type used by retrieval/object-schema
 endpoint columns. **Decision: do not adopt dynamic schema
 packs as the runtime primitive.** Rainver keeps the canonical domain boundary
 closed and uses the existing Space/User/Agent/Run/Proposal/Artifact governance
@@ -706,7 +728,6 @@ Load-bearing boundaries:
 ## Cross-references
 
 - Current-state pointers: [`ROADMAP_AND_FUTURE_RISKS.md`](ROADMAP_AND_FUTURE_RISKS.md).
-- Unimplemented ideas: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9 and §23.
 - Module current-state: `.agent/modules/knowledge-base.md`,
   `.agent/modules/memory.md`.
 - Credential channel for all provider calls: ADR 0008.

@@ -11,6 +11,21 @@ import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 
 const JsonObjectSchema = z.record(z.unknown());
 
+/**
+ * The facts a proposal's title is made of, for types whose title the UI words
+ * in the reader's language. The stored title stays for every other reader.
+ */
+export const ProposalTitlePartsSchema = z
+  .object({
+    kind: z.literal("asset_version_promote"),
+    asset_key: z.string(),
+    version: z.number().int(),
+    target_scope_type: z.string(),
+    target_scope_id: z.string().nullable(),
+  })
+  .strict();
+export type ProposalTitleParts = z.infer<typeof ProposalTitlePartsSchema>;
+
 export const ProposalOutSchema = z
   .object({
     id: IdSchema,
@@ -26,6 +41,7 @@ export const ProposalOutSchema = z
     target_namespace: z.string(),
     memory_type: z.string(),
     proposed_title: z.string(),
+    title_parts: ProposalTitlePartsSchema.nullish(),
     proposed_content: z.string(),
     rationale: z.string(),
     status: z.string(),
@@ -52,6 +68,19 @@ export const ProposalOutSchema = z
     egress_approval_status: z.string().nullish(),
     egress_approval_id: IdSchema.nullish(),
     project_id: IdSchema.nullish(),
+    /** The Memory entry an update or archive proposal acts on. */
+    target_memory_id: IdSchema.nullish(),
+    /**
+     * Present on an update that asks for a person's revision before it can be
+     * accepted (a maintenance finding): whether one has been written, and by whom.
+     */
+    operator_revision: z
+      .object({
+        edited_by_user_id: IdSchema.nullable(),
+        edited_at: ISODateTimeSchema.nullable(),
+      })
+      .strict()
+      .optional(),
     incomplete_patch: z.boolean().optional(),
     skipped_changes: z.array(JsonObjectSchema).optional(),
     skipped_count: z.number().int().nonnegative().optional(),
@@ -74,7 +103,6 @@ export type ProposalPage = z.infer<typeof ProposalPageSchema>;
 export const ProposalAcceptResultTypeSchema = z.enum([
   "memory_entry",
   "code_patch_apply",
-  "policy_version",
   "egress_review",
   "follow_up_task",
   "agent_version",
@@ -103,6 +131,8 @@ export const ProposalAcceptResultTypeSchema = z.enum([
   "workflow_execution_checkpoint",
   "project_brief_version",
   "project_operation",
+  /** A plugin's own proposal: what it changed lives in the plugin, not in a core object. */
+  "plugin_proposal",
 ]);
 export type ProposalAcceptResultType = z.infer<
   typeof ProposalAcceptResultTypeSchema

@@ -1,6 +1,7 @@
 import type { ServerConfig } from "../../config.js";
 import { dbPool, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { artifactReadSql, proposalReadSql, runReadSql } from "../access/contentAccessSql.js";
+import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
 import {
   ACTIVE_RUN_STATUSES,
   DONE_TASK_STATUSES,
@@ -26,12 +27,18 @@ import type {
   MeTimelineEntry,
   QueryParams,
 } from "./frontendSupportTypes.js";
-export type {
-  HomeSummaryOut,
-  MePendingProposalItem,
-  MeSummaryOut,
-  MeTimelineEntry,
-} from "./frontendSupportTypes.js";
+import { proposalTitleParts, proposalTitlePayloadSql } from "../proposals/titleParts.js";
+
+interface OperationInProgressRow {
+  id: string;
+  project_id: string;
+  project_name: string;
+  kind: string;
+  title: string;
+  status: string;
+  progress_json: Record<string, unknown> | null;
+  updated_at: unknown;
+}
 
 export class PgFrontendSupportService {
   constructor(private readonly db: Queryable) {}
@@ -71,10 +78,10 @@ export class PgFrontendSupportService {
       this.activeTasks(identity, activeTasksLimit),
       this.activitySummary(identity.spaceId),
       this.runStatsToday(identity.spaceId),
-      this.jobQueueStatus(identity.spaceId),
+      this.jobQueueStatus(identity),
       this.runtimeStatus(identity.spaceId),
       this.modelProviderStatus(identity.spaceId),
-      this.sourceSummary(identity.spaceId),
+      this.sourceSummary(identity),
       this.operationsInProgress(identity),
     ]);
 
@@ -100,7 +107,7 @@ export class PgFrontendSupportService {
     };
   }
 
-  private async operationsInProgress(identity:SpaceUserIdentity){const result=await this.db.query<any>(`SELECT po.id,po.project_id,p.name AS project_name,po.kind,po.title,po.status,po.progress_json,po.updated_at FROM project_operations po JOIN projects p ON p.id=po.project_id AND p.space_id=po.space_id AND p.deleted_at IS NULL WHERE po.space_id=$1 AND po.status IN ('draft','active','waiting_review') AND (p.owner_user_id=$2 OR EXISTS(SELECT 1 FROM spaces s WHERE s.id=$1 AND s.type='personal') OR EXISTS(SELECT 1 FROM project_members pm WHERE pm.space_id=$1 AND pm.project_id=p.id AND pm.user_id=$2 AND pm.status='active')) ORDER BY po.updated_at DESC LIMIT 10`,[identity.spaceId,identity.userId]);return result.rows.map(row=>({...row,progress_json:row.progress_json&&typeof row.progress_json==='object'?row.progress_json:{},updated_at:iso(row.updated_at)}));}
+  private async operationsInProgress(identity:SpaceUserIdentity){const result=await this.db.query<OperationInProgressRow>(`SELECT po.id,po.project_id,p.name AS project_name,po.kind,po.title,po.status,po.progress_json,po.updated_at FROM project_operations po JOIN projects p ON p.id=po.project_id AND p.space_id=po.space_id AND p.deleted_at IS NULL WHERE po.space_id=$1 AND po.status IN ('draft','active','waiting_review') AND (p.owner_user_id=$2 OR EXISTS(SELECT 1 FROM spaces s WHERE s.id=$1 AND s.type='personal') OR EXISTS(SELECT 1 FROM project_members pm WHERE pm.space_id=$1 AND pm.project_id=p.id AND pm.user_id=$2 AND pm.status='active')) ORDER BY po.updated_at DESC LIMIT 10`,[identity.spaceId,identity.userId]);return result.rows.map(row=>({...row,progress_json:row.progress_json&&typeof row.progress_json==='object'?row.progress_json:{},updated_at:iso(row.updated_at)}));}
 
   async meSummary(userId: string, query: QueryParams): Promise<MeSummaryOut> {
     const recentRunsLimit = boundedQueryInt(query.recent_runs_limit, 10, 1, 50);
@@ -293,6 +300,8 @@ export class PgFrontendSupportService {
           preview: boolean;
           created_by_run_id: string | null;
           visibility: string;
+          awaiting_revision: boolean;
+          title_payload: Record<string, unknown> | null;
         }> }
       : await this.db.query<{
           id: string;
@@ -306,10 +315,18 @@ export class PgFrontendSupportService {
           preview: boolean;
           created_by_run_id: string | null;
           visibility: string;
+          awaiting_revision: boolean;
+          title_payload: Record<string, unknown> | null;
         }>(
           `SELECT p.id, p.title, p.proposal_type, p.status, p.risk_level,
                   p.urgency, p.review_deadline, p.expires_at, p.preview,
-                  p.created_by_run_id, p.visibility
+                  p.created_by_run_id, p.visibility,
+                  -- A maintenance update the person has not revised yet: its
+                  -- accept is refused until they do (operator_revision).
+                  (p.proposal_type = 'memory_update'
+                    AND p.payload_json->>'requires_operator_edit' = 'true'
+                    AND p.payload_json->'operator_edit'->>'edited_by_user_id' IS NULL) AS awaiting_revision,
+                  ${proposalTitlePayloadSql("p")}
              FROM proposals p
              LEFT JOIN runs run_for_instructed
                ON run_for_instructed.id = p.created_by_run_id
@@ -329,6 +346,7 @@ export class PgFrontendSupportService {
         return {
           id: row.id,
           title: row.title,
+          title_parts: proposalTitleParts(row.proposal_type, row.title_payload ?? {}),
           proposal_type: row.proposal_type,
           status: row.status,
           risk_level: row.risk_level,
@@ -339,6 +357,7 @@ export class PgFrontendSupportService {
           preview: Boolean(row.preview),
           created_by_run_id: row.created_by_run_id,
           visibility: row.visibility,
+          awaiting_revision: Boolean(row.awaiting_revision),
         };
       }),
     };
@@ -503,7 +522,10 @@ export class PgFrontendSupportService {
     };
   }
 
-  private async jobQueueStatus(spaceId: string): Promise<HomeSummaryOut["job_queue_status"]> {
+  private async jobQueueStatus(identity: SpaceUserIdentity): Promise<HomeSummaryOut["job_queue_status"]> {
+    // The counts are Space-wide, an accepted oracle (SECURITY_AND_ACCESS_BOUNDARIES).
+    // The error text is not a count: a Job is its submitter's (`GET /jobs/:id`
+    // answers 404 to anyone else), so the preview shows only the viewer's own.
     const result = await this.db.query<{
       queued: string | number;
       running: string | number;
@@ -518,12 +540,12 @@ export class PgFrontendSupportService {
          count(*) FILTER (WHERE status = 'failed' AND attempts < max_attempts)::text AS retryable,
          (SELECT error
             FROM jobs
-           WHERE space_id = $1 AND status = 'failed' AND error IS NOT NULL
+           WHERE space_id = $1 AND user_id = $2 AND status = 'failed' AND error IS NOT NULL
            ORDER BY updated_at DESC, id DESC
            LIMIT 1) AS recent_error_preview
        FROM jobs
        WHERE space_id = $1`,
-      [spaceId],
+      [identity.spaceId, identity.userId],
     );
     const row = result.rows[0];
     return {
@@ -536,10 +558,8 @@ export class PgFrontendSupportService {
   }
 
   private async runtimeStatus(spaceId: string): Promise<HomeSummaryOut["runtime_status"]> {
-    // What this Space can actually dispatch to. It used to read the retired
-    // `runtime_tool_bindings` table, which described server-installed CLIs;
-    // since ADR 0016 a runtime is configured by an Agent profile naming an
-    // execution host and a copy on it.
+    // What this Space can dispatch to: an Agent profile naming an execution
+    // host and a copy on it (ADR 0016).
     const result = await this.db.query<{ runtime_key: string }>(
       `SELECT DISTINCT profile.runtime_key
          FROM agent_runtime_profiles profile
@@ -581,9 +601,9 @@ export class PgFrontendSupportService {
     };
   }
 
-  private async sourceSummary(spaceId: string): Promise<HomeSummaryOut["source_summary"]> {
+  private async sourceSummary(identity: SpaceUserIdentity): Promise<HomeSummaryOut["source_summary"]> {
     const result = await this.db.query<{
-      open_items: string | number;
+      pending_reading_items: string | number;
       new_items_today: string | number;
       pending_extraction_jobs: string | number;
       failed_extraction_jobs: string | number;
@@ -592,18 +612,21 @@ export class PgFrontendSupportService {
       due_connections: string | number;
     }>(
       `SELECT
-         -- Triage moved from source_items.status to per-user library_status, so
-         -- there is no longer an item-level "open" flag. Home stays space-scoped:
-         -- an item is open while nobody in the space has dismissed it, which is
-         -- what the old status IN ('new','triaged','selected') meant.
+         -- This person's reading, not the Space's: items they may read in the
+         -- Library that they have neither opened nor set aside. Another
+         -- member's read, ignore or archive changes nothing here (B56).
          (SELECT count(*)::text FROM source_items si
+           LEFT JOIN source_item_user_states suis
+             ON suis.space_id = si.space_id AND suis.source_item_id = si.id AND suis.user_id = $2
            WHERE si.space_id = $1 AND si.deleted_at IS NULL
-             AND NOT EXISTS (
-               SELECT 1 FROM source_item_user_states suis
-                WHERE suis.space_id = si.space_id AND suis.source_item_id = si.id
-                  AND suis.library_status IN ('ignored', 'archived'))) AS open_items,
-         (SELECT count(*)::text FROM source_items
-           WHERE space_id = $1 AND deleted_at IS NULL AND created_at >= date_trunc('day', now())) AS new_items_today,
+             AND COALESCE(suis.read_status, 'unread') = 'unread'
+             AND COALESCE(suis.library_status, 'new') NOT IN ('ignored', 'archived')
+             -- Personal reading: a Space admin's oversight of other members'
+             -- private items is not their reading list.
+             AND ${sourceItemReadableClause("si", "$2", true, { includeOversight: false })}) AS pending_reading_items,
+         (SELECT count(*)::text FROM source_items si
+           WHERE si.space_id = $1 AND si.deleted_at IS NULL AND si.created_at >= date_trunc('day', now())
+             AND ${sourceItemReadableClause("si", "$2", true, { includeOversight: false })}) AS new_items_today,
          (SELECT count(*)::text FROM extraction_jobs
            WHERE space_id = $1 AND status = 'pending') AS pending_extraction_jobs,
          (SELECT count(*)::text FROM extraction_jobs
@@ -614,11 +637,11 @@ export class PgFrontendSupportService {
            WHERE space_id = $1 AND deleted_at IS NULL AND status = 'active') AS active_evidence,
          (SELECT count(*)::text FROM source_connections
            WHERE space_id = $1 AND deleted_at IS NULL AND status = 'active') AS due_connections`,
-      [spaceId],
+      [identity.spaceId, identity.userId],
     );
     const row = result.rows[0];
     return {
-      open_items: numeric(row?.open_items),
+      pending_reading_items: numeric(row?.pending_reading_items),
       new_items_today: numeric(row?.new_items_today),
       pending_extraction_jobs: numeric(row?.pending_extraction_jobs),
       failed_extraction_jobs: numeric(row?.failed_extraction_jobs),
@@ -637,27 +660,35 @@ export class PgFrontendSupportService {
       assigned_tasks_count: string | number;
       recent_failed_runs_count: string | number;
     }>(
+      // One scalar count per Space and table. Joining proposals, tasks and
+      // runs side by side multiplies them into |P|x|T|x|R| rows per Space,
+      // each evaluating the read predicates, before DISTINCT folds them back.
       `SELECT s.id AS space_id,
               s.name,
               s.type,
-              count(DISTINCT p.id) FILTER (WHERE p.status = 'pending' AND ${proposalReadSql("$1")})::text AS pending_proposals_count,
-              count(DISTINCT t.id) FILTER (WHERE t.deleted_at IS NULL AND t.assigned_user_id = $1)::text AS assigned_tasks_count,
-              count(DISTINCT r.id) FILTER (
-                WHERE r.status = 'failed'
+              (SELECT count(*)
+                 FROM proposals p
+                 LEFT JOIN runs run_for_instructed
+                   ON run_for_instructed.id = p.created_by_run_id
+                  AND run_for_instructed.space_id = p.space_id
+                WHERE p.space_id = s.id
+                  AND p.status = 'pending'
+                  AND ${proposalReadSql("$1")})::text AS pending_proposals_count,
+              (SELECT count(*)
+                 FROM tasks t
+                WHERE t.space_id = s.id
+                  AND t.deleted_at IS NULL
+                  AND t.assigned_user_id = $1)::text AS assigned_tasks_count,
+              (SELECT count(*)
+                 FROM runs r
+                WHERE r.space_id = s.id
+                  AND r.status = 'failed'
                   AND r.created_at >= now() - interval '7 days'
-                  AND ${runReadSql("$1")}
-              )::text AS recent_failed_runs_count
+                  AND ${runReadSql("$1")})::text AS recent_failed_runs_count
          FROM space_memberships sm
          JOIN spaces s ON s.id = sm.space_id
-         LEFT JOIN proposals p ON p.space_id = sm.space_id
-         LEFT JOIN runs run_for_instructed
-           ON run_for_instructed.id = p.created_by_run_id
-          AND run_for_instructed.space_id = p.space_id
-         LEFT JOIN tasks t ON t.space_id = sm.space_id
-         LEFT JOIN runs r ON r.space_id = sm.space_id
         WHERE sm.user_id = $1
           AND sm.status = 'active'
-        GROUP BY s.id, s.name, s.type
         ORDER BY s.type ASC, s.name ASC, s.id ASC`,
       [userId],
     );

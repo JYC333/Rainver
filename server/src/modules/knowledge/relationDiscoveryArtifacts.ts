@@ -12,19 +12,19 @@ import {
 import type { Queryable } from "../routeUtils/common.js";
 
 /**
- * Slice F packetization: the discovery report becomes an owner-private (or
+ * The discovery report becomes an owner-private (or
  * `space_ops`) artifact plus a single batched `relation_discovery_packet`
  * proposal. Accepting the packet creates child pending `object_relation_create`
  * / `knowledge_create` proposals — it never writes a canonical edge or item
  * directly. This is the one shared "review-scaling" packet entry point for
  * discovery, mirroring the Memory maintenance and Claim Candidate Packet flows.
  */
-export const RELATION_DISCOVERY_REPORT_ARTIFACT_TYPE = "relation_discovery_report";
+const RELATION_DISCOVERY_REPORT_ARTIFACT_TYPE = "relation_discovery_report";
 export const RELATION_DISCOVERY_PACKET_PROPOSAL_TYPE = "relation_discovery_packet";
 
 const MAX_CHILD_PROPOSALS = 40;
 
-export interface RelationDiscoveryReportContext {
+interface RelationDiscoveryReportContext {
   spaceId: string;
   ownerUserId: string;
   report: RelationDiscoveryReport;

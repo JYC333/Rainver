@@ -47,7 +47,7 @@ const RESEARCH_STAGES: readonly ResearchStage[] = [
   "failed",
 ];
 
-export type ResearchOperationStatus = "draft" | "active" | "waiting_review" | "completed" | "failed" | "cancelled";
+type ResearchOperationStatus = "draft" | "active" | "waiting_review" | "completed" | "failed" | "cancelled";
 
 export type ResearchStepStatus = "pending" | "active" | "blocked" | "done" | "skipped";
 
@@ -88,8 +88,6 @@ export interface ResearchOperationState {
   channel_ids: string[];
   project_source_binding_ids: string[];
   source_post_processing_rule_ids: string[];
-  project_source_binding_id: string | null;
-  source_post_processing_rule_id: string | null;
   source_backfill_plan_id: string | null;
   source_backfill_plan_ids: string[];
   query: {
@@ -132,7 +130,7 @@ export interface ResearchOperationState {
   // one at a time instead of batched.
   comparison_degraded?: boolean;
   // The notebook role the comparison needs a note in and this project has
-  // none for (N2 — normally `understanding`). Set when the stage stops for
+  // none for (normally `understanding`). Set when the stage stops for
   // want of a baseline rather than for want of material, and cleared as soon as
   // a batch queues, so "no comparison happened" always carries its reason
   // instead of looking like an empty scan.
@@ -276,7 +274,7 @@ export interface ResearchOperationRow {
   created_at?: string;
 }
 
-export interface ResearchMutationSpec {
+interface ResearchMutationSpec {
   /** Stages the operation must currently be in for the projection mutation to apply. */
   from: readonly ResearchStage[];
   to: ResearchStage;
@@ -481,8 +479,6 @@ export function researchState(value: unknown): ResearchOperationState {
   const stageState = optionalString(source.stage_state);
   const historyMode = optionalString(history.mode);
   const queryHistoryMode = optionalString(query.history_mode);
-  const projectSourceBindingId = optionalString(source.project_source_binding_id);
-  const sourcePostProcessingRuleId = optionalString(source.source_post_processing_rule_id);
   const sourceBackfillPlanId = optionalString(source.source_backfill_plan_id);
   const projectSourceBindingIds = stringArray(source.project_source_binding_ids);
   const sourcePostProcessingRuleIds = stringArray(source.source_post_processing_rule_ids);
@@ -524,8 +520,6 @@ export function researchState(value: unknown): ResearchOperationState {
     channel_ids: stringArray(source.channel_ids),
     project_source_binding_ids: projectSourceBindingIds,
     source_post_processing_rule_ids: sourcePostProcessingRuleIds,
-    project_source_binding_id: projectSourceBindingId,
-    source_post_processing_rule_id: sourcePostProcessingRuleId,
     source_backfill_plan_id: sourceBackfillPlanId,
     source_backfill_plan_ids: sourceBackfillPlanIds.length > 0
       ? sourceBackfillPlanIds

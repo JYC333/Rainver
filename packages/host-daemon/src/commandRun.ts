@@ -12,10 +12,8 @@ import { existingTaskWorktree, taskLeaseKey, useTaskWorktree } from "./taskWorkt
 /**
  * A fixed command the control plane runs in a workspace on this host.
  *
- * The Verification Engine needs to ask a question about a workspace — did the
- * tests pass — and used to reach a Runner that only ever existed beside the
- * server. Answering it here is what makes verification available on a paired
- * host at all.
+ * The Verification Engine asks a question about a workspace — did the tests
+ * pass — on the host that holds that workspace, including a paired one.
  *
  * It is not a `launch`: no runtime, no session, no provider binding, no work
  * surface, and one answer instead of a stream. A strict host still wraps it in
@@ -23,7 +21,7 @@ import { existingTaskWorktree, taskLeaseKey, useTaskWorktree } from "./taskWorkt
  * more right to the machine than the Run did — while a trusted host runs it
  * natively, exactly as it runs that owner's Runs.
  */
-export interface CommandRunRequest {
+interface CommandRunRequest {
   request_id: string;
   workspace?: { kind: "location"; workspace_location_id?: string; workspace_relative_path?: string; worktree?: { task_id: string; merge_id?: string } } | { kind: "managed"; agent_id?: string; container?: ManagedWorkspaceContainer };
   workspace_location_id?: string;
@@ -41,7 +39,7 @@ export interface CommandRunRequest {
   isolation?: HostLaunchIsolation;
 }
 
-export interface CommandRunResult {
+interface CommandRunResult {
   exit_code: number;
   stdout: string;
   stderr: string;
@@ -110,8 +108,8 @@ export async function runHostCommand(
   log: (line: string) => void = () => {},
 ): Promise<CommandRunResult> {
   // Held for the whole command, not merely checked at the door: a verification
-  // recipe runs for minutes and is in neither run registry, so without this a
-  // drain reports quiet and the replacement deletes the tree it is executing
+  // recipe runs for minutes and is in neither run registry. Do not report the
+  // drain quiet. A replacement would delete the tree it is executing
   // from. A command in a Task worktree marks it in use for as long, so the
   // sweep and a settle leave it alone.
   const workspace = request.workspace?.kind === "location" ? request.workspace : undefined;
@@ -136,7 +134,7 @@ async function runHostCommandInner(
     // becomes a read-write bind. The same guard the run directory already has.
     return { exit_code: 1, stdout: "", stderr: "", timed_out: false, error: `command request id is not a usable directory name: ${request.request_id}` };
   }
-  // A verification recipe or C3 probe launches the same copy a Run does, and
+  // A verification recipe launches the same copy a Run does, and
   // it is in neither run registry — so the drain cannot see it and the closed
   // door has to. Refused, not queued: the caller is waiting on an HTTP request.
   if (isRuntimeKeyBeingReplaced(request.runtime_key)) {
@@ -196,8 +194,7 @@ async function runHostCommandInner(
   // HOME is the request's own scratch directory, never the workspace: a probe
   // or a recipe that writes caches belongs in a directory that is removed with
   // it, not in someone's checkout. A managed copy's manifest `HOME` overrides
-  // it, because that copy's login lives there and is the whole point of naming
-  // an installation.
+  // it. A managed copy's login lives in that manifest `HOME`.
   let spawnEnv: Record<string, string> = {
     PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
     HOME: scratch,

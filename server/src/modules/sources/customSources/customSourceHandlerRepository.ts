@@ -1,3 +1,4 @@
+import { assertSourceConnectionReadable } from "../sourceConnectionAccess.js";
 import type {
   CustomSourceInstanceRunnerSettingsUpdate,
   CustomSourceSpacePolicyUpdate,
@@ -280,7 +281,7 @@ function spacePolicyOut(spaceId: string, read: ScopedSettingsRead<CustomSourceSp
   };
 }
 
-export function instanceRunnerSettingsOut(
+function instanceRunnerSettingsOut(
   config: ServerConfig,
   read: ScopedSettingsRead<CustomSourceInstanceRunnerSettings> | null = null,
 ) {
@@ -332,13 +333,17 @@ export class PgCustomSourceHandlerRepository {
     this.settingsStore = new ScopedSettingsStore(db);
   }
 
-  /** Confirms the connection exists in this space; throws 404 otherwise. Every other method depends on this same-space gate. */
+  /**
+   * Confirms the connection exists in this space and the caller may read it;
+   * throws 404 otherwise. Every other read method depends on this gate.
+   */
   private async requireConnection(identity: SpaceUserIdentity, connectionId: string): Promise<void> {
     const result = await this.db.query<{ id: string }>(
       `SELECT id FROM source_connections WHERE space_id = $1 AND id = $2 AND deleted_at IS NULL`,
       [identity.spaceId, connectionId],
     );
     if (!result.rows[0]) throw new HttpError(404, "Source connection not found");
+    await assertSourceConnectionReadable(this.db, identity, connectionId);
   }
 
   private async getSpacePolicySettings(spaceId: string) {
@@ -446,7 +451,7 @@ export class PgCustomSourceHandlerRepository {
   /**
    * Combined Source Detail read model: active handler version (if any),
    * most recent run, repair status, recent run failure-class breakdown, and
-   * any pending proposal blocking activation. Phase 12 hardening: this is
+   * any pending proposal blocking activation. This is
    * the single read call an operator/admin needs to answer "why is this
    * source disabled, blocked, or proposal-gated" without cross-referencing
    * `handler-versions`/`handler-runs`/`proposals` separately.

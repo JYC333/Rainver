@@ -13,6 +13,7 @@ import {
 } from "../automations/targetSupport.js";
 import { HttpError } from "../routeUtils/common.js";
 import { InformationDigestService } from "./service.js";
+import { digestPeriod, digestTimezone, scheduledDigestDate } from "./digestPeriod.js";
 import { BraveSerendipityProbeProvider, SerendipityProbeService } from "./serendipityProbe.js";
 
 const TARGET_TYPE = "information_digest";
@@ -60,7 +61,17 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
   if (!config.databaseUrl) throw new HttpError(502, "SERVER_DATABASE_URL is required");
   const pool = getDbPool(config.databaseUrl);
   const request = requestFromConfig(automation.config_json, automation.project_id);
-  const date = dateFromContext(fireInput.triggerContext);
+  // The day comes from the slot this fire was scheduled for, not from when a
+  // worker got to it: a fire delayed past midnight still reports its own day.
+  // A manual "run now" is a slot at the moment it was pressed.
+  const slot = triggerType === "schedule" && automation.next_run_at ? automation.next_run_at : new Date().toISOString();
+  const timezone = request.operation === "daily"
+    ? await digestTimezone(pool, fireInput.spaceId, request.scope === "personal"
+      ? { type: "personal", userId: automation.owner_user_id }
+      : { type: "project", projectId: request.project_id! })
+    : "UTC";
+  const period = digestPeriod(scheduledDigestDate(slot, timezone), timezone);
+  const date = period.date;
   const started = await withTransaction(pool, async (client) => {
     await lockAndCheckAutomationBudget(client, automation);
     const automationRunId = await new PgAutomationRepository(client).createAutomationRun({
@@ -81,15 +92,18 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
           new BraveSerendipityProbeProvider(pool, config),
         ).run(fireInput.spaceId, automation.owner_user_id)
       : null;
-    const digest = request.operation === "daily"
+    const generated = request.operation === "daily"
       ? request.scope === "personal"
-        ? await new InformationDigestService(pool).personal(fireInput.spaceId, automation.owner_user_id, date, started.automationRunId)
-        : await new InformationDigestService(pool).project(fireInput.spaceId, request.project_id!, fireInput.actorUserId, date, started.automationRunId)
+        ? await new InformationDigestService(pool).scheduledPersonal(fireInput.spaceId, automation.owner_user_id, period, started.automationRunId)
+        : await new InformationDigestService(pool).scheduledProject(fireInput.spaceId, request.project_id!, fireInput.actorUserId, period, started.automationRunId)
       : null;
+    const digest = generated?.digest ?? null;
     await withTransaction(pool, async (client) => {
       await new PgAutomationRepository(client).completeNativeAutomationRun({
         automationRunId: started.automationRunId,
-        status: probe?.status === "degraded" ? "degraded" : "succeeded",
+        // A probe that failed outright is not a succeeded Automation run:
+        // the standby pool got nothing and somebody should see that.
+        status: probe?.status === "degraded" || probe?.status === "failed" ? "degraded" : "succeeded",
         result: probe
           ? {
               operation: "probe",
@@ -97,7 +111,16 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
               external_result_count: probe.external_result_count,
               source_recommendation_count: probe.source_recommendation_count,
             }
-          : { operation: "daily", digest_id: digest!.id, digest_date: date, item_count: digest!.items.length },
+          : {
+              operation: "daily",
+              digest_id: digest!.id,
+              digest_date: date,
+              timezone,
+              period_start_utc: period.startUtc,
+              period_end_utc: period.endUtc,
+              created: generated!.created,
+              item_count: digest!.items.length,
+            },
       });
       if (context.advanceSchedule) await new PgAutomationRepository(client).advanceSchedule(automation);
     });
@@ -108,6 +131,8 @@ async function execute(context: AutomationTargetExecutionContext): Promise<Recor
       ...(probe ? { serendipity_probe: probe } : {
         digest_id: digest!.id,
         digest_date: date,
+        timezone,
+        created: generated!.created,
         item_count: digest!.items.length,
       }),
     };
@@ -138,11 +163,4 @@ function requestFromConfig(configJson: Record<string, unknown> | null | undefine
   const projectId = typeof config.project_id === "string" ? config.project_id : boundProjectId ?? null;
   const operation = config.operation === "probe" ? "probe" as const : "daily" as const;
   return { scope, operation, project_id: scope === "project" ? projectId : null };
-}
-
-function dateFromContext(context: Record<string, unknown> | null | undefined): string {
-  const value = recordValue(context).digest_date;
-  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
-    ? value
-    : new Date().toISOString().slice(0, 10);
 }

@@ -7,12 +7,12 @@ import type {
 import type { RetrievalSearchService } from "../index.js";
 
 /**
- * Rainver-controlled retrieval tool surface (W10).
+ * Rainver-controlled retrieval tool surface.
  *
  * Managed runs do not expose retrieval as an external MCP server. Vendor tools
- * are adapters, never the system of record:
- * instead this in-platform service is the governed entrypoint a managed run uses
- * to call retrieval / Context Brief. Its governance contract:
+ * are adapters, never the system of record. This in-platform service is the
+ * governed entrypoint a managed run uses to call retrieval / Context Brief.
+ * Its governance contract:
  *
  *  - **Viewer is the run's instructing user, not the agent.** The agent cannot
  *    choose whose visibility it searches under — the viewer is always
@@ -20,7 +20,7 @@ import type { RetrievalSearchService } from "../index.js";
  *    read (the search service's per-viewer revalidate gate does the enforcement).
  *  - **Every call passes the policy gateway as the agent/run actor, before this
  *    service ever runs.** `SystemActionGateway`'s dispatch step is the single
- *    enforcement point (action authority consolidation plan, D6/D7); this
+ *    enforcement point; this
  *    service performs no policy check and writes no `policy_decision_records`
  *    row of its own — it is a plain executor, like every other domain
  *    service the gateway calls after enforcement passes.
@@ -28,13 +28,13 @@ import type { RetrievalSearchService } from "../index.js";
  *    caller; a later Runtime Context turn may acquire them only through its
  *    typed Retrieval channel and live reauthorization.
  *
- * It wraps an already-constructed `RetrievalSearchService`, so whatever egress
- * (W9) / rerank / synthesis configuration the caller built is honored
+ * It wraps an already-constructed `RetrievalSearchService`, so the egress,
+ * rerank, and synthesis configuration the caller built is honored
  * unchanged; this layer only adds the actor scoping. Managed-run binding lives
  * in `runs/managedRetrievalTools.ts`: opted-in runs expose `retrieval.search`
  * / `retrieval.brief` through a bounded tool loop and preflight modes.
  */
-export interface RetrievalToolActor {
+interface RetrievalToolActor {
   spaceId: string;
   /** The run's instructing user — the viewer for ALL access control. */
   instructedByUserId: string;
@@ -44,7 +44,7 @@ export interface RetrievalToolActor {
   runId?: string | null;
 }
 
-export interface RetrievalToolSearchParams {
+interface RetrievalToolSearchParams {
   query: string;
   objectTypes?: RetrievalObjectType[];
   objectProfiles?: string[];

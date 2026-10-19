@@ -1,4 +1,4 @@
-import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { users } from "./auth.js";
 import { runs } from "./runs.js";
@@ -144,8 +144,7 @@ export const projectInstructionVersions = pgTable("project_instruction_versions"
 ]);
 
 // Per-user UI state over aggregated ProjectAttentionItem rows (which are
-// computed on demand from registered domain adapters, not stored). See plan
-// section 8.
+// computed on demand from registered domain adapters, not stored).
 export const projectAttentionUserStates = pgTable("project_attention_user_states", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
@@ -177,6 +176,13 @@ export const projectAttentionUserStates = pgTable("project_attention_user_states
 		}).onDelete("cascade"),
 ]);
 
+/**
+ * The working draft of a Project's public summary — one row per Project, edited
+ * by Project writers. What readers of other Projects see is never read from
+ * here: publishing copies a draft version into `project_public_summary_publications`,
+ * so later draft edits leave the published text in place until an owner
+ * publishes again or revokes it.
+ */
 export const projectPublicSummaries = pgTable("project_public_summaries", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
@@ -186,14 +192,15 @@ export const projectPublicSummaries = pgTable("project_public_summaries", {
 	highlightsJson: jsonb("highlights_json").default([]).notNull(),
 	sourceRefsJson: jsonb("source_refs_json").default([]).notNull(),
 	redactionVersion: varchar("redaction_version", { length: 64 }).notNull(),
-	reviewStatus: varchar("review_status", { length: 32 }).default('pending').notNull(),
+	// Incremented by every draft save. Publishing names the version it approves,
+	// so a draft replaced between review and approval is refused, not published.
+	draftVersion: integer("draft_version").default(1).notNull(),
 	updatedByUserId: varchar("updated_by_user_id", { length: 36 }),
 	generatedByRunId: varchar("generated_by_run_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	uniqueIndex("ix_project_public_summaries_project_unique").using("btree", table.projectId.asc().nullsLast()),
-	index("ix_project_public_summaries_review_status").using("btree", table.reviewStatus.asc().nullsLast()),
 	index("ix_project_public_summaries_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	foreignKey({
 			columns: [table.generatedByRunId],
@@ -216,9 +223,51 @@ export const projectPublicSummaries = pgTable("project_public_summaries", {
 			name: "project_public_summaries_updated_by_user_id_fkey"
 		}).onDelete("set null"),
 	check("ck_project_public_summaries_highlights_array", sql`jsonb_typeof(highlights_json) = 'array'::text`),
-	check("ck_project_public_summaries_review_status", sql`(review_status)::text = ANY (ARRAY[('draft'::character varying)::text, ('approved'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_project_public_summaries_source_refs_array", sql`jsonb_typeof(source_refs_json) = 'array'::text`),
 	check("ck_project_public_summaries_topics_array", sql`jsonb_typeof(topics_json) = 'array'::text`),
+	check("ck_project_public_summaries_draft_version", sql`draft_version >= 1`),
+]);
+
+/**
+ * The approved, space-public snapshot of a Project's public summary — the only
+ * row the public read, the retrieval projection, and the assistant's candidate
+ * collector ever serve. One row per Project; publishing again replaces it,
+ * revoking deletes it. It records who approved which draft version and when.
+ */
+export const projectPublicSummaryPublications = pgTable("project_public_summary_publications", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }).notNull(),
+	summaryText: text("summary_text").notNull(),
+	topicsJson: jsonb("topics_json").default([]).notNull(),
+	highlightsJson: jsonb("highlights_json").default([]).notNull(),
+	sourceRefsJson: jsonb("source_refs_json").default([]).notNull(),
+	redactionVersion: varchar("redaction_version", { length: 64 }).notNull(),
+	sourceDraftVersion: integer("source_draft_version").notNull(),
+	publishedByUserId: varchar("published_by_user_id", { length: 36 }),
+	publishedAt: timestamp("published_at", { withTimezone: true, mode: 'string' }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+	uniqueIndex("ix_project_public_summary_publications_project_unique").using("btree", table.projectId.asc().nullsLast()),
+	index("ix_project_public_summary_publications_space_id").using("btree", table.spaceId.asc().nullsLast()),
+	foreignKey({
+			columns: [table.projectId, table.spaceId],
+			foreignColumns: [projects.id, projects.spaceId],
+			name: "project_public_summary_publications_space_project_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.spaceId],
+			foreignColumns: [spaces.id],
+			name: "project_public_summary_publications_space_id_fkey"
+		}),
+	foreignKey({
+			columns: [table.publishedByUserId],
+			foreignColumns: [users.id],
+			name: "project_public_summary_publications_published_by_user_id_fkey"
+		}).onDelete("set null"),
+	check("ck_project_public_summary_publications_highlights_array", sql`jsonb_typeof(highlights_json) = 'array'::text`),
+	check("ck_project_public_summary_publications_source_refs_array", sql`jsonb_typeof(source_refs_json) = 'array'::text`),
+	check("ck_project_public_summary_publications_topics_array", sql`jsonb_typeof(topics_json) = 'array'::text`),
+	check("ck_project_public_summary_publications_source_draft_version", sql`source_draft_version >= 1`),
 ]);
 
 export const projectMembers = pgTable("project_members", {

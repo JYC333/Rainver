@@ -48,7 +48,24 @@ export const sourceItemAnnotations = pgTable("source_item_annotations", {
 	topicCandidatesJson: jsonb("topic_candidates_json").default([]).notNull(),
 	/** Agent Run that produced this annotation, for provenance and cost audit. */
 	annotationRunId: varchar("annotation_run_id", { length: 36 }),
+	/**
+	 * Attempts spent in the current failure episode. Bounded: three initial
+	 * attempts and one automatic recovery round of three, six per episode
+	 * (`retryPolicy.ts`). A manual retry after the budget is spent opens a
+	 * new episode and starts the count over.
+	 */
 	attemptCount: integer("attempt_count").default(0).notNull(),
+	/**
+	 * Why a pending row is not runnable right now, or why a failed one
+	 * stopped. `retry_scheduled` waits for `next_retry_at`; the condition
+	 * reasons wait for the condition and consume no attempt;
+	 * `budget_exhausted` is paused until a person retries.
+	 */
+	waitReason: varchar("wait_reason", { length: 32 }),
+	/** When a scheduled retry becomes runnable; the countdown the notification shows. NULL while a condition is awaited. */
+	nextRetryAt: timestamp("next_retry_at", { withTimezone: true, mode: 'string' }),
+	/** The failure episode this row belongs to: one notification per episode, updated until it clears. */
+	episodeId: varchar("episode_id", { length: 36 }),
 	errorJson: jsonb("error_json"),
 	annotatedAt: timestamp("annotated_at", { withTimezone: true, mode: 'string' }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
@@ -58,6 +75,9 @@ export const sourceItemAnnotations = pgTable("source_item_annotations", {
 	unique("uq_source_item_annotations_id_space").on(t.id, t.spaceId),
 	// The queue scan: pending rows oldest first, within a space.
 	index("ix_source_item_annotations_pending").on(t.spaceId, t.status, t.createdAt),
+	// The sweep: runnable rows by retry time, and open episodes by reason.
+	index("ix_source_item_annotations_retry").on(t.spaceId, t.status, t.nextRetryAt),
+	index("ix_source_item_annotations_episode").on(t.spaceId, t.episodeId),
 	// Coverage distribution reads: succeeded rows grouped by domain.
 	index("ix_source_item_annotations_domain").on(t.spaceId, t.domainKey),
 	index("ix_source_item_annotations_stance").on(t.spaceId, t.stanceTargetKey, t.stancePolarity),
@@ -71,12 +91,15 @@ export const sourceItemAnnotations = pgTable("source_item_annotations", {
 	foreignKey({ columns: [t.sourceChannelId], foreignColumns: [sourceChannels.id], name: "source_item_annotations_channel_fkey" }).onDelete("set null"),
 	foreignKey({ columns: [t.annotationRunId], foreignColumns: [runs.id], name: "source_item_annotations_run_fkey" }).onDelete("set null"),
 	check("ck_source_item_annotations_status", sql`status IN ('pending','succeeded','failed','skipped')`),
+	check("ck_source_item_annotations_wait_reason", sql`wait_reason IS NULL OR wait_reason IN ('retry_scheduled','provider_unavailable','egress_denied','consent_missing','budget_exhausted')`),
+	check("ck_source_item_annotations_wait_shape", sql`(wait_reason = 'retry_scheduled') = (next_retry_at IS NOT NULL)`),
+	check("ck_source_item_annotations_wait_status", sql`wait_reason IS NULL OR (wait_reason = 'budget_exhausted' AND status = 'failed') OR (wait_reason <> 'budget_exhausted' AND status = 'pending')`),
 	check("ck_source_item_annotations_topic_candidates", sql`jsonb_typeof(topic_candidates_json) = 'array'`),
 	check("ck_source_item_annotations_stance_polarity", sql`stance_polarity IS NULL OR stance_polarity IN ('supports','opposes','mixed','neutral')`),
 	check("ck_source_item_annotations_stance_confidence", sql`stance_confidence IS NULL OR stance_confidence BETWEEN 0 AND 100`),
 	check("ck_source_item_annotations_stance_shape", sql`stance_polarity IS NULL OR ((stance_polarity IN ('supports','opposes') AND stance_target IS NOT NULL AND stance_target_key IS NOT NULL) OR (stance_polarity IN ('mixed','neutral') AND stance_target_key IS NULL))`),
 	// A succeeded annotation must carry the fields the digest pipeline reads;
-	// without this a partially-parsed result would look usable and then rank
+	// Do not accept a partial result. It would look usable and then rank
 	// against a NULL domain.
 	check("ck_source_item_annotations_succeeded_complete", sql`status <> 'succeeded' OR (domain_key IS NOT NULL AND depth IS NOT NULL AND genre IS NOT NULL AND stance_polarity IS NOT NULL AND stance_confidence IS NOT NULL)`),
 ]);

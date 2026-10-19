@@ -11,8 +11,7 @@ import { machines } from "./machines.js";
  * hash afterward — there is no separate pairing-code table; a pairing code
  * is a host row in `pending_pairing` status.
  *
- * execution-topology-and-project-control-plane-plan.md P1 / D1: this row is
- * an ExecutionHost — one execution environment on a physical `machine_id`,
+ * This row is an ExecutionHost — one execution environment on a physical `machine_id`,
  * not the device itself. A single Windows desktop is one Machine with two
  * ExecutionHost rows (Windows native, WSL), each with its own
  * `environment_kind`, filesystem namespace, and daemon connection.
@@ -31,12 +30,6 @@ export const hosts = pgTable("hosts", {
 	platform: varchar({ length: 64 }),
 	arch: varchar({ length: 32 }),
 	daemonVersion: varchar("daemon_version", { length: 32 }),
-	/**
-	 * No longer read or written: a host's control-plane address is
-	 * configuration (`hostControlPlaneUrl`). Kept until every deployed release
-	 * stops reading it; the drop is in the deferred register.
-	 */
-	daemonServerUrl: varchar("daemon_server_url", { length: 512 }),
 	/**
 	 * Explicit provider-proxy base URL for this host, when the derived one is
 	 * wrong: a reverse proxy in front of the API, or a proxy port published

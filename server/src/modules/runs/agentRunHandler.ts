@@ -29,6 +29,7 @@ import { owedSettleSql } from "../hosts/taskBranchRequests.js";
 import { UNDER_WAY_MERGE_STATUSES } from "../hosts/taskMerges.js";
 import type { RunRecord } from "./runRepositoryTypes.js";
 import type { Queryable } from "../routeUtils/common.js";
+import { finalizedForPostRun } from "./finalizationOutcome.js";
 
 export function registerAgentRunHandler(
   registry: JobHandlerRegistry,
@@ -190,12 +191,10 @@ async function handleAgentRun(
       worker_id: job.worker_id,
       job_id: job.job_id,
       command_source: "job",
-      // control-center-phase2-plan.md P1: the hosts dispatch endpoint no
-      // longer calls executeRun synchronously — it enqueues this job instead
-      // (async dispatch) and carries the requested timeout here (dropped
-      // silently by the P1 migration until discovery review caught it — no
-      // other agent_run job carries timeout_ms today). The vendor session to
-      // resume comes from the Run, above, so a retry keeps it.
+      // The hosts dispatch endpoint enqueues this job. The requested timeout
+      // travels here. Do not drop it: no other agent_run job carries
+      // timeout_ms. The vendor session to resume comes from the Run, above,
+      // so a retry keeps it.
       adapter_config: {
         ...recordValue(job.payload.adapter_config),
         ...(hostThread.resume_session_id ? { remote_resume_session_id: hostThread.resume_session_id } : {}),
@@ -223,7 +222,7 @@ async function handleAgentRun(
           });
       if (terminal) {
         const finalization = await materializer.finalizeRun(terminal);
-        if (finalization.status === "succeeded") {
+        if (finalizedForPostRun(finalization)) {
           const currentTerminal = await repository.getRun(job.space_id, runId);
           if (currentTerminal && isTerminalRun(currentTerminal.status)) {
             await orchestration.reconcileTerminalDelegation(currentTerminal);
@@ -237,6 +236,20 @@ async function handleAgentRun(
               );
             }
             await finalizeChatTurn(config, repository, currentTerminal);
+            // The domain reconcilers ride on every terminal Run, this one
+            // included: a standing batch whose Run was orphaned here would
+            // otherwise show running forever, with nothing left to settle it.
+            const contract = await getDbPool(config.databaseUrl!).query<{ workflow_input_json: unknown }>(
+              `SELECT contract_snapshot_json->'workflow_input_json' AS workflow_input_json
+                 FROM runs WHERE id=$1 AND space_id=$2`,
+              [runId, job.space_id],
+            );
+            await enqueueRunTerminalReconcilers(getDbPool(config.databaseUrl!), {
+              space_id: job.space_id,
+              user_id: job.user_id,
+              run_id: runId,
+              workflow_input_json: recordValue(contract.rows[0]?.workflow_input_json),
+            });
           }
         }
       }
@@ -246,7 +259,7 @@ async function handleAgentRun(
   let completedRun = await repository.getRun(job.space_id, runId);
   if (completedRun && isTerminalRun(completedRun.status)) {
     const finalization = await materializer.finalizeRun(completedRun);
-    if (finalization.status !== "succeeded") {
+    if (!finalizedForPostRun(finalization)) {
       throw new Error(
         finalization.error_message ?? "Run finalization reconciliation failed.",
       );
@@ -259,12 +272,10 @@ async function handleAgentRun(
   if (completedRun && isTerminalRun(completedRun.status)) {
     await orchestration.reconcileTerminalDelegation(completedRun);
   }
-  // control-center-phase2-plan.md P1: the hosts dispatch endpoint now
-  // enqueues this job instead of awaiting executeRun inline, so task-thread
-  // outcome recording (vendor session id, session_reset detection) has to
-  // happen here instead, gated on the run actually carrying a thread.
-  // Before chat finalization on purpose: releasing the thread's dispatch
-  // lock must not depend on message materialization succeeding.
+  // Task-thread outcome recording (vendor session id, session_reset) happens
+  // here, gated on the run carrying a thread. Before chat finalization:
+  // releasing the thread's dispatch lock must not depend on message
+  // materialization succeeding.
   if (completedRun && isTerminalRun(completedRun.status) && hostThread.thread_id) {
     await recordHostThreadOutcome(
       config,
@@ -296,6 +307,7 @@ async function handleAgentRun(
   }
   return result;
 }
+
 
 const TASK_RUN_AHEAD = "Another execution Run of this Task is still in progress";
 

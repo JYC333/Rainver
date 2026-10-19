@@ -116,11 +116,10 @@ export default function HostAgentRow({
       <span className="w-28 shrink-0 truncate font-medium" title={adapter.display_name}>{adapter.display_name}</span>
       <span className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         {copies.map(entry => {
-          // One Log in when Rainver's managed CLI login exists: that is the
-          // step the person actually has to do. The Agent-Auth handshake the
-          // Agent advertised alongside it runs unattended afterwards — the
-          // daemon's probe and every Run session authenticate with it — so
-          // offering it as a second button only looked like a duplicate.
+          // One Log in when Rainver's managed CLI login exists. The Agent-Auth
+          // handshake runs unattended afterwards: the daemon's probe and every
+          // Run session authenticate with it. Do not offer that handshake as
+          // a second button.
           const authMethods = entry.options?.cli_login_available ? [] : entry.options?.auth_methods ?? []
           // A CLI that holds several accounts (OpenCode) reports them by
           // provider id and kind. Its login *adds* one and its logout *removes*
@@ -131,7 +130,11 @@ export default function HostAgentRow({
           const accountSummary = multiAccount
             ? accounts.length === 0 ? 'no accounts' : `${accounts.length} account${accounts.length === 1 ? '' : 's'}`
             : null
-          const canLogout = entry.logged_in === true || (multiAccount && accounts.length > 0)
+          // Only where a logout path exists: the server accepts one through a
+          // CLI login or a logout command, both of which leave `authMethods`
+          // empty. A copy signed in only by its advertised Agent Auth has
+          // nothing to log out of here.
+          const canLogout = (entry.logged_in === true || (multiAccount && accounts.length > 0)) && authMethods.length === 0
           const quota = usageLabel(usage.get(entry.id))
           const badge = (
             <Badge variant={entry.logged_in === false || (multiAccount && accounts.length === 0) ? 'warning' : 'secondary'}>
@@ -262,9 +265,9 @@ export default function HostAgentRow({
           </span>
         })}
         {rainverPinned && (
-          // The Retry lives in the provisioning panel and only exists for an
-          // instance admin looking at a failed install, so only that viewer is
-          // pointed at it; everyone else is just told who owns this copy.
+          // Retry lives in the provisioning panel and is shown only to an
+          // instance admin looking at a failed install. Everyone else is
+          // told who owns this copy.
           <span className="shrink-0 text-muted-foreground">
             Managed by Rainver{manageable && provisioningFailed ? ' — use Retry above' : ''}
           </span>

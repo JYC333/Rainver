@@ -12,6 +12,7 @@ import {
 import { Input } from '../../components/ui/input'
 import { Textarea } from '../../components/ui/textarea'
 import { errMsg } from '../../lib/utils'
+import { useAppTranslation } from '../../i18n'
 import type { OpenRoomDiscussionRequest, RoomDiscussionShape } from '../../types/api'
 
 /**
@@ -36,6 +37,7 @@ export function OpenDiscussionDialog({
   /** Resolves when the discussion is open; a rejection keeps the dialog open with the reason. */
   onSubmit: (request: OpenRoomDiscussionRequest) => Promise<void>
 }) {
+  const { t } = useAppTranslation()
   const [topic, setTopic] = useState('')
   const [all, setAll] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
@@ -65,21 +67,21 @@ export function OpenDiscussionDialog({
 
   function validate(): OpenRoomDiscussionRequest | string {
     const trimmed = topic.trim()
-    if (!trimmed) return 'Say what the discussion is about.'
+    if (!trimmed) return t('conversation_ui.open_discussion.need_topic')
     const count = all ? agents.length : selected.length
-    if (count === 0) return 'Choose at least one Agent.'
+    if (count === 0) return t('conversation_ui.open_discussion.need_agent')
     if (count > ROOM_DISCUSSION_MAX_PARTICIPANTS) {
       return all
-        ? `This Room has ${count} active Agents; a discussion seats at most ${ROOM_DISCUSSION_MAX_PARTICIPANTS}. Choose up to ${ROOM_DISCUSSION_MAX_PARTICIPANTS}.`
-        : `${count} Agents are selected; a discussion seats at most ${ROOM_DISCUSSION_MAX_PARTICIPANTS}.`
+        ? t('conversation_ui.open_discussion.too_many_all', { count, max: ROOM_DISCUSSION_MAX_PARTICIPANTS })
+        : t('conversation_ui.open_discussion.too_many_selected', { count, max: ROOM_DISCUSSION_MAX_PARTICIPANTS })
     }
     const rounds = Number(roundCap)
     if (!Number.isInteger(rounds) || rounds < 1 || rounds > ROOM_DISCUSSION_MAX_ROUNDS) {
-      return `Rounds must be a whole number from 1 to ${ROOM_DISCUSSION_MAX_ROUNDS}.`
+      return t('conversation_ui.open_discussion.rounds_invalid', { max: ROOM_DISCUSSION_MAX_ROUNDS })
     }
     const spend = spendCap.trim() ? Number(spendCap) : null
     if (spend !== null && (!Number.isFinite(spend) || spend <= 0 || spend > 1000)) {
-      return 'The spend cap must be more than $0 and at most $1000.'
+      return t('conversation_ui.open_discussion.spend_invalid')
     }
     return {
       topic: trimmed,
@@ -111,25 +113,24 @@ export function OpenDiscussionDialog({
     <Dialog open={open} onOpenChange={next => { if (!next && !submitting) onClose() }}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Open a discussion</DialogTitle>
+          <DialogTitle>{t('conversation_ui.open_discussion.title')}</DialogTitle>
           <DialogDescription>
-            The Agents reply to each other until nobody addresses anyone, the round cap is reached, or you stop it.
-            The Manager then writes the conclusion.
+            {t('conversation_ui.open_discussion.description')}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 text-sm">
           <Textarea
-            aria-label="Topic"
-            placeholder="What should they discuss?"
+            aria-label={t('conversation_ui.open_discussion.topic')}
+            placeholder={t('conversation_ui.open_discussion.topic_placeholder')}
             rows={3}
             value={topic}
             onChange={event => setTopic(event.target.value)}
           />
           <fieldset className="space-y-1">
-            <legend className="mb-1 text-xs font-medium text-muted-foreground">Participants</legend>
+            <legend className="mb-1 text-xs font-medium text-muted-foreground">{t('conversation_ui.open_discussion.participants')}</legend>
             <label className="flex items-center gap-2">
               <input type="checkbox" checked={all} onChange={event => setAll(event.target.checked)} />
-              All Agents
+              {t('conversation_ui.open_discussion.all_agents')}
             </label>
             {agents.map(agent => (
               <label key={agent.id} className="flex items-center gap-2">
@@ -146,19 +147,19 @@ export function OpenDiscussionDialog({
             ))}
           </fieldset>
           <fieldset className="space-y-1">
-            <legend className="mb-1 text-xs font-medium text-muted-foreground">Shape</legend>
+            <legend className="mb-1 text-xs font-medium text-muted-foreground">{t('conversation_ui.open_discussion.shape')}</legend>
             <label className="flex items-center gap-2">
               <input type="radio" name="discussion-shape" checked={shape === 'open'} onChange={() => chooseShape('open')} />
-              Open — each round sees the replies so far
+              {t('conversation_ui.open_discussion.shape_open')}
             </label>
             <label className="flex items-center gap-2">
               <input type="radio" name="discussion-shape" checked={shape === 'debate'} onChange={() => chooseShape('debate')} />
-              Debate — the first round answers independently
+              {t('conversation_ui.open_discussion.shape_debate')}
             </label>
           </fieldset>
           <div className="grid grid-cols-2 gap-3">
             <label className="space-y-1">
-              <span className="block text-xs font-medium text-muted-foreground">Rounds</span>
+              <span className="block text-xs font-medium text-muted-foreground">{t('conversation_ui.open_discussion.rounds')}</span>
               <Input
                 type="number"
                 min={1}
@@ -171,12 +172,12 @@ export function OpenDiscussionDialog({
               />
             </label>
             <label className="space-y-1">
-              <span className="block text-xs font-medium text-muted-foreground">Spend cap (USD, optional)</span>
+              <span className="block text-xs font-medium text-muted-foreground">{t('conversation_ui.open_discussion.spend_cap')}</span>
               <Input
                 type="number"
                 min={0}
                 step="0.01"
-                placeholder={`$${ROOM_DISCUSSION_DEFAULT_SPEND_CAP_USD.toFixed(2)} (default)`}
+                placeholder={t('conversation_ui.open_discussion.spend_default', { amount: ROOM_DISCUSSION_DEFAULT_SPEND_CAP_USD.toFixed(2) })}
                 value={spendCap}
                 onChange={event => setSpendCap(event.target.value)}
               />
@@ -185,9 +186,9 @@ export function OpenDiscussionDialog({
           {error && <p className="text-xs text-destructive" role="alert">{error}</p>}
         </div>
         <DialogFooter>
-          <Button size="sm" variant="outline" onClick={onClose} disabled={submitting}>Cancel</Button>
+          <Button size="sm" variant="outline" onClick={onClose} disabled={submitting}>{t('conversation_ui.open_discussion.cancel')}</Button>
           <Button size="sm" onClick={() => void submit()} disabled={submitting}>
-            {submitting ? 'Opening…' : 'Open discussion'}
+            {submitting ? t('conversation_ui.open_discussion.opening') : t('conversation_ui.open_discussion.submit')}
           </Button>
         </DialogFooter>
       </DialogContent>

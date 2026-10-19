@@ -59,6 +59,15 @@ describe("finance ledger plugin schema", () => {
     }
   });
 
+  it("bundles the per-entry import state as an appended migration", () => {
+    const ids = financeLedgerPlugin.migrations!.map((migration: { id: string }) => migration.id);
+    expect(ids).toEqual(["0001_create_finance_ledger_tables", "0002_import_entries"]);
+    const migration = financeLedgerPlugin.migrations![1]!;
+    expect(migration.sql).toContain("CREATE TABLE public.finance_import_entries");
+    expect(migration.sql).toContain("UNIQUE (import_source_id, entry_key)");
+    expect(migration.sql).toContain("finance_import_sources_book_content_hash_unique");
+  });
+
   it("keeps finance tables space scoped", () => {
     const migration = financeLedgerPlugin.migrations![0]!;
     for (const table of REQUIRED_TABLES) {

@@ -6,13 +6,13 @@ import { PgMemoryReadRepository, MemoryReadValidationError } from "../src/module
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Real-PostgreSQL integration tests for the server memory read model. The
-// route/unit suites use fakes, so they cannot catch the defects that only
-// surface on the real stack: the scoped WHERE + post-filter
-// pagination, jsonb tags parsing, ILIKE search, summary access redaction,
-// redaction, cross-user/cross-space visibility, and the project_id membership
-// check. These run the actual SQL against a throwaway Postgres (testcontainers)
+// route/unit suites use fakes. These lock what the real schema enforces: the
+// scoped WHERE plus post-filter pagination, jsonb tags parsing, ILIKE search,
+// summary access redaction, cross-user and cross-space visibility, and the
+// project_id membership check. They run through `useTestDatabase`.
 //
-// Skips gracefully when Docker is unavailable so `pnpm test` runs everywhere.
+// The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 let repo: PgMemoryReadRepository | undefined;
 
@@ -120,6 +120,17 @@ describe("PgMemoryReadRepository against real Postgres", () => {
 
     const rows = await repo.search(SPACE, USER, { query: "server", limit: 10 });
     expect(rows.map((m) => m.id).sort()).toEqual(["m-hit"]);
+  });
+
+  it("treats LIKE wildcards in a search query as the characters typed", async () => {
+    if (!db.available || !repo) return;
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-literal", owner_user_id: USER, content: "ticket a_b resolved" });
+    await insertMemoryEntry(db.pool, SPACE, { id: "m-near", owner_user_id: USER, content: "ticket axb resolved" });
+
+    expect((await repo.search(SPACE, USER, { query: "a_b", limit: 10 })).map((m) => m.id)).toEqual(["m-literal"]);
+    // A bare wildcard would otherwise match every readable memory and log a
+    // search hit against each of them.
+    expect(await repo.search(SPACE, USER, { query: "%", limit: 10 })).toEqual([]);
   });
 
   it("a cross-person get writes one explicit_read trace and bumps the read counters", async () => {

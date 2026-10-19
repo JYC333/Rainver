@@ -29,9 +29,11 @@ function target(
     provider: {
       id: providerId,
       space_id: "space-1",
+      home_space_id: "space-1",
       name: providerId,
       provider_type: "openai",
       base_url: `https://api.${providerId}.test/v1`,
+      deployment: "cloud" as const,
       network_profile_id: null,
       default_model: `default-of-${providerId}`,
       available_models: [],
@@ -190,6 +192,24 @@ const CHAT = {
 };
 
 describe("provider invocation resilience", () => {
+  it("refuses a Cohere embedding batch that returns fewer vectors than it was sent", async () => {
+    // Results are matched to inputs by position. A batch short by one would
+    // shift every later vector onto the neighbouring chunk, with the right
+    // dimensions and no error anywhere.
+    const store = makeStore({
+      p1: target("p1", [{ member: "m1", key: "k1" }], { provider_type: "cohere", base_url: "https://api.cohere.test" }),
+    }, []);
+    scriptedHttp([{ status: 200, body: { embeddings: { float: [[0.1, 0.2]] }, meta: {} } }]);
+
+    await expect(completeProviderEmbedding(store, "space-1", {
+      spend: { kind: "person", user_id: "user-1" },
+      provider_id: "p1",
+      model: "embed-v4.0",
+      inputs: ["alpha", "beta"],
+      metering: { subject_user_id: "user-1" },
+    })).rejects.toThrow(/1 embeddings? for 2 inputs/);
+  });
+
   it("binds formal ProviderTask Runs to each physical attempt and usage observation", async () => {
     const usage: UsageObservation[] = [];
     const lifecycleEvents: string[] = [];
@@ -474,7 +494,7 @@ describe("provider invocation resilience", () => {
   });
 
   it("keeps an Ollama request on the original Chat Completions fields", async () => {
-    // A local server implements the fields the API had when it was written.
+    // A local server speaks the original Chat Completions fields.
     // Detecting modern OpenAI features from an arbitrary base URL would send
     // a body it answers 400 to.
     const store = makeStore({
@@ -715,9 +735,9 @@ describe("provider invocation resilience", () => {
 
   it("retries and falls back when the stream dies after the provider already answered 200", async () => {
     // undici reports a response body torn off mid-flight as a bare
-    // `terminated`. Classifying that from the 200 already in hand called it
-    // permanent, so the call failed with no retry and no fallback — fatal
-    // every time for the longest generation on the platform, a whole research
+    // `terminated`. Do not classify that from the 200 already in hand. A
+    // committed status is not a finished body. Treating the tear as permanent
+    // skips retry and fallback on the longest generation, a whole research
     // report returned in one structured response.
     const outcomes: Array<{ member: string; outcome: PoolOutcome }> = [];
     const store = makeStore(

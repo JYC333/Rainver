@@ -4,19 +4,17 @@ import { relative } from "node:path";
 /**
  * Hard time budgets for a Vitest run.
  *
- * Documentation did not stop the suites from blowing up twice, because the
- * cost that blew up was never a single bad test: it was old, reasonable tests
- * whose per-call cost grew with the size of the schema and the module graph.
- * Only measurement catches that, so this reporter measures every run and
- * fails it when a number doubles rather than drifts:
+ * Per-call cost grows with the schema and the module graph, including tests
+ * that were already reasonable. This reporter measures every run and fails
+ * it when a number doubles rather than drifts:
  *
  * - any one file's module import time over `maxFileImportMs`;
  * - any one test over `maxTestMs`;
  * - the run's total import time or total test time over the committed
  *   baseline times `tolerance`.
  *
- * Totals are summed per file, not wall clock, so they do not depend on the
- * worker count or the machine. Raising a limit means editing the budget file
+ * Totals are summed per file, not wall clock. They still grow when the
+ * machine is busy. Raising a limit means editing the budget file
  * in the same change, where review can see it. The ten slowest files by
  * import and by test time are printed on every run so slow growth stays
  * visible between the times the gate fires.

@@ -8,7 +8,7 @@ import { shouldRedactMemoryContent } from "../memory/memoryReadAuth.js";
 import type { ContentAccessLevel } from "../access/contentAccessTypes.js";
 
 export const PROJECT_PUBLIC_SUMMARY_PROMPT_VERSION = "project_public_summary.prompt.v1";
-export const PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION = "project_public_summary.v1";
+const PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION = "project_public_summary.v1";
 
 const CONTEXT_MAX_CHARS = 14_000;
 
@@ -64,13 +64,12 @@ export interface PublicSummaryPromptContext {
   allowedSourceRefs: Map<string, PublicSummarySourceRef>;
 }
 
-export interface GeneratedPublicSummary {
+interface GeneratedPublicSummary {
   summary_text: string;
   topics: string[];
   highlights: string[];
   source_refs: PublicSummarySourceRef[];
   redaction_version: string;
-  review_status: "draft";
 }
 
 export function buildProjectPublicSummaryPrompt(
@@ -102,7 +101,6 @@ export function buildProjectPublicSummaryPrompt(
         },
       ],
       redaction_version: PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION,
-      review_status: "draft",
     }, null, 2),
     "",
     "Project:",
@@ -122,7 +120,7 @@ export function buildProjectPublicSummaryPrompt(
     section("Artifacts", context.artifacts.map(artifactLine)),
     section("Proposals", context.proposals.map(proposalLine)),
     "",
-    "Generate one draft JSON object now. Set review_status to draft.",
+    "Generate one draft JSON object now.",
   ].filter((line): line is string => typeof line === "string");
 
   return { system, user: lines.join("\n").slice(0, CONTEXT_MAX_CHARS) };
@@ -144,7 +142,6 @@ export function parseGeneratedPublicSummary(
     highlights,
     source_refs: sourceRefs.length > 0 ? sourceRefs : firstAllowedSourceRef(allowedRefs),
     redaction_version: PROJECT_PUBLIC_SUMMARY_REDACTION_VERSION,
-    review_status: "draft",
   };
 }
 

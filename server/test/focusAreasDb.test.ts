@@ -153,8 +153,8 @@ describe("focus areas (real Postgres)", () => {
     const service = new FocusAreaService(db.pool);
     const area = await service.create(identity, { name: `Ownerless ${randomUUID()}` });
 
-    // Agent-ingested content carries no owner; without this path the feature's
-    // headline use case — collected knowledge — could never be classified.
+    // Agent-ingested content carries no owner. Do not require an owner before
+    // classifying it.
     const ingested = randomUUID();
     const now = new Date().toISOString();
     await db.pool.query(

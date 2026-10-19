@@ -73,10 +73,7 @@ export class ProjectResearchRetryService<TRead, TSetup> {
     const backfillPlanIds = state.source_backfill_plan_ids?.length
       ? state.source_backfill_plan_ids
       : state.source_backfill_plan_id ? [state.source_backfill_plan_id] : [];
-    const ruleIds = unique([
-      ...state.source_post_processing_rule_ids,
-      ...(state.source_post_processing_rule_id ? [state.source_post_processing_rule_id] : []),
-    ]);
+    const ruleIds = unique(state.source_post_processing_rule_ids);
     if (
       (state.run_kind === "baseline" || state.run_kind === "historical_backfill")
       && (failedStage === "backfill" || failedStage === "screening")
@@ -134,7 +131,7 @@ export class ProjectResearchRetryService<TRead, TSetup> {
       // queueComparison reloads and mutates the operation's persisted state
       // itself (see MonitoringCoordinator.queueComparison) — it takes only
       // ids, not `state`, so mutating the local `state` object here has no
-      // effect and previously read as if it reset something it doesn't.
+      // effect. Do not treat it as a reset.
       await this.ports.queueComparison({
         spaceId: identity.spaceId,
         userId: identity.userId,

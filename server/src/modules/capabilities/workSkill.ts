@@ -9,10 +9,10 @@ import {
 /**
  * The Rainver Work Skill: the harness contract a dispatched agent works under.
  *
- * It is a builtin skill in the sense `SkillSourceType`'s `"builtin"` already
- * means — content Rainver owns, versioned with the server rather than
- * imported, carrying no provenance, risk or approval state because there is no
- * third party to trust. It is not an enablement: a Run that has tool grants
+ * It is a builtin skill: `SkillSourceType` `"builtin"` is content Rainver
+ * owns, versioned with the server rather than imported, carrying no
+ * provenance, risk, or approval state because there is no third party to
+ * trust. It is not an enablement: a Run that has tool grants
  * gets it, with nothing to turn on and nothing that can turn it off, because a
  * Run that can act and cannot report is an error state. A Run with no grants
  * gets no Skill and no surface.
@@ -20,19 +20,18 @@ import {
  * Its content has one source. The judgement rules are the same constants
  * enforced by the ACP System Action Gateway
  * (`systemActions/conversationPolicy.ts`); the CLI mechanics below describe
- * how an external runtime reaches those actions. Two hand-maintained copies
- * of "when to call which action" are precisely the drift this arrangement
- * exists to prevent.
+ * how an external runtime reaches those actions. Do not keep a second copy
+ * of "when to call which action".
  *
- * What an agent may actually call is decided elsewhere and is unchanged by
- * this file: the Run's `permission_snapshot_json.tool_grants` computed at
+ * What an agent may actually call is decided elsewhere, not by this file:
+ * the Run's `permission_snapshot_json.tool_grants` computed at
  * creation, enforced call by call by `SystemActionDispatcher`. The Skill says
  * so, and points at `list` rather than naming a fixed set, so a Run that was
  * granted less does not read instructions for actions it cannot invoke.
  */
-export const WORK_SKILL_ID = "rainver-work";
+const WORK_SKILL_ID = "rainver-work";
 
-export const WORK_SKILL_FILE_NAME = "SKILL.md";
+const WORK_SKILL_FILE_NAME = "SKILL.md";
 
 /** Where the Skill is written, relative to the run directory the host makes. */
 export const WORK_SKILL_RELATIVE_PATH = `rainver/${WORK_SKILL_FILE_NAME}`;
@@ -41,20 +40,15 @@ export interface WorkSkillOptions {
   /**
    * Whether this Run can deliver a declared output.
    *
-   * `artifact.submit` and the output directory it names exist on the
-   * remote-host path; a server-sandbox Run has neither, so telling it to copy
-   * a file into an unset `$RAINVER_OUTPUT_DIR` and declare it would send the
-   * agent through a workflow that silently writes nothing and then refuses.
-   * Everything else about reporting back is identical, so everything else in
-   * the Skill is.
+   * Set only when `artifact.submit` was granted. Do not tell a Run without
+   * that grant to write `$RAINVER_OUTPUT_DIR` and declare the file.
    */
   deliverOutputs: boolean;
   /**
-   * Whether this Run is a turn in a conversation with a person. Then the
-   * reply *is* the message they read, and the commands record durable
-   * objects alongside it; a dispatched Task has no reader for its reply at
-   * all. The dispatched text told a Room agent its reply reached nobody,
-   * and it answered "what should I do next?" with tool calls and a blank.
+   * Whether this Run is a turn in a conversation with a person. The reply
+   * is the message they read, and the commands record durable objects
+   * alongside it. A dispatched Task has no reader for its reply. Do not
+   * tell a Room agent its reply reached nobody.
    */
   conversation?: boolean;
 }

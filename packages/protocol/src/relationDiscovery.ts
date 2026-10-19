@@ -1,18 +1,17 @@
 /**
- * Candidate-relation discovery contracts (Slice F — Gap 6).
+ * Candidate-relation discovery contracts.
  *
  * The discovery pass reads viewer-visible note / knowledge-item text plus
  * policy-allowed Activity/Artifact text, extracts typed internal links
  * deterministically, and resolves them against other viewer-visible Knowledge
- * items. Service-level LLM extraction is injectable for future provider
- * wiring; the public HTTP route rejects the flag until that adapter exists. It
- * produces a single batched, confidence-tiered proposal packet of candidate
- * `object_relation_create` edges (and, optionally, candidate `knowledge_item`
- * stubs for unresolved targets). It is the proposal-gated analogue of the context-and-retrieval design's
- * self-wiring graph: discovery NEVER writes an edge or item directly — accepting
- * the packet only creates child pending proposals, which still go through normal
- * review. Discovery is access-safe: only visible source text and only visible
- * resolution targets are ever used, so it cannot leak hidden object existence.
+ * items. An extractor can be injected into the service. The public HTTP route
+ * rejects `llm_extraction_enabled`. Discovery produces a single batched,
+ * confidence-tiered proposal packet of candidate `object_relation_create`
+ * edges (and, optionally, candidate `knowledge_item` stubs for unresolved
+ * targets). It never writes an edge or item directly — accepting the packet
+ * only creates child pending proposals, which go through review. Discovery
+ * is access-safe: only visible source text and only visible resolution
+ * targets are ever used, so it cannot leak hidden object existence.
  */
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
@@ -21,8 +20,7 @@ const ReviewScopeSchema = z.enum(["private", "space_ops"]);
 const ConfidenceTierSchema = z.enum(["high", "medium", "low"]);
 
 // Source object types whose text the deterministic pass reads. Activity and
-// artifact rows are review-only anchors unless a future root-object model gives
-// them FK-backed relation endpoints.
+// artifact rows are review-only anchors. They are not FK-backed relation endpoints.
 export const RelationDiscoverySourceTypeSchema = z.enum(["knowledge_item", "note", "activity", "artifact"]);
 export type RelationDiscoverySourceType = z.infer<typeof RelationDiscoverySourceTypeSchema>;
 
@@ -47,8 +45,8 @@ export type RelationDiscoveryScanRequestInput = z.input<typeof RelationDiscovery
 
 export const RelationDiscoveryCandidateKindSchema = z.enum([
   "object_relation_candidate",
-  // Activity/Artifact anchors cannot safely create FK-backed object relations
-  // today. They stay as review-only evidence rows in the packet.
+  // Activity/Artifact anchors cannot safely create FK-backed object relations.
+  // They stay as review-only evidence rows in the packet.
   "relation_review_candidate",
   "knowledge_item_candidate",
 ]);

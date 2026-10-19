@@ -24,7 +24,7 @@ export type SourceProviderCategoryGroup = z.infer<typeof SourceProviderCategoryG
 
 /**
  * Setup guidance a Provider offers the channel-creation form. Only arXiv
- * declares category groups today; the shape stays open because the catalog
+ * declares category groups. The shape stays open because the catalog
  * owns which providers publish what.
  */
 export const SourceProviderSetupSchemaSchema = z.object({
@@ -88,8 +88,8 @@ export const SourceChannelScanStateSchema = z.object({
 
 /**
  * The values the `source_channels.capture_policy` CHECK constraint allows.
- * The read model used to declare a bare string, which is looser than both the
- * database and the create request.
+ * This enum matches the database and the create request. Do not widen it to
+ * a bare string.
  */
 export const SourceChannelCapturePolicySchema = z.enum([
   "reference_only",
@@ -127,4 +127,6 @@ export const SourceChannelCreateRequestSchema = z.object({
   fetch_frequency: SourceFetchFrequencySchema.optional(),
   schedule_rule: z.record(z.unknown()).optional(),
   capture_policy: SourceChannelCapturePolicySchema.optional(),
+  /** The caller's own Source to add the monitor to; otherwise one is found or made by provider. */
+  source_connection_id: z.string().trim().min(1).optional(),
 }).passthrough();

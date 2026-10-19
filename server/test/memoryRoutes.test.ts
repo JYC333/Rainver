@@ -332,8 +332,8 @@ describe("memory read routes", () => {
             resulting_memory_id: memoryId,
           });
         },
-        // Not the caller's own entry, which is the case the proposal flow is
-        // still for (ADR 0003 §3).
+        // Not the caller's own entry. That is the case the proposal flow
+        // covers (ADR 0003 §3).
         async setOwnStatus() {
           return null;
         },
@@ -430,8 +430,8 @@ describe("memory read routes", () => {
       url: "/api/v1/memory?created_by=agent&session=session-1&run=run-1&since=2026-08-01T00:00:00.000Z",
     });
     expect(res.statusCode).toBe(200);
-    // Reading what the Agents wrote is the after-the-fact review that replaced
-    // approving each write (ADR 0003 §2), so the page must be able to ask for it.
+    // Agent-authored memory is read after the fact (ADR 0003 §2). Do not
+    // require a per-write approval to list it. The page must be able to ask for it.
     expect(seen).toMatchObject({
       writtenBy: "agent",
       sessionId: "session-1",

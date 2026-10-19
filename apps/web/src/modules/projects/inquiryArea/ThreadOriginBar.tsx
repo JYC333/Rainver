@@ -8,11 +8,9 @@ import { NEXT_FOCUS_LABELS } from './nextFocus'
 /**
  * Which Thread sent you here, shown in the Area where the work happens.
  *
- * Following a call to action used to leave the Thread behind entirely: the
- * destination knew nothing about why the user had arrived, so the round was
- * only ever closed by someone who remembered to navigate back. The open Step
- * carries that context, which means it survives a refresh, a second
- * navigation, and another device — none of which a URL parameter does.
+ * The destination must know which Thread sent the person here. The open Step
+ * carries that context. A URL parameter does not survive a refresh, a second
+ * navigation, or another device.
  *
  * Rendered only for steps whose work belongs to this Area, so Operations does
  * not claim a Thread that is off reading evidence somewhere else.

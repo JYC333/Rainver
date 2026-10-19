@@ -16,10 +16,10 @@ control plane — the server host (strictly isolated, bubblewrap sandboxed, the 
 in a single-machine deployment) or a personal machine the user owns and has paired (trusted-host mode,
 native execution, no sandbox isolation). See
 [decisions/0016-control-plane-execution-hosts.md](decisions/0016-control-plane-execution-hosts.md) for
-the two-tier trust model. The system is **not** local-first; it supports offline capture
-and draft queuing for personal convenience but active memory, proposals, credentials, and deployment
-remain server-authoritative, and Project Folder operations remain authoritative to whichever host owns
-that folder. See
+the two-tier trust model. The system is not local-first. There is no sync
+protocol and no offline queue. Active memory, proposals, credentials, and
+deployment remain server-authoritative, and Project Folder operations remain
+authoritative to whichever host owns that folder. See
 [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md) for the
 durable position on this boundary.
 
@@ -55,7 +55,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | Local-first compatibility position | [architecture/LOCAL_FIRST_COMPATIBILITY.md](architecture/LOCAL_FIRST_COMPATIBILITY.md) |
 | Architectural invariants (load before structural changes) | [BOUNDARIES.md](BOUNDARIES.md) |
 | Layer map and cross-cutting concerns | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| Shipped foundations | [ROADMAP.md](ROADMAP.md) |
+| Foundations | [ROADMAP.md](ROADMAP.md) |
 | How to run, test, and build | [COMMANDS.md](COMMANDS.md) |
 | Practical gotchas | [WORKING_TIPS.md](WORKING_TIPS.md) |
 | Repository-wide product and domain glossary | [GLOSSARY.md](GLOSSARY.md) |
@@ -139,7 +139,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/MEMORY_MODEL.md](architecture/MEMORY_MODEL.md) | Memory scopes, visibility, access control |
 | [architecture/SHARED_SPACE_MEMORY_ISOLATION.md](architecture/SHARED_SPACE_MEMORY_ISOLATION.md) | Current Memory layers and the shared SQL predicate for HTTP, retrieval, maintenance, and context injection |
 | [architecture/PROPOSALS.md](architecture/PROPOSALS.md) | Proposal types, lifecycle, apply flow |
-| [architecture/MEMORY_EVOLUTION_PLAN.md](architecture/MEMORY_EVOLUTION_PLAN.md) | Pointer: Knowledge retrieval and Memory maintenance are current-state elsewhere; remaining Memory-quality ideas live in plans/unimplemented-from-guides.md |
+| [architecture/MEMORY_EVOLUTION_PLAN.md](architecture/MEMORY_EVOLUTION_PLAN.md) | Points at current retrieval and maintenance docs; names Memory-quality ideas that are not implemented |
 | [architecture/EVOLUTION_SIGNAL_SYSTEM.md](architecture/EVOLUTION_SIGNAL_SYSTEM.md) | Current rule-based evolution signal emitters, target resolution, deduplication, and A2 verification facts |
 
 ### Sources / Evidence / Provenance
@@ -155,7 +155,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | Doc | What it covers |
 |---|---|
 | [architecture/ARTIFACTS.md](architecture/ARTIFACTS.md) | Artifact lifecycle, storage paths, export |
-| [architecture/EXECUTION_MODEL.md](architecture/EXECUTION_MODEL.md) | Sandbox selection, worktree vs Docker, PathPolicy |
+| [architecture/EXECUTION_MODEL.md](architecture/EXECUTION_MODEL.md) | Sandbox selection, worktree scope, host namespace, PathPolicy |
 
 ### Frontend Information Architecture
 
@@ -166,9 +166,9 @@ are source of truth for active nav and routes. For UI decisions, see the module 
 |---|---|
 | [architecture/FRONTEND_INFORMATION_ARCHITECTURE.md](architecture/FRONTEND_INFORMATION_ARCHITECTURE.md) | Frontend role, dogfooding loop, home direction, module visibility, empty-state policy |
 | [architecture/MANUAL_ACCEPTANCE_TASK_PLAN_WORKFLOW.md](architecture/MANUAL_ACCEPTANCE_TASK_PLAN_WORKFLOW.md) | Clickable manual acceptance paths for Task planning, Agent Plans, and fixed Workflow Automation |
-| [modules/product-shell.md](modules/product-shell.md) | Shell, NavRail, CommandPalette, PanelLayout |
-| [modules/frontend-layout.md](modules/frontend-layout.md) | Responsive layout, mobile variants |
-| [modules/client-server-protocol.md](modules/client-server-protocol.md) | REST, WebSocket, SSE, offline queue protocol |
+| [modules/product-shell.md](modules/product-shell.md) | Shell, global rail, scene sidebar, floating capture |
+| [modules/frontend-layout.md](modules/frontend-layout.md) | Rail, scene sidebar, main outlet, mobile tab bar |
+| [modules/client-server-protocol.md](modules/client-server-protocol.md) | REST, host WebSocket, turn SSE. There is no offline queue |
 | [modules/activity-inbox.md](modules/activity-inbox.md) | Activity inbox UI and quick capture |
 | [modules/graph-view.md](modules/graph-view.md) | Shared GraphProjection contract, graph renderer boundary, core Graph page, Project graph lens consumption |
 
@@ -259,6 +259,7 @@ when shortening a decision; do not delete an ADR merely because it is old.
 | [0021](decisions/0021-files-code-codemirror-drafts-and-input-resources.md) | Files & Code uses CodeMirror for complete text files; PostgreSQL recovery drafts remain private pending state while the Project Folder stays canonical; sent file state freezes as an immutable message resource read lazily through Run-scoped governed tools |
 | [0022](decisions/0022-acp-runtime-authority-and-schema-epoch.md) | AgentRuntimeProfile is the mutable Agent deployment/backend authority; Agent loops use the single ACP adapter, bounded provider work has explicit execution shape, and the pre-release schema epoch is reset once after cutover |
 | [0023](decisions/0023-authentication-foundation-schema-epoch.md) | The completed authentication foundation replaced the provisional auth migrations with a Drizzle-generated baseline; earlier databases had no upgrade path or compatibility shim |
+| [0024](decisions/0024-access-reading-and-execution-integrity-schema-epoch.md) | This release's schema changes were folded into a new Drizzle-generated baseline with the contract steps applied directly; earlier databases are recreated, not upgraded |
 
 ---
 

@@ -40,15 +40,15 @@ beforeAll(async () => {
 afterEach(() => { __setProviderHttpClientForTests(null); });
 beforeEach(async () => { if (!db.available) return; await resetTables(
   db.pool,
-  ["research_checklist_items", "research_evidence_cards", "note_revisions", "note_collection_items", "note_collections", "notes", "space_objects", "project_corpus_items", "source_items", "projects", "space_memberships", "users", "spaces", "runs", "agent_runtime_profiles", "agent_versions", "agents", "model_provider_space_grants", "model_providers", "jobs",
+  ["research_checklist_items", "research_evidence_cards", "note_revisions", "note_collection_items", "note_collections", "notes", "space_objects", "project_corpus_items", "source_items", "project_members", "projects", "space_memberships", "users", "spaces", "runs", "agent_runtime_profiles", "agent_versions", "agents", "model_provider_space_grants", "model_providers", "jobs",
    "provider_task_snapshots", "provider_task_deliveries", "provider_task_controls"],
   { cascade: true },
 ); const now = new Date().toISOString(); await db.pool.query(`INSERT INTO spaces (id,name,type,created_at,updated_at) VALUES ($1,'Space','personal',$2,$2)`, [SPACE, now]); await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Owner','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [USER, now]); await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'owner','active',$4,$4)`, [randomUUID(), SPACE, USER, now]); await db.pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Project','active',$4,$4)`, [PROJECT, SPACE, USER, now]);
   await db.pool.query(`INSERT INTO model_providers (id,space_id,owner_user_id,name,provider_type,base_url,default_model,enabled,capabilities_json,config_json,created_at,updated_at) VALUES ($1,$2,$3,'Test Provider','openai','https://example.invalid/v1','test-model',true,'{}'::jsonb,'{}'::jsonb,$4,$4)`, [PROVIDER, SPACE, USER, now]);
   await db.pool.query(`INSERT INTO model_provider_space_grants (id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at) VALUES ($1,$2,$3,$4,$4,true,true,$5,$5)`, [randomUUID(), PROVIDER, SPACE, USER, now]);
-  // Bounded research tasks now invoke the provider in-process, so the fixture
-  // needs a real (encrypted) key in the provider's pool rather than a row the
-  // agent-run path never resolved.
+  // Bounded research tasks invoke the provider in-process. The fixture
+  // needs a real (encrypted) key in the provider's pool. Do not seed a row
+  // the agent-run path never resolved.
   if (config) await resolveProviderCommandStore(config).addPoolCredential(SPACE, USER, PROVIDER, { api_key: "test-research-key" });
 });
 
@@ -93,6 +93,51 @@ describe("Research Area (real Postgres)", () => {
     const reader = await new PgReaderRepository(db.pool, { artifactStorageRoot: "/tmp", sandboxRoot: "/tmp" } as ServerConfig).getDocument(identity, "research_notebook", understandingId);
     expect(reader).toMatchObject({ document_type: "research_notebook", document_id: understandingId, normalized_text: "Current finding", content_hash: updated.content_hash });
     await expect(knowledge.updateNote(identity, understandingId, { expect_version: 1, content_json: doc })).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("gives a summary-level reader no note body and no ask-AI rewrite of it", async () => {
+    if (!db.available || !config) return;
+    const owner = { spaceId: SPACE, userId: USER };
+    const service = new ProjectResearchAreaService(db.pool, config);
+    const area = await service.initializeArea(owner, PROJECT);
+    const understanding = area.notes[0]!;
+    const doc = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "OWNER ONLY FINDING" }] }] };
+    await new PgKnowledgeRepository(db.pool).updateNote(owner, understanding.id, { expect_version: 1, content_json: doc, plain_text: "OWNER ONLY FINDING" });
+    await db.pool.query(`UPDATE space_objects SET visibility = 'space_shared', access_level = 'summary' WHERE id = $1`, [understanding.id]);
+    const member = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Member','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [member, now]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`, [randomUUID(), SPACE, member, now]);
+    await db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, PROJECT, member, now]);
+    const reader = { spaceId: SPACE, userId: member };
+
+    const seen = (await service.getArea(reader, PROJECT)).notes.find((note: { id: string }) => note.id === understanding.id);
+    expect(seen).toMatchObject({ title: "Current understanding", body_withheld: true });
+    expect(JSON.stringify(seen)).not.toContain("OWNER ONLY FINDING");
+    await expect(service.askAi(reader, PROJECT, {
+      prompt: "Rewrite it.", section_key: "understanding", execution: { model_provider_id: PROVIDER },
+    })).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("does not move a role away from a note the ask-AI caller cannot read", async () => {
+    if (!db.available || !config) return;
+    const owner = { spaceId: SPACE, userId: USER };
+    const service = new ProjectResearchAreaService(db.pool, config);
+    const understanding = (await service.initializeArea(owner, PROJECT)).notes[0]!;
+    await db.pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1`, [understanding.id]);
+    const member = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Member','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [member, now]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`, [randomUUID(), SPACE, member, now]);
+    await db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, PROJECT, member, now]);
+
+    await expect(service.askAi({ spaceId: SPACE, userId: member }, PROJECT, {
+      prompt: "Rewrite it.", execution: { model_provider_id: PROVIDER },
+    })).rejects.toMatchObject({ statusCode: 404 });
+    const holders = await db.pool.query<{ object_id: string }>(
+      `SELECT object_id FROM notes WHERE role_project_id = $1 AND project_role = 'understanding'`, [PROJECT],
+    );
+    expect(holders.rows).toEqual([{ object_id: understanding.id }]);
   });
 
   it("nests the project's auto-created notes folder under the seeded PARA 'Projects' folder", async () => {
@@ -171,8 +216,8 @@ describe("Research Area (real Postgres)", () => {
     });
     expect(written.outcome).toBe("written");
     if (written.outcome !== "written") return;
-    // The user's formatted block survives untouched — the whole point of block
-    // ops — including its identity, so anchors into it stay valid.
+    // The user's formatted block survives untouched, including its identity,
+    // so anchors into it stay valid.
     const afterFirst = blockContent(written.note)[0]!;
     const { attrs: afterAttrs, ...afterUserContent } = afterFirst;
     expect(afterUserContent).toEqual(boldDoc.content[0]);
@@ -262,9 +307,8 @@ describe("Research Area (real Postgres)", () => {
     expect(result.signalIds).toHaveLength(2);
     expect((await db.pool.query(`SELECT supports_count,contradicts_count,new_direction_count FROM research_scan_summaries WHERE operation_id=$1`, [operation])).rows[0])
       .toEqual({ supports_count: 1, contradicts_count: 1, new_direction_count: 0 });
-    // The notebook is untouched — monitoring no longer co-edits it directly.
-    // Resolved by role, and refs read from the note's latest revision: the
-    // title binding and `notes.refs_json` are both gone (NA, N8).
+    // The notebook is untouched. Monitoring does not edit it. Notes are
+    // resolved by role, and refs are read from the note's latest revision.
     const section = (await db.pool.query(
       `SELECT n.version, n.plain_text, nr.refs_json
          FROM notes n
@@ -323,6 +367,29 @@ describe("Research Area (real Postgres)", () => {
     expect((await db.pool.query(`SELECT count(*)::int AS count FROM inquiry_evidence_signals WHERE space_id=$1 AND project_id=$2`, [SPACE, PROJECT])).rows[0]?.count).toBe(2);
   });
 
+  it("keeps material a person excluded out of the monitoring comparison, whatever the AI relevance says", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString(); const item = randomUUID(); const corpusItemId = randomUUID();
+    await new ProjectResearchAreaService(db.pool).initializeArea({ spaceId: SPACE, userId: USER }, PROJECT);
+    await db.pool.query(
+      `INSERT INTO source_items (id,space_id,owner_user_id,visibility,item_type,title,first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
+       VALUES ($1,$2,$3,'space_shared','feed_entry','Excluded paper',$4,$4,'excerpt_saved','summary_only',$4,$4)`,
+      [item, SPACE, USER, now],
+    );
+    await db.pool.query(
+      `INSERT INTO project_corpus_items (id,space_id,project_id,source_item_id,role,status,triage_status,triage_confirmed_by_user,relevance,read_status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'candidate','active','excluded',true,'relevant','unread',$5,$5)`,
+      [corpusItemId, SPACE, PROJECT, item, now],
+    );
+    await seedCorpusSourceProvenance(corpusItemId, item, now);
+    const result = await new ProjectResearchMonitorComparisonService(db.pool).queue({
+      spaceId: SPACE, userId: USER, projectId: PROJECT, agentId: randomUUID(), runtimeProfileId: null,
+      researchQuestion: "Does the effect replicate?", sourceItemIds: [item],
+      workflowId: randomUUID(), operationId: randomUUID(),
+    });
+    expect(result).toEqual({ outcome: "no_eligible_material" });
+  });
+
   it("deduplicates cited-DOI integrity alerts and creates review work", async () => {
     if (!db.available) return;
     const now = new Date().toISOString(); const workflow = randomUUID(); const sourceItem = randomUUID();
@@ -345,9 +412,8 @@ describe("Research Area (real Postgres)", () => {
     );
     await seedCorpusSourceProvenance(corpusItemId, sourceItem, now);
     const understandingId = area.notes[0]!.id;
-    // Refs live on `note_revisions` now (N8), and the only writer is
-    // `writeNote` — so the fixture goes through it rather than reaching past
-    // it into a column, which is what let the old copy drift in the first place.
+    // Refs live on `note_revisions`. The only writer is `writeNote`. Do not
+    // write the column directly.
     await writeNote(db.pool, {
       spaceId: SPACE,
       noteId: understandingId,
@@ -391,9 +457,9 @@ describe("Research Area (real Postgres)", () => {
       section_key: "understanding",
       execution: { model_provider_id: PROVIDER },
     });
-    // Admitted and made durable on the request, performed by the worker: the
-    // request path no longer holds a provider call open, and a crash can no
-    // longer strand a succeeded Run whose edit never reached the note.
+    // Admitted and made durable on the request, performed by the worker. Do
+    // not hold a provider call on the request path: a crash must not leave a
+    // succeeded Run whose edit never reached the note.
     expect(edited).toMatchObject({ daily_limit: 20, daily_used: 1, status: "queued" });
     const queuedRun = (await db.pool.query<{
       status: string; model_provider_id: string | null; provider_task_control_id: string | null; started_at: string | null;
@@ -461,8 +527,8 @@ describe("Research Area (real Postgres)", () => {
     const service = new ProjectResearchAreaService(db.pool, config);
     await service.initializeArea(identity, PROJECT);
 
-    // Admission succeeds whatever the provider is doing: a provider failure is
-    // the worker's problem now, not a 502 on the person's request.
+    // Admission succeeds whatever the provider is doing. A provider failure
+    // is the worker's problem, not a 502 on the person's request.
     const queued = await service.askAi(identity, PROJECT, {
       prompt: "Rewrite the current understanding.",
       section_key: "understanding",
@@ -487,10 +553,9 @@ describe("Research Area (real Postgres)", () => {
 
   it("keeps one Run for one bounded task however many provider attempts its key pool makes", async () => {
     if (!db.available || !config) return;
-    // The lifecycle rule in RUNS_AND_OUTPUTS.md, and the one the two
-    // hand-rolled wrappers disagreed on: Daily Reports used to create a new
-    // Run per attempt and fail each, so a task that succeeded on the second
-    // key left a failed Run beside it claiming the same work.
+    // One bounded task is one Run, however many provider attempts its key
+    // pool makes. Do not create a new Run per attempt: a task that succeeds
+    // on the second key then leaves a failed Run beside it.
     await resolveProviderCommandStore(config).addPoolCredential(SPACE, USER, PROVIDER, { api_key: "second-research-key" });
     let calls = 0;
     __setProviderHttpClientForTests({
@@ -557,10 +622,10 @@ describe("Research Area (real Postgres)", () => {
 
   it("settles a queued ProviderTask Run whose preparer can never rebuild it, once the job has no retries left", async () => {
     if (!db.available || !config) return;
-    // The preparer reads the Run's frozen contract; a Run that never froze its
-    // provider binding can never be rebuilt, and nothing downstream settled it
-    // — `recoverStaleRuns` only reclaims rows that actually started, so the
-    // Run sat `queued` forever while still counting against the daily budget.
+    // The preparer reads the Run's frozen contract. A Run that never froze its
+    // provider binding cannot be rebuilt. Do not leave it queued.
+    // `recoverStaleRuns` only reclaims rows that actually started, so this
+    // Run would stay `queued` and keep counting against the daily budget.
     const runs = new PgRunRepository(db.pool);
     const stranded = await runs.createQueuedProviderTaskRun({
       space_id: SPACE,
@@ -663,7 +728,7 @@ describe("Research Area (real Postgres)", () => {
     });
     // The attempt links its ledger rows to the Run it just created, in the
     // same transaction. A failure there rolls the Run away with them, and the
-    // caller used to be handed the id of a row that no longer exists.
+    // caller must not be handed the id of a row that no longer exists.
     await db.pool.query(
       `CREATE FUNCTION refuse_provider_task_link() RETURNS trigger AS $$
          BEGIN RAISE EXCEPTION 'provider task link update refused'; END;
@@ -754,6 +819,49 @@ describe("Research Area (real Postgres)", () => {
     expect(messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
     expect(messages[0]?.content).toBe("What is the current understanding?");
     expect(messages[2]?.content).toBe("Follow-up question.");
+  });
+
+  it("notebookChat keeps the answer, and declines the edit, when the model picks a note the person may read but not write", async () => {
+    if (!db.available || !config) return;
+    const identity = { spaceId: SPACE, userId: USER };
+    const service = new ProjectResearchAreaService(db.pool, config);
+    await service.initializeArea(identity, PROJECT);
+    // Another member's note, shared with the person at full read level.
+    const other = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(`INSERT INTO users (id,display_name,status,created_at,updated_at, email, registration_source) VALUES ($1,'Member','active',$2,$2, lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [other, now]);
+    await db.pool.query(`INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,'member','active',$4,$4)`, [randomUUID(), SPACE, other, now]);
+    await db.pool.query(`INSERT INTO project_members (id,space_id,project_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'member','active',$5,$5)`, [randomUUID(), SPACE, PROJECT, other, now]);
+    const note = await new PgKnowledgeRepository(db.pool).createNote({ spaceId: SPACE, userId: other }, {
+      title: "Member's private note", primary_project_id: PROJECT, plain_text: "Theirs.",
+    }) as { id: string; version: number };
+    await db.pool.query(`UPDATE space_objects SET visibility = 'selected_users' WHERE id = $1`, [note.id]);
+    await db.pool.query(
+      `INSERT INTO content_access_grants (id, space_id, resource_type, resource_id, grantee_user_id, granted_by_user_id, access_level, created_at, updated_at)
+       VALUES ($1,$2,'space_object',$3,$4,$5,'full',now(),now())`,
+      [randomUUID(), SPACE, note.id, USER, other],
+    );
+    __setProviderHttpClientForTests({
+      fetch: async () => openAiChatResponse({
+        choices: [{ message: { content: JSON.stringify({
+          answer: "I added the conclusion.",
+          notebook_update: { note_id: note.id, new_note_title: null, ops: [{ op: "append", index: null, count: null, markdown: "Conclusion" }], refs: [] },
+        }) } }],
+      }),
+    });
+
+    const result = await service.notebookChat(identity, PROJECT, {
+      message: "Add the conclusion to the member's note.",
+      execution: { model_provider_id: PROVIDER },
+    });
+    // The Run was spent and answered; only the write it is not entitled to is withheld.
+    expect(result).toMatchObject({ ok: true, reply: "I added the conclusion.", notebook_edit: null });
+    expect((await db.pool.query<{ version: number }>(`SELECT version FROM notes WHERE object_id = $1`, [note.id])).rows[0])
+      .toEqual({ version: note.version });
+    const messages = (await db.pool.query<{ role: string }>(
+      `SELECT role FROM messages WHERE session_id=$1 ORDER BY created_at ASC`, [result.session_id],
+    )).rows;
+    expect(messages.map((m) => m.role)).toEqual(["user", "assistant"]);
   });
 
   it("notebookChat rejects a session_id that belongs to a different project", async () => {

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { sha256Utf8 } from '../project_files/draftController'
 import { RoomMessageComposer, emptyRoomMessageComposerValue } from './RoomMessageComposer'
 import { projectFoldersApi } from '../../api/client'
 import type { ConversationInputPart } from '@rainver/protocol'
@@ -79,7 +80,7 @@ function EmptyResultsFileHarness() {
   />
 }
 
-function RoutingHarness() {
+function RoutingHarness({ restore = null }: { restore?: { token: number; text: string } | null }) {
   const [value, setValue] = useState(emptyRoomMessageComposerValue())
   return <>
     <RoomMessageComposer
@@ -89,6 +90,7 @@ function RoutingHarness() {
       members={[{ agent_id: 'agent-1', status: 'active' }, { agent_id: 'agent-2', status: 'active' }]}
       disabled={false}
       resetToken={0}
+      restore={restore}
       onSubmit={() => undefined}
     />
     <output data-testid="room-routing">{JSON.stringify(value)}</output>
@@ -174,8 +176,25 @@ describe('RoomMessageComposer keyboard behavior', () => {
     fireEvent.keyDown(editor, { key: 'ArrowDown', bubbles: true, cancelable: true })
     fireEvent.keyDown(editor, { key: 'Enter', bubbles: true, cancelable: true })
     await waitFor(() => expect(screen.queryByRole('option', { name: /App\.tsx/ })).not.toBeInTheDocument())
-    expect(JSON.parse(screen.getByTestId('room-input-parts').textContent ?? '[]')).toMatchObject([{ kind: 'file_reference', relative_path: 'src/App.tsx' }])
+    // The body's digest, which the server admits, not the on-disk `sha256`.
+    expect(JSON.parse(screen.getByTestId('room-input-parts').textContent ?? '[]')).toMatchObject([{
+      kind: 'file_reference', relative_path: 'src/App.tsx', sha256: await sha256Utf8('export const App = 1'),
+    }])
     expect(document.querySelector('[data-file-reference]')).toHaveTextContent('src/App.tsx')
+  })
+
+  it('finds a file beyond the first two hundred of a large Folder tree', async () => {
+    const user = userEvent.setup({ delay: null })
+    vi.mocked(projectFoldersApi.tree).mockResolvedValue({
+      name: 'repo', path: '.', type: 'dir', children: [
+        ...Array.from({ length: 220 }, (_, index) => ({ name: `file-${index}.ts`, path: `src/file-${index}.ts`, type: 'file' as const, size: 1 })),
+        { name: 'zeta.ts', path: 'src/zeta.ts', type: 'file', size: 1 },
+      ],
+    })
+    render(<FileHarness />)
+    const editor = await getEditor()
+    await user.type(editor, '@zeta')
+    expect(await screen.findByRole('option', { name: /zeta\.ts/ })).toBeInTheDocument()
   })
 
   it('keeps the @ menu open when authorized file search finishes with no matches', async () => {
@@ -212,5 +231,17 @@ describe('RoomMessageComposer keyboard behavior', () => {
         { recipient_agent_ids: ['agent-2'], content: 'review it' },
       ],
     }))
+  })
+
+  it('puts a saved draft back with its Agent mentions still addressed', async () => {
+    render(<RoutingHarness restore={{ token: 1, text: 'Context first @Builder fix the build\nthen @Critic review it' }} />)
+
+    await waitFor(() => expect(JSON.parse(screen.getByTestId('room-routing').textContent ?? '{}')).toMatchObject({
+      text: 'Context first @Builder fix the build\nthen @Critic review it',
+      mentionIds: ['agent-1', 'agent-2'],
+    }))
+    const editor = document.querySelector('.ProseMirror') as HTMLElement
+    expect(editor).toHaveTextContent('Context first @Builder fix the build')
+    expect(editor.querySelectorAll('[data-agent-id]')).toHaveLength(2)
   })
 })

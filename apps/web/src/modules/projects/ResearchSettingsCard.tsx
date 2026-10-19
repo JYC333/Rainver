@@ -8,9 +8,9 @@ import type { ProjectResearchSettings } from './useProjectResearch'
 /**
  * The saved intake configuration and its item limit.
  *
- * This was a section inside the Project settings dialog on the Overview, which
- * put a Research-only control behind a button whose other half renames the
- * Project. Research configuration belongs to the Research Area.
+ * Research configuration belongs to the Research Area. Do not put it in the
+ * Project settings dialog on the Overview, behind a button whose other half
+ * renames the Project.
  */
 export function ResearchSettingsCard({ settings }: { settings: ProjectResearchSettings }) {
   const [itemLimitInput, setItemLimitInput] = useState('')

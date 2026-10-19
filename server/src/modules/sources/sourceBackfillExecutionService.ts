@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import { HttpError, objectValue, withQueryableTransaction } from "../routeUtils/common.js";
 import { consumeConnectionQuota } from "./sourceQuotaBucket.js";
+import { sourceConnectorRegistry } from "./catalog/sourceConnectorRegistry.js";
 import { nextBackfillRetryAt } from "./sourceBackfillRetry.js";
 
 interface PlanRow {
+  id: string;
   status: string;
   source_channel_id: string;
   quota_policy_json: { window?: unknown; limit_count?: unknown };
@@ -78,6 +80,9 @@ export class SourceBackfillExecutionService {
   }
 
   private async startLocked(spaceId: string, planId: string, proposalId: string, strategy: unknown, quota: unknown) {
+    // Every path takes the research operation before the plan (see
+    // lockResearchOperationForPlan); taking the plan first could deadlock.
+    await this.lockResearchOperationForPlan(spaceId, planId);
     const updated = await this.db.query<{ id: string }>(
       `UPDATE source_backfill_plans
           SET status='approved', updated_at=$4
@@ -144,7 +149,10 @@ export class SourceBackfillExecutionService {
       return null;
     }
 
-    const remainingBudget = await this.remainingBudgetLocked(spaceId, plan, segment);
+    const { remaining: remainingBudget, unsettled } = await this.remainingBudgetLocked(spaceId, plan, segment);
+    // A sibling's in-flight page holds budget it may not use. Wait for it to
+    // settle rather than skipping this plan's remaining history for good.
+    if (remainingBudget <= 0 && unsettled > 0) return null;
     if (remainingBudget <= 0) {
       await this.db.query(
         `UPDATE source_backfill_segments SET status='skipped'
@@ -154,12 +162,22 @@ export class SourceBackfillExecutionService {
       await this.finishIfDone(spaceId, planId);
       return null;
     }
+    const channel = await this.db.query<{ source_connection_id: string; connector_key: string }>(
+      `SELECT ch.source_connection_id, c.connector_key
+         FROM source_channels ch
+         JOIN source_connections sc ON sc.id=ch.source_connection_id AND sc.space_id=ch.space_id
+         JOIN source_provider_connectors spc ON spc.id=sc.provider_connector_id
+         JOIN source_connectors c ON c.id=spc.connector_id
+        WHERE ch.id=$1 AND ch.space_id=$2 AND ch.status <> 'archived'`,
+      [plan.source_channel_id, spaceId],
+    );
+    if (!channel.rows[0]) throw new Error("Source channel not found for backfill plan");
     const window = objectValue(segment.window_json);
     const scheduledWindow = {
       ...window,
       max_items: remainingBudget,
       remaining_items: remainingBudget,
-      page_size: Math.min(100, remainingBudget),
+      page_size: resumedPageSize(window, channel.rows[0].connector_key) ?? Math.min(100, remainingBudget),
       partial: false,
       exhausted: false,
     };
@@ -169,11 +187,6 @@ export class SourceBackfillExecutionService {
     );
 
     const now = new Date().toISOString();
-    const channel = await this.db.query<{ source_connection_id: string }>(
-      `SELECT source_connection_id FROM source_channels WHERE id=$1 AND space_id=$2 AND status <> 'archived'`,
-      [plan.source_channel_id, spaceId],
-    );
-    if (!channel.rows[0]) throw new Error("Source channel not found for backfill plan");
     const quota = await consumeConnectionQuota(this.db, spaceId, channel.rows[0].source_connection_id, plan.quota_policy_json);
     if (!quota.allowed) {
       await this.db.query(
@@ -202,36 +215,101 @@ export class SourceBackfillExecutionService {
   }
 
   /**
-   * Project Research owns the total budget on the operation row. Locking that
-   * row serializes reservations across sibling monitor plans while the source
-   * plan counters provide the settled usage and running segment windows provide
-   * the in-flight reservation. Standalone Source plans keep their own budget
-   * in strategy_json.
+   * `remaining` is what may be dispatched now; `unsettled` is the part of the
+   * budget held only by in-flight reservations, which may yet come back.
    */
-  private async remainingBudgetLocked(spaceId: string, plan: PlanRow, segment: SegmentRow): Promise<number> {
-    if (plan.project_operation_kind !== "research") {
-      const configuredMax = integerValue(objectValue(plan.strategy_json).max_items) ?? integerValue(objectValue(segment.window_json).max_items) ?? 100;
-      return configuredMax - Number(plan.items_ingested ?? 0);
+  private async remainingBudgetLocked(spaceId: string, plan: PlanRow, segment: SegmentRow): Promise<{ remaining: number; unsettled: number }> {
+    const usage = await this.budgetUsageLocked(spaceId, plan, segment.id);
+    const settledRemaining = usage.total - usage.settled;
+    return {
+      remaining: settledRemaining - usage.reserved,
+      unsettled: Math.max(0, Math.min(settledRemaining, usage.reserved)),
+    };
+  }
+
+  /**
+   * How many items a running segment's next history page may take, decided
+   * under the same lock as dispatch: what is left of the shared budget after
+   * every segment's imported items and every other in-flight page. Called by
+   * the extraction worker, inside its transaction, after it wrote the page's
+   * consumed items onto the segment window and before it queues the page.
+   */
+  async continuationAllowanceLocked(spaceId: string, planId: string, segmentId: string): Promise<number> {
+    const plan = await this.db.query<PlanRow>(
+      `SELECT p.*, o.kind AS project_operation_kind,
+              (o.progress_json->'history'->>'max_items')::int AS operation_max_items
+         FROM source_backfill_plans p
+         LEFT JOIN project_operations o ON o.id=p.project_operation_id AND o.space_id=p.space_id
+        WHERE p.id=$1 AND p.space_id=$2
+        FOR UPDATE OF p`,
+      [planId, spaceId],
+    );
+    if (!plan.rows[0]) return 0;
+    const usage = await this.budgetUsageLocked(spaceId, plan.rows[0], segmentId);
+    return Math.max(0, usage.total - usage.settled - usage.reserved);
+  }
+
+  /**
+   * Budget accounting for dispatch and for each continuation page. Project
+   * Research owns one total on the operation row, shared by sibling monitor
+   * plans; a standalone Source plan owns its own in strategy_json. Settled
+   * usage counts every segment's imported items, including the pages a
+   * still-running segment has already read (`consumed_items`), and never less
+   * than the plan's recorded counter. Each other running segment reserves its
+   * current page, at most what its window still allows. The caller holds the
+   * operation lock (Project Research) or the plan row lock (standalone), so
+   * reservations are serialized.
+   */
+  private async budgetUsageLocked(
+    spaceId: string,
+    plan: PlanRow,
+    excludeSegmentId: string,
+  ): Promise<{ total: number; settled: number; reserved: number }> {
+    const research = plan.project_operation_kind === "research";
+    let total: number;
+    if (research) {
+      const operationTotal = integerValue(plan.operation_max_items);
+      if (!operationTotal || operationTotal < 1) throw new HttpError(409, "Project Research operation has no valid item budget");
+      total = operationTotal;
+    } else {
+      const segment = await this.db.query<{ window_json: unknown }>(
+        `SELECT window_json FROM source_backfill_segments WHERE id=$1 AND space_id=$2`,
+        [excludeSegmentId, spaceId],
+      );
+      total = integerValue(objectValue(plan.strategy_json).max_items)
+        ?? integerValue(objectValue(segment.rows[0]?.window_json).max_items)
+        ?? 100;
     }
-    const total = integerValue(plan.operation_max_items);
-    if (!total || total < 1) throw new HttpError(409, "Project Research operation has no valid item budget");
-    const settled = await this.db.query<{ settled: string | null }>(
-      `SELECT COALESCE(SUM(items_ingested),0)::int AS settled
-         FROM source_backfill_plans
-        WHERE project_operation_id=$1 AND space_id=$2`,
-      [plan.project_operation_id, spaceId],
+    const usage = await this.db.query<{ settled: number; reserved: number }>(
+      `SELECT COALESCE(SUM(GREATEST(COALESCE(p.items_ingested,0), COALESCE(seg.consumed,0))),0)::int AS settled,
+              COALESCE(SUM(seg.reserved),0)::int AS reserved
+         FROM source_backfill_plans p
+         LEFT JOIN LATERAL (
+           SELECT SUM(GREATEST(s.items_ingested, COALESCE((s.window_json->>'consumed_items')::int,0))) AS consumed,
+                  SUM(CASE
+                        WHEN s.status='running' AND s.id<>$3
+                         AND COALESCE(s.window_json->>'partial','false')<>'true'
+                         AND COALESCE(s.window_json->>'exhausted','false')<>'true'
+                        THEN LEAST(
+                          COALESCE(NULLIF(s.window_json->>'page_size','0')::int,0),
+                          COALESCE((s.window_json->>'remaining_items')::int, NULLIF(s.window_json->>'page_size','0')::int, 0))
+                        ELSE 0
+                      END) AS reserved
+             FROM source_backfill_segments s
+            WHERE s.plan_id=p.id AND s.space_id=p.space_id
+         ) seg ON true
+        WHERE p.space_id=$1 AND ${research ? "p.project_operation_id=$2" : "p.id=$2"}`,
+      [spaceId, research ? plan.project_operation_id : plan.id, excludeSegmentId],
     );
-    const reserved = await this.db.query<{ reserved: string | null }>(
-      `SELECT COALESCE(SUM(COALESCE(NULLIF(s.window_json->>'page_size','0')::int,0)),0) AS reserved
-         FROM source_backfill_segments s
-         JOIN source_backfill_plans p ON p.id=s.plan_id AND p.space_id=s.space_id
-        WHERE p.project_operation_id=$1 AND p.space_id=$2 AND s.status='running'`,
-      [plan.project_operation_id, spaceId],
-    );
-    return total - Number(settled.rows[0]?.settled ?? 0) - Number(reserved.rows[0]?.reserved ?? 0);
+    return { total, settled: Number(usage.rows[0]?.settled ?? 0), reserved: Number(usage.rows[0]?.reserved ?? 0) };
   }
 
   private async reconcileLocked(spaceId: string, planId: string) {
+    // Operation, then segments, then plan: the order a page continuation
+    // takes (extractionWorker.queueBackfillContinuationIfNeeded). Settling
+    // segments and counters first and the operation last would deadlock
+    // against a continuation finishing at the same time.
+    await this.lockResearchOperationForPlan(spaceId, planId);
     const rows = await this.db.query<ReconcileJobRow>(
       `SELECT s.id AS segment_id, j.id AS extraction_job_id, s.window_json, s.attempt_count,
               j.status, j.items_created, j.items_updated,
@@ -348,15 +426,23 @@ export class SourceBackfillExecutionService {
     const window = segment.window_json && typeof segment.window_json === "object" && !Array.isArray(segment.window_json)
       ? segment.window_json as Record<string, unknown>
       : {};
+    // The partial window still describes the last page imported; resume at
+    // the page after it, which the worker recorded as `next_cursor`, from the
+    // item the segment reached.
+    const cursor = (window.next_cursor == null ? null : integerValue(window.next_cursor))
+      ?? (window.cursor == null ? 0 : integerValue(window.cursor) ?? 0) + 1;
+    const consumedItems = window.consumed_items == null ? null : integerValue(window.consumed_items);
     const nextWindow = {
       ...window,
+      cursor,
+      ...(consumedItems !== null ? { offset: consumedItems } : {}),
       max_items: additionalItems,
       remaining_items: additionalItems,
       page_size: Math.min(100, additionalItems),
       partial: false,
       exhausted: false,
       has_more: true,
-      next_cursor: window.cursor ?? null,
+      next_cursor: cursor,
     };
     const currentMax = integerValue(objectValue(plan.strategy_json).max_items) ?? Number(plan.items_ingested ?? 0);
     if (plan.project_operation_kind === "research") {
@@ -392,8 +478,8 @@ export class SourceBackfillExecutionService {
   }
 
   /**
-   * Raises a plan's item budget (e.g. after a Source Monitor's search query
-   * was fixed following a zero-result run), independent of the
+   * Raises a plan's item budget (for example after a Source Monitor search
+   * query is corrected following a zero-result run), independent of the
    * budget-exhaustion recovery `continuePartial` handles. For a plan that's
    * still in progress ('approved'/'running'), this only raises the stored
    * budget — the plan's own dispatch loop picks up the new number next time
@@ -476,6 +562,17 @@ export class SourceBackfillExecutionService {
     );
   }
 
+  /** The lock dispatch takes; a continuation takes it first, inside its own transaction. */
+  async lockBudgetForPlan(spaceId: string, planId: string): Promise<void> {
+    await this.lockResearchOperationForPlan(spaceId, planId);
+  }
+
+  /**
+   * The first lock of every plan mutation. A plan inside a research
+   * operation shares that operation's item budget with its siblings, so the
+   * operation row serializes them; it is always taken before any segment or
+   * plan row, so two paths can never wait on each other.
+   */
   private async lockResearchOperationForPlan(spaceId: string, planId: string): Promise<void> {
     const scope = await this.db.query<{ project_operation_id: string | null; project_operation_kind: string | null }>(
       `SELECT p.project_operation_id, o.kind AS project_operation_kind
@@ -493,6 +590,24 @@ export class SourceBackfillExecutionService {
       [operationId, spaceId],
     );
   }
+}
+
+/**
+ * A page-numbered connector (OpenAlex) resuming a segment past its first page
+ * must keep the page width it started with: the same page number at another
+ * width is a different slice. The remaining budget then caps the items kept.
+ */
+function resumedPageSize(window: Record<string, unknown>, connectorKey: string): number | null {
+  const cursor = window.cursor == null ? 0 : integerValue(window.cursor) ?? 0;
+  const pageSize = window.page_size == null ? null : integerValue(window.page_size);
+  if (cursor < 1 || pageSize === null || pageSize < 1) return null;
+  let narrowable: boolean;
+  try {
+    narrowable = sourceConnectorRegistry.get(connectorKey).getCapabilities().supports_page_size_narrowing;
+  } catch {
+    return null;
+  }
+  return narrowable ? null : Math.min(100, pageSize);
 }
 
 function integerValue(value: unknown): number | null {

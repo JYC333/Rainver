@@ -48,12 +48,8 @@ describe("content access", () => {
   });
 
   it("does not treat an administrator role as a read bypass when no oversight context is supplied", () => {
-    // A context with no oversightLevel is the byte-identical "today" behavior:
-    // decideContentAccess defaults oversight to 'none', so a bare admin role
-    // (with nothing granting oversight) still denies private content it does
-    // not own. The oversight-mode bypass is opt-in via context.oversightLevel,
-    // exercised separately in contentAccessPolicy.test.ts and
-    // contentAccessEquivalence.test.ts.
+    // No oversightLevel means oversight is 'none'. A bare admin role, with
+    // nothing granting oversight, denies private content it does not own.
     expect(isKnownSpaceRole("admin")).toBe(true);
     expect(isSpaceOwnerOrAdmin("admin")).toBe(true);
     expect(decideContentAccess(resource, context)).toBe("deny");

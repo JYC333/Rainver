@@ -28,8 +28,8 @@ import type { PolicyCheckRequest } from "@rainver/protocol";
 /**
  * Service-side result shape. Validated against the wire
  * `PolicyEnforceResultSchema` at the route boundary before it leaves the
- * process, so this stays a plain the server interface (the wire type is a strict
- * passthrough that a fixed interface cannot structurally satisfy).
+ * process. This stays a plain interface. The wire type is a strict
+ * passthrough that a fixed interface cannot structurally satisfy.
  */
 export interface EnforceResult {
   status: "allow" | "blocked" | "error";

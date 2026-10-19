@@ -6,10 +6,9 @@ import { helperProcessEnv } from "./providerBinding.js";
 /**
  * What a runtime says it can be set to, asked over ACP rather than guessed.
  *
- * The alternative was hardcoding a list, and the list is wrong: Claude's
- * effort levels are not Codex's, and a bare `low`/`medium`/`high` misses
- * values a runtime really offers (`1m`, `default`). Only the runtime knows,
- * and ACP exists to ask it.
+ * Do not hardcode the list. Claude's effort levels are not Codex's, and a
+ * bare `low`/`medium`/`high` misses values a runtime really offers (`1m`,
+ * `default`). Only the runtime knows. Ask it over ACP.
  */
 function record(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -240,8 +239,9 @@ export function probeAcpOptions(
   timeoutMs = 20_000,
   /**
    * Told why a probe yielded nothing. The null result is deliberate (a probe
-   * must never cost the heartbeat), but silent null left a copy with no login
-   * button and no explanation anywhere; the reason goes to the daemon log.
+   * must never cost the heartbeat). Do not return a silent null. The copy
+   * would have no login button and no explanation anywhere; the reason goes
+   * to the daemon log.
    */
   onFailure?: (reason: string) => void,
   runtimeKey?: string,
@@ -291,6 +291,11 @@ export function probeAcpOptions(
     }
     child.stderr?.on("data", (chunk: Buffer) => {
       stderr = (stderr + chunk.toString("utf8")).slice(-4000);
+    });
+    // A write to an agent that already exited fails asynchronously with EPIPE
+    // on the stream, not in `send`'s try; unheard, it ends the daemon.
+    child.stdin?.on("error", (error) => {
+      finish(null, `stdin closed: ${error.message}${stderrTail()}`);
     });
 
     const send = (frame: Record<string, unknown>) => {

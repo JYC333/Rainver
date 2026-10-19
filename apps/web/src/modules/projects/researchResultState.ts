@@ -82,16 +82,15 @@ function workflowIdOf(operation: ProjectOperation): string {
 }
 
 /**
- * The backend allows at most one active operation per workflow — a retry (or
+ * The backend allows at most one active operation per workflow. A retry (or
  * an auto-created incremental scan) creates a fresh operation for the same
- * workflow rather than reusing the old one, leaving the superseded operation
- * permanently "failed" in history. Without this, `failedOperations` still
- * counted that stale operation as retriable — the panel showed "failed,
- * Retry" pointing at it while a newer operation for the same workflow was
- * actually running, and clicking Retry 409'd ("another operation is already
- * active for this workflow") with no way to see or act on the real one. Only
- * the newest operation per workflow is ever "current"; older ones for the
- * same workflow are history, not something to retry or report as running.
+ * workflow. Do not count the superseded operation as retriable. It stays
+ * "failed" in history, and the panel would show "failed, Retry" pointing at
+ * it while a newer operation for the same workflow was actually running.
+ * Retry then returns 409 ("another operation is already active for this
+ * workflow") with no way to see or act on the real one. Only the newest
+ * operation per workflow is ever "current"; older ones for the same workflow
+ * are history, not something to retry or report as running.
  */
 function currentOperations(operations: ProjectOperation[]): ProjectOperation[] {
   const byWorkflow = new Map<string, ProjectOperation>()
@@ -268,7 +267,9 @@ export function researchResultState(input: ResearchResultStateInput): ResearchRe
   const monitoring = monitoringActive(input.workflow)
   const latestTodaySummary = todaySummary(input.scanSummaries)
   const noReportOutcome = completedWithoutReport(latestOperation)
-  const deferredSources = input.operations.flatMap(operation => {
+  // Only an operation that is still going retries anything: a cancelled or
+  // finished one keeps its last progress as it was, retries included.
+  const deferredSources = runningOperations.flatMap(operation => {
     const stage = operation.progress_json.current_stage
     if (stage !== 'backfill' && stage !== 'screening') return []
     const backfill = objectValue(operation.progress_json.backfill_progress)

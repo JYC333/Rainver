@@ -64,7 +64,7 @@ and triggers the pg@9 deprecation warning.
 Accepted Delivery preparation derives `runs.has_context_taint` and
 `runs.context_taint_json` from authorized source ownership/visibility before
 adapter execution. Safe Invocation Snapshots retain the source refs consumed by
-content-demotion disclosure; no legacy Context Snapshot table or compatibility
+content-demotion disclosure. There is no Context Snapshot table or compatibility
 column exists.
 
 Explicit fused cross-Space storage is also one critical transaction. It locks
@@ -100,9 +100,8 @@ Every newly created Space is seeded with an immutable empty root Runtime
 Context Policy version and active binding. Run execution resolves the current
 Space/Project/Folder/Agent/User chain after the existing execution-policy gate
 and persists an immutable `execution_control_snapshots` row before invoking an
-adapter. Adapters do not receive that snapshot until the Runtime Context
-Gateway delivery cutover; the preflight record is already durable and real,
-never a placeholder id.
+adapter. The Runtime Context Gateway turns that row into the Delivery the
+adapter receives. The row is a real snapshot, never a placeholder id.
 
 Invocation attempt creation uses a short transaction and a per-Space/invocation
 advisory lock. It loads and locks the persisted same-Space Execution Control
@@ -230,15 +229,18 @@ and selects only the uncaptured recent tail, enforcing the 2,000-summary +
 per imported session, unique on `imported_session_id`, holding the short
 account a whole-session reference carries. It has no version chain, cursor or
 lease, because an imported session's records are fixed until its folder is
-re-synced — there is no growing thread to compact incrementally, which is the
-one thing the Room's machinery exists to do.
+re-synced. There is no growing thread to compact incrementally. That
+compaction is what a Room summary does.
 
 Its integrity rests on two properties instead. The upsert is **monotonic**: it
 declines to write when the incoming `covered_through_record_at` is older than
 the stored one, so two overlapping runs cannot walk coverage backwards. And
 staleness is compared as an *instant*, never by identity — `pg` decodes
 `timestamptz` to a JS `Date`, so `===` between two reads is always false and
-would re-summarize, and re-bill, on every sync.
+would re-summarize, and re-bill, on every sync. A session its runtime does
+not date has no instant to compare (`last_record_at` stays null), so for it
+the covered record count against the session's record count is the
+staleness test instead.
 
 Writes happen on demand, never eagerly at import: the attach path resolves any
 missing summary *before* opening its transaction, precisely because doing so
@@ -308,8 +310,7 @@ successful commit and never participate in the critical write outcome.
   `server/migrations/` is both the drizzle-kit output directory (`meta/`
   journal and snapshots) and the **append-only chain** the server migration
   runner applies: the frozen `0000_baseline.sql` followed by one numbered file
-  per schema change. That baseline starts the 2026-09-26 host-thread-tool-field
-  schema epoch (B59) — a pre-epoch database has no upgrade
+  per schema change. That baseline is the access, reading and execution integrity schema epoch (B59, ADR 0024). A pre-epoch database has no upgrade
   path and must be recreated from it; within the epoch an older build's database
   is brought forward by the normal migrate step. Edit the Drizzle schema, then
   `pnpm run schema:generate -- --name <name>` appends the diff (`--custom`
@@ -320,10 +321,9 @@ successful commit and never participate in the critical write outcome.
   and schema drift. See `server/migrations/README.md` and B59.
   Maintenance-marked migrations are deliberately refused by the live-start
   path once an instance already has an applied release; the offline migration
-  path applies them during a coordinated cutover. The completed authentication
-  foundation is part of the current `0000_baseline.sql` directly: the
-  provisional auth add/correct/drop migrations were retired by ADR 0023, with
-  no legacy backfill, dual read, or compatibility path.
+  path applies them during a coordinated cutover. Authentication lives in
+  the current `0000_baseline.sql`. There is no separate auth backfill, dual
+  read, or compatibility path (ADR 0023).
   `ops/scripts/start.sh` never generates a migration; it applies the committed
   chain, so a host running the stack needs Docker but no Node toolchain.
 - Authentication provisioning is a transaction-owned boundary: Better Auth may
@@ -382,7 +382,7 @@ successful commit and never participate in the critical write outcome.
   is NOT NULL with a server default, and DB CHECK constraints enforce the allowed `status` set,
   `attempts >= 0`, and `max_attempts > 0`.
 - `RunStep` has DB-level `UniqueConstraint(run_id, step_index)`.
-- `BackupService` uses a local advisory lock file (`backups/.backup.lock`, fcntl-based) and fails closed when `pg_dump` fails.
+- `BackupService` uses a local pid lock file (`backups/.backup.lock`, exclusively created with `wx`; a stale lock left by a crash is reclaimed by `removeStaleLock`) and fails closed when `pg_dump` fails.
 - Backup/restore uses `pg_dump -Fc --no-owner --no-acl` (custom format) and `pg_restore`. Backups are disabled by default; prod fails fast at startup unless `BACKUP_ENABLED=true` or `BACKUP_ACCEPT_NO_BACKUP=true`.
 
 ## Deployment Topology Assumption
@@ -395,7 +395,7 @@ Current local deployment assumes one server process owns bootstrap and scheduler
 - Timestamps must be UTC with timezone.
 - Store large files in storage; store metadata and relative paths in DB.
 - Avoid long transactions and transaction-spanning external calls.
-- Do not rely on application-only `MAX()+1` ordering for distributed writers without a future lock/constraint note. Current `RunStep.step_index` uses `MAX()+1` — a documented distributed-runner risk.
+- Do not rely on application-only `MAX()+1` ordering for distributed writers. Current `RunStep.step_index` uses `MAX()+1` — a documented distributed-runner risk.
 
 ## Conversation input persistence
 
@@ -407,9 +407,9 @@ message. A current Files & Code attachment instead revalidates the saved/draft
 descriptor, writes or reuses a bounded content-addressed blob, inserts its
 message-owned `conversation_input_resources` row, and appends the normalized
 `input_resource` part in that same transaction. The resource is immutable and
-later read through Run-scoped actions; it is not materialized on a Host. Legacy
-`conversation_file_snapshots` rows remain readable for historical messages and
-compatibility retries. `conversation_turn_idempotencies` records client turn
+later read through Run-scoped actions; it is not materialized on a Host.
+`conversation_file_snapshots` stores the frozen text of a `file_reference`
+part. A retry reads that row. Do not re-read the workspace. `conversation_turn_idempotencies` records client turn
 keys and the committed response for replay-safe sends. Expired or orphaned
 media/resources are tombstoned or unreferenced by retryable sweeps, so a
 filesystem or blob cleanup failure does not lose the database record needed for
@@ -427,7 +427,7 @@ Low-frequency instance, space, user, and space-user settings use the
 generic `settings(scope_type, scope_id, settings_key, settings_json)` table.
 Business modules must not hand-write `settings` table CRUD. They define a typed
 descriptor with a stable key, scope type, defaults, parser, and serializer, then
-read/write through `server/src/modules/settings/ScopedSettingsStore`.
+read/write through `server/src/modules/settings/scopedSettings.ts`.
 Use the settings module helpers to encode composite `space_user` scope ids.
 
 The store owns row identity, create-if-missing, upsert, timestamp updates,
@@ -439,7 +439,7 @@ scheduler task store, not in scoped user setting rows.
 
 When adding a new setting:
 
-- Reuse `server/src/modules/settings/ScopedSettingsStore`; do not add
+- Reuse `server/src/modules/settings/scopedSettings.ts`; do not add
   feature-specific tables such as `space_<feature>_settings`,
   `user_<feature>_settings`, or `instance_<feature>_settings`.
 - Define a typed descriptor with a stable `settings_key`, exact scope
@@ -461,13 +461,14 @@ features define a stable task type and task key, while `scheduler_tasks` owns
 `state_json`.
 
 Business modules must not create one scheduler state table per feature. They
-read/write scheduler task rows through `server/src/modules/scheduler/PgSchedulerTaskStore`
+read/write scheduler task rows through `server/src/modules/scheduler/taskStore.ts`
 and keep product settings in scoped settings or domain tables. The durable
 `jobs` table remains the execution queue; `scheduler_tasks` is only scheduler
 cursor/state metadata used to decide when to enqueue or fire work.
 Current recurring scheduler cursors include daily capture reports
-(`daily_capture_report`), automation schedules (`automation`), and source
-source connection scans (`source_connection_scan`).
+(`daily_capture_report`), automation schedules (`automation`), source
+channel scans (`source_channel_scan`), and source post-processing rules
+(`source_post_processing_rule`).
 Do not move execution-queue timestamps such as `jobs.scheduled_at` or
 domain work-item due timestamps such as `memory_maintenance_jobs.run_after`
 into `scheduler_tasks`; those rows are the work being processed, not the
@@ -496,12 +497,15 @@ snapshot, inserting all attributed item rows, and consuming selected
 day windows are explicit UTC instants and do not depend on the PostgreSQL
 session timezone.
 A lazy read-created snapshot may be replaced once by the authoritative
-scheduled Run; a snapshot already carrying `generated_by_run_id` is returned
+scheduled Run. The replacement keeps that snapshot's serendipity rows, whose
+pool items are already consumed and which may carry the reader's feedback,
+instead of selecting a second batch; a snapshot already carrying `generated_by_run_id` is returned
 unchanged on repeated fires so standby items cannot be double-consumed.
 
 The weekly external probe never shares the delivery transaction. Its
 `information_digest_probe_runs` row is unique per `(space,user,period)` and
-constrains `request_count` to 0–3. Probe results and existing Source
+constrains `request_count` to 0–3, the same cap as the reader's
+`probe_domain_budget` setting. Probe results and existing Source
 recommendations land in the private standby pool before a later daily
 transaction selects them. Network work therefore cannot hold digest locks or
 turn daily delivery into an external-call transaction.
@@ -549,7 +553,7 @@ and domain keys only; no member id leaves the repository.
 | Invocation Delivery lifecycle | `InvocationSnapshotService` — transaction-bound live reauthorization plus atomic plan/attempt, then short acknowledgement and finalization transactions; gateway reconciles Usage after acknowledgement | Provider call occurs between attempt creation and acknowledgement |
 | Runtime Context continuity | `RuntimeContextContinuityService` — per-scope advisory lock, dense append-only event sequence, gaps, terminal Micro Checkpoint, active Semantic Checkpoint pointer, immutable corrections | Semantic extraction runs outside the transaction; result persistence revalidates the selected head and canonical refs |
 | Bounded provider-task lifecycle | `PgProviderCommandStore.beginProviderTaskAttempt` — immutable task control, unique physical-attempt Delivery, and draft safe Snapshot in one short transaction; completion updates only the draft Snapshot and Usage carries the same refs | Domain-owned provider call occurs after attempt commit and before completion |
-| Activity capture | `ActivityService` | None |
+| Activity capture | `PgActivityRepository` | None |
 | Sources daily briefing Activity pointer | Source post-processing repository short upsert after successful run; auxiliary failure logged | None |
 | Information Digest daily snapshot | Transaction-scoped advisory lock by scope/day; root upsert plus complete item replacement commit together | Existing snapshot remains intact on failure |
 | Activity consolidation | One short commit per activity outcome | Low (consolidation model call possible) |
@@ -559,8 +563,6 @@ and domain keys only; no member id leaves the repository.
 | Deployment/deployer client | `deployment_jobs` persist (ADR 0020); socket/network remains outside the DB | High: socket/network |
 
 Advisory locks are process-local. `RunStep` ordering uses `MAX()+1`.
-Unimplemented multi-host locking ideas:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §21.
 
 ## Schema Authoring (drizzle-kit as a generator)
 
@@ -609,8 +611,7 @@ changes.
 
 **Narrow custom-SQL boundary:**
 Some PostgreSQL primitives are not expressible in the Drizzle DSL here:
-data backfills, changes to the `retrieval_object_type` DOMAIN's `CHECK`
-values, and Postgres extensions (`CREATE EXTENSION`). Those go into a
+data backfills and Postgres extensions (`CREATE EXTENSION`). Those go into a
 `--custom` migration, or into the generated file of the change they belong
 to, and must not change table structure that `src/db/schema/` describes
 unless the schema files are updated in the same change. `schema:check` is
@@ -620,20 +621,21 @@ created by some migration. It does not inspect a live database or re-read
 custom SQL for structural drift.
 
 **Schema representation notes:**
-- Content column defaults are storage backstops, not creation policy. Seven
-  legacy defaults remain `space_shared` (`activity_records`, `artifacts`,
-  `space_objects`, `knowledge_promotion_candidates`, `proposals`, `runs`,
-  `tasks`) and six remain/are explicitly written `private`
+- Content column defaults are storage backstops, not creation policy. Eight
+  column defaults are `space_shared` (`activity_records`, `artifacts`,
+  `imported_sessions`, `space_objects`, `knowledge_promotion_candidates`,
+  `proposals`, `runs`, `tasks`) and five remain `private`
   (`extracted_evidence`, `reader_annotations`, `source_connections`,
-  `source_items`, `source_snapshots`, `memory_entries`). User-initiated routes
+  `source_items`, `source_snapshots`); `memory_entries.visibility` has no
+  default and is always written explicitly. User-initiated routes
   always supply the access-owned creation context, so these contradictory
   defaults are unreachable on that path; derived writers inherit their source.
-  We intentionally do not migrate sixteen defaults into a second policy
+  We intentionally do not migrate these thirteen defaults into a second policy
   authority.
-- The `retrieval_object_type` Postgres DOMAIN (a closed enum used by ~10
-  retrieval/knowledge columns) is represented with `customType` in
-  `src/db/schema/_types.ts`; the DOMAIN definition itself lives in SQL
-  migrations.
+- The `retrieval_object_type` Postgres ENUM type (a closed enum used by ~10
+  retrieval/knowledge columns) is declared with `pgEnum` in
+  `src/db/schema/_types.ts`; adding a member edits the `pgEnum` and generates a
+  migration. `customType` is used only for `tsvector` and pgvector.
 - `retrieval_chunks.embedding` is a deliberately *unconstrained* pgvector
   column (no fixed dimension — enforced per-row by a CHECK tying
   `embedding_dimensions` to `vector_dims(embedding)`); drizzle-orm's

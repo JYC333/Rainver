@@ -5,11 +5,10 @@ import { threadEventBatchKey, type ThreadEventProvenance } from "./threadWorkEve
 /**
  * How many questions one turn may open.
  *
- * The bound is what replaced the approval queue on decomposition (ADR 0017
- * §2). It is not a safety limit on a dangerous write — opening a question is
- * cheap and archivable — but on how much a person is asked to take in at
- * once: past about five, a decomposition stops being reviewable at a glance,
- * which is the same threshold the screening corpus limit exists at for cost.
+ * The bound is how much a person is asked to take in at once (ADR 0017 §2).
+ * Do not put an approval queue on decomposition. Opening a question is cheap
+ * and archivable. Past about five, a decomposition stops being reviewable at
+ * a glance, the same threshold the screening corpus limit uses for cost.
  *
  * Refusing costs a turn, never a decision: the Agent is told to continue in
  * the next one.
@@ -28,9 +27,9 @@ export async function countThreadsOpenedInTurn(
   provenance: ThreadEventProvenance,
 ): Promise<number> {
   const batchKey = threadEventBatchKey("thread.created", provenance);
-  // Unreachable from the one caller, which always has a Run — but a bound
-  // standing where a gate used to stand refuses when it cannot count, rather
-  // than skipping. A future caller without a batch is one this cannot see.
+  // Unreachable from the one caller, which always has a Run. A missing batch
+  // key refuses rather than skipping: a caller without a batch is one this
+  // cannot see.
   if (!batchKey) return Number.POSITIVE_INFINITY;
   const result = await db.query<{ total: string }>(
     `SELECT count(*)::text AS total
@@ -49,7 +48,7 @@ export async function countThreadsOpenedInTurn(
  *
  * Hashed rather than concatenated: the column is 128 characters and a provider
  * tool-call id has no length contract, so the raw pair could exceed it and
- * turn a retry into a 422 — which is the failure the key exists to prevent.
+ * turn a retry into a 422.
  */
 export function threadCallIdempotencyKey(runId: string, toolCallId: string | null | undefined): string {
   return createHash("sha256").update(`${runId}:${toolCallId ?? "no-key"}`).digest("hex");
@@ -58,11 +57,9 @@ export function threadCallIdempotencyKey(runId: string, toolCallId: string | nul
 /**
  * An active Thread in this Project already asking the same thing.
  *
- * The retired proposal path coalesced on the statement under an advisory lock,
- * for the case a re-planned or re-sampled decomposition actually produces:
- * the same question worded identically, under a fresh tool-call id. Without
- * it that now opens a *durable* duplicate rather than a duplicate pending
- * proposal — strictly worse, because the person has to archive it.
+ * The same question worded identically, under a fresh tool-call id, is one
+ * Thread. Do not open a second durable Thread for it: the person then has to
+ * archive the duplicate.
  *
  * Statement equality after trimming, not similarity: coalescing two questions
  * that merely resemble each other would silently drop one the person asked

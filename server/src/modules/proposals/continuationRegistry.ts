@@ -23,8 +23,7 @@ export interface ContinuationProposal {
 export interface ProposalContinuation {
   /**
    * A short machine-readable tag describing what kind of continuation this
-   * is, for a future consumer (frontend, another domain) to key off of.
-   * A directive is a hint, not a forced tool call: a registration may name an
+   * is. A directive is a hint, not a forced tool call: a registration may name an
    * activity rather than an action id when more than one tool can satisfy it.
    */
   directive: string | null;
@@ -34,20 +33,20 @@ export interface ProposalContinuation {
   context?: Record<string, unknown>;
 }
 
-export type ProposalContinuationHandler = (input: {
+type ProposalContinuationHandler = (input: {
   db: Queryable;
   proposal: ContinuationProposal;
 }) => Promise<ProposalContinuation> | ProposalContinuation;
 
 /**
- * A domain-completion event (plan Phase 3) — the registry's second trigger
+ * A domain-completion event — the registry's second trigger
  * source alongside a resolved Proposal. `kind` selects the registered
  * handler; `key` is the idempotency key the caller uses to dedupe repeated
  * reconciliation of the same completion (e.g. a delegation id, an
  * operation id) — the registry itself does not dedupe; the Room dispatch
  * layer does, the same way it already dedupes Proposal continuations.
  */
-export interface DomainCompletionEvent {
+interface DomainCompletionEvent {
   kind: string;
   key: string;
   space_id: string;
@@ -55,20 +54,18 @@ export interface DomainCompletionEvent {
   payload: Record<string, unknown>;
 }
 
-export type EventContinuationHandler = (input: {
+type EventContinuationHandler = (input: {
   db: Queryable;
   event: DomainCompletionEvent;
 }) => Promise<ProposalContinuation> | ProposalContinuation;
 
 /**
  * Maps a resolved (accepted/rejected) Proposal, or a domain-completion
- * event, to what a Room should tell the continuation run to do next — the
- * typed replacement for the per-`proposal_type` prose that used to be
- * hardcoded in `rooms/service.ts` (the retired room-advancement-reliability
- * plan, Phases 2 and 3; current state in `.agent/modules/rooms.md`).
+ * event, to what a Room should tell the continuation run to do next.
  * Rooms consumes this registry and holds no domain knowledge of its own;
- * each domain registers its own handler here, mirroring how
- * `ProposalApplierRegistry` lets domains own their apply logic.
+ * each domain registers its own handler here, mirroring
+ * `ProposalApplierRegistry`. Do not hardcode per-`proposal_type` prose in
+ * `rooms/service.ts`.
  */
 export class ConversationContinuationRegistry {
   private readonly handlers = new Map<string, ProposalContinuationHandler>();

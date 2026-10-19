@@ -2,10 +2,10 @@ import { getRuntimeAdapterSpec } from "../runtimeAdapters/specs.js";
 
 const RETRYABLE_RUN_ERROR_CODES = new Set([
   "adapter_timeout",
-  // `cli_adapter_timeout`, `cli_stall_timeout` and
-  // `cli_runtime_provider_config_failed` were the server-side CLI line's
-  // codes and went with it (ADR 0016); these two are what a host daemon
-  // actually reports.
+  // A host daemon reports these two. Do not also list
+  // `cli_adapter_timeout`, `cli_stall_timeout`, or
+  // `cli_runtime_provider_config_failed`: a daemon does not emit them
+  // (ADR 0016).
   "runtime_timeout",
   "runtime_stall_timeout",
   "adapter_runtime_error",

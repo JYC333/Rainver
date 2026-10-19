@@ -1,51 +1,5 @@
-import { pgTable, index, unique, check, foreignKey, varchar, integer, boolean, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, unique, check, varchar, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import { spaces } from "./spaces.js";
-import { proposals } from "./proposals.js";
-
-export const policies = pgTable("policies", {
-	id: varchar({ length: 36 }).primaryKey().notNull(),
-	spaceId: varchar("space_id", { length: 36 }).notNull(),
-	name: varchar({ length: 256 }).notNull(),
-	domain: varchar({ length: 64 }).notNull(),
-	policyJson: jsonb("policy_json").notNull(),
-	enabled: boolean().notNull(),
-	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
-	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
-	policyKey: varchar("policy_key", { length: 256 }),
-	policyVersion: integer("policy_version").default(1).notNull(),
-	status: varchar({ length: 32 }).default('active').notNull(),
-	enforcementMode: varchar("enforcement_mode", { length: 32 }),
-	priority: integer().default(0).notNull(),
-	ruleJson: jsonb("rule_json"),
-	appliesToJson: jsonb("applies_to_json"),
-	supersedesPolicyId: varchar("supersedes_policy_id", { length: 36 }),
-	createdFromProposalId: varchar("created_from_proposal_id", { length: 36 }),
-}, (table): PgTableExtraConfigValue[] => [
-	index("ix_policies_created_from_proposal_id").using("btree", table.createdFromProposalId.asc().nullsLast()),
-	index("ix_policies_domain").using("btree", table.domain.asc().nullsLast()),
-	index("ix_policies_policy_key").using("btree", table.policyKey.asc().nullsLast()),
-	index("ix_policies_space_id").using("btree", table.spaceId.asc().nullsLast()),
-	index("ix_policies_status").using("btree", table.status.asc().nullsLast()),
-	index("ix_policies_supersedes_policy_id").using("btree", table.supersedesPolicyId.asc().nullsLast()),
-	foreignKey({
-			columns: [table.createdFromProposalId],
-			foreignColumns: [proposals.id],
-			name: "fk_policies_created_from_proposal_id_proposals"
-		}).onDelete("set null"),
-	foreignKey({
-			columns: [table.supersedesPolicyId],
-			foreignColumns: [table.id],
-			name: "fk_policies_supersedes_policy_id_policies"
-		}).onDelete("set null"),
-	foreignKey({
-			columns: [table.spaceId],
-			foreignColumns: [spaces.id],
-			name: "policies_space_id_fkey"
-		}),
-	check("ck_policies_enforcement_mode", sql`(enforcement_mode IS NULL) OR ((enforcement_mode)::text = ANY (ARRAY[('allow'::character varying)::text, ('deny'::character varying)::text, ('require_approval'::character varying)::text, ('allow_with_log'::character varying)::text]))`),
-	check("ck_policies_status", sql`(status)::text = ANY (ARRAY[('draft'::character varying)::text, ('active'::character varying)::text, ('superseded'::character varying)::text, ('disabled'::character varying)::text])`),
-]);
 
 export const policyDecisionRecords = pgTable("policy_decision_records", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

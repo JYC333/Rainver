@@ -36,8 +36,8 @@ const SRC = join(import.meta.dirname, "..", "src");
 
 describe("project work event vocabulary", () => {
   // The column carries a format check only, so the registry is the whole of
-  // the closed-set enforcement. A demoted constraint with nothing asking the
-  // registry would be strictly worse than the constraint it replaced.
+  // the closed-set enforcement. Do not leave only the format check. Any
+  // token that matches the format would then be accepted.
   it("declares every kind the protocol vocabulary carries", () => {
     for (const kind of PROJECT_WORK_EVENT_KINDS) {
       expect(hasWorkEventKindDeclaration(kind), kind).toBe(true);
@@ -79,12 +79,11 @@ describe("project work event vocabulary", () => {
 });
 
 describe("work loop stages", () => {
-  // The five stages are a system constant; a Mode changes what they are
-  // called and nothing else. A missing label would silently fall back to a
-  // key, which reads as a bug in whichever Project happens to use that Mode.
-  // A status with no lane is a card that is counted and never drawn — the
-  // defect the Board shipped once. The list lives in the protocol; the two
-  // check constraints, the repository validator and the lanes derive from it.
+  // The five stages are a system constant, with one wording in every Project.
+  // A missing label would silently fall back to a key. A status with no lane
+  // is a card that is counted and never drawn. Do not omit a status from the
+  // lane list. The list lives in the protocol; the two check constraints, the
+  // repository validator and the lanes derive from it.
   it("draws every Task status on exactly one lane, or archives it", () => {
     const lanes = new Set(DEFAULT_COLUMNS.map((column) => column.status_key));
     for (const status of TASK_STATUSES) {
@@ -109,8 +108,8 @@ describe("work loop stages", () => {
     for (const stage of WORK_LOOP_STAGE_KEYS) {
       expect(WORK_LOOP_STAGE_LABELS[stage], stage).toBeTruthy();
     }
-    // The keys are the docs' vocabulary, so they are the labels too; there is
-    // no per-Project set to pick from any more (ADR 0019).
+    // The keys are the docs' vocabulary, so they are the labels too. There is
+    // no per-Project label set (ADR 0019).
     expect(workLoopStageLabel("verify")).toBe("Verify");
     expect(workLoopStageLabel("frame")).toBe("Frame");
   });
@@ -140,8 +139,8 @@ describe("run settlement decision", () => {
 
   it("holds a successful Run whose evaluation did not accept it", () => {
     // The evaluation already computes this recommendation on every
-    // finalization; the old projection simply never read it, so a Run the
-    // evaluator called `retry` still closed its Task as done.
+    // finalization. Settlement must read it. A Run the evaluator called
+    // `retry` must not close its Task as done.
     for (const recommendation of ["review", "retry", "needs_evidence", null]) {
       expect(outcomeForRun("succeeded", recommendation, true, []), String(recommendation))
         .toMatchObject({ flow: "waiting_for_review", stage: "verify" });
@@ -202,8 +201,8 @@ describe("declared required outputs", () => {
   it("pins the person-only statuses to the ones the Task table allows", () => {
     // If `waiting_for_review` were renamed in the CHECK constraint, the
     // responsibility chain's `NOT IN (...)` would match nothing, an Agent-held
-    // Task would stop reaching a person again, and every test would stay
-    // green — the defect the chain exists to prevent, reintroduced silently.
+    // Task would stop reaching a person, and every test would stay green.
+    // Do not let the chain's status list drift from the CHECK constraint.
     const schema = readFileSync(join(import.meta.dirname, "../src/db/schema/tasks.ts"), "utf8");
     const check = /check\("ck_tasks_status", sql`status IN \(([^)]*)\)`\)/.exec(schema);
     expect(check).not.toBeNull();

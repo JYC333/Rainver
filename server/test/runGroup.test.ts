@@ -22,8 +22,10 @@ import {
   verificationResultToOut,
 } from "../src/modules/runs/runReadModel.js";
 import { resetTables } from "./support/resetTables.js";
-import { ensureDefaultRuntimeProfile } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedServerHost } from "./support/domainSeeds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { resolveExecutionHost } from "../src/modules/runs/executionHostResolution.js";
+import { finalizedForPostRun } from "../src/modules/runs/finalizationOutcome.js";
 
 describe("runContractSnapshot", () => {
   it("keeps the dispatch-time Git snapshot immutable in the Run contract", () => {
@@ -210,11 +212,9 @@ describe("runContractSnapshot", () => {
 });
 
 describe("runDelegationIdempotencyDb", () => {
-  // Real-Postgres coverage for the run_delegations idempotency guarantee added
-  // for the Runtime I/O Convergence "Governed CLI tools" requirement: a
-  // reconnect or retry of agent.delegate with the same tool_call_id must not
+  // A reconnect or retry of agent.delegate with the same tool_call_id must not
   // duplicate the durable delegation/child-run side effect. This exercises the
-  // actual partial UNIQUE INDEX (uq_run_delegations_parent_tool_call), which a
+  // partial UNIQUE INDEX (uq_run_delegations_parent_tool_call), which a
   // FakeDb unit test cannot verify.
 
 
@@ -407,6 +407,21 @@ describe("runDelegationIdempotencyDb", () => {
       expect((await repo.listDelegations(SPACE, GROUP, USER)).map((row) => row.id)).toEqual([delegation.id]);
       expect(await repo.listDelegations(SPACE, GROUP, other)).toEqual([]);
     });
+  });
+});
+
+describe("runExecutionHostDb", () => {
+  const db = useTestDatabase(`${import.meta.filename}#runExecutionHostDb`);
+
+  it("resolves a Profile-pinned host to that host and no Location", async () => {
+    if (!db.available) return;
+    const hostId = randomUUID();
+    await resetTables(db.pool, ["hosts", "machines"], { cascade: true });
+    await seedServerHost(db.pool, { id: hostId });
+
+    await expect(resolveExecutionHost(db.pool, {
+      executionHostId: hostId, workspaceLocationId: null, projectFolderId: null, spaceId: randomUUID(),
+    })).resolves.toEqual({ hostKind: "server", hostId, workspaceLocationId: null });
   });
 });
 
@@ -720,10 +735,10 @@ describe("runRetryPolicy", () => {
       expect(isRetryableRunErrorCode("invalid_request")).toBe(false);
     });
 
-    it("retries a host daemon's timeout and stall, and no longer knows the deleted server-host codes", () => {
-      // `cli_adapter_timeout` and `cli_stall_timeout` were the server-side CLI
-      // line's codes; ADR 0016 deleted the line and nothing emits them. These
-      // two are what a host daemon reports for the same failures.
+    it("retries a host daemon's timeout and stall, and does not retry cli_adapter_timeout or cli_stall_timeout", () => {
+      // `cli_adapter_timeout` and `cli_stall_timeout` are not emitted. Do not
+      // treat them as retryable. `runtime_timeout` and `runtime_stall_timeout`
+      // are what a host daemon reports for those failures.
       expect(isRetryableRunErrorCode("cli_adapter_timeout")).toBe(false);
       expect(isRetryableRunErrorCode("cli_stall_timeout")).toBe(false);
       expect(isRetryableRunErrorCode("runtime_timeout")).toBe(true);
@@ -737,12 +752,10 @@ describe("runRetryPolicy", () => {
 
 /**
  * `run_events.event_type` is CHECK-constrained, and every writer goes through a
- * best-effort append that swallows the rejection. So an event type added in
- * code but not to the constraint does not fail loudly — it silently never
- * exists. That is exactly what happened to `egress_refused`: the host enforced
- * the refusal, logged it, and reported it on the completion frame, and the one
- * thing that would have explained a 403 to the person was dropped at the last
- * step for weeks.
+ * best-effort append that swallows the rejection. An event type added in code
+ * but not in the constraint never exists, and nothing fails. `egress_refused`
+ * has to be in the constraint: the host enforces the refusal, and this event
+ * is what explains a 403. Do not rely on the append to surface a missing type.
  */
 const schema = readFileSync(join(import.meta.dirname, "..", "src", "db", "schema", "runs.ts"), "utf8");
 const constraint = schema.slice(schema.indexOf('check("ck_run_events_event_type"'));
@@ -805,5 +818,17 @@ describe("run detail withholding", () => {
   it("serves the same records whole at full", () => {
     expect(runStepToOut(step, "full")).toMatchObject({ output_summary: "SECRET OUTPUT", metadata_json: { secret: true } });
     expect(runEventToOut(event, "full")).toMatchObject({ summary: "SECRET SUMMARY" });
+  });
+});
+
+describe("agent_run post-run steps", () => {
+  it("run once settlement is merely owed, and wait on any other finalization failure", () => {
+    // Settlement owed: the evaluation is durable and the sweep finishes the
+    // reconcilers; the thread outcome, chat turn and domain reconcilers still
+    // happen now, once, and the succeeded Run's job does not fail.
+    expect(finalizedForPostRun({ status: "failed", error_code: "settlement_pending" })).toBe(true);
+    expect(finalizedForPostRun({ status: "succeeded" })).toBe(true);
+    // A real failure stops before them; the job's retry runs them.
+    expect(finalizedForPostRun({ status: "failed", error_code: "finalization_failed" })).toBe(false);
   });
 });

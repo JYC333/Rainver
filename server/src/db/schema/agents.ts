@@ -24,7 +24,12 @@ export const agents = pgTable("agents", {
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 	visibility: varchar({ length: 32 }).notNull(),
 	accessLevel: varchar("access_level", { length: 16 }).default('full').notNull(),
+	// Provenance only: the catalog Agent template (and its version) this Agent
+	// was created from. Never read to assemble runtime configuration.
+	sourceTemplateId: varchar("source_template_id", { length: 128 }),
+	sourceTemplateVersionId: varchar("source_template_version_id", { length: 128 }),
 }, (table): PgTableExtraConfigValue[] => [
+	check("ck_agents_source_template_pair", sql`(source_template_id IS NULL) = (source_template_version_id IS NULL)`),
 	index("ix_agents_agent_kind").using("btree", table.agentKind.asc().nullsLast()),
 	index("ix_agents_current_version_id").using("btree", table.currentVersionId.asc().nullsLast()),
 	index("ix_agents_owner_user_id").using("btree", table.ownerUserId.asc().nullsLast()),
@@ -87,10 +92,10 @@ export const actors = pgTable("actors", {
 	index("ix_actors_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_actors_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_actors_user_id").using("btree", table.userId.asc().nullsLast()),
-	// One identity per person and per service in a Space. Without these the
-	// resolver's insert-on-conflict was decorative: two concurrent first writes
-	// for the same person produced two actors, and every audit row after that
-	// named one of them at random.
+	// One identity per person and per service in a Space. Do not rely on
+	// insert-on-conflict without these. Two concurrent first writes for the
+	// same person would produce two actors, and every audit row after that
+	// would name one of them at random.
 	uniqueIndex("uq_actors_user_per_space").using("btree", table.spaceId.asc().nullsLast(), table.userId.asc().nullsLast()).where(sql`actor_type = 'user' AND status = 'active'`),
 	uniqueIndex("uq_actors_service_per_space").using("btree", table.spaceId.asc().nullsLast(), table.actorType.asc().nullsLast(), table.serviceName.asc().nullsLast()).where(sql`service_name IS NOT NULL AND status = 'active'`),
 	foreignKey({

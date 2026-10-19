@@ -1,15 +1,14 @@
-import { PROJECT_WORK_EVENT_KINDS, type ProjectWorkEventKind } from "@rainver/protocol";
+import { type ProjectWorkEventKind } from "@rainver/protocol";
 
 /**
  * Which subjects each Project work event kind may be written about, and who
  * declared it.
  *
  * The column carries a format check only, the same trade the ontology made for
- * `link_type`: a closed-set CHECK on a shared table forces every new domain to
- * edit that table, and three mutually inconsistent CHECKs is what the ontology
- * audit actually found when nobody did. The trade is only safe while something
- * asks the registry on the write path — `assertWorkEventKind` is that
- * something, and it is called from the one writer.
+ * `link_type`. A closed-set CHECK on a shared table forces every new domain to
+ * edit that table. Do not add one. The format check is safe only while
+ * `assertWorkEventKind` asks the registry on the write path, and it is called
+ * from the one writer.
  *
  * Open for modules and plugins to register into, for the same reason link
  * types are: a declaration needs an implementation behind it, so it belongs in
@@ -103,8 +102,4 @@ registerCoreWorkEventKinds();
  */
 export function hasWorkEventKindDeclaration(kind: string): boolean {
   return registry.has(kind as ProjectWorkEventKind);
-}
-
-export function coreWorkEventKindCount(): number {
-  return PROJECT_WORK_EVENT_KINDS.length;
 }

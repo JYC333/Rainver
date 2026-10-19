@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { useParams } from 'react-router-dom'
@@ -8,26 +8,46 @@ import { Skeleton } from '../../components/ui/skeleton'
 import { Card } from '../../components/ui/card'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
-import type { InformationDigest } from '../../types/api'
+import type { InformationDigestLookup } from '../../types/api'
 import { InformationDigestView } from '../library/InformationDigestView'
+import { DigestDayNav, DigestMissing, DigestProvenance } from '../library/DigestDay'
+import { useAppTranslation } from '../../i18n'
 
 export default function ProjectDigestPage() {
   const { projectId = '' } = useParams()
   const { activeSpaceId } = useSpace()
-  const [digest, setDigest] = useState<InformationDigest | null>(null)
+  const { t } = useAppTranslation()
+  const [day, setDay] = useState<string | null>(null)
+  const [latestDay, setLatestDay] = useState<string | null>(null)
+  const [lookup, setLookup] = useState<InformationDigestLookup | null>(null)
   const [loading, setLoading] = useState(true)
+  const digest = lookup?.status === 'available' ? lookup.digest : null
 
+  // Another Project starts at its own latest day, not the day picked here.
+  useEffect(() => {
+    setDay(null)
+    setLatestDay(null)
+    setLookup(null)
+  }, [projectId])
+
+  // Only the latest request lands, so fast prev/next cannot show a stale day.
+  const loadRequest = useRef(0)
   const load = useCallback(async () => {
     if (!activeSpaceId || !projectId) return
+    const request = ++loadRequest.current
     setLoading(true)
     try {
-      setDigest(await informationDigestsApi.project(activeSpaceId, projectId))
+      const next = await informationDigestsApi.project(activeSpaceId, projectId, day ?? undefined)
+      if (request !== loadRequest.current) return
+      setLookup(next)
+      if (day === null) setLatestDay(next.status === 'available' ? next.digest.digest_date : next.digest_date)
     } catch (error) {
-      toast.error(errMsg(error))
+      if (request === loadRequest.current) toast.error(errMsg(error))
     } finally {
-      setLoading(false)
+      if (request === loadRequest.current) setLoading(false)
     }
-  }, [activeSpaceId, projectId])
+  }, [activeSpaceId, projectId, day])
+  const shownDay = lookup ? (lookup.status === 'available' ? lookup.digest.digest_date : lookup.digest_date) : null
 
   useEffect(() => { void load() }, [load])
 
@@ -40,7 +60,28 @@ export default function ProjectDigestPage() {
         </div>
         <Button variant="outline" onClick={load} disabled={loading}><RefreshCw className="size-4" />Refresh</Button>
       </div>
-      {loading && !digest ? <div className="space-y-3"><Skeleton className="h-32" /><Skeleton className="h-32" /></div> : null}
+      {loading && !lookup ? <div className="space-y-3"><Skeleton className="h-32" /><Skeleton className="h-32" /></div> : null}
+      {lookup && shownDay ? (
+        <DigestDayNav
+          date={shownDay}
+          timezone={lookup.status === 'available' ? lookup.digest.timezone : lookup.timezone}
+          canGoForward={latestDay !== null && shownDay < latestDay}
+          onSelect={setDay}
+        />
+      ) : null}
+      {lookup?.status === 'missing' ? (
+        <DigestMissing missing={lookup} onBackfill={async (date) => {
+          if (!activeSpaceId) return
+          try {
+            const result = await informationDigestsApi.backfillProject(activeSpaceId, projectId, date)
+            setLookup({ status: 'available', digest: result.digest })
+            toast.success(result.created ? t('digest_reports.backfill_done') : t('digest_reports.backfill_existing'))
+          } catch (error) {
+            toast.error(errMsg(error))
+          }
+        }} />
+      ) : null}
+      {digest ? <DigestProvenance digest={digest} /> : null}
       {digest?.team_aggregates_available && digest.team_blind_spot_domains.length > 0 ? (
         <Card className="p-4 space-y-2">
           <h2 className="text-sm font-semibold">Team blind spots</h2>

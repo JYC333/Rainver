@@ -30,8 +30,7 @@ const ORIGIN_LABEL: Record<ThreadReferenceProvenance['kind'], string> = {
  * its origin, who brought it, and whether it is trusted.
  *
  * One-shot, so the link goes to the source as it is *now* while the quoted
- * text is as it was when attached. The two can differ, which is the point of
- * saying when it was taken.
+ * text is as it was when attached. The two can differ. Say when it was taken.
  */
 export function ReferenceMessage({
   message,
@@ -93,12 +92,11 @@ export function ReferenceMessage({
  * Where the source can be opened, or null when it cannot be.
  *
  * Logical, unscoped paths: `SpaceLink` adds the Space prefix every route in
- * this app lives under. Building it here instead is how the conversation link
- * came to point outside the router and land on Home.
+ * this app lives under. Do not build the Space prefix here. The conversation
+ * link would point outside the router and land on Home.
  *
- * Null rather than a guess: a conversation attached before `source_room_id`
- * was recorded has no Room to open, and a link onto the wrong Room is worse
- * than none.
+ * Null rather than a guess. A conversation with no `source_room_id` has no
+ * Room to open, and a link onto the wrong Room is worse than none.
  */
 function originLink(
   reference: ThreadReferenceProvenance,

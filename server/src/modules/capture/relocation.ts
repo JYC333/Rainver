@@ -60,10 +60,9 @@ export function relocationCandidates(
  * Whether this caller may take the content out of the Space, as opposed to
  * copying it (ADR 0013 amendments 6a/6b).
  *
- * Move is decision 6's transformation run backwards: the original leaves the
- * Project. One member must not be able to remove another member's contribution
- * from the team's Space, so move needs authority over the content — its owner,
- * or someone administering the Project it sits in.
+ * Move takes the original out of the Project. One member must not remove
+ * another member's contribution from the team's Space, so move needs authority
+ * over the content — its owner, or someone administering the Project it sits in.
  */
 export async function canMoveCapture(
   db: Queryable,

@@ -7,9 +7,8 @@ import { withNoteWrites } from "./noteWriter.js";
 /**
  * Projection of a capture into the caller's private marginalia note.
  *
- * A capture whose destination is marginalia is still an `activity_record`
- * first; this is the second half of that write, and the two commit together so
- * the felt behaviour of typing a thought inside a Project is unchanged.
+ * A capture whose destination is marginalia is an `activity_record`
+ * first; this is the second half of that write, and the two commit together.
  *
  * Why the note is private and per-user: ADR 0013 decision 3 would publish a
  * margin note to the whole team on the first keystroke, and decision 3a is the
@@ -44,7 +43,7 @@ export interface MarginaliaInput {
  * write scope, and binding them to the repository's outer handle would put
  * them outside the transaction whenever that handle is a pool.
  */
-export interface MarginaliaDeps {
+interface MarginaliaDeps {
   /** Read-gated object lookup, so an invisible target leaves no note behind. */
   requireVisibleSpaceObject(
     db: Queryable,
@@ -80,9 +79,9 @@ export async function appendMarginalia(
   const target = input.targetId
     ? await deps.requireVisibleSpaceObject(db, identity, input.targetId, "Capture target not found")
     : null;
-  // Visible is not the same as in scope. Without this an object belonging to
-  // one Project could be annotated under another the caller happens to write,
-  // producing a note binding and a cross-Project link no surface can produce.
+  // Visible is not the same as in scope. Do not annotate an object under a
+  // Project it does not belong to. That would write a note binding and a
+  // cross-Project link no surface can produce.
   if (target && !(await objectIsInProject(db, identity, target.id, target.primary_project_id, input.projectId))) {
     throw new HttpError(422, "Capture target does not belong to this Project");
   }
@@ -118,7 +117,7 @@ export async function appendMarginalia(
       }
       // The first block the append introduced. A capture whose text contains a
       // blank line becomes several blocks; the anchor is where it starts, and
-      // P2b's preview offers the rest as the blocks that follow it.
+      // the preview offers the rest as the blocks that follow it.
       return {
         note_id: existing.note_id,
         note_title: existing.title,

@@ -8,14 +8,11 @@ import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 
 /**
- * Where this host reaches the provider proxy — the one setting that decides
- * whether a binding on this host can work at all, and the last part of this
- * feature that could only be changed by editing a file on the server.
+ * Where this host reaches the provider proxy. This setting decides whether a
+ * binding on this host can work at all.
  *
  * The effective address is computed by the server with the same function a
- * dispatched run uses, not re-derived here: a second derivation would be free
- * to disagree, and the disagreement would surface only as a run failing on
- * someone else's machine.
+ * dispatched run uses. Do not re-derive it here.
  */
 export default function HostProxyAddress({
   host,

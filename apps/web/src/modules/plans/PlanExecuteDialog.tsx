@@ -41,15 +41,20 @@ export default function PlanExecuteDialog({ open, planId, onOpenChange, onExecut
       })
   }, [agentId])
 
-  async function loadAgents() {
-    if (loaded) return
-    try {
-      setAgents(await agentsApi.list({ limit: '100' }))
-      setLoaded(true)
-    } catch (error) {
-      toast.error(errMsg(error))
-    }
-  }
+  // The owner opens this dialog by setting `open`; Radix reports only its own
+  // open/close actions through onOpenChange, so the Agents load on `open`.
+  useEffect(() => {
+    if (!open || loaded) return
+    let current = true
+    agentsApi.list({ limit: '100' })
+      .then(rows => {
+        if (!current) return
+        setAgents(rows)
+        setLoaded(true)
+      })
+      .catch(error => { if (current) toast.error(errMsg(error)) })
+    return () => { current = false }
+  }, [open, loaded])
 
   async function submit() {
     if (!agentId) {
@@ -76,7 +81,7 @@ export default function PlanExecuteDialog({ open, planId, onOpenChange, onExecut
   }
 
   return (
-    <Dialog open={open} onOpenChange={value => { onOpenChange(value); if (value) void loadAgents() }}>
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Execute plan</DialogTitle>

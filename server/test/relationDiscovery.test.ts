@@ -150,6 +150,31 @@ describe("runRelationDiscoveryScan", () => {
     });
   });
 
+  it("reports truncation only when the cap stopped the scan before every link was examined", async () => {
+    const targets = ["Beta", "Gamma", "Delta"].map((title) =>
+      item({ id: `item-${title.toLowerCase()}`, title, slug: title.toLowerCase() }));
+    const source = item({ id: "item-a", title: "Alpha", content: "Alpha uses [[Beta]], [[Gamma]] and [[Delta]]." });
+    const request = {
+      limit: 200,
+      max_candidates: 3,
+      review_scope: "private" as const,
+      include_unresolved_item_candidates: false,
+      llm_extraction_enabled: false,
+      llm_max_sources: 8,
+      create_packet: true,
+    };
+
+    // Exactly as many candidates as the cap, every link examined: nothing was
+    // left unscanned, so a reviewer must not be told to scan again.
+    const exact = await runRelationDiscoveryScan(new FakeDiscoveryDb([source, ...targets]), { spaceId: "space-1", userId: "user-1", request });
+    expect(exact.report.candidates).toHaveLength(3);
+    expect(exact.report.truncated).toBe(false);
+
+    const over = await runRelationDiscoveryScan(new FakeDiscoveryDb([source, ...targets]), { spaceId: "space-1", userId: "user-1", request: { ...request, max_candidates: 2 } });
+    expect(over.report.candidates).toHaveLength(2);
+    expect(over.report.truncated).toBe(true);
+  });
+
   it("uses a typed wikilink prefix when it is a known relation type", async () => {
     const items = [
       item({ id: "item-a", title: "Alpha", content: "See [[depends_on::Beta]]." }),

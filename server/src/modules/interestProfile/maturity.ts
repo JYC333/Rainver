@@ -56,8 +56,7 @@ export function profileMaturity(
  * beats sampling at random.
  *
  * Never reaches zero. A profile that only ever fills computed gaps converges on
- * the reader's own history, which is the failure this whole mechanism exists to
- * prevent.
+ * the reader's own history. Do not let the profile converge there.
  */
 export const MIN_EXPLORATION_SHARE = 0.25;
 

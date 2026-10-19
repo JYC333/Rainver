@@ -1,33 +1,29 @@
 # Sources Custom Source Handlers
 
-Status: implemented through Phase 8 backend create-flow/proposal integration,
-frontend create/detail/settings surfaces, first scan-job integration, and
-Level 2 Source Recipe Phase 8 source-detail/compatibility/test flow
-(2026-07-01). The schema, read models, runner, deterministic handler
+Status: backend create-flow, proposal integration, scan jobs, and the Level 2
+Source Recipe path are implemented. The schema, read models, runner, deterministic handler
 generation, fixture tests, inside-envelope activation, handler-run history,
 manual/scheduled scan queueing, trusted endpoint fetch path, Custom Source
 proposal payloads/appliers, Source Recipe plan/create/dry-run/activate
 services, Source Recipe proposal applier, recipe scan worker,
-`source_runs` read model, and declarative-pipeline bridge exist. Sources
-exposes Custom Source draft creation, a recipe-first `/sources` Create Source
-card, and `/sources/connections/:connectionId` Source Detail product tabs
-(Overview, Plan, Preview, Items, Evidence, Runs) with handler internals under
-Advanced.
+`source_runs` read model, and declarative-pipeline bridge exist as backend
+APIs/services. The web `/sources` area is `SourceChannelsPage` plus
+`/sources/:sourceId` (`SourceChannelDetailPage`); no page calls the Custom
+Source draft/handler or Source Recipe plan/create/dry-run/activate APIs. The
+web surfaces for this feature are `CustomSourceSpacePolicyPanel` (Space
+Settings) and `CustomSourceRunnerSettingsPanel` (Instance Settings).
 Repair/rollback and credentialed source support are implemented backend-side
 (see "Repair" and "Credentialed Sources" below). Browser/Python handlers are
-not implemented. Source Detail has no Repair tab and no credential-management
-UI — those routes exist as API/service only
-([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11).
+not implemented. There is no Repair or credential-management UI — those routes exist as API/service only.
 
-`typescript_node` remains the generated-code Level 3 fallback. Existing
-`declarative_pipeline_v1` handler versions remain readable/executable for
-compatibility and can be explicitly bridged into Level 2
-`source_recipe_versions`. See "Declarative pipeline model" below for the
-Level 1/2/3 split: new configurable source creation now goes through
-Level 2 Source Recipes first, while generated/template handler expansion stays
-frozen as the Level 3 advanced fallback.
+`typescript_node` is the generated-code Level 3 fallback. Existing
+`declarative_pipeline_v1` handler versions stay readable and executable and can
+be explicitly bridged into Level 2 `source_recipe_versions`. See "Declarative
+pipeline model" below for the Level 1/2/3 split: new configurable source
+creation goes through Level 2 Source Recipes, while generated/template handler
+expansion stays frozen as the Level 3 advanced fallback.
 
-## Level 3 Freeze (2026-07-01)
+## Level 3 generated handlers
 
 Generated/template handler work (`typescript_node`) is **frozen** as the
 Level 3 advanced fallback:
@@ -41,8 +37,6 @@ Level 3 advanced fallback:
   (conversation-first Source creation) is the main path.
 - Broader generated-code execution is not supported.
 
-Unimplemented runner expansions:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11.
 
 ## Boundary
 
@@ -176,19 +170,17 @@ The implemented settings API keeps that ownership split explicit:
 
 ## Runner Expectations
 
-The first implementation should prefer TypeScript/Node handlers. Python may be
-evaluated later, but it increases dependency and environment risk.
+The runner executes TypeScript/Node handlers. Python handlers are not implemented.
 
-The runner must execute generated code in a separate process with a temporary
-sandbox, minimal environment, controlled network, no repository write access, no
-ambient credentials, and strict resource limits. Existing worktree sandboxing is
-not enough for generated Custom Source code, and `one_shot_docker` must not be
-treated as active isolation until it is implemented.
+Generated handler code runs in a separate process with a temporary sandbox, a
+minimal environment, no repository write access, and no ambient credentials. A
+worktree sandbox is not this boundary. `one_shot_docker` is not this boundary
+either. Do not treat it as active isolation for generated handler code.
 
 If runner support is disabled or unavailable, Custom Source execution fails
 closed.
 
-### Phase 4 implementation status
+### Runner
 
 `server/src/modules/sources/customSources/customSourceRunner.ts` implements: separate
 OS-process execution (`node:child_process.spawn`, `shell: false`), a
@@ -217,15 +209,13 @@ inside the declared handler contract (`input.json`, `output.json`, the
 handler entrypoint, and sandbox `files/`). **This is defense-in-depth, not
 OS-level network, process, or filesystem isolation** — a native addon, a
 raw syscall, process internals, or an unpatched file API could still reach
-outside the sandbox at the OS permission level. The same runner is used by
+outside the sandbox at the OS permission level. Do not describe this runner
+as OS-sandboxed. The same runner is used by
 fixture tests and live scan jobs and does not grant network access to the
 handler process. Trusted server code fetches `source_connections.endpoint_url`,
 enforces the handler policy envelope's allowed origins before each
 request/redirect, and passes the fetched HTML through
-`input.json.source.config.fetched_html`. Do not describe this runner as
-OS-sandboxed until a real process/network/filesystem isolation layer exists —
-this mirrors the same honesty requirement already applied to `one_shot_docker`
-(B13).
+`input.json.source.config.fetched_html`.
 
 The contract validator (`customSourceContractValidator.ts`) rejects a
 snapshot `file_path` that is a symlink (`lstat`, not `stat`) and separately
@@ -233,7 +223,7 @@ verifies via `realpath` that the fully resolved path — including any
 symlinked intermediate directory under `files/` — stays inside the
 sandbox `files/` root, before the materializer ever reads or copies it.
 
-### Phase 5 implementation status
+### Create flow
 
 `server/src/modules/sources/customSources/customSourceCreateFlowService.ts` implements the
 backend draft -> generate-handler -> test-handler -> activate flow. Handler
@@ -266,10 +256,10 @@ through the built-in extraction worker.
 
 ## Declarative Pipeline Model
 
-A compatibility handler execution model, `language: "declarative_pipeline_v1"`,
-can still exist beside `typescript_node` rows for advanced/history cases. It was added because the
-`typescript_node` template generator's real customization surface is a single
-CSS class name (list vs. single-page mode); it cannot paginate, follow a list
+A handler execution model, `language: "declarative_pipeline_v1"`,
+exists beside `typescript_node` rows. The `typescript_node` template
+generator's customization surface is a single CSS class name (list vs.
+single-page mode). It cannot paginate, follow a list
 item's own link, download a non-HTML asset, or capture per-item snapshots in
 list mode. New recipe-like sources are represented by
 Level 2 `source_recipe_versions`. Any `declarative_pipeline_v1` handler
@@ -278,7 +268,7 @@ rows. The explicit bridge (`SourceRecipePipelineBridgeService`,
 `POST /api/v1/sources/custom-sources/:connectionId/bridge-pipeline`) validates
 `manifest_json.pipeline`, wraps it as `source.recipe.v1`, creates a new paused
 recipe source, and writes a draft `source_recipe_versions` row. It does not
-mutate the old generated-custom connection or auto-activate the recipe; the
+mutate that custom-source connection or auto-activate the recipe; the
 normal recipe dry-run/activate path still applies.
 
 Unlike `typescript_node` (generated code executed in a sandboxed child
@@ -330,9 +320,9 @@ Step catalog (`packages/protocol/src/sourceCustomSourceHandlers.ts`,
 Resource bounds: wall-clock `timeout_ms` is checked before every step and
 enforced per-request via `AbortSignal.timeout`; `max_files` bounds the total
 number of stored snapshots across `follow_link` and `download_asset`
-combined; each individual fetch is capped at `max_download_bytes` (no
-separate cumulative-bytes-across-fetches limit exists yet — the practical
-worst case is bounded by `max_files * max_download_bytes`). Exceeding
+combined; each individual fetch is capped at `max_download_bytes`. There is
+no separate cumulative-bytes-across-fetches limit. The worst case is
+`max_files * max_download_bytes`. Exceeding
 `max_output_bytes` on the final serialized output produces
 `output_too_large: true` with `raw_output_json: null`, exactly like the
 `typescript_node` runner.
@@ -361,8 +351,8 @@ Execution dispatch: `customSourceHandlerExecution.ts`'s
 `testHandler` and the scan worker's `runOne` — `typescript_node` resolves the
 stored source artifact and runs `CustomSourceRunner`; `declarative_pipeline_v1`
 parses `manifest_json.pipeline` and runs `runCustomSourcePipeline`. Both
-return the same `CustomSourceRunnerResult` shape, so the Phase 3 contract
-validator and materializer are unchanged and shared by both models.
+return the same `CustomSourceRunnerResult` shape, so the contract
+validator and materializer are shared by both models.
 
 Schema: `source_handler_versions.language`'s `CHECK` constraint in
 `server/migrations/0000_baseline.sql` allows both `typescript_node` and
@@ -371,9 +361,9 @@ Schema: `source_handler_versions.language`'s `CHECK` constraint in
 
 ## Level 2 Source Recipes
 
-Status: implemented through Phase 8 (`server/src/modules/sources/sourceRecipes/`,
-`server/src/modules/sources/sourceRecipeRoutes.ts`, the `/sources` Create Source
-card, Source Detail normal/Advanced split, and compatibility bridge).
+Status: `server/src/modules/sources/sourceRecipes/`,
+`server/src/modules/sources/sourceRecipeRoutes.ts`, and the pipeline
+bridge. Backend only; no web page calls these APIs.
 
 Source Recipes are the normal configurable source path. They do not execute
 generated code. A recipe version stores structured JSON over a fixed primitive
@@ -393,20 +383,21 @@ Implemented flow:
 - `activateRecipe` activates a dry-run-tested version directly when the policy
   envelope stays inside bounds; envelope broadening creates a
   `source_recipe_activation` proposal and binds the version until review.
+  Activation re-checks under the connection lock that the active version is
+  still the one the envelope was compared with and that the version is still
+  activatable with a passing dry-run, and otherwise answers 409.
 - `recipeScanWorker` handles manual/scheduled scans for active recipe sources
   and materializes validated output through the shared Sources
-  materializer.
+  materializer. Its scheduler first reclaims a recipe scan job left `running`
+  for over ten minutes, so a crashed process cannot block a channel forever.
 - `listSourceRuns` projects product run history from extraction jobs, handler
   runs, and recipe dry-run results so the UI does not expose raw worker tables
   by default.
 - `SourceRecipePipelineBridgeService` explicitly bridges existing
   `declarative_pipeline_v1` handler versions into draft recipe sources.
 
-The frontend `/sources` Create Source card wires plan, create, dry-run, and
-activate into one flow with URL/name/frequency/capture inputs, plan/sample
-preview, and activation/proposal feedback. Source Detail now exposes Overview,
-Plan, Preview, Items, Evidence, Runs, and Advanced; raw handler versions/runs,
-policy envelopes, recipe JSON, and extraction jobs are kept in Advanced.
+The Source Recipe plan, create, dry-run, and activate flow is API-only; the
+web client declares these calls. No frontend page wires them.
 
 ## Repair
 
@@ -433,8 +424,9 @@ While a repair attempt is in flight, `source_connections.repair_status` is
 `repair_pending`; any failure past that point (generation, the fixture test
 itself throwing rather than just failing, envelope evaluation, activation, or
 proposal creation) reverts it to `repair_required` rather than leaving it
-stuck `repair_pending` forever. A repair call rejects outright (409) if the
-connection is already `repair_pending`, so two repair attempts cannot race on
+stuck `repair_pending` forever, and so does rejecting the repair's proposal.
+A repair call rejects outright (409) if the connection is already
+`repair_pending`, so two repair attempts cannot race on
 the same connection through the API (this is an application-level guard, not
 a row lock — a true concurrent double-call at the database level is not
 separately interlocked).
@@ -449,7 +441,7 @@ Repair auto-activates only when:
 Otherwise a proposal is created before activation:
 
 - envelope unchanged but Space policy requires review →
-  `custom_source_repair_activation` (see "Phase 6 Proposal Payloads" above);
+  `custom_source_repair_activation` (see "Proposal payloads" below);
 - envelope broadened (new/changed network origins, credential request,
   browader capture/retention, larger limits, language change, disabled log
   redaction) → the same `custom_source_policy_delta`/
@@ -512,26 +504,21 @@ activation with a `credential_ref` set is treated as within-envelope only
 when Space policy's `credentialed_sources_allowed` is `true`; otherwise (or
 when an already-active connection's credential changes) it creates a
 `custom_source_credentialed_source` proposal, exactly as already described
-above. Repair (Phase 9) is unaffected — a repaired version keeps whatever
+above. A repair keeps whatever
 `credential_ref` the active version already had unless the repair request
 changes the connection's credential, at which point the same
 `evaluateCustomSourceActivation` delta logic decides proposal-vs-auto-apply.
 
 Credential rotation/deletion and a UI for creating or selecting a Custom
 Source credential are not implemented (API/service layer only).
-See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §11.
 
-## Phase 1 Schema Design (implemented in Phase 2)
+## Schema in the baseline
 
-This section records the schema shape consolidated into
-`server/migrations/0000_baseline.sql`. There was no historical data or
-deployed system when these Sources changes landed, so the declarative pipeline
-and Source Recipe schema are part of the frozen baseline rather
-than kept as separate incremental migration files. Once a real deployment has
-applied `0001`, later schema changes must be added as ordered incremental
-migrations.
+The declarative pipeline and Source Recipe schema live in
+`server/migrations/0000_baseline.sql`. Later schema changes are new numbered
+files after that baseline. There is no `0001`. Do not recreate one.
 
-`source_connections` gains nullable/defaulted implementation columns:
+`source_connections` has these implementation columns:
 
 - `handler_kind varchar` — `built_in` (default), `generated_custom`, or
   `recipe`.
@@ -607,12 +594,11 @@ Shared wire DTOs and the handler `input.json`/`output.json` contract live in
 Source Recipe wire DTOs live in
 `packages/protocol/src/sourceRecipes.ts`.
 
-No Project-owned source schema is added anywhere in this design, and no
-fields are added to Knowledge `sources`.
+Knowledge `sources` does not carry a Project-owned source schema.
 
-## Phase 6 Proposal Payloads
+## Proposal payloads
 
-Phase 6 ("Policy and proposals") is implemented by
+Implemented by
 `server/src/modules/sources/customSources/customSourceProposalApplier.ts`,
 `server/src/modules/proposals/payloadSchemas.ts`, and
 `CustomSourceCreateFlowService.activateHandler`.
@@ -671,11 +657,11 @@ approval-required deltas. First activation compares capture/retention against
 the Space defaults; later activations compare against the active approved
 handler version.
 
-## Operations (Phase 12)
+## Operations
 
-Status: implemented — rate limiting, artifact retention, and an observability
-read model. No Instance Settings UI change or alerting integration; the new
-hard limits are read-only via the existing
+Rate limiting, artifact retention, and an observability read model. No
+Instance Settings UI change or alerting integration. The hard limits are
+read-only via the existing
 `GET /api/v1/sources/custom-source-settings/instance` response.
 
 **Diagnosing a broken or blocked Custom Source** — one call answers it:
@@ -684,7 +670,7 @@ hard limits are read-only via the existing
 active handler version and latest run:
 
 - `repair_status` — `ok`, `repair_required` (3+ consecutive non-succeeded
-  runs, or a failed repair attempt — see "Repair" above), `repair_pending`
+  runs, or a failed or rejected repair attempt — see "Repair" above), `repair_pending`
   (a repair or activation is awaiting either a live run or proposal review),
   or `disabled` (nothing sets this automatically).
 - `recent_run_status_counts` — a breakdown of the last 20
@@ -719,13 +705,13 @@ broken by this job. Only the artifact (file + `artifacts` row) and
 is kept for audit/history. `declarative_pipeline_v1` versions have no
 artifact to prune (their pipeline definition lives in `manifest_json`).
 
-**Fail-closed behavior** (already covered by existing tests, listed here for
-an operator's reference, not newly added by Phase 12): runner disabled
+**Fail-closed behavior** (covered by the runner tests, listed here for
+an operator's reference): runner disabled
 (`runner_disabled`), handler language not in the instance allowlist
 (`language_not_allowed`), and browser automation/shell/dependency
 installation requests (unconditionally refused regardless of instance
 availability flags) all record a `blocked` handler run with the reason as
-`failure_class`, visible through `handler-runs` and now through
+`failure_class`, visible through `handler-runs` and
 `recent_run_status_counts`.
 
 ## Non-Goals

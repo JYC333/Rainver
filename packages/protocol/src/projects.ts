@@ -11,12 +11,6 @@ import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 // the wire shape for the `/api/v1/projects/.../public-summary*` routes.
 // ---------------------------------------------------------------------------
 
-export const ProjectPublicSummaryReviewStatusSchema = z.enum([
-  "draft",
-  "approved",
-  "archived",
-]);
-
 /** Pointer-only provenance ref. Must never embed raw source content. */
 export const ProjectPublicSummarySourceRefSchema = z
   .object({
@@ -27,18 +21,41 @@ export const ProjectPublicSummarySourceRefSchema = z
   })
   .passthrough();
 
+const ProjectPublicSummaryContentShape = {
+  project_id: IdSchema,
+  project_name: z.string(),
+  summary_text: z.string(),
+  topics: z.array(z.string()).default([]),
+  highlights: z.array(z.string()).default([]),
+  source_refs: z.array(z.record(z.unknown())).default([]),
+  redaction_version: z.string(),
+} as const;
+
+/**
+ * The approved, space-public snapshot: what `GET /projects/{id}/public-summary`,
+ * the public list, search and the assistant serve. It carries who approved
+ * which draft version and when; a later draft edit never changes it.
+ */
 export const ProjectPublicSummarySchema = z
   .object({
     id: IdSchema,
     space_id: IdSchema,
-    project_id: IdSchema,
-    project_name: z.string(),
-    summary_text: z.string(),
-    topics: z.array(z.string()).default([]),
-    highlights: z.array(z.string()).default([]),
-    source_refs: z.array(z.record(z.unknown())).default([]),
-    redaction_version: z.string(),
-    review_status: ProjectPublicSummaryReviewStatusSchema,
+    ...ProjectPublicSummaryContentShape,
+    source_draft_version: z.number().int().positive(),
+    published_by_user_id: IdSchema.nullable(),
+    published_at: ISODateTimeSchema,
+    ...SecretResponseGuards,
+  })
+  .passthrough();
+export type ProjectPublicSummary = z.infer<typeof ProjectPublicSummarySchema>;
+
+/** The working draft Project writers edit. Never served to readers of other Projects. */
+export const ProjectPublicSummaryDraftSchema = z
+  .object({
+    id: IdSchema,
+    space_id: IdSchema,
+    ...ProjectPublicSummaryContentShape,
+    draft_version: z.number().int().positive(),
     updated_by_user_id: IdSchema.nullable(),
     generated_by_run_id: IdSchema.nullable(),
     created_at: ISODateTimeSchema,
@@ -46,6 +63,24 @@ export const ProjectPublicSummarySchema = z
     ...SecretResponseGuards,
   })
   .passthrough();
+export type ProjectPublicSummaryDraft = z.infer<typeof ProjectPublicSummaryDraftSchema>;
+
+/**
+ * `GET /projects/{id}/public-summary/editor` — both sides at once, for the
+ * Project writers who edit the draft. `can_publish` is the caller's
+ * owner-level authority over this Project, so the client offers publish and
+ * revoke only where the server will accept them.
+ */
+export const ProjectPublicSummaryEditorStateSchema = z
+  .object({
+    project_id: IdSchema,
+    draft: ProjectPublicSummaryDraftSchema.nullable(),
+    published: ProjectPublicSummarySchema.nullable(),
+    can_publish: z.boolean(),
+    ...SecretResponseGuards,
+  })
+  .passthrough();
+export type ProjectPublicSummaryEditorState = z.infer<typeof ProjectPublicSummaryEditorStateSchema>;
 
 export const ProjectPublicSummaryListResponseSchema = z
   .object({
@@ -58,9 +93,10 @@ export const ProjectPublicSummaryListResponseSchema = z
   .passthrough();
 
 /**
- * PUT body. A bare write stages a `draft`; `review_status` other than `draft`
- * is a publish/unpublish action and is gated to project-owner-level authority
- * server-side. Legacy `*_json` aliases are accepted and pass through.
+ * PUT body: saves the draft (project writer authority) and bumps its
+ * `draft_version`. Publishing is a separate owner-level action
+ * (`POST .../public-summary/publish`); there is no status field here to flip.
+ * Older `*_json` aliases are accepted and pass through.
  */
 export const ProjectPublicSummaryUpsertRequestSchema = z
   .object({
@@ -68,13 +104,26 @@ export const ProjectPublicSummaryUpsertRequestSchema = z
     topics: z.array(z.string()).optional(),
     highlights: z.array(z.string()).optional(),
     source_refs: z.array(ProjectPublicSummarySourceRefSchema).optional(),
-    review_status: ProjectPublicSummaryReviewStatusSchema.optional(),
     redaction_version: z.string().optional(),
     generated_by_run_id: IdSchema.optional(),
   })
   .passthrough();
 export type ProjectPublicSummaryUpsertRequest = z.infer<
   typeof ProjectPublicSummaryUpsertRequestSchema
+>;
+
+/**
+ * POST .../public-summary/publish body. The approver names the draft version
+ * they reviewed; a draft saved in between is refused (409) rather than
+ * published under the earlier approval.
+ */
+export const ProjectPublicSummaryPublishRequestSchema = z
+  .object({
+    draft_version: z.number().int().positive(),
+  })
+  .strict();
+export type ProjectPublicSummaryPublishRequest = z.infer<
+  typeof ProjectPublicSummaryPublishRequestSchema
 >;
 
 /** POST .../public-summary/draft body. All fields optional. */
@@ -206,12 +255,10 @@ export type ProjectAttentionItem = z.infer<typeof ProjectAttentionItemSchema>;
 /**
  * A Project Operation that has not stopped, as the front page reads it.
  *
- * Pulse said "nothing is being worked on right now" while a research
- * acquisition screened 873 documents for four hours: its only source was the
- * Task board, and an Operation is not a Task. The fields are exactly what the
- * existing `researchOperationDetail` reads, so the front page renders the
- * same sentence the Research Area does instead of composing a second one —
- * and it still fetches nothing an Area owns.
+ * Pulse reads Operations as well as the Task board. An Operation is not a
+ * Task. The fields are exactly what `researchOperationDetail` reads, so the
+ * front page renders the same sentence the Research Area does. Do not compose
+ * a second sentence, and do not fetch anything an Area owns.
  */
 export const ProjectRunningOperationSchema = z.object({
   id: IdSchema,

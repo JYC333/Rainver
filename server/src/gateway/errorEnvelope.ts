@@ -16,7 +16,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { resolveRequestId } from "./requestContext.js";
 
-export interface ErrorEnvelope {
+interface ErrorEnvelope {
   error: string;
   message: string;
   request_id?: string;
@@ -63,8 +63,8 @@ function boundedString(value: unknown, maxLength = 1000): string | undefined {
 /**
  * Keep the client-facing error generic while making uncaught failures useful
  * to the operator. PostgreSQL exposes the structured fields below on its
- * errors; recording them avoids the previous `reason: "Error"` dead end
- * without logging request bodies, headers, or credentials.
+ * errors. Record those fields. Do not log `reason: "Error"` and nothing else,
+ * and do not log request bodies, headers, or credentials.
  */
 function errorLogFields(error: unknown): ErrorLogFields {
   const known = error as {
@@ -107,8 +107,7 @@ export function registerErrorEnvelopeHandler(app: FastifyInstance): void {
           };
     const requestId = resolveRequestId(request);
     // Keep the response generic, but log the server-side cause at error level.
-    // The previous implementation put the useful error only at debug level,
-    // which made production failures look indistinguishable from one another.
+    // Do not log it only at debug: production failures then look the same.
     request.log.error(
       {
         err,

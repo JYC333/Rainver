@@ -30,7 +30,7 @@ Socket (operator-triggered, no request arguments):
 
 | Job Type              | Script                         | Effect                              |
 |-----------------------|--------------------------------|-------------------------------------|
-| `rebuild_rainver` | `scripts/rebuild.sh`           | docker compose pull (prod) + up -d  |
+| `rebuild_rainver` | `scripts/rebuild.sh`           | dev/test build + up -d; prod refused |
 | `restart_rainver` | `scripts/restart.sh`           | docker compose restart              |
 | `health_check`        | `scripts/health_check.sh`      | server /health, checked in-container |
 
@@ -53,11 +53,13 @@ one event per stage. Reporting retries across the server restart that `recreate`
 causes, so a stage that ran is never missing from the job's audit.
 
 The loop is configured by the generated `.deployer.env` (`DEPLOYER_SERVER_URL`,
-`SERVER_INTERNAL_TOKEN`). Without both, it does not start and this container is
-exactly the operator-only deployer it was before.
+`SERVER_INTERNAL_TOKEN`). Without both, the loop does not start. The
+container stays an operator-only deployer.
 
-Each heartbeat names the deployer sending it — the container's own name, stable
-across a restart of this process inside it. The server records it on the job it
+Each heartbeat names the deployer sending it — the container's hostname
+(`HOSTNAME`, which is the container ID when Compose sets no hostname), stable
+across a restart of this process inside it and new when the container is
+recreated. The server records it on the job it
 hands out, and only a beat from that same deployer releases a job left `running`
 by a process that died. Running a second deployer (this container plus the
 host-run process below) is therefore safe from the server's side, though they
@@ -89,8 +91,6 @@ Useful for development or environments where Docker Compose is not running the d
 
 ```bash
 # Install Python deps (none beyond stdlib)
-# Create socket directory
-sudo mkdir -p /var/run/rainver
 
 # The jobs need the checkout, the mode root, and the host path of that mode root.
 # On the host the last two are the same directory.

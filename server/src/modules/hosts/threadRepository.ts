@@ -2,11 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 
 /**
- * ADR 0016 D14: a host thread pins a run-file-lifecycle conversation to one
- * WorkspaceLocation (execution-topology-and-project-control-plane-plan.md
- * P1 — previously a (host, project_folder) pair directly). See
- * `server/src/db/schema/hostThreads.ts` for the invariants this row
- * encodes.
+ * A host thread pins a run-file-lifecycle conversation to one
+ * WorkspaceLocation. See `server/src/db/schema/hostThreads.ts` for the
+ * invariants this row encodes.
  */
 export interface HostThread {
   id: string;
@@ -304,9 +302,9 @@ export class PgHostThreadRepository {
    * — is the Agent's alone, so it is archived whenever that Agent leaves,
    * which is what keeps what it learned in this Room out of the next one. The
    * shared Conversation **cwd** belongs to every Agent in the Session, so it
-   * follows only when the last one leaves. Before the profile existed the
-   * second condition gated both, and `pending_archive_at` was left null for a
-   * departing Agent while others remained.
+   * follows only when the last one leaves. Do not gate the profile archive on
+   * the last Agent leaving: `pending_archive_at` would stay null while others
+   * remain, and what this Agent learned stays in the Room.
    */
   async closeConversationAgentForRoom(spaceId: string, roomId: string, agentId: string): Promise<
     Array<HostThread & { include_workspace: boolean }>
@@ -379,12 +377,10 @@ export class PgHostThreadRepository {
   }
 
   /**
-   * Close a direct-chat thread. `pendingArchive` used to mean "this thread has
-   * a managed workspace worth archiving"; it now means "there is host state to
-   * archive at all", which is true of every host-bound direct thread, because
-   * the Agent's runtime profile is archived whether or not the cwd was
-   * Rainver's to manage. Whether the workspace goes with it is decided at the
-   * request, not here.
+   * Close a direct-chat thread. `pendingArchive` means there is host state to
+   * archive, which is true of every host-bound direct thread: the Agent's
+   * runtime profile is archived whether or not the cwd was Rainver's to
+   * manage. Whether the workspace goes with it is decided at the request.
    */
   async closeDirectAgent(agentId: string, userId: string, pendingArchive = false): Promise<void> {
     await this.db.query(
@@ -406,9 +402,9 @@ export class PgHostThreadRepository {
    * The other half of `host-state/reset`: the profiles that held those
    * sessions are archived on the machine, so a thread that still believed it
    * could resume `vendor_session_id` would fail on its next turn with the
-   * runtime reporting no such conversation. `session_reset` is the existing
-   * state for exactly that, and the retired ids are kept so ambient session
-   * import can still tell the Agent's old sessions from the owner's own.
+   * runtime reporting no such conversation. Mark that thread `session_reset`.
+   * Keep the retired ids so ambient session import can still tell the Agent's
+   * sessions from the owner's own.
    *
    * Two shapes of thread hold this Agent's sessions and they are matched
    * differently. A Conversation or direct thread carries `agent_id` itself. A
@@ -419,7 +415,9 @@ export class PgHostThreadRepository {
    * currently lives in. Matching only on the column would archive a
    * `location` profile and leave its thread resuming into nothing; matching
    * any Run ever would retire a session that now lives in another Agent's
-   * profile, which this reset does not touch.
+   * profile, which this reset does not touch. A Location thread also carries
+   * no `execution_host_id` of its own (`create` leaves it null); its host is
+   * the Location's.
    */
   async retireAgentSessionsOnHost(agentId: string, hostId: string): Promise<number> {
     const result = await this.db.query(
@@ -428,7 +426,9 @@ export class PgHostThreadRepository {
               retired_vendor_session_ids = CASE WHEN vendor_session_id IS NULL THEN retired_vendor_session_ids ELSE retired_vendor_session_ids || to_jsonb(vendor_session_id) END,
               vendor_session_id = NULL,
               updated_at = now()
-        WHERE thread.execution_host_id = $2
+        WHERE COALESCE(thread.execution_host_id, (
+                SELECT wl.execution_host_id FROM workspace_locations wl WHERE wl.id = thread.workspace_location_id
+              )) = $2
           AND thread.status IN ('active', 'session_reset')
           AND (
             thread.agent_id = $1
@@ -466,10 +466,10 @@ export class PgHostThreadRepository {
   /**
    * Host state a reconnecting daemon still owes an archive for.
    *
-   * Not restricted to `workspace_mode = 'managed'` any more: a Conversation
-   * pinned to a registered WorkspaceLocation has no Rainver-managed cwd but
-   * still has the Agent's runtime profile on that machine, and leaving that
-   * behind is the leak this phase closes. `include_workspace` says which of
+   * Covers a Conversation pinned to a registered WorkspaceLocation, not only
+   * `workspace_mode = 'managed'`. That Conversation has no Rainver-managed
+   * cwd, and it still has the Agent's runtime profile on that machine.
+   * Leaving the profile behind leaks it. `include_workspace` says which of
    * the two the daemon should move.
    */
   async listPendingManagedWorkspaceArchives(hostId: string): Promise<Array<{
@@ -558,8 +558,8 @@ export class PgHostThreadRepository {
       vendorSessionId: string | null;
       sessionReset: boolean;
       /**
-       * Whether the Run's prompt reached the runtime and the turn completed:
-       * only then did the vendor session receive what it was dispatched with.
+       * Whether the Run's prompt reached the runtime and the turn completed.
+       * The vendor session has received what it was dispatched with only then.
        */
       landed?: boolean;
       /** The identity digest the Run was dispatched with, and whether its block was in the prompt. */
@@ -568,10 +568,9 @@ export class PgHostThreadRepository {
       contextWindow?: { used: number; size: number } | null;
     },
   ): Promise<void> {
-    // A reset clears the stale vendor session id outright rather than
-    // COALESCE-preserving it — otherwise every subsequent dispatch into this
-    // thread keeps retrying the exact same broken `--resume <id>` forever
-    // instead of degrading to a fresh session as `session_reset` promises.
+    // A reset clears the stale vendor session id. Do not COALESCE-preserve
+    // it. Every later dispatch would retry the same broken `--resume <id>`
+    // instead of starting fresh, which is what `session_reset` means.
     //
     // The identity digest is recorded here and nowhere else: only a Run that
     // carried the block and landed may say the session holds it, so a

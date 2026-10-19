@@ -1,3 +1,4 @@
+import { countTasksCreatedInTurn, lockTurnFanOutForTransaction, TASK_FAN_OUT_PER_TURN } from "../tasks/turnFanOut.js";
 import type { SystemActionId, WorkLoopStageKey } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
@@ -26,8 +27,8 @@ import { declareRunArtifact, type RunArtifactRole } from "./artifactDeclarations
  * The gate for the two structural writes is not here: `decisionCore.ts` decides
  * by trigger origin, so the same definition serves a person asking in a
  * conversation and an unattended wake-up, and only the second needs approval.
- * Putting that distinction in two action definitions would have meant two
- * schemas, two executors, and two places to forget one of them.
+ * Do not split that into two action definitions. That would be two schemas,
+ * two executors, and two places to forget one of them.
  */
 /** Enough for an Agent to find the Task meant without flooding the turn. */
 const MAX_LISTED_TASKS = 50;
@@ -47,9 +48,9 @@ export function registerProjectWorkSystemActionExecutors(
    * dedupes on `(space_id, idempotency_key)` — so the id alone collides across
    * every Run in the Space, and the Run id alone still collides across a
    * Supervisor retry, which re-executes the *same* run id in a fresh process
-   * whose counter restarts at 1. Without the attempt, attempt 2's first call
-   * resolves to attempt 1's event: the row is written and the event is
-   * swallowed, which is the divergence the single writer exists to prevent.
+   * whose counter restarts at 1. Do not omit the attempt. Attempt 2's first
+   * call would resolve to attempt 1's event: the row is written and the event
+   * is swallowed.
    */
   async function contextFor(db: Queryable, idempotencyKey: string | null): Promise<AgentActionContext> {
     if (!run.agent_id) throw new HttpError(422, "This action requires an Agent identity");
@@ -94,6 +95,15 @@ export function registerProjectWorkSystemActionExecutors(
       // membership revoked mid-turn must lose, deterministically.
       await lockActiveProjectForMutation(tx, run.space_id, projectId);
       await assertProjectWriterForMutation(tx, run.space_id, projectId, identity.userId);
+      // Counted under the turn's fan-out lock, the one the follow-up
+      // reconciler holds too, so neither route sees room the other took.
+      await lockTurnFanOutForTransaction(tx, run.id);
+      if (await countTasksCreatedInTurn(tx, run.space_id, run.id) >= TASK_FAN_OUT_PER_TURN) {
+        throw new HttpError(
+          429,
+          `This turn already created ${TASK_FAN_OUT_PER_TURN} Tasks. Continue in the next turn, or tell the user what is left to create.`,
+        );
+      }
       // The Task is created under the person who asked — they own it and it
       // inherits their access — but `task.created` is attributed to the Agent,
       // because the Agent is what made it. The timeline is the record of who

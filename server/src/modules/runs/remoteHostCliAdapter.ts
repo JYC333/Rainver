@@ -1,9 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type InvocationDelivery, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent } from "@rainver/protocol";
 import type { ContentBlock } from "./cliConversationProtocol.js";
 import type { CredentialSpendDeps } from "../policy/credentialSpend.js";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { AcpRuntimeAdapter } from "../runtimeAdapters/acpRuntimeAdapter.js";
-import type { AgentRunRecord } from "./repository.js";
+import { PgRunRepository, type AgentRunRecord } from "./repository.js";
 import { buildRunWorkSurface, type RunWorkSurface, type RunWorkSurfaceFrame } from "./runWorkSurface.js";
 import { acpRuntimeContextPromptBlocks } from "./acpRuntimeContextPrompt.js";
 import { stallTimeoutSeconds } from "./stallTimeout.js";
@@ -43,34 +44,24 @@ import {
 } from "./remoteProviderBinding.js";
 
 /**
- * ADR 0016 P3: the remote-host counterpart to `executeVendorCliAdapter` —
- * deliberately a separate, much smaller function rather than a branch
- * inside it. `executeVendorCliAdapter` is credential- and provider-coupled
- * throughout (grant → sandbox config → provider binding, each with its own
- * cleanup-on-failure path); a trusted remote host gets no server-brokered
- * credential for native login. The canonical Runtime Context Delivery is
- * still prepared by the control plane and sent through ACP. What the two *do* share is the tool
- * surface: both stage the same `rainver` command and Skill and issue the same
- * Run-scoped identity, by design, since a dispatched agent must report back
- * the same way wherever it runs.
- * Forking that function's internals would risk the credential-sensitive
- * server-host path for a feature that shares almost none of its logic. The
- * two functions share only genuinely pure pieces: spec lookup and argv
- * rendering. Canonical Runtime Context Delivery is projected into the one
- * ACP prompt channel; ACP protocol events are consumed by the conversation
- * controller on both paths, not parsed from vendor stdout.
+ * CLI execution for a daemon Run (`executeRemoteHostCliAdapter`). Every
+ * `local_cli` adapter is a daemon run: the built-in host or a paired
+ * machine. Do not add a second CLI executor in the server process.
  *
- * Remote-eligible adapters: the `acp` protocol (`claude_code`, `opencode`,
- * `codex_cli`) — driven via
- * `createCliConversationController` over the daemon's duplex
- * `stdin`/`stdin_close` frames, the same controller abstraction the
- * server-host path already uses. `codex_cli`'s adapter binary (`codex-acp`)
- * is a pinned dependency of `packages/host-daemon`, not something a trusted
- * host installs itself — the daemon resolves and spawns its own bundled copy
- * (see `packages/host-daemon/src/execution.ts`).
+ * The control plane prepares Runtime Context Delivery and sends it through
+ * ACP. A host that uses its own login does not receive a server-brokered
+ * credential. This path stages the `rainver` work surface and the Run-scoped
+ * identity.
+ *
+ * `claude_code`, `opencode`, and `codex_cli` speak ACP through
+ * `createCliConversationController` and the daemon's duplex `stdin` /
+ * `stdin_close` frames. `codex_cli`'s adapter binary (`codex-acp`) is a
+ * pinned dependency of `packages/host-daemon`. The daemon resolves and
+ * spawns that bundled copy (`packages/host-daemon/src/execution.ts`). Do not
+ * ask the host to install it.
  */
 /**
- * ACP runtime replatform P2: the daemon knows the real workspace path for a
+ * The daemon knows the real workspace path for a
  * run (it resolved it to spawn the process); the server never does (ADR 0016
  * B64). An ACP session still needs to name its `cwd` — both as an argv token
  * (opencode's `headless_command_template`) and inside the controller's own
@@ -83,21 +74,20 @@ import {
  */
 export const REMOTE_HOST_ACP_CWD_PLACEHOLDER = REMOTE_CWD_PLACEHOLDER;
 
-export interface RemoteHostCliAdapterInput {
+interface RemoteHostCliAdapterInput {
   run: AgentRunRecord;
   prompt: string | null;
   invocation_delivery?: InvocationDelivery;
   model: string | null;
   resume_session_id: string | null;
   timeout_seconds?: number | null;
-  /** The dispatch's adapter settings; `stall_timeout_seconds` is read from it, as on the server-host path. */
+  /** The dispatch's adapter settings; `stall_timeout_seconds` is read from it. */
   adapter_config?: Record<string, unknown>;
   runtime_event_sink?: (event: RuntimeSemanticEvent) => Promise<void> | void;
   /**
-   * control-center-phase2-plan.md P1 (C2): the normalized conversation event
-   * sink, persisted as frames arrive (not a post-hoc parse of accumulated
-   * stdout, unlike `runtime_event_sink`/`run_events`, which only reflects
-   * whatever the caller does with what has already resolved).
+   * Normalized conversation events, persisted as frames arrive. Not a
+   * post-hoc parse of accumulated stdout. `runtime_event_sink` / `run_events`
+   * only reflect what the caller does with what has already resolved.
    */
   thread_event_sink?: (drafts: ThreadEventDraft[]) => Promise<void> | void;
   process_registry?: CliProcessRegistry;
@@ -118,11 +108,10 @@ export interface RemoteHostCliAdapterInput {
  *
  * The dispatch's own override first — Task dispatch pins a thread's copy that
  * way — then the runtime profile's, which is where every other surface records
- * it. Reading only the override meant a Room turn and a direct chat silently
- * launched `own`: harmless on a paired machine, where `own` is the owner's
- * logged-in CLI, and fatal on the built-in host, which has no vendor CLI on
- * PATH at all. It also made the usage ledger and the quota cache disagree
- * about which copy had run.
+ * it. Do not read only the override. A Room turn and a direct chat would
+ * launch `own`: on a paired machine that is the owner's logged-in CLI, and on
+ * the built-in host there is no vendor CLI on PATH. The usage ledger and the
+ * quota cache would also disagree about which copy had run.
  */
 export function dispatchInstallation(run: {
   model_override_json?: unknown;
@@ -207,8 +196,8 @@ function resolveTimeoutSeconds(input: RemoteHostCliAdapterInput, defaultSeconds:
  *
  * `install` widens that and comes only from the dispatch
  * (`model_override_json.egress_profile`), which the server composes and no
- * request body reaches. A *standing* grant on the Agent runtime profile was
- * the plan's other half and is deliberately not read: `runtime_config_json`
+ * request body reaches. A standing grant on the Agent runtime profile is not
+ * read: `runtime_config_json`
  * is free-form and `canWriteRuntimeProfiles` is a read predicate for an
  * ordinary Agent, so any member who can see the Agent could have widened what
  * its Runs reach. Granting `install` through the product needs an
@@ -331,8 +320,7 @@ export async function executeRemoteHostCliAdapter(
 async function runRemoteHostCliAdapter(
   input: RemoteHostCliAdapterInput,
   hostId: string,
-  // execution-topology-and-project-control-plane-plan.md P1 / D2/D5: this is
-  // a WorkspaceLocation id. The daemon wire frame uses the same
+  // A WorkspaceLocation id. The daemon wire frame uses the same
   // `workspace_location_id` field, and the daemon's local config maps that id
   // to the real directory on the owning machine.
   workspaceLocationId: string | null,
@@ -348,9 +336,8 @@ async function runRemoteHostCliAdapter(
   if (spec.implementation_status !== "implemented") {
     return remoteFailureWithEvent(input, spec.runtime_key, "runtime_adapter_not_implemented", `Runtime adapter '${runtimeKey}' is not executable.`, startedAt);
   }
-  // Every currently-implemented local_cli adapter is ACP; this defends only
-  // against a hypothetical future non-ACP adapter slipping past routes.ts's
-  // own remote-eligibility gate.
+  // This path runs ACP adapters. A spec whose protocol is not `acp` fails
+  // closed here. Do not dispatch it.
   if (spec.invocation.protocol !== "acp") {
     return remoteFailureWithEvent(
       input,
@@ -361,19 +348,14 @@ async function runRemoteHostCliAdapter(
     );
   }
 
-  // control-center-phase2-plan.md P3 follow-up (real-usage feedback,
-  // 2026-08-22): every remote dispatch is workspace-bound (`dispatch`
-  // requires `project_folder_id`) and the daemon's diff capture already
-  // stages new files with `git add --intent-to-add --all` before `git diff
-  // HEAD`, so a brand-new file written directly into the workspace shows
-  // its full content in "Review diff" — nudging the agent to write
-  // deliverables to `$RAINVER_OUTPUT_DIR` instead only misdirected
-  // ordinary work out of the workspace the user actually asked for it in.
-  // The daemon still injects `RAINVER_OUTPUT_DIR` and uploads whatever
-  // lands there (kept dormant, not removed — a future structured
-  // rainver-information channel, distinct from workspace file
-  // changes, is a real open design question logged in
-  // `tasks/deferred-register.md`, not decided here).
+  // Every remote dispatch is workspace-bound (`dispatch` requires
+  // `project_folder_id`) and the daemon's diff capture stages new files with
+  // `git add --intent-to-add --all` before `git diff HEAD`, so a brand-new
+  // file written into the workspace shows its full content in "Review diff".
+  // Do not tell the agent to write ordinary work only to `$RAINVER_OUTPUT_DIR`.
+  // The daemon still injects `RAINVER_OUTPUT_DIR` and uploads whatever lands
+  // there. A structured channel for information meant for Rainver, distinct
+  // from workspace file changes, is open in `tasks/deferred-register.md`.
   let prompt = input.prompt ?? input.run.prompt ?? "";
   const supplementalInstructions: string[] = [];
 
@@ -391,21 +373,17 @@ async function runRemoteHostCliAdapter(
       // ndjson_rpc-strategy adapter); passing it here would be a no-op at
       // best and is omitted for clarity.
       model: null,
-      // Trusted-host semantics (D1) do not fit `renderCliCommand`'s built-in
-      // permission-bypass gate, which requires a server-known worktree
-      // sandbox_cwd and a high/critical risk_level — both server-host
-      // concepts. Remote's auto-approve flag is appended manually below.
+      // Do not use `renderCliCommand`'s permission-bypass gate. It requires a
+      // server-known worktree path and a high or critical risk. This dispatch
+      // has neither. The auto-approve flag is appended below.
       permission_bypass: false,
       risk_level: "low",
       project_folder_id: input.run.project_folder_id,
       sandbox_cwd: REMOTE_HOST_ACP_CWD_PLACEHOLDER,
       resume_session_id: input.resume_session_id,
       required_sandbox_level: null,
-      // See renderCliCommand's doc comment: no server-local path exists to
-      // check, and faking one would be security theater, not enforcement.
-      // Known gap, not silently ignored — see hosts.md and the deferred
-      // register: a real remote deny-config would need the daemon to write
-      // it into its own workspace, which phase 1 does not do.
+      // No server-local path exists to check, and faking one would not enforce
+      // anything. This path does not write a deny config into the daemon workspace.
       skip_subagent_disable_check: true,
     });
   } catch (error) {
@@ -420,10 +398,8 @@ async function runRemoteHostCliAdapter(
 
   const argv = [...rendered.argv];
   if (spec.permissions.supports_permission_bypass && spec.permissions.permission_bypass_arg_template) {
-    // Trusted-host default (D1): auto-approve edits/commands in the
-    // workspace — headless execution has no human to answer a permission
-    // prompt. P4's dispatch composer exposes this as a per-dispatch choice;
-    // phase 1 always takes this default.
+    // Headless execution has no person to answer a permission prompt, so
+    // this always passes the bypass arguments.
     argv.push(...spec.permissions.permission_bypass_arg_template);
   }
 
@@ -431,10 +407,16 @@ async function runRemoteHostCliAdapter(
   const threadEvents = createThreadEventNormalizer();
   const runtimeEvents = createVendorEventNormalizer(spec.runtime_key);
   const timeoutSeconds = resolveTimeoutSeconds(input, spec.limits.default_timeout_seconds, spec.limits.max_timeout_seconds);
+  // Credentials this run carries must outlive it. Its budget starts when the
+  // host launches it, and the launch may first wait up to one budget (see
+  // `RemoteWsCliCommandExecutor`), so the longest it can live is two budgets;
+  // the margin keeps a request in flight at that boundary from being cut off.
+  const credentialLifetimeSeconds = 2 * timeoutSeconds + 300;
 
   // The control plane's choice of model backend for this run, if it made one.
-  // Read from the thread message rather than `runs.model_provider_id` — see
-  // `remoteProviderBinding.ts` for why that column is not evidence.
+  // Read the frozen Runtime Profile snapshot. Do not read
+  // `runs.model_provider_id`. That column is the router's prediction until
+  // execution records the binding.
   let providerBinding: RemoteProviderBinding | null = null;
   /** The provider this run actually executed against; null means the copy's own login. */
   let boundProviderId: string | null = null;
@@ -469,9 +451,7 @@ async function runRemoteHostCliAdapter(
             runtimeKey: spec.runtime_key,
             binding: bound,
             scope,
-            // Outlive the run itself, the way the server-host path does, so a
-            // request in flight at the timeout boundary is not cut off.
-            ttlSeconds: timeoutSeconds + 300,
+            ttlSeconds: credentialLifetimeSeconds,
             leaseRegistry: deps.leaseRegistry,
             // Reads this host's kind and proxy override to resolve a proxy URL
             // it can actually reach. `config.databaseUrl` is proven
@@ -511,11 +491,9 @@ async function runRemoteHostCliAdapter(
     }
   }
 
-  // How this run reports back. Offered whenever the Run was granted any tool
-  // at all: an agent dispatched with a tool surface and no way to reach it is
-  // exactly the gap that per-vendor MCP configuration used to fill on the
-  // server host and never filled here. A Run granted nothing gets no command
-  // rather than one that would refuse everything.
+  // How this run reports back. Offered whenever the Run was granted any tool.
+  // A Run granted nothing gets no command rather than one that would refuse
+  // everything.
   //
   // The grants come from the Run's own persisted snapshot, the same source
   // `SystemActionDispatcher` enforces against — never from the dispatch
@@ -528,7 +506,7 @@ async function runRemoteHostCliAdapter(
         config,
         run: input.run,
         hostId,
-        timeoutSeconds,
+        lifetimeSeconds: credentialLifetimeSeconds,
       });
     } catch (error) {
       return remoteFailureWithEvent(
@@ -541,8 +519,8 @@ async function runRemoteHostCliAdapter(
     }
   }
   if (workSurface) {
-    // An empty prompt stays empty: a pointer on its own would start a turn
-    // nobody asked for, the same guard the server-host path makes.
+    // An empty prompt stays empty. A pointer on its own would start a turn
+    // nobody asked for.
     // The daemon substitutes the placeholder with the file's absolute path on
     // that machine (only it knows one); an unexpanded `$RAINVER_SKILL_PATH`
     // is a path a read_file tool cannot open.
@@ -627,10 +605,32 @@ async function runRemoteHostCliAdapter(
   // Named here because the result envelope reports it too, and both must be
   // the same answer.
   const installation = dispatchInstallation(input.run);
-  const strictHost = await hostIsStrict(deps.config?.databaseUrl, hostId, deps.db);
+  let strictHost: boolean;
+  try {
+    strictHost = await hostIsStrict(deps.config?.databaseUrl, hostId, deps.db);
+  } catch (error) {
+    // Not knowing is not "trusted". A built-in host taken for a paired machine
+    // would launch without its strict session config and with direct egress
+    // in place of the instance's managed route (B62); the Run fails instead.
+    return remoteFailureWithEvent(
+      input,
+      spec.runtime_key,
+      "host_trust_unavailable",
+      `Could not read the execution host's trust mode: ${error instanceof Error ? error.message : String(error)}`,
+      startedAt,
+    );
+  }
   const egressTransport = !deps.executor && strictHost && deps.config
     ? managedHostEgressTransport(await readInstanceOperationsPolicy(deps.config))
     : { mode: "direct" } satisfies HostEgressTransport;
+  // The launch nonce is written on the Run's attempt before the frame leaves,
+  // so the host's diff/output uploads — which name it — bind to this attempt
+  // and to no other (D45). A test with no database runs the protocol alone.
+  const launchId = randomUUID();
+  if (deps.config?.databaseUrl) {
+    await new PgRunRepository(deps.db ?? getDbPool(deps.config.databaseUrl))
+      .bindAttemptLaunch({ space_id: input.run.space_id, run_id: input.run.id, launch_id: launchId });
+  }
   const executor = deps.executor ?? new RemoteWsCliCommandExecutor(
     hostId,
     workspaceLocationId,
@@ -649,6 +649,7 @@ async function runRemoteHostCliAdapter(
     dispatchIsolation(input.run),
     egressTransport,
     input.max_concurrent_runs ?? null,
+    launchId,
   );
   let stdoutText = "";
   // Provider binding is authoritative for a bound run. User-selected generic
@@ -699,14 +700,11 @@ async function runRemoteHostCliAdapter(
       const drafts = threadEvents.pushAcpProtocolEvent(event);
       if (drafts.length > 0) void input.thread_event_sink?.(drafts);
     },
-    // execution-topology-and-project-control-plane-plan.md P0.4/D7: makes
-    // the dispatch-preset pre-authorization a durable, visible fact on the
-    // thread this Run belongs to, rather than an invisible default. Reuses
-    // the existing `diagnostic` event type (§2.14's plan correction: not a
-    // new `host_thread_events` CHECK-constraint value) — kept human-readable
-    // (discovery review finding #3), not a serialized JSON blob, since
-    // `ThreadConversation.tsx`'s `DiagnosticsDrawer` renders every
-    // `diagnostic` line verbatim and this fires on essentially every
+    // Makes the dispatch-preset pre-authorization a durable, visible fact on the
+    // thread this Run belongs to. Reuses the `diagnostic` event type. Do not
+    // add a new `host_thread_events` CHECK value. Keep it human-readable, not
+    // a serialized JSON blob: `ThreadConversation.tsx`'s `DiagnosticsDrawer`
+    // renders every `diagnostic` line verbatim and this fires on essentially every
     // tool-using turn.
     on_permission_decision: (record) => {
       void input.thread_event_sink?.([{
@@ -722,9 +720,8 @@ async function runRemoteHostCliAdapter(
     command: argv,
     cwd: null,
     timeout_seconds: timeoutSeconds,
-    // The same rule as the server-host path: a runtime running a long tool
-    // call emits nothing for its duration, and a third of the run budget
-    // (100s for the default) was killing legitimate turns mid-call.
+    // A long tool call emits nothing until it returns. Do not use a third of
+    // the run budget.
     stall_timeout_seconds: stallTimeoutSeconds(input.adapter_config, timeoutSeconds),
     env: {},
     run_id: input.run.id,
@@ -732,9 +729,8 @@ async function runRemoteHostCliAdapter(
     process_registry: input.process_registry,
     stdio_controller: stdioController,
     on_stdout_chunk: (chunk) => {
-      // Kept only as the last-resort output_text/measurement fallback for
-      // the (effectively unreachable today) case where the controller never
-      // formed at all — see its own doc comment below.
+      // Fallback output_text when the controller never formed. See its doc
+      // comment below.
       stdoutText += chunk;
     },
     on_stderr_chunk: (chunk) => {
@@ -777,15 +773,21 @@ async function runRemoteHostCliAdapter(
     : { external_session_id: null, usage: null, model_usage: [], subscription_quota: null };
   if (result.timed_out) {
     const stalled = result.failure_code === "stall_timeout";
+    const neverLaunched = result.failure_code === "launch_wait_timeout";
     const idle = typeof result.idle_seconds === "number" ? result.idle_seconds : null;
     // Say which kind of stuck this was. "Remote Run timed out" is true of a
-    // runtime that worked for the whole budget and of one that said nothing
-    // after the first second, and only the second is worth retrying quickly.
-    const detail = stalled
-      ? `Remote Run produced no output for ${idle ?? "?"}s and was stopped.`
-      : idle !== null && idle > 0
-        ? `Remote Run timed out after ${timeoutSeconds}s (last output ${idle}s earlier).`
-        : `Remote Run timed out after ${timeoutSeconds}s.`;
+    // runtime that worked for the whole budget, of one that said nothing
+    // after the first second, and of one the host never started; only the
+    // second is worth retrying quickly, and the third is not the runtime's
+    // doing at all. The executor's stderr carries that third reason. Do not
+    // read the idle count when no process started. It says nothing.
+    const detail = neverLaunched
+      ? result.stderr || `The host did not start this run within its ${timeoutSeconds}s budget.`
+      : stalled
+        ? `Remote Run produced no output for ${idle ?? "?"}s and was stopped.`
+        : idle !== null && idle > 0
+          ? `Remote Run timed out after ${timeoutSeconds}s (last output ${idle}s earlier).`
+          : `Remote Run timed out after ${timeoutSeconds}s.`;
     await input.thread_event_sink?.([
       { event_type: "diagnostic", text: detail },
       { event_type: "status", status: "run_timeout" },
@@ -875,18 +877,13 @@ async function runRemoteHostCliAdapter(
 }
 
 /**
- * control-center-phase2-plan.md P3 (closure review): every one of the four
- * early-return failure paths above the `run_started` status event
- * (line ~144) used to return via bare `remoteFailure` with no thread event
- * at all — a Run could reach a terminal DB status
- * (`orchestrationService.ts`) while `host_thread_events` stayed completely
- * empty for it. `ThreadConversation.tsx`'s poll only learns a run finished
- * from a `status` event in that same stream, so those failures left the
- * conversation UI stuck showing the run as still active indefinitely.
- * Awaited, matching the terminal `run_succeeded`/`run_failed`/`run_timeout`
- * emissions further down this file (not the per-chunk fire-and-forget
- * pattern) — the same "a poller right at the terminal transition must not
- * observe a truncated conversation" reasoning applies here too.
+ * Early failure paths must write a thread status event and await it before
+ * returning. The conversation poll learns that a run finished only from a
+ * `status` event in `host_thread_events`. A terminal DB status with an empty
+ * event stream leaves the UI showing the run as still active. Match the
+ * terminal `run_succeeded` / `run_failed` / `run_timeout` emissions further
+ * down: a poller at the terminal transition must not observe a truncated
+ * conversation.
  */
 /**
  * Whether this host is the instance's built-in strict one. Read from the row
@@ -897,15 +894,13 @@ async function runRemoteHostCliAdapter(
 /**
  * The workspace the launch frame carries.
  *
- * The relative path has to be merged into a Location workspace the snapshot
- * already named, not merely used when there is no workspace at all. The
- * built-in host's daemon never ran `workspace add`, so a Location id alone
- * resolves to nothing there and the Run dies with "no local path registered";
- * the path under the shared workspace root is the only thing that lets it
- * resolve one (ADR 0016 section 4). A Conversation bound to a server Location
- * always arrives with a snapshot workspace, which is exactly the case the
- * previous `??` skipped — so this failed for every such Run and for none of
- * the managed-workspace ones that had been tried.
+ * The relative path is merged into a Location workspace the snapshot already
+ * named. Do not use it only when there is no workspace at all. The built-in
+ * host's daemon does not run `workspace add`, so a Location id alone resolves
+ * to nothing there and the Run dies with "no local path registered". The path
+ * under the shared workspace root is what lets it resolve one (ADR 0016
+ * section 4). A Conversation bound to a server Location always arrives with a
+ * snapshot workspace. Skipping the merge in that case fails every such Run.
  */
 export { launchWorkspace as launchWorkspaceForTest };
 
@@ -959,7 +954,7 @@ export function taskMergeIdOf(run: { contract_snapshot_json?: unknown }): string
   return typeof mergeId === "string" && mergeId.length > 0 ? mergeId : null;
 }
 
-export interface TaskWorktreeRun {
+interface TaskWorktreeRun {
   contract_snapshot_json?: unknown;
   run_type?: string | null;
   required_sandbox_level?: string | null;
@@ -983,9 +978,8 @@ export function executionTaskId(run: TaskWorktreeRun): string | null {
 async function hostIsStrict(databaseUrl: string | null | undefined, hostId: string, db?: Queryable): Promise<boolean> {
   if (!databaseUrl) return false;
   const result = await (db ?? getDbPool(databaseUrl))
-    .query<{ kind: string }>(`SELECT kind FROM hosts WHERE id = $1 LIMIT 1`, [hostId])
-    .catch(() => null);
-  return result?.rows[0]?.kind === "server";
+    .query<{ kind: string }>(`SELECT kind FROM hosts WHERE id = $1 LIMIT 1`, [hostId]);
+  return result.rows[0]?.kind === "server";
 }
 
 async function remoteFailureWithEvent(
@@ -1021,11 +1015,9 @@ function remoteFailure(
 }
 
 /**
- * `CliCommandExecutor` backed by a daemon's WebSocket connection instead of
- * the local sandbox-runner's TCP port. Same interface as
- * `SandboxRunnerCliCommandExecutor` on purpose: everything above this class
- * (argv rendering, vendor event parsing) stays identical regardless of
- * which one executes the command.
+ * `CliCommandExecutor` for a daemon WebSocket. Do not open a TCP port to a
+ * runner beside the server. Argv rendering and vendor event parsing stay
+ * above this class.
  */
 export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
   constructor(
@@ -1064,6 +1056,8 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
      * size.
      */
     private readonly maxConcurrentRuns: number | null = null,
+    /** Recorded on the Run's attempt by the caller; uploads are accepted against it. */
+    private readonly launchId: string = randomUUID(),
   ) {}
 
   async runCommand(input: Parameters<CliCommandExecutor["runCommand"]>[0]): Promise<CliExecutionResult> {
@@ -1071,10 +1065,8 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
       return { returncode: 1, stdout: "", stderr: "Host is offline.", timed_out: false, failure_code: "sandbox_runner_unavailable" };
     }
     const controller = input.stdio_controller;
-    // Line-split incoming `output` frames into the controller, exactly as
-    // `SandboxRunnerCliCommandExecutor`'s `connectAndRun` does for the
-    // server-host sandbox-runner socket — same controller abstraction,
-    // different transport underneath.
+    // Line-split incoming `output` frames into the controller. This transport
+    // is the daemon socket.
     const sendToController = (message: Record<string, unknown>) => {
       this.registry.sendStdin(this.hostId, input.run_id, `${JSON.stringify(message)}\n`);
     };
@@ -1083,9 +1075,9 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     };
     let protocolBuffer = "";
     // Last sign of life from the runtime. A run whose ACP stream has gone
-    // quiet and one that is working look identical from here otherwise, and
-    // waiting out the whole run timeout to tell them apart is what made a
-    // stalled OpenCode turn cost five silent minutes.
+    // quiet and one that is working look identical from here otherwise.
+    // Do not wait out the whole run timeout to tell them apart. A stalled
+    // turn would sit silent until that timeout.
     let lastOutputAt = Date.now();
     const onOutput = (chunk: string) => {
       lastOutputAt = Date.now();
@@ -1100,13 +1092,12 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         // `CliStdioController`'s interface (localCliExecution.ts); this
         // controller's body is fully synchronous, so the returned promise
         // is already resolved by the time this call returns and needs no
-        // `await` — awaiting it here would only reintroduce a microtask hop
-        // this synchronous design exists to avoid. The `.catch()` below
-        // guards a different hazard: `async` turns even a synchronous
-        // internal throw into a rejected Promise instead of letting it
-        // reach this `try/catch`, so without it a future bug inside
-        // `receive()` would become an unhandled rejection rather than a
-        // contained Run failure (discovery review finding #2).
+        // `await`. Awaiting it here would only reintroduce a microtask hop.
+        // Do not await it. The `.catch()` below guards a different hazard:
+        // `async` turns even a synchronous internal throw into a rejected
+        // Promise instead of letting it reach this `try/catch`. Do not drop
+        // the catch. A throw inside `receive()` would become an unhandled
+        // rejection rather than a contained Run failure.
         try {
           controller.receive(JSON.parse(record), sendToController, closeControllerStdin)
             .catch(() => { controller.reject("CLI protocol emitted invalid JSON"); closeControllerStdin(); });
@@ -1158,6 +1149,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
       input.on_stderr_chunk,
       onLaunched,
       this.maxConcurrentRuns,
+      this.launchId,
     );
     if (controller) void launchedPromise!.then(() => controller.start(sendToController));
     input.process_registry?.registerRemote?.(
@@ -1233,7 +1225,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
           ? "The host did not start this run within its time budget: another Run was writing its workspace, or the host had no free slot."
           : "",
         timed_out: true,
-        failure_code: expiry ?? "timeout",
+        failure_code: expiredBeforeLaunch ? "launch_wait_timeout" : expiry ?? "timeout",
         idle_seconds: Math.round((Date.now() - lastOutputAt) / 1000),
       };
     }

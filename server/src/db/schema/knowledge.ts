@@ -203,9 +203,9 @@ export const knowledgeItems = pgTable("knowledge_items", {
 	rootItemId: varchar("root_item_id", { length: 36 }),
 	supersedesItemId: varchar("supersedes_item_id", { length: 36 }),
 	knowledgeKind: varchar("knowledge_kind", { length: 32 }).notNull(),
-	// Domain lifecycle state, moved off `space_objects` (B12D). The default
-	// matches what every writer already passes explicitly; it exists so a new
-	// caller cannot create a status-less row.
+	// Domain lifecycle state lives on this row (B12D), not on `space_objects`.
+	// The default matches what every writer passes; a new caller cannot
+	// create a status-less row.
 	status: varchar({ length: 32 }).default('active').notNull(),
 	slug: varchar({ length: 512 }),
 	aliasesJson: jsonb("aliases_json"),
@@ -224,9 +224,9 @@ export const knowledgeItems = pgTable("knowledge_items", {
 	version: integer().notNull(),
 	deprecatedAt: timestamp("deprecated_at", { withTimezone: true, mode: 'string' }),
 	// Discriminated, immutable pointer to the exact source revision this
-	// version was promoted/revalidated from — never a pointer
-	// to a live mutable object. Null for Knowledge created outside promotion or
-	// through a path that predates the promotion-Candidate flow.
+	// version was promoted or revalidated from — never a pointer to a live
+	// mutable object. Null when the version was not promoted or revalidated
+	// from a source revision.
 	pinnedSourceRefJson: jsonb("pinned_source_ref_json"),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_knowledge_items_created_from_proposal_id").using("btree", table.createdFromProposalId.asc().nullsLast()),
@@ -376,10 +376,10 @@ export const spaceObjects = pgTable("space_objects", {
 	// B12E/B12F: subtype membership is validated by the entity registry at the
 	// only root writer. A closed list here would make the root know every subtype.
 	check("ck_space_objects_object_type_format", sql`(object_type)::text ~ '^[a-z][a-z0-9_]{0,31}$'::text`),
-	// The former `ck_space_objects_status` / `ck_space_objects_status_by_type`
-	// pair branched on `object_type`, so every new domain had to edit a
-	// root-table constraint. B12E forbids that: the root is ignorant of its
-	// subtypes. Each extension table now carries its own status constraint.
+	// Do not put a status constraint on the root that branches on `object_type`.
+	// Every new domain would have to edit a root-table constraint. B12E forbids
+	// that: the root is ignorant of its subtypes. Each extension table carries
+	// its own status constraint.
 	check("ck_space_objects_visibility", sql`visibility IN ('private', 'space_shared', 'selected_users')`),
 	check("ck_space_objects_access_level", sql`access_level IN ('full', 'summary')`),
 	check("ck_space_objects_private_owner", sql`visibility = 'space_shared' OR owner_user_id IS NOT NULL`),
@@ -441,6 +441,7 @@ export const spaceObjectProfiles = pgTable("space_object_profiles", {
     WHEN 'project_public_summary'::text THEN ((key)::text = 'project_public_summary'::text)
     WHEN 'source_item'::text THEN ((key)::text = ANY (ARRAY[('external_url'::character varying)::text, ('feed_entry'::character varying)::text, ('activity_record'::character varying)::text, ('artifact'::character varying)::text, ('run_event'::character varying)::text, ('file'::character varying)::text, ('document'::character varying)::text, ('log'::character varying)::text]))
     WHEN 'extracted_evidence'::text THEN ((key)::text = ANY (ARRAY[('document'::character varying)::text, ('excerpt'::character varying)::text, ('event'::character varying)::text, ('log'::character varying)::text, ('artifact'::character varying)::text, ('claim'::character varying)::text, ('summary'::character varying)::text]))
+    WHEN 'inquiry_thread'::text THEN ((key)::text = ANY (ARRAY[('question'::character varying)::text, ('hypothesis'::character varying)::text]))
     ELSE false
 END`),
 	check("ck_space_object_profiles_retrieval_policy_object", sql`jsonb_typeof(retrieval_policy_json) = 'object'::text`),
@@ -490,8 +491,8 @@ export const knowledgeItemSources = pgTable("knowledge_item_sources", {
 	knowledgeItemId: varchar("knowledge_item_id", { length: 36 }).notNull(),
 	sourceId: varchar("source_id", { length: 36 }).notNull(),
 	// Deliberately NOT `link_type`: this is citation lineage, not a semantic
-	// graph edge (B12A). Renaming it would merge two vocabularies the
-	// boundaries file exists to keep apart.
+	// graph edge (B12A). Do not rename it to `link_type`. That would merge two
+	// vocabularies the boundaries keep apart.
 	relationType: varchar("relation_type", { length: 32 }).notNull(),
 	locator: varchar({ length: 1024 }),
 	quote: text(),
@@ -595,8 +596,8 @@ export const claims = pgTable("claims", {
 	subjectObjectId: varchar("subject_object_id", { length: 36 }),
 	subjectText: text("subject_text"),
 	claimKind: varchar("claim_kind", { length: 32 }).notNull(),
-	// Domain lifecycle state, moved off `space_objects` (B12D). The claim
-	// status transition rules stay in `claimStatusRules.ts`.
+	// Domain lifecycle state lives on this row (B12D), not on `space_objects`.
+	// The claim status transition rules stay in `claimStatusRules.ts`.
 	status: varchar({ length: 32 }).default('active').notNull(),
 	claimText: text("claim_text").notNull(),
 	normalizedClaimHash: varchar("normalized_claim_hash", { length: 128 }).notNull(),
@@ -801,8 +802,8 @@ export const objectRelations = pgTable("object_relations", {
 	check("ck_object_relations_metadata_object", sql`jsonb_typeof(metadata_json) = 'object'::text`),
 	check("ck_object_relations_no_self", sql`(from_object_id)::text <> (to_object_id)::text`),
 	// B12F: the vocabulary is owned by `modules/ontology/linkTypes.ts`, which
-	// also declares endpoints and governance. A second closed set here could
-	// only drift from it — and did, for three values, before this change.
+	// also declares endpoints and governance. Do not add a second closed set
+	// here.
 	check("ck_object_relations_link_type_format", sql`(link_type)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text`),
 	check("ck_object_relations_status", sql`(status)::text = ANY (ARRAY[('candidate'::character varying)::text, ('active'::character varying)::text, ('rejected'::character varying)::text, ('archived'::character varying)::text])`),
 ]);
@@ -896,16 +897,16 @@ export const notes = pgTable("notes", {
 	contentHash: varchar("content_hash", { length: 64 }),
 	updatedByUserId: varchar("updated_by_user_id", { length: 36 }),
 	updatedByRunId: varchar("updated_by_run_id", { length: 36 }),
-	// N2/N3: the system-reserved role this note plays in its Project's
-	// notebook, replacing the title-string binding the research baseline used
-	// to resolve by. Membership is owned by the registry in
+	// The system-reserved role this note plays in its Project's notebook.
+	// Do not resolve the research baseline by the title string. Membership
+	// is owned by the registry in
 	// `modules/knowledge/noteProjectRoles.ts` (B12F), so the constraint below
 	// is a format check, not a closed set.
 	//
 	// `role_project_id` is the Project the role is scoped to. It duplicates the
 	// root's `primary_project_id` — deliberately, and the way
 	// `inquiry_threads.project_id` does: a partial unique index cannot span two
-	// tables, and "one role, one note per Project" (N3) is exactly what has to
+	// tables, and "one role, one note per Project" is exactly what has to
 	// be enforced by an index rather than remembered by a service. The pair is
 	// written together and cleared together; nothing sets one without the other.
 	roleProjectId: varchar("role_project_id", { length: 36 }),
@@ -995,8 +996,8 @@ export const notes = pgTable("notes", {
 	check("ck_notes_marginalia_binding", sql`((marginalia_project_id IS NULL) = (marginalia_owner_user_id IS NULL)) AND ((marginalia_target_object_id IS NULL) OR (marginalia_owner_user_id IS NOT NULL))`),
 	check("ck_notes_version", sql`version >= 1`),
 	// B12F: the role vocabulary belongs to the registry, so the database only
-	// constrains the token's shape. What it does still enforce is the pairing —
-	// a role without the Project it is scoped to would leave the unique index
+	// constrains the token's shape. It also enforces the pairing. A role
+	// without the Project it is scoped to would leave the unique index
 	// grouping every space's roleless-project notes together.
 	check("ck_notes_project_role_format", sql`(project_role IS NULL) OR ((project_role)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text)`),
 	check("ck_notes_project_role_pairing", sql`(project_role IS NULL) = (role_project_id IS NULL)`),

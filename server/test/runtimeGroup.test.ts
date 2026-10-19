@@ -102,12 +102,11 @@ describe("runtimeAdapters", () => {
 });
 
 describe("runtimeEventNormalization", () => {
-  // Runtime I/O Convergence requires semantic Run Events to never persist
-  // credentials or unbounded vendor payloads (see
-  // .agent/architecture/RUNS_AND_OUTPUTS.md). Codex-style command_execution
-  // events fall back to the raw shell command string for tool_name, which can
-  // carry secrets or arbitrarily long text — this must be redacted and bounded
-  // the same way `error.message` already is.
+  // Semantic Run Events must not persist credentials or unbounded vendor
+  // payloads (see .agent/architecture/RUNS_AND_OUTPUTS.md). Codex-style
+  // command_execution events fall back to the raw shell command string for
+  // tool_name, which can carry secrets or arbitrarily long text. Redact and
+  // bound it the same way `error.message` already is.
 
   describe("normalizeVendorEvents tool_name redaction", () => {
     it("redacts a secret embedded in an ACP tool_call title", () => {
@@ -179,7 +178,7 @@ describe("runtimeEventNormalization", () => {
       expect((events[0]!.metadata_json as Record<string, unknown>).tool_name).toBe("Read file");
     });
 
-    it("normalizes ACP tool lifecycle updates for codex_cli too (ACP runtime replatform P3)", () => {
+  it("normalizes ACP tool lifecycle updates for codex_cli too", () => {
       const events = normalizeVendorEvents("codex_cli", [
         {
           jsonrpc: "2.0",
@@ -505,8 +504,8 @@ describe("Server runtime provisioning against PostgreSQL", () => {
     expect((await repository.get(hostId, "opencode"))?.error).toBe(INTERRUPTED_INSTALL_ERROR);
 
     // The owner was still waiting on the daemon when another process gave its
-    // claim up for lost. Its answer is the real diagnosis; the placeholder was
-    // a guess, so it must not outlive it.
+    // claim up for lost. Keep the real diagnosis. Do not leave the
+    // interrupted-install placeholder in place of it.
     await repository.fail(hostId, "opencode", "1.0.0", "daemon reported\na sha256\tmismatch");
     expect(await repository.get(hostId, "opencode")).toMatchObject({
       state: "failed",

@@ -1,10 +1,11 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import MemoriesPage from '../MemoriesPage'
 import type { Memory } from '../../../types/api'
 import { agentsApi, knowledgeApi, memoryApi, spacesApi } from '../../../api/client'
+import i18n from '../../../i18n'
 
 const toastCalls: string[] = []
 vi.mock('sonner', () => {
@@ -53,6 +54,22 @@ describe('MemoriesPage, memory an Agent wrote', () => {
     })
   })
 
+  it('pages through more than one page of entries and starts again from the first page on a new filter', async () => {
+    vi.mocked(memoryApi.list).mockResolvedValue({ items: [memoryRow()], limit: 50, offset: 0, total: 120 })
+    renderPage()
+
+    expect(await screen.findByText('1–50 of 120')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
+    await waitFor(() => {
+      expect(memoryApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ limit: 50, offset: 50 }))
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Written by an Agent' }))
+    await waitFor(() => {
+      expect(memoryApi.list).toHaveBeenLastCalledWith(expect.objectContaining({ created_by: 'agent', offset: 0 }))
+    })
+  })
+
   it('carries a paused session straight into the list', async () => {
     renderPage('/memory?session=session-1')
 
@@ -75,7 +92,7 @@ describe('MemoriesPage, memory an Agent wrote', () => {
     vi.mocked(memoryApi.delete).mockResolvedValue(memoryRow({ status: 'archived' }) as never)
     renderPage()
 
-    fireEvent.click(await screen.findByRole('button', { name: '×' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Archive Meeting times' }))
     await waitFor(() => { expect(memoryApi.delete).toHaveBeenCalledWith('memory-1') })
     // Not "proposal submitted": the server archived it.
     expect(toastCalls).toContain('Archived')
@@ -88,11 +105,43 @@ describe('MemoriesPage, memory an Agent wrote', () => {
     await waitFor(() => { expect(memoryApi.restore).toHaveBeenCalledWith('memory-1') })
   })
 
+  it('ignores a slower answer for a filter that is no longer selected', async () => {
+    let finishFirst!: (page: Awaited<ReturnType<typeof memoryApi.list>>) => void
+    vi.mocked(memoryApi.list)
+      .mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve }))
+      .mockResolvedValueOnce({ items: [memoryRow({ id: 'memory-2', title: 'Agent note' })], limit: 50, offset: 0, total: 1 })
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Written by an Agent' }))
+    expect(await screen.findByText('Agent note')).toBeInTheDocument()
+
+    await act(async () => { finishFirst({ items: [memoryRow({ title: 'Stale note' })], limit: 50, offset: 0, total: 1 }) })
+    expect(screen.queryByText('Stale note')).not.toBeInTheDocument()
+    expect(screen.getByText('Agent note')).toBeInTheDocument()
+  })
+
+  it('reads in Chinese, keeping the entry itself as written', async () => {
+    await i18n.changeLanguage('zh-CN')
+    try {
+      renderPage()
+
+      expect(await screen.findByRole('heading', { name: '记忆' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '由智能体写入' })).toBeInTheDocument()
+      expect(await screen.findByText('Meeting times')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '归档《Meeting times》' })).toBeInTheDocument()
+      expect(screen.getByRole('columnheader', { name: '创建时间' })).toBeInTheDocument()
+      expect(screen.getByText(/2026年8月2[56]日/)).toBeInTheDocument()
+      expect(screen.getByText('0.5')).toBeInTheDocument()
+    } finally {
+      await i18n.changeLanguage('en')
+    }
+  })
+
   it('still says a proposal was submitted for someone else\'s entry', async () => {
     vi.mocked(memoryApi.delete).mockResolvedValue({ id: 'proposal-1', proposal_type: 'memory_archive' } as never)
     renderPage()
 
-    fireEvent.click(await screen.findByRole('button', { name: '×' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Archive Meeting times' }))
     await waitFor(() => { expect(toastCalls).toContain('Archive proposal submitted') })
   })
 })
@@ -223,7 +272,7 @@ describe('MemoriesPage maintenance UI', () => {
     vi.mocked(memoryApi.create).mockResolvedValue({ id: 'proposal-1' } as never)
     vi.mocked(memoryApi.maintenanceScan).mockResolvedValue({
       findings: [],
-      counts: { duplicate: 0, stale: 0, thin: 0, lifecycle_drift: 0 },
+      counts: { duplicate: 0, stale: 0, thin: 0, contradiction: 0 },
       candidate_limit: 500,
       candidates_examined: 0,
       scanned: 0,
@@ -274,6 +323,29 @@ describe('MemoriesPage maintenance UI', () => {
         project_id: 'project-1',
       })
     })
+  })
+
+  it('counts a scan in Chinese', async () => {
+    vi.mocked(memoryApi.maintenanceScan).mockResolvedValueOnce({
+      findings: [],
+      counts: { duplicate: 0, stale: 0, thin: 0, contradiction: 0 },
+      candidate_limit: 500,
+      candidates_examined: 3,
+      scanned: 3,
+      truncated: false,
+      artifact_id: 'report-artifact-1',
+      proposal_id: null,
+      access_safety: {},
+    } as never)
+    await i18n.changeLanguage('zh-CN')
+    try {
+      renderPage()
+      fireEvent.click(await screen.findByRole('button', { name: '扫描' }))
+      expect(await screen.findByText('已扫描 3 条')).toBeInTheDocument()
+      expect(screen.getByText('已完成')).toBeInTheDocument()
+    } finally {
+      await i18n.changeLanguage('en')
+    }
   })
 
   it('runs a project-filtered maintenance scan and creates a claim candidate packet from the report', async () => {

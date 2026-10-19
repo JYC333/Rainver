@@ -10,9 +10,10 @@ import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 // Real-Postgres coverage for domain-neutral Project Research integrity checks:
 // project-level claim intent records (project_research_claim_links) linking
-// to already-canonical `claims` rows, and the integrity gate's V1 checks
-// (citation existence, claim evidence/gap, evidence visible in project
-// corpus, experiment-provenance placeholder).
+// to already-canonical `claims` rows, and the integrity checks (citation
+// existence, a claim has evidence or an explicit gap, evidence visible in
+// the project corpus, experiment-backed claims reference a real Experiment
+// Definition).
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

@@ -1,9 +1,20 @@
 import { describe, expect, it, beforeEach } from 'vitest'
 import {
   clearConversationDraft,
+  draftFileSearchQuery,
   readConversationDraft,
   writeConversationDraft,
 } from './conversationDraft'
+
+describe('draftFileSearchQuery', () => {
+  it('searches by file name so a long path still fits the 200-character query limit', () => {
+    const deep = `${'directory-segment/'.repeat(20)}deeply-nested-file.ts`
+    expect(deep.length).toBeGreaterThan(200)
+    expect(draftFileSearchQuery(deep)).toBe('deeply-nested-file.ts')
+    expect(draftFileSearchQuery('README.md')).toBe('README.md')
+    expect(draftFileSearchQuery(`${'n'.repeat(300)}.ts`)).toHaveLength(200)
+  })
+})
 
 describe('conversation drafts', () => {
   beforeEach(() => sessionStorage.clear())
@@ -61,6 +72,15 @@ describe('conversation drafts', () => {
       saved_at: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
     }))
     expect(readConversationDraft('room:room-1')).toBeNull()
+  })
+
+  it('keeps the stored draft when the current text cannot be sent as written', () => {
+    writeConversationDraft({ destination: 'room:room-1:session-1', text: 'short', input_parts: [] })
+    writeConversationDraft({ destination: 'room:room-1:session-1', text: 'x'.repeat(8001), input_parts: [] })
+    expect(readConversationDraft('room:room-1:session-1')?.text).toBe('short')
+
+    writeConversationDraft({ destination: 'room:room-1:session-1', text: '   ', input_parts: [] })
+    expect(readConversationDraft('room:room-1:session-1')).toBeNull()
   })
 
   it('clears after a successful send', () => {

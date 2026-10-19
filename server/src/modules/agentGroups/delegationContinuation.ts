@@ -5,9 +5,9 @@ import {
 
 /**
  * Continuation for a delegated child run's completion, fired only when no
- * run in the Room's group was already waiting on it (plan Phase 3): the
- * fix for "delegate 完成了却没有后续" for a manager that replied and ended
- * its turn without calling `agent.wait_for_results`. The waiting case is
+ * run in the Room's group was already waiting on it. A manager that replied
+ * and ended its turn without calling `agent.wait_for_results` still gets
+ * the child's result. The waiting case is
  * unaffected — it already resumes through the existing
  * `queueWaitingDependencyRunsIfReady` path and never reaches this handler.
  */

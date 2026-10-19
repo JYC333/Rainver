@@ -24,10 +24,8 @@ const EVALUATION_LABELS: Record<(typeof EVALUATION_STATES)[number], string> = {
  * offered rather than hidden behind a disclosure.
  *
  * Two controls. The cognitive state is a real judgement only the user can make,
- * so it stays — as one-click segments instead of a two-click menu. The Next
- * Focus dropdown that used to live here is gone: the next round's first step is
- * computed, and asking twice was the duplication that made this form feel like
- * a form.
+ * so it stays — as one-click segments instead of a two-click menu. The next
+ * round's first step is computed. Do not ask for it again here.
  */
 export function CloseOutForm({ projectId, detail, onRecorded }: {
   projectId: string
@@ -47,9 +45,9 @@ export function CloseOutForm({ projectId, detail, onRecorded }: {
   const [changeSummary, setChangeSummary] = useState('')
   const [saving, setSaving] = useState(false)
 
-  // Reset only when the form is pointed at a different Thread. Keying on the
-  // whole `detail` object threw away half-typed input every time a sibling
-  // refresh produced a new object for the same Thread.
+  // Reset only when the form is pointed at a different Thread. Do not key
+  // on the whole `detail` object. A sibling refresh builds a new object for
+  // the same Thread and throws away half-typed input.
   useEffect(() => {
     setAnswerState(storedAnswer)
     setAnswerSummary(storedSummary)

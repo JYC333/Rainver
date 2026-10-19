@@ -1,15 +1,19 @@
 import { useState, useEffect, useId } from 'react'
 import { Archive, Clock, Loader2, Pause, Play, Plus, ShieldCheck } from 'lucide-react'
 import { toast } from 'sonner'
+import { AUTOMATION_TARGET_TYPES, automationTargetDefinition } from '@rainver/protocol'
 import { automationsApi, agentsApi, evolutionApi, projectsApi } from '../../api/client'
 import type { AutomationOut, AutomationTargetType, AutomationTriggerType, AgentOut, EvolvableAsset, EvolvableAssetVersion, Project, WorkflowExecutionSummary } from '../../types/api'
 import { useSpace } from '../../contexts/SpaceContext'
+import { useAuth } from '../../contexts/AuthContext'
 import { SpaceLink } from '../../core/spaceNav'
 import { Card, CardTitle } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
 import { Badge, StatusBadge } from '../../components/ui/badge'
 import { errMsg } from '../../lib/utils'
+import { formatDateTime } from '../../i18n/format'
+import i18n, { useAppTranslation } from '../../i18n'
 
 const BROWSER_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
@@ -23,9 +27,8 @@ const CRON_PRESETS: { label: string; expr: string }[] = [
 const fieldLabel = 'text-[11px] font-medium text-muted-foreground uppercase tracking-wider'
 const selectCls = 'flex h-9 w-full rounded-md border border-border bg-input px-3 text-sm'
 
-function fmt(dt: string | null): string {
-  if (!dt) return '—'
-  try { return new Date(dt).toLocaleString() } catch { return dt }
+function fmt(dt: string | null | undefined) {
+  return formatDateTime(dt)
 }
 
 function cfgString(cfg: Record<string, unknown> | null, key: string): string {
@@ -42,19 +45,23 @@ function cfgBoolDefault(cfg: Record<string, unknown> | null, key: string, fallba
   return typeof value === 'boolean' ? value : fallback
 }
 
+/** The Automation's registered target. A config without one is an Agent run, as the server reads it. */
 function automationTarget(auto: AutomationOut): AutomationTargetType {
-  const target = cfgString(auto.config_json, 'target_type')
-  if (target === 'knowledge_retrieval_maintenance') return 'knowledge_retrieval_maintenance'
-  if (target === 'context_ops_review_cycle') return 'context_ops_review_cycle'
-  if (target === 'workflow') return 'workflow'
-  return 'agent_run'
+  const target = cfgString(auto.config_json, 'target_type') || 'agent_run'
+  return (AUTOMATION_TARGET_TYPES as readonly string[]).includes(target) ? target as AutomationTargetType : 'agent_run'
 }
 
 function shortTargetLabel(target: AutomationTargetType): string {
-  if (target === 'knowledge_retrieval_maintenance') return 'knowledge maintenance'
-  if (target === 'context_ops_review_cycle') return 'context ops review cycle'
-  if (target === 'workflow') return 'workflow'
-  return 'agent run'
+  return i18n.t(`management_ui.automations.target.${target}`)
+}
+
+/** The targets whose Project binding a person can change here; the server refuses it for the rest. */
+function bindsProject(target: AutomationTargetType): boolean {
+  return target === 'agent_run' || target === 'workflow'
+}
+
+function spawnsRuns(target: AutomationTargetType): boolean {
+  return automationTargetDefinition(target)?.spawns_runs !== 'none'
 }
 
 function defaultName(target: AutomationTargetType): string {
@@ -115,6 +122,13 @@ function AddAutomationForm({ agents, projects, workflowAssets, onAdded, canCreat
     }
     if (next === 'knowledge_retrieval_maintenance') setCreatePacket(false)
     if (next === 'workflow' && triggerType === 'schedule') setWorkflowResolution('pin')
+  }
+
+  function handleTriggerChange(next: AutomationTriggerType) {
+    setTriggerType(next)
+    // A schedule disables the Resolution select, so it must not keep a
+    // "follow" that the submit check refuses for scheduled workflows.
+    if (next === 'schedule' && targetType === 'workflow') setWorkflowResolution('pin')
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -228,7 +242,7 @@ function AddAutomationForm({ agents, projects, workflowAssets, onAdded, canCreat
 
       <div className="space-y-1.5">
         <label className={fieldLabel}>Trigger</label>
-        <select value={triggerType} onChange={e => setTriggerType(e.target.value as AutomationTriggerType)} className={selectCls}>
+        <select value={triggerType} onChange={e => handleTriggerChange(e.target.value as AutomationTriggerType)} className={selectCls}>
           <option value="schedule">Schedule (cron)</option>
           <option value="manual">Manual only</option>
         </select>
@@ -314,6 +328,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
   projects: Project[]
   onChanged: (updated?: AutomationOut) => void
 }) {
+  const { t } = useAppTranslation()
   const [busy, setBusy] = useState(false)
   const [projectDraft, setProjectDraft] = useState(auto.project_id ?? '')
   const [savingProject, setSavingProject] = useState(false)
@@ -321,17 +336,23 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
   const isSchedule = auto.trigger_type === 'schedule'
   const archived = auto.status === 'archived'
   const target = automationTarget(auto)
+  const { currentUser } = useAuth()
+  // Only the owner changes an Automation's content, Project or enablement.
+  // A Space owner/admin who cannot read it gets the operations view: they may
+  // pause or archive it, and see nothing of what it runs.
+  const isOwner = currentUser?.id === auto.owner_user_id
+  const opsOnly = auto.access === 'ops'
 
   useEffect(() => {
     setProjectDraft(auto.project_id ?? '')
   }, [auto.project_id])
 
   useEffect(() => {
-    if (target !== 'workflow') { setExecutions([]); return }
+    if (target !== 'workflow' || opsOnly) { setExecutions([]); return }
     let active = true
     void automationsApi.workflowExecutions(auto.id).then(rows => { if (active) setExecutions(rows.slice(0, 5)) }).catch(() => { if (active) setExecutions([]) })
     return () => { active = false }
-  }, [auto.id, target])
+  }, [auto.id, target, opsOnly])
 
   async function act(fn: () => Promise<unknown>, ok: string) {
     setBusy(true)
@@ -361,7 +382,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
     <Card>
       <div className="flex items-start justify-between mb-2">
         <div className="flex items-center gap-2 flex-wrap">
-          <CardTitle>{auto.name}</CardTitle>
+          <CardTitle>{opsOnly ? "Another member's automation" : auto.name}</CardTitle>
           <Badge variant="muted" className="text-[10px]">
             {shortTargetLabel(target)}
           </Badge>
@@ -384,7 +405,12 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
       {cfgString(auto.config_json, 'prompt') && (
         <p className="text-xs mb-3 line-clamp-2"><span className="text-muted-foreground">Prompt: </span>{cfgString(auto.config_json, 'prompt')}</p>
       )}
-      {target === 'agent_run' && !archived && (
+      {opsOnly && (
+        <p className="text-xs mb-3 text-muted-foreground">
+          You can pause or archive this automation. Its prompt, configuration and results belong to its owner.
+        </p>
+      )}
+      {bindsProject(target) && !archived && isOwner && (
         <div className="flex flex-wrap items-end gap-2 mb-3">
           <label className="min-w-48 flex-1 space-y-1">
             <span className={fieldLabel}>Project binding</span>
@@ -403,13 +429,17 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
           </Button>
         </div>
       )}
-      {target !== 'agent_run' && (
+      {target !== 'agent_run' && !opsOnly && (
         <p className="text-xs mb-3 flex items-center gap-1.5 text-muted-foreground">
           <ShieldCheck className="size-3.5" />
           {target === 'workflow'
             ? `Workflow ${cfgString(auto.config_json, 'workflow_asset_key') || '—'} · ${cfgString(auto.config_json, 'workflow_resolution') || 'pin'}${cfgString(auto.config_json, 'workflow_version_id') ? ` · version ${cfgString(auto.config_json, 'workflow_version_id').slice(-8)}` : ''}`
             : target === 'context_ops_review_cycle'
             ? `Context Review Cycle report${cfgBool(auto.config_json, 'create_packets') ? ' + review packets' : ''} · memory ${cfgBoolDefault(auto.config_json, 'include_memory_maintenance', true) ? 'on' : 'off'}`
+            : target === 'information_digest'
+            ? (auto.project_id ? t('management_ui.automations.digest_project') : t('management_ui.automations.digest_personal'))
+            : target === 'autonomous_tick'
+            ? t('management_ui.automations.autonomous')
             : `Private report${cfgBool(auto.config_json, 'create_packet') ? ' + proposal packet' : ''}`}
         </p>
       )}
@@ -423,7 +453,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
 
       {!archived && (
         <div className="flex gap-2">
-          <Button size="sm" variant="outline" disabled={busy}
+          {!opsOnly && <Button size="sm" variant="outline" disabled={busy}
             onClick={async () => {
               setBusy(true)
               try {
@@ -434,7 +464,7 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
                 // a persona write on exactly that difference.
                 const result = await automationsApi.fire(auto.id)
                 if (result.skipped) toast.info(result.skip_reason ? `Skipped — ${result.skip_reason}` : 'Skipped')
-                else toast.success(target === 'agent_run' || target === 'workflow' ? 'Run queued' : 'Scan completed')
+                else toast.success(spawnsRuns(target) ? t('management_ui.automations.run_queued') : t('management_ui.automations.completed'))
                 onChanged()
               } catch (err) {
                 toast.error(errMsg(err))
@@ -442,14 +472,14 @@ function AutomationCard({ auto, agentName, projectName, projects, onChanged }: {
                 setBusy(false)
               }
             }}>
-            <Play className="size-3.5 mr-1" /> {target === 'agent_run' || target === 'workflow' ? 'Run now' : 'Scan now'}
-          </Button>
+            <Play className="size-3.5 mr-1" /> {t('management_ui.automations.run_now')}
+          </Button>}
           {auto.status === 'active' ? (
             <Button size="sm" variant="outline" disabled={busy}
               onClick={() => act(() => automationsApi.update(auto.id, { status: 'paused' }), 'Paused')}>
               <Pause className="size-3.5 mr-1" /> Pause
             </Button>
-          ) : (
+          ) : isOwner && (
             <Button size="sm" variant="outline" disabled={busy}
               onClick={() => act(() => automationsApi.update(auto.id, { status: 'active' }), 'Resumed')}>
               <Play className="size-3.5 mr-1" /> Resume

@@ -18,11 +18,8 @@ import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("projectResearchSynthesisOnlyExecutionDb", () => {
-  // Real-Postgres coverage for the synthesis_only vertical slice migrated to
-  // execution-per-pass WorkflowExecution authority (plan section 17.3): the
-  // Dedicated synthesis-only WorkflowExecution coverage. All Project Research
-  // run kinds now use execution-per-pass authority; this file exercises the
-  // specialized two-node report-snapshot pass.
+  // Real-Postgres coverage for synthesis_only. Each pass is its own
+  // WorkflowExecution. This file exercises the two-node report-snapshot pass.
 
   const CATALOG_ROOT = join(process.cwd(), "..", "catalog");
   const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -178,7 +175,7 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
       });
       await runs.insertRunEvaluation({ space_id: SPACE, run_id: synthesizeRun, outcome_status: "passed", trajectory_status: "acceptable", evaluated_at: now });
 
-      await new WorkflowExecutionService(config).reconcileForRun(db.pool, SPACE, synthesizeRun, OWNER);
+      await new WorkflowExecutionService(config).reconcileForRun(db.pool, SPACE, synthesizeRun);
 
       const finalNodes = await db.pool.query<{ node_key: string; status: string }>(
         `SELECT node_key, status FROM workflow_execution_nodes WHERE execution_id=$1 ORDER BY node_key`,
@@ -193,9 +190,9 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
         `SELECT status, progress_json->>'current_stage' AS current_stage FROM project_operations WHERE id=$1`,
         [operationId],
       );
-      // Checkpoint reform: reaching idea_review no longer means
-      // waiting on anybody, so the operation stays active rather than
-      // advertising a review that will never be asked for.
+      // Reaching idea_review does not mean waiting on anybody, so the
+      // operation stays active rather than advertising a review that will
+      // never be asked for.
       expect(finalOperation.rows[0]).toEqual({ status: "active", current_stage: "idea_review" });
 
       const report = await db.pool.query<{ synthesis_run_id: string; run_kind: string; status: string }>(
@@ -209,9 +206,9 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
           WHERE space_id=$1 AND machine_result_json->>'operation_id'=$2`,
         [SPACE, operationId],
       );
-      // Checkpoint reform: idea_review is recorded but does not
-      // hold the operation, so it is waived at creation and
-      // `reconcileIdeaReviewStage` carries the operation on from there.
+      // idea_review is recorded and does not hold the operation. It is waived
+      // at creation and `reconcileIdeaReviewStage` carries the operation on
+      // from there.
       expect(checkpoint.rows).toContainEqual({
         checkpoint_type: "idea_review",
         status: "waived",
@@ -223,7 +220,7 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
       // reconcile() call that dispatched it — after that call's own
       // isComplete() check already ran. The next periodic-reconciler tick
       // picks up the now-all-done node graph and finishes the execution.
-      await new WorkflowExecutionService(config).reconcile(db.pool, SPACE, executionId!, OWNER);
+      await new WorkflowExecutionService(config).reconcile(db.pool, SPACE, executionId!);
       const finalExecution = await db.pool.query<{ status: string }>(`SELECT status FROM workflow_executions WHERE id=$1`, [executionId]);
       expect(finalExecution.rows[0]).toEqual({ status: "completed" });
 
@@ -252,7 +249,7 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
       const now = new Date().toISOString();
       const runs = await dispatchSynthesisRun(synthesizeRun, now);
       await runs.markRunTerminal({ run_id: synthesizeRun, space_id: SPACE, status: "failed", error_json: { error_code: "provider_error" }, completed_at: now });
-      await new WorkflowExecutionService(config).reconcileForRun(db.pool, SPACE, synthesizeRun, OWNER);
+      await new WorkflowExecutionService(config).reconcileForRun(db.pool, SPACE, synthesizeRun);
 
       const node = await db.pool.query<{ status: string }>(
         `SELECT status FROM workflow_execution_nodes WHERE execution_id=$1 AND node_key='synthesize'`,
@@ -275,17 +272,12 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
 });
 
 describe("projectResearchSynthesisResumeDb", () => {
-  // Real-Postgres coverage for a second, compounding bug on top of the
-  // reconcileOperation stage-clobber fix: `queueSynthesis`'s idempotency guard
-  // (`if (state.synthesis_run_id) return;`) silently no-ops whenever a
-  // synthesis run was already queued once, even if current_stage was since
-  // reset back to "screening" (by the now-fixed clobber bug, or any other
-  // path) and the operation genuinely still needs to advance. Any operation
-  // that got clobbered even once before the reconcile fix landed is stuck
-  // forever: re-approving the checkpoint calls decideCheckpoint successfully,
-  // but resumeAfterCheckpoint -> queueSynthesis returns immediately without
-  // touching current_stage, so nothing visibly happens and the checkpoint
-  // keeps coming back on the next reconcile tick.
+  // `queueSynthesis` must not treat a stored `synthesis_run_id` as already
+  // done. `if (state.synthesis_run_id) return` no-ops even when current_stage
+  // was reset to "screening" and the operation still needs to advance.
+  // Re-approving the checkpoint then succeeds, queueSynthesis returns without
+  // touching current_stage, and the checkpoint comes back on the next
+  // reconcile tick.
 
   const CONFIG = loadConfig({});
   const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -339,9 +331,9 @@ describe("projectResearchSynthesisResumeDb", () => {
       checkpoint_ids: [],
       source_post_processing_rule_ids: [],
       source_post_processing_rule_id: null,
-      // A prior approval already queued a synthesis run once, but current_stage
-      // was reset back to "screening" afterward (the clobber bug this operation
-      // simulates having already suffered before the reconcile fix landed).
+      // A prior approval already queued a synthesis run, and current_stage was
+      // reset to "screening" afterward. The stored run id must not stop
+      // queueSynthesis from advancing.
       synthesis_run_id: EXISTING_RUN_ID,
       watermark: { before: null, after: null, overlap_hours: 48 },
     };
@@ -666,16 +658,15 @@ describe("projectResearchSynthesisRetryDb", () => {
 });
 
 describe("projectResearchSynthesisStageGuardDb", () => {
-  // Real-Postgres coverage for a regression where reconcileOperation's
-  // backfill->screening transition block has no stage guard: once backfill
-  // plans are 'completed' and the pipeline is drained, it unconditionally
-  // re-runs on every periodic tick — including AFTER the user has already
-  // approved the screening_gate checkpoint and the workflow has advanced to
-  // synthesis. That clobbers current_stage back to "screening" and creates a
-  // brand-new pending screening_gate checkpoint (the approved one no longer
-  // matches createCheckpoint's "status='pending'" upsert lookup), which is
-  // exactly what an "Approve screening did nothing, the checkpoint came back
-  // after refresh" report looks like from the outside.
+  // The backfill-to-screening transition must have a stage guard. Once
+  // backfill plans are completed and the pipeline is drained, an unguarded
+  // block re-runs on every periodic tick, including after the screening_gate
+  // checkpoint is approved and the workflow has advanced to synthesis. That
+  // would clobber current_stage back to "screening" and create a new pending
+  // screening_gate checkpoint (the approved one no longer matches
+  // createCheckpoint's "status='pending'" upsert lookup), which is what an
+  // "Approve screening did nothing, the checkpoint came back after refresh"
+  // report looks like.
 
   const CONFIG = loadConfig({});
   const SPACE = "11111111-1111-4111-8111-111111111111";

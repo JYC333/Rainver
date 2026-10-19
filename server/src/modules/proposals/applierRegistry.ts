@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   memoryColumnsWithAccess,
   serializeMemoryRow,
@@ -107,7 +106,6 @@ export function createDefaultProposalApplierRegistry(
   for (const proposalType of ["memory_create", "memory_update", "memory_archive"]) {
     registry.register(proposalType, applyMemoryProposal);
   }
-  registry.register("policy_change", applyPolicyChangeProposal);
   registerCapabilityProposalAppliers(registry);
   registerKnowledgeProposalAppliers(registry);
   registerClaimCandidatePacketProposalAppliers(registry);
@@ -142,7 +140,7 @@ async function applyMemoryProposal(context: ProposalApplyContext): Promise<Propo
     context.userId,
   );
 
-  if (context.proposal.proposal_type !== "memory_archive") {
+  if (context.proposal.proposal_type !== "memory_archive" && !applied.unchanged) {
     await enqueueMemoryRetrievalEmbeddingBackfill(context);
   }
 
@@ -185,73 +183,3 @@ async function enqueueMemoryRetrievalEmbeddingBackfill(
   }
 }
 
-async function applyPolicyChangeProposal(context: ProposalApplyContext): Promise<ProposalApplyResult> {
-  const payload = context.proposal.payload_json ?? {};
-
-  const name = strFromPayload(payload, "name");
-  const domain = strFromPayload(payload, "domain");
-  if (!name) throw new Error("policy_change payload missing required field 'name'");
-  if (!domain) throw new Error("policy_change payload missing required field 'domain'");
-
-  const policyJson = objFromPayload(payload, "policy_json") ?? {};
-  const ruleJson = objFromPayload(payload, "rule_json");
-  const appliesToJson = jsonValueFromPayload(payload, "applies_to_json");
-  const policyKey = strFromPayload(payload, "policy_key");
-  const enforcementMode = strFromPayload(payload, "enforcement_mode");
-  const supersedePolicyId = strFromPayload(payload, "supersedes_policy_id");
-  const priority = typeof payload.priority === "number" ? payload.priority : 0;
-
-  const now = new Date().toISOString();
-  const policyId = randomUUID();
-  const spaceId = context.proposal.space_id;
-
-  if (supersedePolicyId) {
-    await context.db.query(
-      `UPDATE policies SET status = 'superseded', updated_at = $1 WHERE id = $2 AND space_id = $3 AND status = 'active'`,
-      [now, supersedePolicyId, spaceId],
-    );
-  }
-
-  await context.db.query(
-    `INSERT INTO policies
-       (id, space_id, name, domain, policy_json, enabled, policy_key,
-        enforcement_mode, priority, policy_version, status,
-        rule_json, applies_to_json, supersedes_policy_id,
-        created_from_proposal_id, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5::jsonb, TRUE, $6, $7, $8, 1, 'active',
-             $9::jsonb, $10::jsonb, $11, $12, $13, $13)`,
-    [
-      policyId, spaceId, name, domain, JSON.stringify(policyJson),
-      policyKey ?? null, enforcementMode ?? null, priority,
-      ruleJson ? JSON.stringify(ruleJson) : null,
-      appliesToJson ? JSON.stringify(appliesToJson) : null,
-      supersedePolicyId ?? null,
-      context.proposal.id, now,
-    ],
-  );
-
-  return {
-    result_type: "policy_version",
-    result: { policy_id: policyId, space_id: spaceId, domain, name },
-    proposalPayloadPatch: { ...payload, resulting_policy_id: policyId },
-  };
-}
-
-function strFromPayload(payload: Record<string, unknown>, key: string): string | null {
-  const v = payload[key];
-  return typeof v === "string" && v.trim() ? v.trim() : null;
-}
-
-function objFromPayload(payload: Record<string, unknown>, key: string): Record<string, unknown> | null {
-  const v = payload[key];
-  return v !== null && typeof v === "object" && !Array.isArray(v)
-    ? (v as Record<string, unknown>)
-    : null;
-}
-
-function jsonValueFromPayload(payload: Record<string, unknown>, key: string): unknown | null {
-  const v = payload[key];
-  if (v === null || v === undefined) return null;
-  if (typeof v === "object") return v;
-  return null;
-}

@@ -13,13 +13,13 @@ import { projects } from "./projects.js";
 import { spaceObjects } from "./knowledge.js";
 
 /**
- * Additional Project scopes for a `space_objects` row (U8/U9).
+ * Additional Project scopes for a `space_objects` row.
  *
  * `space_objects.primary_project_id` is governance ownership and stays single —
  * the content read gate evaluates it as a hard AND before visibility and grants,
  * so a note filed in Project A is unreadable to a non-member of A no matter what
- * per-user grant exists. That is what made cross-Project placement impossible
- * rather than merely unimplemented.
+ * per-user grant exists. Do not treat that as a missing feature. A grant
+ * cannot place the note in another Project.
  *
  * This table widens the *scope* half of that predicate and nothing else. A share
  * says "members of this other Project may reach past the project barrier"; it
@@ -30,7 +30,7 @@ import { spaceObjects } from "./knowledge.js";
  *
  * Declared at `space_objects` granularity because that is where the read gate
  * works (see `contentAccessRegistry`) — one row shape serves every ontology
- * subtype. Only the note share action writes rows today.
+ * subtype. Only the note share action writes rows.
  */
 export const spaceObjectProjectShares = pgTable("space_object_project_shares", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),

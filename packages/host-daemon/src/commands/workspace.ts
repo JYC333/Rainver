@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createWorkspace, listWorkspaces, removeWorkspace, type WorkspaceOut } from "../api.js";
-import { requireConfig, saveConfig } from "../config.js";
+import { requireConfig, updateConfig } from "../config.js";
 
 export interface LocalWorkspace extends WorkspaceOut {
   local_path: string | null;
@@ -20,7 +20,9 @@ export async function workspaceAdd(options: { path: string; projectId: string; n
     name: options.name,
     displayPath: absolutePath,
   });
-  await saveConfig({ ...config, workspaces: { ...config.workspaces, [created.id]: absolutePath } });
+  // Merged into the config as it is now, not the snapshot read before the
+  // round trip: another registration may have landed meanwhile.
+  await updateConfig((current) => ({ ...current, workspaces: { ...current.workspaces, [created.id]: absolutePath } }));
   return created;
 }
 
@@ -40,7 +42,9 @@ export async function workspaceList(): Promise<LocalWorkspace[]> {
 export async function workspaceRemove(options: { id: string }): Promise<void> {
   const config = await requireConfig();
   await removeWorkspace(config.server_url, config.token, options.id);
-  const workspaces = { ...config.workspaces };
-  delete workspaces[options.id];
-  await saveConfig({ ...config, workspaces });
+  await updateConfig((current) => {
+    const workspaces = { ...current.workspaces };
+    delete workspaces[options.id];
+    return { ...current, workspaces };
+  });
 }

@@ -20,7 +20,7 @@ import {
   resolveRuntimeContextPolicies,
 } from "./runtimeContextPolicyResolver.js";
 
-export interface RuntimeContextPolicyIdentity {
+interface RuntimeContextPolicyIdentity {
   spaceId: string;
   userId: string;
 }
@@ -44,7 +44,7 @@ interface ScopeRef {
   scopeId: string;
 }
 
-export interface RuntimeContextPolicyExecutionInput {
+interface RuntimeContextPolicyExecutionInput {
   spaceId: string;
   projectId?: string | null;
   projectFolderId?: string | null;

@@ -17,9 +17,9 @@ vi.mock('../../core/spaceNav', () => ({
   ),
 }))
 
-// Question/hypothesis definition now happens entirely on the Inquiry Thread
-// page (see QuestionRefinementPanel.test.tsx) — by the time this dialog
-// opens, `research_question`/`research_context_version_id` already reflect
+// Question and hypothesis definition happens on the Inquiry Thread page
+// (see QuestionRefinementPanel.test.tsx). By the time this dialog opens,
+// `research_question` and `research_context_version_id` already reflect
 // whatever was confirmed there. These drafts model that already-refined state.
 const initialDraft = {
   research_question: 'How should agent tools be evaluated?',
@@ -40,13 +40,13 @@ const providerVendors = [
     id: 'openai', display_name: 'OpenAI', protocol: 'openai_completions',
     supports_chat: true, supports_structured_output: true,
     supports_embedding: true, supports_rerank: false, default_base_url: 'https://api.openai.com/v1',
-    api_key_required: true, subscription_only: false,
+    api_key_required: true, subscription_only: false, self_hostable: false,
   },
   {
     id: 'openai_codex', display_name: 'OpenAI Codex', protocol: 'openai_codex_responses',
     supports_chat: true, supports_structured_output: true,
     supports_embedding: false, supports_rerank: false, default_base_url: 'https://chatgpt.com/backend-api',
-    api_key_required: false, subscription_only: true,
+    api_key_required: false, subscription_only: true, self_hostable: false,
   },
 ] satisfies ProviderVendorOut[]
 
@@ -206,10 +206,10 @@ describe('ResearchSetupDialog', () => {
     const user = userEvent.setup({ delay: null })
     vi.spyOn(researchDiscoveryApi, 'evaluate').mockResolvedValue({ strategy: {
       id: '22222222-2222-4222-8222-222222222222', project_id: 'project-1', research_context_version_id: '11111111-1111-4111-8111-111111111111', question_snapshot: initialDraft.research_question, status: 'selected',
-      version: 1, parent_strategy_id: null, adaptation_direction: null,
+      version: 1, parent_strategy_id: null, adaptation_direction: null, semantic_intent: null,
       policy_version: 'research_query_policy.v1', policy: {}, execution_budget: {},
       created_at: '2026-08-13T09:00:00.000Z', selected_at: '2026-08-13T09:00:10.000Z', materialized_at: null,
-      provider_plans: [{ id: 'plan-1', provider_key: 'arxiv', status: 'selected', selected_attempt_id: 'attempt-1', terminal_decision: 'accept', decision_reason: 'Target range', coverage_warning: 'The accessible preview is smaller than the provider estimate.', attempts: [{ id: 'attempt-1', provider_plan_id: 'plan-1', round: 0, sequence: 1, direction: 'initial', semantic_query: { schema_version: 'research_semantic_query.v1', core: [{ value: 'coding agent memory', synonyms: ['agent memory module'], weight: 1 }], expansions: [], qualifiers: [{ value: 'recovery benchmark', synonyms: [], weight: 0.8 }], exclusions: [{ value: 'human-only studies', synonyms: [], weight: 1 }], time_window: null }, compiled_query: { schema_version: 'research_compiled_query.v1', provider_key: 'arxiv', query: { search_query: 'coding agent recovery' }, fingerprint: '1234567890abcdef' }, observation: { schema_version: 'research_preview_observation.v1', provider_hit_count: 42, accessible_hit_count: 42, relevance_rate: 0.8, relevance_lower_bound: 0.6, diversity_score: 0.7, duplicate_rate: 0, samples: [{ sample_id: 'sample-1', title: 'Agent paper', source_uri: null, occurred_at: null, excerpt: null, relevance: 'relevant', matched_core_concepts: ['coding agent'] }] }, score: 0.8, decision: 'accept', decision_reason: 'Target range', error_class: null, created_at: '2026-08-13T09:00:00.000Z', completed_at: '2026-08-13T09:00:05.000Z' }] }],
+      provider_plans: [{ id: 'plan-1', provider_key: 'arxiv', status: 'selected', selected_attempt_id: 'attempt-1', terminal_decision: 'accept', decision_reason: 'Target range', coverage_warning: 'The accessible preview is smaller than the provider estimate.', attempt_count: 2, attempts: [{ id: 'attempt-1', provider_plan_id: 'plan-1', round: 0, sequence: 1, direction: 'initial', semantic_query: { schema_version: 'research_semantic_query.v1', core: [{ value: 'coding agent memory', synonyms: ['agent memory module'], weight: 1 }], expansions: [], qualifiers: [{ value: 'recovery benchmark', synonyms: [], weight: 0.8 }], exclusions: [{ value: 'human-only studies', synonyms: [], weight: 1 }], time_window: null }, compiled_query: { schema_version: 'research_compiled_query.v1', provider_key: 'arxiv', query: { search_query: 'coding agent recovery' }, fingerprint: '1234567890abcdef' }, observation: { schema_version: 'research_preview_observation.v1', provider_hit_count: 42, accessible_hit_count: 42, relevance_rate: 0.8, relevance_lower_bound: 0.6, diversity_score: 0.7, duplicate_rate: 0, samples: [{ sample_id: 'sample-1', title: 'Agent paper', source_uri: null, occurred_at: null, excerpt: null, relevance: 'relevant', matched_core_concepts: ['coding agent'] }] }, score: 0.8, decision: 'accept', decision_reason: 'Target range', error_class: null, created_at: '2026-08-13T09:00:00.000Z', completed_at: '2026-08-13T09:00:05.000Z' }] }],
     } })
     vi.spyOn(researchDiscoveryApi, 'materialize').mockResolvedValue({ query_strategy_id: '22222222-2222-4222-8222-222222222222', project_id: 'project-1', status: 'materialized', sources: [{ provider_key: 'arxiv', research_query_attempt_id: 'attempt-1', source_channel_id: 'channel-1', project_source_binding_id: 'binding-1', query_fingerprint: '1234567890abcdef' }] })
     render(
@@ -241,7 +241,17 @@ describe('ResearchSetupDialog', () => {
     expect(screen.getAllByText('human-only studies')).toHaveLength(2)
     expect(screen.getAllByText(/agent memory module/)).toHaveLength(2)
     expect(screen.getByText(/accessible preview is smaller/)).toBeInTheDocument()
-    expect(screen.getByText(/View 1 evaluation attempt/)).toBeInTheDocument()
+    expect(screen.getByText(/View 2 evaluation attempts/)).toBeInTheDocument()
+    // The strategy carries only recent attempts; the full history is read on request.
+    const [recent] = (await vi.mocked(researchDiscoveryApi.evaluate).mock.results[0]!.value).strategy.provider_plans[0]!.attempts
+    const listAttempts = vi.spyOn(researchDiscoveryApi, 'listAttempts').mockResolvedValue({
+      items: [{ ...recent!, id: 'attempt-2', round: 1, decision_reason: 'An older retry round' }, recent!],
+      total: 2, limit: 100, offset: 0,
+    })
+    await user.click(screen.getByRole('button', { name: 'Show all 2' }))
+    expect(listAttempts).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222', 'arxiv', { project_id: 'project-1', limit: 100, offset: 0 })
+    expect(await screen.findByText('An older retry round')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Show all 2' })).not.toBeInTheDocument()
     expect(screen.getByText(/Provider counts are independent estimates and may overlap/)).toBeInTheDocument()
     const evaluatedArxiv = screen.getAllByRole('checkbox', { name: /arxiv/i }).slice(-1)[0]
     expect(evaluatedArxiv).toBeChecked()

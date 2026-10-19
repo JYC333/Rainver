@@ -7,10 +7,10 @@ export const PROJECT_RESEARCH_SYNTHESIS_PROMPT_KEY = "project_research.synthesis
 export const PROJECT_RESEARCH_QUESTION_REFINE_PROMPT_KEY = "project_research.question_refine";
 export const PROJECT_RESEARCH_QUESTION_SUBQUESTION_REPAIR_PROMPT_KEY = "project_research.question_subquestion_repair";
 export const PROJECT_RESEARCH_SYNTHESIS_CRITIQUE_PROMPT_KEY = "project_research.synthesis_critique";
-export const PROJECT_RESEARCH_EVIDENCE_CARD_PROMPT_KEY = "project_research.evidence_card";
+const PROJECT_RESEARCH_EVIDENCE_CARD_PROMPT_KEY = "project_research.evidence_card";
 export const PROJECT_RESEARCH_MONITOR_COMPARE_PROMPT_KEY = "project_research.monitor_compare";
 
-export interface ResolvedProjectResearchSynthesisPrompt {
+interface ResolvedProjectResearchSynthesisPrompt {
   instruction: string;
   resolveResult: PromptResolveResult;
 }

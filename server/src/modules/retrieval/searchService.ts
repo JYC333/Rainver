@@ -8,7 +8,7 @@ import type {
   RetrievalSearchResponse,
   RetrievalSearchResult,
 } from "@rainver/protocol";
-import type { Queryable } from "../routeUtils/common.js";
+import { escapeLikePattern, type Queryable } from "../routeUtils/common.js";
 import { normalizeAlias, tokenizeSimple } from "./normalize.js";
 import { normalizeTextForSearch } from "./normalize.js";
 import { toVectorLiteral } from "./embeddingStore.js";
@@ -19,7 +19,7 @@ import { parseRelationalIntent, type RelationalIntent } from "./relationalIntent
 import {
   applyAdaptiveReturn,
   armFetchLimit,
-  boundRerankText,
+  boundRerankTexts,
   buildItems,
   candidateKey,
   clamp,
@@ -102,12 +102,12 @@ interface SearchInput {
   /** Managed-run agent id. Source connection consent may restrict agent access. */
   agentId?: string | null;
   /**
-   * Opt in to conservative adaptive return (§2.4): trim the visible tail at a
+   * Opt in to conservative adaptive return: trim the visible tail at a
    * sharp score cliff so a precise answer is not padded with weak results. Never
    * grows the set; defaults off (the caller/surface opts in).
    */
   adaptiveReturn?: boolean;
-  /** Runtime ranking mechanics that have passed calibration and shipped for the space. */
+  /** Runtime ranking mechanics that have passed calibration and are active for the space. */
   rankingConfig?: RetrievalRuntimeRankingConfig;
   /** Internal audit classification for callers that reuse search as a read subroutine. */
   auditAccessType?: string;
@@ -240,7 +240,7 @@ export interface RetrievalSearchServiceOptions {
   // query string (no candidate content, no access surface); the original query
   // is always searched, so rewrite only adds recall and degrades safely.
   queryRewriter?: QueryRewriter;
-  // Post-revalidate synthesizer for buildBrief (W6). Like the reranker, it only
+  // Post-revalidate synthesizer for buildBrief. Like the reranker, it only
   // ever sees live-revalidated content; when absent or failing, buildBrief still
   // returns the sources + the deterministic gap analysis (no LLM answer).
   synthesizer?: Synthesizer;
@@ -329,12 +329,12 @@ export class RetrievalSearchService {
   }
 
   /**
-   * Build a Context Brief (W6): the same revalidated, ranked sources as `search`,
+   * Build a Context Brief: the same revalidated, ranked sources as `search`,
    * plus an optional synthesized + cited answer and a gap analysis. The synthesis
    * stage is optional and skippable — with no synthesizer (or on failure) the
    * brief still returns the sources and the deterministic gap analysis. Citations
-   * are validated against the surfaced sources; gap findings are advisory output
-   * (W7 consumes them as review candidates), never silent canonical writes.
+   * are validated against the surfaced sources; gap findings are advisory output,
+   * never silent canonical writes.
    */
   async buildBrief(input: SearchInput): Promise<RetrievalBriefResponse> {
     const c = this.deriveControls(input);
@@ -494,7 +494,7 @@ export class RetrievalSearchService {
 
     // Graph recall seeds from every DIRECT match the viewer can actually read
     // (exact + lexical + vector), not just exact-title hits — so relational recall
-    // works for free-text queries too (W4). Seeds are revalidated here and the
+    // works for free-text queries too. Seeds are revalidated here and the
     // traversal revalidates every hop, so a non-visible seed/intermediate node can
     // never surface its neighbors (invariant 4); expansion starts only from
     // visible nodes. The cache is reused by the post-fusion revalidation below.
@@ -559,7 +559,7 @@ export class RetrievalSearchService {
       controls.runtimeRankingConfig,
       trace,
     );
-    // §2.8 aggregate telemetry: the ranking-stage score distribution over the
+    // Aggregate telemetry: the ranking-stage score distribution over the
     // visible set, plus boost-axis attribution. Counts only — no ids/titles.
     trace.score_buckets = scoreBucketHistogram(visible);
     if (Object.keys(rankingTelemetry.boost_attribution).length > 0) {
@@ -588,7 +588,7 @@ export class RetrievalSearchService {
         candidates: visible,
       });
     }
-    // Adaptive return (§2.4): opt-in trim of the visible tail at a sharp score
+    // Adaptive return: opt-in trim of the visible tail at a sharp score
     // cliff, after rerank/feedback have settled the final order.
     if (controls.adaptiveReturn) {
       visible = applyAdaptiveReturn(visible, trace);
@@ -889,12 +889,14 @@ export class RetrievalSearchService {
     const trimmed = query.trim();
     if (!trimmed) return [];
     const tokens = tokenizeSimple(query);
-    const like = `%${trimmed}%`;
+    // The characters typed, not a pattern: `%` and `_` in a title or query
+    // would otherwise match anything, and create-safety would call every
+    // object a probable duplicate of "100%".
+    const like = `%${escapeLikePattern(trimmed)}%`;
     const objectProfileParam = objectProfileFilterParam(objectProfiles);
     // ts_rank_cd normalization flag 1 divides the rank by 1 + log(document
     // length): a BM25-style length penalty so a long page that merely mentions
-    // the terms does not outrank a focused page (W5 interim BM25 stance — full
-    // BM25 via pg_search is deferred, see the roadmap doc). It composes with the
+    // the terms does not outrank a focused page. It composes with the
     // per-arm max-pool and the title-phrase boost.
     const result = await this.db.query<RetrievalCandidateRow>(
       `WITH matches AS (
@@ -921,7 +923,7 @@ export class RetrievalSearchService {
             AND ($5::varchar[] IS NULL OR (ro.object_profile = ANY($5::varchar[]) AND sok.id IS NOT NULL))
             AND (
               rc.tsv @@ plainto_tsquery('simple', $4)
-              OR rc.plain_text ILIKE $3
+              OR rc.plain_text ILIKE $3 ESCAPE '\\'
             )
        ),
        best AS (
@@ -962,7 +964,7 @@ export class RetrievalSearchService {
   }
 
   /**
-   * Bounded, breadth-first multi-hop graph recall (W4). Starting from the visible
+   * Bounded, breadth-first multi-hop graph recall. Starting from the visible
    * seeds, it walks typed `retrieval_edges` up to `GRAPH_MAX_HOPS`, surfacing each
    * neighbor as a first-class candidate (fused into RRF, not just a boost).
    *
@@ -1347,7 +1349,7 @@ export class RetrievalSearchService {
     // The `nearest` CTE computes pgvector cosine distance, narrowing by space,
     // object type, and embedding_dimensions, over-fetches chunks, dedups to the
     // best chunk per object, then joins retrieval_objects only for the final
-    // set's title. For ANN-indexed dimensions (W5) it casts to `halfvec` with a
+    // set's title. For ANN-indexed dimensions it casts to `halfvec` with a
     // CONSTANT dimension and a literal `embedding_dimensions = D` predicate so the
     // partial HNSW index (ix_retrieval_chunks_embedding_hnsw_D) is used; other
     // dimensions fall back to the exact `vector` scan. `queryDimensions` is a
@@ -1428,7 +1430,7 @@ export class RetrievalSearchService {
       updatedAt: row.updated_at ?? null,
       sourceConnectionIds: sourceConnectionIdsFromJson(row.source_connection_ids_json),
       // Carried separately from evidence.confidence for the post-RRF cosine blend
-      // (§2.3), since fusion may overwrite this candidate's evidence.
+      // since fusion may overwrite this candidate's evidence.
       vectorSimilarity: similarityFromDistance(Number(row.distance)),
     }));
   }
@@ -1570,31 +1572,30 @@ export class RetrievalSearchService {
     if (!this.reranker || visible.length === 0) return visible;
     const windowSize = rerankWindowSize(visible.length, maxResults, this.rerankConfig);
     // Build from the live-revalidated title/text only — never the projection chunk
-    // (invariant 1). `visible` should always have a cache entry (collectVisible kept
-    // exactly those); the guard is defensive so a future cache change can't leak the
-    // projection text or throw mid-search.
-    // §2.6 token budget: truncate per-candidate text and stop sending text once the
-    // running total reaches the payload cap, so a few very long revalidated texts
-    // cannot blow the provider payload. Truncates only already-visible text.
-    const perItemCap = this.rerankConfig.maxCandidateTextChars;
-    const payloadCap = this.rerankConfig.maxPayloadChars;
-    let payloadChars = 0;
-    let truncated = 0;
-    const rerankCandidates: RerankCandidate[] = [];
-    for (const candidate of visible.slice(0, windowSize)) {
+    // (invariant 1). `visible` should have a cache entry (`collectVisible` kept
+    // exactly those). Do not read the projection when the cache entry is missing.
+    // That leaks projection text or throws mid-search.
+    // Token budget: the window shares one payload budget (`boundRerankTexts`),
+    // so every candidate is judged on some of its text and the whole payload
+    // stays bounded however long the revalidated texts are.
+    const windowed = visible.slice(0, windowSize).flatMap((candidate) => {
       const revalidated = cache.get(candidateKey(candidate));
-      if (!revalidated) continue;
-      const boundedText = boundRerankText(revalidated.text, perItemCap, payloadCap, payloadChars);
-      if (boundedText.truncated) truncated += 1;
-      payloadChars += boundedText.text?.length ?? 0;
-      rerankCandidates.push({
-        objectType: candidate.objectType,
-        objectId: candidate.objectId,
-        title: revalidated.title,
-        text: boundedText.text,
-        sourceConnectionIds: candidate.sourceConnectionIds,
-      });
-    }
+      return revalidated ? [{ candidate, revalidated }] : [];
+    });
+    const bounded = boundRerankTexts(
+      windowed.map(({ revalidated }) => ({ title: revalidated.title, text: revalidated.text })),
+      query,
+      this.rerankConfig.maxCandidateTextChars,
+      this.rerankConfig.maxPayloadChars,
+    );
+    const truncated = bounded.truncated;
+    const rerankCandidates: RerankCandidate[] = windowed.map(({ candidate, revalidated }, index) => ({
+      objectType: candidate.objectType,
+      objectId: candidate.objectId,
+      title: revalidated.title,
+      text: bounded.texts[index]!,
+      sourceConnectionIds: candidate.sourceConnectionIds,
+    }));
     let scores: RerankScore[] | null = null;
     try {
       scores = await this.reranker.rerank(
@@ -1746,7 +1747,7 @@ function objectProfileMatches(
   return Boolean(candidate.objectProfile && objectProfiles.includes(candidate.objectProfile));
 }
 
-/** Aggregate-safe histogram of the visible candidates' final scores (§2.8). */
+/** Aggregate-safe histogram of the visible candidates' final scores. */
 function scoreBucketHistogram(visible: readonly ScoredCandidate[]): Record<string, number> {
   const buckets: Record<string, number> = {};
   for (const candidate of visible) {
@@ -1756,7 +1757,7 @@ function scoreBucketHistogram(visible: readonly ScoredCandidate[]): Record<strin
   return buckets;
 }
 
-/** Count windowed candidates whose position changed after rerank (§2.8 aggregate). */
+/** Count windowed candidates whose position changed after rerank. */
 function countMoved(
   before: readonly ScoredCandidate[],
   after: readonly ScoredCandidate[],

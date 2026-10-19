@@ -26,11 +26,17 @@ import {
 } from './ui/dialog'
 import { Label } from './ui/label'
 import { Skeleton } from './ui/skeleton'
+import { formatDateTime } from '../i18n/format'
 
 interface ContentAccessControlProps {
   resourceType: string
   resourceId: string
   ownerUserId: string | null
+  /**
+   * Called with the saved policy. A Memory access change writes a new version,
+   * so its `resource_id` is the new head's id.
+   */
+  onUpdated?: (policy: ContentAccessPolicy) => void
 }
 
 const ACCESS_OPTIONS: Array<{ value: ContentAccessLevel; label: string }> = [
@@ -48,6 +54,7 @@ export function ContentAccessControl({
   resourceType,
   resourceId,
   ownerUserId,
+  onUpdated,
 }: ContentAccessControlProps) {
   const { activeSpaceId, spaces = [], userId = '' } = useSpace()
   const [open, setOpen] = useState(false)
@@ -68,7 +75,10 @@ export function ContentAccessControl({
   const activeSpace = spaces.find(space => space.id === activeSpaceId)
   const role = activeSpace?.role
   const oversightMode = activeSpace?.oversight_mode ?? 'none'
-  const canManage = ownerUserId === userId || role === 'owner' || role === 'admin'
+  // Only its owner decides who reads a Memory entry; a Space owner or admin
+  // manages everything else here.
+  const canManage = ownerUserId === userId
+    || (resourceType !== 'memory' && (role === 'owner' || role === 'admin'))
   const publishableType = publicationResourceType(resourceType)
   const canPublish = ownerUserId === userId && publishableType !== null
   const availableTargets = useMemo(
@@ -80,6 +90,10 @@ export function ContentAccessControl({
     if (!open || !activeSpaceId || !canManage) return
     let cancelled = false
     setLoading(true)
+    // What was on screen last time — possibly an edit that was never saved,
+    // possibly another resource's policy — is not this resource's current
+    // policy. Nothing is editable or saveable until this load has answered.
+    setPolicy(null)
     Promise.all([
       contentAccessApi.get(resourceType, resourceId),
       spacesApi.members(activeSpaceId),
@@ -154,6 +168,7 @@ export function ContentAccessControl({
       setPolicy(updated)
       setDemotionDisclosure(null)
       toast.success('Access updated')
+      onUpdated?.(updated)
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
@@ -256,7 +271,7 @@ export function ContentAccessControl({
                     {accessLogs.map(log => (
                       <div key={log.id} className="flex flex-wrap justify-between gap-2 text-sm">
                         <span>{log.viewer_display_name} · {log.access_type}</span>
-                        <span className="text-xs text-muted-foreground">{new Date(log.accessed_at).toLocaleString()}</span>
+                        <span className="text-xs text-muted-foreground">{formatDateTime(log.accessed_at)}</span>
                       </div>
                     ))}
                   </div>

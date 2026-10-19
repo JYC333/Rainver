@@ -33,30 +33,30 @@ function humanize(id: string): string {
   return id.replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase())
 }
 
-export interface PolicyCard {
+interface PolicyCard {
   key: string
   label: string
   enabled: boolean
   detail?: string
 }
 
-export type OutputMode = 'review' | 'artifact' | 'auto'
+type OutputMode = 'review' | 'artifact' | 'auto'
 
-export interface OutputCard extends PolicyCard {
+interface OutputCard extends PolicyCard {
   /** review = proposal/draft requiring human approval; artifact = saved output; auto = direct (e.g. chat). */
   mode: OutputMode
   /** memory outputs are always proposal-only and can never be auto-saved. */
   alwaysReview: boolean
 }
 
-export interface SafetySummary {
+interface SafetySummary {
   can: string[]
   cannot: string[]
   /** derived review posture; hard policy defaults are read-only. */
   posture: 'Strict' | 'Balanced' | 'Draft-friendly'
 }
 
-export interface ScheduleSummary {
+interface ScheduleSummary {
   kind: 'manual' | 'daily' | 'interval' | 'cron'
   label: string
   enabled: boolean
@@ -150,7 +150,7 @@ const OUTPUT_TYPE_LABELS: Record<string, string> = {
   object_relation_delete: 'Object relation removal',
   object_profile_create: 'Object profile',
   object_profile_update: 'Object profile update',
-  // Legacy labels kept for backward compat with older stored agent versions
+  // These keys appear on stored versions. Keep the labels. Do not drop them.
   memory_update_proposal: 'Memory update',
   knowledge_item_proposal: 'Knowledge item',
   knowledge_item_create_proposal: 'Knowledge item',
@@ -179,7 +179,7 @@ export function allowedOutputTypes(version: { output_policy_json?: unknown }): s
 }
 
 /** Review mode for an output type: explicit default_review_mode wins, else heuristic. */
-export function reviewModeForType(version: { output_policy_json?: unknown }, id: string): OutputMode {
+function reviewModeForType(version: { output_policy_json?: unknown }, id: string): OutputMode {
   const out = asObj(version.output_policy_json)
   const map = asObj(out.default_review_mode)
   const explicit = map[id]

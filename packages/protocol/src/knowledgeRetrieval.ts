@@ -6,8 +6,8 @@ import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 // owned by the Projects domain adapter. source_item / extracted_evidence are
 // owned by the Source domain adapter. inquiry_thread is owned by the Inquiry
 // domain adapter; Threads are `space_objects` rows (ADR 0011 decision 1), and
-// the adapter exists for the domain fields the generic projection has no reason
-// to know about. The contract is shared but each domain registers
+// the adapter carries the domain fields the generic projection does not know
+// about. The contract is shared but each domain registers
 // its own adapter into its own registry, so the surfaces stay isolated.
 export const RETRIEVAL_OBJECT_TYPE_VALUES = [
   "knowledge_item",
@@ -128,7 +128,7 @@ export const RetrievalSearchResponseSchema = z
   .passthrough();
 export type RetrievalSearchResponse = z.infer<typeof RetrievalSearchResponseSchema>;
 
-// ── Context Brief (W6): synthesis + citations + gap analysis over the retrieved
+// ── Context Brief: synthesis + citations + gap analysis over the retrieved
 // sources. The brief is built only from the viewer-visible, revalidated results;
 // citations point at those surfaced sources, and gap findings are advisory output
 // (maintenance/report/proposal-packet flows may turn them into review candidates;
@@ -210,7 +210,7 @@ export const RetrievalBriefResponseSchema = z
   .passthrough();
 export type RetrievalBriefResponse = z.infer<typeof RetrievalBriefResponseSchema>;
 
-// ── Maintenance scan (W7, "context review cycle"): a READ-ONLY, batched report of review
+// ── Maintenance scan: a READ-ONLY, batched report of review
 // candidates over the derived projection — duplicates, orphan pages, thin pages,
 // and suggested relations. It never writes canonical data; acting on a finding
 // stays on the existing proposal/approval flow.
@@ -308,7 +308,7 @@ export const RetrievalEvalRankAttributionSchema = z
   })
   .strict();
 
-// P2 eval/explain artifact input. This shape is intentionally aggregate-only:
+// Eval/explain artifact input. This shape is aggregate-only:
 // no candidate ids, titles, snippets, or arbitrary content fields are accepted.
 export const RetrievalEvalReportRequestSchema = z
   .object({
@@ -480,7 +480,7 @@ const RetrievalTraceSummarySchema = z
     graph: z.record(z.unknown()).optional(),
     relational: z.record(z.unknown()).optional(),
     synthesis: z.record(z.unknown()).optional(),
-    // Aggregate ranking telemetry (§2.8): score histogram + boost-axis fire
+    // Aggregate ranking telemetry: score histogram + boost-axis fire
     // counts over the visible set, plus the adaptive-return outcome. Counts only.
     score_buckets: RetrievalEvalCountMapSchema.optional(),
     boost_attribution: RetrievalEvalCountMapSchema.optional(),
@@ -554,7 +554,7 @@ export const SpaceRetrievalSettingsSchema = z.object({
   query_rewrite_default: z.boolean(),
   use_query_cache: z.boolean(),
   include_trace: z.boolean(),
-  // W9 egress governance: when false, this space's indexed content is never sent
+  // When false, this space's indexed content is never sent
   // to a model provider (embedding / rerank / synthesis); those stages are
   // skipped and retrieval degrades to the deterministic arms. Default true.
   external_egress_enabled: z.boolean(),

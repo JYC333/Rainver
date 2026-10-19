@@ -56,11 +56,10 @@ describe("folder-read path policy", () => {
   });
 
   /**
-   * `\b` does not fire between `_` and a letter, so a pattern written
-   * `\b(token|secret)\b` matched neither `access_token` nor `client_secret` —
-   * the two spellings most likely to appear in real source. The server's copy
-   * of this rule was fixed; this one, which runs on the daemon and feeds both
-   * the Files & Code reader and the persisted `remote_diff`, was not.
+   * `\b` does not fire between `_` and a letter. Do not write
+   * `\b(token|secret)\b`. It matches neither `access_token` nor
+   * `client_secret`. This copy runs on the daemon and feeds the Files & Code
+   * reader and the persisted `remote_diff`.
    */
   it("redacts a credential word anywhere in the name, not only at a word boundary", () => {
     const result = redactSecretLikeDiff([
@@ -94,8 +93,8 @@ describe("folder-read path policy", () => {
   });
 
   it("agrees with the server's rule on a placeholder value and a bare query key", () => {
-    // The two implementations say "change both together"; these are the two
-    // places they had silently drifted apart. A value that says a credential is
+    // The two implementations say "change both together". Do not let them
+    // drift. A value that says a credential is
     // *absent* is left alone — redacting `password: none` hides the answer and
     // protects nothing — and a hard-coded `?key=` has neither a credential word
     // in front of it nor a recognisable shape.
@@ -108,8 +107,8 @@ describe("folder-read path policy", () => {
   });
 
   it("redacts a structured value whole, and an empty one not at all", () => {
-    // Scanning a scalar out of a list left the rest dangling:
-    // `secrets: [1,2]` came out as `secrets:[REDACTED],2]`, which is a mangled
+    // Do not scan a scalar out of a list. The rest would dangle:
+    // `secrets: [1,2]` would come out as `secrets:[REDACTED],2]`, a mangled
     // diff rather than a redacted one. Whole, because the alternative is
     // deciding which element of `api_key: ["…"]` is the credential.
     for (const [input, expected] of [

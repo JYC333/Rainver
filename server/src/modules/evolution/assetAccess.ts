@@ -1,6 +1,8 @@
 import { HttpError, objectValue, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { assertProjectWriter, canWriteProject } from "../projects/access.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
+import { canChangeAgent, canConfigureAssistant } from "../agents/agentAccess.js";
+import { sha256, sha256Json } from "./hash.js";
 
 export interface EvolvableAssetAccessRow {
   id: string;
@@ -10,7 +12,7 @@ export interface EvolvableAssetAccessRow {
   metadata_json?: unknown;
 }
 
-export interface NormalizedOwnerScope {
+interface NormalizedOwnerScope {
   ownerScopeType: string;
   ownerScopeId: string | null;
 }
@@ -44,7 +46,7 @@ export async function normalizeAssetOwnerScopeForCreate(
   }
   if (ownerScopeType === "agent") {
     if (!ownerScopeId) throw new HttpError(422, "owner_scope_id is required for agent-owned assets");
-    await assertCanManageAgentScope(db, identity, ownerScopeId, "Requires agent owner or space owner/admin role to create an agent-owned asset");
+    await assertCanManageAgentScope(db, identity, ownerScopeId, "Requires permission to configure this Agent to create an agent-owned asset");
     return { ownerScopeType, ownerScopeId };
   }
   throw new HttpError(422, "owner_scope_type must be one of space, project, user, agent");
@@ -110,9 +112,10 @@ export async function normalizeVersionScopeForWrite(
   scopeId: string | null,
 ): Promise<string | null> {
   if (scopeType === "system") {
-    if (scopeId) throw new HttpError(422, "system-scoped asset versions must not include scope_id");
-    await assertSpaceOwnerOrAdmin(db, identity, "Requires space owner/admin role to create a system-scoped asset version");
-    return null;
+    // The system baseline is release content, synced from the built-in
+    // catalog at startup. No Space role writes it; customize at Space,
+    // Project, Agent or personal scope instead.
+    throw new HttpError(403, "The built-in baseline comes from the release catalog; customize it at Space, Project, Agent or personal scope");
   }
   if (scopeType === "space") {
     if (scopeId && scopeId !== identity.spaceId) {
@@ -133,10 +136,41 @@ export async function normalizeVersionScopeForWrite(
     return scopeId;
   }
   if (scopeType === "agent") {
-    await assertCanManageAgentScope(db, identity, scopeId, "Requires agent owner or space owner/admin role to create an agent-scoped asset version");
+    await assertCanManageAgentScope(db, identity, scopeId, "Requires permission to configure this Agent to create an agent-scoped asset version");
     return scopeId;
   }
   throw new HttpError(422, "scope_type must be one of system, space, project, user, agent");
+}
+
+/**
+ * Whether a version may serve a target scope (a pin, a deployment ref, or a
+ * resolution for that scope). A built-in version serves every Space; a
+ * Space version serves anything in its Space; a Project, Agent or personal
+ * version serves only its own scope. A version never changes scope: to use
+ * other content elsewhere, create a version in that scope.
+ */
+export function versionServesScope(
+  identity: SpaceUserIdentity,
+  target: { scopeType: string; scopeId: string | null },
+  version: { space_id: string | null; scope_type: string; scope_id: string | null },
+): boolean {
+  if (version.space_id === null) return version.scope_type === "system";
+  if (version.space_id !== identity.spaceId) return false;
+  if (version.scope_type === "space") return version.scope_id === identity.spaceId;
+  if (version.scope_type === "project" || version.scope_type === "agent") {
+    return target.scopeType === version.scope_type && target.scopeId === version.scope_id;
+  }
+  if (version.scope_type === "user") {
+    return target.scopeType === "user" && target.scopeId === identity.userId && version.scope_id === identity.userId;
+  }
+  return false;
+}
+
+/** The identity of a version's content: its JSON body, or the reference it names. */
+export function assetVersionContentHash(contentJson: unknown, contentRef: string | null): string {
+  if (contentJson !== null && contentJson !== undefined) return sha256Json(contentJson);
+  if (!contentRef) throw new HttpError(422, "content_json or content_ref is required");
+  return sha256(`content_ref:${contentRef}`);
 }
 
 export function assertAssetAllowsTargetScope(
@@ -175,6 +209,38 @@ export async function canViewScopedRef(
   return false;
 }
 
+/**
+ * Whether the caller may see one version row: a built-in version is shared by
+ * every Space, anything else only inside its own Space and scope.
+ */
+export async function canViewVersionScope(
+  db: Queryable,
+  identity: SpaceUserIdentity,
+  row: { space_id: string | null; scope_type: string; scope_id: string | null },
+): Promise<boolean> {
+  if (row.space_id === null) return row.scope_type === "system";
+  if (row.space_id !== identity.spaceId) return false;
+  return canViewScopedRef(db, identity, row.scope_type, row.scope_id);
+}
+
+/**
+ * An HTTP resolution names the Project and Agent it resolves for. The caller
+ * may name only ones whose scoped versions it could list; runtime resolution
+ * derives these from the Run and does not come through here.
+ */
+export async function assertCanResolveForScopes(
+  db: Queryable,
+  identity: SpaceUserIdentity,
+  scopes: { projectId: string | null; agentId: string | null },
+): Promise<void> {
+  if (scopes.projectId && !(await canViewScopedRef(db, identity, "project", scopes.projectId))) {
+    throw new HttpError(404, "Project not found");
+  }
+  if (scopes.agentId && !(await canViewScopedRef(db, identity, "agent", scopes.agentId))) {
+    throw new HttpError(404, "Agent not found");
+  }
+}
+
 export async function assertCanPinScope(db: Queryable, identity: SpaceUserIdentity, scopeType: string, scopeId: string): Promise<void> {
   if (scopeType === "project") {
     await assertProjectWriter(db, identity.spaceId, scopeId, identity.userId);
@@ -194,11 +260,11 @@ export async function assertCanPinScope(db: Queryable, identity: SpaceUserIdenti
     return;
   }
   if (scopeType === "agent") {
-    await assertCanManageAgentScope(db, identity, scopeId, "Requires agent owner or space owner/admin role to pin an agent-scoped asset version");
+    await assertCanManageAgentScope(db, identity, scopeId, "Requires permission to configure this Agent to pin an agent-scoped asset version");
   }
 }
 
-export async function assertCanManageAgentScope(
+async function assertCanManageAgentScope(
   db: Queryable,
   identity: SpaceUserIdentity,
   agentId: string,
@@ -209,14 +275,14 @@ export async function assertCanManageAgentScope(
   }
 }
 
-export async function canManageAgentScope(
+async function canManageAgentScope(
   db: Queryable,
   identity: SpaceUserIdentity,
   agentId: string,
   options: { missingAsFalse?: boolean } = {},
 ): Promise<boolean> {
-  const agent = await db.query<{ owner_user_id: string | null }>(
-    `SELECT owner_user_id
+  const agent = await db.query<{ agent_kind: string; project_id: string | null }>(
+    `SELECT agent_kind, project_id
        FROM agents
       WHERE id = $1 AND space_id = $2 AND status = 'active'
       LIMIT 1`,
@@ -227,11 +293,15 @@ export async function canManageAgentScope(
     if (options.missingAsFalse) return false;
     throw new HttpError(404, "Agent not found");
   }
-  if (row.owner_user_id === identity.userId) return true;
-  return isSpaceOwnerOrAdmin(await activeSpaceRole(db, identity));
+  // Agent-scope versions and pins are what that Agent's prompts and
+  // workflows resolve to at run time: managing them is configuring the
+  // Agent, decided by the same person — never by Space role alone.
+  return row.agent_kind === "system_assistant"
+    ? canConfigureAssistant(db, identity, { projectId: row.project_id })
+    : canChangeAgent(db, identity, agentId);
 }
 
-export async function assertSpaceOwnerOrAdmin(db: Queryable, identity: SpaceUserIdentity, message: string): Promise<void> {
+async function assertSpaceOwnerOrAdmin(db: Queryable, identity: SpaceUserIdentity, message: string): Promise<void> {
   if (!isSpaceOwnerOrAdmin(await activeSpaceRole(db, identity))) {
     throw new HttpError(403, message);
   }

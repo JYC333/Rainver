@@ -3,10 +3,8 @@ import { createCliConversationController } from "../src/modules/runs/cliConversa
 
 /**
  * `codex-acp` announces `_auth/status_update` immediately after `initialize`.
- * The controller knew three inbound shapes and failed the whole turn on
- * anything else, so a Room turn to Codex on the built-in host died with
- * "unsupported protocol message" before it ever prompted. The underscore is
- * ACP's own marker for a vendor extension, so more of these are coming.
+ * An inbound shape this controller does not list is ignored. Do not fail the
+ * turn on it. The underscore is ACP's marker for a vendor extension.
  */
 describe("an ACP notification the controller does not recognise", () => {
   const controller = () => createCliConversationController({
@@ -81,9 +79,9 @@ describe("structured conversation prompt content", () => {
 /**
  * Which options a session has depends on the ones already set. Codex offers
  * `fast-mode` at `session/new` and withdraws it once the model is one that
- * does not support it — and `model` is deliberately set first, so the composer
- * sending back every option it was shown made a withdrawn one fatal. Two Room
- * turns died on `fast-mode: false`, a value that asks for nothing.
+ * does not support it, and `model` is set first. Do not send back every
+ * option the composer was shown. A withdrawn one would be fatal.
+ * `fast-mode: false` asks for nothing.
  */
 describe("a session option that disappears once the model is chosen", () => {
   const withConfig = (config: Parameters<typeof createCliConversationController>[0]["session_config"]) =>
@@ -124,8 +122,8 @@ describe("a session option that disappears once the model is chosen", () => {
 /**
  * A session the runtime never answered a prompt in has no transcript on disk,
  * so resuming it fails with "no rollout found" — reported as an opaque
- * "Internal error" one turn *after* the one that actually broke. Verified on
- * the built-in host: the rollout file appears only for the turn that prompted.
+ * "Internal error" one turn after the turn that failed. The rollout file
+ * appears only for the turn that prompted.
  */
 describe("the vendor session a failed turn leaves behind", () => {
   const reachSession = (config: Parameters<typeof createCliConversationController>[0]["session_config"]) => {

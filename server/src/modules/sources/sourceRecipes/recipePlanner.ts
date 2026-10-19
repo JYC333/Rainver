@@ -1,12 +1,11 @@
 import type { SourceRecipeDefinition } from "@rainver/protocol";
 
 /**
- * Deterministic Source planning rules for the conversation-first Create
- * Source flow. No LLM is involved in v1: the planner sniffs the (trusted,
- * origin-guarded) endpoint content and maps it onto one of four fixed recipe
- * shapes built only from catalog primitives. If LLM assistance is added
- * later it may only propose recipe JSON that validates against
- * `SourceRecipeDefinitionSchema` — never code.
+ * Deterministic Source planning for the conversation-first Create Source
+ * flow. The planner sniffs the (trusted, origin-guarded) endpoint content
+ * and maps it onto one of four fixed recipe shapes built only from catalog
+ * primitives. Do not call a model from this planner, and do not emit code.
+ * Recipe JSON has to validate against `SourceRecipeDefinitionSchema`.
  */
 
 export const PLANNED_SOURCE_TYPES = ["rss", "atom", "web_list", "web_page"] as const;

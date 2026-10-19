@@ -10,8 +10,7 @@ How the web client talks to `/api/v1`. Unknown paths return the local
 404 catch-all.
 
 The Files & Code recovery-draft and lazy message-owned input-resource contract
-is recorded in [ADR 0021](../decisions/0021-files-code-codemirror-drafts-and-input-resources.md)
-and is now the shipped behavior.
+is recorded in [ADR 0021](../decisions/0021-files-code-codemirror-drafts-and-input-resources.md).
 
 ## Owns
 - REST API conventions (request/response shape, error format, pagination)
@@ -28,8 +27,8 @@ and is now the shipped behavior.
 **Base URL:** `GET /api/v1/...`
 
 **Auth:** Session-cookie identity is current for the web app. Google OAuth is
-available when configured. Persisted API keys are feature-gated and disabled
-until the schema adds `api_keys`. The browser must not keep a leftover key in
+available when configured. Persisted API keys are feature-gated and disabled.
+There is no `api_keys` table. The browser must not keep a leftover key in
 `localStorage` or send it after logout. Internal service routes use the server
 internal token, not browser credentials. The production PWA service worker
 uses NetworkOnly for `/api/v1/*` so authenticated GET bodies are not reused
@@ -53,7 +52,14 @@ an immutable message-owned resource and gives the Run a server-issued resource
 id. The initial prompt contains the descriptor, not the body. Agents read or
 search it through the Run-scoped `input_resource.read/search` actions; no
 generic database URL, Host temporary path, or absolute browser path is exposed.
-Legacy file snapshots remain readable for older messages and retry paths.
+`input_resource.read` is addressed by line and continued by byte: a line longer
+than one read returns a bounded piece ending on a UTF-8 character boundary, and
+the cursor `next_line` + `next_byte_offset` continues it on the same line
+number. `eof` marks the end; `truncated` means more remains. An offset inside a
+multi-byte character, past the line's end, or a `sha256` that does not match the
+frozen resource is refused. Reads joined in cursor order reproduce the
+resource.
+File snapshots already stored on older messages stay readable on retry paths.
 
 Files & Code draft routes use optimistic `draft_id`/`draft_version` mutations;
 draft content stays in the authenticated server database and is not carried in
@@ -91,7 +97,7 @@ with a route-specific maximum.
 
 **Filtering:** query params matching model field names (e.g., `?scope=user&type=preference`).
 
-**Ordering:** `?order_by=created_at&desc=true`
+**Ordering:** fixed per route; there is no generic `order_by` / `desc` query parameter.
 
 ## Run read model (`runs/runReadModel.ts`, `runToOut`)
 
@@ -182,8 +188,6 @@ There is no Chat-specific streaming endpoint and no polling execution path.
 - [server-status.md](server-status.md)
 - [agents.md](agents.md)
 
-Unimplemented generic WS / chunk SSE:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §7.
 ## Authentication protocol
 
 The auth client uses the explicit `/api/v1/auth/*` facade. Login and recovery

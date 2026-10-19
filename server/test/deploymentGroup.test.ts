@@ -10,10 +10,10 @@ import {
   type AuthRepository,
   type CurrentUser,
 } from "../src/modules/auth/identity.js";
-import { ALLOWED_DEPLOYER_JOB_TYPES, DeployerSocketClient } from "../src/modules/deployment/client.js";
 import { deploymentModule } from "../src/modules/deployment/index.js";
 import { DeploymentService } from "../src/modules/deployment/service.js";
 import { DeploymentRepository } from "../src/modules/deployment/repository.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 import { UNATTENDED_RUN_JOB_TYPES } from "../src/modules/deployment/drainAdmission.js";
 import { scanAutomationsAndFire } from "../src/modules/automations/scheduler.js";
 import { JobDeferredError, JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
@@ -48,19 +48,6 @@ function sourceFiles(dir: string): string[] {
 }
 
 describe("deployer socket boundary", () => {
-  it("limits submitted deployer jobs to the allowlist", async () => {
-    expect([...ALLOWED_DEPLOYER_JOB_TYPES].sort()).toEqual([
-      "health_check",
-      "rebuild_rainver",
-      "restart_rainver",
-    ]);
-    const client = new DeployerSocketClient({ deployerSocketPath: "/tmp/missing-deployer.sock" });
-    await expect(client.submit("self_evolution_apply" as string)).resolves.toMatchObject({
-      status: "failed",
-      error: "Unknown deployer job_type: self_evolution_apply",
-    });
-  });
-
   it("keeps the privileged deployer socket limited to its three operator scripts", () => {
     const protocol = readFileSync(join(repoRoot, "deployer", "protocol.py"), "utf8");
     const deployer = readFileSync(join(repoRoot, "deployer", "deployer.py"), "utf8");
@@ -72,22 +59,15 @@ describe("deployer socket boundary", () => {
     expect(deployer).not.toContain("update.sh");
     expect(protocol).not.toContain("code_patch");
     expect(deployer).not.toContain("code_patch");
-    const allowedReferences = new Set([
-      join(repoRoot, "server", "src", "modules", "deployment", "client.ts"),
-      join(repoRoot, "server", "src", "modules", "deployment", "index.ts"),
-    ]);
-    const unexpectedCallers = sourceFiles(join(repoRoot, "server", "src"))
-      .filter((path) => !allowedReferences.has(path))
-      .filter((path) => readFileSync(path, "utf8").includes("DeployerSocketClient"));
-    expect(unexpectedCallers).toEqual([]);
   });
 
-  it("fails closed when the configured socket is absent", async () => {
-    const client = new DeployerSocketClient({ deployerSocketPath: "/tmp/missing-deployer.sock" });
-    await expect(client.submit("health_check")).resolves.toMatchObject({
-      status: "failed",
-      job_id: null,
-    });
+  it("gives the server no way to reach the deployer socket (B41/B42)", () => {
+    // The server pulls nothing into the deployer: no socket client, no socket
+    // path in its configuration. Do not add one that points at `RAINVER_HOME`
+    // and submits a job.
+    const serverSources = sourceFiles(join(repoRoot, "server", "src"));
+    const socketReferences = serverSources.filter((path) => /DeployerSocketClient|deployerSocketPath|DEPLOYER_SOCKET/.test(readFileSync(path, "utf8")));
+    expect(socketReferences).toEqual([]);
   });
 });
 
@@ -116,7 +96,7 @@ describe("deployment authority", () => {
       avatar_url: null,
       is_instance_admin: false,
       created_at: new Date().toISOString(),
-      last_login_at: null,
+      default_space_id: null, last_login_at: null,
     };
   }
 
@@ -473,6 +453,34 @@ describe("deployment authority", () => {
     );
     expect(terminalRetry.job.status).toBe("succeeded");
     expect(terminalRetry.events.map((event) => event.event_id)).toEqual(["e1", "e2"]);
+  });
+
+  it("answers a terminal report retried while its first attempt was still committing", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const job = await service().createJob("update", ADMIN);
+    await service().heartbeat(beat());
+    const terminal = stageEvent({ stage: "health", status: "succeeded", terminal: true }, "e-final");
+
+    // The first attempt has ended the job but not committed; the retry reads
+    // no event yet and then finds the job no longer running.
+    const firstAttempt = await db.pool.connect();
+    try {
+      await firstAttempt.query("BEGIN");
+      await new DeploymentRepository(firstAttempt).appendEvent({
+        job_id: job.id, event_id: terminal.event_id, stage: terminal.stage, status: terminal.status,
+        log_tail: null, target_tag: null, result_json: undefined, terminal: true,
+      });
+      let settled = false;
+      const retry = service().recordStageEvent(job.id, terminal).finally(() => { settled = true; });
+      await waitForLockWaiter(db.pool, { settled: () => settled });
+      await firstAttempt.query("COMMIT");
+      const detail = await retry;
+      expect(detail.job.status).toBe("succeeded");
+      expect(detail.events.map((event) => event.event_id)).toEqual(["e-final"]);
+    } finally {
+      await firstAttempt.query("ROLLBACK").catch(() => undefined);
+      firstAttempt.release();
+    }
   });
 
   it("names the failure with the end of the stage's own output", async (ctx) => {

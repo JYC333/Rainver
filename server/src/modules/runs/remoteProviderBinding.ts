@@ -1,6 +1,7 @@
 import type { ServerConfig } from "../../config.js";
 import type { Queryable } from "../routeUtils/common.js";
 import { resolveProvidersDbPort } from "../providers/dbReader.js";
+import { runtimeProviderEgressDestination } from "../retrieval/egress/egressPolicy.js";
 import {
   providerProxyLeases,
   type ProviderProxyLeaseRegistry,
@@ -22,11 +23,9 @@ import type { AgentRunRecord } from "./repository.js";
 import type { VendorCliRuntimeKey } from "../runtimeAdapters/specs.js";
 
 /**
- * What the executing host is told. Deliberately runtime-agnostic: the daemon
- * creates a directory, writes these bytes, and reports the paths back as
- * environment. Every Codex-TOML or OpenCode-JSON decision stays here, next to
- * the server-host path that already makes it — one implementation, not two
- * that drift.
+ * What the executing host is told. The daemon creates a directory, writes
+ * these bytes, and reports the paths back as environment. Codex TOML and
+ * OpenCode JSON stay in this module. Do not teach the daemon those formats.
  *
  * The wire contract owns the shape; this alias is what the rest of the remote
  * path calls it. Every host-bound Agent run carries one, bound or not.
@@ -42,13 +41,13 @@ export type RemoteProviderBindingFrame = HostLaunchProviderBinding;
  * session the next turn is about to resume, and every turn after the first
  * fails with the runtime reporting no such conversation.
  *
- * It is not machine-global either, which is what it used to be: keyed by
- * adapter and provider alone, every Agent on a machine shared one login,
- * one session store, and one pile of vendor auto-memory, and an unbound run
- * simply used the machine's own `~/.claude`. Keying by Agent × container is
- * what makes "the Agent is the memory boundary, the Conversation is the
- * context boundary" true of the substrate as well as of Rainver's own
- * Memory ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §6).
+ * It is not machine-global either. Keying by adapter and provider alone would
+ * share one login, one session store, and one pile of vendor auto-memory
+ * across every Agent, and an unbound run would use the machine's own
+ * `~/.claude`. Keying by Agent × container is what makes "the Agent is the
+ * memory boundary, the Conversation is the context boundary" true of the
+ * substrate as well as of Rainver's own Memory
+ * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §6).
  *
  * The container is the Conversation for a Room turn, the owner for a direct
  * chat, and the WorkspaceLocation for everything else — a Task thread, an
@@ -104,8 +103,7 @@ export async function resolveRuntimeProfileScope(
       // The thread's Agent and the Run's are the same on every path that
       // creates one, and the archive keys off the thread's column — so a
       // divergence would write this run into another Agent's profile and
-      // archive the wrong one. Enforced rather than assumed: failing open here
-      // crosses the boundary this whole phase exists to draw.
+      // archive the wrong one. Do not fail open. The profile is keyed by Agent.
       if (row.agent_id && row.agent_id !== run.agent_id) {
         throw new RemoteProviderBindingError(
           "runtime_profile_agent_mismatch",
@@ -162,12 +160,11 @@ export function runtimeProfileKey(
 /**
  * The profile frame for a run with no ModelProvider binding.
  *
- * There used to be none: an unbound run was launched with the machine's own
- * environment, so its CLI read `~/.claude` — one login, one session store and
- * one pile of vendor auto-memory shared by every Agent on the machine. This
- * gives it the same profile a bound run gets, minus the lease: no `files`, no
- * `env`, only the state-root variables and a link to the one credential file
- * this installation was logged in with.
+ * An unbound run gets the same profile shape as a bound run, minus the lease:
+ * no `files`, no `env`, only the state-root variables and a link to the one
+ * credential file this installation was logged in with. Do not launch it on
+ * the machine's own `~/.claude`; that shares one login and session store
+ * across every Agent.
  *
  * The link, rather than a token in the environment: passing the credential
  * through `CLAUDE_CODE_OAUTH_TOKEN` or its equivalents would mean Rainver read
@@ -206,12 +203,11 @@ export function buildUnboundRuntimeProfile(
  * profile-relative paths the daemon resolves.
  *
  * Deliberately **not** `HOME`. A bound run gets `HOME: "."` because B67 wants
- * the machine contributing nothing at all, and pays for it by losing
- * `~/.gitconfig` and `~/.ssh` — a cost that phase accepted for bound runs and
- * recorded. An unbound run must not pay it: a Task run on a paired machine
- * commits and pushes inside a registered Location, and moving its `HOME` would
- * break `git commit` on the author identity and `git push` on the user's ssh
- * config, for runs that worked the day before.
+ * the machine contributing nothing at all, and that drops `~/.gitconfig` and
+ * `~/.ssh`. An unbound run must not pay that cost: a Task run on a paired
+ * machine commits and pushes inside a registered Location, and moving its
+ * `HOME` would break `git commit` on the author identity and `git push` on
+ * the user's ssh config.
  *
  * Each runtime names its own state root instead, and each of these is the
  * variable that runtime's own binding already uses:
@@ -220,12 +216,12 @@ export function buildUnboundRuntimeProfile(
  *   transcripts and the `.credentials.json` the login link lands on.
  * - Codex — `CODEX_HOME`, likewise for `sessions/` and `auth.json`.
  * - OpenCode — the XDG roots. Its data directory is `$XDG_DATA_HOME/opencode`,
- *   falling back to `HOME/.local/share/opencode`, which is why the bound path
+ *   falling back to `HOME/.local/share/opencode`. The bound path
  *   redirects `HOME`: `XDG_DATA_HOME` is not on B67's allowlist so there is
  *   nothing to point. Here there is. **This is the one state root not verified
  *   on a real host** — if OpenCode ignores `XDG_DATA_HOME`, its state stays
- *   machine-global, which is no worse than before this phase but is not the
- *   isolation this claims. Recorded in the deferred register.
+ *   machine-global. That is not the isolation this claims. Recorded in the
+ *   deferred register.
  */
 function profileStateEnv(runtimeKey: string): Record<string, string> {
   if (runtimeKey === "claude_code") return { CLAUDE_CONFIG_DIR: ".claude" };
@@ -252,7 +248,7 @@ export const RUNTIME_PROFILE_MODEL_SOURCE = "runtime_profile";
  * correct: it says which backend was chosen, and the run's own failure says
  * the rest.
  *
- * Without this the two disagree in the strong form: the router stamps the
+ * Do not leave the router's prediction in place. The router stamps the
  * provider its candidate scoring chose, execution uses the Host's binding, and
  * usage attributes to the second while the Run row names the first. Clearing
  * the column for an unbound run matters just as much — a run on the machine's
@@ -347,6 +343,24 @@ export async function resolveRemoteRunBinding(
 }
 
 /**
+ * The model a provider-bound Run sends to, in the order the binding resolves
+ * it: the frozen Runtime Profile's model, then the Run's own override, then
+ * the Provider's default, then its first listed model. Egress is judged on
+ * this model, never on the Provider's default alone: the same local server
+ * may forward another model to its vendor's cloud.
+ */
+export function effectiveRunProviderModel(
+  run: { runtime_profile_snapshot_json?: unknown; model_override_json?: unknown },
+  provider: { default_model?: string | null; available_models?: unknown },
+): string | null {
+  return stringValue(recordValue(run.runtime_profile_snapshot_json).model_name)
+    ?? stringValue(recordValue(run.model_override_json).model)
+    ?? stringValue(provider.default_model)
+    ?? stringArray(provider.available_models)[0]
+    ?? null;
+}
+
+/**
  * Turns a resolved binding into a lease the host can use and the files its
  * runtime needs. The provider's real key is never part of this — the proxy
  * substitutes it inside the server process.
@@ -375,8 +389,8 @@ export async function buildRemoteProviderBinding(input: {
   if (!providers) {
     throw new RemoteProviderBindingError("providers_db_unavailable", "Provider database read port is unavailable.");
   }
-  // `userId: null` matches the server-host runtime path and excludes
-  // subscription providers, which have no key and no compatible base URL.
+  // `userId: null` excludes subscription providers. They have no key and no
+  // compatible base URL for this binding. Do not pass a person id here.
   const provider = await providers.getProvider(input.run.space_id, null, input.binding.provider_id);
   if (!provider || typeof provider !== "object") {
     throw new RemoteProviderBindingError(
@@ -411,9 +425,9 @@ export async function buildRemoteProviderBinding(input: {
     ?? stringValue(record.default_model)
     ?? availableModels[0]
     ?? null;
-  // Codex and OpenCode name a model in their config, and the server-host path
-  // refuses without one rather than letting the runtime fall back to a
-  // built-in default that the bound provider does not serve.
+  // Codex and OpenCode name a model in their config. Refuse without one.
+  // Do not let the runtime fall back to a built-in default the bound
+  // provider does not serve.
   if (!model && input.runtimeKey !== "claude_code") {
     throw new RemoteProviderBindingError(
       `${input.runtimeKey === "codex_cli" ? "codex" : "opencode"}_model_required`,
@@ -439,6 +453,21 @@ export async function buildRemoteProviderBinding(input: {
     throw error;
   }
 
+  // Classified on the Provider's own declaration, its home Space and the
+  // model this Run sends to — the same judgement egress made at admission.
+  const localDestination = runtimeProviderEgressDestination(input.runtimeKey, {
+    space_id: stringValue(record.home_space_id) ?? stringValue(record.space_id) ?? "",
+    provider_type: stringValue(record.provider_type) ?? "",
+    base_url: stringValue(record.base_url),
+    deployment: record.deployment === "trusted_local" ? "trusted_local" : "cloud",
+    config_json: {
+      claude_compatible_base_url: stringValue(record.claude_compatible_base_url),
+      openai_compatible_base_url: stringValue(record.openai_compatible_base_url),
+    },
+    default_model: stringValue(record.default_model),
+    model,
+  }, input.run.space_id) === "local_provider";
+
   const registry = input.leaseRegistry ?? providerProxyLeases;
   const lease = registry.create(authorization, {
     run_id: input.run.id,
@@ -450,6 +479,7 @@ export async function buildRemoteProviderBinding(input: {
     route: requirement.route,
     upstream_base_url: upstreamBaseUrl,
     model,
+    pinned_model: localDestination ? model : null,
     runtime_key: input.runtimeKey,
     session_id: input.run.session_id,
     parent_run_id: input.run.parent_run_id ?? null,
@@ -510,7 +540,7 @@ export async function buildRemoteProviderBinding(input: {
  * runtime learns its model.
  *
  * The spaces genuinely differ, and each is defined by the config this module
- * writes, which is why the translation lives here rather than in the protocol
+ * writes. The translation lives here rather than in the protocol
  * controller:
  *
  * - **OpenCode** addresses a model as `<providerId>/<model>`; a bound run's

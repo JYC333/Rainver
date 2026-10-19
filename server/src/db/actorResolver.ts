@@ -4,12 +4,11 @@ import type { Queryable } from "../modules/routeUtils/common.js";
 /**
  * Get-or-create an `actors` row for a person or a service.
  *
- * Every append-only surface that records *who did this* — run steps, and now
- * Project work events — needs a non-null Actor FK, and each of them arrived at
- * the same select-then-insert. Keeping one copy matters less for the SQL than
- * for the lookup key: an actor found by a slightly different predicate is a
- * second identity for the same person, and nothing downstream can tell the two
- * apart afterwards.
+ * Every append-only surface that records who did this — run steps and
+ * Project work events — needs a non-null Actor FK. Do not keep a second
+ * select-then-insert. An actor found by a different predicate is a second
+ * identity for the same person, and nothing downstream can tell the two
+ * apart.
  *
  * Not covered here: the Space Assistant's actor, which deliberately pins its
  * row id to the Agent id so Room provisioning can reconcile it idempotently
@@ -78,10 +77,10 @@ export async function resolveAgentActorId(
   agentId: string,
 ): Promise<string> {
   const now = new Date().toISOString();
-  // Pinned id, so this is an upsert rather than find-or-create: a row that
-  // was archived keeps the Agent's id, and a plain insert would collide on it
-  // while the active-only lookup kept missing it — an Agent that could never
-  // act again.
+  // Pinned id, so this is an upsert rather than find-or-create. An archived
+  // row keeps the Agent's id. Do not plain-insert. It would collide, and an
+  // active-only lookup would keep missing it, so the Agent could never act
+  // again.
   const result = await db.query<{ id: string }>(
     `INSERT INTO actors (
        id, space_id, actor_type, user_id, agent_id, service_name, display_name,

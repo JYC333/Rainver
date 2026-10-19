@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
-import type { JobEnvelopeForHandler } from "../src/modules/jobs/handlerRegistry.js";
+import { JobDeferredError, type JobEnvelopeForHandler } from "../src/modules/jobs/handlerRegistry.js";
 import { registerProjectResearchExecutionHandlers } from "../src/modules/projectResearch/executionRegistration.js";
 import { ProjectResearchOrchestrator } from "../src/modules/projectResearch/orchestrator.js";
 import { RESEARCH_PIPELINE_START_JOB, ResearchAcquisitionPipelineRunner } from "../src/modules/projectResearch/pipeline/researchAcquisitionPipelineJob.js";
@@ -12,7 +12,7 @@ import { RESEARCH_OPERATION_FAILURE_NOTIFY_JOB } from "../src/modules/projectRes
 import { __setQuestionRefineInvokerForTests } from "../src/modules/projectResearch/questionRefineService.js";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import { HttpError, type SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
-import { seedAgentWithVersion, seedServerHost, seedSpaceOwnerProject, seedRoomManager } from "./support/domainSeeds.js";
+import { seedAgentWithVersion, seedServerHost, seedSpaceMember, seedSpaceOwnerProject, seedRoomManager } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { SCREENING_AUTO_CONTINUE_CORPUS_LIMIT } from "../src/modules/projectResearch/researchCheckpointPolicy.js";
@@ -29,7 +29,7 @@ describe("researchAcquisitionPipelineDb", () => {
   const CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
 
   // Real-Postgres coverage for the background pipeline behind
-  // `research.start_acquisition` (room-advancement-reliability-plan Phase 4):
+  // `research.start_acquisition`:
   // bare accepted Thread -> a running Operation, with the FINER-assessment
   // gate and the Room continuation events. Only the live LLM (question
   // assessment) and live multi-provider search (query evaluation) are faked —
@@ -217,8 +217,7 @@ describe("researchAcquisitionPipelineDb", () => {
   }
 
   describe("ResearchAcquisitionPipelineRunner (real Postgres)", () => {
-    // The Room-message assertion the plan's verification section also calls
-    // for (one posted `research_pipeline_outcome` continuation) is covered
+    // The Room-message assertion (one posted `research_pipeline_outcome` continuation) is covered
     // separately in researchAcquisitionContinuation.test.ts, which exercises
     // `registerResearchAcquisitionContinuation`'s handlers directly — full
     // Room message dispatch additionally requires a working conversation
@@ -246,12 +245,11 @@ describe("researchAcquisitionPipelineDb", () => {
       expect(operation.rows[0]!.status).toBe("active");
       expect(operation.rows[0]!.progress_json).toMatchObject({ origin_room_id: ROOM, origin_session_id: SESSION, origin_group_id: "group-1" });
 
-      // The acquisition is bounded before it runs, and says so. Unbounded,
-      // this walked a source's whole history — 873 documents, every one put
-      // through an LLM classification — with no confirmation, nothing on
-      // screen, and the first number the user ever saw inside the failure
-      // four hours later. The walk is newest-first and the budget is
-      // operation-wide, so the cap buys the most recent N items.
+      // The acquisition is bounded before it runs, and says so. Do not walk
+      // a source's whole history. Every document would go through an LLM
+      // classification with no confirmation and nothing on screen. The walk
+      // is newest-first and the budget is operation-wide, so the cap buys
+      // the most recent N items.
       expect(operation.rows[0]!.progress_json).toMatchObject({
         history: { max_items: SCREENING_AUTO_CONTINUE_CORPUS_LIMIT },
       });
@@ -260,10 +258,10 @@ describe("researchAcquisitionPipelineDb", () => {
 
     it("starts when assessment rephrased the question, keeping the Thread's own statement authoritative", async () => {
       if (!db.available) return;
-      // Assessment rewriting the question is the pipeline working, not drift:
-      // comparing the strategy's text with the Thread's rejected the
-      // pipeline's own output, so `research.start_acquisition` could never
-      // start once a single word changed. Provenance decides instead — the
+      // Assessment rewriting the question is the pipeline working, not drift.
+      // Do not compare the strategy's text with the Thread's. That would
+      // reject the pipeline's own output, so `research.start_acquisition`
+      // could never start once a single word changed. Provenance decides — the
       // strategy came from an assessment of this Thread.
       __setQuestionRefineInvokerForTests(refiningAssessmentInvoker());
       const statement = "agent memory 应该按什么维度分类？";
@@ -296,8 +294,8 @@ describe("researchAcquisitionPipelineDb", () => {
 
       // No acquisition was started — and the attempt is still visible where a
       // person looks for it. A pipeline that stopped before startInitialIntake
-      // used to leave nothing but a jobs row, so every Project surface showed
-      // an empty list, which reads as "still running".
+      // still leaves a visible attempt. Do not leave only a jobs row: every
+      // Project surface then shows an empty list, which reads as still running.
       const operations = await db.pool.query<{ status: string; intent_text: string; progress_json: Record<string, unknown> }>(
         `SELECT status, intent_text, progress_json FROM project_operations WHERE space_id=$1 AND project_id=$2 AND kind='research'`,
         [SPACE, PROJECT],
@@ -310,6 +308,42 @@ describe("researchAcquisitionPipelineDb", () => {
         outcome_status: "assessment_not_passed",
       });
       expect(operations.rows[0]!.intent_text).toContain("assessment");
+    });
+
+    it("keeps its first outcome while a busy Room turn defers the report, instead of running the pipeline again", async () => {
+      if (!db.available) return;
+      __setQuestionRefineInvokerForTests(failingAssessmentInvoker());
+      const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
+        kind: "question",
+        statement: "Tell me everything about everything.",
+      });
+      const job = await makeJob(String(thread.id));
+      await db.pool.query(
+        `INSERT INTO jobs (id, space_id, user_id, job_type, status, priority, payload_json, attempts, max_attempts, scheduled_at, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,'running',0,$5::jsonb,1,3,now(),now(),now())`,
+        [job.job_id, SPACE, OWNER, RESEARCH_PIPELINE_START_JOB, JSON.stringify(job.payload)],
+      );
+      // An Agent's chat turn still holds the Room conversation.
+      const turn = randomUUID();
+      await db.pool.query(
+        `INSERT INTO runs (id, space_id, agent_id, agent_version_id, session_id, run_type, trigger_origin, status, mode,
+                           owner_user_id, visibility, created_at, updated_at, execution_kind, model_override_json)
+         VALUES ($1,$2,$3,$4,$5,'agent','manual','queued','live',$6,'space_shared',now(),now(),'agent',
+                 '{"chat_turn":{"schema_version":"chat_turn.v1"}}'::jsonb)`,
+        [turn, SPACE, AGENT, AGENT_VERSION, SESSION, OWNER],
+      );
+      const runner = new ResearchAcquisitionPipelineRunner(db.pool, config!, { adaptiveQueryDependencies: FAKE_QUERY_DEPENDENCIES });
+      await expect(runner.run(job)).rejects.toBeInstanceOf(JobDeferredError);
+
+      // The worker runs the deferred job again from its stored payload.
+      const stored = await db.pool.query<{ payload_json: Record<string, unknown> }>(`SELECT payload_json FROM jobs WHERE id=$1`, [job.job_id]);
+      await expect(runner.run({ ...job, payload: stored.rows[0]!.payload_json })).rejects.toBeInstanceOf(JobDeferredError);
+
+      const attempts = await db.pool.query(
+        `SELECT id FROM project_operations WHERE space_id=$1 AND project_id=$2 AND kind='research'`,
+        [SPACE, PROJECT],
+      );
+      expect(attempts.rows).toHaveLength(1);
     });
 
     // Advance-to-done idempotency: a second, identical invocation reuses the
@@ -340,8 +374,7 @@ describe("researchAcquisitionPipelineDb", () => {
       expect(strategies.rows).toHaveLength(1);
     });
 
-    // Regression test for the discovery-review finding: `failOperation` can run
-    // inside a `WorkflowExecutionService` SAVEPOINT that gets rolled back on
+    // `failOperation` can run inside a `WorkflowExecutionService` SAVEPOINT that gets rolled back on
     // rethrow, so `notifyRoomOfOperationFailure` must enqueue its Room
     // notification through the same `Queryable` `failOperation` is already
     // using (sharing its commit/rollback fate) rather than posting the Room
@@ -402,8 +435,8 @@ describe("researchAcquisitionPipelineDb", () => {
 });
 
 describe("researchAcquisitionServiceDb", () => {
-  // Real-Postgres coverage for the synchronous half of `research.start_acquisition`
-  // (room-advancement-reliability-plan Phase 4): Thread validation, the
+  // Real-Postgres coverage for the synchronous half of `research.start_acquisition`.
+  // Thread validation, the
   // "already starting" idempotency guard, and the enqueued job payload shape.
   // The pipeline itself (assessment -> evaluate -> activate -> startInitialIntake)
   // is covered in researchAcquisitionPipelineDb.test.ts.
@@ -437,6 +470,38 @@ describe("researchAcquisitionServiceDb", () => {
           originSessionId: null,
         }),
       ).rejects.toMatchObject({ statusCode: 404 } satisfies Partial<HttpError>);
+    });
+
+    it("starts nothing for a Project viewer, or for a writer on a Thread they cannot read", async () => {
+      if (!db.available) return;
+      const VIEWER = "2bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      const WRITER = "2ccccccc-cccc-4ccc-8ccc-cccccccccccc";
+      for (const [user, role] of [[VIEWER, "viewer"], [WRITER, "member"]] as const) {
+        await seedSpaceMember(db.pool, { space: SPACE, user });
+        await db.pool.query(
+          `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, 'active', now(), now())`,
+          [randomUUID(), SPACE, PROJECT, user, role],
+        );
+      }
+      const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
+        kind: "question",
+        statement: "What does the owner keep to themselves?",
+      });
+      const service = new ResearchAcquisitionService(db.pool);
+      const start = (userId: string) => service.startAcquisition({ spaceId: SPACE, userId }, PROJECT, {
+        threadId: String(thread.id), originRoomId: null, originSessionId: null,
+      });
+
+      await expect(start(VIEWER)).rejects.toMatchObject({ statusCode: 403 } satisfies Partial<HttpError>);
+
+      await db.pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1 AND space_id = $2`, [String(thread.id), SPACE]);
+      await expect(start(WRITER)).rejects.toMatchObject({ statusCode: 404 } satisfies Partial<HttpError>);
+
+      const jobs = await db.pool.query(`SELECT id FROM jobs WHERE space_id=$1 AND job_type=$2`, [SPACE, RESEARCH_PIPELINE_START_JOB]);
+      expect(jobs.rows).toHaveLength(0);
+      // The owner, who can read it, still starts it.
+      await expect(start(OWNER)).resolves.toEqual({ status: "queued", thread_id: String(thread.id) });
     });
 
     it("enqueues a research_pipeline_start job carrying the Thread and Room origin", async () => {
@@ -496,11 +561,9 @@ describe("researchAcquisitionServiceDb", () => {
       expect(jobs.rows).toHaveLength(1);
     });
 
-    // Regression test for the discovery-review finding: without an advisory
-    // lock serializing the "already starting" check against the enqueue, two
-    // concurrent calls can both observe no active job and both enqueue one —
-    // duplicating real LLM-assessment/live-search pipeline cost. Same idiom as
-    // the Inquiry Thread creation path's coalesce guard.
+    // Do not enqueue without an advisory lock on the "already starting" check.
+    // Two concurrent calls would both observe no active job and both enqueue
+    // one, duplicating a real LLM-assessment or live-search pipeline run.
     it("serializes concurrent calls for the same Thread so only one job is enqueued", async () => {
       if (!db.available) return;
       const thread = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {

@@ -1,17 +1,16 @@
 /**
- * Per-request context helpers for the server gateway entry layer.
+ * Per-request context helpers for the gateway.
  *
- * The "gateway" is the permanent entry/routing layer of the server.
- * These helpers carry the cross-cutting request metadata — request id
- * continuity, safe header access, and the server marker header — that
- * every server path shares.
+ * The gateway module owns routing and request context. Do not add a second
+ * entry layer. These helpers carry the cross-cutting request metadata —
+ * request id continuity, safe header access, and the server marker header —
+ * that every server path shares.
  *
  * This file is metadata only. Native auth resolution lives in modules/auth and
  * only publishes the resulting user/space identifiers into request context.
  */
 
 import type { FastifyRequest } from "fastify";
-import { randomUUID } from "node:crypto";
 
 /** Standard correlation id header, preserved end-to-end. */
 export const REQUEST_ID_HEADER = "x-request-id";
@@ -29,11 +28,15 @@ export const SERVER_MARKER_VALUE = "server";
  */
 const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "proxy-authorization"]);
 
-/** Preserve an incoming `x-request-id`, or generate one if absent. */
+/**
+ * The request's one correlation id: the incoming `x-request-id` when the
+ * client sent one, otherwise the id Fastify generated for it (`appShell`
+ * configures both). Read from the request rather than minted here so that
+ * every caller on the same request — the response header, a route, the error
+ * envelope, the log line — gets the same id.
+ */
 export function resolveRequestId(request: FastifyRequest): string {
-  const incoming = request.headers[REQUEST_ID_HEADER];
-  const value = Array.isArray(incoming) ? incoming[0] : incoming;
-  return value || randomUUID();
+  return String(request.id);
 }
 
 /**
@@ -53,7 +56,7 @@ export function readHeader(request: FastifyRequest, name: string): string | unde
  * attach authenticated identity after validating a session cookie; raw credentials
  * never belong in this object.
  */
-export interface RequestContext {
+interface RequestContext {
   /** Preserved or generated correlation id for this request. */
   requestId: string;
   method: string;

@@ -3,9 +3,8 @@
  *
  * Bundled official plugin source lives under plugins/official/*, is compiled
  * into dist/official-plugins/*, and loaded into BUILT_IN_PLUGINS at startup.
- * Package install state and schema are still created only by the installer.
- * Level 2 (downloaded): plugins will use the same startup-load shape from the
- * instance plugins directory.
+ * Package install state and schema are created only by the installer.
+ * Remote package download is not implemented.
  *
  * Usage (in server startup):
  *   const host = new PluginHost(BUILT_IN_PLUGINS)

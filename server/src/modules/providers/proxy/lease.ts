@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import type { InvocationAuditRefs } from "@rainver/protocol";
 import type { CredentialSpendAuthorization } from "../../policy/credentialSpend.js";
 
-export interface ProviderProxyLeaseInput {
+interface ProviderProxyLeaseInput {
   run_id: string;
   space_id: string;
   provider_id: string;
@@ -12,6 +12,12 @@ export interface ProviderProxyLeaseInput {
   route?: ProviderProxyRoute;
   upstream_base_url: string;
   model?: string | null;
+  /**
+   * Set on a lease whose destination was judged local for this model: the
+   * proxy then refuses a request for any other model, which the same local
+   * server could forward to its vendor's cloud.
+   */
+  pinned_model?: string | null;
   runtime_key?: string | null;
   session_id?: string | null;
   parent_run_id?: string | null;
@@ -34,7 +40,7 @@ export interface ProviderProxyLeaseInput {
 
 export type ProviderProxyRoute = "anthropic" | "openai";
 
-export interface ProviderProxyLease {
+interface ProviderProxyLease {
   id: string;
   token: string;
   run_id: string;
@@ -61,6 +67,7 @@ export interface ProviderProxyLease {
 }
 
 export interface ResolvedProviderProxyLease {
+  pinned_model: string | null;
   id: string;
   token_hash: Buffer;
   run_id: string;
@@ -119,10 +126,9 @@ export function providerProxyExternalBaseUrl(): string | null {
 
 /**
  * Where one lease lives under a proxy base URL. The shape is the proxy's own
- * routing contract (`server.ts` splits the path back into route and lease id),
- * so every caller that builds such a URL goes through here rather than
- * repeating it — there were four copies, and a wire format spread across four
- * expressions is one edit away from disagreeing.
+ * routing contract (`server.ts` splits the path back into route and lease id).
+ * Every caller that builds such a URL goes through here. Do not copy the path
+ * format at a call site.
  */
 export function providerProxyLeaseUrl(baseUrl: string, route: ProviderProxyRoute, leaseId: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/${route}/${encodeURIComponent(leaseId)}`;
@@ -165,6 +171,7 @@ export class ProviderProxyLeaseRegistry {
       route: input.route ?? "anthropic",
       upstream_base_url: normalizeBaseUrl(input.upstream_base_url),
       model: input.model ?? null,
+      pinned_model: input.pinned_model ?? null,
       runtime_key: input.runtime_key ?? null,
       session_id: input.session_id ?? null,
       parent_run_id: input.parent_run_id ?? null,

@@ -29,9 +29,9 @@ const KEEP_LOCAL_EXACT = [
   'project.sidecar.width',
 ]
 /**
- * No prefix is safe to keep wholesale, which is the point. `project.sidecar.`
+ * Do not keep a prefix wholesale. `project.sidecar.`
  * covers both a pane width and `project.sidecar.room.<id>.conversation`, and
- * `rainver:` covers both the theme and every notebook chat session — so a new
+ * `rainver:` covers both the theme and every notebook chat session. A new
  * preference is listed by name, and anything nobody listed is cleared.
  */
 const KEEP_LOCAL_PREFIXES: string[] = []
@@ -67,7 +67,7 @@ export function clearSessionResidue(): void {
 }
 
 /** Removes the API response cache, whatever state the app thinks it is in. */
-export async function dropApiCache(): Promise<void> {
+async function dropApiCache(): Promise<void> {
   if (typeof caches === 'undefined') return
   try { await caches.delete(API_CACHE_NAME) } catch { /* unsupported */ }
 }
@@ -80,11 +80,10 @@ export async function clearAuthenticatedBrowserState(): Promise<void> {
 /**
  * Runs once at boot, before the app asks who is signed in.
  *
- * The service worker must not cache authenticated API bodies, and does not —
- * but a cache written by an older build, or left behind when a tab was closed
- * mid-logout, outlives the code that stopped writing it. Deleting it
- * unconditionally costs one cache miss on something that was never
- * supposed to be there.
+ * The service worker must not cache authenticated API bodies, and does not.
+ * A cache from an older build, or from a tab closed mid-logout, can still be
+ * there. Deleting it unconditionally costs one cache miss on something that
+ * should not be there.
  */
 export function dropApiCacheAtBoot(): void {
   void dropApiCache()
@@ -95,8 +94,8 @@ export function dropApiCacheAtBoot(): void {
  *
  * One object on purpose: a `BroadcastChannel` never delivers to itself, but it
  * does deliver to every *other* channel object — including another one in the
- * same tab. Announcing through a second object made the tab that signed out
- * hear its own logout and run the remote handler on itself.
+ * same tab. Do not announce through a second object. The tab that signed out
+ * would hear its own logout and run the remote handler on itself.
  */
 let logoutChannel: BroadcastChannel | null = null
 
@@ -114,9 +113,8 @@ function openLogoutChannel(): BroadcastChannel | null {
 /**
  * Runs `onRemote` when another tab of this browser signs out.
  *
- * Without it, signing out in one tab left every other tab holding a rendered
- * page full of the previous person's content until something happened to make
- * it call the API. Returns a stop function.
+ * Another tab's sign-out clears this tab. Do not keep rendering the previous
+ * person's page until the next API call. Returns a stop function.
  */
 export function watchCrossTabLogout(onRemote: () => void): () => void {
   const channel = openLogoutChannel()

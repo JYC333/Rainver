@@ -102,13 +102,13 @@ export interface RuntimeAdapterSpec {
     interactive_command_template?: string[];
     protocol?: "acp";
     /**
-     * ACP runtime replatform P3: the daemon-probed vendor binary name to
+     * The daemon-probed vendor binary name to
      * check `capabilities_json.runtimes` against for remote eligibility,
      * when it differs from `executable.command`. An ACP adapter package
-     * (e.g. `codex-acp`) is our own bundled client, not something a trusted
+     * (e.g. `codex-acp`) is the bundled client, not something a trusted
      * host has installed — the daemon's capability probe checks for the
-     * underlying vendor CLI (`codex`) instead (see A6, hosts.md). Unset for
-     * adapters whose vendor CLI natively speaks the wire protocol we use
+     * underlying vendor CLI (`codex`) instead. See hosts.md. Unset for
+     * adapters whose vendor CLI natively speaks the wire protocol
      * (opencode: the daemon probes for "opencode" and that is also
      * `executable.command`).
      */
@@ -313,7 +313,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     },
     delegation_controllability: "runtime_config",
     structured_output: "native_event_stream",
-    // ACP runtime replatform P4: Claude's opaque ACP session id is resumed by
+    // Claude's opaque ACP session id is resumed by
     // the general AcpController, not by vendor-specific `--resume` argv.
     checkpoint_resume: "runtime_session",
     cancellation_reliability: "best_effort",
@@ -357,13 +357,14 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     },
     permissions: {
       // ACP's permission requests are answered by the controller. Keep the
-      // policy key and an empty argv template so existing high-risk dispatch
-      // policy remains valid without reviving Claude's CLI-only bypass flag.
+      // policy key and an empty argv template, so a high-risk dispatch that
+      // names `allow_permission_bypass` still matches. Do not put a CLI
+      // bypass flag on that argv.
       supports_permission_bypass: true,
       permission_bypass_arg_template: [],
       permission_bypass_policy_key: "allow_permission_bypass",
     },
-    // claude-agent-acp 0.70 (read 2026-09-24): AskUserQuestion becomes a form
+    // claude-agent-acp 0.70: AskUserQuestion becomes a form
     // elicitation — one question in `message`, several as `question_<n>`
     // fields with the question in `description`.
     interaction: {
@@ -402,19 +403,18 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     subagent_disable_mechanism: "unknown",
     delegation_controllability: "unknown",
     structured_output: "unknown",
-    // ACP runtime replatform P3: codex resumes an opaque session id through
-    // `session/resume` (A7) — the general AcpController, not a bespoke
+    // Codex resumes an opaque session id through
+    // `session/resume` — the general AcpController, not a bespoke
     // thread/resume RPC. The server keeps the corresponding `.codex` state in
     // the conversation's isolated HOME; each turn's usage is per-turn
-    // already (session/prompt's own result.usage), no baseline subtraction
-    // needed the way the deleted codex_app_server controller required.
+    // already (session/prompt's own result.usage). No baseline subtraction.
     checkpoint_resume: "runtime_session",
     cancellation_reliability: "best_effort",
     observability_level: "opaque",
     side_effect_level: "workspace",
     data_exposure: "provider",
     baseline_trust_level: "low",
-    // `codex-acp` is our own pinned ACP adapter (A6), not the vendor CLI
+    // `codex-acp` is the pinned ACP adapter, not the vendor CLI
     // itself — it bundles a compatible `@openai/codex` and, absent
     // `CODEX_PATH`, spawns that bundled copy directly. `remote_capability_probe`
     // below still points capability checks at the vendor CLI name a trusted
@@ -446,7 +446,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     // Codex's `mode` defaults to `agent`, which keeps its own sandbox and
     // approval gate. Inside the strict namespace that gate has nothing left to
     // protect and its policy makes the Run's own workspace read-only, so the
-    // one boundary is ours. Verified on the built-in host 2026-09-08.
+    // one boundary is ours.
     strict_session_config: [{ id: "mode", type: "select", value: "agent-full-access", category: "mode" }],
     model: {
       supports_model_override: false,
@@ -454,7 +454,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       provider_api: "openai_compatible",
     },
     permissions: { supports_permission_bypass: false },
-    // codex-acp 1.12 (read 2026-09-24): request_user_input becomes a form
+    // codex-acp 1.12: request_user_input becomes a form
     // elicitation whose generic `message` is "Codex needs your input to
     // continue."; each question is a field whose `title` is the question.
     interaction: {

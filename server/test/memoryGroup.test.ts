@@ -70,7 +70,7 @@ describe("memorySourceMonitoringContract", () => {
    * Memory source-monitoring compatibility fixture.
    *
    * The fixture covers every provenance-trust composition, accept context,
-   * semantic/episodic signal, and legacy flat-key normalization. Because this is
+   * semantic/episodic signal, and flat-key normalization. Because this is
    * the apply gate that decides reject / require_review / allow, any outcome
    * drift fails the build.
    */

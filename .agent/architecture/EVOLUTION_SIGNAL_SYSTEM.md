@@ -1,12 +1,11 @@
 # Evolution Signal System
 
-This document describes the current rule-based signal path. It is the D1
-foundation for the later evaluation and supervisor consumers.
+This document describes the current rule-based signal path.
 
 ## Ownership and storage
 
 `evolution_signals` remains the single observation stream owned by the
-`evolution` module. D1 reuses the existing table and does not add a parallel
+`evolution` module. That table is the observation stream. Do not add a parallel
 metrics or telemetry store. `EvolutionSignalEmitter` lives at
 `server/src/modules/evolution/signalEmitters.ts`.
 
@@ -25,11 +24,11 @@ runs and unrelated proposals do not create orphan evolution signals.
 |---|---|---|
 | A run is finalized with a failed or partial outcome | `run_finalization_failed` | `PostRunFinalizationService` |
 | A completed finalization is requested again | `run_finalization_repeated` | `PostRunFinalizationService` |
-| Summed `token_usage_events.estimated_cost_usd` reaches 80% of the A1 contract maximum | `run_cost_threshold` | `PostRunFinalizationService` + `PgUsageRepository` |
-| Observed duration reaches 80% of the A1 contract maximum | `run_latency_threshold` | `PostRunFinalizationService` |
+| Summed `token_usage_events.estimated_cost_usd` reaches 80% of `contract_snapshot_json.max_cost` | `run_cost_threshold` | `PostRunFinalizationService` + `PgUsageRepository` |
+| Observed duration reaches 80% of `contract_snapshot_json.max_duration_seconds` | `run_latency_threshold` | `PostRunFinalizationService` |
 | A proposal is rejected | `proposal_rejected` | `PgProposalApplyService` post-commit callback (including Bundle reject) |
-| A future proposal status requests changes | `proposal_request_changes` | Emitter rule is ready; no such current status exists |
-| A deterministic verification check fails | `verification_failed` | Emitted from finalized RunEvaluation verification facts; A2 engine owns result production |
+| No proposal status requests changes | `proposal_request_changes` | The emitter rule exists; no such status exists |
+| A deterministic verification check fails | `verification_failed` | Emitted from finalized RunEvaluation verification facts; the verification engine owns result production |
 | A supervisor records an outcome | `supervisor_outcome` | `PgRunSupervisor` emits after its durable decision |
 | An autonomous Run exceeds its review wait bound | `supervisor_outcome` | `AutonomyRecoveryService` emits after cancellation and operational alert persistence |
 
@@ -52,7 +51,7 @@ Cost uses the finalization-time sum of `token_usage_events.estimated_cost_usd`
 for the run. Duration uses the run's `started_at` to `ended_at` timestamps.
 Unknown observations do not produce threshold signals.
 
-## Evolution bundles (D3)
+## Evolution bundles
 
 The evolution module exposes `/api/v1/evolution/bundles` for grouping visible,
 pending ordinary proposals into one review context; the Inbox uses the same
@@ -81,9 +80,10 @@ rollback proposal is persisted when policy or preflight rejects the request.
 Pending rollback requests are idempotently reused. The applier takes the bundle
 advisory lock, then sorted asset-level transaction advisory locks shared with
 promotion apply, verifies that each asset is unchanged since the recorded
-post-apply snapshot, restores approved members in reverse bundle order, and
-writes an `evolution.bundle.rolled_back` activity record in the same
-transaction. Snapshot capture itself takes the asset lock before reading any
+post-apply snapshot, restores approved members in reverse approval order (one
+decision request approves its members in bundle order), and writes an
+`evolution.bundle.rolled_back` activity record in the same transaction.
+Snapshot capture itself takes the asset lock before reading any
 asset/version/reference state, so the snapshot and promotion apply share one
 serialized critical section. A mismatch or unsupported proposal type aborts the
 transaction and leaves the bundle unchanged; no best-effort partial restore is
@@ -97,30 +97,34 @@ member states return `null`.
 
 Each rule carries a source type, source id, signal type, and dedup window. The
 payload stores a stable `dedup_key`. Insertion takes a PostgreSQL transaction
-advisory lock for that target/source tuple and checks the window atomically,
-so repeated finalization or worker delivery does not flood the stream without
-requiring a new migration or a second uniqueness table.
+advisory lock for that target/source tuple in a statement of its own, then
+checks the window and inserts in the same transaction (a lock and an
+existence check inside one statement would let the second writer wait and
+then act on a snapshot from before the first commit), so repeated
+finalization or worker delivery does not flood the stream without requiring a
+new migration or a second uniqueness table. Auto-provisioned targets are
+created the same way, one per target key.
 
 Signal writes are advisory telemetry. Finalization and proposal decisions
-remain authoritative if signal persistence fails; a signal failure is
-swallowed inside a savepoint. Supervisor decisions and their
+remain authoritative if signal persistence fails: finalization, proposal
+decisions (emitted post-commit) and autonomy recovery catch and swallow a
+signal failure outside any decision transaction. Supervisor decisions and their
 `supervisor_outcome` signal are attempted on the same transaction-bound
-`PoolClient`, so a signal cannot commit independently before a decision that
-later rolls back.
+`PoolClient`, where a signal failure is swallowed inside a savepoint, so a
+signal cannot commit independently before a decision that later rolls back.
 
 ## Current boundaries
 
-D1 does not claim that a successful run passed acceptance criteria. Verification
-facts are now owned by the A2 engine; finalized failed verification results
+A successful run is not claimed to have passed acceptance criteria. Verification
+facts are owned by the verification engine; finalized failed verification results
 produce a `verification_failed` signal through the same bounded target and
-deduplication path. Supervisor facts remain owned by A3 and emit through the
-same bounded target/deduplication path. The runtime-conformance emitter is
-gone with the C3 suite (2026-09-09). The D1 triage/dismiss surface is now present.
+deduplication path. Supervisor facts are owned by the run supervisor and emit
+through the same bounded target/deduplication path. There is no
+runtime-conformance emitter. Triage and dismiss are the signal routes above.
 The proposal lifecycle has no `request_changes` status.
 
-The D1.1 inventory is complete for current durable event classes. The manual
+The inventory covers the current durable event classes. The manual
 `review_requested` signal is an explicit user intent record, and the direct
 signal-create route is an explicit ingestion surface; neither represents a
-missing automatic performance emitter. Direct Artifact edit evidence remains
-D1.2 (see [../plans/backlog.md](../plans/backlog.md))
-because there is not yet an authoritative Artifact revision event.
+missing automatic performance emitter. There is no direct Artifact-edit
+signal. There is no authoritative Artifact revision event to emit one from.

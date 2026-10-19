@@ -28,19 +28,19 @@ import { upsertCanonicalEvidence } from "../evidenceIdentity.js";
  * `.agent/architecture/DATABASE_AND_TRANSACTIONS.md#external-call-boundary`
  * for why file copies are not held inside a long-lived transaction.
  *
- * Acceptance (Phase 3): an invalid output never reaches any Source write —
+ * An invalid output never reaches any Source write —
  * `validateCustomSourceHandlerOutput` runs to completion before the first
  * INSERT. A valid output writes only Source objects and artifacts.
  */
 
-export interface CustomSourceHandlerRunContext {
+interface CustomSourceHandlerRunContext {
   runId: string;
   spaceId: string;
   sourceConnectionId: string;
   handlerVersionId: string;
 }
 
-export interface CustomSourceMaterializationResult {
+interface CustomSourceMaterializationResult {
   status: "succeeded" | "failed" | "validation_failed";
   itemsCreated: number;
   itemsUpdated: number;
@@ -80,7 +80,7 @@ export class CustomSourceMaterializationService {
     rawOutputJson: unknown;
     /** False for Level 2 recipe scans, which have no `source_handler_runs` row to update (`run.runId` is the extraction job id there). Defaults to true. */
     recordHandlerRun?: boolean;
-    /** Identifies which source implementation produced the validated output. Defaults to the Level 3 Custom Source handler path for backward compatibility. */
+    /** Which source implementation produced the validated output. Omitted means the Level 3 Custom Source handler path. */
     sourceKind?: SourceMaterializationKind;
   }): Promise<CustomSourceMaterializationResult> {
     const recordHandlerRun = input.recordHandlerRun ?? true;
@@ -198,11 +198,24 @@ export class CustomSourceMaterializationService {
     descriptor: SourceMaterializationDescriptor,
   ): Promise<{ itemId: string; created: boolean }> {
     const now = new Date().toISOString();
+    // Found by this connection's own id first; failing that, by the URL the
+    // connection's scope already holds — the Project's items, or for a
+    // personal connection its owner's items — the same reuse the built-in
+    // extraction does, since that URL is unique there and a second insert of
+    // it can only fail. Another member's personal copy is never reused.
     const existing = await this.db.query<{ id: string; content_state: string }>(
       `SELECT id, content_state FROM source_items
         WHERE space_id = $1::varchar AND connection_id = $2::varchar AND source_external_id = $3::varchar
+        UNION ALL
+       (SELECT si.id, si.content_state FROM source_items si
+          JOIN source_connections owning ON owning.space_id = $1::varchar AND owning.id = $2::varchar
+         WHERE si.space_id = $1::varchar AND si.deleted_at IS NULL
+           AND si.project_id IS NOT DISTINCT FROM owning.project_id
+           AND (owning.project_id IS NOT NULL OR si.owner_user_id IS NOT DISTINCT FROM owning.owner_user_id)
+           AND (si.source_uri = $4::text OR si.canonical_uri = $4::text)
+         LIMIT 1)
         LIMIT 1`,
-      [run.spaceId, run.sourceConnectionId, item.external_id],
+      [run.spaceId, run.sourceConnectionId, item.external_id, item.source_uri],
     );
     const contentState = materializedItemContentState(item);
     const contentHash = sha256(item.excerpt ?? item.title ?? item.source_uri);
@@ -242,6 +255,7 @@ export class CustomSourceMaterializationService {
                 END,
                 retention_policy = $12,
                 metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $11::jsonb,
+                source_external_id = CASE WHEN connection_id = $13::varchar THEN $14::varchar ELSE source_external_id END,
                 updated_at = $9
           WHERE space_id = $1::varchar AND id = $2::varchar`,
         [
@@ -257,6 +271,8 @@ export class CustomSourceMaterializationService {
           contentState,
           metadata,
           retentionPolicy,
+          run.sourceConnectionId,
+          item.external_id,
         ],
       );
       return { itemId, created: false };

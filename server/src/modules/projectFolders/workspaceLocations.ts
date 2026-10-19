@@ -10,8 +10,7 @@ import { normalizeHostCapabilities } from "../hosts/capabilities.js";
 import { getLocalCliRuntimeAdapterSpec, listRuntimeAdapterSpecs } from "../runtimeAdapters/index.js";
 
 /**
- * execution-topology-and-project-control-plane-plan.md P1 / D2: one
- * physical checkout of a logical `project_folders` row. See
+ * One physical checkout of a logical `project_folders` row. See
  * `server/src/db/schema/workspaceLocations.ts` for the persisted runtime
  * readiness fact reported by the owning execution host.
  */
@@ -62,12 +61,12 @@ export interface ActiveLocationWithHost extends WorkspaceLocationRow {
 }
 
 /**
- * The host daemon's legacy workspace-list contract. A daemon lists logical
- * workspace registrations, while execution is now backed by a Location row;
- * keep the old field names and join the Folder identity fields here rather
- * than leaking the internal Location vocabulary onto the daemon wire.
+ * The host daemon's workspace-list contract. A daemon lists logical workspace
+ * registrations. Execution is a Location row. The wire keeps the daemon's
+ * field names; Folder identity is joined here. Do not put Location vocabulary
+ * on the daemon wire.
  */
-export interface HostWorkspaceOut {
+interface HostWorkspaceOut {
   id: string;
   project_id: string;
   name: string;
@@ -263,7 +262,7 @@ export class PgWorkspaceLocationRepository {
     return result.rows.map((row) => ({ ...row, created_at: dateIso(row.created_at) }));
   }
 
-  /** `workspace remove`: scoped to the calling host's own token, exactly like `unregisterForHost` before P1. */
+  /** `workspace remove`: scoped to the calling host's own token. */
   async unregisterForHost(hostId: string, locationId: string): Promise<boolean> {
     const result = await this.db.query(
       `DELETE FROM workspace_locations WHERE id = $1 AND execution_host_id = $2 AND execution_host_kind = 'remote'`,
@@ -274,9 +273,8 @@ export class PgWorkspaceLocationRepository {
 
   /**
    * Everything the dispatch endpoint (and any authorization check keyed off
-   * "where does this Run execute") needs, in one query. Replaces
-   * `hosts/repository.ts`'s folder-keyed `resolveDispatchTarget` — a Folder
-   * no longer determines a single host, a Location does.
+   * "where does this Run execute") needs, in one query. A Location determines
+   * the host. Do not key this on a Folder.
    */
   async resolveDispatchTarget(locationId: string, options: { allowStale?: boolean } = {}): Promise<{
     location_id: string;
@@ -350,9 +348,15 @@ export class PgWorkspaceLocationRepository {
       );
       return unchanged;
     }
-    const branch = (await runLocationGit(["rev-parse", "--abbrev-ref", "HEAD"], root, 10_000)).stdout.trim() || null;
-    const head = (await runLocationGit(["rev-parse", "HEAD"], root, 10_000)).stdout.trim() || null;
+    // Only a successful command's output is a fact, as the host daemon reads
+    // it: an unborn repository (`git init`, no commit yet) prints the literal
+    // "HEAD" before failing, and a timed-out status is not a clean one.
+    const branchResult = await runLocationGit(["rev-parse", "--abbrev-ref", "HEAD"], root, 10_000);
+    const branch = branchResult.code === 0 ? branchResult.stdout.trim() || null : null;
+    const headResult = await runLocationGit(["rev-parse", "HEAD"], root, 10_000);
+    const head = headResult.code === 0 ? headResult.stdout.trim() || null : null;
     const status = await runLocationGit(["status", "--porcelain"], root, 10_000);
+    const dirty = status.code === 0 ? status.stdout.trim().length > 0 : null;
     const updated = await this.db.query<{ changed: boolean; head_moved: boolean }>(
       `WITH previous AS (SELECT git_head, dirty FROM workspace_locations WHERE id = $1)
        UPDATE workspace_locations SET branch = $2, git_head = $3, dirty = $4, execution_ready = true,
@@ -360,13 +364,13 @@ export class PgWorkspaceLocationRepository {
        RETURNING ((SELECT git_head FROM previous) IS DISTINCT FROM $3::varchar
                   OR (SELECT dirty FROM previous) IS DISTINCT FROM $4::boolean) AS changed,
                  ((SELECT git_head FROM previous) IS DISTINCT FROM $3::varchar) AS head_moved`,
-      [location.id, storableBranch(branch), head, status.stdout.trim().length > 0, new Date().toISOString()],
+      [location.id, storableBranch(branch), head, dirty, new Date().toISOString()],
     );
     const row = updated.rows[0];
     return { changed: Boolean(row?.changed), headMoved: Boolean(row?.head_moved) };
   }
 
-  /** Refresh migrated server Locations during server startup as well as after a new Folder is created. */
+  /** Refresh every non-archived server Location's git status at startup. */
   async refreshServerLocations(workspaceRoot: string): Promise<void> {
     const result = await this.db.query<WorkspaceLocationRow>(
       `SELECT ${COLUMNS}
@@ -487,9 +491,8 @@ export interface WorkspaceLocationHeartbeat {
 }
 
 /**
- * ADR 0016 / B62-B64, moved from `project_folders` to `workspace_locations`
- * in P1: a remote Location has no server-side path at all — `root_path` is
- * always NULL for it (schema-enforced,
+ * ADR 0016 / B62-B64. A remote Location has no server-side path. `root_path`
+ * is always NULL for it (schema-enforced,
  * `ck_workspace_locations_remote_no_root_path`).
  */
 export function assertServerHostLocation(location: Pick<WorkspaceLocationRow, "execution_host_kind">): void {
@@ -499,12 +502,9 @@ export function assertServerHostLocation(location: Pick<WorkspaceLocationRow, "e
 }
 
 /**
- * Shared by the sandbox/code-patch/proposal-apply call sites that used to
- * fetch a Folder and call `assertServerHostFolder` +
- * `projectFolderAbsoluteRoot` directly — all three only ever resolved a
- * Folder's single active host-bound path. `allow_external_root` and other logical-repo policy fields
- * still come from the Folder row itself; this only replaces the physical
- * path half.
+ * Resolves a Folder's single active host-bound path for sandbox, code-patch,
+ * and proposal-apply. `allow_external_root` and other logical-repo policy
+ * fields still come from the Folder row; this returns only the physical path.
  */
 export async function resolveActiveServerHostLocation(
   db: Queryable,

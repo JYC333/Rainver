@@ -5,7 +5,7 @@ import { withQueryableTransaction, type Queryable } from "../routeUtils/common.j
 import { applyRunArtifactDeclarations } from "../projectWork/artifactDeclarations.js";
 import { recordConversationHeadMove } from "../sessions/conversationGitGate.js";
 import { PgMachineRepository } from "./machineRepository.js";
-import type { AmbientSessionCount, HostRunGitAfter, ManagedWorkspaceHeartbeat } from "@rainver/protocol";
+import type { AmbientSessionCount, HostRunDiffUpload, HostRunGitAfter, HostRunOutputsUpload, ManagedWorkspaceHeartbeat } from "@rainver/protocol";
 import { PgWorkspaceLocationRepository, type WorkspaceLocationHeartbeat } from "../projectFolders/workspaceLocations.js";
 import { isStale } from "./liveness.js";
 import { wakeTaskMergesForLocations } from "./taskMerges.js";
@@ -72,12 +72,10 @@ export interface DaemonHelloInfo {
   daemon_version?: string | null;
   capabilities_json?: Record<string, unknown> | null;
   /**
-   * D1: which execution environment this is, distinct from `platform`
+   * Which execution environment this is, distinct from `platform`
    * (Node's `process.platform`, which cannot tell WSL apart from native
-   * Linux — both report `"linux"`). Not yet auto-detected by the daemon
-   * (a real, deliberately deferred gap — see `environmentKindFromPlatform`);
-   * a future daemon version can report it explicitly here without a
-   * protocol change.
+   * Linux — both report `"linux"`). The daemon reports that same mapping.
+   * `environmentKindFromPlatform` is the default when the field is absent.
    */
   environment_kind?: string | null;
   workspace_reports?: WorkspaceLocationHeartbeat[] | null;
@@ -86,8 +84,8 @@ export interface DaemonHelloInfo {
   managed_workspaces?: ManagedWorkspaceHeartbeat[] | null;
 }
 
-/** Safe default when a daemon does not (yet) report `environment_kind` explicitly. */
-export function environmentKindFromPlatform(platform: string | null): string {
+/** Default when a daemon does not report `environment_kind`. */
+function environmentKindFromPlatform(platform: string | null): string {
   if (platform === "win32") return "windows_native";
   if (platform === "darwin") return "macos_native";
   return "linux_native";
@@ -103,14 +101,14 @@ function rawToken(): string {
 
 /** Crockford base32 without I/L/O/U — 13 characters is 65 bits, still retypeable. */
 const PAIRING_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-export const PAIRING_CODE_LENGTH = 13;
+const PAIRING_CODE_LENGTH = 13;
 
 function rawPairingCode(): string {
   // Short, easy to retype at a terminal prompt — this is a short-lived,
   // one-time credential, not the long-lived bearer token. Each character is
-  // 5 uniform bits (the alphabet size divides 256), so case-folding and
-  // stripping no longer collapse the entropy the way a 10-char uppercase
-  // base64url slice did.
+  // 5 uniform bits (the alphabet size divides 256). Case-folding and
+  // stripping do not collapse the entropy. Do not switch to a short
+  // uppercase base64url slice.
   const bytes = randomBytes(PAIRING_CODE_LENGTH);
   let code = "";
   for (const byte of bytes) {
@@ -120,12 +118,10 @@ function rawPairingCode(): string {
 }
 
 function hostOut(row: HostRow): HostOut {
-  // The built-in host is a daemon connection like any other now — the same
-  // `rainver-host` process, in strict mode, inside `sandbox-runner`. It used
-  // to be reported permanently `online` because it was an in-process execution
-  // boundary with no heartbeat to be stale; reporting that today would hide
-  // exactly the failure an operator needs to see, which is the instance's own
-  // execution host not being connected.
+  // The built-in host is a daemon connection like any other: the same
+  // `rainver-host` process, in strict mode, inside `sandbox-runner`. Apply
+  // the same staleness predicate. Do not report it permanently `online`:
+  // that hides the instance's own execution host not being connected.
   const status = row.status === "online" && isStale(row.last_heartbeat_at)
     ? "offline"
     : row.status;
@@ -165,9 +161,9 @@ export class PgHostRepository {
     const id = randomUUID();
     const now = new Date().toISOString();
     const inserted = await this.pool.query<{ id: string }>(
-      // `offline`, not `online`: the built-in host is a daemon connection now
-      // — the same `rainver-host` in strict mode, inside `sandbox-runner` —
-      // and it is online once it has said hello, like every other host.
+      // `offline`, not `online`. The built-in host is a daemon connection,
+      // the same `rainver-host` in strict mode inside `sandbox-runner`.
+      // It is online once it has said hello, like every other host.
       `INSERT INTO hosts (id, owner_user_id, machine_id, environment_kind, name, kind, status, created_at, updated_at)
        VALUES ($1, NULL, $2, 'server', 'server', 'server', 'offline', $3, $3)
        ON CONFLICT DO NOTHING
@@ -211,12 +207,9 @@ export class PgHostRepository {
 
   /**
    * `machineId` names an *existing* Machine this host should join (the
-   * Windows-native + WSL case: two hosts, one physical device) — omitted,
-   * a fresh Machine is auto-created and named after the host, matching the
-   * common case where each personal host is its own device. There is no
-   * "pick or create a Machine" UI yet (P1.10 is grouping/display only, per
-   * the plan); this parameter exists so that flow has somewhere to land
-   * without a further schema change.
+   * Windows-native + WSL case: two hosts, one physical device). Omitted,
+   * a fresh Machine is created and named after the host. There is no
+   * pick-or-create Machine UI.
    */
   async issuePairingCode(
     ownerUserId: string,
@@ -301,8 +294,7 @@ export class PgHostRepository {
    * pairing code shares the `token_hash` column with the real bearer token
    * before `/register` runs, so accepting `pending_pairing` here would let
    * the short-lived, low-care pairing code itself act as a full host
-   * credential for its whole TTL, defeating the point of a one-time
-   * exchange-only secret.
+   * credential for its whole TTL.
    */
   async authenticate(token: string): Promise<HostRow | null> {
     const result = await this.pool.query<HostRow>(
@@ -347,8 +339,8 @@ export class PgHostRepository {
 
   /**
    * A daemon below `MIN_HOST_DAEMON_VERSION` is not admitted, so this is the
-   * inverse of `recordHeartbeat`: the version it reported is still written —
-   * it is what names the reason beside the host in the Command Center — but
+   * inverse of `recordHeartbeat`: the version it reported is written — it
+   * is what names the reason beside the host in the Command Center — but
    * the host does not go online, keeps no fresh heartbeat, and is therefore
    * not a dispatch target anywhere `host_online` is read.
    */
@@ -401,20 +393,33 @@ export class PgHostRepository {
 
   /**
    * A host may only upload artifacts for a Run bound to that same host — this
-   * is the only authorization check the upload endpoints need (ADR 0016 P3):
+   * is the only authorization check the upload endpoints need (ADR 0016):
    * the bearer token already proves "this daemon", this proves "for one of
    * its own Runs". Managed profiles have no Workspace Location, so the
    * profile binding is the second authorization path below.
    */
   /**
-   * execution-topology-and-project-control-plane-plan.md P1 / D3: a Run
-   * binds to a Location, not a Folder — the JOIN goes through
-   * `workspace_locations` (a Location has exactly one host) rather than
-   * `project_folders` (which, after P1, no longer names one at all). Managed
-   * runs use their selected runtime profile's host binding instead.
+   * A Run binds to a Location, not a Folder. The JOIN goes through
+   * `workspace_locations` (a Location has exactly one host).
+   * `project_folders` does not name a host. Managed runs use their selected
+   * runtime profile's host binding instead.
    */
-  async runOwnedByHost(hostId: string, runId: string): Promise<RunForUpload | null> {
-    const result = await this.pool.query<RunForUpload>(
+  /**
+   * The Run and the attempt an upload belongs to, locked for the rest of the
+   * transaction. The attempt row is what finalization updates when the Run
+   * ends, so holding its lock here orders every upload against that
+   * transition: either the upload lands before the attempt closed, or it sees
+   * the closed attempt and is refused. The launch nonce ties the upload to
+   * the one attempt whose frame carried it; a retry's uploads name a different
+   * nonce and can never be mistaken for this attempt's.
+   */
+  private async lockUploadAttempt(
+    tx: Queryable,
+    hostId: string,
+    runId: string,
+    launchId: string,
+  ): Promise<{ ok: true; run: RunForUpload } | { ok: false; reason: HostUploadRefusal }> {
+    const run = await tx.query<RunForUpload>(
       `SELECT r.id, r.space_id, r.owner_user_id, r.project_id, r.project_folder_id,
               r.session_id, r.workspace_location_id,
               COALESCE(wl.execution_host_id = $2, false) AS location_on_host
@@ -428,70 +433,94 @@ export class PgHostRepository {
         LIMIT 1`,
       [runId, hostId],
     );
-    return result.rows[0] ?? null;
+    const row = run.rows[0];
+    if (!row) return { ok: false, reason: "run_not_on_host" };
+    const attempt = await tx.query<{ status: string; is_current: boolean }>(
+      `SELECT a.status,
+              a.attempt_number = (SELECT max(c.attempt_number) FROM run_attempts c
+                                   WHERE c.space_id = a.space_id AND c.run_id = a.run_id) AS is_current
+         FROM run_attempts a
+        WHERE a.space_id = $1 AND a.run_id = $2 AND a.launch_id = $3
+        FOR UPDATE`,
+      [row.space_id, row.id, launchId],
+    );
+    const current = attempt.rows[0];
+    if (!current || !current.is_current) return { ok: false, reason: "attempt_superseded" };
+    if (!OPEN_ATTEMPT_STATUSES.has(current.status)) return { ok: false, reason: "attempt_ended" };
+    return { ok: true, run: row };
   }
 
   /**
-   * D7: a remote diff is a read-only run artifact, never a code-patch
+   * A remote diff is a read-only run artifact, never a code-patch
    * proposal. Visibility is `space_shared` (project-scoped, since the row
    * also carries `project_id`/`project_folder_id` — see the `artifact`
    * ontology entity's `contentAccessible` declaration), not `private`: a
    * remote Run is visible to any Project reader, not just the host owner —
-   * its visibility follows Project read access, not host ownership. A
-   * `private` artifact here would have let a non-owner reader see "Review
-   * diff" on a run they can legitimately see, then get a false "no diff was
-   * uploaded" instead of an access-denied — found during the control-center
-   * plan's final integration review.
+   * its visibility follows Project read access, not host ownership. Do not
+   * store it `private`. A non-owner reader would see "Review diff" on a run
+   * they can read, then get "no diff was uploaded" instead of an access denial.
+   *
+   * A second upload for the same launch answers with the artifact the first
+   * one made: the daemon retries on a lost acknowledgement, and a retry must
+   * neither duplicate the artifact nor rewrite the Run's recorded HEAD.
    */
   async recordDiffArtifact(
-    run: RunForUpload,
-    /**
-     * Who this artifact belongs to. A paired host passes its owner, which is
-     * also the Run's; the built-in host has no owner, so the Run's owner is the
-     * only answer — and an artifact landing with a null owner has no
-     * attribution at all.
-     */
+    hostId: string,
+    /** The uploading host's owner; the built-in host has none and the Run's owner is used. */
     hostOwnerUserId: string | null,
-    input: { diff: string | null; truncated: boolean; git_before?: HostRunGitAfter; git_after?: HostRunGitAfter },
-  ): Promise<{ artifact_id: string | null }> {
-    // Recorded first and on its own: a Run whose diff could not be captured
-    // still left its checkout somewhere, and that is what the Conversation's
-    // send gate needs.
-    // A branch name longer than the Conversation's record holds is not kept:
-    // the send gate then treats a moved HEAD as it would with no report at all.
-    const storable = (position: HostRunGitAfter | undefined) => position && (position.branch?.length ?? 0) <= MAX_GIT_BRANCH_LENGTH ? position : undefined;
-    const gitAfter = storable(input.git_after);
-    if (gitAfter) await this.recordGitAfter(run, gitAfter, storable(input.git_before) ?? null);
-    if (input.diff === null) return { artifact_id: null };
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    const diff = input.diff.length > MAX_DIFF_BYTES ? input.diff.slice(0, MAX_DIFF_BYTES) : input.diff;
-    const truncated = input.truncated || input.diff.length > MAX_DIFF_BYTES;
-    await this.pool.query(
-      `INSERT INTO artifacts (
-         id, space_id, run_id, artifact_type, title, content, mime_type,
-         exportable, export_formats_json, preview, created_at, updated_at,
-         metadata_json, visibility, owner_user_id, trust_level, project_id, project_folder_id
-       ) VALUES (
-         $1, $2, $3, 'remote_diff', $4, $5, 'text/x-diff',
-         true, $6::jsonb, false, $7, $7,
-         $8::jsonb, 'space_shared', $9, 'unknown', $10, $11
-       )`,
-      [
-        id,
-        run.space_id,
-        run.id,
-        `Remote diff for run ${run.id}`,
-        diff,
-        JSON.stringify(["text/x-diff"]),
-        now,
-        JSON.stringify({ truncated }),
-        hostOwnerUserId,
-        run.project_id,
-        run.project_folder_id,
-      ],
-    );
-    return { artifact_id: id };
+    runId: string,
+    input: HostRunDiffUpload,
+  ): Promise<HostUploadOutcome<{ artifact_id: string | null }>> {
+    return withQueryableTransaction(this.pool, async (tx) => {
+      const locked = await this.lockUploadAttempt(tx, hostId, runId, input.launch_id);
+      if (!locked.ok) return locked;
+      const run = locked.run;
+      const existing = await tx.query<{ id: string }>(
+        `SELECT id FROM artifacts
+          WHERE run_id = $1 AND artifact_type = 'remote_diff' AND metadata_json->>'launch_id' = $2
+          LIMIT 1`,
+        [run.id, input.launch_id],
+      );
+      if (existing.rows[0]) return { ok: true, result: { artifact_id: existing.rows[0].id } };
+      // Recorded first and on its own: a Run whose diff could not be captured
+      // still left its checkout somewhere, and that is what the Conversation's
+      // send gate needs.
+      // A branch name longer than the Conversation's record holds is not kept:
+      // the send gate then treats a moved HEAD as it would with no report at all.
+      const storable = (position: HostRunGitAfter | undefined) => position && (position.branch?.length ?? 0) <= MAX_GIT_BRANCH_LENGTH ? position : undefined;
+      const gitAfter = storable(input.git_after);
+      if (gitAfter) await this.recordGitAfter(tx, run, gitAfter, storable(input.git_before) ?? null);
+      if (input.diff === null) return { ok: true, result: { artifact_id: null } };
+      const id = randomUUID();
+      const now = new Date().toISOString();
+      const diff = input.diff.length > MAX_DIFF_BYTES ? input.diff.slice(0, MAX_DIFF_BYTES) : input.diff;
+      const truncated = input.truncated === true || input.diff.length > MAX_DIFF_BYTES;
+      await tx.query(
+        `INSERT INTO artifacts (
+           id, space_id, run_id, artifact_type, title, content, mime_type,
+           exportable, export_formats_json, preview, created_at, updated_at,
+           metadata_json, visibility, owner_user_id, trust_level, project_id, project_folder_id
+         ) VALUES (
+           $1, $2, $3, 'remote_diff', $4, $5, 'text/x-diff',
+           true, $6::jsonb, false, $7, $7,
+           $8::jsonb, 'space_shared', $9, 'unknown', $10, $11
+         )`,
+        [
+          id,
+          run.space_id,
+          run.id,
+          `Remote diff for run ${run.id}`,
+          diff,
+          JSON.stringify(["text/x-diff"]),
+          now,
+          JSON.stringify({ truncated, launch_id: input.launch_id }),
+          hostOwnerUserId ?? run.owner_user_id,
+          run.project_id,
+          run.project_folder_id,
+        ],
+      );
+      return { ok: true, result: { artifact_id: id } };
+    });
   }
 
   /**
@@ -508,14 +537,14 @@ export class PgHostRepository {
    * The Run's key is merged, not written over: this lands before the Run is
    * finalized, and finalization keeps it (`PgRunRepository`).
    */
-  private async recordGitAfter(run: RunForUpload, gitAfter: HostRunGitAfter, gitBefore: HostRunGitAfter | null): Promise<void> {
+  private async recordGitAfter(tx: Queryable, run: RunForUpload, gitAfter: HostRunGitAfter, gitBefore: HostRunGitAfter | null): Promise<void> {
     const workspaceAfter = {
       branch: gitAfter.branch,
       head: gitAfter.head,
       workspace_location_id: run.workspace_location_id ?? null,
       observed_at: new Date().toISOString(),
     };
-    await withQueryableTransaction(this.pool, async (tx) => {
+    {
       await tx.query(
         `UPDATE runs
             SET output_json = jsonb_set(
@@ -534,77 +563,96 @@ export class PgHostRepository {
         to: gitAfter,
         byRun: run.id,
       });
-    });
+    }
   }
 
   /**
    * One artifact per uploaded output file, capped in count and size (see
    * MAX_OUTPUT_FILES/MAX_OUTPUT_FILE_BYTES). Same `space_shared` visibility
-   * reasoning as `recordDiffArtifact`, above.
+   * reasoning as `recordDiffArtifact`, above, and the same idempotency: a
+   * launch whose outputs already landed gets them back, and its artifact
+   * declarations are not applied a second time.
    */
   async recordOutputArtifacts(
-    run: RunForUpload,
-    /**
-     * Who this artifact belongs to. A paired host passes its owner, which is
-     * also the Run's; the built-in host has no owner, so the Run's owner is the
-     * only answer — and an artifact landing with a null owner has no
-     * attribution at all.
-     */
+    hostId: string,
     hostOwnerUserId: string | null,
-    files: Array<{ name: string; content: string }>,
-  ): Promise<{ artifact_ids: string[]; skipped: string[] }> {
-    const artifactIds: string[] = [];
-    const uploaded: Array<{ artifact_id: string; name: string }> = [];
-    const skipped: string[] = [];
-    const now = new Date().toISOString();
-    for (const file of files.slice(0, MAX_OUTPUT_FILES)) {
-      if (file.content.length > MAX_OUTPUT_FILE_BYTES) {
-        skipped.push(file.name);
-        continue;
-      }
-      const id = randomUUID();
-      await this.pool.query(
-        `INSERT INTO artifacts (
-           id, space_id, run_id, artifact_type, title, content, mime_type,
-           exportable, export_formats_json, preview, created_at, updated_at,
-           metadata_json, visibility, owner_user_id, trust_level, project_id, project_folder_id
-         ) VALUES (
-           $1, $2, $3, 'remote_output', $4, $5, 'text/plain',
-           true, $6::jsonb, false, $7, $7,
-           $8::jsonb, 'space_shared', $9, 'unknown', $10, $11
-         )`,
-        [
-          id,
-          run.space_id,
-          run.id,
-          file.name,
-          file.content,
-          JSON.stringify(["text/plain"]),
-          now,
-          JSON.stringify({ source_filename: file.name }),
-          hostOwnerUserId,
-          run.project_id,
-          run.project_folder_id,
-        ],
+    runId: string,
+    input: HostRunOutputsUpload,
+  ): Promise<HostUploadOutcome<{ artifact_ids: string[]; skipped: string[] }>> {
+    return withQueryableTransaction(this.pool, async (tx) => {
+      const locked = await this.lockUploadAttempt(tx, hostId, runId, input.launch_id);
+      if (!locked.ok) return locked;
+      const run = locked.run;
+      const existing = await tx.query<{ id: string }>(
+        `SELECT id FROM artifacts
+          WHERE run_id = $1 AND artifact_type = 'remote_output' AND metadata_json->>'launch_id' = $2
+          ORDER BY title ASC, id ASC`,
+        [run.id, input.launch_id],
       );
-      artifactIds.push(id);
-      uploaded.push({ artifact_id: id, name: file.name });
-    }
-    if (files.length > MAX_OUTPUT_FILES) skipped.push(...files.slice(MAX_OUTPUT_FILES).map((f) => f.name));
-    // What the Run said these files are. Without it every uploaded file stays
-    // `remote_output` and belongs to no Task, so a Task with a declared
-    // required output can never be satisfied by a dispatched agent.
-    //
-    // One transaction, because a half-applied batch is worse than an
-    // unapplied one: some outputs would be typed and linked and others not,
-    // the host deletes the run directory immediately afterwards, and nothing
-    // retries. All or nothing keeps the failure legible.
-    await withQueryableTransaction(this.pool, (tx) => applyRunArtifactDeclarations(tx, run, uploaded));
-    return { artifact_ids: artifactIds, skipped };
+      const skipped: string[] = [];
+      const accepted: Array<{ name: string; content: string }> = [];
+      for (const file of input.files.slice(0, MAX_OUTPUT_FILES)) {
+        if (file.content.length > MAX_OUTPUT_FILE_BYTES) skipped.push(file.name);
+        else accepted.push(file);
+      }
+      // Ids come back in file-name order on the first delivery and on a
+      // replay alike, so a retry sees the same answer it would have seen.
+      accepted.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      if (input.files.length > MAX_OUTPUT_FILES) skipped.push(...input.files.slice(MAX_OUTPUT_FILES).map((f) => f.name));
+      if (existing.rows.length > 0) {
+        return { ok: true, result: { artifact_ids: existing.rows.map((row) => row.id), skipped } };
+      }
+      const artifactIds: string[] = [];
+      const uploaded: Array<{ artifact_id: string; name: string }> = [];
+      const now = new Date().toISOString();
+      for (const file of accepted) {
+        const id = randomUUID();
+        await tx.query(
+          `INSERT INTO artifacts (
+             id, space_id, run_id, artifact_type, title, content, mime_type,
+             exportable, export_formats_json, preview, created_at, updated_at,
+             metadata_json, visibility, owner_user_id, trust_level, project_id, project_folder_id
+           ) VALUES (
+             $1, $2, $3, 'remote_output', $4, $5, 'text/plain',
+             true, $6::jsonb, false, $7, $7,
+             $8::jsonb, 'space_shared', $9, 'unknown', $10, $11
+           )`,
+          [
+            id,
+            run.space_id,
+            run.id,
+            file.name,
+            file.content,
+            JSON.stringify(["text/plain"]),
+            now,
+            JSON.stringify({ source_filename: file.name, launch_id: input.launch_id }),
+            hostOwnerUserId ?? run.owner_user_id,
+            run.project_id,
+            run.project_folder_id,
+          ],
+        );
+        artifactIds.push(id);
+        uploaded.push({ artifact_id: id, name: file.name });
+      }
+      // What the Run said these files are. Without it every uploaded file stays
+      // `remote_output` and belongs to no Task, so a Task with a declared
+      // required output can never be satisfied by a dispatched agent. In the
+      // same transaction as the files and the attempt check: a half-applied
+      // batch is worse than an unapplied one.
+      await applyRunArtifactDeclarations(tx, run, uploaded);
+      return { ok: true, result: { artifact_ids: artifactIds, skipped } };
+    });
   }
 }
 
-export interface RunForUpload {
+/** Why an upload was not accepted, each a different thing for the daemon's log to say. */
+export type HostUploadRefusal = "run_not_on_host" | "attempt_superseded" | "attempt_ended";
+export type HostUploadOutcome<T> = { ok: true; result: T } | { ok: false; reason: HostUploadRefusal };
+
+/** An attempt still able to produce outputs: running, or asked to stop but not yet reported. */
+const OPEN_ATTEMPT_STATUSES = new Set(["queued", "running", "cancelling"]);
+
+interface RunForUpload {
   id: string;
   space_id: string;
   owner_user_id: string | null;

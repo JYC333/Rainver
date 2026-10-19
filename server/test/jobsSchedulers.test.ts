@@ -15,8 +15,8 @@ import { AutomationService } from "../src/modules/automations/service.js";
 import type { AutomationRow } from "../src/modules/automations/repository.js";
 import { registerRetrievalMaintenanceAutomationTarget } from "../src/modules/retrieval/automationTarget.js";
 import { registerContextOpsReviewCycleAutomationTarget } from "../src/modules/contextOps/automationTarget.js";
+import { isValidTimezone } from "../src/modules/scheduler/localDay.js";
 import {
-  isValidTimezone,
   PgDailyReportSettingsRepository,
   type DailyReportSettingRow,
 } from "../src/modules/dailyReports/repository.js";
@@ -459,7 +459,9 @@ describe("SchedulerRegistry", () => {
       awaitRunOnStart: true,
     });
     await registry.start();
-    expect(onTaskError).toHaveBeenCalledWith("broken-task", expect.any(Error));
+    // The hook gets the task, the kind and the log reference, never the exception text.
+    expect(onTaskError).toHaveBeenCalledWith({ task_name: "broken-task", kind: "exception", reference: expect.stringMatching(/^[0-9a-f-]{36}$/) });
+    expect(JSON.stringify(onTaskError.mock.calls)).not.toContain("scheduler boom");
     await registry.stop();
   });
 
@@ -999,11 +1001,11 @@ describe("AutomationService policy preflight", () => {
   });
 
   it("preflights the fire under the origin the Run will actually carry", async () => {
-    // The preflight and the Run row are two authorities over one fire. Before
-    // ADR 0003 §5 / D1 the preflight asserted `automation` outright, so a
-    // person firing with their own prompt — a `manual` Run they could have
-    // started against the Agent directly — was refused for want of the
-    // automation's standing credential grant.
+    // The preflight and the Run row are two authorities over one fire. A
+    // person firing with their own prompt is a `manual` Run they could have
+    // started against the Agent directly (ADR 0003 §5 / D1). Do not preflight
+    // it as `automation`. That refuses it for want of the automation's
+    // standing credential grant.
     vi.mocked(enforce).mockResolvedValue({ status: "allow" });
     const fakePool = new AgentAutomationFireFakePool();
     dbPoolMock.current = fakePool;
@@ -1027,7 +1029,7 @@ describe("AutomationService policy preflight", () => {
     expect(asked).toMatchObject({ trigger_origin: "manual" });
 
     // The same automation firing its own prompt is unattended work, and that
-    // still needs the grant.
+    // needs the grant.
     await expect(new AutomationService(config, withoutGrant()).fire({
       spaceId: "space-1",
       automationId: "auto-1",
@@ -1301,8 +1303,11 @@ class MaintenanceAutomationFakePool implements Queryable {
     if (sql.includes("FROM agent_versions")) {
       return { rowCount: 1, rows: [{ id: "agent-version-1" }] as Row[] };
     }
-    if (sql.includes("SELECT id FROM automations") && sql.includes("FOR UPDATE")) {
-      return { rowCount: 1, rows: [{ id: "auto-1" }] as Row[] };
+    if (sql.includes("FROM automations") && sql.includes("FOR UPDATE")) {
+      return {
+        rowCount: 1,
+        rows: [{ id: "auto-1", status: "active", config_json: { cron: "0 9 * * *", timezone: "UTC" } }] as Row[],
+      };
     }
     if (sql.includes("INSERT INTO automation_runs")) {
       return { rowCount: 1, rows: [] };
@@ -1400,8 +1405,11 @@ class AgentAutomationFireFakePool implements Queryable {
     if (sql.includes("FROM agent_versions")) {
       return { rowCount: 1, rows: [{ id: "agent-version-1" }] as Row[] };
     }
-    if (sql.includes("SELECT id FROM automations") && sql.includes("FOR UPDATE")) {
-      return { rowCount: 1, rows: [{ id: "auto-1" }] as Row[] };
+    if (sql.includes("FROM automations") && sql.includes("FOR UPDATE")) {
+      return {
+        rowCount: 1,
+        rows: [{ id: "auto-1", status: "active", config_json: { cron: "0 9 * * *", timezone: "UTC" } }] as Row[],
+      };
     }
     if (sql.includes("FROM agent_runtime_profiles")) {
       return {

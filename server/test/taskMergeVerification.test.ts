@@ -6,8 +6,8 @@ import type { RunRecord } from "../src/modules/runs/repository.js";
 /**
  * A merge's gate (ADR 0016 §11): the Task's declared checks, asked again of
  * its rebased worktree. Only what a workspace can answer is asked — a Run's
- * outputs are not part of the tree being merged — and a check that could not
- * run did not say yes.
+ * outputs are not part of the tree being merged. A check that could not
+ * run does not say yes. Do not treat an unrun check as a pass.
  */
 const emptyPlan: VerificationPlanReader = {
   async getPlan() {
@@ -55,6 +55,30 @@ describe("a merge's verification", () => {
       base_commit_sha: "a".repeat(40),
     });
     expect(outcome.status).toBe("failed");
+  });
+
+  it("reads path globs in diff scope and forbidden-path checks", async () => {
+    const changedFiles = (paths: string[]): VerificationCommandExecutor => ({
+      async run(input) {
+        // `git diff --name-only -z`: NUL-terminated names.
+        const stdout = input.command[1] === "diff" ? paths.map((path) => `${path}\0`).join("") : "";
+        return { returncode: 0, stdout, stderr: "", timed_out: false };
+      },
+    });
+    const verify = (paths: string[], acceptance: unknown) => verifyTaskWorkspace(emptyPlan, changedFiles(paths), {
+      run: runWith(acceptance), target, base_commit_sha: "a".repeat(40),
+    });
+
+    await expect(verify(["src/a/b.ts"], [{ type: "diff_scope", allowed_paths: ["src/**"] }]))
+      .resolves.toMatchObject({ status: "passed" });
+    await expect(verify(["docs/a.md"], [{ type: "diff_scope", allowed_paths: ["src/**"] }]))
+      .resolves.toMatchObject({ status: "failed" });
+    await expect(verify(["config/prod.yaml"], [{ type: "no_forbidden_change", forbidden_paths: ["config/*.yaml"] }]))
+      .resolves.toMatchObject({ status: "failed" });
+    await expect(verify(["secrets/key.txt"], [{ type: "no_forbidden_change", forbidden_paths: ["**/secrets/**"] }]))
+      .resolves.toMatchObject({ status: "failed" });
+    await expect(verify(["src/a.ts"], [{ type: "no_forbidden_change", forbidden_paths: ["**/secrets/**", "a?.md"] }]))
+      .resolves.toMatchObject({ status: "passed" });
   });
 
   it("is not required when the Task declares nothing a workspace can answer", async () => {

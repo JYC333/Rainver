@@ -1,7 +1,5 @@
 # Proposals
 
-Date: 2026-06-19
-
 Proposals are the product review and application boundary for durable mutations.
 
 ## Product API
@@ -15,7 +13,7 @@ Proposals are the product review and application boundary for durable mutations.
 - `GET /api/v1/proposals` defaults to pending proposals.
 - `status=all` is explicit and returns proposals across statuses.
 - Product-recognized proposal types are `memory_create`, `memory_update`,
-  `memory_archive`, `policy_change`, `code_patch`, `egress_review`,
+  `memory_archive`, `code_patch`, `egress_review`,
   `follow_up_task`, `agent_config_update`, `knowledge_create`,
   `knowledge_update`, `knowledge_archive`, `claim_create`, `claim_update`,
   `claim_archive`, `object_relation_create`, `object_relation_delete`,
@@ -25,13 +23,13 @@ Proposals are the product review and application boundary for durable mutations.
   `custom_source_policy_delta`, `custom_source_credentialed_source`, and
   `custom_source_repair_activation`.
 - Registered server apply types include `memory_create`, `memory_update`,
-  `memory_archive`, `policy_change`, `code_patch`, Knowledge proposal types,
+  `memory_archive`, `code_patch`, Knowledge proposal types,
   Claim Candidate Packet, retrieval review packet types, task proposal types,
   Project Folder proposal types, and capability proposal types contributed through
   the server `ProposalApplierRegistry`, plus the Custom Source proposal types
-  registered by the Sources module. Unregistered proposal types fail closed on accept
-  until their owning domain registers a server applier. `egress_review` approval
-  rows are supported, but `egress_review` does not currently have a registered applier.
+  registered by the Sources module. Unregistered proposal types fail closed on
+  accept. Do not apply a type that has no server applier. `egress_review` is
+  registered by `egressReviewApplier.ts`.
 - Accept returns the general `ProposalAcceptOut` response shape.
 - Agent-created proposals remain pending by default. A grantable System Action
   may be applied immediately only when a matching human-created
@@ -44,6 +42,8 @@ Proposals are the product review and application boundary for durable mutations.
   has not already been used, and every applied file still holds what the patch
   wrote (409 otherwise). It sets the proposal's status to `rolled_back` and writes a
   `proposal.code_patch.rolled_back` activity at the proposal's own visibility.
+  If a file write or the commit fails, the restored files get the applied content
+  back, so the proposal stays `accepted` and the rollback can be retried.
 - Accept, reject, rollback and egress approval share one reach rule,
   `authorizeProposalDecision`: same Space, the state the decision acts on,
   content-readable, and — for a Run's proposal — inside a Room the caller can
@@ -82,8 +82,8 @@ Proposals are the product review and application boundary for durable mutations.
   child pending `memory_archive` proposals for supported duplicate findings and
   child pending `memory_update` proposals for supported stale, thin, lifecycle,
   archived-state, project-scope, source-policy, and contradiction findings. It
-  does not write canonical Memory directly; child proposals still require their
-  own normal review/apply step.
+  does not write canonical Memory directly; child proposals require their
+  own review/apply step.
 - Retrieval maintenance and diagnostics packet apply records creator-owned
   review of owner-private retrieval work. A space admin cannot accept another
   user's private packet through the current appliers. Retrieval maintenance
@@ -107,17 +107,22 @@ Proposals are the product review and application boundary for durable mutations.
 - `follow_up_task` has a registered applier (`tasks/proposalApplier.ts`).
   After a Run a person asked for finalizes successfully, the proposal is
   applied for them rather than queued (ADR 0017 §2,
-  `tasks/followUpTaskReconciler.ts`); every other case waits for a person as
-  before. Whichever route reaches it, the write takes the Project lock and
+  `tasks/followUpTaskReconciler.ts`); every other case waits for a person.
+  Whichever route reaches it, the write takes the Project lock and
   re-checks Project writer authority — the space role that authorises an
   accept says nothing about whether that person may write into the Project.
-  Two consequences worth knowing: a card whose Project has since been archived
+  A card whose Project has since been archived
   can only be rejected, and a follow-up naming a Project other than the Run's
   own is never applied automatically — it waits for a person, being the same
   input `task.create` refuses outright.
-- `policy_change`, `agent_config_update`, and other non-memory target
-  mutations are not currently registered server appliers. They fail closed
-  until their owning domain registers a server applier.
+- There is no generic `policy_change` proposal type. Nothing enforced the
+  `policies` rows it wrote, so it has no applier and no producer offers it;
+  a stored `policy_change` proposal fails closed on accept like any
+  unregistered type. The policy that does govern runs is the Runtime Context
+  Policy, versioned through its own `runtime_context_policy.change` path
+  (`modules/policy.md`). `agent_config_update` and other unregistered
+  non-memory target mutations fail closed. Do not apply a type that has no
+  server applier.
 - Custom Source proposal apply validates the handler version/proposal binding,
   rejects stale active-pointer or envelope changes, and then activates the
   named handler version while superseding the previous active version.
@@ -127,7 +132,7 @@ Proposals are the product review and application boundary for durable mutations.
 - Evolution bundles are a review grouping with exclusive ownership of their
   pending members. Their member decisions run through `ProposalApplyService`
   in the same database transaction as the member state transition; ordinary
-  proposal accept/reject routes cannot bypass an active bundle. D3 rollback is
+  proposal accept/reject routes cannot bypass an active bundle. Bundle rollback is
   represented by an `evolution_bundle_rollback` proposal, so it receives the
   normal `proposal.apply` policy/audit gate, and its successful reverse-order
   restoration writes an activity record. Bundle rejection emits the same
@@ -143,9 +148,10 @@ Proposals are the product review and application boundary for durable mutations.
   controlled same-asset Bundle/Bundle and Bundle/ordinary-promotion cases; it
   must run against the shared Testcontainers database when that runtime is
   available.
-- Public post-create execution config changes for Agents must use
-  `POST /api/v1/agents/{agent_id}/config-proposals`; direct
-  `POST /agents/{agent_id}/versions` does not advance the current version.
+- Post-create execution config changes for Agents are owner-only and go
+  through `POST /api/v1/agents/{agent_id}/config`, which appends a new
+  immutable `AgentVersion`. No route creates `agent_config_update` proposals,
+  and there is no direct `POST /agents/{agent_id}/versions`.
 - Rejected, accepted, expired, or superseded proposals cannot be applied again.
 - Cross-space or unauthorized access must not reveal proposal details.
 
@@ -153,8 +159,8 @@ Proposals are the product review and application boundary for durable mutations.
 
 - Proposal creation, acceptance, and rejection must be durable.
 - User-created memory proposals use the `proposal.create` policy gate.
-- Agent execution config proposals use the `agent.config_update` policy gate
-  at proposal creation and `proposal.apply` at acceptance.
+- Agent execution config is not a proposal. The owner routes append an
+  immutable `AgentVersion` directly and do not call `agent.config_update`.
 - Agent-generated Knowledge proposals use the same review boundary:
   Activity, Run, or Artifact source -> `knowledge_*` proposal -> human
   acceptance -> active Knowledge record. They must not auto-activate and must
@@ -162,9 +168,13 @@ Proposals are the product review and application boundary for durable mutations.
 - Knowledge proposal apply is implemented through the server
   `ProposalApplierRegistry`. Source monitoring has an explicit code boundary
   for Knowledge. A full evaluator for external or untrusted
-  Activity/Artifact-derived Knowledge is not implemented
-  ([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9).
+  Activity/Artifact-derived Knowledge is not implemented.
 - Accepted proposals keep enough result detail for callers to identify the applied product effect.
 - Automatic grant acceptance records `approval_source=action_grant:<id>` and
   increments the bounded grant use count in the same transaction as apply.
 - Proposal application must be idempotence-safe at the API boundary: repeated accept attempts must not repeat the mutation.
+- A person-initiated request may name its identity in `pending_operation_key`.
+  It is unique among pending proposals of one type in a Space
+  (`uq_proposals_pending_operation`), so asking again while that proposal is
+  pending returns it, and a decided proposal frees the key for a new request.
+  Skill package Review/Convert use it (`modules/capability.md`).

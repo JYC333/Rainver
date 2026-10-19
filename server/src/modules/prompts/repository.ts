@@ -7,13 +7,15 @@ import {
   assertCanWriteAssetOwnerScope,
   canReadAssetOwnerScope,
   canViewScopedRef,
+  canViewVersionScope,
   normalizeVersionScopeForWrite,
+  versionServesScope,
 } from "../evolution/assetAccess.js";
 import { EvolvableAssetEvaluationRepository } from "../evolution/assetEvaluationRepository.js";
 import { EvolvableAssetRepository } from "../evolution/assetRepository.js";
-import { HttpError, objectValue, optionalObject, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
-import { sha256Json } from "./hash.js";
+import { HttpError, objectValue, optionalObject, optionalString, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { missingRequiredVariables, renderPromptMessages, renderPromptTemplate } from "./renderer.js";
+import { lockEvolutionAssets } from "../evolution/assetLocks.js";
 
 // Prompt assets are a prompt-specific view over the generic evolvable-asset
 // system (asset_type 'prompt_template'). Not every 'prompt_template' asset
@@ -23,7 +25,7 @@ import { missingRequiredVariables, renderPromptMessages, renderPromptTemplate } 
 // marker (set by the built-in prompt sync or prompt version creation).
 const PROMPT_ASSET_TYPE = "prompt_template";
 
-export interface PromptAssetLookupRow extends Record<string, unknown> {
+interface PromptAssetLookupRow extends Record<string, unknown> {
   id: string;
   asset_key: string;
   space_id: string | null;
@@ -92,11 +94,7 @@ export class PromptRepository {
   ): Promise<Record<string, unknown>> {
     const { row, promptType } = await this.requireWritablePromptAssetRow(identity, assetKey);
     const content = await this.validatedPromptContent(promptType, body.content_json);
-    return this.assets.createVersion(identity, row.id, {
-      ...body,
-      content_json: content,
-      content_hash: optionalString(body.content_hash) ?? sha256Json(content),
-    });
+    return promptVersionOut(await this.assets.createVersion(identity, row.id, { ...body, content_json: content }));
   }
 
   async renderPreview(
@@ -108,7 +106,7 @@ export class PromptRepository {
     const versionId = optionalString(body.version_id);
     const content = body.content_json !== undefined
       ? await this.validatedPromptContent(promptType, body.content_json)
-      : await this.promptVersionContent(row.id, versionId, promptType);
+      : await this.promptVersionContent(identity, row.id, versionId, promptType);
     const variables = objectValue(body.variables);
     const errors = missingRequiredVariables(content.variables_schema, variables).map((name) => `Missing required variable '${name}'`);
     const warnings: string[] = [];
@@ -208,7 +206,10 @@ export class PromptRepository {
     if (!version) throw new HttpError(422, "version_id does not reference a version of this prompt asset");
     validateVersionForDeployment(identity, normalized, scope.scopeType, scope.scopeId, version);
     const proposalId = optionalString(body.promoted_from_proposal_id);
-    if (normalized === "production") {
+    // Production requires a proposal; any label that names one must name an
+    // accepted promotion proposal for this deployment. Do not archive the
+    // current ref first. The foreign key would then refuse the new one.
+    if (normalized === "production" || proposalId) {
       await this.assertAcceptedPromotionProposal(identity, row.id, versionId, scope.scopeType, scope.scopeId, normalized, proposalId);
     }
     return this.insertDeploymentRef(identity, row.id, scope.scopeType, scope.scopeId, normalized, versionId, proposalId);
@@ -223,6 +224,13 @@ export class PromptRepository {
     const label = normalizedLabel(optionalString(body.label) ?? "production");
     const scope = await this.normalizedDeploymentScope(identity, row, body);
     const explicitVersionId = optionalString(body.version_id);
+    const current = await this.activeDeploymentRef(identity, row.id, scope.scopeType, scope.scopeId, label);
+    // A ref a rollback wrote has no "previous" to return to by default: the
+    // last archived ref is the one it replaced, and going there would swap
+    // the two versions back and forth. Name the version instead.
+    if (!explicitVersionId && current?.rolled_back_from_ref_id) {
+      throw new HttpError(409, "This deployment is already a rollback; name the version_id to roll back to");
+    }
     const targetVersionId = explicitVersionId
       ?? await this.previousDeploymentVersionId(identity, row.id, scope.scopeType, scope.scopeId, label);
     if (!targetVersionId) throw new HttpError(404, "No previous deployment ref is available for rollback");
@@ -232,7 +240,7 @@ export class PromptRepository {
     if (label === "production" && explicitVersionId) {
       await this.assertVersionHasPassedEvaluation(identity, row.id, targetVersionId);
     }
-    return this.insertDeploymentRef(identity, row.id, scope.scopeType, scope.scopeId, label, targetVersionId, null);
+    return this.insertDeploymentRef(identity, row.id, scope.scopeType, scope.scopeId, label, targetVersionId, null, current?.id ?? null);
   }
 
   private async requirePromptAssetRow(
@@ -268,14 +276,29 @@ export class PromptRepository {
     return parsed.data;
   }
 
-  private async promptVersionContent(assetId: string, versionId: string | null, promptType: PromptType): Promise<PromptAssetContent> {
-    const result = await this.db.query<{ content_json: unknown }>(
-      versionId
-        ? `SELECT content_json FROM evolvable_asset_versions WHERE asset_id = $1 AND id = $2 LIMIT 1`
-        : `SELECT content_json FROM evolvable_asset_versions WHERE asset_id = $1 ORDER BY version DESC LIMIT 1`,
-      versionId ? [assetId, versionId] : [assetId],
+  private async promptVersionContent(
+    identity: SpaceUserIdentity,
+    assetId: string,
+    versionId: string | null,
+    promptType: PromptType,
+  ): Promise<PromptAssetContent> {
+    // Version numbers run across every Space and scope of a shared asset, so
+    // "latest" means the latest version this caller may see.
+    const result = await this.db.query<{ content_json: unknown; space_id: string | null; scope_type: string; scope_id: string | null }>(
+      `SELECT content_json, space_id, scope_type, scope_id
+         FROM evolvable_asset_versions
+        WHERE asset_id = $1 AND (space_id IS NULL OR space_id = $2)
+          ${versionId ? "AND id = $3" : ""}
+        ORDER BY version DESC`,
+      versionId ? [assetId, identity.spaceId, versionId] : [assetId, identity.spaceId],
     );
-    const row = result.rows[0];
+    let row: { content_json: unknown } | undefined;
+    for (const candidate of result.rows) {
+      if (await canViewVersionScope(this.db, identity, candidate)) {
+        row = candidate;
+        break;
+      }
+    }
     if (!row) {
       throw new HttpError(404, versionId ? "Prompt version not found for this asset" : "Prompt asset has no versions");
     }
@@ -301,9 +324,10 @@ export class PromptRepository {
     label: string,
     versionId: string,
     proposalId: string | null,
+    rolledBackFromRefId: string | null = null,
   ): Promise<Record<string, unknown>> {
     const now = new Date().toISOString();
-    const spaceId = scopeType === "system" ? null : identity.spaceId;
+    const spaceId = identity.spaceId;
     const existing = await this.db.query<DeploymentRefRow>(
       `SELECT ${DEPLOYMENT_REF_COLUMNS}
          FROM prompt_deployment_refs
@@ -312,36 +336,68 @@ export class PromptRepository {
           AND scope_id IS NOT DISTINCT FROM $3
           AND label = $4
           AND status = 'active'
-          AND space_id IS NOT DISTINCT FROM $5
+          AND space_id = $5
           AND version_id = $6
         LIMIT 1`,
       [assetId, scopeType, scopeId, label, spaceId, versionId],
     );
     if (existing.rows[0]) return deploymentRefOut(existing.rows[0]);
 
-    await this.db.query(
-      `UPDATE prompt_deployment_refs
-          SET status = 'archived', updated_at = $6
-        WHERE asset_id = $1
-          AND scope_type = $2
-          AND scope_id IS NOT DISTINCT FROM $3
-          AND label = $4
-          AND status = 'active'
-          AND space_id IS NOT DISTINCT FROM $5`,
-      [assetId, scopeType, scopeId, label, spaceId, now],
-    );
+    // Archive and insert together. Do not insert after the archive has
+    // committed on its own. The label would have no active ref at all.
     const id = randomUUID();
-    await this.db.query(
-      `INSERT INTO prompt_deployment_refs (
-         id, space_id, asset_id, scope_type, scope_id, label, version_id, status,
-         promoted_by_user_id, promoted_from_proposal_id, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10, $10)`,
-      [id, spaceId, assetId, scopeType, scopeId, label, versionId, identity.userId, proposalId, now],
-    );
+    await withQueryableTransaction(this.db, async (db) => {
+      // Under the asset lock a promotion takes to deprecate earlier
+      // versions, re-check the version: a deployment either lands before
+      // that check (and keeps its version approved) or sees it deprecated.
+      await lockEvolutionAssets(db, [assetId]);
+      const current = await db.query<PromptVersionRow>(
+        `SELECT id, asset_id, space_id, scope_type, scope_id, status FROM evolvable_asset_versions WHERE asset_id = $1 AND id = $2 LIMIT 1`,
+        [assetId, versionId],
+      );
+      if (!current.rows[0]) throw new HttpError(422, "version_id does not reference a version of this prompt asset");
+      validateVersionForDeployment(identity, label, scopeType, scopeId, current.rows[0]);
+      await db.query(
+        `UPDATE prompt_deployment_refs
+            SET status = 'archived', updated_at = $6
+          WHERE asset_id = $1
+            AND scope_type = $2
+            AND scope_id IS NOT DISTINCT FROM $3
+            AND label = $4
+            AND status = 'active'
+            AND space_id = $5`,
+        [assetId, scopeType, scopeId, label, spaceId, now],
+      );
+      await db.query(
+        `INSERT INTO prompt_deployment_refs (
+           id, space_id, asset_id, scope_type, scope_id, label, version_id, status,
+           promoted_by_user_id, promoted_from_proposal_id, rolled_back_from_ref_id, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', $8, $9, $10, $11, $11)`,
+        [id, spaceId, assetId, scopeType, scopeId, label, versionId, identity.userId, proposalId, rolledBackFromRefId, now],
+      );
+    });
     const result = await this.db.query<DeploymentRefRow>(`SELECT ${DEPLOYMENT_REF_COLUMNS} FROM prompt_deployment_refs WHERE id = $1`, [id]);
     const row = result.rows[0];
     if (!row) throw new HttpError(500, "Failed to set prompt deployment ref");
     return deploymentRefOut(row);
+  }
+
+  private async activeDeploymentRef(
+    identity: SpaceUserIdentity,
+    assetId: string,
+    scopeType: string,
+    scopeId: string | null,
+    label: string,
+  ): Promise<DeploymentRefRow | null> {
+    const result = await this.db.query<DeploymentRefRow>(
+      `SELECT ${DEPLOYMENT_REF_COLUMNS}
+         FROM prompt_deployment_refs
+        WHERE asset_id = $1 AND scope_type = $2 AND scope_id = $3 AND label = $4
+          AND status = 'active' AND space_id = $5
+        LIMIT 1`,
+      [assetId, scopeType, scopeId, label, identity.spaceId],
+    );
+    return result.rows[0] ?? null;
   }
 
   private async previousDeploymentVersionId(
@@ -359,10 +415,10 @@ export class PromptRepository {
           AND scope_id IS NOT DISTINCT FROM $3
           AND label = $4
           AND status = 'archived'
-          AND space_id IS NOT DISTINCT FROM $5
+          AND space_id = $5
         ORDER BY updated_at DESC
         LIMIT 1`,
-      [assetId, scopeType, scopeId, label, scopeType === "system" ? null : identity.spaceId],
+      [assetId, scopeType, scopeId, label, identity.spaceId],
     );
     return result.rows[0]?.version_id ?? null;
   }
@@ -430,13 +486,14 @@ interface DeploymentRefRow {
   status: string;
   promoted_by_user_id: string | null;
   promoted_from_proposal_id: string | null;
+  rolled_back_from_ref_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
 const DEPLOYMENT_REF_COLUMNS = `
   id, space_id, asset_id, scope_type, scope_id, label, version_id, status,
-  promoted_by_user_id, promoted_from_proposal_id, created_at, updated_at
+  promoted_by_user_id, promoted_from_proposal_id, rolled_back_from_ref_id, created_at, updated_at
 `;
 
 interface PromptVersionRow {
@@ -546,6 +603,7 @@ function deploymentRefOut(row: DeploymentRefRow): Record<string, unknown> {
     status: row.status,
     promoted_by_user_id: row.promoted_by_user_id,
     promoted_from_proposal_id: row.promoted_from_proposal_id,
+    rolled_back_from_ref_id: row.rolled_back_from_ref_id,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -569,18 +627,7 @@ function validateVersionForDeployment(
         : "staging deployment requires a candidate, testing, or approved version",
     );
   }
-  if (version.space_id === null) {
-    if (version.scope_type !== "system") throw new HttpError(422, "version_id is not deployable to this scope");
-    return;
+  if (!versionServesScope(identity, { scopeType: targetScopeType, scopeId: targetScopeId }, version)) {
+    throw new HttpError(422, "version_id is not deployable to the requested scope");
   }
-  if (version.space_id !== identity.spaceId) throw new HttpError(422, "version_id is not visible to this space");
-  if (version.scope_type === "system") return;
-  if (version.scope_type === "space") {
-    if (version.scope_id !== identity.spaceId) throw new HttpError(422, "space-scoped version must belong to the active space");
-    return;
-  }
-  if (version.scope_type === "project" && targetScopeType === "project" && version.scope_id === targetScopeId) return;
-  if (version.scope_type === "agent" && targetScopeType === "agent" && version.scope_id === targetScopeId) return;
-  if (version.scope_type === "user" && targetScopeType === "user" && version.scope_id === identity.userId && targetScopeId === identity.userId) return;
-  throw new HttpError(422, "version_id is not deployable to the requested scope");
 }

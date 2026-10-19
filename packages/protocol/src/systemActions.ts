@@ -22,16 +22,24 @@ export type SystemActionVisibility = (typeof SYSTEM_ACTION_VISIBILITY_VALUES)[nu
 export const SYSTEM_ACTION_ACTOR_VALUES = ["user", "agent", "system", "automation"] as const;
 export type SystemActionActorType = (typeof SYSTEM_ACTION_ACTOR_VALUES)[number];
 
-export const SYSTEM_ACTION_SIDE_EFFECT_VALUES = ["none", "draft", "proposal", "durable"] as const;
+/**
+ * `conditional_proposal`: the action writes directly while it stays inside the
+ * bounds it declares, and files a proposal of `proposal_type` — gated by
+ * `gate_class` — when it does not (`task.plan.propose`: a Plan within its
+ * budget and risk is approved as written; one past them waits for a person's
+ * `plan_review`, a direction gate). Registered as such rather than as
+ * `durable`, so the registry never claims a write is ungated when it is not.
+ */
+export const SYSTEM_ACTION_SIDE_EFFECT_VALUES = ["none", "draft", "proposal", "conditional_proposal", "durable"] as const;
 
 /**
  * Why a write is gated behind per-instance human approval
  * ([ADR 0017](../../../.agent/decisions/0017-authorization-by-cost-not-authorship.md) §1).
  *
  * The list is exhaustive and an action that registers as a proposal must name
- * one. Authorship is deliberately not on it: "an Agent wrote it" was the old
- * default, and under an Agent that advances work it degrades into a rubber
- * stamp on exactly the writes that matter. What is gated is what cannot be
+ * one. Authorship is not a gate class. Do not gate a write because an Agent
+ * wrote it: under an Agent that advances work that becomes a rubber stamp on
+ * the writes that matter. What is gated is what cannot be
  * taken back, costs money, changes who can see something, or changes the
  * Agent itself.
  */
@@ -74,8 +82,7 @@ const ZodSchemaValue = z.custom<z.ZodType>(
 );
 
 /**
- * Declarative resource resolution for the generic policy adapter (action
- * authority consolidation plan, D4). An action carrying this needs no
+ * Declarative resource resolution for the generic policy adapter. An action carrying this needs no
  * hand-written `if (definition.id === ...)` branch in
  * `enforcePolicyForAction`: the generic adapter reads `resource_type` (or
  * falls back to the action's own `owning_module`), reads `resource_id` from
@@ -169,7 +176,7 @@ export interface SystemActionDefinition {
   readonly grantable: boolean;
   /** Ontology object types this action operates on, when it operates on one. */
   readonly applies_to?: readonly string[];
-  /** Declarative resource resolution for the generic policy adapter (D4). */
+  /** Declarative resource resolution for the generic policy adapter. */
   readonly policy_resource?: SystemActionPolicyResource;
   /** Which managed Agent tool family contributes this action, if any. */
   readonly agent_tool_surface?: SystemActionAgentToolSurface;
@@ -359,8 +366,11 @@ const proposalInputs:Record<string,z.ZodType>={
     answerability: z.string().optional(),
     // Hypothesis-kind cognitive fields.
     evaluation_state: z.enum(["untested", "supported", "challenged", "contradicted", "inconclusive"]).optional(),
-    confidence: z.number().min(0).max(100).optional(),
-    confidence_method: z.string().optional(),
+    // Stored as an integer percentage and a 32-character method label; the
+    // contract says so, rather than letting the database refuse the whole
+    // conclusion after the fact.
+    confidence: z.number().int().min(0).max(100).optional(),
+    confidence_method: z.string().max(32).optional(),
     // Shared.
     unresolved_gaps: z.string().optional(),
     confirmed_next_focus: z.string().optional(),
@@ -373,15 +383,17 @@ const proposalInputs:Record<string,z.ZodType>={
     proposed_content: z.string().min(1),
     supersedes_knowledge_item_id: z.string().min(1).optional(),
   }).passthrough(),
-  // Scope is the caller's to set. It used to be a server constant nobody
-  // could reach, so "only read the last year" or "500 is fine" had no way
-  // through — the only adjustment available was cancelling and starting over.
+  // Scope is the caller's to set. Do not replace it with a server constant:
+  // the caller then has no way to say "only the last year" or "500 is enough"
+  // except cancelling and starting over.
   "research.start_acquisition": z.object({
     thread_id: z.string().min(1).describe("The Inquiry Thread id exactly as returned by inquiry.list_threads. Never invent, abbreviate, or derive one from the statement."),
     intent_note: z.string().trim().min(1).max(2000).optional(),
     max_items: z.number().int().min(1).max(2000).optional()
       .describe("How many of the newest matching items this pass reads. Defaults to 200. Raise it only when the user asks for more."),
-    since: z.string().trim().min(1).optional()
+    since: z.string().trim().min(1)
+      .refine((value) => !Number.isNaN(Date.parse(value)), "since must be an ISO date")
+      .optional()
       .describe("ISO date; only material published on or after it is collected. Omit for all available history."),
   }).strict(),
   "research.list_operations": z.object({
@@ -417,11 +429,11 @@ export const SYSTEM_ACTION_REGISTRY = [
   action("project.summary.brief", "Build project summary brief", "projects", "RetrievalToolService.brief", "project.summary.brief", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
   action("source.retrieval.search", "Search source material", "sources", "RetrievalToolService.search", "source.retrieval.search", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
   action("source.retrieval.brief", "Build source brief", "sources", "RetrievalToolService.brief", "source.retrieval.brief", "none", { agentToolSurface: "retrieval", policyAdapter: "retrieval" }),
-  // D8: the tool-call entry and the runtime-delegation-output entry (Path A
+  // The tool-call entry and the runtime-delegation-output entry (Path A
   // and Path B, agentGroupRuns.ts/runtimeDelegationMaterializer.ts) draft the
-  // same thing — "this Agent decided another Agent should do work" — so they
-  // validate against the exact same strict schema rather than Path A
-  // accepting anything (`objectInput`) while Path B alone was strict.
+  // same thing — "this Agent decided another Agent should do work". They
+  // validate against the same strict schema. Do not let Path A accept
+  // anything while Path B is strict.
   action("agent.delegate", "Delegate to an agent", "agent_groups", "AgentGroupRunService.spawnChildRun", "run.spawn_child", "durable", { agentToolSurface: "delegation", policyAdapter: "agent_delegate", inputSchema: RuntimeDelegationOutputItemSchema }),
   action("agent.wait_for_results", "Wait for agent results", "agent_groups", "AgentGroupRunService.waitForResults", "runtime.execute", "none", { policyResource: { resource_type: "run", resource_id_fallback: "run", check_action_approval_grant: false }, agentToolSurface: "delegation", policyAdapter: "declared_resource", inputSchema: AgentWaitForResultsInputSchema }),
   httpAction("source.recipe.plan", "Plan a Source recipe", "sources", "SourceRecipeService.planSource", "source.recipe.create", "none"),
@@ -472,7 +484,7 @@ export const SYSTEM_ACTION_REGISTRY = [
   agentAction("handoff.write", "Write the handoff your next session starts from", "agentGroups", "AgentHandoffService.write", "handoff.write", "durable", { resource_type: "host_thread", resource_id_fallback: "run", check_action_approval_grant: false }),
   action("proposal.list_pending", "List this conversation's pending Proposals with their ids", "proposals", "PgProposalRepository.listVisible", "proposal.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, inputSchema: proposalInputs["proposal.list_pending"] }),
   agentAction("proposal.decide", "Decide a proposal this conversation produced, on the person's instruction", "proposals", "ProposalDecisionExecutor.decide", "proposal.decide", "durable", { resource_type: "proposal", resource_id_input_field: "proposal_id", resource_id_fallback: "run", check_action_approval_grant: false }),
-  agentAction("task.plan.propose", "Propose an Agent-generated Task plan", "plans", "PgPlanRepository.createPlanFromAgent", "task.plan.propose", "durable", { resource_type: "plan", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: true }),
+  conditionallyGatedAgentAction("task.plan.propose", "Propose an Agent-generated Task plan", "plans", "PgPlanRepository.createPlanFromAgent", "task.plan.propose", "plan_review", "direction", { resource_type: "plan", resource_id_input_field: "task_id", resource_id_fallback: "run", check_action_approval_grant: true }),
   internalAction("source.backfill.start", "Start approved Source history import", "sources", "SourceBackfillExecutionService.start", "source.backfill.start"),
   httpAction("source.backfill.pause", "Pause Source history import", "sources", "SourceBackfillPlanningService.setPaused", "source.backfill.manage", "durable"),
   httpAction("source.backfill.resume", "Resume Source history import", "sources", "SourceBackfillPlanningService.setPaused", "source.backfill.manage", "durable"),
@@ -486,26 +498,26 @@ export const SYSTEM_ACTION_REGISTRY = [
   // The deterministic way for an Agent to learn a Thread's id: a read that
   // returns the Project's active Threads with their ids, so the id a later
   // thread-bound action carries is copied from a tool result, never composed
-  // by the model from the statement (which is how a made-up slug reached
-  // research.start_acquisition and failed as an opaque 404).
+  // by the model from the statement. A made-up slug fails
+  // `research.start_acquisition` as an opaque 404. Copy the id from this
+  // tool result.
   action("inquiry.list_threads", "List this Project's active Inquiry Threads with their ids", "inquiry", "InquiryThreadService.listThreads", "inquiry.thread.list", "none", { policyResource: { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }, inputSchema: proposalInputs["inquiry.list_threads"] }),
   // Adopting the system's own recorded next step, on the user's say-so. It
   // writes only what the Inquiry Area's Adopt button writes — the Thread's
   // focus — so requiring a proposal here would gate a suggestion the system
   // made behind a review of the same suggestion.
   // The Agent's own memory, bounded rather than pre-approved (ADR 0003).
-  // Until these existed no Agent could write memory from a conversation at
-  // all, so the person was never the bottleneck there — nothing was.
+  // These two actions are how an Agent writes memory from a conversation.
+  // Do not leave only the retrieval actions. Nothing would write.
   agentAction("memory.remember", "Remember something across sessions", "memory", "PgMemoryApplyRepository.applyDirect", "memory.write", "durable", { resource_type: "memory_entry", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("memory.revise", "Revise a memory this Agent wrote", "memory", "PgMemoryApplyRepository.applyDirect", "memory.write", "durable", { resource_type: "memory_entry", resource_id_input_field: "memory_id", resource_id_fallback: "run", check_action_approval_grant: false }),
   agentAction("inquiry.adopt_next_step", "Adopt the recorded next step for an Inquiry Thread", "inquiry", "InquiryAdviceService.adoptAdvice", "inquiry.advice.adopt", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }),
-  // Direct, origin-gated and bounded (ADR 0017 §2). Splitting a question into
-  // sub-questions is one judgement a person made when they asked; drafting it
-  // into N proposals they then approve one by one is that judgement taken N
-  // times, and it taught them to approve without reading. What replaces the
-  // gate is the trigger origin — an unattended run still waits — the per-turn
-  // fan-out bound, and Updates, where every Thread an Agent opens can be
-  // archived in one click.
+  // Direct, origin-gated and bounded (ADR 0017 §2). Do not draft the split as
+  // N proposals. Splitting a question is one judgement a person made when they
+  // asked; approving each draft would take that judgement N times. What holds
+  // the bound is the trigger origin — an unattended run still waits — the
+  // per-turn fan-out bound, and Updates, where every Thread an Agent opens can
+  // be archived in one click.
   agentAction("inquiry.create_thread", "Open an Inquiry Thread", "inquiry", "InquiryThreadService.createThread", "inquiry.thread.create", "durable", { resource_type: "project", resource_id_fallback: "project_or_run", check_action_approval_grant: false }),
   // A conclusion is the Thread's own state and every Iteration keeps the
   // position it replaced, so it is recorded and revertible rather than
@@ -514,14 +526,13 @@ export const SYSTEM_ACTION_REGISTRY = [
   // Runtime `proposal_type` is `knowledge_create` or `knowledge_update`
   // (revalidation branch) depending on `supersedes_knowledge_item_id`;
   // `knowledge_create` here is descriptive metadata only — nothing currently
-  // compares it for equality (see `acceptAgentProposalIfGranted`), and this
-  // action is not wired into that auto-apply path in this phase.
+  // compares it for equality (see `acceptAgentProposalIfGranted`). This
+  // action is not on that auto-apply path.
   gatedProposalAction("inquiry.promote_knowledge", "Propose promoting a concluded Inquiry round to Knowledge", "inquiry", "KnowledgePromotionCandidateService.proposeFromThreadForAgent", "inquiry.knowledge.promote", "knowledge_create", "exposure"),
-  // Direct execution, no proposal gate (room-advancement-reliability-plan
-  // Phase 4) — the Thread was already human-accepted at creation; starting
-  // acquisition on it is execution, not an agent-drafted structure/content
-  // write. The human confirmation gate is replaced by hard idempotency
-  // guards in the acquisition service.
+  // Direct execution, no proposal gate. The Thread was already
+  // human-accepted at creation, so starting acquisition on it is execution,
+  // not an agent-drafted structure/content write. Idempotency guards in the
+  // acquisition service are the confirmation.
   agentAction("research.start_acquisition", "Start tracked research acquisition", "projectResearch", "ResearchAcquisitionService.startAcquisition", "research.acquisition.start", "durable", { resource_type: "inquiry_thread", resource_id_input_field: "thread_id", resource_id_fallback: "run", check_action_approval_grant: false }, "research"),
   // The symmetric stop for the action above. Direct execution for the same
   // reason: a stop that waits on a proposal review is not a stop.
@@ -649,11 +660,9 @@ function objectAction<const Id extends string>(
  * An action whose write waits for a person, and says why
  * ([ADR 0017](../../../.agent/decisions/0017-authorization-by-cost-not-authorship.md) §1/§5).
  *
- * The gate class is a required argument rather than a default, because a
- * default is how "draft a proposal" became the shape of every Agent write
- * without anyone deciding it should be. An action that cannot name its class
- * is not a proposal action; it is a direct write governed by trigger origin
- * and bounds.
+ * The gate class is a required argument. Do not default it. An action that
+ * cannot name its class is not a proposal action; it is a direct write
+ * governed by trigger origin and bounds.
  */
 function gatedProposalAction<const Id extends string>(id: Id, title: string, owningModule: string, applicationService: string, policyAction: PolicyActionId, proposalType: string, gateClass: SystemActionGateClass, policyResource: Partial<Pick<SystemActionPolicyResource, "resource_type" | "resource_id_input_field" | "resource_id_fallback">> = {}): SystemActionDefinition & { readonly id: Id } {
   return { id, version: 1, title, description: title, visibility: visibility("agent_tool", "public_api"),
@@ -672,6 +681,16 @@ function agentAction<const Id extends string>(id: Id, title: string, owningModul
     agent_tool_surface: agentToolSurface, policy_adapter: "declared_resource" };
 }
 
+/**
+ * An Agent action that writes directly inside its declared bounds and files a
+ * `proposalType` proposal, gated by `gateClass`, past them. The class is a
+ * required argument for the same reason `gatedProposalAction`'s is.
+ */
+function conditionallyGatedAgentAction<const Id extends string>(id: Id, title: string, owningModule: string, applicationService: string, policyAction: PolicyActionId, proposalType: string, gateClass: SystemActionGateClass, policyResource: SystemActionPolicyResource): SystemActionDefinition & { readonly id: Id } {
+  return { ...agentAction(id, title, owningModule, applicationService, policyAction, "conditional_proposal", policyResource),
+    proposal_type: proposalType, gate_class: gateClass };
+}
+
 function internalAction<const Id extends string>(id:Id,title:string,owningModule:string,applicationService:string,policyAction:PolicyActionId):SystemActionDefinition&{readonly id:Id}{
   return{id,version:1,title,description:title,visibility:visibility("internal_only","system_job"),allowed_actor_types:["user","system"],input_schema:objectInput,output_schema:objectOutput,owning_module:owningModule,application_service:applicationService,policy_action:policyAction,side_effects:"durable",idempotency_required:true,proposal_type:null,gate_class:null,grantable:false};
 }
@@ -679,10 +698,9 @@ function internalAction<const Id extends string>(id:Id,title:string,owningModule
 /**
  * The actions that apply to an ontology object type (ADR 0012 decision 8).
  *
- * This is the mechanism `applies_to` was added for: a surface rendering an
- * object — or a selection inside one — asks the registry what it can offer
- * rather than hard-coding a menu. An action with no `applies_to` is not
- * object-bound and never appears here.
+ * `applies_to` is how a surface rendering an object — or a selection inside
+ * one — asks the registry what it can offer. Do not hard-code that menu. An
+ * action with no `applies_to` is not object-bound and never appears here.
  */
 export function systemActionsForObjectType(objectType: string): readonly SystemActionDefinition[] {
   return SYSTEM_ACTION_REGISTRY.filter((definition) => definition.applies_to?.includes(objectType));
@@ -707,8 +725,7 @@ export type SourceSystemActionId = Extract<SystemActionId, `source.${string}`>;
  * than a hand-maintained literal that can drift from what actually validates.
  *
  * `$schema` is stripped — a meta-schema pointer is Draft-7 tooling noise on a
- * tool-call payload, and the hand-written schemas it replaces never carried
- * one either.
+ * tool-call payload. Do not send it.
  */
 export function systemActionInputJsonSchema(
   definition: Pick<SystemActionDefinition, "input_schema">,

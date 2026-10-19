@@ -50,8 +50,8 @@ function filesUnder(path: string): string[] {
   });
 }
 
-describe("legacy Runtime Context absence", () => {
-  it("keeps retired authorities out of production, schema, protocol, and active tests", () => {
+describe("Runtime Context names that must stay absent", () => {
+  it("are absent from production, schema, protocol, and active tests", () => {
     const violations: string[] = [];
     for (const root of roots) {
       for (const file of filesUnder(join(repoRoot, root))) {

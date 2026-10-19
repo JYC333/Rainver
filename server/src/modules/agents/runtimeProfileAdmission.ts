@@ -16,12 +16,10 @@ import {
  * Admission for `agent_runtime_profiles`: the one place a Profile's deployment
  * selection is normalized, validated and written.
  *
- * It lives beside `repository.ts` rather than inside it because the same rules
- * used to exist three times there — inlined in Agent creation, again in the
- * shared normalizer, and a third time on the Space provisioning template — and
- * two near-identical 16-parameter `UPDATE`s wrote the result. The repository
- * keeps its public API and owns the Agent/AgentVersion rows; the Profile row's
- * admission and writes are owned here.
+ * It lives beside `repository.ts` rather than inside it. The repository keeps
+ * its public API and owns the Agent/AgentVersion rows; the Profile row's
+ * admission and writes are owned here. Do not inline these rules again at
+ * Agent creation and at the provisioning template.
  *
  * Nothing in this module reads a Space provisioning template or an existing
  * Run: a Profile is deployment authority, and the template is a provisioning
@@ -107,7 +105,7 @@ export interface HostRuntimeProfileTarget {
   runtimeInstallation: string;
 }
 
-export interface RuntimeProfileAdmissionInput {
+interface RuntimeProfileAdmissionInput {
   agentId?: string;
   name: string;
   runtimeKey: string;
@@ -133,7 +131,7 @@ export interface RuntimeProfileAdmissionInput {
   agentContext?: { projectId: string | null; actorUserId: string | null };
 }
 
-export interface NormalizedRuntimeProfile {
+interface NormalizedRuntimeProfile {
   name: string;
   runtimeKey: string;
   backendMode: AgentRuntimeBackendMode;
@@ -155,15 +153,14 @@ export interface NormalizedRuntimeProfile {
  * `@rainver/protocol` owns it: the schema refuses credential-bearing keys at
  * any depth, refuses a nested key that would shadow runtime identity or an
  * immutable AgentVersion constraint, and refuses a key the *other* bag
- * authors. The server used to re-walk the same key sets beside the schema;
- * one rule, parsed at both the route boundary and here, is what keeps the two
- * answers from drifting.
+ * authors. One rule, parsed at both the route boundary and here. Do not
+ * re-walk the key sets beside the schema.
  */
 export function runtimeConfigRecord(value: unknown): Record<string, unknown> {
   return parseOptionBag(RuntimeProfileConfigJsonSchema, value, "runtime_config_json");
 }
 
-export function runtimePolicyRecord(value: unknown): Record<string, unknown> {
+function runtimePolicyRecord(value: unknown): Record<string, unknown> {
   return parseOptionBag(RuntimeProfilePolicyJsonSchema, value, "runtime_policy_json");
 }
 
@@ -185,8 +182,8 @@ function parseOptionBag(
 /**
  * The secret-free projection of a stored option bag, through the canonical
  * protocol implementation. The column is `jsonb NOT NULL DEFAULT '{}'`, so a
- * non-object never reaches here and the local coercion that used to sit in
- * front of it only hid a schema violation from one reader while another threw.
+ * non-object never reaches here. Do not coerce a non-object into `{}` in
+ * front of the strip: that hides a schema violation from one reader.
  */
 export function strippedOptionBag(value: unknown): Record<string, unknown> {
   return stripSecretFieldsFromRecord(value) as Record<string, unknown>;
@@ -337,9 +334,9 @@ export async function insertRuntimeProfile(
 
 /**
  * The one writer for an existing Profile row. Both update paths — the explicit
- * PATCH and the idempotent provisioning upsert — went through their own
- * 16-parameter `UPDATE` with the same column list; a second copy is a second
- * place for a new column to be forgotten.
+ * PATCH and the idempotent provisioning upsert — use this. Do not keep a
+ * second 16-parameter `UPDATE` with the same column list. A second copy is a
+ * second place for a new column to be forgotten.
  */
 export async function updateRuntimeProfileRow(
   db: Queryable,
@@ -421,9 +418,8 @@ export async function normalizeRuntimeProfileInput(
     ?? (modelProviderId || modelName ? "model_provider" : "runtime_native");
   assertBackendModeBinding(runtimeKey, backendMode, modelProviderId, modelName);
 
-  // A caller that names a Location has named the mode: 'location' was the
-  // only shape before managed workspaces existed, so it stays the default
-  // for that input. 'managed' must always be explicit.
+  // A caller that names a Location has named the mode. `location` is the
+  // default for that input. `managed` must always be explicit.
   const workspaceMode = input.workspaceMode ?? (input.workspaceLocationId != null ? "location" : null);
   const hostBound = input.executionHostId != null
     || input.workspaceLocationId != null
@@ -518,7 +514,7 @@ export function assertProviderExecutionTarget(
   }
 }
 
-export async function validateHostExecutionBinding(
+async function validateHostExecutionBinding(
   db: Queryable,
   input: {
     spaceId: string;
@@ -593,8 +589,8 @@ export async function validateHostExecutionBinding(
   // Two safety models (ADR 0016 §3, B63). A paired host is its owner's, so
   // binding an Agent to one requires being that owner. The built-in host has
   // no owner and serves every Space — the per-Run namespace is what makes it
-  // safe — so there is no ownership to check, and refusing it here was what
-  // made the host the execution-target picker offers impossible to select.
+  // safe. There is no ownership to check. Do not refuse it here. Refusing it
+  // makes the host the execution-target picker offers impossible to select.
   if (row.host_owner_user_id !== null && row.host_owner_user_id !== input.actorUserId) {
     throw new HttpError(403, "The execution host must belong to the caller");
   }

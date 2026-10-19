@@ -58,7 +58,7 @@ vi.mock('../../../../api/client', () => {
     },
     knowledgeApi: { list: vi.fn().mockResolvedValue(emptyPage), search: vi.fn().mockResolvedValue({ items: [] }) },
     inquiryApi: { raiseFromNote: vi.fn(), listOpenSteps: vi.fn().mockResolvedValue([]) },
-    providersApi: { list: vi.fn().mockResolvedValue([]) },
+    providersApi: { usable: vi.fn().mockResolvedValue([]) },
     sessionsApi: { messages: vi.fn().mockResolvedValue([]) },
     projectNotebookChatApi: { send: vi.fn() },
   }
@@ -108,10 +108,9 @@ beforeEach(() => {
 })
 
 /**
- * U1/U3: the Project's notes are the *same* page as `/knowledge/notes`, hoisted
- * to the Project's folder. The guardrail that matters is that there is one
- * implementation — the previous Project notebook was a weaker copy, and every
- * capability the shared editor grew stopped at its edge.
+ * The Project's notes are the *same* page as `/knowledge/notes`, hoisted
+ * to the Project's folder. There is one implementation. Do not keep a second
+ * Project notebook that stops where the shared editor grows.
  */
 describe('Project notes surface', () => {
   it('mounts the shared notes surface hoisted to the Project folder', async () => {

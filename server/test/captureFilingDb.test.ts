@@ -1,5 +1,9 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { captureFilingModule } from "../src/modules/captureFiling/index.js";
 import { CaptureFilingService } from "../src/modules/captureFiling/service.js";
+import { buildModuleServer } from "./support/moduleServer.js";
 import { ContentAccessAuditService } from "../src/modules/contentAccess/audit.js";
 import { PgActivityRepository } from "../src/modules/activity/repository.js";
 import { PgAnnotationRepository } from "../src/modules/reader/repository.js";
@@ -63,7 +67,22 @@ function filing(): CaptureFilingService {
   return new CaptureFilingService(db.pool);
 }
 
+afterEach(() => __setAuthIdentityForTests(null));
+
 describe("filing a personal capture into a Project (real Postgres)", () => {
+  it("answers a malformed filing request as 422, not as a server error", async () => {
+    if (!db.available) return;
+    __setAuthIdentityForTests({ spaceId: PERSONAL, userId: OWNER });
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [captureFilingModule]);
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/v1/me/filings", payload: { activity_id: CAPTURE } });
+      expect(response.statusCode).toBe(422);
+      expect(response.json()).toMatchObject({ detail: expect.stringContaining("target_project_id") });
+    } finally {
+      await app.close();
+    }
+  });
+
   it("creates a new object in the target Space and leaves the capture as provenance", async () => {
     if (!db.available) return;
     const result = await filing().file({
@@ -111,12 +130,13 @@ describe("filing a personal capture into a Project (real Postgres)", () => {
 
   it("refuses a target Project the caller cannot write", async () => {
     if (!db.available) return;
+    // Out of the Space, the Project is not theirs to see either: absent.
     await db.pool.query(`DELETE FROM space_memberships WHERE space_id = $1 AND user_id = $2`, [TEAM, OWNER]);
     await expect(filing().file({
       userId: OWNER,
       activityId: CAPTURE,
       targetProjectId: PROJECT,
-    })).rejects.toMatchObject({ statusCode: 403 });
+    })).rejects.toMatchObject({ statusCode: 404 });
   });
 
   it("refuses to file the same capture twice", async () => {

@@ -31,7 +31,7 @@ const REMOTE_HOST = {
 }
 
 const CLAUDE_ADAPTER = { runtime_key: 'claude_code', display_name: 'Claude Code', command: 'claude', capability_probe: 'claude', remote_eligible: true, reports_managed_cli_version: true, supports_runtime_native: true, supports_model_provider: false, provider_api: 'claude_compatible' as const }
-// ACP runtime replatform P3: codex_cli's own executable is the pinned
+// codex_cli's own executable is the pinned
 // codex-acp adapter, not the vendor `codex` binary a host's capability probe
 // reports — capability_probe carries that distinction.
 const CODEX_ADAPTER = { runtime_key: 'codex_cli', display_name: 'Codex', command: 'codex-acp', capability_probe: 'codex', remote_eligible: true, reports_managed_cli_version: true, supports_runtime_native: true, supports_model_provider: false, provider_api: 'openai_compatible' as const }
@@ -91,9 +91,9 @@ describe('HostsPanel', () => {
   })
 
   it('marks a loaded Server Runtime status as stale when the next read fails', async () => {
-    // The panel keeps the last good status on a failed read, so the "could not
-    // load" branch is unreachable once one has landed and the badge silently
-    // claimed to be current. The indicator is what says otherwise.
+    // The panel keeps the last good status on a failed read. Do not leave the
+    // "could not load" branch unreachable once one has landed, or the badge
+    // would claim to be current. The indicator is what says otherwise.
     vi.useFakeTimers()
     try {
       render(<HostsPanel />)
@@ -113,9 +113,8 @@ describe('HostsPanel', () => {
   })
 
   it('shows versions on installed Agent rows and omits uninstalled runtime badges', async () => {
-    // ACP runtime replatform P3: codex_cli is remote-eligible now (its own
-    // adapter is codex-acp), so a still-genuinely-ineligible adapter
-    // (gemini_cli, implementation_status "planned") exercises this case.
+    // codex_cli is remote-eligible. gemini_cli is not. An ineligible runtime
+    // does not get a phase badge on the host row.
     const GEMINI_ADAPTER = { runtime_key: 'gemini_cli', display_name: 'Gemini CLI', command: 'gemini', capability_probe: 'gemini', remote_eligible: false, supports_runtime_native: false, supports_model_provider: false }
     vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER, GEMINI_ADAPTER] })
     vi.mocked(hostsApi.list).mockResolvedValue({
@@ -128,9 +127,9 @@ describe('HostsPanel', () => {
   })
 
   it('lists an installed registry agent even though it is not dispatch-eligible', async () => {
-    // A registry agent's managed copy is installable and managed on the host
-    // while `remote_eligible` stays false (no login/state-root contract yet).
-    // Filtering the host list by eligibility hid the copy right after install.
+    // A registry agent's managed copy is installable on the host while
+    // `remote_eligible` stays false. Do not filter the host list by
+    // eligibility. The copy would disappear right after install.
     const CURSOR_ADAPTER = { runtime_key: 'acp_cursor', display_name: 'Cursor', command: 'acp_cursor', capability_probe: 'acp_cursor', remote_eligible: false, supports_runtime_native: true, supports_model_provider: false }
     vi.mocked(hostsApi.listRuntimeDefinitions).mockResolvedValue({ items: [CLAUDE_ADAPTER, CODEX_ADAPTER, CURSOR_ADAPTER] })
     vi.mocked(hostsApi.list).mockResolvedValue({
@@ -185,10 +184,39 @@ describe('HostsPanel', () => {
     }
   })
 
+  it('keeps the newer hosts list when an earlier poll answers later', async () => {
+    vi.useFakeTimers()
+    try {
+      const renamed = { ...REMOTE_HOST, name: 'Laptop renamed' }
+      let releaseSlow!: (value: { items: Array<typeof REMOTE_HOST | typeof SERVER_HOST> }) => void
+      vi.mocked(hostsApi.list)
+        .mockResolvedValueOnce({ items: [SERVER_HOST, REMOTE_HOST] })
+        .mockImplementationOnce(() => new Promise(resolve => { releaseSlow = resolve }) as never)
+        .mockResolvedValue({ items: [SERVER_HOST, renamed] })
+      render(<HostsPanel />)
+      await act(async () => { await Promise.resolve() })
+      expect(screen.getAllByText('Laptop').length).toBeGreaterThan(0)
+
+      // The slow poll starts, and the one after it answers first with the rename.
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+      expect(screen.getAllByText('Laptop renamed').length).toBeGreaterThan(0)
+
+      await act(async () => {
+        releaseSlow({ items: [SERVER_HOST, REMOTE_HOST] })
+        await Promise.resolve()
+      })
+      expect(screen.getAllByText('Laptop renamed').length).toBeGreaterThan(0)
+      expect(screen.queryByText('Laptop')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not stack provisioning reads while one is still in flight', async () => {
-    // The 3s tick is shorter than a slow provisioning read. Without a guard
-    // each tick opened another request and merged whatever came back last, so
-    // an older answer could overwrite a newer one.
+    // The 3s tick is shorter than a slow provisioning read. Do not open
+    // another request while one is in flight. An older answer could overwrite
+    // a newer one.
     vi.useFakeTimers()
     try {
       type ProvisioningStatus = Awaited<ReturnType<typeof hostsApi.serverRuntimeProvisioning>>
@@ -231,10 +259,10 @@ describe('HostsPanel', () => {
     expect(screen.queryByText('Model backend')).toBeNull()
   })
 
-  // The built-in host used to be described as having no controls of its own.
-  // It is a daemon in strict mode now: it carries the same managed copies and
-  // logins a paired host does, and every Run on it is isolated in its own
-  // namespace — which is what makes it safe for a Space to share.
+  // The built-in host is a daemon in strict mode. It carries the same managed
+  // copies and logins a paired host does, and every Run on it is isolated in
+  // its own namespace, which is what makes it safe for a Space to share.
+  // Do not describe it as having no controls of its own.
   it('describes the built-in host as isolated, and names the capacity it runs at', async () => {
     render(<HostsPanel />)
     expect(await screen.findByText(/every Run is isolated in its own namespace/)).toBeInTheDocument()
@@ -275,7 +303,7 @@ describe('HostsPanel', () => {
 
     await screen.findByTestId('host-agent-host-server-opencode')
     expect(screen.getByTestId('host-agent-host-server-opencode')).toHaveTextContent('Managed by Rainver')
-    // The Retry only exists for a failed install, so a healthy one must not
+    // Retry is shown only for a failed install. A healthy one must not
     // point at a button that is not on the page.
     expect(screen.getByTestId('host-agent-host-server-opencode')).not.toHaveTextContent('use Retry above')
     expect(screen.queryByRole('button', { name: /Remove managed:1\.2\.3 of OpenCode/ })).toBeNull()
@@ -340,9 +368,8 @@ describe('HostsPanel', () => {
 
 /**
  * The host card is where a copy's subscription and its upgrade history are
- * acted on. None of it had a test, and the rollback button shipped unreachable
- * because the server dropped `rollback_version` on the way in — a defect one
- * assertion here would have caught.
+ * acted on. The rollback control must send `rollback_version`. Dropping that
+ * field makes the button do nothing.
  */
 describe('HostAgentRow subscription and upgrade controls', () => {
   const CLAUDE_HOST = {

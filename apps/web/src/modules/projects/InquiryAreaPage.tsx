@@ -64,7 +64,7 @@ export default function InquiryAreaPage() {
   const [corpus, setCorpus] = useState<{ projectId: string; items: Map<string, ProjectCorpusItem> } | null>(null)
 
   // What this Area is currently about, so a capture made from here hangs on the
-  // Thread rather than falling into the Project inbox (U11).
+  // Thread rather than falling into the Project inbox.
   useDeclareProjectCaptureTarget(detail ? { objectId: detail.id, title: detail.statement } : null)
 
   const [threadTab, setThreadTab] = useState<ThreadTabId>('evidence')
@@ -313,8 +313,8 @@ export default function InquiryAreaPage() {
             <TabsTrigger value="review">
               Review{candidates.length > 0 ? ` (${candidates.length})` : ''}
             </TabsTrigger>
-            {/* An Experiment tests a hypothesis Thread and reports back into
-                Inquiry; it was a separate Area only by accident of history. */}
+            {/* Experiments are a view here. An Experiment tests a hypothesis
+                Thread and reports back into Inquiry. */}
             <TabsTrigger value="experiments">Experiments</TabsTrigger>
           </TabsList>
         </Tabs>

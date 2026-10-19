@@ -4,16 +4,18 @@ import { withTransaction } from "../src/db/tx.js";
 import { ensureProjectNotesFolder } from "../src/modules/knowledge/noteProjectFolders.js";
 import { persistNotesTreeReorder } from "../src/modules/knowledge/notesTreeReorder.js";
 import { PgKnowledgeRepository } from "../src/modules/knowledge/repository.js";
+import { removeNotePlacement } from "../src/modules/knowledge/noteWriter.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
- * S6 boundary set. `contentAccessSql` evaluates the Project scope as a hard AND
+ * `contentAccessSql` evaluates the Project scope as a hard AND
  * *before* visibility and grants, so a note owned by Project A is unreadable to
- * a non-member of A no matter what per-user grant exists — that is why
- * cross-Project placement needed a new term in the predicate rather than a
- * grant. These tests pin what that term may and may not do.
+ * a non-member of A no matter what per-user grant exists. Cross-Project
+ * placement is a term in that predicate, not a grant. These tests pin what
+ * that term may and may not do.
  *
  * The Space is a **team** space: a `personal` space grants project access to
  * every member unconditionally (see `projectReadAccessSql`), which would make
@@ -33,7 +35,9 @@ const BETA = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const GAMMA = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
 
-const db = useTestDatabase(import.meta.filename, { max: 2 });
+// Three: the concurrency test holds two clients open and still has to ask
+// `pg_stat_activity` whether the second is waiting.
+const db = useTestDatabase(import.meta.filename, { max: 3 });
 
 let projectA = "";
 let projectB = "";
@@ -148,11 +152,24 @@ describe("cross-project note sharing (real Postgres)", () => {
     expect(await repository.listNoteProjectShares(alpha, noteId)).toEqual([
       expect.objectContaining({ project_id: projectB, project_name: "Project B", shared_by_user_id: ALPHA }),
     ]);
-    // Governance ownership does not move (U7).
+    // Governance ownership does not move.
     const owner = await db.pool.query<{ primary_project_id: string }>(
       `SELECT primary_project_id FROM space_objects WHERE id = $1`, [noteId],
     );
     expect(owner.rows[0]?.primary_project_id).toBe(projectA);
+  });
+
+  it("refuses a declared link type that note links do not store, as 422", async () => {
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const noteId = await noteInProjectA();
+    const other = await noteInProjectA();
+    // `cites` is in the registry, for other relation tables; note_links'
+    // check constraint would refuse it, which must surface as a 422 here.
+    await expect(repository.createNoteLink(alpha, noteId, { target_type: "note", target_id: other, link_type: "cites" }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    expect(await repository.createNoteLink(alpha, noteId, { target_type: "note", target_id: other, link_type: "supports" }))
+      .toMatchObject({ link_type: "supports" });
   });
 
   it("keeps a shared note read-only for the receiving Project", async () => {
@@ -219,8 +236,7 @@ describe("cross-project note sharing (real Postgres)", () => {
 
     expect(await repository.getNote(beta, noteId)).toBeNull();
     expect(await repository.listNoteProjectShares(alpha, noteId)).toEqual([]);
-    // The placement goes with the share: a tree with a hole in it is the silent
-    // absence the explicit-share rule exists to prevent.
+    // The placement goes with the share. Do not leave a tree with a hole in it.
     expect(placements(await repository.getNote(alpha, noteId)))
       .toEqual([{ collection_id: folderA, sort_order: 0 }]);
   });
@@ -287,6 +303,94 @@ describe("cross-project note sharing (real Postgres)", () => {
     );
     expect(rows.rows).toEqual([{ revoked_at: null }]);
     expect(await repository.getNote(beta, noteId)).toMatchObject({ id: noteId });
+  });
+
+  /**
+   * The owning Project always keeps an entry. B's share is B's way in, not a
+   * home for A's note: with only B's placement left, A's own tree could no
+   * longer show a note A owns and governs. The refusal names the two things
+   * that actually help — move it within A, or delete the note.
+   */
+  it("refuses to remove the owning Project's last entry while only a share's entry remains", async () => {
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const noteId = await noteInProjectA();
+    await repository.addNotePlacement(alpha, noteId, folderB, true);
+
+    await expect(repository.removeNotePlacement(alpha, noteId, folderA)).rejects.toMatchObject({
+      statusCode: 422,
+      responseBody: {
+        code: "note_owning_entry_required",
+        note_id: noteId,
+        owning_project_id: projectA,
+        actions: ["move_within_owning_project", "delete_note"],
+        affected_note_count: 1,
+      },
+    });
+    expect(placements(await repository.getNote(alpha, noteId)).map((p) => p.collection_id).sort())
+      .toEqual([folderA, folderB].sort());
+    // The drag path is the same removal with a different verb.
+    const elsewhere = await repository.createNoteCollection(alpha, { name: "Loose" }) as { id: string };
+    await expect(withTransaction(db.pool, (client) => persistNotesTreeReorder(client, alpha, {
+      kind: "notes",
+      updates: [{ noteId, fromCollectionId: folderA, collectionId: elsewhere.id, sortOrder: 0 }],
+    }))).rejects.toMatchObject({ statusCode: 422, responseBody: { code: "note_owning_entry_required" } });
+    // So is "file it here", which replaces every placement.
+    await expect(repository.updateNote(alpha, noteId, { collection_id: elsewhere.id }))
+      .rejects.toMatchObject({ statusCode: 422, responseBody: { code: "note_owning_entry_required" } });
+    expect(placements(await repository.getNote(alpha, noteId))).toHaveLength(2);
+  });
+
+  it("lets A reorganize within its own subtree without touching B's entry", async () => {
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const noteId = await noteInProjectA();
+    await repository.addNotePlacement(alpha, noteId, folderB, true);
+    const subfolderA = await repository.createNoteCollection(alpha, { name: "Deeper", parent_id: folderA }) as { id: string };
+
+    await withTransaction(db.pool, (client) => persistNotesTreeReorder(client, alpha, {
+      kind: "notes",
+      updates: [{ noteId, fromCollectionId: folderA, collectionId: subfolderA.id, sortOrder: 0 }],
+    }));
+
+    expect(placements(await repository.getNote(alpha, noteId)).map((p) => p.collection_id).sort())
+      .toEqual([subfolderA.id, folderB].sort());
+    expect(await repository.getNote(beta, noteId)).toMatchObject({ id: noteId });
+    // Taking the subfolder away is refused for the same reason the explicit
+    // removal is: it would leave A without an entry.
+    await expect(withTransaction(db.pool, (client) =>
+      new PgKnowledgeRepository(client).deleteNoteCollection(alpha, subfolderA.id),
+    )).rejects.toMatchObject({ statusCode: 422, responseBody: { code: "note_owning_entry_required" } });
+    expect(placements(await repository.getNote(alpha, noteId))).toHaveLength(2);
+  });
+
+  it("serializes concurrent removals on the note so they cannot together empty it", async () => {
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const noteId = await noteInProjectA();
+    const subfolderA = await repository.createNoteCollection(alpha, { name: "Deeper", parent_id: folderA }) as { id: string };
+    await repository.addNotePlacement(alpha, noteId, subfolderA.id);
+
+    const first = await db.pool.connect();
+    const second = await db.pool.connect();
+    try {
+      await first.query("BEGIN");
+      await removeNotePlacement(first, SPACE, noteId, folderA, { userId: ALPHA });
+      await second.query("BEGIN");
+      let settled = false;
+      const racing = removeNotePlacement(second, SPACE, noteId, subfolderA.id, { userId: ALPHA })
+        .finally(() => { settled = true; });
+      await waitForLockWaiter(db.pool, { settled: () => settled });
+      await first.query("COMMIT");
+      // Each remover saw "there is still another entry" at its start; only
+      // the one that ran second sees the whole picture, and is refused.
+      await expect(racing).rejects.toMatchObject({ statusCode: 422, responseBody: { code: "note_owning_entry_required" } });
+      await second.query("ROLLBACK");
+    } finally {
+      first.release();
+      second.release();
+    }
+    expect(placements(await repository.getNote(alpha, noteId))).toEqual([{ collection_id: subfolderA.id, sort_order: 0 }]);
   });
 
   it("counts in the knowledge summary only what the viewer can read", async () => {

@@ -47,11 +47,11 @@ describe("the egress policy a dispatch states", () => {
 /**
  * Which copy on the host a dispatch actually launches.
  *
- * Reading only the dispatch override meant a Room turn and a direct chat
- * launched `own` — the machine's own PATH binary. On a paired machine that is
- * the owner's logged-in CLI, so it looked fine while quietly substituting a
- * copy nobody chose; on the built-in host, which has no vendor CLI on PATH,
- * the launch simply fails.
+ * Do not read only the dispatch override. A Room turn and a direct chat
+ * would launch `own`, the machine's own PATH binary. On a paired machine
+ * that is the owner's logged-in CLI, so it looks fine while substituting a
+ * copy nobody chose. On the built-in host there is no vendor CLI on PATH,
+ * and the launch fails.
  */
 describe("which installation a dispatch names", () => {
   it("takes the runtime profile's copy when the dispatch pins none", () => {

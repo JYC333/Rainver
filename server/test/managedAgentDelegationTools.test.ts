@@ -150,6 +150,9 @@ describe("ACP agent delegation tools", () => {
         if (sql.includes("FROM run_attempts") && sql.includes("FOR UPDATE")) {
           return { rows: [{ id: "attempt-manager" }] as Row[], rowCount: 1 };
         }
+        if (sql.includes("WITH RECURSIVE waits")) {
+          return { rows: [{ waits_on_waiter: false }] as Row[], rowCount: 1 };
+        }
         if (sql.includes("WITH parked AS")) {
           parkedSqlSeen = true;
           return { rows: [{ id: managerRun.id }] as Row[], rowCount: 1 };
@@ -236,6 +239,9 @@ describe("ACP agent delegation tools", () => {
         }
         if (sql.includes("FROM run_attempts") && sql.includes("FOR UPDATE")) {
           return { rows: [{ id: "attempt-manager" }] as Row[], rowCount: 1 };
+        }
+        if (sql.includes("WITH RECURSIVE waits")) {
+          return { rows: [{ waits_on_waiter: false }] as Row[], rowCount: 1 };
         }
         if (sql.includes("WITH parked AS")) {
           parkedSqlSeen = true;

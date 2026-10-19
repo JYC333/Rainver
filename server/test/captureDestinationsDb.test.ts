@@ -8,15 +8,14 @@ import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
- * The four capture destinations behind one entry (D1/D2).
+ * The four capture destinations behind one entry.
  *
- * What these tests are guarding is the decoupling of ownership from pipeline.
- * Binding the two — Project implies shared, personal implies reviewed — is the
- * arrangement this work replaced, and its failure mode is silent: material
- * pasted into a Project becomes the user's private marginalia, invisible to the
- * team it was meant for. The mirror of that, a margin note published to the
- * whole team on the first keystroke, is what ADR 0013 decision 3a exists to
- * prevent. Both directions are asserted here.
+ * Ownership and pipeline are separate. Do not bind them: Project does not
+ * imply shared, and personal does not imply reviewed. Material pasted into a
+ * Project would become the user's private marginalia, invisible to the team.
+ * The mirror, a margin note published to the whole team on the first
+ * keystroke, is what ADR 0013 decision 3a prevents. Both directions are
+ * asserted here.
  */
 
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -154,7 +153,7 @@ describe("capture destinations (real Postgres)", () => {
     });
     // A URL is captured as a link, so the pipeline downstream knows to fetch it.
     expect(await activityRow(result.activity_id)).toMatchObject({ source_kind: "web_capture" });
-    // The teammate can read it: this is the case that was being privatised.
+    // The teammate can read a space-shared capture. Do not record it as private.
     const seen = await db.pool.query(
       `SELECT id FROM activity_records WHERE id = $1 AND visibility = 'space_shared' AND space_id = $2`,
       [result.activity_id, TEAM],
@@ -339,7 +338,8 @@ describe("capture destinations (real Postgres)", () => {
   it("keeps a shared jot on the same object out of the private marginalia note", async () => {
     if (!db.available) return;
     const repository = new PgKnowledgeRepository(db.pool);
-    // Marginalia first: this is the order that used to make the jot land in it.
+    // Marginalia is first. That order would put the jot there if the
+    // destination were ignored.
     const marginalia = await capture().capture({
       userId: OWNER, requestSpaceId: TEAM, destination: "object_marginalia",
       text: "Private aside.", projectId: PROJECT, targetId,
@@ -457,7 +457,7 @@ describe("capture destinations (real Postgres)", () => {
     await expect(capture().capture({
       userId: MATE, requestSpaceId: TEAM, destination: "project_marginalia",
       text: "Should not land.", projectId: PROJECT,
-    })).rejects.toMatchObject({ statusCode: 403 });
+    })).rejects.toMatchObject({ statusCode: 404 });
 
     expect((await db.pool.query(`SELECT id FROM activity_records`)).rows).toHaveLength(0);
     expect((await db.pool.query(`SELECT object_id FROM notes WHERE marginalia_owner_user_id IS NOT NULL`)).rows)

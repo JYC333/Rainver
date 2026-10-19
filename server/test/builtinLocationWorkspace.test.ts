@@ -7,7 +7,7 @@ import { verificationTargetForTest } from "../src/modules/runs/orchestrationServ
  * resolves to nothing on it and the Run dies with "no local path registered".
  * The path under the shared workspace root is what lets it resolve one
  * (ADR 0016 section 4) — and a Conversation bound to a server Location always
- * arrives with a snapshot workspace, which is the case that used to skip it.
+ * arrives with a snapshot workspace. Do not skip resolving it.
  */
 describe("the workspace a Location-bound launch carries", () => {
   const LOC = "loc-1";
@@ -39,11 +39,10 @@ describe("the workspace a Location-bound launch carries", () => {
 
 /**
  * The same gap, in the other place that names a workspace. A launch carries the
- * built-in host's path because `builtinLocationRelativePath` computes it; the
- * verifier reached for `port.workspace` first and took the snapshot's
- * path-less Location as-is, so every verification on that host came back "no
- * local path registered" — reported, after two relabellings, as a Run that had
- * failed its acceptance checks.
+ * built-in host's path because `builtinLocationRelativePath` computes it. Do
+ * not take the snapshot's path-less Location as-is. Every verification on that
+ * host would come back "no local path registered" and the Run would fail its
+ * acceptance checks.
  */
 describe("the workspace a verifier runs in", () => {
   const LOC = "loc-1";

@@ -23,7 +23,7 @@ import { downloadRuntimeArtifact, type RuntimeArtifactDownloadDependencies } fro
  */
 
 /** `managed:<version>` — an installation id, as opposed to `own`. */
-export const MANAGED_PREFIX = "managed:";
+const MANAGED_PREFIX = "managed:";
 export const OWN_INSTALLATION = "own";
 
 /** How a runtime is logged into and how a login is recognised (the spec's `credentials.login`). */
@@ -49,10 +49,10 @@ export interface ToolManifest {
   installed_at: string;
 }
 
-export type ToolDistribution = RuntimeDistribution;
+type ToolDistribution = RuntimeDistribution;
 /** The wire's `install_tool` frame, minus its type tag; nothing is rebuilt from it. */
-export type InstallToolFrame = Omit<HostServerFrameOf<"install_tool">, "type">;
-export type UninstallToolFrame = Omit<HostServerFrameOf<"uninstall_tool">, "type">;
+type InstallToolFrame = Omit<HostServerFrameOf<"install_tool">, "type">;
+type UninstallToolFrame = Omit<HostServerFrameOf<"uninstall_tool">, "type">;
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function toolsDir(): string {
@@ -119,9 +119,8 @@ export function readToolManifestSync(runtimeKey: string, installation: string): 
  * The *current* managed copy of each runtime — one per runtime key (ADR 0016 §9).
  *
  * A version kept behind the current one is a rollback target, not a second
- * installation: reporting it would put two copies of one Agent on the host
- * card, each with its own login, which is exactly the confusion one-version
- * addresses.
+ * installation. Do not report it: the host card would show two copies of one
+ * Agent, each with its own login.
  */
 export async function installedTools(): Promise<Map<string, ToolManifest[]>> {
   const result = new Map<string, ToolManifest[]>();
@@ -238,8 +237,9 @@ export async function rollbackTool(runtimeKey: string): Promise<ToolManifest | n
 
 /**
  * Installs into a staging directory and renames it into place, so a
- * half-finished install never reads as an installed tool. Re-installing an
- * existing version replaces it.
+ * half-finished install never reads as an installed tool (a uv tool, which
+ * cannot be moved, is installed in place instead). Re-installing an existing
+ * version replaces it.
  */
 export async function installTool(
   frame: InstallToolFrame,
@@ -248,10 +248,28 @@ export async function installTool(
 ): Promise<ToolManifest> {
   const finalDir = toolDir(frame.runtime_key, frame.version);
   const home = managedToolHome(frame.runtime_key);
-  const stagingDir = `${finalDir}.installing`;
-  await rm(stagingDir, { recursive: true, force: true });
-  await mkdir(stagingDir, { recursive: true, mode: 0o700 });
+  // uv writes absolute paths into what it installs (the entry-point symlink,
+  // each script's interpreter line), so a uv tool stops working once its
+  // directory is renamed. It is installed where it will run instead; a copy
+  // of the same version already there is moved aside and put back on failure.
+  // Readers still never see it half-done: a version without its manifest is
+  // not installed, and the manifest is written last.
+  const inPlace = frame.distribution.kind === "uvx";
+  const stagingDir = inPlace ? finalDir : `${finalDir}.installing`;
+  const asideDir = inPlace ? `${finalDir}.replaced` : null;
+  let movedAside = false;
+  let stagingStarted = false;
+  let manifest: ToolManifest;
   try {
+    if (asideDir) {
+      await rm(asideDir, { recursive: true, force: true });
+      await rename(finalDir, asideDir).then(() => { movedAside = true; }).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
+    }
+    stagingStarted = true;
+    await rm(stagingDir, { recursive: true, force: true });
+    await mkdir(stagingDir, { recursive: true, mode: 0o700 });
     const launch = await materialize(frame.distribution, stagingDir, log, downloadDependencies, frame.egress_transport ?? { mode: "direct" });
     // User data is outside the version directory, so replacing or pruning
     // binaries cannot remove login, native history, settings, or Skills.
@@ -271,7 +289,7 @@ export async function installTool(
       );
       if (!healthy) throw new Error("The managed runtime failed its ACP initialize health check; the previous installation remains active.");
     }
-    const manifest: ToolManifest = {
+    manifest = {
       runtime_key: frame.runtime_key,
       version: frame.version,
       runtime_version: runtimeVersion,
@@ -283,17 +301,9 @@ export async function installTool(
       installed_at: new Date().toISOString(),
     };
     await writeFile(join(stagingDir, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
-    await rm(finalDir, { recursive: true, force: true });
-    await rename(stagingDir, finalDir);
-  // One current copy per runtime key, plus exactly one kept behind it so the
-    // upgrade has something to be undone to (ADR 0016 §9). User state is outside
-    // this tree.
-    const keep = new Set([frame.version, ...managedVersionsFor(frame.runtime_key)
-      .filter((manifest) => manifest.version !== frame.version)
-      .slice(0, 1)
-      .map((manifest) => manifest.version)]);
-    for (const sibling of await readdir(join(toolsDir(), frame.runtime_key)).catch(() => [] as string[])) {
-      if (!keep.has(sibling)) await rm(join(toolsDir(), frame.runtime_key, sibling), { recursive: true, force: true });
+    if (!inPlace) {
+      await rm(finalDir, { recursive: true, force: true });
+      await rename(stagingDir, finalDir);
     }
     // The launch was resolved against the staging path; rewrite every
     // string of it against the final one.
@@ -305,11 +315,33 @@ export async function installTool(
     manifest.home = relocate(manifest.home);
     manifest.login_command = manifest.login_command?.map(relocate) ?? null;
     await writeFile(join(finalDir, "manifest.json"), JSON.stringify(manifest, null, 2), { mode: 0o600 });
-    return manifest;
   } catch (error) {
-    await rm(stagingDir, { recursive: true, force: true });
+    if (stagingStarted) await rm(stagingDir, { recursive: true, force: true });
+    if (asideDir && movedAside) {
+      await rename(asideDir, finalDir).catch((restoreError: NodeJS.ErrnoException) => {
+        if (restoreError.code !== "ENOENT") throw restoreError;
+      });
+    }
     throw error;
   }
+  // The installed manifest is committed. Cleanup cannot turn a usable runtime
+  // into a failed installation or delete it while trying to restore a backup.
+  try {
+    if (asideDir) await rm(asideDir, { recursive: true, force: true });
+    // One current copy per runtime key, plus exactly one kept behind it so the
+    // upgrade has something to be undone to (ADR 0016 §9). User state is outside
+    // this tree.
+    const keep = new Set([frame.version, ...managedVersionsFor(frame.runtime_key)
+      .filter((manifest) => manifest.version !== frame.version)
+      .slice(0, 1)
+      .map((manifest) => manifest.version)]);
+    for (const sibling of await readdir(join(toolsDir(), frame.runtime_key)).catch(() => [] as string[])) {
+      if (!keep.has(sibling)) await rm(join(toolsDir(), frame.runtime_key, sibling), { recursive: true, force: true });
+    }
+  } catch (error) {
+    log(`Runtime installed; old-version cleanup failed: ${String(error)}`);
+  }
+  return manifest;
 }
 
 /** A version label is useful metadata, but failure to print it must not abort a valid install. */

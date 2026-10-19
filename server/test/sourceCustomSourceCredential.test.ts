@@ -13,8 +13,9 @@ import { CustomSourceCredentialService } from "../src/modules/sources/customSour
 import { HttpError } from "../src/modules/routeUtils/common.js";
 import { publicAddressGuard } from "./support/outboundGuard.js";
 
-// Real-Postgres integration tests for Phase 10 (Custom Source credentials).
-// Skips gracefully when Docker is unavailable.
+// Real-Postgres integration tests for Custom Source credentials.
+// The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 const SPACE_A = "space-a";
 const IDENTITY = { spaceId: SPACE_A, userId: "user-1" };

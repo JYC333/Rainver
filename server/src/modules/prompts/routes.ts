@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { HttpError, dbPool, jsonBody, optionalString, params, query, resolveIdentity, sendRouteError } from "../routeUtils/common.js";
+import { assertCanResolveForScopes } from "../evolution/assetAccess.js";
 import { PromptRepository } from "./repository.js";
 import { resolvePrompt } from "./resolver.js";
 
@@ -74,12 +75,15 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     try {
       const body = jsonBody(request);
+      const projectId = optionalString(body.project_id);
+      const agentId = optionalString(body.agent_id);
+      await assertCanResolveForScopes(dbPool(context.config), identity, { projectId, agentId });
       return reply.send(await resolvePrompt(dbPool(context.config), {
         spaceId: identity.spaceId,
         userId: identity.userId,
         assetKey: requireParam(request, "assetKey"),
-        projectId: optionalString(body.project_id),
-        agentId: optionalString(body.agent_id),
+        projectId,
+        agentId,
         explicitVersionId: optionalString(body.explicit_version_id),
         allowUserPin: body.allow_user_pin === true,
         label: optionalString(body.label),

@@ -24,7 +24,7 @@ import {
   type DiscoveredAutonomyCandidate,
 } from "./registry.js";
 
-export interface ObserveAutonomyTickInput {
+interface ObserveAutonomyTickInput {
   spaceId: string;
   automationId: string;
   ownerUserId: string;
@@ -32,7 +32,7 @@ export interface ObserveAutonomyTickInput {
   now?: Date;
 }
 
-export interface AutonomyTickResult {
+interface AutonomyTickResult {
   tick_id: string;
   mode: "observe_only";
   status: "succeeded";
@@ -43,7 +43,7 @@ export interface AutonomyTickResult {
   candidate_ids: string[];
 }
 
-export interface LaunchAutonomyCandidatesInput {
+interface LaunchAutonomyCandidatesInput {
   automation: AutomationRow;
   triggerType: string;
   preflightSnapshot: Record<string, unknown>;
@@ -53,7 +53,7 @@ export interface LaunchAutonomyCandidatesInput {
   now?: Date;
 }
 
-export interface AutonomyLaunchTickResult {
+interface AutonomyLaunchTickResult {
   tick_id: string;
   coordinator_run_id: string;
   automation_run_id: string;
@@ -63,6 +63,20 @@ export interface AutonomyLaunchTickResult {
   refused: Array<{ candidate_id: string; reason: string }>;
   launched_run_ids: string[];
 }
+
+/**
+ * A failed candidate may be observed afresh once the coordinator of the tick
+ * that launched it has settled; while that coordinator still waits on a
+ * sibling, the failure stays on the row for it to count.
+ */
+const FAILED_CANDIDATE_RESETTABLE_SQL = `NOT EXISTS (
+  SELECT 1 FROM autonomy_ticks launch_tick
+  JOIN runs coordinator
+    ON coordinator.id = launch_tick.coordinator_run_id AND coordinator.space_id = launch_tick.space_id
+   WHERE launch_tick.space_id = autonomy_candidates.space_id
+     AND launch_tick.id = autonomy_candidates.launch_tick_id
+     AND coordinator.status = 'waiting_for_dependency'
+)`;
 
 export class AutonomyService {
   constructor(private readonly db: Queryable) {}
@@ -129,44 +143,51 @@ export class AutonomyService {
              -- tick would re-materialize the identical row, still find
              -- run_id/status pointing at the dead Run, and refuse it as
              -- 'candidate_not_launchable' forever.
+             -- ... but only once its launch tick's coordinator has settled.
+             -- Do not clear the row's run and launch tick before that coordinator
+             -- has settled. The failure is still this tick's to count. Clearing
+             -- it loses the failure, and a coordinator still waiting on a
+             -- sibling reports the tick as succeeded.
              status = CASE
-               WHEN autonomy_candidates.status IN ('discovered', 'ranked', 'observed', 'refused', 'failed')
+               WHEN autonomy_candidates.status IN ('discovered', 'ranked', 'observed', 'refused')
+                 OR (autonomy_candidates.status = 'failed' AND ${FAILED_CANDIDATE_RESETTABLE_SQL})
                  THEN 'observed'
                ELSE autonomy_candidates.status
              END,
              decision_reason = CASE
-               WHEN autonomy_candidates.status IN ('discovered', 'ranked', 'observed', 'refused', 'failed')
+               WHEN autonomy_candidates.status IN ('discovered', 'ranked', 'observed', 'refused')
+                 OR (autonomy_candidates.status = 'failed' AND ${FAILED_CANDIDATE_RESETTABLE_SQL})
                  THEN 'observe_only'
                ELSE autonomy_candidates.decision_reason
              END,
              -- Clear the dead attempt's bookkeeping so the next launch pass
              -- treats this as a fresh, unlaunched candidate.
              run_id = CASE
-               WHEN autonomy_candidates.status = 'failed' THEN NULL
+               WHEN autonomy_candidates.status = 'failed' AND ${FAILED_CANDIDATE_RESETTABLE_SQL} THEN NULL
                ELSE autonomy_candidates.run_id
              END,
              launch_tick_id = CASE
-               WHEN autonomy_candidates.status = 'failed' THEN NULL
+               WHEN autonomy_candidates.status = 'failed' AND ${FAILED_CANDIDATE_RESETTABLE_SQL} THEN NULL
                ELSE autonomy_candidates.launch_tick_id
              END,
              artifact_id = CASE
-               WHEN autonomy_candidates.status = 'failed' THEN NULL
+               WHEN autonomy_candidates.status = 'failed' AND ${FAILED_CANDIDATE_RESETTABLE_SQL} THEN NULL
                ELSE autonomy_candidates.artifact_id
              END,
              admission_decision_json = CASE
-               WHEN autonomy_candidates.status = 'failed' THEN '{}'::jsonb
+               WHEN autonomy_candidates.status = 'failed' AND ${FAILED_CANDIDATE_RESETTABLE_SQL} THEN '{}'::jsonb
                ELSE autonomy_candidates.admission_decision_json
              END,
              decided_at = CASE
-               WHEN autonomy_candidates.status = 'failed' THEN NULL
+               WHEN autonomy_candidates.status = 'failed' AND ${FAILED_CANDIDATE_RESETTABLE_SQL} THEN NULL
                ELSE autonomy_candidates.decided_at
              END,
              launched_at = CASE
-               WHEN autonomy_candidates.status = 'failed' THEN NULL
+               WHEN autonomy_candidates.status = 'failed' AND ${FAILED_CANDIDATE_RESETTABLE_SQL} THEN NULL
                ELSE autonomy_candidates.launched_at
              END,
              completed_at = CASE
-               WHEN autonomy_candidates.status = 'failed' THEN NULL
+               WHEN autonomy_candidates.status = 'failed' AND ${FAILED_CANDIDATE_RESETTABLE_SQL} THEN NULL
                ELSE autonomy_candidates.completed_at
              END
            RETURNING id`,
@@ -304,6 +325,7 @@ export class AutonomyService {
     const launchedRunIds: string[] = [];
     const refused: Array<{ candidate_id: string; reason: string }> = [];
     const automationBudget = automationBudgetSource(input.automation);
+    try {
     for (const candidateId of initialized.observed.candidate_ids) {
       let decision: AutonomousAdmissionDecision<string>;
       try {
@@ -483,6 +505,34 @@ export class AutonomyService {
       if (decision.allowed) launchedRunIds.push(decision.value);
       else refused.push({ candidate_id: candidateId, reason: decision.reason });
     }
+    } catch (error) {
+      // The initialization transaction has committed a running tick and a
+      // coordinator waiting on its children. An admission that throws for any
+      // reason other than a budget (the Agent archived meanwhile, a database
+      // error) must still end both, or the tick shows running and the
+      // coordinator waits forever with no child left to settle it.
+      await withQueryableTransaction(this.db, async (db) => {
+        await db.query(
+          `UPDATE autonomy_ticks
+              SET status = 'failed',
+                  candidates_admitted = $3,
+                  candidates_launched = $3,
+                  summary_json = summary_json || $4::jsonb,
+                  completed_at = $5,
+                  updated_at = $5
+            WHERE space_id = $1 AND id = $2`,
+          [
+            input.automation.space_id,
+            initialized.observed.tick_id,
+            launchedRunIds.length,
+            JSON.stringify({ refused, launched_run_ids: launchedRunIds, error: error instanceof Error ? error.message : String(error) }),
+            now.toISOString(),
+          ],
+        );
+        await settleAutonomyCoordinator(db, input.automation.space_id, initialized.observed.tick_id, now.toISOString());
+      }).catch(() => undefined);
+      throw error;
+    }
 
     await withQueryableTransaction(this.db, async (db) => {
       await db.query(
@@ -518,14 +568,16 @@ export class AutonomyService {
           }),
         ],
       );
-      if (launchedRunIds.length === 0) {
-        await settleAutonomyCoordinator(
-          db,
-          input.automation.space_id,
-          initialized.observed.tick_id,
-          now.toISOString(),
-        );
-      }
+      // Always, not only with nothing launched: a child that ended while a
+      // later candidate was still being admitted could not settle the
+      // coordinator then (the tick was running), so the pass settles now,
+      // which is a no-op while any child is still under way.
+      await settleAutonomyCoordinator(
+        db,
+        input.automation.space_id,
+        initialized.observed.tick_id,
+        now.toISOString(),
+      );
     });
     return {
       tick_id: initialized.observed.tick_id,

@@ -1,7 +1,6 @@
 import { randomUUID, createHash } from "node:crypto";
-import type { PoolClient } from "../../../db/pool.js";
 import { insertProposalRow } from "../../proposals/reviewPackets.js";
-import { HttpError, page, countFromRow, type Queryable, withQueryableTransaction } from "../../routeUtils/common.js";
+import { HttpError, bestEffortStep, page, countFromRow, type Queryable, withQueryableTransaction } from "../../routeUtils/common.js";
 import { PgSchedulerTaskStore, type SchedulerTaskRow } from "../../scheduler/taskStore.js";
 import { computeNextRunAt, InvalidScheduleError } from "../../automations/schedule.js";
 import type { SourceConnectionRow, SourceItemRow, EvidenceRow } from "../sourceRepositoryRows.js";
@@ -20,7 +19,7 @@ import {
 import { SOURCE_POST_PROCESSING_LIMITS } from "./config.js";
 import { upsertCanonicalEvidence } from "../evidenceIdentity.js";
 import { lockActiveProjectForMutation } from "../../projects/access.js";
-import { evidenceProvenanceReadableClause, sourceItemReadableClause } from "../sourceItemAccess.js";
+import { evidenceProvenanceReadableClause, sourceConnectionLiveSubscriberClause, sourceItemReadableClause } from "../sourceItemAccess.js";
 
 const POST_PROCESSING_EVIDENCE_ACCESS = contentResourceDefinition("extracted_evidence")!;
 const POST_PROCESSING_SOURCE_ACCESS = contentResourceDefinition("source_item")!;
@@ -38,9 +37,9 @@ export type SourcePostProcessingContentSource =
   | "prefer_extracted_text_for_candidates"
   | "require_extracted_text_for_candidates";
 export type SourcePostProcessingRetrievalDomain = "knowledge" | "project" | "memory" | "source";
-export type SourcePostProcessingRetrievalMode = "exact" | "lexical" | "hybrid" | "hybrid_rerank";
-export type SourcePostProcessingDeepAnalysisContentSource = "prefer_extracted_text" | "require_extracted_text";
-export type SourcePostProcessingDeepAnalysisOutput = "deep_report" | "per_item_deep_summary";
+type SourcePostProcessingRetrievalMode = "exact" | "lexical" | "hybrid" | "hybrid_rerank";
+type SourcePostProcessingDeepAnalysisContentSource = "prefer_extracted_text" | "require_extracted_text";
+type SourcePostProcessingDeepAnalysisOutput = "deep_report" | "per_item_deep_summary";
 export type SourcePostProcessingDecisionReviewStatus =
   | "pending"
   | "accepted"
@@ -171,7 +170,7 @@ export interface SourcePostProcessingRuleRow {
   next_run_at?: unknown;
 }
 
-export interface SourcePostProcessingRunRow {
+interface SourcePostProcessingRunRow {
   id: string;
   space_id: string;
   rule_id: string | null;
@@ -198,7 +197,7 @@ export interface SourcePostProcessingRunRow {
   created_at: unknown;
 }
 
-export interface SourcePostProcessingItemDecisionRow {
+interface SourcePostProcessingItemDecisionRow {
   id: string;
   space_id: string;
   source_channel_id: string;
@@ -443,6 +442,8 @@ interface DailyBriefingActivityRunRow {
   run_id: string;
   source_channel_id: string;
   connection_name: string;
+  connection_id: string;
+  connection_visibility: string;
   owner_user_id: string;
   triggered_by_user_id: string | null;
   project_id: string | null;
@@ -786,7 +787,7 @@ export class PgSourcePostProcessingRepository {
     const buckets = groupBriefingRuns(result.rows);
     const total = buckets.length;
     const pageBuckets = buckets.slice(input.offset, input.offset + input.limit);
-    const items = await this.hydrateBriefingSummaries(input.spaceId, pageBuckets);
+    const items = await this.hydrateBriefingSummaries(input.spaceId, input.userId, pageBuckets);
     return page(items, total, input.limit, input.offset);
   }
 
@@ -838,6 +839,8 @@ export class PgSourcePostProcessingRepository {
         )
       : { rows: [] };
 
+    const readableArtifactIds = new Set(artifacts.rows.map((row) => row.id));
+
     // artifacts.run_id is the underlying agent run id, not
     // source_post_processing_runs.id — map each artifact back to the
     // post-processing run id via output_artifact_ids_json membership instead
@@ -881,6 +884,7 @@ export class PgSourcePostProcessingRepository {
          LEFT JOIN source_post_processing_runs pr
            ON pr.space_id = d.space_id AND pr.id = d.run_id
         WHERE d.space_id = $1 AND d.run_id = ANY($2::text[])
+          AND ${sourceItemReadableClause("ii", "$3", false)}
         ORDER BY d.created_at DESC, d.id DESC`,
       [input.spaceId, runIds, input.userId],
     );
@@ -891,12 +895,18 @@ export class PgSourcePostProcessingRepository {
       connection_name: first.connection_name,
       project_id: first.project_id,
       date: input.date,
-      runs: runsResult.rows.map((row) => ({
-        run_id: row.run_id,
-        status: row.status,
-        created_at: timestampString(row.created_at) ?? "",
-        summary: row.summary,
-      })),
+      runs: runsResult.rows.map((row) => {
+        // A successful run's summary is the start of its digest, so it is
+        // shown only to a reader who can read one of the run's outputs.
+        const outputs = stringArray(row.output_artifact_ids_json);
+        const readable = outputs.some((id) => readableArtifactIds.has(id));
+        return {
+          run_id: row.run_id,
+          status: row.status,
+          created_at: timestampString(row.created_at) ?? "",
+          summary: readable ? row.summary : null,
+        };
+      }),
       digests,
       item_summaries: itemSummaries,
       item_decisions: decisionsResult.rows.map(decisionOut),
@@ -905,6 +915,7 @@ export class PgSourcePostProcessingRepository {
 
   private async hydrateBriefingSummaries(
     spaceId: string,
+    userId: string,
     buckets: BriefingBucket[],
   ): Promise<SourcePostProcessingBriefingDaySummaryOut[]> {
     if (buckets.length === 0) return [];
@@ -921,11 +932,13 @@ export class PgSourcePostProcessingRepository {
       ),
       artifactIds.length
         ? this.db.query<BriefingArtifactRow>(
-            `SELECT id, title, content, metadata_json
-               FROM artifacts
-              WHERE space_id = $1 AND id = ANY($2::text[])
-                AND metadata_json->>'action' = 'batch_digest'`,
-            [spaceId, artifactIds],
+            // The preview is the digest's body: the same read gate as getBriefing.
+            `SELECT a.id, a.title, a.content, a.metadata_json
+               FROM artifacts a
+              WHERE a.space_id = $1 AND a.id = ANY($2::text[])
+                AND a.metadata_json->>'action' = 'batch_digest'
+                AND ${artifactReadSql("$3")}`,
+            [spaceId, artifactIds, userId],
           )
         : Promise.resolve({ rows: [] as BriefingArtifactRow[] }),
     ]);
@@ -1223,7 +1236,7 @@ export class PgSourcePostProcessingRepository {
   }): Promise<void> {
     const runResult = await this.db.query<DailyBriefingActivityRunRow>(
       `SELECT pr.id AS run_id, pr.source_channel_id, sc.name AS connection_name,
-              sc.owner_user_id, pr.triggered_by_user_id,
+              sc.id AS connection_id, sc.owner_user_id, sc.visibility AS connection_visibility, pr.triggered_by_user_id,
               pr.project_id, pr.output_artifact_ids_json, pr.summary, pr.created_at,
               (pr.created_at AT TIME ZONE COALESCE(r.input_config_json->>'timezone', 'UTC'))::date::text AS local_date,
               sc.config_json
@@ -1301,10 +1314,11 @@ export class PgSourcePostProcessingRepository {
     }
     const digestById = new Map(digestArtifacts.rows.map((row) => [row.id, row]));
     const digest = artifactIds.map((id) => digestById.get(id)).find((row): row is BriefingArtifactRow => Boolean(row));
-    const digestPreview = digest?.content ? digestPreviewFromMarkdown(digest.content, 260) : null;
-    const summaryPreview = dayRuns.map((row) => row.summary).find((summary): summary is string => Boolean(summary?.trim()));
+    // A pointer, not a copy (B24A): the counts and where to read, never the
+    // digest text. The briefing is read in Library under the connection's
+    // own gate, which is re-checked on every open.
     const content = truncateText(
-      [decisionCountsSummary(counts), digestPreview ?? summaryPreview ?? ""].filter(Boolean).join(" "),
+      `${decisionCountsSummary(counts)} ${digest ? "A digest was written for this day." : ""} Open the briefing in Library to read it.`.replace(/\s+/g, " ").trim(),
       500,
     );
     const projectId = dayRuns.map((row) => row.project_id).find((id): id is string => Boolean(id)) ?? run.project_id;
@@ -1329,7 +1343,7 @@ export class PgSourcePostProcessingRepository {
        ) VALUES (
          $1, $2, $3, $4, NULL, 'source', $5, $6,
          $7::jsonb, $8::timestamptz, $9::timestamptz, 'raw', $9::timestamptz, 'source',
-         'internal_system', 'space_shared', $10, $11
+         'internal_system', $13, $10, $11
        )
        ON CONFLICT (space_id, aggregate_key) WHERE aggregate_key IS NOT NULL
        DO UPDATE SET title = EXCLUDED.title,
@@ -1340,6 +1354,7 @@ export class PgSourcePostProcessingRepository {
                      updated_at = EXCLUDED.updated_at,
                      user_id = COALESCE(EXCLUDED.user_id, activity_records.user_id),
                      owner_user_id = COALESCE(EXCLUDED.owner_user_id, activity_records.owner_user_id),
+                     visibility = EXCLUDED.visibility,
                      status = CASE
                        WHEN ((activity_records.payload_json -> 'post_processing_run_ids') ? $12)
                          THEN activity_records.status
@@ -1368,8 +1383,74 @@ export class PgSourcePostProcessingRepository {
         run.owner_user_id,
         aggregateKey,
         input.runId,
+        // The pointer reaches the people the briefing is for: a private
+        // connection's owner alone; otherwise the channel's current digest
+        // subscribers whom the connection still admits, granted below.
+        run.connection_visibility === "private" ? "private" : "selected_users",
       ],
     );
+    if (run.connection_visibility !== "private") {
+      await this.grantBriefingToSubscribers(input.spaceId, {
+        activityId: await this.dailyBriefingActivityId(input.spaceId, aggregateKey),
+        channelId: run.source_channel_id,
+        connectionId: run.connection_id,
+        grantedByUserId: run.owner_user_id,
+        at: now,
+      });
+    }
+  }
+
+  /**
+   * Grants a shared briefing pointer to exactly the channel's current digest
+   * subscribers whom the connection admits today, and revokes it from anyone
+   * who no longer is one — someone who left the channel keeps reading what
+   * was delivered to them, but is not told about new briefings.
+   */
+  private async grantBriefingToSubscribers(
+    spaceId: string,
+    input: { activityId: string; channelId: string; connectionId: string; grantedByUserId: string; at: string },
+  ): Promise<void> {
+    const eligible = `
+      SELECT DISTINCT subscriber.user_id
+        FROM source_channel_user_subscriptions subscriber
+        JOIN space_memberships subscriber_membership
+          ON subscriber_membership.space_id = subscriber.space_id
+         AND subscriber_membership.user_id = subscriber.user_id
+         AND subscriber_membership.status = 'active'
+        JOIN source_connections briefing_connection
+          ON briefing_connection.space_id = subscriber.space_id AND briefing_connection.id = $3
+       WHERE subscriber.space_id = $1
+         AND subscriber.source_channel_id = $2
+         AND subscriber.status = 'subscribed'
+         AND subscriber.digest_enabled = true
+         AND ${sourceConnectionLiveSubscriberClause("briefing_connection", "subscriber.user_id")}`;
+    await this.db.query(
+      `INSERT INTO content_access_grants (
+         id, space_id, resource_type, resource_id, grantee_user_id,
+         granted_by_user_id, access_level, created_at, updated_at, revoked_at, revoked_by_user_id
+       )
+       SELECT gen_random_uuid()::varchar, $1, 'activity_record', $4, eligible.user_id, $5, 'full', $6, $6, NULL, NULL
+         FROM (${eligible}) eligible
+       ON CONFLICT (space_id, resource_type, resource_id, grantee_user_id)
+       DO UPDATE SET revoked_at = NULL, revoked_by_user_id = NULL, updated_at = EXCLUDED.updated_at`,
+      [spaceId, input.channelId, input.connectionId, input.activityId, input.grantedByUserId, input.at],
+    );
+    await this.db.query(
+      `UPDATE content_access_grants
+          SET revoked_at = $6, revoked_by_user_id = $5, updated_at = $6
+        WHERE space_id = $1 AND resource_type = 'activity_record' AND resource_id = $4
+          AND revoked_at IS NULL
+          AND grantee_user_id NOT IN (${eligible})`,
+      [spaceId, input.channelId, input.connectionId, input.activityId, input.grantedByUserId, input.at],
+    );
+  }
+
+  private async dailyBriefingActivityId(spaceId: string, aggregateKey: string): Promise<string> {
+    const result = await this.db.query<{ id: string }>(
+      `SELECT id FROM activity_records WHERE space_id = $1 AND aggregate_key = $2 LIMIT 1`,
+      [spaceId, aggregateKey],
+    );
+    return result.rows[0]!.id;
   }
 
   async updateRunAgentRunId(spaceId: string, postProcessingRunId: string, agentRunId: string): Promise<void> {
@@ -1488,9 +1569,11 @@ export class PgSourcePostProcessingRepository {
     cursor: SourceWatermark | null;
   }): Promise<void> {
     const now = new Date().toISOString();
+    // A run over an empty batch has no last item to advance to; it keeps the
+    // watermark instead of sending the next run back to the oldest item.
     await this.db.query(
       `UPDATE source_post_processing_rules
-          SET cursor_json = $3::jsonb,
+          SET cursor_json = COALESCE($3::jsonb, cursor_json),
               last_fired_at = $4,
               updated_at = $4
         WHERE space_id = $1 AND id = $2`,
@@ -1508,19 +1591,6 @@ export class PgSourcePostProcessingRepository {
     if (!rule) return;
     const now = new Date().toISOString();
     await this.upsertRuleSchedule(rule, now, true);
-  }
-
-  async hasInFlightRun(spaceId: string, ruleId: string): Promise<boolean> {
-    const result = await this.db.query<{ id: string }>(
-      `SELECT id
-         FROM source_post_processing_runs
-        WHERE space_id = $1
-          AND rule_id = $2
-          AND status IN ('queued', 'running')
-        LIMIT 1`,
-      [spaceId, ruleId],
-    );
-    return Boolean(result.rows[0]);
   }
 
   async collectInputBatch(input: {
@@ -1667,11 +1737,11 @@ export class PgSourcePostProcessingRepository {
         inheritedAt: now,
       });
     }
-    await reindexExtractedEvidenceAndParentForRetrieval(this.db, {
+    await bestEffortStep(this.db, "source_evidence_reindex", () => reindexExtractedEvidenceAndParentForRetrieval(this.db, {
       spaceId: input.spaceId,
       evidenceId,
       trigger: "source_post_processing_evidence",
-    }).catch((error) => {
+    }), (error) => {
       process.stderr.write(
         `[source.retrieval] evidence reindex failed (${evidenceId}): ${String((error as Error)?.message ?? error)}\n`,
       );
@@ -1915,7 +1985,30 @@ export class PgSourcePostProcessingRepository {
     for (const task of tasks) {
       if (!task.space_id) continue;
       const row = await this.getRule(task.space_id, task.task_key);
-      if (row && row.status === "active" && row.trigger_type === "schedule") rules.push(row);
+      if (row && row.status === "active" && row.trigger_type === "schedule") {
+        rules.push(row);
+        continue;
+      }
+      // A rule paused, archived, or moved off its schedule without going
+      // through this repository (archiving a Project does so) leaves a due
+      // task behind. Settle it, or it holds a place in every batch.
+      if (row) {
+        await this.upsertRuleSchedule(row, nowIso);
+      } else {
+        await this.scheduler.upsert({
+          taskType: SOURCE_POST_PROCESSING_TASK_TYPE,
+          taskKey: task.task_key,
+          scopeType: task.scope_type,
+          scopeId: task.scope_id,
+          spaceId: task.space_id,
+          userId: task.user_id,
+          status: "archived",
+          nextRunAt: null,
+          stateJson: task.state_json,
+          metadataJson: task.metadata_json,
+          updatedAt: nowIso,
+        });
+      }
     }
     return rules;
   }
@@ -2110,7 +2203,7 @@ export class PgSourcePostProcessingRepository {
   }
 }
 
-export function ruleOut(row: SourcePostProcessingRuleRow): SourcePostProcessingRuleOut {
+function ruleOut(row: SourcePostProcessingRuleRow): SourcePostProcessingRuleOut {
   return {
     id: row.id,
     space_id: row.space_id,
@@ -2161,7 +2254,7 @@ export function runOut(row: SourcePostProcessingRunRow): SourcePostProcessingRun
   };
 }
 
-export function decisionOut(row: WithAccessLevel<SourcePostProcessingItemDecisionRow>): SourcePostProcessingItemDecisionOut {
+function decisionOut(row: WithAccessLevel<SourcePostProcessingItemDecisionRow>): SourcePostProcessingItemDecisionOut {
   const summaryOnly = bodyWithheld(row.effective_access_level);
   return {
     id: row.id,
@@ -2258,7 +2351,7 @@ export function normalizeInputConfig(value: unknown): SourcePostProcessingInputC
     ),
     include_excerpts: booleanValue(record.include_excerpts, true),
     include_evidence: booleanValue(record.include_evidence, false),
-    timezone: stringValue(record.timezone) ?? "UTC",
+    timezone: timeZoneValue(record.timezone, "input_config_json.timezone"),
     retrieval_context: normalizeRetrievalContext(record.retrieval_context),
     candidate_prefilter: normalizeCandidatePrefilter(record.candidate_prefilter),
     deep_analysis: normalizeDeepAnalysis(record.deep_analysis),
@@ -2585,6 +2678,22 @@ function stringValue(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
+/**
+ * An IANA time zone the rule's local day and its briefing stream are read in.
+ * Validated on write: the value goes straight into `AT TIME ZONE`, where an
+ * unknown zone fails every Brief list and detail that scans the rule's runs.
+ */
+function timeZoneValue(value: unknown, field: string): string {
+  const raw = stringValue(value);
+  if (!raw) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: raw });
+  } catch {
+    throw new HttpError(422, `${field} must be a valid IANA time zone`);
+  }
+  return raw;
+}
+
 function booleanValue(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
@@ -2704,8 +2813,12 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function localDayRange(timezone: string): { start: string; end: string } {
-  const now = new Date();
+/**
+ * The local calendar day `now` falls in, as a UTC range. Its end is the next
+ * local midnight, not a fixed 24 hours on: a day that changes clocks is 23 or
+ * 25 hours long, and a fixed offset would drop the last hour of a 25-hour day.
+ */
+export function localDayRange(timezone: string, now = new Date()): { start: string; end: string } {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,
     year: "numeric",
@@ -2716,7 +2829,11 @@ function localDayRange(timezone: string): { start: string; end: string } {
   const month = Number(parts.find((part) => part.type === "month")?.value ?? now.getUTCMonth() + 1);
   const day = Number(parts.find((part) => part.type === "day")?.value ?? now.getUTCDate());
   const start = zonedLocalToUtc({ year, month, day, hour: 0, minute: 0 }, timezone);
-  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  const nextDay = new Date(Date.UTC(year, month - 1, day + 1));
+  const end = zonedLocalToUtc(
+    { year: nextDay.getUTCFullYear(), month: nextDay.getUTCMonth() + 1, day: nextDay.getUTCDate(), hour: 0, minute: 0 },
+    timezone,
+  );
   return { start: start.toISOString(), end: end.toISOString() };
 }
 
@@ -2753,5 +2870,3 @@ function zonedParts(date: Date, timezone: string): { year: number; month: number
   const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((item) => item.type === type)?.value ?? 0);
   return { year: part("year"), month: part("month"), day: part("day"), hour: part("hour"), minute: part("minute") };
 }
-
-export type SourcePostProcessingPoolClient = PoolClient;

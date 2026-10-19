@@ -1,4 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { loadConfig } from "../src/config.js";
+import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
 import { seedRun, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
@@ -10,9 +12,10 @@ import {
 } from "../src/modules/memory/memoryApplyRepository.js";
 
 // Real-PostgreSQL integration tests for the memory appliers. These run the
-// actual INSERT/UPDATE memory_entries + provenance / relation writes against a
-// versioning, supersede, and access invariants are exercised on the real
-// stack. Skips gracefully when Docker is unavailable.
+// actual INSERT/UPDATE memory_entries + provenance / relation writes, so the
+// column set, versioning, supersede, and access invariants are exercised on
+// the real schema. The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 let repo: PgMemoryApplyRepository | undefined;
 
@@ -267,6 +270,35 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
     expect(out.memory.access_level).toBe("full");
   });
 
+  it("does not apply a proposal that is no longer pending", async () => {
+    if (!db.available || !db.pool) return;
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES ('member-1', $1, $2, 'owner', 'active', now(), now())`,
+      [SPACE, USER],
+    );
+    const apply = PgProposalApplyService.fromConfig(loadConfig({
+      SERVER_DATABASE_URL: db.connectionUri,
+    }));
+    const pending = proposal({
+      id: "prop-pending-gate",
+      payload_json: { proposed_content: "from an open proposal", provenance_entries: [userConf] },
+    });
+    await seedProposal(pending);
+    const accepted = await apply.accept(pending.id, { spaceId: SPACE, userId: USER });
+    expect(accepted).not.toBeNull();
+
+    const closed = proposal({
+      id: "prop-rejected-gate",
+      payload_json: { proposed_content: "from a closed proposal", provenance_entries: [userConf] },
+    });
+    await seedProposal(closed);
+    await db.pool.query("UPDATE proposals SET status = 'rejected' WHERE id = $1", [closed.id]);
+    expect(await apply.accept(closed.id, { spaceId: SPACE, userId: USER })).toBeNull();
+    expect((await db.pool.query("SELECT count(*)::int AS c FROM memory_entries")).rows[0]?.c).toBe(1);
+    expect((await db.pool.query("SELECT status FROM proposals WHERE id = $1", [closed.id])).rows[0]?.status).toBe("rejected");
+  });
+
   it("keeps the no-visibility default private in a personal space", async () => {
     if (!db.available || !repo) return; // space is 'personal' by default
     const out = await applyCreate(
@@ -422,6 +454,27 @@ describe("PgMemoryApplyRepository against real Postgres", () => {
         USER,
       ),
     ).rejects.toBeInstanceOf(MemoryApplyError);
+  });
+
+  it("refuses a stale update or archive of a version that was already superseded", async () => {
+    if (!db.available || !repo || !db.pool) return;
+    await insertActiveMemory({ id: "mem-stale", content: "v1" });
+    await applyUpdate(
+      proposal({ proposal_type: "memory_update", payload_json: { target_memory_id: "mem-stale", proposed_content: "v2", provenance_entries: [userConf] } }),
+      USER,
+    );
+
+    await expect(applyUpdate(
+      proposal({ id: "prop-2", proposal_type: "memory_update", payload_json: { target_memory_id: "mem-stale", proposed_content: "stale edit", provenance_entries: [userConf] } }),
+      USER,
+    )).rejects.toBeInstanceOf(MemoryApplyError);
+    const archive = proposal({ id: "prop-3", proposal_type: "memory_archive", payload_json: { target_memory_id: "mem-stale", provenance_entries: [userConf] } });
+    await seedProposal(archive);
+    await expect(repo.applyArchive(archive, USER)).rejects.toBeInstanceOf(MemoryApplyError);
+    const chain = await db.pool.query<{ status: string }>(
+      `SELECT status FROM memory_entries WHERE id = 'mem-stale' OR root_memory_id = 'mem-stale' ORDER BY created_at`,
+    );
+    expect(chain.rows.map((row) => row.status)).toEqual(["superseded", "active"]);
   });
 
   // ── applyOnly repository contract ────────────────────────────────────────

@@ -19,8 +19,7 @@ import { ensureDefaultRuntimeProfile, seedMainlineRoomsForAllProjects } from "./
  * Real-Postgres coverage for the Board read model and the manual close gate.
  *
  * The read model exists so the Board and the write path answer "can this
- * close" identically; a test that stubbed either side would let them drift,
- * which is the failure it is meant to prevent.
+ * close" identically. Do not stub either side. They would drift.
  */
 
 const SPACE = "41111111-1111-4111-8111-111111111111";
@@ -294,8 +293,8 @@ describe("project board read model", () => {
     const privateRunId = await makeRunWithEvaluation(task, "accept", { visibility: "private" });
     const actorId = await resolveUserActorId(db.pool!, SPACE, OWNER);
     // Written through the real writer, naming its Run the way a Run-produced
-    // event does. Hand-inserting `data_json.run_id` would have tested a shape
-    // no production writer produces.
+    // event does. Do not hand-insert `data_json.run_id`. That shape is not
+    // what a production writer produces.
     await appendProjectWorkEvent(db.pool!, {
       spaceId: SPACE,
       projectId: PROJECT,
@@ -321,9 +320,9 @@ describe("project board read model", () => {
 
   it("draws one Board's columns even when the Project has two", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // `boards` has no uniqueness on (space_id, project_id). Reading every
-    // matching Board's columns produced duplicate lanes with every card drawn
-    // twice, which reads as data corruption rather than as a second Board.
+    // `boards` has no uniqueness on (space_id, project_id). Do not read
+    // every matching Board's columns. That draws duplicate lanes and every
+    // card twice, which reads as data corruption rather than as a second Board.
     for (const [order, name] of [[0, "First"], [1, "Second"]] as const) {
       const boardId = randomUUID();
       await db.pool!.query(
@@ -386,9 +385,10 @@ describe("manual close gate", () => {
     const repository = new PgTaskRepository(db.pool!);
 
     // An evaluation comes from an execution Run's review, so most Tasks never
-    // have one. Prompting on it fired for essentially every close, which
-    // trains the person to click through and buries the reason that is a
-    // claim about deliverables under one that is only a process step.
+    // have one. Do not prompt on a missing evaluation at close. That prompt
+    // would fire for essentially every close, train the person to click
+    // through, and bury the reason that is a claim about deliverables under
+    // one that is only a process step.
     await repository.updateTask(owner, task, { status: "done" });
 
     const after = await db.pool!.query<{ status: string }>(`SELECT status FROM tasks WHERE id = $1`, [task]);
@@ -601,8 +601,8 @@ describe("blocked cards", () => {
     await makeTask({ id: task, status: "blocked" });
     const board = await getProjectBoard(db.pool!, owner, PROJECT);
     const card = board.cards.find((item) => item.id === task);
-    // `blocked` is an overlay rather than a column, so a card that kept its own
-    // status but had no lane would be counted and then drawn nowhere.
+    // `blocked` is an overlay, not a column. Give the card a lane. A card
+    // with a status and no lane is counted and drawn nowhere.
     expect(card?.status).toBe("blocked");
     expect(card?.column_key).toBe("in_progress");
     expect(board.columns.find((column) => column.status_key === "in_progress")?.count).toBe(1);
@@ -612,9 +612,9 @@ describe("blocked cards", () => {
 describe("cross-Project task lists", () => {
   it("returns rows at all, with the Project join in place", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // `listTasks` had no test anywhere, which is how an ambiguous-column error
-    // from joining `projects` reached a green suite: `tasks` and `projects`
-    // share `id`, `status`, `description`, `owner_user_id` and the timestamps.
+    // Qualify every column in the Project join. `tasks` and `projects` share
+    // `id`, `status`, `description`, `owner_user_id`, and the timestamps. An
+    // unqualified name is an ambiguous-column error.
     await makeTask({ id: randomUUID(), title: "Listed" });
     const repository = new PgTaskRepository(db.pool!);
     const page = await repository.listTasks(owner, {
@@ -630,7 +630,7 @@ describe("cross-Project task lists", () => {
     const handedToAnAgent = randomUUID();
     await makeTask({ id: mine, title: "Mine", assignedUserId: OWNER });
     // Created by me, then claimed by an Agent: the chain stops at the claim, so
-    // it is the Agent's. The predicate this replaced counted it as still mine.
+    // it is the Agent's. Do not count a claimed Task as still mine.
     await makeTask({ id: handedToAnAgent, title: "The Agent has it", createdByUserId: OWNER });
     await db.pool!.query(`UPDATE tasks SET claimed_by_agent_id = $2 WHERE id = $1`, [handedToAnAgent, AGENT]);
 
@@ -651,6 +651,48 @@ describe("cross-Project task lists", () => {
   });
 });
 
+describe("who may change a Board", () => {
+  it("refuses a Project viewer who tries to delete or move the Project's Board", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const boardId = randomUUID();
+    await db.pool!.query(
+      `INSERT INTO boards (id, space_id, project_id, name, board_type, status, sort_order, created_at, updated_at)
+       VALUES ($1, $2, $3, 'Project board', 'kanban', 'active', 0, now(), now())`,
+      [boardId, SPACE, PROJECT],
+    );
+    await db.pool!.query(
+      `UPDATE project_members SET role = 'viewer' WHERE project_id = $1 AND user_id = $2`,
+      [PROJECT, OTHER],
+    );
+    const viewer = { spaceId: SPACE, userId: OTHER };
+    const repo = new PgTaskRepository(db.pool!);
+
+    await expect(repo.updateBoard(viewer, boardId, { deleted_at: "2026-01-01T00:00:00Z" }))
+      .rejects.toMatchObject({ statusCode: 403 });
+    await expect(repo.updateBoard(viewer, boardId, { project_id: null }))
+      .rejects.toMatchObject({ statusCode: 403 });
+    const untouched = await db.pool!.query<{ project_id: string | null; deleted_at: string | null }>(
+      `SELECT project_id, deleted_at FROM boards WHERE id = $1`, [boardId]);
+    expect(untouched.rows[0]).toEqual({ project_id: PROJECT, deleted_at: null });
+    await expect(repo.updateBoard({ spaceId: SPACE, userId: OWNER }, boardId, { name: "Renamed" }))
+      .resolves.toMatchObject({ name: "Renamed" });
+  });
+
+  it("refuses to change a Board while its Project is archived", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const boardId = randomUUID();
+    await db.pool!.query(
+      `INSERT INTO boards (id, space_id, project_id, name, board_type, status, sort_order, created_at, updated_at)
+       VALUES ($1, $2, $3, 'Project board', 'kanban', 'active', 0, now(), now())`,
+      [boardId, SPACE, PROJECT],
+    );
+    await db.pool!.query(`UPDATE projects SET status = 'archived', archived_at = now() WHERE id = $1`, [PROJECT]);
+    const repo = new PgTaskRepository(db.pool!);
+    await expect(repo.updateBoard(owner, boardId, { name: "Renamed" }))
+      .rejects.toMatchObject({ statusCode: 409 });
+  });
+});
+
 describe("who may change a Task", () => {
   it("lets a viewer read the Board and refuses every write", async (ctx) => {
     if (!db.available) return ctx.skip();
@@ -667,9 +709,8 @@ describe("who may change a Task", () => {
     const board = await getProjectBoard(db.pool!, viewer, PROJECT);
     expect(board.cards.map((card) => card.id)).toContain(task);
 
-    // Reading is not licence to change. Before this a viewer could drag any
-    // shared Task to Done, acknowledge the override, or move its Loop stage:
-    // the first thing a second household member would hit.
+    // A viewer must not drag a shared Task to Done, acknowledge the override,
+    // or move its Loop stage.
     await expect(repo.updateTask(viewer, task, { status: "ready" }))
       .rejects.toMatchObject({ statusCode: 403 });
     await expect(repo.updateTask(viewer, task, { title: "Renamed by a viewer" }))
@@ -679,6 +720,62 @@ describe("who may change a Task", () => {
     const untouched = await db.pool!.query<{ status: string; title: string }>(
       `SELECT status, title FROM tasks WHERE id = $1`, [task]);
     expect(untouched.rows[0]).toEqual({ status: "in_progress", title: "Work item" });
+  });
+
+  it("refuses to close or move a Task while its Project is archived", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask({ id: task, status: "in_progress" });
+    await makeRunWithEvaluation(task, "accept");
+    const archived = randomUUID();
+    await db.pool!.query(
+      `INSERT INTO projects (id, space_id, owner_user_id, name, status, archived_at, created_at, updated_at)
+       VALUES ($1, $2, $3, 'Archived Project', 'archived', now(), now(), now())`,
+      [archived, SPACE, OWNER],
+    );
+    const repo = new PgTaskRepository(db.pool!);
+
+    // Moving work into an archived Project restarts work there.
+    await expect(repo.updateTask(owner, task, { project_id: archived }))
+      .rejects.toMatchObject({ statusCode: 409 });
+
+    // Archive freezes the Project: closing a Task would queue a merge.
+    await db.pool!.query(`UPDATE projects SET status = 'archived', archived_at = now() WHERE id = $1`, [PROJECT]);
+    await expect(repo.updateTask(owner, task, { status: "done" }))
+      .rejects.toMatchObject({ statusCode: 409 });
+    const untouched = await db.pool!.query<{ status: string; project_id: string }>(
+      `SELECT status, project_id FROM tasks WHERE id = $1`, [task]);
+    expect(untouched.rows[0]).toEqual({ status: "in_progress", project_id: PROJECT });
+  });
+
+  it("lets only a Project writer record the evaluation that decides the close gate", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const task = randomUUID();
+    await makeTask({ id: task, status: "in_progress" });
+    const run = await makeRunWithEvaluation(task, "accept");
+    await db.pool!.query(
+      `UPDATE project_members SET role = 'viewer' WHERE project_id = $1 AND user_id = $2`,
+      [PROJECT, OTHER],
+    );
+    const viewer = { spaceId: SPACE, userId: OTHER };
+    const repo = new PgTaskRepository(db.pool!);
+
+    await expect(repo.createTaskEvaluation(viewer, task, {
+      evaluator_type: "human", run_id: run, recommendation: "reject",
+    })).rejects.toMatchObject({ statusCode: 403 });
+
+    await db.pool!.query(`UPDATE projects SET status = 'archived', archived_at = now() WHERE id = $1`, [PROJECT]);
+    await expect(repo.createTaskEvaluation(owner, task, {
+      evaluator_type: "human", run_id: run, recommendation: "reject",
+    })).rejects.toMatchObject({ statusCode: 409 });
+
+    await db.pool!.query(`UPDATE projects SET status = 'active', archived_at = NULL WHERE id = $1`, [PROJECT]);
+    await expect(repo.createTaskEvaluation(owner, task, {
+      evaluator_type: "human", run_id: run, recommendation: "reject",
+    })).resolves.toMatchObject({ recommendation: "reject" });
+    const evaluations = await db.pool!.query<{ recommendation: string }>(
+      `SELECT recommendation FROM task_evaluations WHERE task_id = $1 ORDER BY created_at`, [task]);
+    expect(evaluations.rows.map((row) => row.recommendation)).toEqual(["accept", "reject"]);
   });
 
   it("records one acceptance when two people close the same Task at once", async (ctx) => {
@@ -714,10 +811,10 @@ describe("who may change a Task", () => {
 describe("closing twice on purpose", () => {
   it("records each deliberate close, even within one second", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The idempotency key is built from the row the writer read. It has to
-    // keep millisecond precision: a key from `String(Date)` is per-second,
-    // and a close, reopen and close inside one second lost the second
-    // acceptance silently.
+    // The idempotency key is built from the row the writer read. Keep
+    // millisecond precision. Do not build the key from `String(Date)`. That
+    // is per-second, and a close, reopen and close inside one second would
+    // lose the second acceptance silently.
     const task = randomUUID();
     await makeTask({ id: task, status: "in_progress" });
     await makeRunWithEvaluation(task, "accept");
@@ -851,8 +948,8 @@ describe("project updates", () => {
     if (!db.available) return ctx.skip();
     const actorId = await resolveUserActorId(db.pool!, SPACE, OWNER);
     // More than one page, with ids deliberately unrelated to the ordering —
-    // which is what `randomUUID()` gives us, and what broke a cursor keyed on
-    // the id alone: half of each page came back and the rest became
+    // which is what `randomUUID()` gives us. Do not key the cursor on the id
+    // alone. Half of each page would come back and the rest would be
     // unreachable.
     const total = 34;
     for (let index = 0; index < total; index += 1) {
@@ -913,9 +1010,9 @@ describe("project updates", () => {
 
   it("appends a person's update through the writer gate, not the read gate", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The route is the only producer of `project.reported`. Every other test
-    // here stages events by calling the writer directly, so the lock, the
-    // writer check and the actor resolution have never actually run.
+    // The route is the only producer of `project.reported`. Other tests
+    // stage events by calling the writer directly, so they do not run the
+    // lock, the writer check, or the actor resolution.
     const post = async (userId: string): Promise<void> => {
       await withDbTransaction(db.pool!, async (client) => {
         await lockActiveProjectForMutation(client, SPACE, PROJECT);
@@ -972,8 +1069,8 @@ describe("project updates", () => {
 
 describe("inquiry advancement in the Project's account", () => {
   // ADR 0017 §4: an Agent creates, archives and concludes without asking, so
-  // this is where the person sees it and puts it back. Before this, an Agent
-  // advancing a Thread left nothing on any Project surface at all.
+  // this is where the person sees it and puts it back. An Agent advancing a
+  // Thread leaves a row on this surface.
   const threads = () => new InquiryThreadService(db.pool!);
   const iterations = () => new InquiryIterationService(db.pool!);
   const run = { runId: "44444444-4444-4444-8444-444444444444", agentId: AGENT };
@@ -1027,9 +1124,8 @@ describe("inquiry advancement in the Project's account", () => {
 
   it("says nothing about a Thread the reader cannot see", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The same rule Tasks already had: an update naming a Thread would leak
-    // its statement, which is the part worth reading. This is the most
-    // security-relevant of the new joins.
+    // The same rule as Tasks: an update naming a Thread would leak
+    // its statement, which is the part worth reading.
     await threads().createThread(owner, PROJECT, { kind: "question", statement: "Shared question" });
     const hidden = await threads().createThread(owner, PROJECT, {
       kind: "question", statement: "Private question",
@@ -1081,9 +1177,8 @@ describe("inquiry advancement in the Project's account", () => {
 
     const listed = await getProjectUpdates(db.pool!, owner, PROJECT, null);
     const fold = listed.items.find((item) => item.event_kind === "thread.created");
-    // One decomposition is one thing that happened. Three rows of it is the
-    // per-item ceremony ADR 0017 removed from the approval queue, arriving
-    // again in the feed.
+    // One decomposition is one thing that happened. Do not emit one row per
+    // item. That is the per-item ceremony the feed must not repeat.
     expect(fold).toMatchObject({ summary: "Opened 3 questions", subject: null, undo: null });
     expect(fold!.members).toHaveLength(3);
     expect(fold!.members!.every((member) => member.undo?.action === "archive_thread")).toBe(true);

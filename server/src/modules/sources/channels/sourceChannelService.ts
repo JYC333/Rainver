@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { InterestProfileService } from "../../interestProfile/index.js";
 import type { ServerConfig } from "../../../config.js";
 import { HttpError, objectValue, optionalString, requiredString, type Queryable, type SpaceUserIdentity, withQueryableTransaction } from "../../routeUtils/common.js";
 import { normalizeSourceConnectionCreateGovernance } from "../sourceConsent.js";
@@ -10,6 +11,7 @@ import { PgProposalApplyService } from "../../proposals/applyService.js";
 import { CustomSourceCredentialService } from "../customSources/customSourceCredentialService.js";
 import type { ResearchCompiledQuery, ResearchProviderKey } from "@rainver/protocol";
 import { ResearchProviderCompiler } from "../../research/queryPlanning/providerCompiler.js";
+import { closeSubscriptionWindow, openSubscriptionWindow } from "./subscriptionWindows.js";
 
 interface SourceChannelProposalActor {
   agentId?: string | null;
@@ -18,7 +20,7 @@ interface SourceChannelProposalActor {
   projectId?: string | null;
 }
 
-export interface SourceChannelRow {
+interface SourceChannelRow {
   id: string;
   space_id: string;
   source_connection_id: string;
@@ -54,7 +56,7 @@ export interface SourceChannelRow {
   connection_visibility?: string;
 }
 
-export interface SelectedResearchAttemptChannelInput {
+interface SelectedResearchAttemptChannelInput {
   attemptId: string;
   providerKey: ResearchProviderKey;
   compiledQuery: ResearchCompiledQuery;
@@ -80,6 +82,30 @@ export class SourceChannelService {
       params,
     );
     return result.rows.map((row) => this.channelOut(row));
+  }
+
+  /**
+   * Channels other members created that this person follows or has left —
+   * the ones they can leave or rejoin. Their own channels are paused or
+   * archived instead, from the channel itself.
+   */
+  async listFollowed(identity: SpaceUserIdentity) {
+    const result = await this.db.query<SourceChannelRow>(
+      `SELECT channel_row.*, sub.status AS subscription_status
+         FROM (${this.selectSql()}) channel_row
+         JOIN source_channel_user_subscriptions sub
+           ON sub.space_id=channel_row.space_id AND sub.source_channel_id=channel_row.id
+        WHERE sub.space_id=$1 AND sub.user_id=$2 AND sub.status IN ('subscribed','muted')
+          AND channel_row.created_by_user_id <> $2
+          AND channel_row.status <> 'archived'
+          AND channel_row.connection_visibility='space_shared'
+        ORDER BY sub.updated_at DESC, channel_row.id DESC`,
+      [identity.spaceId, identity.userId],
+    );
+    return result.rows.map((row) => ({
+      ...this.channelOut(row),
+      subscription_status: row.subscription_status as "subscribed" | "muted",
+    }));
   }
 
   async listRecommendations(identity: SpaceUserIdentity) {
@@ -109,20 +135,67 @@ export class SourceChannelService {
     decision: "subscribed" | "dismissed" | "muted",
   ) {
     const now = new Date().toISOString();
-    const result = await this.db.query<{ status: string }>(
-      `UPDATE source_channel_user_subscriptions sub
-          SET status=$4, updated_at=$5
-         FROM source_channels ch, source_connections sc
-        WHERE sub.space_id=$1 AND sub.user_id=$2 AND sub.source_channel_id=$3
-          AND sub.status='pending' AND ch.id=sub.source_channel_id AND ch.space_id=sub.space_id
-          AND ch.status='active'
-          AND sc.id=ch.source_connection_id AND sc.space_id=ch.space_id
-          AND sc.visibility='space_shared' AND sc.deleted_at IS NULL
-      RETURNING sub.status`,
-      [identity.spaceId, identity.userId, channelId, decision, now],
-    );
-    if (!result.rows[0]) throw new HttpError(404, "Pending source recommendation not found");
-    return { source_channel_id: channelId, status: result.rows[0].status, updated_at: now };
+    return withQueryableTransaction(this.db, async (db) => {
+      const result = await db.query<{ status: string }>(
+        `UPDATE source_channel_user_subscriptions sub
+            SET status=$4::varchar(32), updated_at=$5::timestamptz
+           FROM source_channels ch, source_connections sc
+          WHERE sub.space_id=$1 AND sub.user_id=$2 AND sub.source_channel_id=$3
+            AND sub.status='pending' AND ch.id=sub.source_channel_id AND ch.space_id=sub.space_id
+            AND ch.status='active'
+            AND sc.id=ch.source_connection_id AND sc.space_id=ch.space_id
+            AND sc.visibility='space_shared' AND sc.deleted_at IS NULL
+        RETURNING sub.status`,
+        [identity.spaceId, identity.userId, channelId, decision, now],
+      );
+      if (!result.rows[0]) throw new HttpError(404, "Pending source recommendation not found");
+      if (decision === "subscribed") {
+        await openSubscriptionWindow(db, { spaceId: identity.spaceId, channelId, userId: identity.userId, at: now });
+      }
+      return { source_channel_id: channelId, status: result.rows[0].status, updated_at: now };
+    });
+  }
+
+  /**
+   * Leaves or rejoins a channel the person already has a subscription row
+   * for. Unsubscribing (`muted`) stops new items and digest delivery and
+   * ends this person's automatic interest facts from the channel — the
+   * profile's derived facts are rebuilt on the next pass from what they still
+   * subscribe to — while everything delivered inside the subscription window
+   * stays readable (historical eligibility). Resubscribing opens a new
+   * window; it grants nothing the connection would not grant today.
+   */
+  async setSubscription(
+    identity: SpaceUserIdentity,
+    channelId: string,
+    status: "subscribed" | "muted",
+  ): Promise<{ source_channel_id: string; status: string; updated_at: string }> {
+    const now = new Date().toISOString();
+    const row = await withQueryableTransaction(this.db, async (db) => {
+      const result = await db.query<{ status: string; previous: string }>(
+        `UPDATE source_channel_user_subscriptions sub
+            SET status = $4::varchar(32), updated_at = $5::timestamptz
+           FROM (SELECT status AS previous FROM source_channel_user_subscriptions
+                  WHERE space_id = $1 AND user_id = $2 AND source_channel_id = $3) prior,
+                source_channels ch
+          WHERE sub.space_id = $1 AND sub.user_id = $2 AND sub.source_channel_id = $3
+            AND sub.status IN ('subscribed', 'muted')
+            AND ch.id = sub.source_channel_id AND ch.space_id = sub.space_id
+            AND ch.status <> 'archived'
+        RETURNING sub.status, prior.previous`,
+        [identity.spaceId, identity.userId, channelId, status, now],
+      );
+      const updated = result.rows[0];
+      if (!updated) throw new HttpError(404, "Source channel subscription not found");
+      const ref = { spaceId: identity.spaceId, channelId, userId: identity.userId, at: now };
+      if (status === "subscribed") await openSubscriptionWindow(db, ref);
+      else await closeSubscriptionWindow(db, ref);
+      return updated;
+    });
+    if (row.previous === "subscribed" && status === "muted") {
+      await new InterestProfileService(this.db).forgetAutomaticFacts(identity.spaceId, identity.userId);
+    }
+    return { source_channel_id: channelId, status: row.status, updated_at: now };
   }
 
   /**
@@ -184,14 +257,21 @@ export class SourceChannelService {
     const status = body.status === "paused" ? "paused" : "active";
     const schedule = resolveChannelSchedule(body, frequency, status);
     const projectId = optionalString(body.project_id);
+    // A monitor added from a Source's own page names that Source. Do not
+    // guess the connection from the provider. The monitor could land on
+    // another Source of the same provider.
+    const targetConnectionId = optionalString(body.source_connection_id);
+    const targetConnection = targetConnectionId
+      ? await this.requireOwnConnection(identity, targetConnectionId, provider.mapping_id)
+      : null;
     const existing = body._force_create === true
       ? { rows: [] as SourceChannelRow[] }
       : await this.db.query<SourceChannelRow>(
       `${this.selectSql()} WHERE ch.space_id = $1 AND ch.created_by_user_id = $2
          AND CASE WHEN ch.channel_type='search' THEN ss.query_fingerprint ELSE ch.query_fingerprint END = $3
-         AND sc.project_id IS NOT DISTINCT FROM $4
+         AND ${targetConnection ? "ch.source_connection_id = $4" : "sc.project_id IS NOT DISTINCT FROM $4"}
          AND ch.status <> 'archived' LIMIT 1`,
-      [identity.spaceId, identity.userId, fingerprint, projectId],
+      [identity.spaceId, identity.userId, fingerprint, targetConnection ? targetConnection.id : projectId],
     );
     if (existing.rows[0]) return this.channelOut(existing.rows[0]);
 
@@ -203,7 +283,7 @@ export class SourceChannelService {
       consent: body.consent ?? {},
       capture_policy: body.capture_policy ?? "reference_only",
     });
-    const connection = await this.ensureConnection(identity, provider, sourceName, governance, body);
+    const connection = targetConnection ?? await this.ensureConnection(identity, provider, sourceName, governance, body);
     const channelResult = await this.db.query<SourceChannelRow>(
       `INSERT INTO source_channels (
          id, space_id, source_connection_id, created_by_user_id, name, channel_type,
@@ -236,6 +316,7 @@ export class SourceChannelService {
        ON CONFLICT (space_id, source_channel_id, user_id) DO UPDATE SET status='subscribed', updated_at=EXCLUDED.updated_at`,
       [randomUUID(), identity.spaceId, channel.id, identity.userId, now],
     );
+    await openSubscriptionWindow(this.db, { spaceId: identity.spaceId, channelId: channel.id, userId: identity.userId, at: now });
     await upsertSourceChannelScanTask(this.db, {
       channel: { id: channel.id, space_id: identity.spaceId, owner_user_id: identity.userId, status, fetch_frequency: frequency },
       nextRunAt: schedule.nextRunAt,
@@ -307,11 +388,12 @@ export class SourceChannelService {
     );
     await this.db.query(
       `INSERT INTO source_channel_user_subscriptions (
-         id,space_id,source_channel_id,user_id,status,library_enabled,digest_enabled,created_at,updated_at
+         id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, created_at, updated_at
        ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)
-       ON CONFLICT (space_id,source_channel_id,user_id) DO UPDATE SET status='subscribed',updated_at=EXCLUDED.updated_at`,
+       ON CONFLICT (space_id, source_channel_id, user_id) DO UPDATE SET status='subscribed', updated_at=EXCLUDED.updated_at`,
       [randomUUID(), identity.spaceId, channelId, identity.userId, now],
     );
+    await openSubscriptionWindow(this.db, { spaceId: identity.spaceId, channelId: channelId, userId: identity.userId, at: now });
     await upsertSourceChannelScanTask(this.db, {
       channel: { id: channelId, space_id: identity.spaceId, owner_user_id: identity.userId, status: "active", fetch_frequency: "daily" },
       nextRunAt: schedule.nextRunAt,
@@ -434,6 +516,21 @@ export class SourceChannelService {
     return result.rows[0];
   }
 
+  private async requireOwnConnection(identity: SpaceUserIdentity, connectionId: string, providerMappingId: string) {
+    const result = await this.db.query<{ id: string; status: string; provider_connector_id: string }>(
+      `SELECT id, status, provider_connector_id FROM source_connections
+        WHERE id=$1 AND space_id=$2 AND owner_user_id=$3
+          AND deleted_at IS NULL AND status <> 'archived'`,
+      [connectionId, identity.spaceId, identity.userId],
+    );
+    const connection = result.rows[0];
+    if (!connection) throw new HttpError(404, "Source not found");
+    if (connection.provider_connector_id !== providerMappingId) {
+      throw new HttpError(422, "The Source does not use this provider");
+    }
+    return { id: connection.id, status: connection.status };
+  }
+
   private async ensureConnection(identity: SpaceUserIdentity, provider: ResolvedSourceProviderConnector, name: string, governance: ReturnType<typeof normalizeSourceConnectionCreateGovernance>, body: Record<string, unknown>) {
     const projectId = optionalString(body.project_id);
     const visibility = optionalString(body.visibility) ?? "private";
@@ -464,6 +561,9 @@ export class SourceChannelService {
       ],
     );
     if (result.rows[0]) return result.rows[0];
+    // A Source that owns its connection must never fall back to someone
+    // else's: the only conflict left is its own name being taken.
+    if (body._force_create === true) throw new HttpError(409, `A source named "${name}" already exists`);
     const concurrent = await this.db.query<{ id: string; status: string }>(
       `SELECT id, status FROM source_connections
         WHERE space_id=$1 AND owner_user_id=$2 AND provider_connector_id=$3
@@ -582,24 +682,23 @@ function genericChannelFingerprint(providerKey: string, connectorKey: string, en
     .digest("hex");
 }
 
+/**
+ * Only a manual frequency drops the rule. A paused or archived channel keeps
+ * its rule without a next run, so resuming it returns to the user's time.
+ */
 function resolveChannelSchedule(body: Record<string, unknown>, frequency: string, status: string, existingRule?: unknown): { nextRunAt: string | null; rule: SourceScheduleRule | null } {
-  if (frequency === "manual" || status !== "active") return { nextRunAt: null, rule: null };
+  if (frequency === "manual") return { nextRunAt: null, rule: null };
   const raw = body.schedule_rule && typeof body.schedule_rule === "object" ? body.schedule_rule as Record<string, unknown> : null;
-  const now = new Date();
-  if (raw) {
-    const rule = normalizeRule(raw, frequency);
-    return { nextRunAt: computeNextRunAtFromScheduleRule(rule, now), rule };
-  }
-  if (existingRule && typeof existingRule === "object") {
-    const rule = normalizeRule(existingRule as Record<string, unknown>, frequency);
-    return { nextRunAt: computeNextRunAtFromScheduleRule(rule, now), rule };
-  }
-  const rule = frequency === "hourly"
-    ? { frequency: "hourly", minute: 0 } as const
-    : frequency === "weekly"
-      ? { frequency: "weekly", weekday: 1, hour: 3, minute: 0 } as const
-      : { frequency: "daily", hour: 3, minute: 0 } as const;
-  return { nextRunAt: computeNextRunAtFromScheduleRule(rule, now), rule };
+  const rule: SourceScheduleRule = raw
+    ? normalizeRule(raw, frequency)
+    : existingRule && typeof existingRule === "object"
+      ? normalizeRule(existingRule as Record<string, unknown>, frequency)
+      : frequency === "hourly"
+        ? { frequency: "hourly", minute: 0 }
+        : frequency === "weekly"
+          ? { frequency: "weekly", weekday: 1, hour: 3, minute: 0 }
+          : { frequency: "daily", hour: 3, minute: 0 };
+  return { nextRunAt: status === "active" ? computeNextRunAtFromScheduleRule(rule, new Date()) : null, rule };
 }
 
 function normalizeRule(raw: Record<string, unknown>, frequency: string): SourceScheduleRule {

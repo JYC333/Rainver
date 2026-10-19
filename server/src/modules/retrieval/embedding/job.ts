@@ -17,7 +17,7 @@ import { RetrievalEmbeddingBackfillService } from "./service.js";
 
 type RetrievalEmbeddingBackfillQueue = Pick<PgJobQueueRepository, "enqueue" | "listJobs">;
 
-export interface RetrievalEmbeddingBackfillEnqueueInput {
+interface RetrievalEmbeddingBackfillEnqueueInput {
   spaceId: string;
   /** Whose action queued the backfill; it spends as theirs. */
   userId: string;
@@ -28,7 +28,7 @@ export interface RetrievalEmbeddingBackfillEnqueueInput {
   proposalId?: string | null;
 }
 
-export interface RetrievalEmbeddingBackfillEnqueueResult {
+interface RetrievalEmbeddingBackfillEnqueueResult {
   jobId: string;
   /** True when an already-queued backfill for this space was reused. */
   deduped?: boolean;
@@ -160,7 +160,7 @@ export function registerRetrievalEmbeddingHandler(
     const result = await service.backfillSpace(spaceId, {
       batchLimit,
       embeddingDimensions: retrievalSettings.embeddingDimensions,
-      // W9: skip provider egress entirely when the space disables it.
+      // Skip provider egress entirely when the space disables it.
       externalEgressEnabled: retrievalSettings.externalEgressEnabled,
     });
     return result as unknown as Record<string, unknown>;

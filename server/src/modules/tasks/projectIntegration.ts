@@ -133,11 +133,10 @@ async function taskAttentionItems(db: Queryable, identity: SpaceUserIdentity, pr
   const now = Date.now();
   const open = (task: DeliveryTask): boolean => !["done", "cancelled"].includes(task.status);
   return (await deliveryTasks(db, identity, projectId))
-    // `waiting_for_review` is the state that means a person has to decide,
-    // so it is the reason this surface exists. `blocked` is now only ever
-    // set deliberately — Run failure stopped writing it, because a Run
-    // ending badly is not the same fact as work being held up by something
-    // else, and merging them lost which one had happened.
+    // `waiting_for_review` is the state that means a person has to decide.
+    // `blocked` is set only deliberately. A Run ending badly is not the same
+    // fact as work being held up by something else. Do not write `blocked`
+    // from a Run failure.
     .filter((task) => (open(task) && task.status === "waiting_for_review")
       || task.status === "blocked"
       || (open(task) && task.due_at !== null && Date.parse(task.due_at) < now))

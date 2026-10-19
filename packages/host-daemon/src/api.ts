@@ -1,4 +1,4 @@
-import type { HostHelloInfo, HostRunDiffUpload, RuntimeProbe } from "@rainver/protocol";
+import type { HostHelloInfo, HostRunDiffUpload, HostRunOutputsUpload, RuntimeProbe } from "@rainver/protocol";
 import { mkdtemp, rm } from "node:fs/promises";
 import { arch, platform, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,7 +76,13 @@ function askRuntimeOptions(probes: RuntimeProbe[], log?: (line: string) => void)
       reportedProbeFailures.set(key, reason);
       log?.(`${key}: could not read its login methods and options — ${reason}`);
     };
-    const cwd = await mkdtemp(join(tmpdir(), "rainver-acp-probe-"));
+    let cwd: string;
+    try {
+      cwd = await mkdtemp(join(tmpdir(), "rainver-acp-probe-"));
+    } catch (error) {
+      failed(`could not create a probe directory: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
     try {
       const [rawCommand, ...args] = probe.argv.map((arg) => substituteCwd(arg, cwd));
       const launch = resolveAcpLaunch(rawCommand!, args, installation, probe.runtime_key);
@@ -207,7 +213,7 @@ export async function uploadRunOutputs(
   serverUrl: string,
   token: string,
   runId: string,
-  files: Array<{ name: string; content: string }>,
+  upload: HostRunOutputsUpload,
 ): Promise<void> {
   // Sent even when empty: the control plane applies this run's artifact
   // declarations here, and a run that declared a deliverable and wrote nothing
@@ -215,7 +221,7 @@ export async function uploadRunOutputs(
   await request<void>(`${serverUrl}/api/v1/hosts/me/runs/${encodeURIComponent(runId)}/outputs`, {
     method: "POST",
     headers: { authorization: `Bearer ${token}` },
-    body: JSON.stringify({ files }),
+    body: JSON.stringify(upload),
   });
 }
 

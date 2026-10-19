@@ -1,11 +1,12 @@
 import type { ReactNode } from 'react'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import RetrievalSettingsPage from './RetrievalSettingsPage'
 import { artifactsApi, providersApi, spacesApi } from '../../api/client'
 
-const { providerSelectorValues } = vi.hoisted(() => ({
+const { providerSelectorValues, spaceState } = vi.hoisted(() => ({
   providerSelectorValues: [] as unknown[],
+  spaceState: { activeSpaceId: 'space-1' },
 }))
 
 vi.mock('sonner', () => ({
@@ -14,9 +15,9 @@ vi.mock('sonner', () => ({
 
 vi.mock('../../contexts/SpaceContext', () => ({
   useSpace: () => ({
-    activeSpaceId: 'space-1',
+    activeSpaceId: spaceState.activeSpaceId,
     activeSpaceName: 'Space One',
-    spaces: [{ id: 'space-1', name: 'Space One', role: 'owner' }],
+    spaces: [{ id: spaceState.activeSpaceId, name: 'Space One', role: 'owner' }],
   }),
 }))
 
@@ -84,6 +85,7 @@ const settings = {
 describe('RetrievalSettingsPage vendor registry failure', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    spaceState.activeSpaceId = 'space-1'
     providerSelectorValues.length = 0
     vi.mocked(spacesApi.getRetrievalSettings).mockResolvedValue(settings)
     vi.mocked(providersApi.vendors).mockRejectedValue(new Error('registry unavailable'))
@@ -103,5 +105,33 @@ describe('RetrievalSettingsPage vendor registry failure', () => {
     expect(screen.queryByText('Retrieval settings unavailable')).not.toBeInTheDocument()
     expect(await screen.findByText('{"provider_id":"provider-1","model":"model-1"}')).toBeInTheDocument()
     expect(providersApi.deleteTaskPolicy).not.toHaveBeenCalled()
+  })
+})
+
+describe('RetrievalSettingsPage Space switch', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    spaceState.activeSpaceId = 'space-1'
+    providerSelectorValues.length = 0
+    vi.mocked(providersApi.vendors).mockResolvedValue([])
+    vi.mocked(providersApi.taskPolicies).mockResolvedValue([])
+    vi.mocked(artifactsApi.list).mockResolvedValue({ items: [] } as never)
+  })
+
+  it('keeps the current Space\'s settings when the previous Space answers later', async () => {
+    let answerFirstSpace: (value: typeof settings) => void = () => {}
+    vi.mocked(spacesApi.getRetrievalSettings).mockImplementation(spaceId => spaceId === 'space-1'
+      ? new Promise(resolve => { answerFirstSpace = resolve })
+      : Promise.resolve({ ...settings, space_id: 'space-2', embedding_dimensions: 1024 }))
+    const view = render(<RetrievalSettingsPage />)
+    expect(spacesApi.getRetrievalSettings).toHaveBeenCalledWith('space-1')
+
+    spaceState.activeSpaceId = 'space-2'
+    view.rerender(<RetrievalSettingsPage />)
+    expect(await screen.findByDisplayValue('1024')).toBeInTheDocument()
+
+    await act(async () => { answerFirstSpace({ ...settings, embedding_dimensions: 2560 }) })
+    expect(screen.getByDisplayValue('1024')).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('2560')).not.toBeInTheDocument()
   })
 })

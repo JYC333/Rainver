@@ -60,15 +60,14 @@ export async function writeNote(db: Queryable, input: {
   if (input.expectVersion !== null && input.expectVersion !== undefined && input.expectVersion !== current.version) {
     return { outcome: "version_conflict", currentVersion: current.version };
   }
-  // Every note write in the system funnels through here, which is why block
-  // ids are stamped at this line and nowhere else: a doc save, an AI ops write,
-  // a capture append and a rollback all leave with ids, and no caller can
-  // forget to ask for them.
+  // Every note write funnels through here. Block ids are stamped at this
+  // line and nowhere else: a doc save, an AI ops write, a capture append
+  // and a rollback all leave with ids. Do not stamp them in a caller.
   //
   // The stamping happens on the *current* document first, and that is
   // load-bearing rather than tidy. Diffing against the raw stored document
-  // would report every id-less block as "added" — a note written before ids
-  // existed has none — so a capture appended to one would anchor on the
+  // would report every id-less block as "added" — a note without ids
+  // has none — so a capture appended to one would anchor on the
   // document's first paragraph instead of its own. Stamping `current` first
   // means the diff sees only blocks that are genuinely new.
   const stamped = withBlockIds(current.content_json ?? {});
@@ -81,12 +80,9 @@ export async function writeNote(db: Queryable, input: {
   const normalized = input.content.kind === "doc" && input.content.plainText !== undefined
     ? (input.content.plainText ?? "")
     : normalizePmText(doc);
-  // Refs accumulate across a note's whole life, so a write has to start from
-  // what the note already cited. `notes.refs_json` used to be that carrier — a
-  // second copy of a list `note_revisions` already keeps per version, kept in
-  // step by hand and read by nothing else (N8). The latest revision is the
-  // same accumulator with one owner, and it is the row rollback restores from,
-  // so the two can no longer disagree.
+  // Refs accumulate across a note's whole life, so a write starts from the
+  // latest revision. That row is the one owner, and it is the row rollback
+  // restores from. Do not keep a second copy on `notes`.
   const previous = await db.query<{ refs_json: unknown }>(
     `SELECT refs_json FROM note_revisions WHERE note_id=$1 AND space_id=$2 ORDER BY version DESC LIMIT 1`,
     [input.noteId, input.spaceId],
@@ -168,6 +164,7 @@ export async function rollbackNote(db: Queryable, input: {
   noteId: string;
   toVersion: number;
   userId: string;
+  expectVersion?: number | null;
 }): Promise<NoteContentRow> {
   const revision = await db.query<{ content_json: Record<string, unknown>; refs_json: unknown }>(
     `SELECT content_json, refs_json FROM note_revisions WHERE note_id=$1 AND space_id=$2 AND version=$3`,
@@ -177,12 +174,18 @@ export async function rollbackNote(db: Queryable, input: {
   const result = await writeNote(db, {
     spaceId: input.spaceId,
     noteId: input.noteId,
+    expectVersion: input.expectVersion,
     content: { kind: "doc", doc: revision.rows[0].content_json },
     source: "rollback",
     userId: input.userId,
     refs: refStrings(revision.rows[0].refs_json),
     diff: { rolled_back_to_version: input.toVersion },
   });
+  // Undoing one edit restores the whole revision before it, so it is refused
+  // once anything else has been written on top: that later work would vanish.
+  if (result.outcome === "version_conflict") {
+    throw new HttpError(409, "The note changed after this edit; restore an earlier version from its history instead");
+  }
   if (result.outcome !== "written") throw new HttpError(409, "Note changed while rolling back; retry");
   return result.note;
 }

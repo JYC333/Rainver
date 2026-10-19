@@ -5,7 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 
 const { evolutionApiMock } = vi.hoisted(() => ({
   evolutionApiMock: {
-    signals: vi.fn(), bundles: vi.fn(), bundle: vi.fn(), proposals: vi.fn(), assets: vi.fn(), assetEvaluationRuns: vi.fn(),
+    signals: vi.fn(), bundles: vi.fn(), bundle: vi.fn(), proposals: vi.fn(), assets: vi.fn(), assetEvaluationRuns: vi.fn(), createBundle: vi.fn(),
   },
 }))
 
@@ -16,6 +16,8 @@ vi.mock('../../../contexts/SpaceContext', () => ({
 }))
 
 import EvolutionInboxPage from '../EvolutionInboxPage'
+import i18n from '../../../i18n'
+import { formatDateTime } from '../../../i18n/format'
 
 describe('EvolutionInboxPage', () => {
   beforeEach(() => {
@@ -59,6 +61,29 @@ describe('EvolutionInboxPage', () => {
     await user.click(await screen.findByRole('tab', { name: /Evidence/ }))
     expect(await screen.findByText('previously bundled')).toBeInTheDocument()
     expect(screen.getByRole('checkbox')).toBeDisabled()
+  })
+
+  it('leaves a selected proposal that was bundled meanwhile out of the new bundle', async () => {
+    const proposal = (id: string, summary: string, extra: Record<string, unknown> = {}) => ({
+      id, proposal_type: 'memory_create', target_id: null, target_name: null, target_type: null, capability_key: null,
+      status: 'pending', summary, created_at: '2026-07-12T00:00:00Z', created_by_run_id: null, ...extra,
+    })
+    evolutionApiMock.proposals
+      .mockResolvedValueOnce([proposal('proposal-1', 'First'), proposal('proposal-2', 'Second')])
+      .mockResolvedValue([proposal('proposal-1', 'First', { bundle_id: 'bundle-9', bundle_member_status: 'active' }), proposal('proposal-2', 'Second')])
+    evolutionApiMock.createBundle.mockResolvedValue({ id: 'bundle-new', title: 'Release', status: 'draft', proposal_ids: ['proposal-2'], created_at: '2026-07-12T00:00:00Z' })
+    const user = userEvent.setup({ delay: null })
+    render(<MemoryRouter><EvolutionInboxPage /></MemoryRouter>)
+
+    await user.click(await screen.findByRole('tab', { name: /Evidence/ }))
+    await screen.findByText('First')
+    for (const box of screen.getAllByRole('checkbox')) await user.click(box)
+    await user.click(screen.getByRole('button', { name: 'Refresh' }))
+    expect(await screen.findByText('already bundled')).toBeInTheDocument()
+
+    await user.type(screen.getByPlaceholderText(/Retrieval repair release/), 'Release')
+    await user.click(screen.getByRole('button', { name: /Create bundle/ }))
+    expect(evolutionApiMock.createBundle).toHaveBeenCalledWith({ title: 'Release', proposal_ids: ['proposal-2'] })
   })
 
   it('approves an ordinary proposal through the canonical proposal boundary', async () => {
@@ -133,5 +158,28 @@ describe('EvolutionInboxPage', () => {
     await user.click(await screen.findByRole('button', { name: /Unsupported bundle/ }))
     expect(await screen.findByText(/Rollback unavailable:/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Roll back approved members/ })).not.toBeInTheDocument()
+  })
+
+  it('reads in Chinese, with counts and dates in the Chinese locale', async () => {
+    await i18n.changeLanguage('zh-CN')
+    try {
+      evolutionApiMock.signals.mockResolvedValue([{
+        id: 'signal-1', signal_type: 'run_failed', severity: 'high', triage_status: 'new',
+        summary: 'Run failed twice', source_type: 'run', created_at: '2026-07-12T08:30:00Z',
+      }])
+      evolutionApiMock.bundles.mockResolvedValue([{ id: 'bundle-1', title: 'Release', status: 'draft', member_count: 2, risk_level: 'medium' }])
+      const user = userEvent.setup({ delay: null })
+      render(<MemoryRouter><EvolutionInboxPage /></MemoryRouter>)
+
+      expect(await screen.findByRole('heading', { name: '自进化收件箱' })).toBeInTheDocument()
+      expect(screen.getByRole('tab', { name: '信号（1）' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /确认/ })).toBeInTheDocument()
+      expect(screen.getByText(`run · ${formatDateTime('2026-07-12T08:30:00Z')}`)).toBeInTheDocument()
+      expect(formatDateTime('2026-07-12T08:30:00Z')).toMatch(/2026年7月12日/)
+      await user.click(screen.getByRole('tab', { name: '批次（1）' }))
+      expect(await screen.findByText('2 个成员')).toBeInTheDocument()
+    } finally {
+      await i18n.changeLanguage('en')
+    }
   })
 })

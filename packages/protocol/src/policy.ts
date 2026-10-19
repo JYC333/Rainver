@@ -14,7 +14,7 @@ import { z } from "zod";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 
 // ---------------------------------------------------------------------------
-// Core enums (decisions.py / actions.py)
+// Core enums
 // ---------------------------------------------------------------------------
 
 export const POLICY_DECISION_VALUES = [
@@ -265,7 +265,7 @@ export const POLICY_ACTION_REGISTRY = [
     current_enforcement_point:
       "server/src/modules/agents/routes.ts",
     description:
-      "Create an agent_config_update proposal for post-create execution configuration changes. The durable mutation is still protected by proposal.apply.",
+      "Registered policy action. Owner routes append an immutable AgentVersion directly and do not call this action or create an agent_config_update proposal.",
     lifecycle_status: "wired_direct",
     record_failure_mode: "best_effort",
   },
@@ -314,21 +314,6 @@ export const POLICY_ACTION_REGISTRY = [
       "Archive a memory entry. Protected via proposal.apply gate and ProposalApplyService. Must not be called directly through PolicyGateway.",
     lifecycle_status: "wired_via_proposal",
     record_failure_mode: "best_effort",
-  },
-  {
-    action: "policy.change",
-    resource_type: "policy",
-    default_risk_level: "high",
-    default_decision: "require_approval",
-    audit_required: true,
-    approval_capability: "approve_policy_change",
-    default_required_approver_role: "owner",
-    current_enforcement_point:
-      "server/src/modules/proposals/applyService.ts via proposal.apply",
-    description:
-      "Create or supersede a policy version. Protected via proposal.apply gate and ProposalApplyService. Must not be called directly through PolicyGateway.",
-    lifecycle_status: "wired_via_proposal",
-    record_failure_mode: "fail_closed",
   },
   {
     action: "knowledge.create",
@@ -1046,7 +1031,7 @@ export const POLICY_ACTION_REGISTRY = [
     audit_required: true,
     approval_capability: null,
     default_required_approver_role: null,
-    current_enforcement_point: "server/src/modules/sources/customSourceRoutes.ts",
+    current_enforcement_point: "server/src/modules/sources/customSources/customSourceRoutes.ts",
     description:
       "Regenerate a Custom Source handler version from its active version's manifest plus overrides, test it, and either auto-activate (unchanged envelope, Space policy allows) or create a review proposal.",
     lifecycle_status: "wired_direct",
@@ -1060,7 +1045,7 @@ export const POLICY_ACTION_REGISTRY = [
     audit_required: true,
     approval_capability: null,
     default_required_approver_role: null,
-    current_enforcement_point: "server/src/modules/sources/customSourceRoutes.ts",
+    current_enforcement_point: "server/src/modules/sources/customSources/customSourceRoutes.ts",
     description:
       "Activate a previously active (superseded) Custom Source handler version in place of the current active one, without a proposal — it can only reduce to an already-approved prior state, never broaden permissions.",
     lifecycle_status: "wired_direct",
@@ -1074,7 +1059,7 @@ export const POLICY_ACTION_REGISTRY = [
     audit_required: true,
     approval_capability: null,
     default_required_approver_role: null,
-    current_enforcement_point: "server/src/modules/sources/customSourceRoutes.ts",
+    current_enforcement_point: "server/src/modules/sources/customSources/customSourceRoutes.ts",
     description:
       "Create a Custom Source fetch credential (encrypted at rest, space-scoped); requires space admin. The plaintext secret is never returned by any API response.",
     lifecycle_status: "wired_direct",
@@ -1150,23 +1135,21 @@ export const POLICY_ACTION_REGISTRY = [
     lifecycle_status: "wired_direct",
     record_failure_mode: "best_effort",
   },
-  // NE registered these two so its Note actions would have a policy action to
-  // name. Both are `reserved`, not `wired_direct`, and the distinction is the
-  // honest one: no code path evaluates either, so nothing is gated by them and
-  // no audit record carries their name.
+  // Both are `reserved`, not `wired_direct`. No code path evaluates either,
+  // so nothing is gated by them and no audit record carries their name.
   //
-  // They were first written as `wired_direct` on the grounds that they made
-  // the action auditable. They do not: the enforcement is the route's own
+  // Do not mark them `wired_direct` to make the action auditable. They are
+  // not: the enforcement is the route's own
   // Project ACL, and who did it is already on the domain row
   // (`space_objects.created_by_user_id` for a Thread,
   // `note_links.created_by_user_id` for a link), so a policy audit record
-  // would restate what the canonical row already says. Wiring them is a
-  // decision to make, not a description of today — which is what `reserved`
-  // means here and for the nine other actions that carry it.
+  // would restate what the canonical row already says. They stay `reserved`:
+  // no code path evaluates them. The same holds for the other actions that
+  // carry `reserved`.
   {
-    // NE: raising a passage of a note as a Question. Direct-write, matching
-    // the Thread create route it calls — P2 confirmed Thread structure stays
-    // direct rather than moving behind a proposal.
+    // Raising a passage of a note as a Question. Direct-write, matching
+    // the Thread create route it calls. Thread structure stays a direct write.
+    // Do not move it behind a proposal.
     action: "inquiry.thread.create",
     // The Project, not the Thread: there is no Thread yet to authorize
     // against, and writing into a Project is the authority being checked —
@@ -1184,9 +1167,9 @@ export const POLICY_ACTION_REGISTRY = [
     record_failure_mode: "fail_closed",
   },
   {
-    // NE: linking a note to evidence. A note_link is navigational and carries
-    // no graph authority (N4), so this would be low risk and allowed by
-    // default if it were ever wired.
+    // Linking a note to evidence. A note_link is navigational and carries
+    // no graph authority. That does not make the action allowed. It is not
+    // implemented, and the default decision is deny.
     action: "note.link.create",
     resource_type: "note",
     default_risk_level: "low",
@@ -1215,11 +1198,10 @@ export const POLICY_ACTION_REGISTRY = [
     record_failure_mode: "best_effort",
   },
   {
-    // Direct execution, no proposal gate (room-advancement-reliability-plan
-    // Phase 4): the Inquiry Thread was already human-accepted at creation,
-    // so starting acquisition on it is execution, not the agent-drafted
-    // structure/content write ADR 0003 gates. The human confirmation gate is
-    // replaced by hard idempotency guards in the acquisition service itself.
+    // Direct execution, no proposal gate: the Inquiry Thread was already
+    // human-accepted at creation, so starting acquisition on it is execution,
+    // not the agent-drafted structure/content write ADR 0003 gates. Idempotency
+    // guards in the acquisition service are the confirmation.
     action: "research.acquisition.start",
     resource_type: "inquiry_thread",
     default_risk_level: "medium",
@@ -1467,7 +1449,7 @@ export const POLICY_ACTION_REGISTRY = [
 export type PolicyActionId = (typeof POLICY_ACTION_REGISTRY)[number]["action"];
 
 // ---------------------------------------------------------------------------
-// Enforcement request (PolicyCheckRequest, gateway.py)
+// Enforcement request (PolicyCheckRequest)
 //
 // `context` carries bounded decision inputs (flattened into the guard ctx);
 // `metadata_json` is audit-only; `payload` is only scanned by hard invariants.
@@ -1519,7 +1501,7 @@ export const PolicyProposalApplyRequestSchema = z
   .strict();
 
 // ---------------------------------------------------------------------------
-// Decision result (PolicyDecision, decisions.py)
+// Decision result (PolicyDecision)
 // ---------------------------------------------------------------------------
 
 export const PolicyDecisionSchema = z
@@ -1550,7 +1532,7 @@ export const PolicyDecisionSchema = z
 export type PolicyDecision = z.infer<typeof PolicyDecisionSchema>;
 
 // ---------------------------------------------------------------------------
-// Durable audit envelope (audit.py PolicyAuditEnvelope → PolicyDecisionRecord)
+// Durable audit envelope (PolicyAuditEnvelope)
 //
 // This is the sanitized, audit-only record the gateway persists. metadata_json
 // is post-sanitization (no credentials/raw memory/patch bodies/stdout-stderr).
@@ -1583,7 +1565,7 @@ export const PolicyAuditEnvelopeSchema = z
 export type PolicyAuditEnvelope = z.infer<typeof PolicyAuditEnvelopeSchema>;
 
 // ---------------------------------------------------------------------------
-// Error taxonomy (exceptions.py — PolicyGateBlocked / PolicyAuditPersistError)
+// Error taxonomy (PolicyGateBlocked / PolicyAuditPersistError)
 //
 // `enforce` returns a PolicyDecision on ALLOW and raises a gate-block on
 // DENY / REQUIRE_APPROVAL; an independent fail-closed audit write failure is a

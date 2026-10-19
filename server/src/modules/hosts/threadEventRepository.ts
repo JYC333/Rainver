@@ -5,11 +5,10 @@ import { withDbTransaction, serializeCalls } from "../routeUtils/common.js";
 const LOCK_PREFIX = "host_thread_events:";
 
 /**
- * control-center-phase2-plan.md P1 (C2): the normalized conversation event
- * log for a task thread — server-side normalized text/tool-activity/status/
- * diagnostic events, not the vendor's raw stream. See
- * `server/src/db/schema/hostThreadEvents.ts` for why this is a sibling table
- * to `run_events`, not a new value in that table's closed vocabulary.
+ * Normalized conversation event log for a task thread: server-side text,
+ * tool activity, status, and diagnostic events, not the vendor's raw stream.
+ * See `server/src/db/schema/hostThreadEvents.ts` for why this is a sibling
+ * table to `run_events`.
  */
 export type HostThreadEventType =
   | "assistant_text"
@@ -21,10 +20,11 @@ export type HostThreadEventType =
   | "diagnostic"
   | "plan_updated";
 
-export interface HostThreadEvent {
+interface HostThreadEvent {
   id: string;
   host_task_thread_id: string;
   run_id: string;
+  attempt_number: number | null;
   project_id: string | null;
   event_index: number;
   event_type: HostThreadEventType;
@@ -38,7 +38,7 @@ export interface HostThreadEvent {
   created_at: string;
 }
 
-export interface NewHostThreadEvent {
+interface NewHostThreadEvent {
   event_type: HostThreadEventType;
   text?: string | null;
   tool_call_id?: string | null;
@@ -49,7 +49,7 @@ export interface NewHostThreadEvent {
   status?: string | null;
 }
 
-const COLUMNS = `id, host_task_thread_id, run_id, project_id, event_index, event_type,
+const COLUMNS = `id, host_task_thread_id, run_id, attempt_number, project_id, event_index, event_type,
   text, tool_call_id, tool_name, tool_input_summary, tool_kind, tool_result_summary, status, created_at`;
 
 export class PgHostThreadEventRepository {
@@ -65,15 +65,13 @@ export class PgHostThreadEventRepository {
    * what the previous row in this same call just committed — the same
    * per-row-sequential approach `PgRunRepository.appendRunEvent` uses for
    * `run_events`. Call volume per chunk is small (a handful of normalized
-   * events per stdout push), so the extra round trips are not a concern in
-   * phase 1.
+   * events per stdout push), so the extra round trips are not a concern.
    *
    * `createSerializedThreadEventSink` already serializes every call made
    * through one sink instance, but a sink is constructed per Run
    * (`orchestrationService.ts`), not per thread — two Runs concurrently
    * active on the same thread would still each hold their own independent
-   * promise chain and race this method's `event_index` read (discovery
-   * review, P1). A `pg_advisory_xact_lock` keyed on the thread — held for
+   * promise chain and race this method's `event_index` read. A `pg_advisory_xact_lock` keyed on the thread — held for
    * this whole batch, across every event, not just one INSERT — closes that
    * gap at the database level regardless of how many processes or sink
    * instances are writing: whichever writer gets the lock first commits its
@@ -83,6 +81,13 @@ export class PgHostThreadEventRepository {
     threadId: string,
     runId: string,
     events: NewHostThreadEvent[],
+    /**
+     * The attempt that produced these events. Once a retry supersedes it,
+     * its late events (an adapter still unwinding) are dropped instead of
+     * landing in the newer attempt's turn. Null tags them with the Run's
+     * current attempt.
+     */
+    attemptNumber: number | null = null,
   ): Promise<HostThreadEvent[]> {
     if (events.length === 0) return [];
     return withDbTransaction(this.db, async (client) => {
@@ -91,12 +96,13 @@ export class PgHostThreadEventRepository {
       for (const event of events) {
         const result = await client.query<HostThreadEvent>(
           `INSERT INTO host_thread_events (
-             id, host_task_thread_id, run_id, project_id, event_index, event_type,
+             id, host_task_thread_id, run_id, attempt_number, project_id, event_index, event_type,
              text, tool_call_id, tool_name, tool_input_summary, tool_kind,
              tool_result_summary, status, created_at
            )
-           VALUES (
+           SELECT
              $1, $2, $3,
+             current_attempt.attempt_number,
              (SELECT pf.project_id
                 FROM host_threads t
                 JOIN workspace_locations wl ON wl.id = t.workspace_location_id
@@ -106,7 +112,8 @@ export class PgHostThreadEventRepository {
                 FROM host_thread_events
                WHERE host_task_thread_id = $2::varchar),
              $4, $5, $6, $7, $8, $9, $10, $11, now()
-           )
+           FROM (SELECT MAX(attempt_number) AS attempt_number FROM run_attempts WHERE run_id = $3::varchar) current_attempt
+           WHERE $12::int IS NULL OR current_attempt.attempt_number = $12::int
            RETURNING ${COLUMNS}`,
           [
             randomUUID(),
@@ -120,9 +127,13 @@ export class PgHostThreadEventRepository {
             event.tool_kind ?? null,
             event.tool_result_summary ?? null,
             event.status ?? null,
+            attemptNumber,
           ],
         );
-        written.push(result.rows[0]!);
+        // Nothing written: the attempt was superseded, and so is every later
+        // event of this batch.
+        if (!result.rows[0]) break;
+        written.push(result.rows[0]);
       }
       return written;
     });
@@ -148,10 +159,10 @@ export class PgHostThreadEventRepository {
  * committed. `serializeCalls` (`routeUtils/common.ts`) keeps this one sink
  * instance's calls in the order they were produced regardless of how many
  * arrive before the first settles; `append()`'s own advisory lock is what
- * actually guarantees `event_index` correctness against *other* concurrently
- * active sink instances for the same thread (a second Run, in a future
- * phase) — the two are complementary, not redundant: this keeps one run's
- * stdout/stderr interleaving honest, the lock keeps the table honest.
+ * actually guarantees `event_index` correctness against other concurrently
+ * active sink instances for the same thread. The two are complementary:
+ * this keeps one run's stdout/stderr interleaving honest, the lock keeps
+ * the table honest.
  *
  * The returned function's promise resolves once every write queued up to
  * and including this call has settled and never rejects — a per-chunk
@@ -165,6 +176,7 @@ export function createSerializedThreadEventSink(
   repository: PgHostThreadEventRepository,
   threadId: string,
   runId: string,
+  attemptNumber: number | null,
 ): (drafts: NewHostThreadEvent[]) => Promise<void> {
-  return serializeCalls((drafts: NewHostThreadEvent[]) => repository.append(threadId, runId, drafts));
+  return serializeCalls((drafts: NewHostThreadEvent[]) => repository.append(threadId, runId, drafts, attemptNumber));
 }

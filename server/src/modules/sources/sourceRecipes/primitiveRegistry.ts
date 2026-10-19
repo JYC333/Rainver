@@ -110,7 +110,7 @@ export function listSourceRecipePrimitives(): SourceRecipePrimitiveDefinitionDTO
   return Object.values(SOURCE_RECIPE_PRIMITIVE_REGISTRY);
 }
 
-export interface SourceRecipeAnalysis {
+interface SourceRecipeAnalysis {
   /** Distinct primitives the recipe uses, in first-use order. */
   primitives: SourceRecipePrimitiveName[];
   /** Registry version of each used primitive (persisted on the recipe version). */

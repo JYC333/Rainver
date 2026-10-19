@@ -24,7 +24,7 @@ export interface AskedUser {
 /**
  * Interactive methods a client serves only if it advertised the capability.
  * Rainver advertises neither, so one of these is a runtime fault — it refuses
- * and fails as before — not a question for the person.
+ * and fails the run — not a question for the person.
  */
 const CAPABILITY_METHOD_PREFIXES = ["fs/", "terminal/"];
 

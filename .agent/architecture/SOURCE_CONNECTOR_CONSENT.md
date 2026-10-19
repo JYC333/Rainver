@@ -1,9 +1,6 @@
 # Source Connector Consent
 
-Status: implemented first pass (2026-06-25)
-
-This document defines the source / connector permission model used by source
-connections before broad ingestion-heavy context work expands. Code remains the
+This document defines the source / connector permission model. Code remains the
 source of truth; active enforcement points are
 `server/src/modules/sources/sourceConsent.ts`,
 `server/src/modules/retrieval/sourcePolicy.ts`, and
@@ -32,7 +29,10 @@ as code and seed changes; there is no runtime connector upload surface:
   objects and derived evidence.
 
 `source_connections.consent_json` and `source_connections.policy_json` are
-normalized into versioned JSON documents on create/update. Retrieval projections
+normalized into versioned JSON documents when a Source Channel implicitly
+creates its connection (`normalizeSourceConnectionCreateGovernance`). Connections
+are internal provenance: every `/sources/connections` HTTP route returns 410 and
+points callers at Source Channels. Retrieval projections
 carry explicit source connection ids and reload current source policy snapshots
 at read/egress time.
 
@@ -42,7 +42,7 @@ define executable connectors.
 
 ## Consent JSON
 
-New and updated source connections normalize consent to:
+New source connections normalize consent to:
 
 ```json
 {
@@ -57,12 +57,17 @@ New and updated source connections normalize consent to:
 }
 ```
 
-The owner is always the authenticated user creating or updating the connection.
+The owner is always the authenticated user creating the Source Channel that
+creates the connection.
 Subjects, readers, and agents are explicit allow-lists. Space admins may be
 allowed by flag, but that does not bypass the normal Space/User policy boundary.
 Provider egress is off by default at the source layer; a connection must
 explicitly allow local or external provider egress before its source policy can
-claim that egress class.
+claim that egress class. The exception is a public `external_feed` connection
+without a credential: unless the request configures egress explicitly, it
+defaults to allowing local and external model egress
+(`source_egress_class` `external_provider_allowed`), and the read path applies
+the same default to rows whose egress was never configured.
 
 Retrieval search, Context Brief, graph traversal, and managed-run retrieval
 tools consume the subject/reader/agent/admin gate for rows that carry explicit
@@ -148,9 +153,10 @@ worker persists extracted text artifacts. `extract_evidence` does not fetch or
 persist broader source content; it remains a candidate-evidence action and is
 not currently retention-escalating.
 
-Import trust tracks the connection `trust_level` and should be carried into
-extracted evidence or proposal provenance when future ingestion flows automate
-more of this path.
+Import trust is the connection `trust_level`. A source snapshot records that
+level. The post-processing prompt includes it, and an `untrusted` connection
+adds a corroboration instruction. A post-processing artifact row is stored at
+`trust_level` `medium`; it does not copy the connection level.
 
 ## Derived Writes
 
@@ -187,7 +193,7 @@ Space/User/Agent/domain gate
 
 ### Paths That Consume Source Policy
 
-Implemented in the retrieval MVP:
+Implemented:
 
 - Retrieval search and Context Brief candidate revalidation.
 - Graph and relational traversal, including every intermediate hop.
@@ -205,17 +211,17 @@ Implemented in the retrieval MVP:
   `source_connection_id` denies the viewer, fail-closed.
 - Context Ops drill-down object lists revalidate every listed object through the
   adapter gate and the source read gate before returning a title.
-- Context artifact attachment: a non-creator attaching a source-derived artifact
-  (e.g. a Context Brief that records the `source_connection_ids` it synthesized
-  from) is re-gated against current source policy; persisted run snapshots stay
-  immutable, only future attachment is blocked.
-- Chat context candidate collection: DB-backed Knowledge, Source, and Project
-  public-summary candidates load explicit source connection ids
-  (`provenance_links`, `sources.metadata_json`, and
-  `project_public_summaries.source_refs_json`) and apply the current source read
-  gate before entering the chat context builder. Activity records still have no
-  canonical source connection field, so they remain source-unlinked until that
-  model exists.
+- Context artifact attachment: a Context Brief records the
+  `source_connection_ids` it synthesized from in its payload (`brief.ts`) so a
+  later attachment can be re-gated; no attachment path re-checks source policy.
+- Runtime Context retrieval: `PgRetrievalAuthorization`
+  (`runtimeContext/productionAcquisition.ts`) takes source connection ids from
+  the domain adapter's `loadCanonical` result and records them on the item's
+  revalidation; Invocation Delivery (`runtimeContext/gateway.ts`) reloads the
+  current source policy snapshots and re-applies the source read gate before
+  the item is delivered. Activity records have no canonical source
+  connection field, so they stay source-unlinked. Do not invent that field
+  to satisfy the source read gate.
 
 Implemented for provider content egress:
 
@@ -225,11 +231,10 @@ Implemented for provider content egress:
 - Embedding backfill joins chunks to `retrieval_objects`, filters pending chunks
   by source egress policy before provider embedding, and fails closed for missing
   source policy snapshots.
-- Chat context candidate collection applies the per-space external egress switch
-  to every DB-backed candidate before text can enter the prompt, and
-  source-connected candidates additionally apply source egress. The chat
-  collector does not receive the final provider destination yet, so it uses the
-  conservative `external_provider` destination.
+- Runtime Context retrieval applies the per-space external egress switch and
+  source egress (`retrievalEgressAllowed`) when planning each item, using
+  `request.egressDestination` (default `internal_process`) as the destination,
+  and Invocation Delivery repeats the check before text enters the prompt.
 - Current query rewrite is query-string-only and does not send source-derived
   content. A content-bearing rewrite must use the same payload source gate.
 - There are no chat-turn artifact attachments or Evidence Packs.
@@ -239,8 +244,6 @@ Implemented for provider content egress:
 - Diagnostics reports aggregate only the operator's own private artifact
   metadata and carry no source-derived titles/snippets.
 
-Unimplemented source-gate extensions:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §23.
 
 ### Read Gate Shape
 
@@ -251,15 +254,24 @@ surfaced.
 Required checks:
 
 - `allowed_reader_user_ids` contains the viewer, or the viewer is the connection
-  owner.
+  owner, or the viewer subscribes now to a live channel of the connection, or
+  the content was delivered (item first seen, or a connection-only snapshot
+  captured) inside one of the viewer's closed subscription periods
+  (`source_channel_subscription_windows`). Both subscriber branches hold only
+  while the connection is neither deleted nor archived and is readable to the
+  viewer under its current visibility and grants
+  (`sourceConnectionReaderConsentClause` and the Reader's single-document gate
+  share them).
 - `allow_space_admins = true` plus current space owner/admin authority may allow
   administrative review; `allow_space_admins = false` blocks that path.
 - `allowed_agent_ids`, when non-empty, must contain the run agent before a
   managed-run tool or context assembly path can use the content.
 - The source connection must belong to the same `space_id` as the requested
   retrieval/context operation.
-- Missing, deleted, or cross-space source connection refs fail closed for
-  connected/source-derived content.
+- Missing, deleted, archived, or cross-space source connection refs fail
+  closed for connected/source-derived content: once a connection is archived
+  or deleted, none of the paths above admits anyone, its owner included —
+  withdrawing a source ends access to what it delivered.
 
 The source gate must not emit hidden-source counts, hidden object IDs, hidden
 titles, hidden graph-neighbor counts, or near-miss hints. A denied source row is
@@ -285,7 +297,7 @@ surface, run id when present, and no query/content/snippets.
 ### Metadata And Projection Requirements
 
 The canonical source connection remains the enforcement source of truth. The
-retrieval MVP carries only explicit source ids in the derived projection and
+retrieval projection carries only explicit source ids and
 reloads current source policy for enforcement:
 
 - `retrieval_objects.source_connection_ids_json` is required for source-derived
@@ -318,13 +330,11 @@ Implementation should add leak tests for:
   allowed internal processing.
 - Audit metadata remaining pointer-only.
 
-Implemented consumers of this model: source-connection create/update
-validation, Sources UI normalized fields, connected retention escalation,
+Implemented consumers of this model: governance normalization when a Source
+Channel creates its connection, Sources UI normalized fields, connected retention escalation,
 RSS/Atom/web page scan scheduling, worker-side full-text/snapshot writes,
-connected summary proposal creation, source-aware retrieval reads, context
-artifact attachment, DB-backed chat candidates with explicit source ids,
+connected summary proposal creation, source-aware retrieval reads, Runtime
+Context retrieval planning and delivery,
 maintenance/Context Ops reads, claim evidence rendering, and retrieval
 provider content egress.
 
-Unimplemented extensions:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §23.

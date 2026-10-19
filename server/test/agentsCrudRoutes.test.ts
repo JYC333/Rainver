@@ -4,14 +4,50 @@ import { loadConfig } from "../src/config.js";
 import { getDbPool } from "../src/db/pool.js";
 import { buildModuleServer } from "./support/moduleServer.js";
 import { agentTemplatesModule } from "../src/modules/agentTemplates/index.js";
-import { __setAgentChatIdentityForTests } from "../src/modules/agents/routes.js";
+import { __setAgentChatIdentityForTests, __setAgentChatServicesFactoryForTests } from "../src/modules/agents/routes.js";
+import { runsModule } from "../src/modules/runs/index.js";
+import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { agentsModule } from "../src/modules/agents/index.js";
-import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
+import { __setAuthIdentityForTests, __setAuthRepositoryForTests } from "../src/modules/auth/identity.js";
+import { fakeAuthRepository } from "./support/routeFakes.js";
 import { __setContentCreationContextResolverForTests } from "../src/modules/access/creationContext.js";
 import { AgentRuntimeProfileCreateBodySchema } from "@rainver/protocol";
 
 vi.mock("../src/db/pool.js", () => ({
   getDbPool: vi.fn(),
+}));
+// Direct-chat workspace restore below: the host dispatch preparation and the
+// Conversation execution context are the boundary the restore tests fake.
+vi.mock("../src/modules/agentGroups/service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/modules/agentGroups/service.js")>()),
+  prepareHostConversationDispatch: vi.fn(async () => ({
+    host_thread: {
+      id: "thread-1",
+      execution_host_id: "host-1",
+      workspace_location_id: null,
+      vendor_session_id: null,
+    },
+    workspace: { kind: "managed" },
+    project_folder_id: null,
+    git_snapshot: {
+      source: "unavailable", workspace_location_id: null, branch: null, commit_sha: null,
+      dirty: null, execution_ready: false, observed_at: "2026-10-14T00:00:00.000Z",
+    },
+    dispatch_lock_id: "lock-1",
+    host_resume_attempted: false,
+    host_prompt_fresh: true,
+  })),
+}));
+vi.mock("../src/modules/agentGroups/agentIdentityPrompt.js", () => ({
+  renderAgentIdentityPrompt: vi.fn(async () => null),
+}));
+vi.mock("../src/modules/sessions/executionContextRepository.js", () => ({
+  PgConversationExecutionContextRepository: class {
+    async lockDraft() { return { state: "draft" }; }
+    async initialize() {}
+    async refreshGitBaseline() {}
+  },
 }));
 
 let app: FastifyInstance | undefined;
@@ -28,8 +64,11 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  __setAgentChatServicesFactoryForTests(null);
+  vi.restoreAllMocks();
   __setAgentChatIdentityForTests(null);
   __setAuthIdentityForTests(null);
+  __setAuthRepositoryForTests(null);
   __setContentCreationContextResolverForTests(null);
   await app?.close();
   app = undefined;
@@ -43,13 +82,25 @@ function config() {
 }
 
 describe("agents CRUD routes", () => {
-  it("rejects the retired adapter_type alias at Profile API boundaries", () => {
+  it("answers an invalid Space runtime default as 422 with the failing field", async () => {
+    __setAuthRepositoryForTests(fakeAuthRepository("owner"));
+    app = buildModuleServer(config(), [agentsModule]);
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/v1/agents/runtime-default",
+      payload: { runtime_key: "opencode", backend_mode: "model_provider" },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({ detail: expect.stringContaining("provider and model") });
+  });
+
+  it("rejects deployment aliases at Profile API boundaries", () => {
     expect(AgentRuntimeProfileCreateBodySchema.safeParse({
       name: "Default",
       runtime_key: "opencode",
     }).success).toBe(true);
-    // `.strict()` is the single rule that retires every deployment alias; no
-    // route keeps its own list of the retired names.
+    // `.strict()` refuses every deployment alias. Do not keep a second list
+    // of those names on a route.
     for (const retired of ["adapter_type", "default_adapter_type", "allowed_adapter_types", "credential_profile_id"]) {
       const parsed = AgentRuntimeProfileCreateBodySchema.safeParse({
         name: "Default",
@@ -82,8 +133,9 @@ describe("agents CRUD routes", () => {
   it("rejects ModelProvider Profiles without an execution Host before changing the default", async () => {
     const query = vi.fn(async () => ({ rows: [{ id: "agent-1" }], rowCount: 1 }));
     const { PgAgentRepository } = await import("../src/modules/agents/repository.js");
-    // The Profile write now validates inside the transaction that holds the
-    // Agent row lock, so the fake pool has to be connectable.
+    // The Profile write validates inside the transaction that holds the
+    // Agent row lock. Do not validate outside it. The fake pool has to be
+    // connectable.
     const repository = new PgAgentRepository({
       query,
       connect: async () => ({ query, release: () => {} }),
@@ -250,6 +302,7 @@ describe("agents CRUD routes", () => {
     let insertedRuntimeConfig: Record<string, unknown> = {};
     let insertedContextPolicy: Record<string, unknown> = {};
     let insertedScheduleConfig: Record<string, unknown> = {};
+    let insertedSourceTemplate: [unknown, unknown] = [null, null];
     const client = {
       query: vi.fn(async (sql: string, params: readonly unknown[] = []) => {
         const norm = sql.replace(/\s+/g, " ").trim();
@@ -273,6 +326,7 @@ describe("agents CRUD routes", () => {
         }
         if (sql.startsWith("INSERT INTO agents")) {
           agentId = String(params[0]);
+          insertedSourceTemplate = [params[11], params[12]];
           return { rows: [], rowCount: 1 };
         }
         if (sql.startsWith("INSERT INTO agent_versions")) {
@@ -329,6 +383,8 @@ describe("agents CRUD routes", () => {
                 agent_kind: "standard",
                 current_version_id: versionId,
                 visibility: "private",
+                source_template_id: insertedSourceTemplate[0],
+                source_template_version_id: insertedSourceTemplate[1],
                 created_at: "2026-06-17T00:00:00.000Z",
                 updated_at: "2026-06-17T00:00:00.000Z",
                 model_provider_id: null,
@@ -420,7 +476,11 @@ describe("agents CRUD routes", () => {
       id: agentId,
       name: "Reviewer",
       runtime_key: "opencode",
+      // The Agent says which catalog template made it.
+      source_template_id: "coding_reviewer",
+      source_template_version_id: expect.any(String),
     });
+    expect(insertedSourceTemplate[0]).toBe("coding_reviewer");
     expect(insertedRuntimeConfig).not.toHaveProperty("runtime_key");
     expect(insertedContextPolicy).toMatchObject({ default_input_contexts: ["selected_workspace"] });
     expect(insertedScheduleConfig).toEqual({ enabled: false, cron: null });
@@ -430,6 +490,25 @@ describe("agents CRUD routes", () => {
       version_id: "prompt-version",
       content_hash: "prompt-hash",
     });
+  });
+
+  it("refuses an Agent PATCH with an invalid config field before writing its identity fields", async () => {
+    const query = vi.fn(async (sql: string) => {
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    vi.mocked(getDbPool).mockReturnValue({ query } as never);
+    app = buildModuleServer(config(), [agentsModule]);
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: "/api/v1/agents/agent-1",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ name: "Renamed", execution_constraints: { max_run_time_seconds: 0 } }),
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect(response.json().detail).toContain("execution_constraints");
+    expect(query).not.toHaveBeenCalled();
   });
 
   it("rejects runtime selection on Agent creation", async () => {
@@ -1208,9 +1287,8 @@ describe("agents CRUD routes", () => {
       current_version_id: newVersionId,
       system_prompt: "New prompt",
     });
-    // Agent config reaches a Run through its immutable AgentVersion. The only
-    // Agent config reaches a Run through its immutable AgentVersion, so no
-    // retired derived-context refresh side effect is expected.
+    // Agent config reaches a Run through its immutable AgentVersion. Do not
+    // enqueue a derived-context refresh from this save.
     expect(jobs).toEqual([]);
   });
 
@@ -1271,5 +1349,125 @@ describe("agents CRUD routes", () => {
       visible.mockRestore();
       created.mockRestore();
     }
+  });
+});
+
+type AgentChatServices = ReturnType<NonNullable<Parameters<typeof __setAgentChatServicesFactoryForTests>[0]>>;
+
+// A host-bound direct chat with `restore_workspace`: the host-side restore is
+// an effect outside the turn's transaction, so it runs last, after anything
+// that can refuse the turn, and a failed restore leaves nothing behind and
+// can simply be sent again.
+/** Records every step in order, and whether the transaction committed or rolled back. */
+function hostBoundServices(steps: string[], options: { enqueueFails?: boolean } = {}): AgentChatServices {
+  const services = {
+    db: { query: async () => ({ rows: [], rowCount: 0 }) } as unknown as Queryable,
+    agents: {
+      async getAgentForChat() {
+        return { id: "agent-1", space_id: "space-1", name: "Assistant", current_version_id: "agent-version-1", tool_permissions_json: {} };
+      },
+    },
+    sessions: {
+      async getSession() { throw new Error("getSession should not run"); },
+      async createSession() {
+        return {
+          id: "session-1", space_id: "space-1", user_id: "user-1", project_folder_id: null, project_id: null, room_id: null,
+          title: null, status: "active", created_at: "2026-10-14T00:00:00.000Z", updated_at: "2026-10-14T00:00:00.000Z",
+        };
+      },
+      async addMessage(_spaceId: string, _userId: string, sessionId: string, input: { role: string; content: string }) {
+        steps.push("message");
+        return {
+          id: "message-user-1", session_id: sessionId, space_id: "space-1", user_id: "user-1", role: input.role,
+          content: input.content, metadata_json: null, created_at: "2026-10-14T00:00:00.000Z",
+        };
+      },
+      async listMessages() { return []; },
+      async attachRunToUserMessage() { return true; },
+    },
+    backends: {
+      async resolveBinding() {
+        return {
+          runtime_profile_id: "runtime-profile-1", runtime_key: "claude_code", binding_id: "binding-1",
+          runtime_state_key: "11111111-1111-4111-8111-111111111111", runtime_session_id: null,
+          runtime_context_fingerprint: null, model_name: null, model_provider_id: null,
+          runtime_config_json: {}, runtime_policy_json: {}, execution_host_id: "host-1",
+          workspace_location_id: null, workspace_mode: "managed", runtime_installation: "own", retired_runtime_state_key: null,
+        };
+      },
+    },
+    runtimeSessions: {
+      async claimTurn() { steps.push("claim"); },
+      async prepare() { throw new Error("prepare should not run"); },
+    },
+    runs: {
+      async createQueuedRun() {
+        steps.push("run");
+        return { id: "run-1", space_id: "space-1", execution_kind: "agent", agent_id: "agent-1", status: "queued" };
+      },
+    },
+    hostThreads: {
+      async recordDirectDispatch() { steps.push("dispatch"); },
+    },
+    jobs: {
+      async enqueue() {
+        if (options.enqueueFails) throw new Error("queue unavailable");
+        steps.push("enqueue");
+      },
+    },
+  } as unknown as AgentChatServices;
+  (services as { inTransaction: AgentChatServices["inTransaction"] }).inTransaction = async (work) => {
+    steps.push("begin");
+    try {
+      const result = await work(services);
+      steps.push("commit");
+      return result;
+    } catch (error) {
+      steps.push("rollback");
+      throw error;
+    }
+  };
+  return services;
+}
+
+describe("direct chat workspace restore", () => {
+  it("restores last, after the turn is queued, so a refused turn restores nothing", async () => {
+    const steps: string[] = [];
+    const restore = vi.spyOn(sharedHostConnectionRegistry, "requestManagedWorkspaceAction").mockImplementation(async () => {
+      steps.push("restore");
+      return { ok: true, changed: true } as Awaited<ReturnType<typeof sharedHostConnectionRegistry.requestManagedWorkspaceAction>>;
+    });
+    __setAgentChatServicesFactoryForTests(() => hostBoundServices(steps, { enqueueFails: true }));
+    app = buildModuleServer(config(), [agentsModule, runsModule]);
+
+    const refused = await app.inject({ method: "POST", url: "/api/v1/agents/agent-1/chat", payload: { message: "Hi", restore_workspace: true } });
+    expect(refused.statusCode).toBe(503);
+    expect(restore).not.toHaveBeenCalled();
+
+    steps.length = 0;
+    __setAgentChatServicesFactoryForTests(() => hostBoundServices(steps));
+    const accepted = await app.inject({ method: "POST", url: "/api/v1/agents/agent-1/chat", payload: { message: "Hi", restore_workspace: true } });
+    expect(accepted.statusCode).toBe(202);
+    expect(steps).toEqual(["begin", "claim", "message", "run", "dispatch", "enqueue", "restore", "commit"]);
+    expect(restore).toHaveBeenCalledWith("host-1", "managed_workspace_restore", expect.objectContaining({ agent_id: "agent-1", container_kind: "direct", include_workspace: true }));
+  });
+
+  it("rolls the turn back on a failed restore, and a resend succeeds even when nothing is left to restore", async () => {
+    const steps: string[] = [];
+    const restore = vi.spyOn(sharedHostConnectionRegistry, "requestManagedWorkspaceAction")
+      .mockResolvedValueOnce({ ok: false, error: "restore_failed" } as Awaited<ReturnType<typeof sharedHostConnectionRegistry.requestManagedWorkspaceAction>>)
+      .mockResolvedValueOnce({ ok: true, changed: false } as Awaited<ReturnType<typeof sharedHostConnectionRegistry.requestManagedWorkspaceAction>>);
+    __setAgentChatServicesFactoryForTests(() => hostBoundServices(steps));
+    app = buildModuleServer(config(), [agentsModule, runsModule]);
+
+    const failed = await app.inject({ method: "POST", url: "/api/v1/agents/agent-1/chat", payload: { message: "Hi", restore_workspace: true } });
+    expect(failed.statusCode).toBe(409);
+    expect(failed.json().detail).toContain("the message was not sent");
+    expect(steps.at(-1)).toBe("rollback");
+
+    const resent = await app.inject({ method: "POST", url: "/api/v1/agents/agent-1/chat", payload: { message: "Hi", restore_workspace: true } });
+    expect(resent.statusCode).toBe(202);
+    expect(steps.at(-1)).toBe("commit");
+    expect(restore).toHaveBeenCalledTimes(2);
   });
 });

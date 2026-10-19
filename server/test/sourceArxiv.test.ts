@@ -10,6 +10,7 @@ import {
   acquireArxivRequestSlot,
 } from "../src/modules/sources/connectors/arxivThrottle.js";
 import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
+import { sourceConnectorRegistry } from "../src/modules/sources/catalog/sourceConnectorRegistry.js";
 import { publicAddressGuard } from "./support/outboundGuard.js";
 import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
@@ -122,6 +123,22 @@ describe("parseArxivFeed", () => {
       </feed>`;
     expect(parseArxivFeed(feed)).toEqual([]);
     expect(() => parseArxivFeed("<html><body>error page</body></html>")).toThrow(HttpError);
+  });
+});
+
+describe("arXiv connector item metadata", () => {
+  it("carries the academic fields the paper materializer and digest read", () => {
+    const [item] = sourceConnectorRegistry.get("arxiv_api").parseResponse(arxivFeed());
+    expect(item?.metadata).toMatchObject({
+      academic_provider: "arxiv",
+      arxiv_id: "2402.08954",
+      authors: ["Author One", "Author Two"],
+      published_at: "2024-02-14T05:19:17.000Z",
+      updated_at: "2024-02-15T05:19:17.000Z",
+      journal_ref: "Example Journal 2024",
+      comment: "10 pages",
+      abs_url: "https://arxiv.org/abs/2402.08954",
+    });
   });
 });
 

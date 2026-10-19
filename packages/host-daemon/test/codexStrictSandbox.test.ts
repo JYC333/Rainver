@@ -12,9 +12,10 @@ describe("applyCodexStrictSandboxToml", () => {
   });
 
   /**
-   * TOML scopes a key to the table above it. Matching `sandbox_mode` anywhere
-   * rewrote a named profile's key and left the top-level default alone, so the
-   * Run still could not write — and somebody's profile quietly changed.
+   * TOML scopes a key to the table above it. Do not match `sandbox_mode`
+   * anywhere it appears. That rewrites a named profile's key and leaves the
+   * top-level default alone: the Run still cannot write, and a profile
+   * changes.
    */
   it("sets the top-level key, not a profile's", () => {
     const config = [
@@ -45,9 +46,9 @@ describe("applyCodexStrictSandboxToml", () => {
 
   /**
    * A continuation line of a multi-line array starts with `[` and is not a
-   * table header. Treating it as one made the insert land above a key that was
-   * still top-level, leaving two top-level `sandbox_mode` keys — a TOML
-   * duplicate-key error, so Codex refuses to start and every strict Run fails.
+   * table header. Do not treat it as one. The insert would land above a key
+   * that is still top-level, leaving two top-level `sandbox_mode` keys, and
+   * the TOML duplicate-key error stops Codex from starting.
    */
   it("does not mistake a multi-line array's continuation for a table header", () => {
     // Both spellings: with a trailing comma, and as the final element, which
@@ -61,10 +62,9 @@ describe("applyCodexStrictSandboxToml", () => {
   });
 
   it("does not mistake a bracket inside a string or a comment for an array", () => {
-    // One unbalanced `[` above the first header used to pin the bracket depth
-    // for the rest of the file, so no header was ever found and the scan fell
-    // back to matching `sandbox_mode` anywhere — the original bug, reinstated
-    // by the fix for the array one.
+    // One unbalanced `[` above the first header must not pin the bracket
+    // depth for the rest of the file. No header is then found, and the scan
+    // matches `sandbox_mode` anywhere.
     for (const first of ['notify = ["bash","-c","echo [done"]', "# see the [profiles docs", 'foo = "a\\"b[c"']) {
       const config = [first, "[profiles.x]", 'sandbox_mode = "read-only"', ""].join("\n");
       const out = applyCodexStrictSandboxToml(config);
@@ -74,10 +74,10 @@ describe("applyCodexStrictSandboxToml", () => {
   });
 
   it("does not read a line inside a multi-line string as a table header", () => {
-    // Nothing inside `"""` or `'''` is syntax. A line reading `[x]` in one was
-    // taken as the first table header, which hid the real top-level key and
-    // inserted a second — the TOML duplicate-key error that stops Codex from
-    // starting. The pre-Phase-8 code got this right by accident.
+    // Nothing inside `"""` or `'''` is syntax. Do not treat a line inside a
+    // multi-line string as a header. That hides the real top-level key and
+    // inserts a second, and the TOML duplicate-key error stops Codex from
+    // starting.
     for (const quote of ['"""', "'''"]) {
       const config = [
         `instructions = ${quote}`,
@@ -97,9 +97,8 @@ describe("applyCodexStrictSandboxToml", () => {
   });
 
   it("does not rewrite a sandbox_mode line that is inside a multi-line string", () => {
-    // The decoy is text, not a key. Rewriting it left the real top-level key
-    // untouched, so Codex started cleanly and the Run silently could not write
-    // — the failure with no error anywhere.
+    // The decoy is text, not a key. Do not rewrite it. The real top-level key
+    // stays untouched: Codex starts, and the Run cannot write, with no error.
     for (const quote of ['"""', "'''"]) {
       const config = [
         `notes = ${quote}`,

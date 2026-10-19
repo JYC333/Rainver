@@ -2,8 +2,8 @@ import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { evidenceProvenanceReadableClause } from "../sources/sourceItemAccess.js";
 
-export interface ResolvedResearchReferenceExcerpt { id: string; title?: string }
-export interface ResolvedResearchReference { id: string; availability: "available" | "unavailable"; title?: string; authors?: string[]; year?: number | null; library_path?: string; academic_path?: string; external_url?: string; excerpts?: ResolvedResearchReferenceExcerpt[] }
+interface ResolvedResearchReferenceExcerpt { id: string; title?: string }
+interface ResolvedResearchReference { id: string; availability: "available" | "unavailable"; title?: string; authors?: string[]; year?: number | null; library_path?: string; academic_path?: string; external_url?: string; excerpts?: ResolvedResearchReferenceExcerpt[] }
 
 interface EvidenceRow { source_item_id: string | null; title: string; source_author: string | null; occurred_at: unknown }
 type SourceItemMeta = Omit<ResolvedResearchReference, "id" | "availability" | "excerpts">;
@@ -13,9 +13,9 @@ type SourceItemMeta = Omit<ResolvedResearchReference, "id" | "availability" | "e
  * shape: one entry per article (`ref-N`), carrying the article metadata the
  * viewer may read plus the cited evidence excerpts as lettered sub-items
  * (`ref-Na`). Grouping follows the persistent `reference_id` labels written
- * at materialization; entries without one (reports stored before two-level
- * numbering) fall back to one positional group per entry, which reproduces
- * the previous flat output.
+ * at materialization; entries without one fall back to one positional group
+ * per entry, the flat list. Do not invent two-level numbers for a report
+ * stored without them.
  */
 export async function resolveResearchReportReferences(db: Queryable, identity: SpaceUserIdentity, content: Record<string, unknown>) {
   const references = collect(content);
@@ -73,7 +73,7 @@ export async function resolveResearchReportReferences(db: Queryable, identity: S
   return { content: sanitize(content), resolved: [...groups.values()] };
 }
 
-/** The persistent materialization label, or the positional fallback for legacy reports. */
+/** The persistent materialization label, or the positional fallback when a report has none. */
 function entryLabel(ref: Record<string, unknown>, positionalIndex: number): string {
   const id = ref.reference_id;
   return typeof id === "string" && id.trim() ? id.trim() : `ref-${positionalIndex}`;

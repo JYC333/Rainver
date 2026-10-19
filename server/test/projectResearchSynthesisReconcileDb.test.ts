@@ -17,11 +17,10 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 // Real-Postgres coverage for reconcileOperation's synthesis stage. The
-// synthesis run's terminal state is normally projected by a one-shot hook in
-// the agent_run job handler; before this coverage existed the periodic
-// reconciler ignored the synthesis stage entirely, so (a) the UI had no live
-// run-status feedback at all while synthesis executed and (b) an operation
-// whose one-shot projection was missed waited forever with no recovery.
+// synthesis run's terminal state is also projected by a one-shot hook in
+// the agent_run job handler. The periodic reconciler covers the synthesis
+// stage too. Do not leave it to the one-shot hook: the UI then has no live
+// run-status while synthesis executes, and a missed projection waits forever.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -115,7 +114,7 @@ async function settleDelegatedRun(runId: string): Promise<void> {
   // nodes then advance one at a time, so drain one graph-length here just as
   // production finalization/reconciliation does.
   for (let index = 0; index < 6; index += 1) {
-    await executions.reconcileForRun(db.pool, SPACE, runId, OWNER);
+    await executions.reconcileForRun(db.pool, SPACE, runId);
   }
   const stillActive = await db.pool.query<{ id: string }>(
     `SELECT execution.id
@@ -150,10 +149,9 @@ async function seedUnderstandingNote(now: string, opts?: { contentJson?: Record<
      VALUES ($1,$2,'note','Current understanding','space_shared',$3,$4,$3,$5,$5)`,
     [objectId, SPACE, OWNER, PROJECT, now],
   );
-  // The `understanding` role is what makes this note the comparison baseline
-  // (NA). The title is only a default now, so a fixture that sets the title
-  // alone would produce a project the monitoring comparison correctly refuses
-  // to run against.
+  // The `understanding` role is what makes this note the comparison baseline.
+  // The title is a default. Do not set only the title. Monitoring comparison
+  // refuses a project whose baseline is the title alone.
   await db.pool.query(
     `INSERT INTO notes (object_id,space_id,content_json,content_format,content_schema_version,plain_text,version,content_hash,role_project_id,project_role)
      VALUES ($1,$2,$3::jsonb,'prosemirror_json',1,$4,$5,'hash',$6,'understanding')`,
@@ -167,9 +165,8 @@ async function seedUnderstandingNote(now: string, opts?: { contentJson?: Record<
 }
 
 /**
- * A note's current refs. They live on the note's latest revision since N8
- * removed `notes.refs_json` — a second copy of the same list that nothing read
- * back and that had to be kept in step by hand.
+ * A note's current refs. They live on the note's latest revision. Do not
+ * keep a second copy on the note row.
  */
 async function latestRefs(noteId: string): Promise<string[]> {
   const result = await db.pool.query<{ refs_json: string[] }>(
@@ -326,8 +323,8 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     await new ProjectResearchOrchestrator(db.pool, CONFIG).reconcileOperation(SPACE, OPERATION);
 
     const operation = await db.pool.query<{ status: string; progress_json: Record<string, unknown> }>(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION]);
-    // Checkpoint reform: idea_review records the synthesis
-    // result without gating on it, so the operation is still active here.
+    // idea_review records the synthesis result and does not gate on it, so the
+    // operation is still active here.
     expect(operation.rows[0]).toMatchObject({ status: "active", progress_json: { current_stage: "idea_review" } });
     const reports = await db.pool.query<{ synthesis_run_id: string }>(`SELECT synthesis_run_id FROM project_research_reports WHERE operation_id=$1`, [OPERATION]);
     expect(reports.rows).toEqual([{ synthesis_run_id: seeded.candidateRunId }]);
@@ -622,8 +619,8 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     const operation = (await db.pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
     expect(operation).toMatchObject({ status: "completed", progress_json: { current_stage: "complete", monitoring_active: true } });
     expect((await db.pool.query(`SELECT stance,comparison_detail FROM research_evidence_cards WHERE source_item_id=$1`, [sourceItem])).rows[0]).toEqual({ stance: "contradicts", comparison_detail: "No effect under stronger controls." });
-    // The notebook is untouched — monitoring no longer co-edits it directly;
-    // disruptive comparisons instead raise an Evidence Signal (plan section 18.2).
+    // The notebook is untouched. Monitoring does not edit it. A disruptive
+    // comparison raises an Evidence Signal.
     const section = (await db.pool.query(`SELECT version FROM notes WHERE object_id=$1`, [understandingId])).rows[0];
     expect(section).toMatchObject({ version: 1 });
     expect(await latestRefs(understandingId)).toEqual([]);
@@ -636,16 +633,16 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
 
   it("stops the comparison stage and names the missing role when the project has no baseline", async () => {
     if (!db.available) return;
-    // NA: the baseline used to be resolved by note title, so a project with no
-    // "Current understanding" compared every paper against an empty string and
-    // reported nothing. The stage must now stop and say what is missing, with
-    // the papers still queued for when a note is given the role.
+    // The baseline is `notes.project_role`, not the title. A project with no
+    // baseline note stops the stage and names the missing role. The papers
+    // stay queued until a note is given the role. Do not compare against an
+    // empty string and report nothing.
     const now = new Date().toISOString();
     const items = Array.from({ length: 2 }, () => randomUUID());
     await db.pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
     const understandingId = await seedUnderstandingNote(now);
-    // The note exists and still has its title — only the role is absent, which
-    // is exactly the state a rename used to produce silently.
+    // The note exists and still has its title. Only the role is absent.
+    // A rename must not drop the baseline without saying so.
     await db.pool.query(`UPDATE notes SET project_role=NULL, role_project_id=NULL WHERE object_id=$1`, [understandingId]);
     for (const item of items) {
       await db.pool.query(
@@ -690,7 +687,7 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     const state = (await db.pool.query(`SELECT status,progress_json FROM project_operations WHERE id=$1`, [OPERATION])).rows[0];
     expect(state.progress_json.comparison_missing_baseline_role).toBe("understanding");
     // No run was queued, and the papers were not consumed — the stage is
-    // waiting, not finished. Finalizing here is what would have looked like a
+    // waiting, not finished. Do not finalize here. That would look like a
     // successful scan that found nothing.
     expect(state.progress_json.comparison_run_id).toBeNull();
     expect(state.progress_json.comparison_pending_source_item_ids).toEqual(items);
@@ -711,9 +708,9 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
   it("compares a large paper set in multiple batches, accumulating results until the last batch completes", async () => {
     if (!db.available) return;
     const now = new Date().toISOString();
-    // COMPARISON_BATCH_SIZE is 6 — 7 papers forces a second batch, which is
-    // exactly the case that used to fail as one 7-paper structured-output
-    // call (models drop/invent ids as the list grows).
+    // COMPARISON_BATCH_SIZE is 6 — 7 papers forces a second batch. Models
+    // drop or invent ids as the list grows. Do not send the whole set as one
+    // structured-output call.
     const items = Array.from({ length: 7 }, () => randomUUID());
     const [batch1, batch2] = [items.slice(0, 6), items.slice(6)];
     await db.pool.query(`UPDATE project_research_workflows SET current_stage='comparison' WHERE object_id=$1`, [WORKFLOW]);
@@ -884,9 +881,9 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
     expect(after.progress_json.comparison_run_id).toBeTruthy();
     expect(after.progress_json.comparison_run_id).not.toBe("stale-failed-run-id");
     expect(after.progress_json.comparison_pending_source_item_ids).toEqual([]);
-    // Batch 1's already-accumulated results must survive the retry — the bug
-    // being fixed here wiped comparison_results_json back to [] on every
-    // retry, silently discarding real LLM output over one bad batch.
+    // Batch 1's already-accumulated results survive the retry. Do not wipe
+    // comparison_results_json on a retry. That discards real output over one
+    // bad batch.
     expect(after.progress_json.comparison_results_json).toEqual(batch1Results);
 
     const run = await db.pool.query<{ status: string; contract_snapshot_json: { workflow_input_json?: { project_research?: { source_item_ids?: string[] } } } }>(
@@ -1073,8 +1070,8 @@ describe("ProjectResearchOrchestrator.reconcileOperation synthesis stage (real P
       workflow_id: WORKFLOW, operation_id: OPERATION, run_kind: "incremental", stage_key: "monitor_compare", source_item_ids: batch1,
     } } });
     // Every entry is fabricated — none of batch1's real ids appear anywhere
-    // in the response (the MiniMax-M3 incident this models: a run returning
-    // comparisons for papers that were never sent and don't exist).
+    // in the response. The run returned comparisons for papers that were
+    // never sent and do not exist.
     await db.pool.query(`UPDATE runs SET output_json=$2::jsonb WHERE id=$1`, ["run-1", JSON.stringify({
       comparisons: [
         { source_item_id: randomUUID(), stance: "supports", detail: "Fabricated paper unrelated to this batch.", affected_sections: ["understanding"] },

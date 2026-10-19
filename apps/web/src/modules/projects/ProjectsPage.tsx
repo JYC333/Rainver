@@ -74,10 +74,9 @@ export default function ProjectsPage() {
     }
     setCreating(true)
     try {
-      // Name and a line about it. Everything that defines the Project — goal,
-      // scope, what success means, how it advances — is decided once it exists,
-      // where the Brief, Pulse's goal prompt and the Assistant can help; asked
-      // here it was guessed at before the work had a shape.
+      // Name and a line about it. Goal, scope, what success means, and how the
+      // Project advances are decided once it exists, where the Brief, Pulse's
+      // goal prompt and the Assistant can help. Do not ask them here.
       const project = await projectsApi.create({
         name: newName.trim(),
         description: newDescription.trim() || null,

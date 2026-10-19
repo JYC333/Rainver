@@ -4,25 +4,16 @@ import type { HostLaunchIsolation } from "@rainver/protocol";
 
 /**
  * The strict-mode namespace: one rootless bubblewrap mount/PID namespace per
- * Run, ported from `sandbox/runner.mjs`'s `buildNamespaceCommand`.
+ * Run. A `strict` host wraps every Run; a `trusted` host spawns natively and
+ * never reaches this file.
  *
- * ADR 0016 says the server host and a paired personal host are the same thing,
- * and this is where that becomes true: the isolation that used to be a
- * property of a separate Runner service colocated with the server is now a
- * trust mode of the one daemon. A `strict` host wraps every Run; a `trusted`
- * host spawns natively and never reaches this file.
- *
- * **One deliberate deviation from the Runner it replaces.** The Runner mapped
- * every authority root onto a canonical target (`/workspace`, `/home/sandbox`,
- * `/runtime-tool`) because the server addressed mounts by managed id and never
- * knew a real path. The daemon is the opposite: it is the only component that
- * resolves paths at all (B64), and every value it has already materialized for
- * the Run — `RAINVER_CLI`, `RAINVER_OUTPUT_DIR`, a runtime profile's state-root
- * variables, a managed copy's manifest command — is an absolute path on this
- * machine. So each path is bound **at its own path** rather than remapped. The
- * containment property is unchanged (an empty root plus an explicit allowlist);
- * what is dropped is a path translation that would have to be undone again in
- * every environment variable the daemon writes.
+ * Bind each path at its own path. The daemon is the only component that
+ * resolves paths (B64), and the values it has already materialized —
+ * `RAINVER_CLI`, `RAINVER_OUTPUT_DIR`, a runtime profile's state-root
+ * variables, a managed copy's manifest command — are absolute paths on this
+ * machine. Remapping them onto canonical targets would have to be undone in
+ * every environment variable the daemon writes. Containment is an empty root
+ * plus an explicit allowlist.
  */
 export interface StrictBind {
   path: string;
@@ -53,8 +44,8 @@ const SYSTEM_ROOTS = ["/usr", "/bin", "/sbin", "/lib", "/lib64"];
 
 /**
  * The minimum an ordinary process needs to resolve users, time zones, DNS and
- * TLS roots. Copied from the Runner's list unchanged — it is the outcome of
- * real runs failing without each entry, not a guess.
+ * TLS roots. Each entry is here because a run fails without it. Do not trim
+ * the list by guess.
  */
 const ETC = [
   "/etc/alternatives",
@@ -83,10 +74,10 @@ const ETC = [
  * needs to know it is inside one. Codex does not read it; the daemon consumes
  * the same fact (`trust === "strict"`) by writing
  * `sandbox_mode = "workspace-write"` into that copy's `config.toml` before
- * spawn (`codexStrictSandbox.ts`), which is the switch measured to stop
- * Codex's default read-only sandbox stacking on top of this namespace.
+ * spawn (`codexStrictSandbox.ts`). That switch stops Codex's default
+ * read-only sandbox stacking on top of this namespace.
  */
-export const STRICT_SANDBOX_ENV: Readonly<Record<string, string>> = Object.freeze({
+const STRICT_SANDBOX_ENV: Readonly<Record<string, string>> = Object.freeze({
   RAINVER_STRICT_SANDBOX: "1",
 });
 
@@ -132,9 +123,9 @@ function mergeBinds(binds: StrictBind[]): StrictBind[] {
  * Builds the full `bwrap` argv for one Run.
  *
  * The child is started through `sh -c` so the namespace can report readiness
- * on fd 3 before `exec`ing the runtime — the same handshake the Runner used,
- * and the only way to tell "the namespace could not be built" apart from "the
- * runtime exited immediately", which are the same exit code otherwise.
+ * on fd 3 before `exec`ing the runtime. That is how "the namespace could not
+ * be built" stays distinct from "the runtime exited immediately", which are
+ * the same exit code otherwise. Do not drop the readiness report.
  */
 export function buildStrictNamespaceCommand(request: StrictNamespaceRequest): { command: string; args: string[] } {
   const cwd = assertAbsolute("cwd", request.cwd);

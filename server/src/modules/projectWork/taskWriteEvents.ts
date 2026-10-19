@@ -13,7 +13,7 @@ import { taskCompletionState } from "./completion.js";
  * is the authority for is worse than no stream.
  */
 
-export interface UserTaskEventContext {
+interface UserTaskEventContext {
   spaceId: string;
   userId: string;
   taskId: string;
@@ -69,7 +69,7 @@ export async function recordTaskCreated(
 /**
  * Refuse a close that has not met what the Task declared.
  *
- * The refusal is the point: a Task closed with its declared outputs missing
+ * A Task closed with its declared outputs missing
  * means the completion contract described nothing. Overriding stays available
  * — a person can always decide a requirement no longer applies — but it names
  * what it skipped, so the record says the Task was closed early rather than
@@ -77,11 +77,10 @@ export async function recordTaskCreated(
  *
  * **A missing evaluation is recorded, not refused.** An evaluation comes from
  * an execution Run's review, and most Tasks never have one — work done inside
- * a turn has none at all — so it was in `missing` for essentially every Task
- * on the board. A prompt that fires on every close is not a gate: it trains
- * the person to click through, and it buries the one reason that is a claim
- * about deliverables under one that is only a process step. It still travels
- * in `overridden`, so the record says the Task closed without a review.
+ * a turn has none at all. Do not prompt on every close: that trains the
+ * person to click through, and it buries the deliverable reason under a
+ * process step. A missing evaluation still travels in `overridden`, so the
+ * record says the Task closed without a review.
  *
  * Runs before the row is written, so a refused close leaves nothing behind.
  */

@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { resolveIdentity, sendRouteError } from "../routeUtils/common.js";
 import { requireInstanceAdmin } from "../routeUtils/access.js";
-import { BackupService } from "./service.js";
+import { BackupInProgressError, BackupService } from "./service.js";
 import { readInstanceOperationsPolicy } from "../settings/index.js";
 
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
@@ -51,6 +51,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         backup: archivePath.split("/").pop() ?? archivePath,
       });
     } catch (error) {
+      if (error instanceof BackupInProgressError) return reply.code(409).send({ detail: error.message });
       return sendRouteError(reply, error);
     }
   });

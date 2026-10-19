@@ -172,9 +172,9 @@ export class AgentGroupRunLifecycleProjector {
   }
 
   /**
-   * Fixes "delegate 完成了却没有后续" (plan Phase 3): when the Manager
-   * replied and ended its turn without calling `agent.wait_for_results`,
-   * nothing else notices this delegation finishing. The caller only invokes
+   * When the Manager replied and ended its turn without calling
+   * `agent.wait_for_results`, nothing else notices this delegation finishing.
+   * The caller only invokes
    * this when nothing was waiting on the completed run before
    * `queueWaitingDependencyRunsIfReady` ran — the waiting case already
    * resumes through that path and must not also get this duplicate one.
@@ -725,9 +725,9 @@ function completedRunResultsBlock(
  * ran: the prompt it was dispatched with — identity block, conversation
  * window, execution rules, assigned task — is still the prompt it needs. That
  * window closes at the person's message, so the replies the earlier
- * recipients produced meanwhile are appended rather than lost; replacing the
- * prompt with a "continue" instruction (the `agent.wait_for_results` resume
- * shape) sent the Agent to work with no identity and no conversation.
+ * recipients produced meanwhile are appended rather than lost. Do not replace
+ * the prompt with a "continue" instruction (the `agent.wait_for_results`
+ * resume shape). The Agent would work with no identity and no conversation.
  */
 function serializedRecipientPrompt(
   waitingRun: RunRecord,

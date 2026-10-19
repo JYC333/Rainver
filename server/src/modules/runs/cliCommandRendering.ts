@@ -37,14 +37,13 @@ export async function renderCliCommand(
     resume_session_id?: string | null;
     required_sandbox_level?: string | null;
     /**
-     * ADR 0016 P3: a remote execution host has no server-local sandbox path
-     * for this check to inspect — the deny-config it verifies would have to
-     * live in the daemon's actual workspace, not a path the server can see
-     * or write to. Writing a compliant-looking file server-side and passing
-     * its path here would prove nothing about what the remote CLI process
-     * actually honors (security theater), so remote callers explicitly opt
-     * out instead. Defaults to false, preserving today's behavior for every
-     * existing (server-host) caller.
+     * A remote execution host has no server-local sandbox path for this check
+     * to inspect. The deny-config it verifies has to live in the daemon's
+     * actual workspace, not a path the server can see or write. Do not write
+     * a compliant-looking file server-side and pass its path here. That
+     * proves nothing about what the remote CLI process honors. Remote callers
+     * set this. It defaults to false, so a server-host caller still runs the
+     * check.
      */
     skip_subagent_disable_check?: boolean;
   },
@@ -77,11 +76,7 @@ export async function renderCliCommand(
 
   const extraArgs: string[] = [];
   // Model selection for an ACP adapter happens over the protocol
-  // (`session/set_config_option`), never via a CLI arg — equivalent to the
-  // former `argument_rendering_strategy !== "ndjson_rpc"` check (deleted:
-  // execution-topology-and-project-control-plane-plan.md P0.6 — every
-  // current adapter's `ndjson_rpc` rendering strategy coincided exactly
-  // with `protocol: "acp"`, so the field only ever restated this).
+  // (`session/set_config_option`), never via a CLI arg.
   if (input.model && spec.invocation.protocol !== "acp") {
     if (!spec.model.supports_model_override || !spec.model.model_arg_template) {
       throw new CliRenderError("model_override_not_supported", `runtime_key '${spec.runtime_key}' does not support model override`);
@@ -104,8 +99,7 @@ export async function renderCliCommand(
     redacted.splice(redactedInsertAt >= 0 ? redactedInsertAt : redacted.length, 0, ...extraArgs);
   }
 
-  // No current adapter ever set `argument_rendering_strategy: "stdin"` (the
-  // deleted field's third value) — the prompt always stays an argv token.
+  // The prompt stays an argv token. Do not put it on stdin.
   return {
     argv,
     redacted_argv: redacted,

@@ -142,9 +142,9 @@ export const projectResearchQuestionAssessmentMessages = pgTable("project_resear
 	check("ck_project_research_question_assessment_messages_structured_object", sql`structured_output_json IS NULL OR jsonb_typeof(structured_output_json) = 'object'::text`),
 ]);
 
-// Immutable outcomes of completed monitoring scans. Keeping this separate
-// from workflow/operation projections means later re-screening cannot rewrite
-// the historical "what was found on this scan" timeline.
+// Immutable outcomes of completed monitoring scans. Kept separate from
+// workflow and operation projections so a later re-screen cannot rewrite
+// what that scan found.
 export const researchScanSummaries = pgTable("research_scan_summaries", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
@@ -370,15 +370,15 @@ export const projectResearchScreeningCriteria = pgTable("project_research_screen
 	includeKeywordsJson: jsonb("include_keywords_json").default([]).notNull(),
 	excludeKeywordsJson: jsonb("exclude_keywords_json").default([]).notNull(),
 	// Domain-specific screening axes, keyed by what the bound extraction profile
-	// declares (R4/D12). `methods` was a column, which forced every domain to
-	// carry an irrelevant domain-shaped criterion; an unconstrained bag would have been the
-	// opposite mistake, so the legal keys come from the profile registry and the
-	// column only guarantees the shape.
+	// declares. Do not store `methods` as its own column. That would force
+	// every domain to carry an irrelevant domain-shaped criterion. An
+	// unconstrained bag would be the opposite mistake, so the legal keys come
+	// from the profile registry and the column only guarantees the shape.
 	domainCriteriaJson: jsonb("domain_criteria_json").default({}).notNull(),
 	dateRangeStart: timestamp("date_range_start", { withTimezone: true, mode: 'string' }),
 	dateRangeEnd: timestamp("date_range_end", { withTimezone: true, mode: 'string' }),
 	// Journals, outlets and sites are the same concept: where material may come
-	// from. `venues` named only the academic half of it.
+	// from. Do not name this `venues`. That name covers only the academic half.
 	sourceRestrictionsJson: jsonb("source_restrictions_json").default([]).notNull(),
 	requiredEvidenceFieldsJson: jsonb("required_evidence_fields_json").default([]).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),

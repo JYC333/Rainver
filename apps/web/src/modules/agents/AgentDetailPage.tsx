@@ -287,6 +287,14 @@ function OverviewTab({ agent, version, runs, proposals, onSaved }: {
   const lastRun = runs[0]
   const promptRef = promptRefFromProvenance(version?.prompt_provenance_json)
 
+  /** Cancelled edits are dropped, so the next Edit starts from the Agent as saved. */
+  function cancelEdit() {
+    setName(agent.name)
+    setDescription(agent.description ?? '')
+    setSystemPrompt(agent.system_prompt ?? '')
+    setEditing(false)
+  }
+
   async function save() {
     setSaving(true)
     try {
@@ -316,7 +324,7 @@ function OverviewTab({ agent, version, runs, proposals, onSaved }: {
             <p className="text-xs text-muted-foreground">Saving creates a new immutable agent version; the previous version is preserved.</p>
             <div className="flex gap-2">
               <Button size="sm" onClick={save} disabled={saving}>{saving ? <Loader2 className="size-4 animate-spin" /> : 'Save'}</Button>
-              <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>
+              <Button size="sm" variant="ghost" onClick={cancelEdit}>Cancel</Button>
             </div>
           </div>
         ) : (
@@ -449,14 +457,14 @@ function ModelTab({
   // Runtime selection comes only from the ACP catalog. Backend support is
   // read from each runtime's definition, not inferred from its display name.
   const [cliAdapters, setCliAdapters] = useState<HostRuntimeDefinitionOption[]>([])
-  // A catalog that failed to load is not a catalog that says "unsupported":
-  // swallowing it hid every backend-mode control while the Profile still
-  // claimed provider mode, leaving no way back.
+  // A catalog that failed to load is not a catalog that says "unsupported".
+  // Do not swallow it: the backend-mode controls would disappear while the
+  // Profile still claimed provider mode, leaving no way back.
   const [catalogError, setCatalogError] = useState<string | null>(null)
   // An empty catalog and a catalog that has not answered yet are different
-  // facts. Without this flag every open of a `model_provider` Profile flashed
-  // "this runtime does not support a ModelProvider binding" until the first
-  // response landed.
+  // facts. Do not treat a catalog that has not answered as an empty catalog.
+  // An open `model_provider` Profile would show "this runtime does not support
+  // a ModelProvider binding" until the first response landed.
   const [catalogLoading, setCatalogLoading] = useState(true)
   const [providerModeNotice, setProviderModeNotice] = useState<string | null>(null)
   const loadCatalog = useCallback(() => {
@@ -485,9 +493,9 @@ function ModelTab({
   }, [agentId, defaultProfile?.id])
 
   // The one place the composer is seeded from. "New profile" only clears the
-  // selection: this effect is keyed on that selection and fires on the very
-  // transition the click causes, so defaults written in the handler were
-  // overwritten here a render later. A new Profile inherits the default
+  // selection. Do not also write defaults in the click handler. This effect
+  // is keyed on that selection and fires on the transition the click causes,
+  // so those defaults would be overwritten a render later. A new Profile inherits the default
   // Profile's execution target, which is what a second Profile for the same
   // Agent almost always wants and is the only complete target the composer
   // can offer without another round of picking.
@@ -545,6 +553,12 @@ function ModelTab({
     if (!next) setModel('')
   }
 
+  /** The Model field and the provider selection name one model; save reads the selection first. */
+  function changeModel(next: string) {
+    setModel(next)
+    setProviderSelection(current => current ? { ...current, model: next } : current)
+  }
+
   async function save() {
     const selectedModel = providerSelection?.model || model.trim()
     if (!hostExecution) {
@@ -574,10 +588,14 @@ function ModelTab({
         enabled,
         is_default: isDefault,
       }
-      if (selectedProfile) await agentsApi.updateRuntimeProfile(agentId, selectedProfile.id, body)
-      else await agentsApi.createRuntimeProfile(agentId, body)
+      const created = selectedProfile
+        ? (await agentsApi.updateRuntimeProfile(agentId, selectedProfile.id, body), null)
+        : await agentsApi.createRuntimeProfile(agentId, body)
       toast.success('Runtime profile saved')
       await onSaved()
+      // The form now edits the Profile it created; left on the empty selection,
+      // a second Save would create it again.
+      if (created?.id) setSelectedProfileId(created.id)
     } catch (err) { toast.error(errMsg(err)) } finally { setSaving(false) }
   }
 
@@ -707,7 +725,7 @@ function ModelTab({
         <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Model</label>
         <Input
           value={model}
-          onChange={e => setModel(e.target.value)}
+          onChange={e => changeModel(e.target.value)}
           placeholder={providerSelection?.provider_id ? 'claude-sonnet-4-6' : 'Provider default'}
           className="font-mono"
           disabled={supportsProviderSelection && !providerSelection?.provider_id}

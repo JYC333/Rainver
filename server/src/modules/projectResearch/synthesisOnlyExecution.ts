@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { sha256Json } from "../evolution/hash.js";
 import type { ServerConfig } from "../../config.js";
 import { HttpError, objectValue, optionalString, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { lockActiveProjectForMutation } from "../projects/access.js";
@@ -25,8 +26,8 @@ const SYNTHESIS_ONLY_WORKFLOW_ID = "project_research.synthesis_only";
 /**
  * Dedicated synthesis-only execution-per-pass Workflow. The general Project
  * Research pipeline uses the same WorkflowExecution authority through
- * researchPassExecution.ts; this specialized pass exists because generating
- * an on-demand immutable snapshot has a smaller two-node graph.
+ * researchPassExecution.ts. An on-demand immutable snapshot uses a smaller
+ * two-node graph.
  */
 export async function startSynthesisOnlyExecution(
   db: Queryable,
@@ -166,11 +167,11 @@ async function findOrCreateSynthesisOnlyTemplateVersion(db: Queryable, identity:
   const versionId = randomUUID();
   const inserted = await db.query<{ id: string }>(
     `INSERT INTO evolvable_asset_versions (
-       id, asset_id, space_id, scope_type, scope_id, version, status, source, content_json, created_at, updated_at
-     ) VALUES ($1, $2, $3, 'space', $3, 1, 'approved', 'user_authored', $4::jsonb, $5, $5)
+       id, asset_id, space_id, scope_type, scope_id, version, status, source, content_hash, content_json, created_at, updated_at
+     ) VALUES ($1, $2, $3, 'space', $3, 1, 'approved', 'user_authored', $6, $4::jsonb, $5, $5)
      ON CONFLICT (asset_id, version) DO NOTHING
      RETURNING id`,
-    [versionId, asset.rows[0]!.id, identity.spaceId, JSON.stringify(synthesisOnlyTemplateShape()), now],
+    [versionId, asset.rows[0]!.id, identity.spaceId, JSON.stringify(synthesisOnlyTemplateShape()), now, sha256Json(synthesisOnlyTemplateShape())],
   );
   if (inserted.rows[0]) return inserted.rows[0].id;
   const raced = await db.query<{ id: string }>(
@@ -271,7 +272,7 @@ async function materializeReport(context: ActionNodeContext): Promise<ActionNode
     context.db,
     context.identity.spaceId,
     operationId,
-    context.executionId,
+    context.container.id,
   );
 
   const archiveBinding = context.bindings.find((binding) => binding.name === "report_archive");
@@ -316,8 +317,8 @@ async function materializeReport(context: ActionNodeContext): Promise<ActionNode
     },
   });
 
-  // Checkpoint reform: `idea_review` records what synthesis produced but no
-  // longer holds the operation. The outcome is written first and the waive
+  // `idea_review` records what synthesis produced and does not hold the
+  // operation. The outcome is written first and the waive
   // follows it, so a dropped outcome write cannot leave a waived checkpoint
   // with nothing behind it; `reconcileIdeaReviewStage` picks up the waived
   // checkpoint on its next tick and resumes from there, so the completion
@@ -328,7 +329,7 @@ async function materializeReport(context: ActionNodeContext): Promise<ActionNode
     context.db,
     context.identity.spaceId,
     operationId,
-    context.executionId,
+    context.container.id,
     gated ? "waiting_review" : "idea_review_recorded",
     {
       research_report_id: materialized.id,

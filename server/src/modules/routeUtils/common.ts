@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import type { z } from "zod";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
@@ -50,7 +51,9 @@ export async function resolveIdentity(
 ): Promise<SpaceUserIdentity | null> {
   const requestId = resolveRequestId(request);
   reply.header(REQUEST_ID_HEADER, requestId);
-  const identity = await introspectIdentity(config, request);
+  // Better Auth may have refreshed the session while validating it; passing
+  // the reply puts the refreshed cookie on this response.
+  const identity = await introspectIdentity(config, request, reply);
   if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
   if (identity.reason === "denied") {
     reply.code(identity.statusCode);
@@ -72,21 +75,61 @@ export async function resolveIdentity(
   return null;
 }
 
+/**
+ * Parse a request body with a protocol schema, answering a validation failure
+ * as 422 with the first issue. `schema.parse` alone throws a ZodError, which
+ * `sendRouteError` does not recognise and the global handler turns into 500.
+ */
+export function parseBody<T>(schema: { safeParse(value: unknown): z.SafeParseReturnType<unknown, T> }, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  const path = issue?.path.length ? `${issue.path.join(".")}: ` : "";
+  throw new HttpError(422, `${path}${issue?.message ?? "Invalid request body"}`);
+}
+
 export function sendRouteError(reply: FastifyReply, error: unknown): FastifyReply {
   logServerRouteError(reply, error);
   if (error instanceof HttpError) {
-    return reply.code(error.statusCode).send(error.responseBody ?? { detail: error.message });
+    if (error.responseBody !== undefined || error.statusCode < 500) {
+      return reply.code(error.statusCode).send(error.responseBody ?? { detail: error.message });
+    }
+    return reply.code(error.statusCode).send(serverFailureBody(reply, error));
   }
   if (
     error instanceof Error &&
     "statusCode" in error &&
     typeof (error as { statusCode?: unknown }).statusCode === "number"
   ) {
-    return reply
-      .code((error as { statusCode: number }).statusCode)
-      .send({ detail: error.message });
+    const statusCode = (error as { statusCode: number }).statusCode;
+    return reply.code(statusCode).send(statusCode < 500 ? { detail: error.message } : serverFailureBody(reply, error));
   }
   throw error;
+}
+
+/** A failure class a provider or transport error may announce; anything else is withheld. */
+const FAILURE_CLASSES = new Set(["transient", "rate_limit", "quota", "permanent", "auth", "timeout"]);
+
+/**
+ * The body of a 5xx that the server did not author as a structured response:
+ * a fixed explanation, the request id the log line carries, and only
+ * allowlisted structure — a stable error code and a failure class that says
+ * whether retrying is sensible. Never the exception's message: a provider's
+ * error text, a URL with a credential in it, a path on this machine, or
+ * another Space's content would otherwise reach whoever made the request.
+ */
+function serverFailureBody(reply: FastifyReply, error: Error): Record<string, unknown> {
+  const code = (error as { code?: unknown }).code;
+  const failureClass = (error as { resilience?: { failure_class?: unknown } }).resilience?.failure_class;
+  const requestId = reply.getHeader(REQUEST_ID_HEADER);
+  return {
+    detail: "The request could not be completed; the server log has the details under this request id.",
+    request_id: typeof requestId === "string" ? requestId : null,
+    ...(typeof code === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(code) ? { code } : {}),
+    ...(typeof failureClass === "string" && FAILURE_CLASSES.has(failureClass)
+      ? { failure_class: failureClass, retryable: failureClass === "transient" || failureClass === "rate_limit" || failureClass === "timeout" }
+      : {}),
+  };
 }
 
 /**
@@ -125,7 +168,15 @@ export function bodyText(request: FastifyRequest): string {
 export function jsonBody(request: FastifyRequest): Record<string, unknown> {
   const text = bodyText(request);
   if (!text) return {};
-  const parsed = JSON.parse(text) as unknown;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    // The app shell hands every body over as a raw buffer, so a body that is
+    // not JSON reaches here rather than Fastify's own parser: it is the
+    // client's error, not a server fault.
+    throw new HttpError(422, "Invalid JSON body");
+  }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new HttpError(422, "JSON object body is required");
   }
@@ -259,6 +310,33 @@ export async function withDbTransaction<T>(
 }
 
 /**
+ * Runs a step whose failure the caller handles in `onFailure` (by logging, or
+ * by rethrowing). On a transaction client a database error would otherwise
+ * leave the whole transaction aborted even when it is caught, so there the
+ * step runs behind a savepoint and a failure rolls back only the step.
+ */
+export async function bestEffortStep(
+  db: Queryable,
+  savepoint: string,
+  step: () => Promise<unknown>,
+  onFailure: (error: unknown) => void,
+): Promise<void> {
+  const handle = db as Queryable & { release?: () => void; connect?: () => Promise<unknown> };
+  const onPool = typeof handle.connect === "function" && typeof handle.release !== "function";
+  const contained = !onPool && await db.query(`SAVEPOINT ${savepoint}`).then(() => true, () => false);
+  try {
+    await step();
+    if (contained) await db.query(`RELEASE SAVEPOINT ${savepoint}`);
+  } catch (error) {
+    if (contained) {
+      await db.query(`ROLLBACK TO SAVEPOINT ${savepoint}`).catch(() => undefined);
+      await db.query(`RELEASE SAVEPOINT ${savepoint}`).catch(() => undefined);
+    }
+    onFailure(error);
+  }
+}
+
+/**
  * Same transaction semantics as `withDbTransaction`, but for application
  * services that are constructed with a `Queryable` that may already be a
  * transaction client (nested inside a caller's transaction). Opens a real
@@ -294,10 +372,18 @@ export async function withQueryableTransaction<T>(
 }
 
 /**
+ * Escapes `\\`, `%` and `_` so a user's search text matches as the characters
+ * typed inside a `LIKE`/`ILIKE` pattern; pair it with `ESCAPE '\\'` in the SQL.
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
+/**
  * Wraps an async callback so every call chains strictly after the one
  * before it, instead of racing when called from synchronous, un-awaited
  * call sites (a live output-stream callback firing several times per
- * chunk, none of which its caller awaits). Without this, two calls whose
+ * chunk, none of which its caller awaits). Do not let those calls race. Two calls whose
  * work reads-then-writes some shared "current max" state (an
  * `event_index`-style cursor) can both read the same starting point and
  * collide. A rejection from one call does not skip or block the next —
@@ -306,9 +392,8 @@ export async function withQueryableTransaction<T>(
  * callback must not crash its un-awaited caller via an unhandled
  * rejection); a caller that needs to know a batch actually landed should
  * `await` the returned promise and check separately, not rely on rejection.
- * `control-center-phase2-plan.md` P1: built for `host_thread_events` writes
- * and the pre-existing `run_events` semantic-event sink, which had the
- * identical race, found via this same phase's own test coverage.
+ * Built for `host_thread_events` writes and the `run_events` semantic-event
+ * sink, which have the same read-then-write race.
  */
 export function serializeCalls<TArg>(
   fn: (arg: TArg) => Promise<unknown>,

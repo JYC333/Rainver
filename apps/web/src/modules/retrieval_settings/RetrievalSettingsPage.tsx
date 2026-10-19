@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, useRef } from 'react'
 import { Database, FileCode2, Search, ShieldAlert, SlidersHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
 import { artifactsApi, providersApi, spacesApi, type ModelProviderOut, type ProviderTaskPolicyOut, type ProviderVendorOut } from '../../api/client'
@@ -122,10 +122,8 @@ type TaskPolicyMap = Partial<Record<RetrievalTask, ProviderTaskPolicyOut>>
 /**
  * Which providers may serve a retrieval task. The capability is the server's —
  * `providerSupportsTask` derives the same answer from the same registry — so
- * this reads it rather than restating it. These three predicates used to be
- * hardcoded lists identical to the server's, which meant a vendor change had to
- * be made in both places or the page would offer a provider the PUT rejects,
- * or hide one it would have accepted.
+ * this reads it rather than restating it. Do not hardcode the vendor lists:
+ * a second list offers a provider the PUT rejects, or hides one it accepts.
  */
 function providerFilterFor(
   kind: RetrievalTaskKind,
@@ -302,6 +300,9 @@ export default function RetrievalSettingsPage() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [calibrationArtifacts, setCalibrationArtifacts] = useState<Artifact[]>([])
+  // The same page instance serves /spaces/A/... and /spaces/B/...; a Space's
+  // answer that arrives after the switch would be saved into the other Space.
+  const settingsRequest = useRef(0)
 
   const load = useCallback(async () => {
     if (!activeSpaceId) {
@@ -310,6 +311,7 @@ export default function RetrievalSettingsPage() {
       setTaskSelections({})
       return
     }
+    const request = ++settingsRequest.current
     setLoading(true)
     try {
       const [next, nextVendors, policies, artifacts] = await Promise.all([
@@ -324,6 +326,7 @@ export default function RetrievalSettingsPage() {
         }),
         artifactsApi.list({ limit: 200 }).then(page => page.items).catch(() => []),
       ])
+      if (request !== settingsRequest.current) return
       setVendors(nextVendors)
       const policyMap = Object.fromEntries(
         RETRIEVAL_TASKS
@@ -343,12 +346,13 @@ export default function RetrievalSettingsPage() {
       setEmbeddingDimensions(String(next.embedding_dimensions))
       setCalibrationArtifacts(artifacts)
     } catch (error) {
+      if (request !== settingsRequest.current) return
       toast.error(errMsg(error))
       setSettings(null)
       setTaskPolicies({})
       setTaskSelections({})
     } finally {
-      setLoading(false)
+      if (request === settingsRequest.current) setLoading(false)
     }
   }, [activeSpaceId])
 

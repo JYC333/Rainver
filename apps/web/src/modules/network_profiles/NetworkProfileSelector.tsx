@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import { networkProfilesApi } from '../../api/client'
 import type { NetworkProfileOut } from '../../types/api'
+import { useAppTranslation } from '../../i18n'
 
 export default function NetworkProfileSelector({
   value,
@@ -14,6 +15,7 @@ export default function NetworkProfileSelector({
   disabled?: boolean
   className?: string
 }) {
+  const { t } = useAppTranslation()
   const [profiles, setProfiles] = useState<NetworkProfileOut[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -38,10 +40,10 @@ export default function NetworkProfileSelector({
         disabled={disabled || loading}
         className="flex h-9 min-w-0 flex-1 rounded-md border border-border bg-input px-3 text-sm"
       >
-        <option value="">Direct</option>
+        <option value="">{t('management_ui.network_profiles.direct')}</option>
         {profiles.map(profile => (
           <option key={profile.id} value={profile.id} disabled={!profile.enabled}>
-            {profile.name}{profile.enabled ? '' : ' (disabled)'}
+            {profile.enabled ? profile.name : t('management_ui.network_profiles.name_disabled', { name: profile.name })}
           </option>
         ))}
       </select>
@@ -50,7 +52,7 @@ export default function NetworkProfileSelector({
         className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground disabled:opacity-50"
         onClick={load}
         disabled={disabled || loading}
-        title="Refresh network profiles"
+        title={t('management_ui.network_profiles.refresh')}
       >
         <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} />
       </button>

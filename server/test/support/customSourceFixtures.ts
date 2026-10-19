@@ -3,7 +3,7 @@ import type { CustomSourceRunnerSettings } from "../../src/modules/sources/custo
 
 /**
  * The Custom Source unit-test fixtures the runner, interpreter, materializer,
- * and create-flow files used to declare each on their own: an enabled runner
+ * and create-flow share: an enabled runner
  * instance, a policy envelope, and the two-article listing page the generated
  * handlers parse. Pass only what a test needs to differ; `limits` merges.
  */

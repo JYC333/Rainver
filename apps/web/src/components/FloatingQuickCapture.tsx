@@ -14,18 +14,13 @@ import { useAppTranslation } from '../i18n'
 const URL_RE = /^https?:\/\/\S+$/i
 
 /**
- * The one capture affordance, everywhere.
+ * The one capture affordance, everywhere. Do not add a second floating button
+ * for another pipeline: the moment a thought arrives is when its category is
+ * not yet known.
  *
- * There used to be two floating buttons at the same corner — a global one
- * writing raw activity to the Personal Space and a Project one appending
- * straight into a note — and the overlap was the visible symptom of a real
- * split: two pipelines competing for one gesture. They are one entry now,
- * because the moment a thought arrives is exactly when its category is not yet
- * known, and classifying before typing is the friction capture exists to remove.
- *
- * So the destination is chosen *after* the box is open, defaults are inferred
- * from where the text came from rather than what it says, and every default is
- * one click from being overridden.
+ * The destination is chosen after the box is open, defaults are inferred from
+ * where the text came from rather than what it says, and every default is one
+ * click from being overridden.
  */
 export function FloatingQuickCapture() {
   const { t } = useAppTranslation()
@@ -40,9 +35,9 @@ export function FloatingQuickCapture() {
   // Set by the paste event, not derived from the text: a paste is where the
   // content came from, which is the only deterministic signal available.
   const [pasted, setPasted] = useState(false)
-  // Deliberately reset after every capture. ADR 0013 decision 2 removed a
-  // sticky write target once already — a destination remembered from last time
-  // is invisible at the moment of writing, which is a mode error.
+  // Reset after every capture (ADR 0013 decision 2). Do not remember a
+  // destination from last time. It is invisible at the moment of writing,
+  // which is a mode error.
   const [chosen, setChosen] = useState<CaptureDestination | null>(null)
   const textRef = useRef<HTMLTextAreaElement>(null)
 
@@ -65,15 +60,15 @@ export function FloatingQuickCapture() {
   const destination = chosen && available.includes(chosen) ? chosen : inferred
 
   // An abandoned capture must not set the destination for the next one either.
-  // The composer is mounted once for the whole app, so without this an explicit
-  // choice would survive closing the panel and walking into another Project.
+  // The composer is mounted once for the whole app. An explicit choice would
+  // survive closing the panel and walking into another Project.
   const reset = useCallback(() => { setPasted(false); setChosen(null) }, [])
   const close = useCallback(() => { setOpen(false); reset() }, [reset])
   useEffect(reset, [reset, projectId, target?.objectId])
 
   // In a Space with one member there is no team to be divided from, so the
   // "only you / team visible" half of every line is noise. What gets stored is
-  // identical either way — a Space that later gains members needs no migration.
+  // identical either way. Do not migrate rows when the Space gains members.
   // Unknown member count reads as "not solo": the Space list arrives
   // asynchronously, and the wording that may be wrong in the gap is the one
   // that understates sharing.
@@ -114,7 +109,9 @@ export function FloatingQuickCapture() {
         ...(destination === 'personal_inbox' ? {} : { project_id: projectId ?? undefined }),
         ...(destination === 'object_marginalia' && target ? { target_id: target.objectId } : {}),
       })
-      setText('')
+      // Only what was sent is cleared. The box keeps focus for the next
+      // thought, so text typed while the save ran is kept, not thrown away.
+      setText(current => current === text ? '' : current.startsWith(text) ? current.slice(text.length).trimStart() : current)
       reset()
       // A capture that landed in a note may have landed in a note the user is
       // looking at. Tell the surfaces once, here, instead of making them watch.

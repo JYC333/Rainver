@@ -107,6 +107,10 @@ export const SkillPackageFileSchema = SkillPackageFilePreviewSchema.extend({
 }).passthrough();
 export type SkillPackageFile = z.infer<typeof SkillPackageFileSchema>;
 
+/** The operations a skill package's Review and Convert actions file. */
+export const SkillPackageProposalOperationSchema = z.enum(["skill_import_approve", "install_from_skill_package"]);
+export type SkillPackageProposalOperation = z.infer<typeof SkillPackageProposalOperationSchema>;
+
 export const SkillPackageSchema = z
   .object({
     id: IdSchema,
@@ -121,6 +125,9 @@ export const SkillPackageSchema = z
     status: SkillPackageStatusSchema,
     created_at: ISODateTimeSchema,
     updated_at: ISODateTimeSchema,
+    // The caller's own still-pending Review or Convert proposal for this
+    // package snapshot; asking again returns it instead of filing another.
+    pending_proposal: z.object({ id: IdSchema, operation: SkillPackageProposalOperationSchema }).nullable(),
     // Detail read only: `GET /skill-packages/:id` joins the owning Source and
     // the file inventory; the list read returns neither.
     source: SkillSourceSchema.optional(),
@@ -229,14 +236,18 @@ export type SkillImportPreviewResponse = z.infer<
 export const SkillImportRequestSchema = z.object({
   url: z.string().min(1),
   source_type: SkillSourceTypeSchema.optional(),
+  // The `package_hash` of the preview being approved. Import re-fetches the
+  // source and answers 409 `skill_package_changed` when the fetched bytes no
+  // longer hash to it.
+  package_hash: z.string().min(1),
 });
+export type SkillImportRequest = z.infer<typeof SkillImportRequestSchema>;
 
 export const SkillConvertToCapabilityRequestSchema = z.object({
   capability_id: z.string().min(1).optional(),
   namespace: z.string().min(1).optional(),
-  // Reserved for the future proposal-gated enablement flow (ADR 0009).
-  // Conversion currently only produces a disabled draft; supplying this field
-  // is rejected until capability enablement goes through proposal review.
+  // Conversion produces a disabled draft. Supplying a project enablement is
+  // rejected: enablement goes through proposal review (ADR 0009).
   enable_for_project_id: IdSchema.nullish(),
   create_runtime_bindings: z.boolean().default(true),
 });

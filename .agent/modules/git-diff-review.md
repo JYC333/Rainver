@@ -15,8 +15,6 @@ workflow.
   for the current Project state. Managed and registered-Location Runs use the
   same per-Run lookup; the card never mutates a workspace or approves a diff.
 
-Design notes: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §4.
-
 ## Related Modules
 - [project-files.md](project-files.md)
 - [proposals.md](proposals.md)

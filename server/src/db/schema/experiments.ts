@@ -7,18 +7,15 @@ import { projects } from "./projects.js";
 import { spaceObjects } from "./knowledge.js";
 import { inquiryThreads } from "./inquiry.js";
 
-// Experiment Domain. Replaces the earlier, narrower
-// `project_experiment_campaigns`/`_runs`/`_provenance` model: a code/prompt
-// A-B comparison becomes one `executor_type` this domain supports
-// (`managed_code_comparison`), not a second top-level Experiment concept.
-// Definition -> Version (immutable config) -> Run (immutable config
-// snapshot) -> Observation (raw recorded data) -> Interpretation (reviewed
-// conclusion, convertible to an Inquiry Evidence Signal).
+// Experiment Domain. `managed_code_comparison` is one `executor_type`, not a
+// second Experiment concept. Do not add a parallel campaign, run, and
+// provenance model beside Definition -> Version -> Run -> Observation ->
+// Interpretation.
 
 export const experimentDefinitions = pgTable("experiment_definitions", {
-	// Ontology object (ADR 0012 / ADR 0011 decision 1). The former `name` is the
-	// root's `title`; identity, visibility, ownership, provenance, and timestamps
-	// live on `space_objects`.
+	// Ontology object (ADR 0012 / ADR 0011 decision 1). The title is the root's
+	// `title`. Identity, visibility, ownership, provenance, and timestamps live
+	// on `space_objects`.
 	objectId: varchar("object_id", { length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	projectId: varchar("project_id", { length: 36 }).notNull(),
@@ -52,7 +49,7 @@ export const experimentVersions = pgTable("experiment_versions", {
 	definitionId: varchar("definition_id", { length: 36 }).notNull(),
 	version: integer().notNull(),
 	// "manual": no execution config, the Run is a human-recorded observation.
-	// "managed_code_comparison": the old Campaign's config shape, carried in
+	// "managed_code_comparison": execution config carried in
 	// config_json (project_folder_id, editable/protected scope, setup_commands,
 	// run_command, metric_parser, time_budget_seconds, timeout_seconds,
 	// resource_budget) — see runService.ts for the exact keys and validation.

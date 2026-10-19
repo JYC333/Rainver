@@ -14,9 +14,9 @@ describe('web API entrypoint', () => {
 
   it('proxies the trusted-host WebSocket through the same dev origin', () => {
     // The one `/internal` path the browser legitimately opens, named exactly.
-    // Proxying all of `/internal` made routes reachable in dev that production
-    // nginx does not forward, which is how a Run tool surface under
-    // `/internal/runs/...` looked like it worked.
+    // Do not proxy all of `/internal`. Production nginx does not forward it,
+    // so a Run tool surface under `/internal/runs/...` would look like it
+    // worked only in dev.
     expect(viteConfigSource).toContain("'/internal/hosts/ws'")
     expect(viteConfigSource).not.toContain("'/internal':")
     expect(viteConfigSource).toContain('ws: true')

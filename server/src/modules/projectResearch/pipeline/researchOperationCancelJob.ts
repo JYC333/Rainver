@@ -39,16 +39,14 @@ const RUN_TERMINAL_SQL_LIST = HARD_TERMINAL_RUN_STATUSES.map((status) => `'${sta
  *   one batch, an accepted leak.)
  * - **Source backfill plans** — the acquisition itself, and the expensive
  *   phase. The segment scheduler advances only plans in `approved`/`running`,
- *   and never consults the Operation's status, so without this an Operation
- *   cancelled mid-backfill kept fetching from the provider and ingesting for
- *   as long as the plan lasted.
+ *   and never consults the Operation's status. Do not leave the plan running.
+ *   A cancelled Operation would keep fetching and ingesting until the plan
+ *   ends.
  * - **The pass Execution** — left `queued`/`running` it stays a live pass
  *   nothing will ever finish.
  *
- * Cancel also resolves the Operation's still-pending checkpoints: pre-reform
- * the checkpoint decision *was* the stop lever, so stopping resolved the row
- * as a side effect; with an independent cancel, a surviving pending gate
- * keeps the web UI advertising a review whose approval would no-op.
+ * Cancel also resolves the Operation's still-pending checkpoints. A surviving
+ * pending gate keeps the web UI advertising a review whose approval would no-op.
  *
  * Everything here is idempotent by construction: `cancelRun` skips Runs that
  * already reached terminal, and every UPDATE is filtered on non-terminal
@@ -89,8 +87,7 @@ export function registerResearchOperationCancelHandler(registry: JobHandlerRegis
     // `projectId` (synthesis/revision/critique in `synthesisCoordinator`,
     // `monitorComparisonService`, `areaService`) and the pass root and node
     // runs from `automation.project_id`, which `findOrCreateResearchAutomation`
-    // always binds to the Project. A future creation path that leaves it null
-    // would be invisible here, which is why this is worth stating.
+    // always binds to the Project. Do not leave `project_id` null.
     const runs = await pool.query<{ id: string }>(
       `SELECT r.id FROM runs r
         WHERE r.space_id=$1 AND r.project_id=$3

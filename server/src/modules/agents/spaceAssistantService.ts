@@ -20,8 +20,8 @@ import { TASK_CONTRACT_POLICY } from "../systemActions/conversationPolicy.js";
 
 const MANAGED_ASSISTANT_NAME = "Space Assistant";
 const MANAGED_ASSISTANT_PROMPT_KEY = "agent_template.personal_assistant.system";
-// The server-host CLIs only: a remote-only adapter (ACP registry agent) has
-// no runtime tool or credential profile on the server for this to provision.
+// Builtin CLI adapters only. A `remote_host_only` adapter has no server-side
+// runtime tool or credential profile for this provisioning. Do not include one.
 //
 // OpenCode first because it takes any OpenAI-compatible endpoint and so works
 // where the vendor-locked CLIs' accounts are hard to obtain; Codex last for
@@ -94,8 +94,7 @@ export interface ManagedAssistantPreparation {
  * Where to send someone whose Space has no backend for its Assistant yet.
  *
  * Both destinations are real work: add a ModelProvider, or log a CLI in on an
- * execution host. The second used to be a server-side credential profile and
- * is now the Command Center's host card.
+ * execution host. The second is the host card.
  */
 export function setupTargetsForMissingBackend(): Array<"model_providers" | "execution_hosts"> {
   return ["model_providers", "execution_hosts"];
@@ -154,8 +153,8 @@ export class SpaceAssistantService {
       );
       const service = new SpaceAssistantService(client, pool);
       for (const { id: agentId } of assistants.rows) {
-        // No CLI runtime is provisionable on the server any more, so every
-        // server-CLI profile a past release created is now unrunnable.
+        // No CLI runtime is provisionable on the server. A server-CLI profile
+        // cannot run, including one already stored. Disable it.
         await service.disableUnavailableCliProfiles(spaceId, agentId);
       }
     });
@@ -164,9 +163,7 @@ export class SpaceAssistantService {
   /**
    * Bring every seed-following Assistant up to the current seed.
    *
-   * Without this a seed change reached a Project's Assistant only when someone
-   * next created a Room there — so a prompt shipped in one release stayed
-   * unapplied on every Assistant that already existed. Runs at boot, once;
+   * A seed change applies to Assistants that already exist. Runs at boot, once;
    * it is idempotent (an instance already at the seed produces no version) and
    * it skips, rather than fails on, an instance whose Project has no eligible
    * backend for its owner. A detached instance is left alone by the same rule
@@ -455,9 +452,9 @@ export class SpaceAssistantService {
   /**
    * Retires a CLI runtime profile that names no execution host.
    *
-   * Such a profile ran a copy the *server* had installed. There are none, so
-   * the profile can only fail at dispatch; disabling it lets the Assistant
-   * fall through to a profile that can actually run.
+   * A CLI profile with no execution host cannot run. There is no
+   * server-installed copy. Disable it so the Assistant falls through to a
+   * profile that can run.
    */
   private async disableUnavailableCliProfiles(spaceId: string, agentId: string): Promise<void> {
     await this.client.query(

@@ -165,9 +165,10 @@ describe("deterministic route selector", () => {
   });
 
   it("lets an explicitly preferred Profile outrank the default on conversational work", () => {
-    // Scoring terms are named for what they measure (B61). A shape-named term
-    // that was really a ten-fold copy of `default_profile` could outscore the
-    // Profile the caller asked for; the default's own weight must not.
+    // Scoring terms are named for what they measure (B61). Do not name a
+    // term for its shape. A ten-fold copy of `default_profile` would
+    // outscore the Profile the caller asked for. The default's own weight
+    // must not.
     const result = new DeterministicRouteSelector().select({
       required_sandbox_level: "none",
       execution_mode: "live",
@@ -255,7 +256,7 @@ describe("deterministic route selector", () => {
     }
   });
 
-  it("rejects a tool-free, file-less adapter from file work, and now admits the CLI", () => {
+  it("admits a CLI that can do the file work and rejects one that cannot", () => {
     const result = new DeterministicRouteSelector().select({
       required_sandbox_level: "none",
       execution_mode: "live",
@@ -274,10 +275,9 @@ describe("deterministic route selector", () => {
         effective_trust_level: "low",
       }),
     ]);
-    // The CLI is selected now. It used to be rejected for having no passing
-    // conformance suite, which was the gate removed on 2026-09-09: a one-shot
-    // behaviour probe, cached against a version key and blind to the model,
-    // was not evidence to refuse work on.
+    // The CLI is selected. Do not reject it for having no passing conformance
+    // suite. A one-shot behaviour probe, cached against a version key and
+    // blind to the model, is not evidence to refuse work on.
     expect(result.selected?.candidate.runtime_profile_id).toBe("open");
     expect(result.rejected).toEqual(expect.arrayContaining([
       expect.objectContaining({

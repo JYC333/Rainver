@@ -5,13 +5,12 @@ import { projectFolders } from "./projectFolders.js";
 import { spaces } from "./spaces.js";
 
 /**
- * execution-topology-and-project-control-plane-plan.md P1 / D2: one
- * physical checkout of a logical `project_folders` row, on one
+ * One physical checkout of a logical `project_folders` row, on one
  * `hosts`/ExecutionHost. A Folder may have several Locations (the same
  * repository checked out on more than one machine or environment); a
  * Location belongs to exactly one Folder and one ExecutionHost.
  *
- * `execution_host_kind` is retained as a denormalized immutable discriminator
+ * `execution_host_kind` is a denormalized immutable discriminator
  * so the remote-root invariant is enforceable in SQL. A composite foreign key
  * below prevents it from drifting from `hosts.kind`.
  *
@@ -20,17 +19,15 @@ import { spaces } from "./spaces.js";
  * location is reachable. Host liveness and workspace readiness are distinct.
  *
  * `branch`/`git_head`/`dirty` are real, nullable columns. The server-host
- * path uses the existing git helpers; a remote daemon reports the same
+ * path uses the git helpers; a remote daemon reports the same
  * observations in its hello/heartbeat payload. Workspace content sync and
- * divergence resolution remain out of scope.
+ * divergence resolution are out of scope.
  */
 export const workspaceLocations = pgTable("workspace_locations", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	// Denormalized from `project_folders.space_id` (write-once, a Folder never
 	// changes Space) so the per-space `root_path` uniqueness constraint below
-	// can be a same-table partial unique index instead of a cross-table trigger
-	// — the same reason the old Folder-level host discriminator existed before
-	// this table.
+	// can be a same-table partial unique index instead of a cross-table trigger.
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	projectFolderId: varchar("project_folder_id", { length: 36 }).notNull(),
 	executionHostId: varchar("execution_host_id", { length: 36 }).notNull(),
@@ -85,8 +82,7 @@ export const workspaceLocations = pgTable("workspace_locations", {
 	// A Folder has one and only one dispatchable checkout. Historical and newly
 	// discovered copies remain archived/stale until an explicit promotion.
 	uniqueIndex("uq_workspace_locations_one_active_per_folder").using("btree", table.projectFolderId.asc().nullsLast()).where(sql`status = 'active'`),
-	// Carries forward `project_folders`' pre-P1 invariant (`uq_project_folders_space_root_path`):
-	// two Locations in the same Space must not claim the same server-host path.
+	// Two Locations in the same Space must not claim the same server-host path.
 	uniqueIndex("uq_workspace_locations_space_root_path").using(
 		"btree",
 		table.spaceId.asc().nullsLast(),

@@ -6,10 +6,9 @@ import { runAssignedTask } from "../src/modules/runs/runAssignedTask.js";
  *
  * A Room turn's `runs.prompt` is the whole assembled prompt — Project state,
  * the conversation's recent messages, the execution rules, and that Agent's
- * own persona and notes. Handing it to a different Agent, which is what the
- * fan-out handover and `agent.wait_for_results` did, carries one Agent's
- * memory of itself into another's vendor session
- * ([ADR 0003](../../.agent/decisions/0003-memory-proposal-flow.md) §4, B68).
+ * own persona and notes. Do not hand it to a different Agent. The fan-out
+ * handover and `agent.wait_for_results` would carry one Agent's memory of
+ * itself into another's vendor session (ADR 0003 §4, B68).
  */
 
 const ROOM_TURN = {

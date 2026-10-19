@@ -42,6 +42,7 @@ const DELIVERY: InvocationDelivery = {
     cursor_through: 1,
     generation: 1,
     rotation_reason: "new_scope",
+    lease_generation: 1,
   },
   control_ref: { type: "execution_control_snapshot", id: "40000000-0000-4000-8000-000000000005" },
   sandbox_ref: null,

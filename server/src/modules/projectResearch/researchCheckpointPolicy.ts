@@ -1,17 +1,14 @@
 import type { Queryable } from "../routeUtils/common.js";
 
 /**
- * Which research checkpoints still stop the workflow, and why.
+ * Which research checkpoints stop the workflow.
  *
- * User dogfooding verdict (2026-08-20): research checkpoints never changed a
- * decision — they were rubber-stamp approved every time — so as blocking gates
- * they only interrupted. The reform makes them informational by
- * default: the checkpoint row is still written, because it is the durable
- * record of what the machine concluded at that point, but the workflow
- * continues and the Room gets a report instead of a permission request.
+ * Checkpoints are informational by default. The checkpoint row is written:
+ * it is the durable record of what the machine concluded. The workflow
+ * continues and the Room gets a report instead of a permission request. Do
+ * not make them blocking gates.
  *
- * Two exceptions survive, for reasons that are not "a human might want to
- * look":
+ * Two exceptions:
  *
  * - `manuscript_gate` blocks because its output is external-facing and
  *   high-stakes. Nothing downstream can un-send a manuscript.
@@ -27,12 +24,11 @@ export const BLOCKING_CHECKPOINT_TYPES: ReadonlySet<string> = new Set(["manuscri
  * How large a screened corpus may be and still flow into synthesis with no
  * human in the loop.
  *
- * This is the budget half of the reform. Removing the gate removes the only
- * place a user saw "N papers matched" before paying for a synthesis over all
- * of them, so the protection has to move from a prompt to a limit: under it,
- * the operation continues unattended; over it, the operation stops and says
- * why, which is a report the user acts on rather than a question they answer
- * on every ordinary run.
+ * The corpus-size limit. That is where the user sees how many items matched
+ * before a synthesis over all of them. Do not drop the gate. Under the limit
+ * the operation continues unattended. Over it the operation stops and says
+ * why. That is a report the user acts on, not a question they answer on every
+ * ordinary run.
  *
  * It is deliberately not the acquisition limit (`history.max_items`, default
  * 10_000): that caps how much material is *collected*, which is cheap, while
@@ -46,12 +42,12 @@ export function screeningExceedsAutoBudget(counts: { relevant: number; maybe: nu
 
 /**
  * Whether a checkpoint type blocks *unconditionally*. This deliberately does
- * not answer the screening question: `screening_gate` blocks on corpus size,
- * and an earlier signature that took the counts as an optional context bag
- * failed open — a caller that forgot to thread the counts through got "does
- * not block" and disabled the budget guard silently. The screening call site
- * must combine this with `screeningExceedsAutoBudget(counts)` explicitly, so
- * forgetting the counts is a visible omission rather than a quiet false.
+ * not answer the screening question: `screening_gate` blocks on corpus size.
+ * Do not take the counts as an optional context bag. A caller that forgot to
+ * thread the counts through would get "does not block" and disable the budget
+ * guard silently. The screening call site must combine this with
+ * `screeningExceedsAutoBudget(counts)` explicitly, so forgetting the counts
+ * is a visible omission rather than a quiet false.
  */
 export function checkpointBlocks(checkpointType: string): boolean {
   return BLOCKING_CHECKPOINT_TYPES.has(checkpointType);
@@ -85,12 +81,11 @@ export async function recordInformationalIdeaReview(
 /**
  * Records that a checkpoint was passed without a human decision.
  *
- * `waived` already means "this gate did not stop the work" and needs no
- * migration; leaving `user_decision` NULL is what separates an automatic
- * waiver from one a person granted, so an audit of the row can still tell
- * whether anybody looked. `decided_by_user_id` stays NULL for the same
- * reason — attributing an automatic advance to the project writer whose
- * identity the pass happens to run under would be a false record.
+ * `waived` means this gate did not stop the work. Leave `user_decision` NULL.
+ * That is what separates an automatic waiver from one a person granted, so an
+ * audit of the row can still tell whether anybody looked. `decided_by_user_id`
+ * stays NULL for the same reason. Do not attribute an automatic advance to the
+ * project writer whose identity the pass happens to run under.
  */
 export async function waiveCheckpointAutomatically(
   db: Queryable,

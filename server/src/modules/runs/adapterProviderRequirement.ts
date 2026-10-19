@@ -2,9 +2,9 @@ import type { ProviderProxyRoute } from "../providers/proxy/lease.js";
 import { providerVendor } from "../providers/vendors.js";
 import { getRuntimeAdapterSpec, type RuntimeAdapterSpec } from "../runtimeAdapters/specs.js";
 
-export type AdapterProviderApi = NonNullable<RuntimeAdapterSpec["model"]["provider_api"]>;
+type AdapterProviderApi = NonNullable<RuntimeAdapterSpec["model"]["provider_api"]>;
 
-export interface AdapterProviderRequirement {
+interface AdapterProviderRequirement {
   /** The `ModelProvider` field the adapter's binding reads for its upstream. */
   base_url_field: "claude_compatible_base_url" | "openai_compatible_base_url";
   missing_base_url_code: string;
@@ -29,9 +29,9 @@ export function adapterProviderApi(runtimeKey: string | null | undefined): Adapt
  * What makes a `ModelProvider` usable by an ACP runtime: the base-URL field its
  * binding reads, and the proxy route the Run's lease is minted on.
  *
- * All that survives of the server-side CLI binding: since ADR 0016 a vendor
- * CLI runs only on an execution host, and the provider binding it receives is
- * built for the wire, not for a local subprocess environment.
+ * A vendor CLI runs only on an execution host (ADR 0016), and the provider
+ * binding it receives is built for the wire, not for a local subprocess
+ * environment.
  * `runs/remoteProviderBinding.ts` is the consumer that mints the lease, and a
  * runtime with no requirement is refused there rather than given a guessed one.
  *

@@ -250,7 +250,7 @@ describe('LibraryItemReaderPage', () => {
   it('loads the reader document and active annotations', async () => {
     await renderPage()
 
-    expect(mockedApi.getDocument).toHaveBeenCalledWith('source_item', 'item-1')
+    expect(mockedApi.getDocument).toHaveBeenCalledWith('source_item', 'item-1', { origin: undefined })
     expect(mockedApi.listAnnotations).toHaveBeenCalledWith('source_item', 'item-1')
     expect(screen.getByText('Signals in Long-Form Reading')).toBeInTheDocument()
     expect(screen.getByTestId('reader-content')).toHaveTextContent('First paragraph.')
@@ -556,13 +556,47 @@ describe('LibraryItemReaderPage', () => {
     await userEvent.click(screen.getByRole('link', { name: 'Next item' }))
 
     await waitFor(() => {
-      expect(mockedApi.getDocument).toHaveBeenLastCalledWith('source_item', 'item-2')
+      expect(mockedApi.getDocument).toHaveBeenLastCalledWith('source_item', 'item-2', { origin: undefined })
     })
     expect(await screen.findByText('Second item')).toBeInTheDocument()
     expect(screen.getByTestId('reader-content')).toHaveTextContent('Next item text.')
     expect(screen.queryByRole('region', { name: 'Selected annotation' })).not.toBeInTheDocument()
     expect(screen.queryByText('Existing comment body')).not.toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Annotation notebook' })).toHaveTextContent('Next item quote.')
+  })
+
+  it('drops an extraction result that returns after the reader moved to another item', async () => {
+    mockedSourcesApi.briefing.mockResolvedValue(makeBriefing({
+      item_decisions: [makeDecision('item-1', 'relevant'), makeDecision('item-2', 'relevant')],
+    }))
+    const secondDoc = { ...docPayload, document_id: 'item-2', source_item_id: 'item-2', title: 'Second item', normalized_text: 'Next item text.' }
+    mockedApi.getDocument.mockImplementation(async (_type, id) => id === 'item-2' ? secondDoc : docPayload)
+    mockedApi.listAnnotations.mockImplementation(async (_type, id) => ({
+      items: id === 'item-2' ? [] : [makeAnnotation()],
+    }))
+    mockedSourcesApi.itemAction.mockResolvedValue({} as never)
+    mockedSourcesApi.jobs.mockImplementation(async params => ({
+      items: params?.status === 'pending' ? [{ id: 'extract-job-1', status: 'pending' } as never] : [],
+      total: params?.status === 'pending' ? 1 : 0,
+      limit: 1,
+      offset: 0,
+    }))
+    let finishExtraction: (job: unknown) => void = () => {}
+    mockedSourcesApi.runJob.mockReturnValue(new Promise(resolve => { finishExtraction = resolve }) as never)
+
+    await renderPage('/library/digests/conn-1/2026-07-07/items/item-1')
+    await userEvent.click(screen.getByRole('button', { name: 'Re-extract' }))
+    await waitFor(() => expect(mockedSourcesApi.runJob).toHaveBeenCalledWith('extract-job-1'))
+
+    await userEvent.click(screen.getByRole('link', { name: 'Next item' }))
+    expect(await screen.findByText('Second item')).toBeInTheDocument()
+
+    await act(async () => { finishExtraction({ status: 'succeeded' }) })
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Text extraction succeeded'))
+    expect(screen.getByText('Second item')).toBeInTheDocument()
+    expect(screen.getByTestId('reader-content')).toHaveTextContent('Next item text.')
+    expect(screen.getByRole('region', { name: 'Annotation notebook' })).not.toHaveTextContent('First paragraph.')
   })
 
   it('moves paragraph focus with arrows and highlights the focused paragraph with H', async () => {

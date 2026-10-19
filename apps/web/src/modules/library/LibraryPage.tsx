@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { toast } from 'sonner'
 import { BookOpen, CheckCircle2, ExternalLink, FileText, Library, RefreshCw, Search, XCircle } from 'lucide-react'
@@ -6,7 +6,7 @@ import { SpaceLink as Link } from '../../core/spaceNav'
 import { informationDigestsApi, projectsApi, sourcesApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { errMsg } from '../../lib/utils'
-import type { ExtractionJob, InformationDigest, InterestProfileSnapshot, Project, SourceChannel, SourceItem, SourcePostProcessingBriefingDaySummary } from '../../types/api'
+import type { ExtractionJob, InformationDigestLookup, InterestProfileSnapshot, Project, SourceChannel, SourceItem, SourcePostProcessingBriefingDaySummary } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Badge, StatusBadge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
@@ -27,7 +27,10 @@ import {
 } from '../sources/sourcePageModel'
 import { runPendingItemJob } from '../sources/sourceActions'
 import { InformationDigestView } from './InformationDigestView'
+import { AnnotationRecoveryNotice, DigestDayNav, DigestMissing, DigestProvenance } from './DigestDay'
+import { useAppTranslation } from '../../i18n'
 import { InterestProfileControls } from './InterestProfileControls'
+import { formatCalendarDay } from '../../i18n/format'
 
 const ITEM_PAGE_SIZE = 30
 const BRIEF_PAGE_SIZE = 10
@@ -63,11 +66,7 @@ const TYPE_VIEW_COPY: Record<LibraryItemTypeFilter, { title: string; emptyTitle:
 }
 
 function fmtDate(date: string): string {
-  return new Date(`${date}T00:00:00`).toLocaleDateString(undefined, {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-  })
+  return formatCalendarDay(date)
 }
 
 export default function LibraryPage() {
@@ -259,6 +258,9 @@ function LibraryItemsRoute({ libraryType }: { libraryType?: LibraryItemTypeFilte
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
   const [extractionStatuses, setExtractionStatuses] = useState<Record<string, ExtractionJob['status']>>({})
+  // Every keystroke in the search box is a request; only the latest one's
+  // answer may become the list.
+  const listRequest = useRef(0)
 
   const channelByConnectionId = useMemo(
     () => new Map(channels.map(channel => [channel.source_connection_id, channel])),
@@ -286,6 +288,7 @@ function LibraryItemsRoute({ libraryType }: { libraryType?: LibraryItemTypeFilte
       setLoading(false)
       return
     }
+    const request = ++listRequest.current
     setLoading(true)
     try {
       const itemStatus = itemFilter
@@ -300,13 +303,15 @@ function LibraryItemsRoute({ libraryType }: { libraryType?: LibraryItemTypeFilte
           offset: itemOffset,
         }),
       ])
+      if (request !== listRequest.current) return
       setChannels(channelRows)
       setSourceItems(itemPage.items)
       setItemTotal(itemPage.total)
     } catch (e) {
+      if (request !== listRequest.current) return
       toast.error(errMsg(e))
     } finally {
-      setLoading(false)
+      if (request === listRequest.current) setLoading(false)
     }
   }, [activeSpaceId, itemFilter, itemQuery, channelFilter, libraryType, itemOffset, selectedConnectionId])
 
@@ -445,11 +450,20 @@ export function LibraryDigestsPage() {
   const [briefingTotal, setBriefingTotal] = useState(0)
   const [briefingOffset, setBriefingOffset] = useState(0)
   const [loading, setLoading] = useState(false)
-  const [daily, setDaily] = useState<InformationDigest | null>(null)
+  const { t } = useAppTranslation()
+  // The shown day; null asks for the latest complete day of the digest's timezone.
+  const [day, setDay] = useState<string | null>(null)
+  const [latestDay, setLatestDay] = useState<string | null>(null)
+  const [daily, setDaily] = useState<InformationDigestLookup | null>(null)
+  const shownDay = daily ? (daily.status === 'available' ? daily.digest.digest_date : daily.digest_date) : null
   const [profile, setProfile] = useState<InterestProfileSnapshot | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
 
+  // Fast prev/next fires overlapping loads: only the latest may land, so the
+  // day shown is always the day asked for.
+  const loadRequest = useRef(0)
   const load = useCallback(async () => {
+    const request = ++loadRequest.current
     if (!activeSpaceId) {
       setBriefings([])
       setBriefingTotal(0)
@@ -461,25 +475,35 @@ export function LibraryDigestsPage() {
     try {
       const [briefingResult, dailyResult, profileResult, projectResult] = await Promise.allSettled([
         sourcesApi.briefings({ limit: BRIEF_PAGE_SIZE, offset: briefingOffset }),
-        informationDigestsApi.personal(activeSpaceId),
+        informationDigestsApi.personal(activeSpaceId, day ?? undefined),
         informationDigestsApi.profile(activeSpaceId),
         projectsApi.list({ status: 'active', limit: 200 }),
       ])
+      if (request !== loadRequest.current) return
       if (briefingResult.status === 'fulfilled') {
         setBriefings(briefingResult.value.items)
         setBriefingTotal(briefingResult.value.total)
       } else {
         throw briefingResult.reason
       }
-      if (dailyResult.status === 'fulfilled') setDaily(dailyResult.value)
+      if (dailyResult.status === 'fulfilled') {
+        setDaily(dailyResult.value)
+        const result = dailyResult.value
+        if (day === null) setLatestDay(result.status === 'available' ? result.digest.digest_date : result.digest_date)
+      } else {
+        // The day could not be read: say so rather than keep showing the
+        // previous day under the newly selected one.
+        setDaily(null)
+        toast.error(errMsg(dailyResult.reason))
+      }
       if (profileResult.status === 'fulfilled') setProfile(profileResult.value)
       setProjects(projectResult.status === 'fulfilled' ? projectResult.value.items : [])
     } catch (e) {
-      toast.error(errMsg(e))
+      if (request === loadRequest.current) toast.error(errMsg(e))
     } finally {
-      setLoading(false)
+      if (request === loadRequest.current) setLoading(false)
     }
-  }, [activeSpaceId, briefingOffset])
+  }, [activeSpaceId, briefingOffset, day])
 
   useEffect(() => { load() }, [load])
 
@@ -500,7 +524,30 @@ export function LibraryDigestsPage() {
         </Button>
       </div>
 
-      {daily && <InformationDigestView digest={daily} projects={projects} onFileToProject={async (itemId, sourceItemId, projectId) => {
+      {activeSpaceId && <AnnotationRecoveryNotice spaceId={activeSpaceId} />}
+
+      {daily && shownDay && (
+        <DigestDayNav
+          date={shownDay}
+          timezone={daily.status === 'available' ? daily.digest.timezone : daily.timezone}
+          canGoForward={latestDay !== null && shownDay < latestDay}
+          onSelect={setDay}
+        />
+      )}
+      {daily?.status === 'missing' && (
+        <DigestMissing missing={daily} onBackfill={async (date) => {
+          if (!activeSpaceId) return
+          try {
+            const result = await informationDigestsApi.backfillPersonal(activeSpaceId, date)
+            setDaily({ status: 'available', digest: result.digest })
+            toast.success(result.created ? t('digest_reports.backfill_done') : t('digest_reports.backfill_existing'))
+          } catch (error) {
+            toast.error(errMsg(error))
+          }
+        }} />
+      )}
+      {daily?.status === 'available' && <DigestProvenance digest={daily.digest} />}
+      {daily?.status === 'available' && <InformationDigestView digest={daily.digest} projects={projects} onFileToProject={async (itemId, sourceItemId, projectId) => {
         try {
           await projectsApi.addCorpusItem(projectId, {
             source_item_id: sourceItemId,
@@ -516,9 +563,12 @@ export function LibraryDigestsPage() {
         if (!activeSpaceId) return
         try {
           const result = await informationDigestsApi.serendipityFeedback(activeSpaceId, itemId, feedback)
-          setDaily(current => current ? {
-            ...current,
-            items: current.items.map(item => item.id === itemId ? { ...item, serendipity_feedback: result.feedback } : item),
+          setDaily(current => current?.status === 'available' ? {
+            status: 'available',
+            digest: {
+              ...current.digest,
+              items: current.digest.items.map(item => item.id === itemId ? { ...item, serendipity_feedback: result.feedback } : item),
+            },
           } : current)
           toast.success(result.blocked ? 'Direction blocked' : 'Feedback saved')
         } catch (error) {

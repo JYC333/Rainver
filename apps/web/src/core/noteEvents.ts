@@ -4,9 +4,8 @@
  * A note can be written from somewhere other than the editor showing it: quick
  * capture appends marginalia to a note that may be open in a tab right now. The
  * two cheap answers are both wrong here. Polling pays its cost on every tick
- * whether or not anything changed, and refetch-on-focus misses precisely the
- * case that prompted this — composer and note visible at the same time, focus
- * never leaving the page.
+ * whether or not anything changed, and refetch-on-focus misses the composer
+ * and the note visible at the same time, with focus never leaving the page.
  *
  * So nothing runs until a write actually lands, and then exactly one message
  * goes out. Same tab travels over an EventTarget; other tabs of the same origin
@@ -22,9 +21,9 @@
  * need a server→client stream, which this deliberately is not.
  */
 
-export type NoteChangedReason = 'capture'
+type NoteChangedReason = 'capture'
 
-export interface NoteChangedDetail {
+interface NoteChangedDetail {
   /** The note that changed, when the write landed in one. */
   noteId: string | null
   /** The Project it belongs to, for surfaces scoped to one. */

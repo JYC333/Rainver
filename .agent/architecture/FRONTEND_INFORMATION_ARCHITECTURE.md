@@ -23,8 +23,8 @@ an `<img>` the browser fetches with no click (D5); its `urlTransform` blanks a
 `src` that is neither same-origin nor `http(s)`; and its sanitize schema drops
 `<source>`, because a `<picture>`'s external `srcset` fetches without passing
 through either of the other two. Raw `<img>` HTML arrives at the same component,
-since Streamdown's pipeline parses HTML into real elements before rendering;
-`skipHtml` does nothing there, so it was removed. An image the instance serves
+since Streamdown's pipeline parses HTML into real elements before rendering.
+An image the instance serves
 itself still renders inline, and an in-app markdown link is a working
 destination rather than a confirmation dialog.
 
@@ -63,16 +63,41 @@ a successful preview for the current Run and input.
 The frontend owns presentation locale. `apps/web/src/i18n/` uses `react-i18next`
 with bundled English and Simplified Chinese resources, English as the default
 and fallback, and a browser-local `rainver:locale` choice that survives logout.
-Settings and public authentication pages expose the switch. The Shell,
-navigation, Space switcher, Home, quick capture, Settings, public authentication,
-account security, Conversation action previews, and Evolution pages use it.
+Settings and public authentication pages expose the switch. Translated today:
+the Shell, navigation, Space switcher, Home, quick capture, Settings, public
+authentication, account security, Evolution, conversations (preflight,
+composer, turns, discussions, run controls, session config, retrieval switch),
+the Agent chat panel, Sessions, Publications, Prompts, Capabilities, Plugins,
+Project Files and Folder settings, Network Profiles, the Job Queue, Activity
+(queue, detail, inbox), the Knowledge notes tree and overview, focus areas,
+digests and daily reports, Token Usage, Memories (including maintenance scans),
+the provider card and its model fields, the information digest view, the error
+boundary, role gates, and the shared
+dialog, date picker, pagination, graph, editor and one-time link components.
 Other module copy is migrated by its owning page. Add page dictionaries under
 `apps/web/src/i18n/` with matching English and Chinese keys, then register them
-in `index.ts` and render through `useAppTranslation`. The catalog test checks
-registered keys and interpolation placeholders across both languages. Locale
-changes do not alter route identifiers, API contracts, server-authored data,
-or authorization.
-User-authored and server-authored text is displayed in its original language.
+in `index.ts` and render through `useAppTranslation`; code outside components
+(utilities, class components' helpers, async callbacks) uses the same `i18n`
+instance's `t`, never a second translation state. Plurals use i18next's
+`_one`/`_other` keys with `count`; English plurals are never concatenated. The
+catalog test checks registered keys and interpolation placeholders across both
+languages.
+Dates, numbers, sizes and relative times go through `apps/web/src/i18n/format.ts`
+(`formatDateTime`, `formatDate`, `formatTime`, `formatDateParts`,
+`formatCalendarDay`, `formatNumber`, `formatRelativeTime`, `formatBytes`), which
+read the current locale from the one instance. A value that belongs to a business
+day passes that day's time zone (or, for a stored calendar day, uses
+`formatCalendarDay`), so a locale change rewords a date but never moves a digest
+or capture to another day. The official diary plugin receives the locale through
+its host's `DiaryWebHost.useLocale()` and keeps its own message table.
+Locale changes do not alter route identifiers, API contracts, server-authored
+data, or authorization. User-authored and server-authored text, and protocol
+codes shown as values, are displayed as they are; the UI words a server reason
+from its code. A proposal whose title the server composes from facts carries
+those facts as `title_parts` (today: `evolvable_asset_version_promote`), and
+`modules/memory/proposalTitle.ts` words that title in the reader's language on
+every proposal list, detail, Today and Evolution bundle view; any other proposal
+shows its stored title.
 
 The frontend should guide users through the product loop rather than act as an app gallery.
 The goal is a working system the user interacts with daily — not a navigation menu of features.
@@ -184,8 +209,10 @@ does not make its Space a write target; only an explicit Project context does.
 Two stable tiers plus per-scene context (`src/core/navigation.tsx`, `src/components/shell/`):
 
 - **Global Rail** (`RAIL_ITEMS`) — narrow, icon-only desktop rail of major destinations, Home
-  first and stable: Home · Inbox · Library · Sources · Review · Knowledge · Shared · Tasks ·
-  Projects · Agents · Settings. Collapsible/expandable. On mobile this becomes the five-item
+  first and stable: Home · Command Center (the `/spaces/:spaceId` default landing page) ·
+  Inbox · Library · Sources · Review · Knowledge · Shared · Tasks · Projects · Agents ·
+  Evolution, with footer items Instance Settings (instance admin), Space Settings (space
+  admin) and Settings. Collapsible/expandable. On mobile this becomes the five-item
   bottom tab bar (`MOBILE_TAB_ITEMS`: Home · Inbox · Library · Review · Tasks).
 - **Scene Sidebar** (`SCENES`) — second-level navigation for the current scene, changes by
   scene (Inbox / Library / Review / Agents / Artifacts). Collapsible; when collapsed the expand
@@ -200,18 +227,15 @@ Two stable tiers plus per-scene context (`src/core/navigation.tsx`, `src/compone
   layout — notably the backend-driven Notes collection tree, which would collide with a
   persistent section sidebar or tab strip. The Notes tree is local to the Notes section
   and is never a global nav tier; PARA is only the default initialization template.
-  `Domains` (`/knowledge/domains`, focus areas) is one of these sections. It sits here
-  because the app's groupings are functional — capture, knowledge, agents, dev — while a
-  focus area is a life-area grouping. The placement is not a claim that a focus area
-  is knowledge, and it is the reason Domains is not in `KNOWLEDGE_WORKSPACE_SECTIONS`
-  (it is a parked destination, not one `/knowledge` should reopen by default).
+  `Domains` (`/knowledge/domains`, focus areas) is one of these sections.
+  The app's groupings are functional — capture, knowledge, agents, dev — and a
+  focus area is a life-area grouping. The placement is not a claim that a focus
+  area is knowledge. Domains is not in `KNOWLEDGE_WORKSPACE_SECTIONS`, so
+  `/knowledge` does not reopen it by default.
 - **Right Inspector** — scene/object-specific and owned by individual pages, never an
   app-level feature menu.
 
-The old single mixed sidebar, the "perspective" (personal-as-Space) model, the
-PersonalView-as-Space switcher entry, the module-gallery Home, the imperative
-`setActiveSpace`/`activeOperationalSpace*` context API, and `location.state` navigation handoffs
-(now `?open=` / `?draft=` URL params) have been removed. All navigation is URL-based.
+Navigation is URL-based (`?open=` / `?draft=`). There is no mixed sidebar, no personal-as-Space switcher, and no `location.state` handoff.
 
 ---
 
@@ -289,12 +313,19 @@ not be navigable.
 | Snapshot Rollback Defaults | Enabled | Space-admin-only section on Space Settings (`/space-settings`) configuring the space-wide `snapshot_retention_days_default` / `snapshot_max_count_default` that Project Folders inherit absent a per-Folder override |
 | Retrieval Settings | Enabled | Space-scoped UI for the `retrieval.space.settings` scoped setting and retrieval `provider_task_policies` (`/retrieval-settings`); members can view retrieval models, while owner/admin users can edit default search mode, retrieval embedding dimensions/models, native rerank model, rerank/rewrite availability, rewrite/cache/trace defaults, and default result budget. Query rewrite, rerank, and synthesis prompt editing links to Prompt Library rather than duplicating prompt controls here. |
 | Settings | Enabled | Functional |
+| Command Center | Enabled | `/command-center`; pairs machines, binds their providers, and manages what runs on them; the default landing page of a Space |
+| Ask Space | Enabled | `/ask-space`; one cited, gap-aware question across Knowledge, Memory, and Project summaries |
+| Context Health | Enabled | `/context-ops`; retrieval health, diagnostics, maintenance, feedback, and memory provenance aggregates |
+| Daily Report | Enabled | `/daily-report`; generates a structured daily report from captures; experience and memory proposals require review |
+| Optional Modules | Enabled (space admin) | `/plugins`; official optional module control plane |
+| Network | Enabled (space admin, not in navigation) | `/network-profiles`, reached from Space Settings |
+| Diary, Finance | Official plugins | `/diary`, `/finance`; static defaults `enabled: false, visible: true`, overlaid at runtime by `GET /api/v1/plugins/effective` |
 | Capabilities | Enabled | Capability/skill control-plane; developer-heavy but user-visible for review |
 | Prompt Library | Enabled | Space-admin prompt control plane at `/prompts`; lists prompt assets and versions, previews/evaluates immutable prompt versions, manages staging/production deployment refs, supports proposal-backed production promotion and rollback, and shows distinct prompt sets plus read-only workflow/capability usage context for auto research assets |
 | Agent Plans | Enabled | `/plans` is a read/review surface for Agent-generated Plans. Plan creation and revision start from Task Detail's Ask Agent to plan action; Plan Detail shows Source Task, review Proposal, Execute, Reconcile, versions, Plan Nodes, node Runs, and root Run. No raw-definition or New Plan form exists. |
 | Automations | Enabled | Space-scoped manual/scheduled Automation surface at `/automations`; supports agent runs, maintenance targets, and fixed Workflow targets with pin/follow resolution, version selection, input JSON, Run now, Pause/Resume, Archive, recent Workflow Executions, node progress, checkpoints, and root Run links. Scheduled Workflow targets are pinned. |
 | Evolution | Enabled | `/evolution`; manages candidate asset versions, draft editing, direct candidate/testing transitions, Evaluation Cases, queued evaluations over existing candidate Runs, evaluation evidence, and proposal-backed Promotion. |
-| Evolution Inbox | Enabled | `/evolution/inbox`; consolidates signals, all visible pending proposal evidence (including ordinary memory/code/workflow proposals), D3 bundles, evaluation evidence, and standard approval actions. Bundle decisions remain server-governed and the UI never applies proposals directly. |
+| Evolution Inbox | Enabled | `/evolution/inbox`; consolidates signals, all visible pending proposal evidence (including ordinary memory/code/workflow proposals), evolution bundles, evaluation evidence, and standard approval actions. Bundle decisions remain server-governed and the UI never applies proposals directly. |
 | Providers | Enabled | Functional; provider cards and create/edit forms show capability labels for Chat, Embeddings, and Native rerank, and creation is split into chat-provider, embedding-provider, and rerank-provider flows so retrieval-only providers are not confused with ordinary chat providers |
 | Token Usage | Enabled | Reached from personal Settings (`/settings` → Usage card) at `/usage`, visible to every active member — not a primary rail destination, since it is a lower-frequency review surface and Space Settings is admin-gated and would hide it from ordinary members. Defaults to `Mine` and supports `Shared in space` and `All visible`; all server aggregations are permission-filtered before grouping. The dashboard shows model token usage, estimated cost, accuracy, platform attribution, sessions, dimensions, read-only budget preview, and private local CLI history imports without exposing prompt or completion content. |
 | Runtime (CLI Adapters) | Enabled | Functional |
@@ -309,21 +340,21 @@ Managed host workspaces are surfaced consistently across the Agents and Rooms ro
 | **Sources** | Enabled | Space-scoped information stream control plane at `/sources`; owns RSS/Atom/web page connections, owner/visibility metadata, opt-in delivery subscriptions, source-level health, scan state, and source governance. Pending source recommendations show source metadata and Follow/Dismiss/Mute actions without exposing the item stream until the user follows. Project item feeds do not live here. |
 | **Project Sources** | Enabled | The Sources Area at `/projects/:projectId/sources` has three tabs over one pipeline — Sources, Raw material (`?tab=raw`; `/raw` redirects), Digest (`?tab=digest`; `/digest` redirects). The Sources tab is the acquisition/control surface; binds existing Sources, explicitly shows/selects the extraction profile and per-binding Standing switch, shows health, runs scans/backfills, pauses/removes bindings, and renders newly materialized source items. A direct binding defaults to the registered generic-document profile and Standing on. It does not own article-level corpus review. |
 | **Research Area** | Enabled | Project research work at `/projects/:projectId/research`, with one six-tab surface: **Standing overview** for goal-ambiguous work and recent inflow, **Focus workbench** for Inquiry-Thread-scoped stage progression, filterable **Reading List** with triage/read and WHY/HOW/WHAT, draggable **Checklist** with agent-origin badges, immutable **Reports** snapshots, and **Runs** — every evidence search the Project is running with its Checkpoint controls (`?tab=runs`, where attention items land). Standing and Focus stay mounted while their tabs are inactive so switching does not discard setup drafts, selections, or either domain's state. Notes are not a Research tab; the Project-level Notes surface owns writing and notebook chat. Project Sources remains acquisition-only with a pointer to the Reading List. |
-| **Project Shell** | Enabled | Every `/projects/:projectId/*` destination shares persistent navigation in two tiers: four promoted destinations always visible — **Pulse** (index), **Board**, **Updates**, **Conversations** (every conversation in the Project as one list, grouped by audience — the Project's own lead with no heading, a limited group appears as a section titled by its roster ("With Alice and Bob · 2 agents") only for its members, and Rooms opened but not yet spoken in are listed so they stay reachable. Creating one offers *in this Project* or *with a limited group…*, the second being a roster picker, each opening in its Room; the Rooms page is reached from it) — and six Areas, flat, under a collapsible **Areas** disclosure remembered per browser: Notes, Inquiry, Research, Sources, Files & Code, Decisions. Raw material and Digest are tabs of Sources, Knowledge review and Experiments are views of Inquiry, Learning and Operations retired to the Space; every previous deep link redirects to its new home. A Project's Task also opens inside the shell at `/projects/:projectId/tasks/:taskId`, rendering the same page as top-level `/tasks/:taskId`. `/projects/:projectId/notes` mounts the shared Notes workspace hoisted to the Project collection, with the same editor/actions as global Notes and Project-scoped notebook chat. Every Area is served by the shell's single floating **Capture** composer: the Project shell declares the Project and an Area that knows what it is currently about declares that object (Inquiry declares its focused Thread; no other Area declares one today), which is what makes the object-marginalia destination reachable. Every destination writes an `activity_record` first; the two marginalia destinations additionally project the text into the caller's own private note in the same transaction. Notes may be shared into another Project by explicit confirmation on placement, shown and revocable from the note's `Shared` status chip. Pulse (the index route, formerly Overview) is the Project's front page: its goal and current focus, a prompt to define the goal until one exists, what needs attention, what is in progress, and the latest reported updates — and hosts no Area's working surface. It carries no Health field, Autonomy switch, or Pause (nothing writes them), no generated "Next" links (they pointed at Areas the sidebar lists), no "Recent activity" (the raw-material queue under another name), and no per-entity summary rows (the Areas list again with counts). Goal edits append an immutable Brief Version and focus edits update Project presentation metadata. Attention is rendered by the shell sidebar, which is on screen from every Area; Pulse renders the same list unfiltered, so the two cannot disagree about whether anything is pending. Every item carries an `attention_class` — `gate` (a decision is blocked on a person), `remainder` (a bounded pipeline offering to spend more), `next_step` (the system's own recorded suggestion, adoptable in one click from Pulse) or `uncertain` (the Agent flagged its own doubt) — and Pulse groups by it, because a decision, a spend, a suggestion and a doubt are acted on differently; the server refuses an adapter that emits an item without one rather than let it vanish from a surface that renders only the four. Nothing else belongs there: "confirm what I already did" is an Updates row, and one item per element of a decomposition the person asked for is what teaches a person to stop reading the list ([ADR 0017](../decisions/0017-authorization-by-cost-not-authorship.md) §4). The Updates page shows what an Agent did directly, folds one turn's writes of one kind into a single expandable row, and offers Undo on each row that can be put back. **In progress** is every kind of running work, not only Tasks: the overview carries the Project's unfinished Operations (`in_progress`, the fields `researchOperationDetail`/`researchOperationPercent` read), so a research acquisition screening 873 documents shows its stage and "848/873 materials classified" on the front page — with a percentage and step position beside the bar, so a stage that counts nothing of its own (synthesis) still says how far along it is instead of showing only a spinner — and links straight to that Operation's row — Pulse renders the Area's own sentence rather than a second one, and still fetches nothing an Area owns. There is no setup checklist: Pulse asks for a goal until one is defined, and each Area's empty state offers its own first action. nothing hides or converts another Area's objects; zero-Folder Projects keep every Area reachable. |
+| **Project Shell** | Enabled | Every `/projects/:projectId/*` destination shares persistent navigation in two tiers: four promoted destinations always visible — **Pulse** (index), **Board**, **Updates**, **Conversations** (every conversation in the Project as one list, grouped by audience — the Project's own lead with no heading, a limited group appears as a section titled by its roster ("With Alice and Bob · 2 agents") only for its members, and Rooms opened but not yet spoken in are listed so they stay reachable. Creating one offers *in this Project* or *with a limited group…*, the second being a roster picker, each opening in its Room; the Rooms page is reached from it) — and six Areas, flat, under a collapsible **Areas** disclosure remembered per browser: Notes, Inquiry, Research, Sources, Files & Code, Decisions. Raw material and Digest are tabs of Sources, Knowledge review and Experiments are views of Inquiry, and Project `/learning` redirects to Pulse. `/operations` redirects to Research's Runs tab. `/digest` and `/raw` redirect to Sources tabs, `/experiments` to the Inquiry experiments view, and `/knowledge-review` to the Inquiry review candidates tab. `/delivery` redirects to Board. A Project's Task also opens inside the shell at `/projects/:projectId/tasks/:taskId`, rendering the same page as top-level `/tasks/:taskId`. `/projects/:projectId/notes` mounts the shared Notes workspace hoisted to the Project collection, with the same editor/actions as global Notes and Project-scoped notebook chat. Every Area is served by the shell's single floating **Capture** composer: the Project shell declares the Project and an Area that knows what it is currently about declares that object (Inquiry declares its focused Thread; no other Area declares one today), which is what makes the object-marginalia destination reachable. Every destination writes an `activity_record` first; the two marginalia destinations additionally project the text into the caller's own private note in the same transaction. Notes may be shared into another Project by explicit confirmation on placement, shown and revocable from the note's `Shared` status chip. Pulse (the index route) is the Project's front page: its goal and current focus, a prompt to define the goal until one exists, what needs attention, what is in progress, and the latest reported updates — and hosts no Area's working surface. It carries no Health field, Autonomy switch, or Pause (nothing writes them), no generated "Next" links (the sidebar already lists the Areas), no "Recent activity" (the raw-material queue under another name), and no per-entity summary rows (the Areas list again with counts). Goal edits append an immutable Brief Version and focus edits update Project presentation metadata. Attention is rendered by the shell sidebar, which is on screen from every Area; Pulse renders the same list unfiltered, so the two cannot disagree about whether anything is pending. Every item carries an `attention_class` — `gate` (a decision is blocked on a person), `remainder` (a bounded pipeline offering to spend more), `next_step` (the system's own recorded suggestion, adoptable in one click from Pulse) or `uncertain` (the Agent flagged its own doubt) — and Pulse groups by it, because a decision, a spend, a suggestion and a doubt are acted on differently; the server refuses an adapter that emits an item without one rather than let it vanish from a surface that renders only the four. Nothing else belongs there: "confirm what I already did" is an Updates row, and one item per element of a decomposition the person asked for is what teaches a person to stop reading the list ([ADR 0017](../decisions/0017-authorization-by-cost-not-authorship.md) §4). The Updates page shows what an Agent did directly, folds one turn's writes of one kind into a single expandable row, and offers Undo on each row that can be put back. **In progress** is every kind of running work, not only Tasks: the overview carries the Project's unfinished Operations (`in_progress`, the fields `researchOperationDetail`/`researchOperationPercent` read), so a research acquisition screening 873 documents shows its stage and "848/873 materials classified" on the front page — with a percentage and step position beside the bar, so a stage that counts nothing of its own (synthesis) still says how far along it is instead of showing only a spinner — and links straight to that Operation's row — Pulse renders the Area's own sentence rather than a second one, and still fetches nothing an Area owns. There is no setup checklist: Pulse asks for a goal until one is defined, and each Area's empty state offers its own first action. nothing hides or converts another Area's objects; zero-Folder Projects keep every Area reachable. |
 | **Inquiry Area** | Enabled | Project-owned Question/Hypothesis domain at `/projects/:projectId/inquiry`, presented as four sibling views over one route: **Focus** (default), **Map**, **Review** (two tabs: Inquiry candidates and Knowledge candidates), and **Experiments**. Focus has a navigator grouped by attention state, a Thread header, one unified stage workspace, and secondary Evidence/Relations/Notes/History tabs. The workspace is the sole owner of the derived Clarify → Acquire → Digest → Conclude → Land round: its top row is the only stage selector, and selecting a stage changes the adjacent panel without mutating backend work. Actual current, manually inspected, completed, and running stages remain visually distinct; a manual selection stays pinned through polling, while a successful action follows the newly derived current stage. Each panel explains the stage purpose and completion condition and contains only that stage's actions. One `Suggested next` surface remains visible above it: valid open non-stale model Advice occupies it, otherwise a deterministic state-grounded fallback does, without asking users to distinguish “AI” from “system” advice. Ignoring model Advice dismisses it and reveals the fallback; stale Advice and manual re-analysis controls are absent. Starting a suggestion or alternative writes the Step through the existing work command and navigates to the owning Area; Acquire and Land retain their legitimate in-stage alternatives. A blocked workspace stays readable with actions disabled and an explicit Unblock that clears no Step. Normal round close-out appears in Land; pause, block, early close-out, lifecycle, priority, owner, and personal-Focus commands live in the Thread menu. Running background work is named without replacing guidance. While work is live the page polls Inquiry, Research Workflow, and Advice reads every five seconds, refreshes after local mutations and on visibility return, and installs no interval for idle Threads; model generation remains server-side and event-driven. Refresh demand is coalesced per Project/Thread and responses are identity-fenced, so an older read cannot overwrite a newly selected Thread; transient Research read failures preserve the last successful live-work snapshot, and polling does not discard an in-progress wording edit. Every Area that owns a Step's work renders a thin origin bar naming the Thread that sent the user there. Map shows the primary-parent structure and relation graph; Review owns Delta Brief and bounded Candidate review. Research-question assessment remains the dedicated `/projects/:projectId/inquiry/:threadId/assess` two-pane conversation/framework route: volatile edits require explicit confirmation, confirmed snapshots and wording revisions remain immutable history, and the model never becomes write authority. |
 | **Experiments** (Inquiry view) | Enabled | `/projects/:projectId/inquiry?view=experiments` (`/experiments` redirects); manages Definitions, immutable protocol Versions, manual and managed comparison Runs, Observations, reviewed Interpretations, and explicit conversion to Inquiry Signals. Managed setup selects an execution-enabled Folder and active Agent by name; the Agent carries the governed runtime profile. Terminal reconciliation returns status and parsed metrics to the Experiment Run. |
 | **Decisions Area** | Enabled | `/projects/:projectId/decisions`; creates standalone or explicitly Inquiry-linked Decision Cases, shows named Thread references, manages Options, Criteria, trade-off scores, Commitments, and explicit Delivery Tasks. |
-| **Learning Area** | Retired | `/projects/:projectId/learning` redirects to Pulse. `learning` HTTP routes and tables remain; the web client does not call `learningApi`. There is no Space-level Cards UI. |
+| **Learning Area** | Redirect | `/projects/:projectId/learning` redirects to Pulse. `learning` HTTP routes and tables remain; the web client does not call `learningApi`. There is no Space-level Cards UI. |
 | **Knowledge candidates** (Inquiry Review tab) | Enabled | `/projects/:projectId/inquiry?view=review&tab=candidates` (`/knowledge-review` redirects); summarizes new source information, selects eligible Notes/Threads/Interpretations and Agents by name for extraction, opens bounded Candidate checkpoints, supports view-all, edit-and-promote, defer/reopen, and dismiss. Canonical Knowledge writes remain proposal-gated. |
-| **Board** | Enabled | `/projects/:projectId/board`; the Project's Task surface, over an ACL-filtered server read model (`GET /projects/:id/board`). Lanes are flow statuses from `board_columns` or the defaults; `cancelled` is archived and `blocked` is an overlay drawn in the lane the work sits in rather than a lane of its own. A card carries its Loop stage, who holds it through the responsibility chain, active-run and blocked signals — and nothing else, so it stays scannable. Dragging to Done is refused with `completion_requirements_unmet` when the Task has not met what it declared; the refusal names the reasons and closing anyway records exactly which were skipped. Filters (all / mine / Agent working / needs me) are relative to the viewer the server names. A writer creates a Task from the Board itself (`New Task`, pre-bound to the Project); a viewer sees no such control and no drag handle. WIP limits are shown, never enforced. `/projects/:projectId/delivery` redirects here; the flatter Delivery Area is gone. |
-| **Operations Area** | Retired | `/projects/:projectId/operations` redirects to `/research?tab=runs`. Automations and Runs are Space-level objects and were shown here only filtered to the Project; alerts were already in the attention list and are read in the Space Inbox filtered to the Project. The one thing on it that belonged to the Project — research operation rows with their Checkpoint controls — is the Research Area's **Runs** tab. |
+| **Board** | Enabled | `/projects/:projectId/board`; the Project's Task surface, over an ACL-filtered server read model (`GET /projects/:id/board`). Lanes are flow statuses from `board_columns` or the defaults; `cancelled` is archived and `blocked` is an overlay drawn in the lane the work sits in rather than a lane of its own. A card carries its Loop stage, who holds it through the responsibility chain, active-run and blocked signals — and nothing else, so it stays scannable. Dragging to Done is refused with `completion_requirements_unmet` when the Task has not met what it declared; the refusal names the reasons and closing anyway records exactly which were skipped. Filters (all / mine / Agent working / needs me) are relative to the viewer the server names. A writer creates a Task from the Board itself (`New Task`, pre-bound to the Project); a viewer sees no such control and no drag handle. WIP limits are shown, never enforced. `/projects/:projectId/delivery` redirects here. |
+| **Operations Area** | Redirect | `/projects/:projectId/operations` redirects to `/research?tab=runs`. Research operation rows and their Checkpoint controls are the Research Area's **Runs** tab. |
 | **Review** (Proposals + Memory) | Enabled | Governance area (rail label "Review"; routes `/proposals` and `/memory`). The scene sidebar links real surfaces; proposal-type filters live inside `/proposals`. `/memory` is also where an Agent's own writes are read after the fact ([ADR 0003](../decisions/0003-memory-proposal-flow.md)): filters for written-by-Agent / by-a-person / archived, and `?session=` / `?run=` (the link a paused session's — or a paused single turn's — attention item carries), an `Agent` marker on those rows, and Archive / Restore acting directly on the owner's own entry — one request, no proposal. The detail page's **History** lists every version with the rationale, run and session behind it, which is what makes a write nobody approved beforehand answerable afterwards. |
-| **Knowledge** | Enabled | First-level unified module (rail label "Knowledge"; route `/knowledge`). `/knowledge` redirects to the last-used section (default `/knowledge/notes`); `/knowledge/home` is an optional overview hub, never the forced landing. Sub-areas switch via an in-header breadcrumb (no scene sidebar): **Notes** (working-knowledge Area — configurable collection tree + open-note tabs), **Wiki** (canonical, KnowledgeItem-backed, `/knowledge/wiki`), **Sources** (backend source CRUD exists; current frontend is list-only evidence browsing), **Cards**. The note editor's link picker offers every object type that is both linkable and searchable — Note, Wiki, Source, Claim, Question — built from `NOTE_LINK_TARGET_TYPE_VALUES` rather than a hand-maintained array, and guarded by `server/test/noteLinkTargetsGuard.test.ts`. Candidates for the search-backed kinds come from `POST /api/v1/knowledge/search`. `note_links` stays navigational and carries no graph authority (N4). The reverse direction is a "jot a note" action on Research Area reading-list cards: `POST /api/v1/knowledge/notes/jot` creates (or appends to) a note and records the link in one call, and `GET /api/v1/knowledge/objects/:objectId/note-links` answers what notes cite a given object. Jotting is offered only on rows with an `object_id` — a corpus row's `source_item_id` / `evidence_id` targets have no `space_objects` row and cannot be a link endpoint. |
+| **Knowledge** | Enabled | First-level unified module (rail label "Knowledge"; route `/knowledge`). `/knowledge` redirects to the last-used section (default `/knowledge/notes`); `/knowledge/home` is an optional overview hub, never the forced landing. Sub-areas switch via an in-header breadcrumb (no scene sidebar): **Notes** (working-knowledge Area — configurable collection tree + open-note tabs), **Wiki** (canonical, KnowledgeItem-backed, `/knowledge/wiki`), **Sources** (backend source CRUD exists; current frontend is list-only evidence browsing), **Cards**. The note editor's link picker offers every object type that is both linkable and searchable — Note, Wiki, Source, Claim, Question — built from `NOTE_LINK_TARGET_TYPE_VALUES` rather than a hand-maintained array, and guarded by `server/test/noteLinkTargetsGuard.test.ts`. Candidates for the search-backed kinds come from `POST /api/v1/knowledge/search`. `note_links` stays navigational and carries no graph authority. The reverse direction is a "jot a note" action on Research Area reading-list cards: `POST /api/v1/knowledge/notes/jot` creates (or appends to) a note and records the link in one call, and `GET /api/v1/knowledge/objects/:objectId/note-links` answers what notes cite a given object. Jotting is offered only on rows with an `object_id` — a corpus row's `source_item_id` / `evidence_id` targets have no `space_objects` row and cannot be a link endpoint. |
 | **Graph** | Enabled | Space-scoped relationship projection at `/graph`; renders the shared `GraphProjection` contract through `apps/web/src/components/graph/`, reads core `/api/v1/graph/*`, persists per-user view state under `scope_key='core:graph'`, `core:graph:<lens_id>`, `project:graph:<project_id>`, or `project:graph:<project_id>:<lens_id>`, and remains read-only over visible `space_objects` / `object_relations`. `?project_id=` narrows the graph to active object-backed Project corpus rows; `?lens_id=academic_citation_v1` applies the academic citation/authorship lens. |
 | **Cards** | `enabled: false, visible: false` | Standalone `/cards` hidden. Knowledge › Cards is an empty-state placeholder. Schema exists; no review API. |
-| Time | `planned: true` | Stub page only; no backend |
+| Time | `enabled: true, visible: true, planned: true` | Stub page only, labelled **Planned** (`modules/time/TimePage.tsx`); no backend, nothing recorded |
 
-Do not register a gallery entry as interactive unless its backend surface exists.
+Do not add a Global Rail item for a module whose backend surface does not exist.
 
 ---
 
@@ -331,7 +362,7 @@ Do not register a gallery entry as interactive unless its backend surface exists
 
 ### Authentication
 
-- 401 dispatches the `auth:required` event → `RequireAuth` redirects to `/login`.
+- 401 dispatches the `auth:required` event → `RequireAuth` redirects to `/login`, except a 401 whose `code` is `operation_unavailable`: an authentication step that failed (a wrong password at re-authentication) while the session stays valid.
 - Per-page auth errors should show "Session expired — sign in again" before redirect.
 
 ### 404 / Not Accessible
@@ -411,15 +442,14 @@ The frontend is ready for personal dogfooding. The core product loop is usable:
 - Cross-space Home aggregates are limited to what `/me/*` exposes (proposals,
   tasks, runs, participation, timeline). There are no per-Space "captures
   waiting" / "review packets ready" / "cards due" aggregate endpoints.
-- Capture supports text and links. Conversation composers separately support
-  authenticated PNG/JPEG/WebP input and authorized Project Folder file
-  references; Capture itself does not accept files or images, and voice remains
-  disabled UI.
+- The floating Capture composer supports text and links; its voice entry is a
+  "soon" placeholder. The `/capture` page adds file upload and browser voice
+  recording, posted through `activityApi.upload` to the personal inbox.
+  Conversation composers separately support authenticated PNG/JPEG/WebP input
+  and authorized Project Folder file references.
 - Home has no Assistant chat entry; project-bound conversation lives only in
   the Rooms surface.
 
-Unimplemented Home/capture ideas:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §6 and §26.
 
 ---
 
@@ -481,9 +511,8 @@ does not apply proposals or infer approval; all mutations go through the server 
 | Module | Current fact |
 |---|---|
 | Graph | Implemented at `/graph` over `GraphProjection` |
-| Cards | Schema only; `/cards` hidden; Knowledge › Cards is a placeholder |
+| Cards | Schema only; `/cards` hidden; Knowledge › Cards does not schedule reviews |
 | Time | `planned: true` stub; no backend |
 | Editor / Calendar | No module |
 | Automation triggers | `manual` and `schedule` only |
 
-Unimplemented stubs: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §2, §3, §16, §26.

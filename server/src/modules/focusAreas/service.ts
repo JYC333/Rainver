@@ -112,8 +112,8 @@ export class FocusAreaService {
   async update(identity: SpaceUserIdentity, id: string, body: Record<string, unknown>): Promise<FocusArea> {
     const current = await this.get(identity, id);
     // Anyone in the Space may read an area; only whoever created it may rename
-    // it. Without this, a member could rename another's area and — because the
-    // active-name index is unique per Space — take the name they wanted.
+    // it. Do not let another member rename it. They could take the name they
+    // wanted, because the active-name index is unique per Space.
     if (current.owner_user_id !== null && current.owner_user_id !== identity.userId) {
       throw new HttpError(403, "Only the focus area's owner can change it");
     }
@@ -179,12 +179,12 @@ export class FocusAreaService {
     focusAreaId: string | null,
   ): Promise<void> {
     if (focusAreaId !== null) await this.requireActive(identity, focusAreaId);
-    // Owned content is classified by its owner. Content with no owner — the
-    // agent-ingested sources and knowledge items this feature exists to
-    // organise — is classified by anyone who can already read it, which the
-    // shared gate decides. Readability is required either way, so this never
-    // reveals anything, and `ck_space_objects_private_owner` guarantees the
-    // ownerless case is always `space_shared`: it can never mean "hidden".
+    // Owned content is classified by its owner. Content with no owner —
+    // agent-ingested sources and knowledge items — is classified by anyone
+    // who can already read it, which the shared gate decides. Readability is
+    // required either way, so this never reveals anything, and
+    // `ck_space_objects_private_owner` guarantees the ownerless case is always
+    // `space_shared`: it can never mean "hidden".
     // Oversight is excluded deliberately — it is a read-only admin capability
     // (ADR 0013) and must not authorize a write.
     const writable = await this.db.query<{ id: string }>(

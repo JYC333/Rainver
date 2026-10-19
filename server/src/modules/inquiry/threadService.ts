@@ -21,11 +21,10 @@ import { recordThreadRevision } from "./threadRevisionService.js";
 import { recordThreadWorkEvent, type ThreadEventProvenance } from "./threadWorkEvents.js";
 
 /**
- * Actions only, in the order of the stages they belong to. The vocabulary
- * previously also carried `pause` and `wait_for_monitoring`, which are states
- * rather than actions: `pause` restated what `attention_state` already says,
- * and waiting on monitoring is what a running background step means. Offering
- * them beside "Read evidence" put two different kinds of thing in one list.
+ * Actions only, in the order of the stages they belong to. `pause` and
+ * `wait_for_monitoring` are states, not actions: pause is `attention_state`,
+ * and waiting on monitoring is a running background step. Do not offer them
+ * in this list.
  */
 export const NEXT_FOCUS_KINDS = [
   "clarify_or_decompose",
@@ -38,9 +37,6 @@ export const NEXT_FOCUS_KINDS = [
   "create_delivery_task",
 ] as const;
 export type NextFocusKind = (typeof NEXT_FOCUS_KINDS)[number];
-
-const ATTENTION_STATES = ["focused", "monitoring", "backlog", "blocked", "resolved", "rejected", "archived"] as const;
-type AttentionState = (typeof ATTENTION_STATES)[number];
 
 const THREAD_RELATION_KINDS = ["decomposes_into", "proposes", "depends_on", "supports", "contradicts", "supersedes", "related_to"] as const;
 
@@ -90,8 +86,7 @@ function threadToOut(row: ThreadRow): Record<string, unknown> {
 
 // A Thread is an ontology object (ADR 0012): identity, ownership, provenance,
 // and timestamps come from `space_objects`, the rest from the extension table.
-// The external field stays `id` so the API shape is unchanged — only the
-// storage moved.
+// The external field is `id`.
 const THREAD_ROOT_COLUMNS = ["owner_user_id", "created_by_user_id", "created_at", "updated_at"];
 const THREAD_OWN_COLUMNS = [
   "space_id", "project_id", "kind", "statement", "lifecycle_status", "attention_state", "priority",
@@ -108,8 +103,8 @@ const threadColumns = (alias = "t", rootAlias = "so"): string => [
 export const THREAD_COLUMNS = threadColumns();
 
 /**
- * Bumps the root's `updated_at` after a domain-field write. The timestamp lives
- * on `space_objects` now, so a domain UPDATE alone would leave it stale.
+ * Bumps `space_objects.updated_at` after a domain-field write. The timestamp
+ * lives on the root. A domain UPDATE alone would leave it stale.
  */
 export const TOUCH_THREAD_ROOT_SQL = `UPDATE space_objects SET updated_at = $1 WHERE id = $2 AND space_id = $3`;
 
@@ -121,8 +116,7 @@ export const THREAD_FROM = `inquiry_threads t
  * Thread CRUD, working relations, Note links, personal Focus, and Project
  * Inquiry settings. The cognitive Iteration / Definition Revision /
  * work-management commands live in `iterationService.ts` — this file only
- * owns thread identity, structure, and non-cognitive linkage. See plan
- * section 9 and ADR 0011.
+ * owns thread identity, structure, and non-cognitive linkage. See ADR 0011.
  */
 export class InquiryThreadService {
   constructor(private readonly db: Queryable) {}
@@ -247,9 +241,9 @@ export class InquiryThreadService {
   async listThreads(identity: SpaceUserIdentity, projectId: string): Promise<Record<string, unknown>[]> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
     const rows = await this.db.query<ThreadRow>(
-      // Project membership is necessary but not sufficient now that a Thread is
-      // an ontology object: the root's visibility is what decides who sees it,
-      // and a `visibility` column nothing enforces is worse than none.
+      // Project membership is necessary but not sufficient. A Thread is an
+      // ontology object: the root's visibility is what decides who sees it.
+      // Do not add a `visibility` column nothing enforces.
       `SELECT ${THREAD_COLUMNS} FROM ${THREAD_FROM}
         WHERE t.space_id = $1 AND t.project_id = $2
           AND ${contentReadSql("space_object", "so", "$3")}
@@ -328,10 +322,9 @@ export class InquiryThreadService {
     };
   }
 
-  // Structure command: working relations between Threads (plan section 9.3).
-  // Manual only — AI-proposed structure changes become Candidates
-  // in a later phase, per the plan's "manual flows before autonomous
-  // candidate generation" sequencing.
+  // Structure command: working relations between Threads.
+  // Manual only. AI-proposed structure changes are Candidates. Do not generate
+  // them on this path.
   async addRelation(
     identity: SpaceUserIdentity,
     projectId: string,
@@ -350,9 +343,9 @@ export class InquiryThreadService {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       await assertThreadReadable(db, identity, projectId, fromThreadId, "change");
       await assertThreadReadable(db, identity, projectId, toThreadId, "change");
-      // Thread structure is an `object_relations` edge now (ADR 0011 decision
-      // 3). The registry keeps it a direct write: the same words between Claims
-      // are reviewed assertions, and the endpoint-specific declaration is what
+      // Thread structure is an `object_relations` edge (ADR 0011 decision 3).
+      // The registry keeps it a direct write. The same words between Claims
+      // are reviewed assertions. The endpoint-specific declaration is what
       // lets both keep their behaviour.
       assertLinkTypeAllowed({
         linkType: relationKind,
@@ -400,19 +393,25 @@ export class InquiryThreadService {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     await withQueryableTransaction(this.db, async (db) => {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
+      // Only what `addRelation` writes: an active structure edge between two
+      // Threads of this Project. Any other edge leaving a Thread — a reviewed
+      // `supports` to a Claim, a Note link — has its own lifecycle and must
+      // not be hard-deleted and recorded as a structure change here.
       const removed = await db.query<{ from_thread_id: string; to_thread_id: string; relation_kind: string }>(
         `DELETE FROM object_relations
           WHERE id = $1 AND space_id = $2
+            AND status = 'active'
+            AND link_type = ANY($5::varchar[])
             AND from_object_id IN (
               SELECT t.object_id FROM ${THREAD_FROM}
                WHERE t.project_id = $3 AND t.space_id = $2 AND ${threadReadableSql("so", "$4", "change")}
             )
             AND to_object_id IN (
-              SELECT so.id FROM space_objects so
-               WHERE so.space_id = $2 AND ${threadReadableSql("so", "$4", "change")}
+              SELECT t.object_id FROM ${THREAD_FROM}
+               WHERE t.project_id = $3 AND t.space_id = $2 AND ${threadReadableSql("so", "$4", "change")}
             )
           RETURNING from_object_id AS from_thread_id, to_object_id AS to_thread_id, link_type AS relation_kind`,
-        [relationId, identity.spaceId, projectId, identity.userId],
+        [relationId, identity.spaceId, projectId, identity.userId, [...THREAD_RELATION_KINDS]],
       );
       const edge = removed.rows[0];
       if (edge) {
@@ -421,7 +420,7 @@ export class InquiryThreadService {
     });
   }
 
-  // Structure command: primary-parent tree projection (plan section 9.3).
+  // Structure command: primary-parent tree projection.
   async setPrimaryParent(
     identity: SpaceUserIdentity,
     projectId: string,
@@ -476,20 +475,18 @@ export class InquiryThreadService {
     });
   }
 
-  // Deep writing uses the unified Note model (plan section 9.7) — this only
-  // creates the link, never a copy of Note content.
+  // This creates the link only, never a copy of Note content.
   /**
-   * NE: raise a passage of a note as a Question.
+   * Raise a passage of a note as a Question.
    *
    * Composes the two writes that already exist rather than adding a third
    * path: the Thread is created exactly as the Inquiry surface creates one,
    * and the link back to the note is the same `references` edge `linkNote`
-   * writes. Both are direct writes — P2 confirmed Thread structure stays
-   * direct rather than moving behind a proposal.
+   * writes. Both are direct writes. Do not move Thread structure behind a
+   * proposal.
    *
    * The link is what makes the action worth having. Without it the Question
-   * would be a retyped sentence with no way back to the reasoning it came
-   * from, which is the disconnection this plan exists to fix.
+   * is a retyped sentence with no way back to the reasoning it came from.
    */
   async raiseNoteAsQuestion(
     identity: SpaceUserIdentity,
@@ -500,8 +497,8 @@ export class InquiryThreadService {
     const statement = requiredString(body.statement, "statement");
     // One transaction across both writes. Separately they are each atomic, but
     // a failure between them would leave a Thread with no route back to the
-    // note — which is precisely the disconnection this action exists to fix,
-    // and worse than the action failing outright.
+    // note. Do not leave that disconnection. It is worse than the action
+    // failing outright.
     return withQueryableTransaction(this.db, async (db) => {
       const scoped = new InquiryThreadService(db);
       const thread = await scoped.createThread(identity, projectId, {
@@ -543,9 +540,8 @@ export class InquiryThreadService {
         [noteObjectId, identity.spaceId, identity.userId],
       );
       if (!note.rows[0]) throw new HttpError(422, "Note not found in this Space");
-      // Thread-to-Note is now an ontology edge with both endpoints inside the
-      // ontology; the half-edge table it replaces existed only because Thread
-      // was not an object.
+      // Thread-to-Note is an ontology edge. Both endpoints are ontology
+      // objects. Do not keep a half-edge table for it.
       assertLinkTypeAllowed({
         linkType: "references",
         fromObjectType: "inquiry_thread",
@@ -694,4 +690,4 @@ export class InquiryThreadService {
   }
 }
 
-export { threadToOut, ATTENTION_STATES, type ThreadRow, type AttentionState };
+export { threadToOut, type ThreadRow };

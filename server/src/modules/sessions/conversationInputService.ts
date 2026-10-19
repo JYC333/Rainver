@@ -133,7 +133,7 @@ export function renderConversationInputResourceDescriptors(
     "Use input_resource.read or input_resource.search with resource_id to inspect a resource.",
     ...(hasDraft ? [
       "IMPORTANT: every descriptor with source_state=draft is the user's latest acknowledged unsaved content.",
-      "Before reading or modifying its relative_path, read that resource's complete draft with input_resource.read (continue from next_line while truncated=true) and use it as the baseline; do not base the change on the same-path workspace file.",
+      "Before reading or modifying its relative_path, read that resource's complete draft with input_resource.read (while truncated=true, continue with start_line=next_line and start_byte_offset=next_byte_offset) and use it as the baseline; do not base the change on the same-path workspace file.",
       "Preserve the draft's content unless the user's instruction explicitly replaces it.",
     ] : []),
     ...descriptors.map((descriptor) => JSON.stringify(descriptor)),
@@ -165,7 +165,7 @@ function inputResourceDescriptor(row: InputResourceDescriptorRow): ConversationI
   };
 }
 
-export interface ConversationInputMediaRecord extends ConversationInputMediaOut {
+interface ConversationInputMediaRecord extends ConversationInputMediaOut {
   space_id: string;
   owner_user_id: string;
   lifecycle: "pending" | "claimed" | "deleted";
@@ -829,12 +829,11 @@ export class ConversationInputService {
 
   /**
    * Hydrates the persisted logical parts only at dispatch time. The returned
-   * objects are ACP v1-shaped but remain plain records so this service does
-   * not become an ACP transport owner. A normal dispatch exposes file
-   * references as authorized ResourceLinks and relative-path instructions.
-   * Legacy file references may still hydrate their historical snapshot body on
-   * manual retry; new immutable resources are always descriptors for the
-   * run-scoped input_resource tools.
+   * objects are ACP v1-shaped plain records. This service is not an ACP
+   * transport owner. A normal dispatch exposes file references as authorized
+   * ResourceLinks and relative-path instructions. A manual retry hydrates a
+   * file reference from its stored snapshot body. New immutable resources are
+   * descriptors for the run-scoped input_resource tools.
    */
   async loadPromptParts(input: {
     spaceId: string;

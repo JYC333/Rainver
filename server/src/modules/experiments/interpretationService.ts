@@ -63,9 +63,9 @@ function interpretationToOut(row: InterpretationRow): Record<string, unknown> {
 /**
  * Experiment Interpretation: a reviewed conclusion over one or more Runs,
  * convertible to an Inquiry Evidence Signal once reviewed.
- * Conversion never edits the Hypothesis Thread directly — it only creates a
- * Signal, which follows the existing material-Signal -> Candidate ->
- * reviewed-accept -> Iteration path unchanged. An Interpretation
+ * Conversion never edits the Hypothesis Thread directly. It only creates a
+ * Signal, which follows the material-Signal -> Candidate ->
+ * reviewed-accept -> Iteration path. An Interpretation
  * cannot silently change a Hypothesis; only an accepted Candidate can.
  */
 export class ExperimentInterpretationService {
@@ -128,6 +128,10 @@ export class ExperimentInterpretationService {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const row = await this.row(db, identity.spaceId, projectId, interpretationId, true);
       if (!row) throw new HttpError(404, "Experiment Interpretation not found");
+      // The same Definition read gate as every other Interpretation path: a
+      // Project writer must not review what they cannot see (B: a visibility
+      // rule applied only to lists is not a rule).
+      await new ExperimentDefinitionService(db).requireDefinition(identity.spaceId, projectId, row.definition_id, identity.userId, db);
       if (row.status !== "draft") throw new HttpError(409, `Interpretation already ${row.status}`);
       const now = new Date().toISOString();
       await db.query(

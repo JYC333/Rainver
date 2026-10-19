@@ -13,6 +13,22 @@ import { getBuiltInCapabilityDefinition } from "./registry.js";
 
 type JsonRecord = Record<string, unknown>;
 
+/**
+ * An imported Skill's version carries its reviewed package snapshot: the
+ * `normalized_skill` and the `capability_definition` derived from it, tied to
+ * the package by `skill_package_id`, the version's `content_ref` and its
+ * `content_hash` (the package hash), with the proposal it was created from.
+ * Delivery renders from these keys, so changing one would deliver content no
+ * review saw under a hash that no longer describes it. New content arrives
+ * only through a new import, which produces a new snapshot and hash.
+ */
+const IMPORTED_SKILL_SNAPSHOT_KEYS = [
+  "capability_definition",
+  "normalized_skill",
+  "skill_package_id",
+  "created_from_proposal_id",
+] as const;
+
 export function registerCapabilityProposalAppliers(registry: ProposalApplierRegistry): void {
   registry.register("skill_import_approve", applySkillImportApproveProposal);
   registry.register("capability_install", applyCapabilityInstallProposal);
@@ -22,11 +38,34 @@ export function registerCapabilityProposalAppliers(registry: ProposalApplierRegi
   registry.register("runtime_skill_binding_update", applyRuntimeSkillBindingUpdateProposal);
 }
 
+/**
+ * The scope a proposal's effect lands in must be the scope its approval was
+ * judged on. Approval is role-by-scope: a proposal with a `project_id` is
+ * decidable by that Project's owner, one without only by a Space owner. An
+ * installation, a shared version, a shared runtime binding and a Space-wide
+ * enablement all change the Space, so a `project_id` on such a proposal would
+ * let a Project owner approve a Space-wide change; a Project-scoped
+ * enablement's payload must name the same Project the proposal was filed
+ * under, or a Space-wide one could be approved under a Project's authority.
+ */
+function assertSpaceEffectScope(context: ProposalApplyContext): void {
+  if (context.proposal.project_id) {
+    throw new HttpError(422, "This proposal changes the Space and cannot be scoped to a Project");
+  }
+}
+
+function assertEnablementEffectScope(context: ProposalApplyContext, scope: EnablementScope): void {
+  if ((scope.projectId ?? null) !== (context.proposal.project_id ?? null)) {
+    throw new HttpError(422, "capability enablement project scope does not match the proposal's Project");
+  }
+}
+
 async function applySkillImportApproveProposal(
   context: ProposalApplyContext,
 ): Promise<ProposalApplyResult> {
   const payload = objectValue(context.proposal.payload_json);
   ensureOperation(payload, "skill_import_approve");
+  assertSpaceEffectScope(context);
   const skillPackageId = requiredPayloadString(payload, "skill_package_id");
   const skillPackage = await approveSkillImportInTransaction({
     db: context.db,
@@ -54,6 +93,7 @@ async function applyCapabilityInstallProposal(
 ): Promise<ProposalApplyResult> {
   const payload = objectValue(context.proposal.payload_json);
   ensureOperation(payload, "install_from_skill_package");
+  assertSpaceEffectScope(context);
   const skillPackageId = requiredPayloadString(payload, "skill_package_id");
   const capabilityId = optionalString(payload.capability_id);
   if (capabilityId && getBuiltInCapabilityDefinition(capabilityId)) {
@@ -98,6 +138,7 @@ async function applyCapabilityUpdateProposal(
 ): Promise<ProposalApplyResult> {
   const payload = objectValue(context.proposal.payload_json);
   ensureOperation(payload, "capability_update");
+  assertSpaceEffectScope(context);
   const versionId = requiredPayloadString(payload, "capability_version_id");
   const status = optionalString(payload.status);
   const metadataPatch = optionalObject(payload.metadata_json) ?? {};
@@ -105,13 +146,21 @@ async function applyCapabilityUpdateProposal(
     throw new HttpError(422, "capability_update status is invalid");
   }
   const now = new Date().toISOString();
-  const target = await context.db.query<{ id: string; capability_key: string }>(
-    `SELECT id, capability_key
+  const target = await context.db.query<{ id: string; capability_key: string; source: string }>(
+    `SELECT id, capability_key, source
        FROM capability_versions
-      WHERE id = $1 AND space_id = $2`,
+      WHERE id = $1 AND space_id = $2
+      FOR UPDATE`,
     [versionId, context.proposal.space_id],
   );
   if (!target.rows[0]) throw new HttpError(404, "Capability version not found");
+  if (target.rows[0].source === "imported_skill") {
+    const touched = IMPORTED_SKILL_SNAPSHOT_KEYS.filter((key) => Object.hasOwn(metadataPatch, key));
+    if (touched.length > 0) {
+      const detail = `An imported Skill's reviewed snapshot cannot be changed (${touched.join(", ")}); import the new package instead`;
+      throw new HttpError(422, detail, { detail, code: "imported_skill_snapshot_immutable" });
+    }
+  }
   const updated = await context.db.query<{ id: string; capability_key: string; status: string }>(
     `UPDATE capability_versions
         SET status = COALESCE($3, status),
@@ -150,6 +199,7 @@ async function applyCapabilityEnableProposal(
   const capabilityKey = requiredPayloadString(payload, "capability_key");
   const capabilityVersionId = optionalString(payload.capability_version_id);
   const scope = parseEnablementScope(payload);
+  assertEnablementEffectScope(context, scope);
   const config = optionalObject(payload.config_json) ?? {};
   await requireCapabilityTarget(context, capabilityKey, capabilityVersionId);
   const now = new Date().toISOString();
@@ -193,6 +243,7 @@ async function applyCapabilityDisableProposal(
   const capabilityVersionId = optionalString(payload.capability_version_id);
   await requireCapabilityTarget(context, capabilityKey, capabilityVersionId);
   const scope = parseEnablementScope(payload);
+  assertEnablementEffectScope(context, scope);
   const now = new Date().toISOString();
   const updated = await updateEnablement(context, {
     capabilityKey,
@@ -219,6 +270,7 @@ async function applyRuntimeSkillBindingUpdateProposal(
 ): Promise<ProposalApplyResult> {
   const payload = objectValue(context.proposal.payload_json);
   ensureOperation(payload, "runtime_skill_binding_update");
+  assertSpaceEffectScope(context);
   const bindingId = requiredPayloadString(payload, "binding_id");
   const enabled = typeof payload.enabled === "boolean" ? payload.enabled : null;
   const bindingJson = optionalObject(payload.binding_json);

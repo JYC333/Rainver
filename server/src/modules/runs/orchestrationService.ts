@@ -53,6 +53,7 @@ import {
 import type { RunMaterializationService } from "./materializationService.js";
 import {
   createProductionRuntimeContextInvocationGateway,
+  EXECUTION_LEASE_HEARTBEAT_MS,
   RuntimeContextCliContinuityService,
   WorkContextService,
   type RuntimeContextGatewayPort,
@@ -111,6 +112,8 @@ import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
 import { mergeRunQuota } from "../hosts/usageService.js";
 import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 import { redactEvidenceText } from "./evidenceRedaction.js";
+import { resolveExecutionHost } from "./executionHostResolution.js";
+import { finalizedForPostRun } from "./finalizationOutcome.js";
 
 export interface RunExecutionRepositoryPort {
   getRun(spaceId: string, runId: string): Promise<RunRecord | null>;
@@ -123,7 +126,7 @@ export interface RunExecutionRepositoryPort {
     space_id: string;
     started_at: string;
     required_sandbox_level?: string | null;
-  }): Promise<AgentRunRecord | null>;
+  }): Promise<(AgentRunRecord & { attempt_number?: number }) | null>;
   checkRunExecutionAuthorization?(run: Pick<
     RunRecord,
     | "space_id"
@@ -211,7 +214,7 @@ export interface RunExecutionRepositoryPort {
   }): Promise<RunRecord | null>;
 }
 
-export interface RunExecutionAdapterDeps {
+interface RunExecutionAdapterDeps {
   materializer?: RunMaterializationService;
   runtimeContextGateway?: RuntimeContextInvocationGatewayPort
     & Partial<Pick<RuntimeContextGatewayPort, "ingestRuntimeEvent" | "recordRuntimeEventGap">>;
@@ -250,8 +253,7 @@ export interface RunExecutionAdapterDeps {
   routeResolver?: RunRouteResolverPort;
   runExchange?: RunExchangePort;
   /**
-   * ADR 0016 P2 / execution-topology-and-project-control-plane-plan.md P1
-   * (D3): resolves a Run's execution site for `HostExecutionPort` selection.
+   * Resolves a Run's execution site for `HostExecutionPort` selection.
    * `workspaceLocationId` is authoritative when present (every Run dispatched
    * through the merged endpoint carries one); `projectFolderId` is the
    * fallback for a Run that has no concrete Location, resolved via that
@@ -264,13 +266,13 @@ export interface RunExecutionAdapterDeps {
    * without a database — the production default is the seeded `hosts` row.
    */
   builtinHostResolver?: () => Promise<string>;
-  /** Seams for the host-daemon CLI adapter, the way `vendorCli` was for the server-host one. */
+  /** Seams for the host-daemon CLI adapter. */
   hostCli?: RemoteHostCliAdapterDeps;
   usageRecorder?: (observation: UsageObservation) => Promise<void>;
   cliContinuity?: RuntimeContextCliContinuityService;
 }
 
-export interface RunRouteResolverPort {
+interface RunRouteResolverPort {
   routeRun(run: AgentRunRecord): Promise<AgentRunRecord>;
 }
 
@@ -285,7 +287,7 @@ export type RunPolicyEnforcer = (
   request: Parameters<typeof enforce>[2],
 ) => Promise<EnforceResult>;
 
-export interface RunCodePatchCollectorPort {
+interface RunCodePatchCollectorPort {
   collect(input: {
     run: RunRecord;
     worktreePath: string | null;
@@ -297,20 +299,21 @@ export interface RunCodePatchCollectorPort {
 export type HostKind = "server" | "remote";
 
 /**
- * ADR 0016 / execution-topology plan P1: the run-file-lifecycle seam a Run's
- * execution is bound to — prepare/cleanup the workspace, run exchange, and
+ * The run-file-lifecycle seam a Run's execution is bound to (ADR 0016):
+ * prepare/cleanup the workspace, run exchange, and
  * code-patch collection — selected once per run from its Location's Host
  * kind (`resolveExecutionPort`, below). `ServerHostExecutionAdapter` wraps
- * the existing sandbox/exchange/code-patch pieces; `RemoteHostExecutionAdapter`
- * dispatches over the daemon and collects uploaded payloads. The CLI process
- * executor (`CliCommandExecutor`) and artifact materialization remain outside
- * this seam because both host adapters share those higher-level services.
+ * the server sandbox, exchange, and code-patch pieces.
+ * `HostDaemonExecutionAdapter` does not prepare a server directory; the
+ * daemon owns the working directory. The CLI process executor
+ * (`CliCommandExecutor`) and artifact materialization remain outside this
+ * seam because both host adapters share those higher-level services.
  */
 export interface HostExecutionPort {
   readonly hostKind: HostKind;
-  /** Set only for a remote port — which daemon connection to dispatch to. */
+  /** Set on a daemon port — which daemon connection to dispatch to. */
   readonly hostId?: string;
-  /** Set only for a remote port — which WorkspaceLocation this Run executes in (D3). */
+  /** Set on a daemon port — which WorkspaceLocation this Run executes in. */
   readonly workspaceLocationId?: string | null;
   readonly workspaceRelativePath?: string | null;
   readonly workspace?: LaunchWorkspace;
@@ -332,15 +335,11 @@ export class ServerHostExecutionAdapter implements HostExecutionPort {
 }
 
 /**
- * ADR 0016 P1: a remote run always dispatches with `required_sandbox_level:
- * "none"` (the dispatch endpoint's job), so `workingDirScopeForLevel`
- * naturally skips every local-filesystem branch in `prepareRuntimeContext` —
- * `sandbox_cwd`/`cleanup`/`exchange` never get set, so `workspaceManager`/
- * `codePatchCollector`/`runExchange` are never actually invoked for a
- * remote run. `runExchange` still needs a real (non-optional)
- * `RunExchangePort` value to satisfy the interface; this one throws instead
- * of silently touching a local path if that "never invoked" assumption is
- * ever violated by a future change.
+ * A daemon Run does not use this server's workspace manager, code-patch
+ * collector, or run exchange. Those fields stay unset, and the local
+ * filesystem branches in `prepareRuntimeContext` do not run. `runExchange`
+ * still has to satisfy `HostExecutionPort`; these methods throw. Do not let
+ * them touch a server path.
  */
 export class HostDaemonExecutionAdapter implements HostExecutionPort {
   readonly workspaceManager = undefined;
@@ -352,10 +351,10 @@ export class HostDaemonExecutionAdapter implements HostExecutionPort {
   };
   constructor(
     /**
-     * Which machine, still — the built-in host is `server` and a paired one is
-     * `remote`. It no longer decides *how* the run executes (every CLI run is
-     * a daemon run now); it decides whether a server-brokered credential is in
-     * play, and what the Run read model calls remote.
+     * Which machine. The built-in host is `server` and a paired one is
+     * `remote`. It decides whether a server-brokered credential is in play,
+     * and what the Run read model calls remote. It does not decide how the
+     * run executes: every CLI run is a daemon run.
      */
     readonly hostKind: HostKind,
     readonly hostId: string,
@@ -392,12 +391,14 @@ export interface RunExecutionInput extends RunExecuteRequest {
   risk_level?: string | null;
   timeout_ms?: number | null;
   runtime_event_sink?: (event: RuntimeSemanticEvent) => Promise<void> | void;
+  /** The Run attempt this execution is; events it produces are tagged with it. */
+  run_attempt_number?: number | null;
   text_delta_sink?: (delta: string) => void;
   invocation_delivery?: InvocationDelivery;
   invocation_attempts?: RunInvocationAttemptLifecycle;
   /** Canonical server-resolved attachment mounts for a server Host launch. */
   workspace_mounts?: Array<{ workspace_location_id: string; access_mode: "read" | "write"; path: string }>;
-  /** ADR 0016 P3: set by `executeRun` from `preparedRuntime.execution_port`; read by `invokeAdapterUnbounded` to route a `local_cli` run to the remote-host adapter instead of `executeVendorCliAdapter`. */
+  /** Set by `executeRun` from `preparedRuntime.execution_port`. `invokeAdapterUnbounded` reads it to send a `local_cli` run to `executeRemoteHostCliAdapter`. Do not add a server-process CLI executor for that run. */
   execution_port?: HostExecutionPort | null;
 }
 
@@ -411,9 +412,8 @@ type RuntimeAdapterExecutor = (
 const RUNTIME_EXECUTORS: Readonly<Record<RuntimeExecutorFamily, RuntimeAdapterExecutor>> = {
   // Unreachable, and fail-closed on purpose. Every `local_cli` run is handed
   // to a host daemon by `invokeAdapterUnbounded` before the registry is
-  // consulted; arriving here means no execution port was resolved, and the
-  // server no longer has a vendor CLI of its own to fall back to — that is
-  // the whole point of one execution protocol. Spawning something here would
+  // consulted; arriving here means no execution port was resolved. The
+  // server has no vendor CLI to fall back to. Spawning something here would
   // be the second dispatch path B62 forbids.
   local_cli: (_config, run) =>
     Promise.resolve(
@@ -451,12 +451,11 @@ const RUNTIME_EXECUTORS: Readonly<Record<RuntimeExecutorFamily, RuntimeAdapterEx
 /**
  * The workspace a verifier runs in, with the built-in host's path folded in.
  *
- * The same merge a launch needs, and for the same reason: the daemon on the
- * built-in host never ran `workspace add`, so a Location id alone resolves to
- * nothing there. A snapshot workspace names the Location without a path, and
- * taking it as-is made every verification on that host come back "no local
- * path registered" — reported, after two relabellings, as a Run that failed
- * its acceptance checks.
+ * The same merge a launch needs. The daemon on the built-in host never ran
+ * `workspace add`, so a Location id alone resolves to nothing there. A
+ * snapshot workspace names the Location without a path. Do not take it as-is.
+ * Every verification on that host would come back "no local path registered"
+ * and the Run would fail its acceptance checks.
  */
 function workspaceForVerification(port: HostExecutionPort): LaunchWorkspace | null {
   const relative = port.workspaceRelativePath ?? null;
@@ -518,7 +517,12 @@ interface PreparedRuntimeContext {
   exchange: RunExchangeHandle | null;
   invocation_delivery: InvocationDelivery | null;
   invocation_attempts: RunInvocationAttemptLifecycle | null;
-  cli_execution_lease: { binding_id: string; lease_id: string } | null;
+  cli_execution_lease: {
+    binding_id: string;
+    lease_id: string;
+    /** Renews the lease while the Run executes; cleared on release. */
+    heartbeat: ReturnType<typeof setInterval> | null;
+  } | null;
   /** Resolved once per run by `resolveExecutionPort`; null until then. */
   execution_port: HostExecutionPort | null;
 }
@@ -573,31 +577,7 @@ export class RunOrchestrationService {
     this.builtinHostResolver = adapters.builtinHostResolver ?? null;
     this.hostKindResolver = adapters.hostKindResolver
       ?? (repository instanceof PgRunRepository && config.databaseUrl
-        ? async ({ executionHostId, workspaceLocationId, projectFolderId, spaceId }) => {
-            const pool = getDbPool(config.databaseUrl!);
-            const result = workspaceLocationId
-              ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
-                  `SELECT id, execution_host_kind, execution_host_id FROM workspace_locations WHERE id = $1 AND space_id = $2 LIMIT 1`,
-                  [workspaceLocationId, spaceId],
-                )
-                : executionHostId
-                ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
-                    `SELECT id, kind AS execution_host_kind, id AS execution_host_id FROM hosts WHERE id = $1 LIMIT 1`,
-                    [executionHostId],
-                  )
-                : projectFolderId
-                ? await pool.query<{ id: string; execution_host_kind: string; execution_host_id: string }>(
-                    `SELECT id, execution_host_kind, execution_host_id FROM workspace_locations WHERE project_folder_id = $1 AND space_id = $2 AND status = 'active' LIMIT 1`,
-                    [projectFolderId, spaceId],
-                  )
-                : { rows: [] as Array<{ id: string; execution_host_kind: string; execution_host_id: string }> };
-            const row = result.rows[0];
-            return {
-              hostKind: (row?.execution_host_kind as HostKind | undefined) ?? "server",
-              hostId: row?.execution_host_id ?? "",
-              workspaceLocationId: row?.execution_host_kind === "remote" && !workspaceLocationId ? null : row?.id ?? null,
-            };
-          }
+        ? (input) => resolveExecutionHost(getDbPool(config.databaseUrl!), input)
         : null);
     this.usageRecorder = adapters.usageRecorder
       ?? (repository instanceof PgRunRepository && config.databaseUrl
@@ -773,7 +753,14 @@ export class RunOrchestrationService {
           exit_code: 1,
           completed_at: startedAt,
         }, run, null, false);
+        // A failure cannot be published over a cancellation that arrived
+        // first; the execution owner publishes that cancellation instead.
+        const cancelled = rejected ? null : await this.publishPendingCancellation(run, startedAt);
+        if (cancelled) executionLockHeld = false;
         await releaseExecutionAuthority();
+        if (cancelled) {
+          return { run_id: run.id, status: "cancelled", error_code: "run_cancelled" };
+        }
         return {
           run_id: run.id,
           status: protocolRunStatus(rejected?.status ?? "failed"),
@@ -857,28 +844,7 @@ export class RunOrchestrationService {
           exit_code: 1,
           completed_at: startedAt,
         }, run, null, false);
-        if (!rejected) {
-          const current = await this.repository.getRun(run.space_id, run.id);
-          if (current?.status === "cancelling") {
-            rejected = await this.publishRunTerminalWithConversationRuntime({
-              run_id: run.id,
-              space_id: run.space_id,
-              status: "cancelled",
-              output_text: "",
-              output_json: canonicalRunOutput({
-                success: false,
-                outputText: "",
-                outputJson: { error_code: "run_cancelled" },
-              }),
-              error_json: {
-                error_code: "run_cancelled",
-                error_text: "Run cancellation won the terminal publication race.",
-              },
-              exit_code: 1,
-              completed_at: startedAt,
-            }, run, null, false);
-          }
-        }
+        if (!rejected) rejected = await this.publishPendingCancellation(run, startedAt);
         if (rejected) executionLockHeld = false;
         const finalization = await this.finalizeTerminalRunBestEffort(
           rejected ?? { ...run, status: "failed", ended_at: startedAt },
@@ -886,7 +852,7 @@ export class RunOrchestrationService {
         const current = this.adapters.materializer
           ? await this.repository.getRun(run.space_id, run.id)
           : rejected;
-        if (finalization?.status === "failed") {
+        if (finalization && !finalizedForPostRun(finalization)) {
           return {
             run_id: run.id,
             status: protocolRunStatus(current?.status ?? "failed"),
@@ -909,6 +875,14 @@ export class RunOrchestrationService {
         required_sandbox_level: run.required_sandbox_level,
       });
       if (!running) {
+        // Stopped after this worker took the lock: the public cancel could not
+        // publish under it, so the Run is `cancelling`, never ran, and only
+        // its execution owner can end it.
+        const cancelled = await this.publishPendingCancellation(run, startedAt);
+        if (cancelled) {
+          executionLockHeld = false;
+          return { run_id: run.id, status: "cancelled", error_code: "run_cancelled" };
+        }
         const current = await this.repository.getRun(run.space_id, run.id);
         return {
           run_id: run.id,
@@ -920,7 +894,7 @@ export class RunOrchestrationService {
       const contextBoundRunning = applyEffectiveWorkContextBindings(running, effectiveBindings);
       await this.markDelegatedRunRunningBestEffort(contextBoundRunning);
 
-      // ADR 0016 P3: resolved once, here, rather than separately inside
+      // Resolved once, here (ADR 0016), rather than separately inside
       // `enforceRuntimePolicy` and `prepareRuntimeContext` — both need to
       // agree on the same host_kind for the same run, and re-querying
       // per-caller risks the two disagreeing under a concurrent host change.
@@ -971,31 +945,28 @@ export class RunOrchestrationService {
       // `appendRunEvent`'s `event_index` is a
       // fresh `COALESCE(MAX+1, 0)` read per INSERT, so two overlapping
       // un-awaited calls for the same run can read the same max and collide
-      // on `uq_run_events_space_run_event_index` — found via
-      // control-center-phase2-plan.md P1's remote-events test, which is the
-      // first coverage to produce two RuntimeSemanticEvents from one chunk
-      // for a remote run. `serializeCalls` (routeUtils/common.ts) fixes it by
-      // construction.
-      // Unlike host_thread_events' equivalent fix, no database-level lock is
-      // needed on top of it: run_events' uniqueness is per-run, and
-      // tryAcquireExecutionLock already guarantees only one process ever
-      // executes a given run, so this in-process chain is the whole story.
+      // on `uq_run_events_space_run_event_index`. `serializeCalls`
+      // (routeUtils/common.ts) orders them. Do not append those events
+      // concurrently.
+      // No database-level lock is needed on top of it: run_events' uniqueness
+      // is per-run, and tryAcquireExecutionLock already guarantees only one
+      // process executes a given run, so this in-process chain is the whole
+      // story.
       //
-      // Swallowing note: `appendRuntimeSemanticEvent` rethrows for
-      // "critical" event types, but no caller has ever actually observed
-      // that rethrow. `remoteHostCliAdapter.ts` calls this sink via `void`,
-      // un-awaited (this process has no unhandledRejection handler, so
-      // Node's default there is to crash — a rethrow was observable, just
-      // never intentionally). Nothing today reads or acts on a "critical"
-      // rethrow's signal.
+      // `appendRuntimeSemanticEvent` rethrows for "critical" event types.
+      // `remoteHostCliAdapter.ts` calls this sink via `void`. This process
+      // has no unhandledRejection handler, so Node's default is to crash.
+      // Nothing reads a "critical" rethrow as a signal.
       // `serializeCalls` turns the `void`-path's crash-on-any-write-hiccup
       // behavior into a swallow too, uniformly — a deliberate call: one
-      // run's transient write failure no longer takes the whole process
+      // run's transient write failure must not take the whole process
       // (and every other concurrently executing run) down with it, and
-      // nothing that actually enforced anything is lost. Flagged explicitly
-      // per P1 discovery/closure review, not silently ridden through.
+      // nothing that actually enforced anything is lost.
+      // Events this dispatch produces carry its attempt, so a retry that
+      // supersedes it does not inherit what it writes while unwinding.
+      const runAttemptNumber = running.attempt_number ?? null;
       const serializedRuntimeEventSink = serializeCalls(
-        (event: RuntimeSemanticEvent) => this.appendRuntimeSemanticEvent(effectiveRun, event),
+        (event: RuntimeSemanticEvent) => this.appendRuntimeSemanticEvent(effectiveRun, event, runAttemptNumber),
       );
       const effectiveInput: RunExecutionInput = {
         ...input,
@@ -1005,6 +976,7 @@ export class RunOrchestrationService {
           ? { workspace_mounts: executionPort.workspaceMounts }
           : {}),
         runtime_event_sink: serializedRuntimeEventSink,
+        run_attempt_number: runAttemptNumber,
         ...(isChatTurnRun(effectiveRun)
           ? { text_delta_sink: (delta: string) => publishChatTextDelta(effectiveRun.id, delta) }
           : {}),
@@ -1059,6 +1031,31 @@ export class RunOrchestrationService {
         executionPort,
         effectiveBindings,
       );
+      // A stop that arrived while the Run was being prepared reached no
+      // process (the adapter registers one only when it dispatches) and could
+      // not publish under this lock. Dispatching now would run the whole turn
+      // and only then report it cancelled.
+      const cancelledBeforeDispatch = await this.publishPendingCancellation(effectiveRun, startedAt);
+      if (cancelledBeforeDispatch) {
+        executionLockHeld = false;
+        if (preparedRuntime.invocation_delivery && preparedRuntime.invocation_attempts) {
+          await preparedRuntime.invocation_attempts.acknowledge(
+            preparedRuntime.invocation_delivery,
+            adapterFailureEnvelope(effectiveRun, "run_cancelled", "The Run was cancelled before it was dispatched."),
+          );
+          await preparedRuntime.invocation_attempts.finalize(preparedRuntime.invocation_delivery, "run_cancelled");
+        }
+        if (step) await this.updateRunStepStatusBestEffort({
+          step_id: step.id,
+          run_id: effectiveRun.id,
+          space_id: effectiveRun.space_id,
+          status: "cancelled",
+          ended_at: new Date().toISOString(),
+          error_type: "run_cancelled",
+          error_message: "The Run was cancelled before it was dispatched.",
+        });
+        return { run_id: effectiveRun.id, status: "cancelled", error_code: "run_cancelled" };
+      }
       let adapterResult: RunAdapterResultEnvelope;
       try {
         adapterResult = await this.invokeAdapter(
@@ -1099,6 +1096,7 @@ export class RunOrchestrationService {
         && this.cliContinuity) {
         const replacement = await this.cliContinuity.rotateMissingVendorState(
           preparedRuntime.cli_execution_lease.binding_id,
+          preparedRuntime.cli_execution_lease.lease_id,
         );
         preparedRuntime.cli_execution_lease.binding_id = replacement.id;
       }
@@ -1466,7 +1464,7 @@ export class RunOrchestrationService {
         const finalization = await this.adapters.materializer.finalizeRun(
           finalTerminalRun,
         );
-        if (finalization.status !== "succeeded") {
+        if (!finalizedForPostRun(finalization)) {
           finalizationFailure = finalization;
           await this.appendFinalizationEvent(running, finalization);
         }
@@ -1596,7 +1594,7 @@ export class RunOrchestrationService {
       const current = this.adapters.materializer
         ? await this.repository.getRun(run.space_id, run.id)
         : failedRun;
-      if (finalization?.status === "failed") {
+      if (finalization && !finalizedForPostRun(finalization)) {
         return {
           run_id: run.id,
           status: protocolRunStatus(current?.status ?? "failed"),
@@ -1620,9 +1618,9 @@ export class RunOrchestrationService {
           const current = await this.repository.getRun(run.space_id, run.id);
           if (current?.status === "waiting_for_dependency") {
             // A delegated child is created `queued` with no job; it is
-            // admitted when its parent yields. Parking is a yield — before
-            // this call nothing admitted a child whose parent waited on it in
-            // the same turn, and the two waited on each other for ever.
+            // admitted when its parent yields. Parking is a yield. Admit
+            // those children here. Do not leave a child queued while its
+            // parent waits on it.
             await this.delegationProjector?.queueDelegatedChildren?.(current);
             await this.delegationProjector?.reconcileWaitingRun?.(current);
           }
@@ -1658,7 +1656,7 @@ export class RunOrchestrationService {
     if (isHardTerminalRunStatus(run.status)) {
       if (run.status === "cancelled") {
         const finalization = await this.finalizeTerminalRunBestEffort(run);
-        if (finalization?.status === "failed") {
+        if (finalization && !finalizedForPostRun(finalization)) {
           return {
             run_id: run.id,
             status: "cancelled",
@@ -1770,7 +1768,7 @@ export class RunOrchestrationService {
     const finalization = await this.finalizeTerminalRunBestEffort(
       updated ?? { ...run, status: "cancelled", ended_at: new Date().toISOString() },
     );
-    if (finalization?.status === "failed") {
+    if (finalization && !finalizedForPostRun(finalization)) {
       return {
         run_id: run.id,
         status: "cancelled",
@@ -1832,22 +1830,18 @@ export class RunOrchestrationService {
     const callerConfig = input.command_source === "http" ? {} : input.adapter_config ?? {};
     const contract = recordValue(run.contract_snapshot_json);
     // The immutable run contract is authoritative. An internal execution
-    // caller may supply a fallback risk for legacy runs, but it can never
-    // downgrade a critical contract to reach a weaker sandbox.
+    // caller may supply a fallback risk when the contract has none. It can
+    // never downgrade a critical contract to reach a weaker sandbox.
     const riskLevel = stringConfigValue(contract.risk_level) ?? input.risk_level ?? null;
-    // Risk still decides the level, on every path. What changed is who acts on
-    // it: the server provisions a worktree or a throwaway directory for a run
-    // it executes itself, while a daemon run carries the level into its
-    // `isolation` policy and the daemon builds the namespace from it. Skipping
-    // the resolution for daemon runs — as a first cut of this did — left every
-    // CLI run at the creation-time `none`, so a critical Folder-bound run got
-    // a read-write workspace and the shared network, with nothing recording
-    // that risk had stopped mattering.
+    // Risk decides the level on every path. A daemon run carries the level
+    // into its `isolation` policy and the daemon builds the namespace from
+    // it. Do not skip the resolution for daemon runs: a CLI run would stay
+    // at the creation-time `none`, so a critical Folder-bound run would get
+    // a read-write workspace and the shared network.
     //
-    // `worktree` and `one_shot_docker` have no daemon analogue yet: the
-    // daemon's workspace is the Location itself, and the namespace is the
-    // isolation. They are carried but only `read_only` changes what a Run
-    // actually gets; narrowing the rest is the egress proxy's phase.
+    // `worktree` and `one_shot_docker` are not daemon workspace kinds. The
+    // daemon's workspace is the Location, and the namespace is the isolation.
+    // They are carried, and only `read_only` changes what a daemon Run gets.
     const requiredSandboxLevel = resolveSandboxLevelForRuntime({
       runtimeKey: run.runtime_key,
       configuredLevel: run.required_sandbox_level,
@@ -1901,11 +1895,11 @@ export class RunOrchestrationService {
       );
       if (decisionId) base.policy_decision_record_ids.push(decisionId);
     }
-    // Only a server-host Run's recorded provider is the one it spends; a
-    // remote Run's backend is decided at launch, where its lease is
+    // A Run on the built-in host spends the provider recorded on the row. A
+    // paired machine's backend is decided at launch, where its lease is
     // authorized. The key is decided again where it is spent — each
-    // managed-API turn and each lease — so this check exists to fail the Run
-    // before any work starts, not as the only one.
+    // managed-API turn and each lease. This check fails the Run before any
+    // work starts. Do not treat it as the only check.
     const profile = recordValue(run.runtime_profile_snapshot_json);
     const selectedProviderId = profile.backend_mode === "model_provider"
       ? stringConfigValue(profile.model_provider_id)
@@ -1915,10 +1909,7 @@ export class RunOrchestrationService {
         const authorization = await authorizeCredentialSpend(
           this.config,
           { space_id: run.space_id, provider_id: selectedProviderId, basis: { kind: "run", run } },
-          {
-            enforcer: this.adapters.policyEnforcer,
-            readRun: (spaceId, runId) => this.repository.getRun(spaceId, runId),
-          },
+          { enforcer: this.adapters.policyEnforcer },
         );
         if (authorization.policy_decision_record_id) {
           base.policy_decision_record_ids.push(authorization.policy_decision_record_id);
@@ -1930,14 +1921,11 @@ export class RunOrchestrationService {
         throw error;
       }
     }
-    // The server-host CLI branch that lived here — resolving a runtime-tool
-    // version and gating a `cli_profile` credential — is gone with the path it
-    // served: every CLI run is dispatched to a host daemon, which runs the copy
-    // it installed under that copy's own login. The `runtime.use_credential`
-    // gate that still matters is the ModelProvider one above, which is keyed on
-    // `hostKind` and so still covers the built-in host's runs. Credential
-    // profiles and the runtime-tool catalog are retired in the phase that
-    // deletes their modules.
+    // Every CLI run is dispatched to a host daemon, which runs the copy it
+    // installed under that copy's own login. Do not resolve a runtime-tool
+    // version or gate a `cli_profile` credential here. The
+    // `runtime.use_credential` gate is the ModelProvider one above, keyed on
+    // `hostKind`, which covers the built-in host's runs.
     return base;
   }
 
@@ -1995,12 +1983,10 @@ export class RunOrchestrationService {
           "Conversation attachments require a configured execution context.",
         );
       }
-      // A CLI run with nothing bound used to get a throwaway directory the
-      // server made for it. It executes on the instance's own host now — but
-      // only if it has a container to be an Agent's profile in: a managed
-      // workspace names a Conversation or a direct owner, which is what B68
-      // keys a runtime profile by. A run with neither has no container, and
-      // inventing a per-run one is the thing B68 forbids, since a profile that
+      // A CLI run executes on a host, and only with a container to be an
+      // Agent's profile in. A managed workspace names a Conversation or a
+      // direct owner, which is what B68 keys a runtime profile by. A run with
+      // neither has no container. Do not invent a per-run one: a profile that
       // dies with its run takes the session the next turn would resume. Such a
       // run reaches the registry's fail-closed entry instead of executing
       // somewhere undefined.
@@ -2061,7 +2047,7 @@ export class RunOrchestrationService {
    * registered path for a Location the control plane created — and without
    * this a Run dispatched to a server Location fails at launch with "no local
    * path registered". ADR 0016 §4 keeps `root_path` populated exactly for
-   * these Locations, which is why the server can answer here and cannot for a
+   * these Locations. The server can answer here and cannot for a
    * paired host.
    */
   private async builtinLocationRelativePath(locationId: string | null): Promise<string | null> {
@@ -2073,9 +2059,9 @@ export class RunOrchestrationService {
     const rootPath = row.rows[0]?.root_path;
     if (!rootPath) return null;
     const relative = relativePath(this.config.workspaceRoot, rootPath);
-    // Outside the instance's own root is not a server Location any more
-    // (ADR 0016 §4 removed that escape hatch); refusing to name it is better
-    // than sending a path the daemon would rightly reject.
+    // A path outside the instance's own root is not a server Location
+    // (ADR 0016 §4). Do not name it. Sending it would hand the daemon a path
+    // it rejects.
     return relative && !relative.startsWith("..") && !isAbsolute(relative) ? relative : null;
   }
 
@@ -2087,7 +2073,14 @@ export class RunOrchestrationService {
         "Dispatching a CLI runtime requires the built-in execution host, which needs a database.",
       );
     }
-    this.builtinHostIdPromise ??= new PgHostRepository(getDbPool(this.config.databaseUrl)).ensureServerHostId();
+    // Cache the answer, not the attempt: a rejected promise left here would
+    // fail every later unbound CLI Run in this worker until a restart.
+    this.builtinHostIdPromise ??= new PgHostRepository(getDbPool(this.config.databaseUrl))
+      .ensureServerHostId()
+      .catch((error: unknown) => {
+        this.builtinHostIdPromise = null;
+        throw error;
+      });
     return this.builtinHostIdPromise;
   }
 
@@ -2256,11 +2249,22 @@ export class RunOrchestrationService {
           agentVersionId: run.agent_version_id,
           runtimeInstallation: stringConfigValue(prepared.adapter_config.runtime_installation),
           control,
+          runId: run.id,
           ...(daemonRun ? { expectedVendorSessionId: hostThreadSessionId } : {}),
         });
-        const cliLeaseId = await this.cliContinuity.acquireExecutionLease(cliBinding.id);
-        prepared.cli_execution_lease = { binding_id: cliBinding.id, lease_id: cliLeaseId };
-        cliBinding = await this.cliContinuity.bindingForExecutionLease(cliBinding.id, cliLeaseId);
+        const cliLease = await this.cliContinuity.acquireExecutionLease(cliBinding.id, { runId: run.id });
+        const continuity = this.cliContinuity;
+        prepared.cli_execution_lease = {
+          binding_id: cliBinding.id,
+          lease_id: cliLease.leaseId,
+          // A lease that is not renewed lapses, so a crashed worker cannot
+          // hold the conversation; one that is, holds it for the whole turn.
+          heartbeat: setInterval(() => {
+            void continuity.heartbeatExecutionLease(cliLease.leaseId).catch(() => false);
+          }, EXECUTION_LEASE_HEARTBEAT_MS),
+        };
+        prepared.cli_execution_lease.heartbeat?.unref?.();
+        cliBinding = await this.cliContinuity.bindingForExecutionLease(cliBinding.id, cliLease.leaseId);
         if (daemonRun) {
           // HostThread and Runtime Context must resume the same opaque ACP
           // session. Any binding rotation (policy, AgentVersion, runtime, or
@@ -2280,7 +2284,7 @@ export class RunOrchestrationService {
               : null,
           });
           if (cliBinding.vendor_session_id && !state.resume) {
-            cliBinding = await this.cliContinuity.rotateMissingVendorState(cliBinding.id);
+            cliBinding = await this.cliContinuity.rotateMissingVendorState(cliBinding.id, prepared.cli_execution_lease.lease_id);
             prepared.cli_execution_lease.binding_id = cliBinding.id;
             state = await prepareConversationRuntimeState({
               rainver_home: this.config.rainverHome,
@@ -2308,15 +2312,9 @@ export class RunOrchestrationService {
         }
       }
 
-      // **Unreachable, and left standing deliberately.** Every `local_cli`
-      // adapter is a daemon run now, so this condition is false by
-      // construction — the working directory of a CLI run belongs to the
-      // daemon, resolved on that machine and, on the built-in host, wrapped in
-      // the namespace it builds. The block below is the server-host worktree
-      // and ephemeral provisioning that served the CLI the server used to
-      // spawn; it goes with `workspaceManager`'s other orchestration callers
-      // when the credential and runtime-tool modules are retired, rather than
-      // being pulled out here in the same change that made it dead.
+      // Unreachable. Every `local_cli` adapter is a daemon run, so this
+      // condition is false. A CLI run's working directory belongs to the
+      // daemon.
       if (isVendorCliAdapter(run.runtime_key) && !prepared.sandbox_cwd && !dispatchesToHostDaemon(run.runtime_key)) {
         const scope = workingDirScopeForLevel(run.required_sandbox_level);
         if (scope === "ephemeral") {
@@ -2429,7 +2427,8 @@ export class RunOrchestrationService {
     if (prepared?.cli_execution_lease && this.cliContinuity) {
       const lease = prepared.cli_execution_lease;
       prepared.cli_execution_lease = null;
-      await this.cliContinuity.releaseExecutionLease(lease.binding_id, lease.lease_id).catch(() => {});
+      if (lease.heartbeat) clearInterval(lease.heartbeat);
+      await this.cliContinuity.releaseExecutionLease(lease.lease_id).catch(() => {});
     }
     const executionPort = prepared?.execution_port ?? this.serverExecutionPort;
     if (prepared?.exchange) {
@@ -2466,19 +2465,13 @@ export class RunOrchestrationService {
     run: RunRecord,
     prepared: PreparedRuntimeContext,
   ): Promise<void> {
-    // Never for a run the daemon owns the directory of: the Exchange is a pair
-    // of directories the server stages and reads back, and there is no such
-    // pair on another machine — the daemon's port throws rather than touch one.
-    // Guarded on the runtime rather than on `sandbox_cwd` being absent,
-    // because a caller can supply that and a thrown Exchange would fail the
-    // whole run at preparation.
-    //
-    // With every CLI run on a daemon, nothing reaches the rest of this
-    // function: the Exchange was a CLI-only mechanism. What replaced it for a
-    // dispatched Run is the diff and the files the daemon uploads from
-    // `$RAINVER_OUTPUT_DIR`, which `recordOutputArtifacts` matches against the
-    // Task's declared outputs. The body below is removed with the rest of the
-    // server-host CLI machinery rather than in the change that made it dead.
+    // A daemon Run returns here. Its outputs are the diff and the files it
+    // uploads from `$RAINVER_OUTPUT_DIR`, which `recordOutputArtifacts`
+    // matches against the Task's declared outputs. Do not prepare an Exchange
+    // for it. The Exchange is a pair of directories the server stages, and a
+    // daemon Run has no such pair. Guard on the runtime, not on `sandbox_cwd`
+    // being absent: a caller can supply that path, and preparing an Exchange
+    // would fail the run.
     if (dispatchesToHostDaemon(run.runtime_key)) return;
     if (!isVendorCliAdapter(run.runtime_key) || !prepared.sandbox_cwd) return;
     const executionPort = prepared.execution_port ?? this.serverExecutionPort;
@@ -2549,9 +2542,9 @@ export class RunOrchestrationService {
     };
     const promise = this.invokeAdapterUnbounded(run, adapterInput);
     if (!timeoutMs || timeoutMs <= 0) return promise;
-    // Local CLI adapters own their deadline: the scoped Runner terminates
-    // the process group and waits for exit. Racing that cleanup here would
-    // release the Job while the child process was still alive.
+    // A `local_cli` adapter's deadline belongs to the daemon. It stops the
+    // process and waits for exit. Do not race a server timeout against that:
+    // the Job would be released while the child was still alive.
     if (spec?.executor_family === "local_cli") return promise;
     return withTimeout(
       promise,
@@ -2590,13 +2583,12 @@ export class RunOrchestrationService {
           invocation_delivery: input.invocation_delivery,
           timeout_seconds: input.timeout_ms && input.timeout_ms > 0 ? Math.ceil(input.timeout_ms / 1000) : null,
           runtime_event_sink: input.runtime_event_sink,
-          // control-center-phase2-plan.md P1 (C2): persisted as frames
-          // arrive, not batched — the thread's live read model. Serialized
-          // per run (see createSerializedThreadEventSink) since stdout and
-          // stderr chunks can arrive back-to-back through un-awaited
+          // Persisted as frames arrive, not batched. The thread's live read model.
+          // Serialized per run (see createSerializedThreadEventSink) since stdout
+          // and stderr chunks can arrive back-to-back through un-awaited
           // callbacks.
           thread_event_sink: threadEvents
-            ? createSerializedThreadEventSink(threadEvents, threadId!, run.id)
+            ? createSerializedThreadEventSink(threadEvents, threadId!, run.id, input.run_attempt_number ?? null)
             : undefined,
           process_registry: this.adapters.processRegistry,
           workspace: input.execution_port.workspace,
@@ -3083,6 +3075,34 @@ export class RunOrchestrationService {
     return terminal;
   }
 
+  /**
+   * Cancellation can linearize first by moving the Run to `cancelling` while
+   * this worker holds its execution lock; public cancellation never removes
+   * that lock, so the execution owner publishes the cancellation. Returns the
+   * cancelled Run, or null when the Run is not `cancelling`.
+   */
+  private async publishPendingCancellation(run: RunRecord, completedAt: string): Promise<RunRecord | null> {
+    const current = await this.repository.getRun(run.space_id, run.id);
+    if (current?.status !== "cancelling") return null;
+    return this.publishRunTerminalWithConversationRuntime({
+      run_id: run.id,
+      space_id: run.space_id,
+      status: "cancelled",
+      output_text: "",
+      output_json: canonicalRunOutput({
+        success: false,
+        outputText: "",
+        outputJson: { error_code: "run_cancelled" },
+      }),
+      error_json: {
+        error_code: "run_cancelled",
+        error_text: "Run cancellation won the terminal publication race.",
+      },
+      exit_code: 1,
+      completed_at: completedAt,
+    }, run, null, false);
+  }
+
   private async publishRunTerminalWithConversationRuntime(
     input: RunTerminalUpdate,
     run: RunRecord,
@@ -3128,6 +3148,7 @@ export class RunOrchestrationService {
         bindingId: delivery.cli_session.binding_ref.id,
         runtimeStateKey: delivery.cli_session.runtime_state_key,
         vendorSessionId: externalSessionId,
+        leaseGeneration: delivery.cli_session.lease_generation,
       });
     } catch {
       // The accepted Delivery and canonical Context Event ledger remain the
@@ -3138,6 +3159,7 @@ export class RunOrchestrationService {
   private async appendRuntimeSemanticEvent(
     run: RunRecord,
     event: RuntimeSemanticEvent,
+    attemptNumber: number | null = null,
   ): Promise<void> {
     const critical = /^(policy_checked|tool_call_|approval_)/.test(event.type);
     let canonical: unknown = null;
@@ -3145,6 +3167,7 @@ export class RunOrchestrationService {
       canonical = await this.repository.appendRunEvent({
       run_id: run.id,
       space_id: run.space_id,
+      attempt_number: attemptNumber,
       event_type: event.type,
       status: semanticEventStatus(event),
       summary: event.summary ?? null,
@@ -3437,10 +3460,9 @@ function cliVendor(runtimeKey: string): string {
 /**
  * `retrieval_intent` is the turn's retrieval query, not its instruction. A
  * managed run's prompt can be a whole rendered batch — Source screening sends
- * sixteen items in one prompt — and the protocol bounds the query, so a long
- * prompt used to fail envelope validation and take the entire run with it.
- * Truncate into a query rather than rejecting the turn; the bound comes from
- * the protocol schema so the two cannot drift. Truncation is the fallback for
+ * sixteen items in one prompt — and the protocol bounds the query. Truncate
+ * into a query rather than rejecting the turn; the bound comes from the
+ * protocol schema so the two cannot drift. Truncation is the fallback for
  * callers with nothing better — a caller that knows its real query passes
  * `retrieval_intent` and never reaches the slice.
  */

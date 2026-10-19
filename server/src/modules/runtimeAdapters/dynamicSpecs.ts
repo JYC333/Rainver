@@ -1,16 +1,15 @@
 import type { RuntimeAdapterSpec } from "./specs.js";
 
 /**
- * Runtime adapters that exist because an operator enabled them, not because
- * they were written into `BUILTIN_RUNTIME_ADAPTER_SPECS` — today, agents
- * from the ACP registry (`modules/acpAgents`). Held in process memory and
- * replaced wholesale by whoever owns their source of truth; `getRuntimeAdapterSpec`
- * consults this after the builtins so the rest of the server reads one catalog.
- *
- * Only the spec lookups go through here. Code that indexes
- * `BUILTIN_RUNTIME_ADAPTER_SPECS` directly (agent configuration, automations,
- * server-host runtime tools) deliberately never sees these: a dynamic adapter
- * is `remote_host_only` and has no server-host execution path.
+ * Runtime adapters an operator enabled. They are not entries of
+ * `BUILTIN_RUNTIME_ADAPTER_SPECS`. Agents from the
+ * ACP registry (`modules/acpAgents`) are the ones held here, in process
+ * memory, and replaced wholesale by whoever owns their source of truth.
+ * `getRuntimeAdapterSpec` consults this map after the builtins, so the rest
+ * of the server reads one catalog. Do not subscript
+ * `BUILTIN_RUNTIME_ADAPTER_SPECS` for an agent. A dynamic adapter is
+ * `remote_host_only` and is invisible in that table; dispatch would answer
+ * "Unknown runtime_key".
  */
 const dynamicSpecs = new Map<string, RuntimeAdapterSpec>();
 

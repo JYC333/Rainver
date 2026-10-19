@@ -102,7 +102,7 @@ describe('Project Pulse', () => {
   })
 
   it('asks for a goal until the Project has one, and then stops', async () => {
-    // Creation no longer asks for a goal and the shell no longer carries a
+    // Creation does not ask for a goal and the shell does not carry a
     // readiness checklist; this is the one place the question is put.
     renderPulse({ ...overview, definition_status: { status: 'needs_definition', basis: 'missing_published_brief_goal', goal_or_problem: null } } as unknown as ProjectOverview)
     expect(await screen.findByTestId('pulse-needs-goal')).toBeInTheDocument()
@@ -113,9 +113,9 @@ describe('Project Pulse', () => {
   })
 
   it('points at Files & Code while no Folder is connected, and stops once one is', async () => {
-    // The only place a Folder is connected is Files & Code, two clicks away;
-    // without this an Agent quietly works in a managed workspace instead of
-    // the Project's code. A Folder is optional, so it is a quiet line.
+    // The only place a Folder is connected is Files & Code, two clicks away.
+    // Do not leave the missing Folder unsaid. An Agent would work in a managed
+    // workspace instead of the Project's code. A Folder is optional, so it is a quiet line.
     renderPulse({ ...overview, has_project_folder: false } as unknown as ProjectOverview)
     expect(await screen.findByTestId('pulse-needs-folder')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Connect a Folder' }))
@@ -153,8 +153,8 @@ describe('Project Pulse', () => {
 
   it('groups what needs a person by why it needs them', async () => {
     // ADR 0017 §4: a decision, a spend and a suggestion read differently and
-    // are acted on differently. One undifferentiated list is what made six
-    // identical cards feel like a pile nobody could resolve.
+    // are acted on differently. Do not flatten them into one list. Six cards
+    // of one kind read as a pile with nothing to do.
     renderPulse({
       ...overview,
       attention: [
@@ -184,10 +184,9 @@ describe('Project Pulse', () => {
   })
 
   it('shows a running Operation, what it is doing, and how far in', async () => {
-    // The failure this fixes: a research acquisition screened 873 documents
-    // for four hours while this panel said "nothing is being worked on",
-    // because its only source was the Task board and an Operation is not a
-    // Task. The progress was in the Operation the whole time.
+    // In progress includes Operations. Do not source this panel only from the
+    // Task board: an Operation is not a Task, and the panel would say nothing
+    // is being worked on while acquisition is running.
     renderPulse({
       ...overview,
       in_progress: [{
@@ -214,9 +213,8 @@ describe('Project Pulse', () => {
   })
 
   it('shows how far along a stage that counts nothing is', async () => {
-    // Synthesis has no item counts of its own, so the row used to be a
-    // sentence, a spinner and a bar — no number anywhere. Where it is in the
-    // pipeline, and how far, is available at every stage.
+    // Synthesis has no item counts of its own. The row still says where it is
+    // in the pipeline and how far.
     renderPulse({
       ...overview,
       in_progress: [{

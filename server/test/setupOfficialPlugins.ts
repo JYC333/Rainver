@@ -58,7 +58,7 @@ const TEMPLATE_LOCK_KEY = 7263123498013;
 function migrationsFingerprint(dir: string): string {
   const hash = createHash("sha256");
   // The shared template models the release that is still running while an
-  // offline maintenance migration is staged. Phase-specific DB tests create
+  // offline maintenance migration is staged. Tests of that migration create
   // an empty database and apply the full chain explicitly.
   for (const file of loadMigrations(dir)) {
     if (requiresMaintenance(file.sql)) continue;
@@ -152,12 +152,10 @@ async function dropStaleTestDatabases(admin: Pool, currentTemplate: string): Pro
 
 /**
  * Docker's published-port path goes through the userland `docker-proxy`,
- * which copies every byte of every statement through an extra process. With
- * a dozen workers hammering one instance that proxy was the busiest thing on
- * the machine: a round trip direct to the container IP measured 3.4x the
- * throughput of the mapped port. Where the container's bridge address is
- * reachable from the host (native Linux engines, WSL2), talk to it directly;
- * where it is not (Docker Desktop on macOS/Windows), keep the mapped port.
+ * which copies every byte of every statement through an extra process. Where
+ * the container's bridge address is reachable from the host (native Linux
+ * engines, WSL2), talk to it directly. Where it is not (Docker Desktop on
+ * macOS/Windows), keep the mapped port.
  */
 async function directConnectionUri(container: StartedPostgreSqlContainer): Promise<string> {
   const mapped = container.getConnectionUri();
@@ -213,8 +211,8 @@ export default async function setup(project: GlobalSetupProject): Promise<() => 
   }
 
   let configured = new PostgreSqlContainer("pgvector/pgvector:pg18")
-    // PostgreSQL 18 stores clusters below a versioned directory here. Mounting
-    // the old /var/lib/postgresql/data path makes the pg18 image fail fast.
+    // PostgreSQL 18 stores clusters below a versioned directory here. Do not
+    // mount /var/lib/postgresql/data: the pg18 image fails fast.
     .withTmpFs({ "/var/lib/postgresql": "rw" })
     // Throughput settings for a throwaway instance serving a dozen workers:
     // durability off (tmpfs anyway), no autovacuum churn behind per-test

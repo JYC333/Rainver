@@ -67,10 +67,9 @@ describe("runtime authority contracts", () => {
     }
   });
 
-  // The Profile body schemas are the API boundary for runtime identity, and
-  // nothing in this package parsed them: the server's route tests covered the
-  // alias rejection, so a widened body shape would have been caught only
-  // there — one package away from the contract it changes.
+  // The Profile body schemas are the API boundary for runtime identity.
+  // Parse them in this package. A widened body shape caught only in the
+  // server's route tests is one package away from the contract it changes.
   it("requires a runtime key and a name on a created Runtime Profile", () => {
     expect(AgentRuntimeProfileCreateBodySchema.safeParse({
       name: "Default", runtime_key: "opencode",
@@ -108,8 +107,8 @@ describe("runtime authority contracts", () => {
   it("gives every live Profile option key exactly one authoring bag", () => {
     // `tools` is read off runtime_config_json by the routing filter and
     // `allow_permission_bypass` off runtime_policy_json by the CLI renderer.
-    // Admission refuses the other bag so the silent `a ?? b` precedence the
-    // readers used to carry can never be reached.
+    // Admission refuses the other bag so the silent `a ?? b` precedence
+    // cannot be reached.
     expect(RuntimeProfileConfigJsonSchema.safeParse({ tools: ["fs.read"] }).success).toBe(true);
     expect(RuntimeProfileConfigJsonSchema.safeParse({ allow_permission_bypass: true }).success).toBe(false);
     expect(RuntimeProfilePolicyJsonSchema.safeParse({ allow_permission_bypass: true }).success).toBe(true);

@@ -30,7 +30,7 @@ const RECORD_COLUMNS = `id, imported_session_id, record_key, content_hash, confl
   truncated, parser_version, extracted_in, created_at`;
 
 /** What one session's reconciliation changed, for the caller's report. */
-export interface ReconcileOutcome {
+interface ReconcileOutcome {
   session: ImportedSessionRow;
   inserted: number;
   unchanged: number;
@@ -209,8 +209,8 @@ export class PgImportedSessionRepository {
     let sessionId = existing.rows[0]?.id ?? null;
     if (sessionId) {
       // Visibility is not re-applied here: it is the person's decision on the
-      // session, and a later sync inheriting the Location default would
-      // silently re-share something they had made private.
+      // session. Do not inherit the Location default on a later sync. It
+      // would re-share a session the person made private.
       await this.db.query(
         `UPDATE imported_sessions
             SET title = COALESCE($2, title),
@@ -311,11 +311,9 @@ export class PgImportedSessionRepository {
       else unchanged += 1;
     }
 
-    // ACP carries no per-record timestamp in any runtime verified so far, so
-    // in practice this always falls back to the session's own vendor
-    // timestamp — which is why the product shows one instant per session
-    // rather than a range. The MIN/MAX is kept because the column exists and a
-    // future replay that does carry times should be used when it appears.
+    // Record timestamps win when the replay has them. Otherwise the session's
+    // vendor timestamp is the instant, so the product shows one instant per
+    // session rather than a range.
     await this.db.query(
       `UPDATE imported_sessions s
           SET record_count = counts.total,
@@ -341,10 +339,9 @@ export class PgImportedSessionRepository {
    * import that vanished with its source would be an archive that erases
    * itself. `gone` is information for the reader.
    *
-   * Only ever called after a *successful* enumeration. An empty list from a
-   * runtime that failed to answer would otherwise mark a folder's entire
-   * history gone, which is why the failure path in the service returns before
-   * reaching this.
+   * Only ever called after a *successful* enumeration. Do not call this on a
+   * failed enumeration. An empty list would mark a folder's entire history
+   * gone. The failure path in the service returns before reaching this.
    */
   async markMissingAsGone(input: {
     spaceId: string;
@@ -354,13 +351,26 @@ export class PgImportedSessionRepository {
     /** Exactly what the host enumerated this sync — never what the server holds. */
     listedVendorSessionIds: readonly string[];
   }): Promise<number> {
+    const listed = [...input.listedVendorSessionIds];
+    // The same enumeration is the only evidence the other way too: a session
+    // marked gone that the host lists again is present, whether or not its
+    // timestamp moved (an unchanged one is never replayed, so reconcile
+    // would never see it).
+    await this.db.query(
+      `UPDATE imported_sessions
+          SET source_state = 'present', updated_at = now()
+        WHERE space_id = $1 AND workspace_location_id = $2 AND runtime_key = $3 AND installation = $4
+          AND source_state = 'gone'
+          AND vendor_session_id = ANY($5::text[])`,
+      [input.spaceId, input.workspaceLocationId, input.runtimeKey, input.installation, listed],
+    );
     const result = await this.db.query(
       `UPDATE imported_sessions
           SET source_state = 'gone', updated_at = now()
         WHERE space_id = $1 AND workspace_location_id = $2 AND runtime_key = $3 AND installation = $4
           AND source_state <> 'gone'
           AND NOT (vendor_session_id = ANY($5::text[]))`,
-      [input.spaceId, input.workspaceLocationId, input.runtimeKey, input.installation, [...input.listedVendorSessionIds]],
+      [input.spaceId, input.workspaceLocationId, input.runtimeKey, input.installation, listed],
     );
     return result.rowCount ?? 0;
   }

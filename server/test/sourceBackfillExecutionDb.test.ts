@@ -1,10 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { seedArxivSourceChain, seedResearchOperation } from "./support/researchSeeds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { seedSpaceOwnerProject } from "./support/domainSeeds.js";
 import { resetTables } from "./support/resetTables.js";
 import { SourceBackfillExecutionService } from "../src/modules/sources/sourceBackfillExecutionService.js";
+import { consumeConnectionQuota } from "../src/modules/sources/sourceQuotaBucket.js";
+import { SourceExtractionWorker } from "../src/modules/sources/extractionWorker.js";
+import { __setArxivThrottleForTests } from "../src/modules/sources/connectors/arxivThrottle.js";
+import { loadConfig } from "../src/config.js";
+import type { Queryable } from "../src/modules/routeUtils/common.js";
+import { publicAddressGuard } from "./support/outboundGuard.js";
 
 // Real-Postgres coverage for the shared item budget across sibling
 // Project Research backfill plans (one plan per selected Source Monitor,
@@ -131,6 +137,21 @@ describe("SourceBackfillExecutionService shared project budget (real Postgres)",
     expect(planB.rows[0]!.status).toBe("completed");
   });
 
+  it("leaves a sibling's segment pending while the budget is only held by an in-flight page", async () => {
+    if (!db.available) return;
+    await seedPlan(PLAN_A, CHANNEL_A, 100, 0, "running");
+    await seedSegment(randomUUID(), PLAN_A, "running", { page_size: 10 });
+    await seedPlan(PLAN_B, CHANNEL_B, 100, 0, "approved");
+    await seedSegment(randomUUID(), PLAN_B, "pending", { from: "2026-01-01T00:00:00.000Z", to: "2026-02-01T00:00:00.000Z", max_items: 10 });
+
+    await new SourceBackfillExecutionService(db.pool).executeNext(SPACE, PLAN_B);
+
+    const planB = await db.pool.query<{ status: string }>(`SELECT status FROM source_backfill_plans WHERE id=$1`, [PLAN_B]);
+    const segment = await db.pool.query<{ status: string }>(`SELECT status FROM source_backfill_segments WHERE plan_id=$1`, [PLAN_B]);
+    expect(segment.rows[0]!.status).toBe("pending");
+    expect(planB.rows[0]!.status).toBe("approved");
+  });
+
   it("keeps a standalone (non-Project) plan on its own independent budget", async () => {
     if (!db.available) return;
     const now = new Date().toISOString();
@@ -226,6 +247,52 @@ describe("SourceBackfillExecutionService shared project budget (real Postgres)",
     expect(segment.rows[0]!.window_json.page_size).toBe(3);
   });
 
+  it("continues a partial from the page after the last one it imported", async () => {
+    if (!db.available) return;
+    await seedStandalonePlan(PLAN_A, CHANNEL_A, 200, 200, "completed");
+    // Two full pages imported: the second started at item 100, and the budget
+    // ran out at its end.
+    await seedSegment(randomUUID(), PLAN_A, "succeeded", {
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-02-01T00:00:00.000Z",
+      cursor: 1,
+      offset: 100,
+      consumed_items: 200,
+      next_cursor: 2,
+      partial: true,
+      exhausted: false,
+    });
+
+    const dispatched = await new SourceBackfillExecutionService(db.pool).continuePartial(SPACE, PLAN_A, 100);
+
+    const job = await db.pool.query<{ metadata_json: { window: Record<string, unknown> } }>(
+      `SELECT metadata_json FROM extraction_jobs WHERE id=$1`,
+      [(dispatched as { job_id: string }).job_id],
+    );
+    expect(job.rows[0]!.metadata_json.window).toMatchObject({ cursor: 2, offset: 200, consumed_items: 200 });
+  });
+
+  it("keeps a page-numbered connector's page width when it resumes a segment", async () => {
+    if (!db.available) return;
+    await db.pool.query(`UPDATE source_connectors SET connector_key='openalex_api' WHERE id=$1`, [CONNECTOR]);
+    await seedStandalonePlan(PLAN_A, CHANNEL_A, 250, 200, "approved");
+    await seedSegment(randomUUID(), PLAN_A, "pending", {
+      from: "2026-01-01T00:00:00.000Z",
+      to: "2026-02-01T00:00:00.000Z",
+      cursor: 2,
+      consumed_items: 200,
+      page_size: 100,
+    });
+
+    const dispatched = await new SourceBackfillExecutionService(db.pool).executeNext(SPACE, PLAN_A);
+
+    const job = await db.pool.query<{ metadata_json: { window: Record<string, unknown> } }>(
+      `SELECT metadata_json FROM extraction_jobs WHERE id=$1`,
+      [(dispatched as { job_id: string }).job_id],
+    );
+    expect(job.rows[0]!.metadata_json.window).toMatchObject({ cursor: 2, page_size: 100, remaining_items: 50 });
+  });
+
   it("raises the budget on a still-running plan without dispatching anything, since its own loop rebuilds the request from the live channel query next time it schedules a segment", async () => {
     if (!db.available) return;
     await seedStandalonePlan(PLAN_A, CHANNEL_A, 10, 4, "approved");
@@ -266,4 +333,154 @@ describe("SourceBackfillExecutionService shared project budget (real Postgres)",
       "Cannot adjust the item budget for a source backfill plan in status failed",
     );
   });
+});
+
+describe("source connection quota bucket (real Postgres)", () => {
+  it("takes the current limit when a window starts again, rather than the smallest ever seen", async () => {
+    if (!db.available) return;
+    // A query preview's small limit for one window...
+    expect(await consumeConnectionQuota(db.pool, SPACE, CONNECTION, { window: "minute", limit_count: 1 })).toEqual({ allowed: true });
+    await db.pool.query(`UPDATE source_quota_buckets SET reset_at = now() - interval '1 second' WHERE scope_key = $1`, [CONNECTION]);
+
+    // ...does not hold a later backfill to it once that window is over.
+    for (let index = 0; index < 3; index += 1) {
+      expect(await consumeConnectionQuota(db.pool, SPACE, CONNECTION, { window: "minute", limit_count: 5 })).toEqual({ allowed: true });
+    }
+  });
+});
+
+describe("history page completion against a concurrent reconcile (real Postgres)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    __setArxivThrottleForTests(null);
+  });
+
+  function arxivPage(ids: string[]): string {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+      <feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+        ${ids.map((id) => `<entry>
+          <id>http://arxiv.org/abs/${id}v1</id>
+          <updated>2026-01-10T00:00:00Z</updated>
+          <published>2026-01-10T00:00:00Z</published>
+          <title>Paper ${id}</title>
+          <summary>Abstract ${id}.</summary>
+          <author><name>Author</name></author>
+          <link href="http://arxiv.org/abs/${id}v1" rel="alternate" type="text/html"/>
+        </entry>`).join("")}
+      </feed>`;
+  }
+
+  it("never lets a reconcile settle a segment between a page's completion and its next page", async () => {
+    if (!db.available) return;
+    __setArxivThrottleForTests({ sleep: async () => {} });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(arxivPage(["2601.00001", "2601.00002"]), { status: 200, headers: { "content-type": "application/atom+xml" } }));
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO source_search_specs
+         (id,space_id,source_channel_id,provider_key,research_query_attempt_id,compiled_provider_query_json,query_fingerprint,active_version,activated_at,created_at,updated_at)
+       VALUES ($1,$2,$3,'arxiv',NULL,$4::jsonb,'fp-spec',1,$5,$5,$5)`,
+      [randomUUID(), SPACE, CHANNEL_A, JSON.stringify({ search_query: "cat:cs.AI", max_results: 100 }), now],
+    );
+    await seedStandalonePlan(PLAN_A, CHANNEL_A, 4, 0, "running");
+    const segmentId = randomUUID();
+    const jobId = randomUUID();
+    const window = { from: "2026-01-01T00:00:00.000Z", to: "2026-02-01T00:00:00.000Z", max_items: 4, remaining_items: 4, page_size: 2, cursor: 0 };
+    await seedSegment(segmentId, PLAN_A, "running", window);
+    await db.pool.query(
+      `INSERT INTO extraction_jobs (id, space_id, connection_id, job_type, status, metadata_json, created_at)
+       VALUES ($1,$2,$3,'connection_scan','pending',$4::jsonb,$5)`,
+      [jobId, SPACE, CONNECTION, JSON.stringify({ source_channel_id: CHANNEL_A, source_backfill_plan_id: PLAN_A, source_backfill_segment_id: segmentId, window }), now],
+    );
+    await db.pool.query(`UPDATE source_backfill_segments SET extraction_job_id=$2 WHERE id=$1`, [segmentId, jobId]);
+
+    // The reconciler runs on its own loop; here it runs the moment the page's
+    // job is recorded as succeeded.
+    let reconciled = false;
+    const racing: Queryable = {
+      query: (async (sql: string, params?: unknown[]) => {
+        const result = await db.pool.query(sql, params);
+        if (!reconciled && sql.includes("SET status = $3") && params?.[2] === "succeeded") {
+          reconciled = true;
+          await new SourceBackfillExecutionService(db.pool).reconcile(SPACE, PLAN_A);
+        }
+        return result;
+      }) as Queryable["query"],
+    };
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, ARTIFACT_STORAGE_ROOT: "/tmp/rainver-test-artifacts" });
+    await expect(new SourceExtractionWorker(racing, config, publicAddressGuard).runPendingJob(jobId, SPACE))
+      .resolves.toMatchObject({ status: "succeeded" });
+
+    expect(reconciled).toBe(true);
+    const segment = await db.pool.query<{ status: string; extraction_job_id: string; window_json: Record<string, unknown> }>(
+      `SELECT status, extraction_job_id, window_json FROM source_backfill_segments WHERE id=$1`,
+      [segmentId],
+    );
+    expect(segment.rows[0]).toMatchObject({ status: "running", window_json: { cursor: 1, offset: 2, consumed_items: 2 } });
+    expect(segment.rows[0]!.extraction_job_id).not.toBe(jobId);
+  });
+
+  it("has a reconcile wait for the research operation before it holds any segment, the order a continuation takes", async () => {
+    if (!db.available) return;
+    await seedPlan(PLAN_A, CHANNEL_A, 10, 0, "running");
+    const segmentId = randomUUID();
+    await seedSegment(segmentId, PLAN_A, "running", { max_items: 10, remaining_items: 10, page_size: 5, cursor: 0 });
+    // A continuation finishing a page holds the operation (and would next
+    // take the segment and the plan).
+    const continuation = await db.pool.connect();
+    try {
+      await continuation.query("BEGIN");
+      await continuation.query(`SELECT id FROM project_operations WHERE id=$1 FOR UPDATE`, [OPERATION]);
+      const reconcile = new SourceBackfillExecutionService(db.pool).reconcile(SPACE, PLAN_A);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      // The waiting reconcile holds neither the segment nor the plan, so the
+      // continuation can take both: no deadlock.
+      await continuation.query(`SELECT id FROM source_backfill_segments WHERE id=$1 FOR UPDATE NOWAIT`, [segmentId]);
+      await continuation.query(`SELECT id FROM source_backfill_plans WHERE id=$1 FOR UPDATE NOWAIT`, [PLAN_A]);
+      await continuation.query("COMMIT");
+      await expect(reconcile).resolves.toBeDefined();
+    } finally {
+      continuation.release();
+    }
+  });
+
+  it("reserves each continuation page against the budget siblings share, so concurrent segments never pass max_items", async () => {
+    if (!db.available) return;
+    // Operation total is 10. A's first page read 5; B has a 4-item page in flight.
+    await seedPlan(PLAN_A, CHANNEL_A, 100, 0, "running");
+    await seedPlan(PLAN_B, CHANNEL_B, 100, 0, "running");
+    const segmentA = randomUUID();
+    const segmentB = randomUUID();
+    const windowA = { max_items: 10, remaining_items: 10, page_size: 5, cursor: 0 };
+    await seedSegment(segmentA, PLAN_A, "running", windowA);
+    await seedSegment(segmentB, PLAN_B, "running", { max_items: 4, remaining_items: 4, page_size: 4, cursor: 0 });
+    const worker = new SourceExtractionWorker(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), publicAddressGuard);
+    const continuePage = (window: Record<string, unknown>, seen: number) =>
+      (worker as unknown as { queueBackfillContinuationIfNeeded(job: unknown, result: unknown): Promise<void> }).queueBackfillContinuationIfNeeded(
+        { id: randomUUID(), space_id: SPACE, connection_id: CONNECTION, metadata_json: { source_channel_id: CHANNEL_A, source_backfill_plan_id: PLAN_A, source_backfill_segment_id: segmentA, window } },
+        { seen, page_size: 5, narrowable: true },
+      );
+
+    await continuePage(windowA, 5);
+    const afterFirst = await db.pool.query<{ window_json: Record<string, unknown> }>(`SELECT window_json FROM source_backfill_segments WHERE id=$1`, [segmentA]);
+    // A's own window would allow 5 more; the shared budget leaves 10 - 5 - 4 = 1.
+    expect(afterFirst.rows[0]!.window_json).toMatchObject({ consumed_items: 5, remaining_items: 1, page_size: 1, partial: false });
+
+    // That page reads its one item; B's page is still in flight, so nothing is left.
+    await continuePage(afterFirst.rows[0]!.window_json, 1);
+    const afterSecond = await db.pool.query<{ window_json: Record<string, unknown> }>(`SELECT window_json FROM source_backfill_segments WHERE id=$1`, [segmentA]);
+    expect(afterSecond.rows[0]!.window_json).toMatchObject({ consumed_items: 6, partial: true, has_more: true });
+    expect(afterSecond.rows[0]!.window_json.next_cursor).toBe(afterSecond.rows[0]!.window_json.cursor);
+    const queued = await db.pool.query(`SELECT id FROM extraction_jobs WHERE metadata_json->>'source_backfill_segment_id'=$1`, [segmentA]);
+    expect(queued.rows).toHaveLength(1);
+
+    // Imported plus reserved never passes the operation total.
+    const pending = await db.pool.query<{ total: number }>(
+      `SELECT SUM(COALESCE((window_json->>'consumed_items')::int,0) + CASE WHEN id=$1 THEN 4 ELSE 0 END)::int AS total
+         FROM source_backfill_segments`,
+      [segmentB],
+    );
+    expect(pending.rows[0]!.total).toBeLessThanOrEqual(10);
+  });
+
 });

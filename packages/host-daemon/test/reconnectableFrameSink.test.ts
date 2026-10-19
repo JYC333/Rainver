@@ -17,10 +17,8 @@ describe("ReconnectableFrameSink", () => {
   });
 
   it("delivers a run's complete frame on a later connection after a reconnect mid-run", () => {
-    // The exact bug this class fixes: a run launched while connection A was
-    // live must still deliver its `complete` frame if the WS reconnects to
-    // connection B before the run's process actually finishes — not be
-    // silently dropped on the now-dead connection A.
+    // A complete frame must still deliver after the WebSocket reconnects.
+    // Do not bind the run to the connection that was live at launch.
     const sink = new ReconnectableFrameSink();
     const connectionA = vi.fn();
     const connectionB = vi.fn();

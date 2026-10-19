@@ -184,7 +184,7 @@ it('lists a limited Room nobody has spoken in, with a way back to its roster', a
   // A Room with no conversation is invisible to a list of conversations,
   // and it is only reachable through one — so the list carries such Rooms
   // separately, named by their audience, or opening one and leaving would
-  // have left it with no way back.
+  // leave it with no way back.
   vi.mocked(projectsApi.conversations).mockResolvedValue({
     items: [],
     empty_rooms: [{ room_id: 'room-9', room_is_mainline: false, room_other_member_names: ['Bob'], room_agent_count: 1 }],

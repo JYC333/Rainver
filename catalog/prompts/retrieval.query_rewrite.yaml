@@ -2,8 +2,7 @@ asset_key: retrieval.query_rewrite
 display_name: Retrieval Query Rewrite Prompt
 description: >
   Registry-managed query-rewrite prompt. Runtime query rewrite resolves this
-  asset through the central prompt resolver before calling the provider; the
-  old space-scoped retrieval prompt surface was migrated onto this asset in M3.
+  asset through the central prompt resolver before calling the provider.
 content:
   schema_version: prompt_asset.v1
   prompt_type: retrieval_query

@@ -13,6 +13,9 @@ import { PgProposalApplyService } from "../src/modules/proposals/applyService.js
 import type { Queryable, QueryResult, SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
+import { EvolutionSignalEmitter } from "../src/modules/evolution/signalEmitters.js";
+import type { AgentRunRecord } from "../src/modules/runs/repository.js";
 
 describe("evolutionBundlesDb", () => {
   const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -276,6 +279,49 @@ describe("evolutionBundlesDb", () => {
         [unsupported.id],
       );
       expect(unsupportedRollbackProposals.rows).toHaveLength(0);
+    });
+
+    it("rolls back same-asset members approved out of position order", async () => {
+      if (!db.available) return;
+      const assets = new EvolvableAssetRepository(db.pool);
+      const evaluations = new EvolvableAssetEvaluationRepository(db.pool);
+      const bundles = new EvolutionBundleRepository(db.pool);
+      const asset = await assets.createAsset(identity, {
+        asset_type: "prompt_template",
+        asset_key: `bundle.order.${randomUUID()}`,
+        display_name: "Ordered asset",
+      });
+      const versions: Array<Awaited<ReturnType<typeof assets.createVersion>>> = [];
+      for (const value of ["first", "second"]) {
+        const version = await assets.createVersion(identity, asset.id as string, {
+          scope_type: "space", scope_id: SPACE, content_json: { value },
+        });
+        await assets.transitionVersionStatus(identity, asset.id as string, version.id as string, { status: "candidate" });
+        versions.push(version);
+      }
+      const proposals: Array<Awaited<ReturnType<typeof evaluations.createPromotionProposal>>> = [];
+      for (const version of versions) {
+        proposals.push(await evaluations.createPromotionProposal(identity, asset.id as string, version.id as string, {
+          target_scope_type: "space", target_scope_id: SPACE, pin_after_approval: true,
+        }));
+      }
+      const created = await bundles.create(identity, {
+        title: "Out of order release",
+        proposalIds: proposals.map((proposal) => proposal.proposal_id as string),
+      });
+      const apply = PgProposalApplyService.fromConfig(loadConfig({
+        SERVER_DATABASE_URL: db.connectionUri,
+        SERVER_INTERNAL_TOKEN: "test-internal-token",
+      }));
+      await bundles.decide(identity, created.id as string, [{ proposalId: proposals[1]!.proposal_id as string, decision: "approve" }], apply);
+      await bundles.decide(identity, created.id as string, [{ proposalId: proposals[0]!.proposal_id as string, decision: "approve" }], apply);
+
+      await expect(bundles.requestRollback(identity, created.id as string, apply))
+        .resolves.toMatchObject({ status: "rolled_back", rollback_error: null });
+      const after = await assets.listVersions(identity, asset.id as string);
+      expect(after.filter((row) => versions.some((version) => version.id === row.id)).map((row) => row.status))
+        .toEqual(["candidate", "candidate"]);
+      expect(await assets.listPins(identity, asset.id as string)).toEqual([]);
     });
 
     it("serializes same-asset approvals and refuses rollback over a later promotion", async () => {
@@ -782,6 +828,53 @@ describe("evolutionSolidifier", () => {
       expect(repository.updateStrategyExperienceStats).toHaveBeenCalledWith("strategy-1", "success");
     });
 
+    it("keys a retried Run's experience per attempt, so a successful retry is counted after a failed first attempt", async () => {
+      const context = {
+        spaceId: "space-1",
+        runId: "run-1",
+        targetId: "target-1",
+        targetName: "Runtime target",
+        strategyAssetId: "strategy-1",
+        strategyKey: "repair.runtime_failure",
+        strategyName: "Repair runtime failure",
+        inputSignalIds: ["signal-1"],
+        decisionReason: "matched runtime failure",
+      };
+      const created = new Map<string, EvolutionExperienceRow>();
+      const repository = {
+        getRunExperienceContext: vi.fn().mockResolvedValue(context),
+        getExperienceByKey: vi.fn(async (_space: string, key: string) => created.get(key) ?? null),
+        createExperience: vi.fn(async (input: { experienceKey: string; outcomeStatus: string }) => {
+          const row = experienceRow({ experience_key: input.experienceKey, outcome_status: input.outcomeStatus });
+          created.set(input.experienceKey, row);
+          return row;
+        }),
+        updateStrategyExperienceStats: vi.fn().mockResolvedValue(undefined),
+      };
+      const solidifier = new EvolutionSolidifier(repository);
+      const evaluation = (attempt: number, outcome: string) => ({
+        id: `evaluation-${attempt}`,
+        space_id: "space-1",
+        run_id: "run-1",
+        evaluator_version: "harness_eval.v1",
+        outcome_status: outcome,
+        evidence_json: { attempt_number: attempt, run_status: outcome === "passed" ? "succeeded" : "failed" },
+      });
+
+      await solidifier.solidifyFromRunEvaluation(evaluation(1, "failed"));
+      await solidifier.solidifyFromRunEvaluation(evaluation(2, "passed"));
+
+      expect(repository.createExperience).toHaveBeenCalledTimes(2);
+      expect([...created.keys()]).toEqual([
+        "repair.runtime_failure/run/run-1/harness_eval.v1/attempt-1",
+        "repair.runtime_failure/run/run-1/harness_eval.v1/attempt-2",
+      ]);
+      expect(repository.updateStrategyExperienceStats.mock.calls).toEqual([
+        ["strategy-1", "failed"],
+        ["strategy-1", "success"],
+      ]);
+    });
+
     it("does not duplicate an existing experience key", async () => {
       const experience = experienceRow();
       const repository = {
@@ -832,4 +925,84 @@ describe("evolutionSolidifier", () => {
       ...overrides,
     };
   }
+});
+
+describe("evolutionSignalEmitterDb", () => {
+  const SPACE = "22222222-2222-4222-8222-222222222222";
+  const db = useTestDatabase(`${import.meta.filename}#evolutionSignalEmitterDb`, { max: 4 });
+
+  beforeEach(async () => {
+    if (!db.available) return;
+    await resetTables(db.pool, ["evolution_signals", "evolution_targets", "spaces"], { cascade: true });
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO spaces (id, name, type, created_at, updated_at) VALUES ($1, 'Emitter', 'team', $2, $2)`,
+      [SPACE, now],
+    );
+  });
+
+  function failedWorkflowRun(id: string): AgentRunRecord {
+    return {
+      id,
+      space_id: SPACE,
+      agent_id: "agent-1",
+      agent_version_id: "agent-version-1",
+      execution_kind: "agent",
+      status: "failed",
+      mode: "execute",
+      prompt: "prompt",
+      instruction: null,
+      project_folder_id: null,
+      session_id: null,
+      project_id: null,
+      runtime_key: "opencode",
+      model_provider_id: null,
+      required_sandbox_level: "none",
+      trigger_origin: "http",
+      started_at: null,
+      ended_at: null,
+      contract_snapshot_json: { source: { kind: "workflow", id: "workflow-1" }, risk_level: "low" },
+    } as AgentRunRecord;
+  }
+
+  it("provisions one auto target when two Runs of the same workflow finalize concurrently", async () => {
+    if (!db.available) return;
+    const a = await db.pool.connect();
+    const b = await db.pool.connect();
+    try {
+      await a.query("BEGIN");
+      await b.query("BEGIN");
+      // The first writer holds its uncommitted target and the lock; the
+      // second must find that target once the lock is released, not act on
+      // a snapshot taken while it waited.
+      await new EvolutionSignalEmitter(a).emitRunFinalization({
+        run: failedWorkflowRun("run-a"),
+        evaluation: { outcome_status: "failed" },
+      });
+      let settled = false;
+      const racing = new EvolutionSignalEmitter(b).emitRunFinalization({
+        run: failedWorkflowRun("run-b"),
+        evaluation: { outcome_status: "failed" },
+      }).finally(() => { settled = true; });
+      await waitForLockWaiter(db.pool, { settled: () => settled, lockType: "advisory" });
+      await a.query("COMMIT");
+      await expect(racing).resolves.toMatchObject({ target_found: true });
+      await b.query("COMMIT");
+    } finally {
+      await a.query("ROLLBACK").catch(() => undefined);
+      await b.query("ROLLBACK").catch(() => undefined);
+      a.release();
+      b.release();
+    }
+    const targets = await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM evolution_targets WHERE space_id = $1 AND status = 'active'`,
+      [SPACE],
+    );
+    expect(targets.rows[0]?.count).toBe("1");
+    const signals = await db.pool.query<{ source_id: string }>(
+      `SELECT source_id FROM evolution_signals WHERE space_id = $1 AND signal_type = 'run_finalization_failed' ORDER BY source_id`,
+      [SPACE],
+    );
+    expect(signals.rows.map((row) => row.source_id)).toEqual(["run-a", "run-b"]);
+  });
 });

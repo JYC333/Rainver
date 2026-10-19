@@ -4,7 +4,8 @@ import { toast } from 'sonner'
 import { agentsApi, ApiRequestError, conversationInputApi, roomsApi, runsApi } from '../../api/client'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { useSpace } from '../../contexts/SpaceContext'
-import { useAppTranslation } from '../../i18n'
+import i18n, { useAppTranslation } from '../../i18n'
+import { formatTime } from '../../i18n/format'
 import { errMsg } from '../../lib/utils'
 import type {
   ThreadReferencePick,
@@ -41,7 +42,7 @@ import { ConversationComposer } from './ConversationComposer'
 import type { ConversationInputPart } from '@rainver/protocol'
 import { ConversationInputPartsView, type ConversationInputFileSource } from './ConversationInputComposer'
 import type { CurrentFileAttachment } from '../projects/ProjectFolderConversationContext'
-import { clearConversationDraft, readConversationDraft, writeConversationDraft } from './conversationDraft'
+import { clearConversationDraft, draftFileSearchQuery, readConversationDraft, writeConversationDraft } from './conversationDraft'
 import { ConversationRunControls } from './ConversationRunControls'
 import { notifyProjectFolderContentChanged } from '../../core/projectFolderEvents'
 import {
@@ -53,19 +54,14 @@ import {
 } from './DiscussionGroup'
 import { OpenDiscussionDialog } from './OpenDiscussionDialog'
 import { ConversationQuotaLine } from './ConversationQuotaLine'
+import { KnowledgeRetrievalToggle } from './KnowledgeRetrievalToggle'
 
 /**
  * One conversation, rendered wherever a conversation is read.
  *
  * The full Room page and the Project sidecar both show the same Conversation.
- * They used to do so with two implementations: the page's,
- * with action cards, run progress and continuation after a decision, and the
- * panel's, a plain list with its own send and poll. Every feature then landed
- * on one side and was missing from the other — the panel had no way to decide
- * a proposal, which is how a person ended up leaving the Project to press a
- * button. The repository's rule is to reuse the existing capability rather
- * than build a second entry with its own authority; this is that capability,
- * and both surfaces render it.
+ * One implementation. Do not give the page and the panel separate send, poll,
+ * or decision paths: a feature then exists on one side only.
  *
  * It owns what a conversation is: the messages and their paging, each turn's
  * proposals as decidable cards, the Runs a turn started and their live
@@ -105,7 +101,7 @@ function sameCurrentFilePart(part: ConversationInputPart, current: CurrentFileAt
       && part.relative_path === current.relativePath
 }
 
-export interface ConversationSurfaceProps {
+interface ConversationSurfaceProps {
   roomId: string
   /** Null while a new Conversation is still awaiting explicit execution setup. */
   conversationId: string | null
@@ -118,15 +114,12 @@ export interface ConversationSurfaceProps {
   humans?: SpaceMember[]
   routingMode?: RoutingMode
   /** Which backend each recipient runs on before the Conversation is initialized. */
-  backendsFor?: (recipientAgentIds: string[]) => ConversationBackendSelection[]
   /** Catalogs already loaded by a containing execution-settings surface. */
-  backendCatalogs?: Record<string, ConversationBackendCatalog>
   /** What the person is looking at; a hint the server states in the turn. */
   focusRefs?: Array<{ type: 'task'; id: string }>
   /** The conversation record the server returned with a send or a page — its title may have been generated. */
   onConversationUpdated?: (conversation: RoomConversationRecord) => void
   /** A send refused for want of a usable Agent backend, with the setup targets the server named. */
-  onBackendRequired?: (setupTargets: string[]) => void
   /** A send that succeeded, so a surface showing a setup prompt can drop it. */
   onSent?: () => void
   /**
@@ -177,11 +170,8 @@ export function ConversationSurface({
   agents = [],
   humans = [],
   routingMode = 'direct',
-  backendsFor,
-  backendCatalogs: suppliedBackendCatalogs,
   focusRefs,
   onConversationUpdated,
-  onBackendRequired,
   onSent,
   siblingConversations,
   onUseInNewThread,
@@ -197,6 +187,7 @@ export function ConversationSurface({
   references,
 }: ConversationSurfaceProps) {
   const { userId } = useSpace()
+  const { t } = useAppTranslation()
   const [detail, setDetail] = useState<RoomDetail | null>(suppliedDetail ?? null)
   const [messages, setMessages] = useState<RoomMessage[]>([])
   // Messages waiting for the conversation's turn, posted by the server at the
@@ -220,6 +211,7 @@ export function ConversationSurface({
   const [inputParts, setInputParts] = useState<ConversationInputPart[]>([])
   const previousConversationId = useRef<string | null | undefined>(undefined)
   const [resetToken, setResetToken] = useState(0)
+  const [restoredDraft, setRestoredDraft] = useState<{ token: number; text: string } | null>(null)
   const [sending, setSending] = useState(false)
   const [loadedBackendCatalogs, setLoadedBackendCatalogs] = useState<Record<string, ConversationBackendCatalog>>({})
   const [sessionConfig, setSessionConfig] = useState<Record<string, SessionConfigSelection[]>>({})
@@ -285,7 +277,10 @@ export function ConversationSurface({
             return part
           }
           if (conversationId && part.kind === 'file_reference') {
-            const result = await conversationInputApi.searchFiles(conversationId, part.relative_path)
+            // The search accepts at most 200 characters while a path may run
+            // to 4096; the file name finds the candidates and the full path
+            // picks the reference back out of them.
+            const result = await conversationInputApi.searchFiles(conversationId, draftFileSearchQuery(part.relative_path))
             return result.items.some(item => item.project_folder_id === part.project_folder_id
               && item.workspace_location_id === part.workspace_location_id
               && item.relative_path === part.relative_path)
@@ -304,7 +299,10 @@ export function ConversationSurface({
       if (cancelled) return
       setComposer(current => ({ ...current, text: draft.text }))
       setInputParts(validated.filter((part): part is ConversationInputPart => part !== null))
-      setResetToken(value => value + 1)
+      // Put back into the editor, not reset: the reset token is the
+      // after-send clear, and it emptied the restored text and attachments,
+      // which the next write then deleted from storage.
+      setRestoredDraft(current => ({ token: (current?.token ?? 0) + 1, text: draft.text }))
       draftReadyRef.current = draftDestination
     })()
     return () => { cancelled = true }
@@ -324,9 +322,9 @@ export function ConversationSurface({
   useEffect(() => { discussionsRef.current = discussions }, [discussions])
   // Held in a ref, never in a dependency list. `loadMessages` reports the
   // conversation it read, and the mount effect below depends on
-  // `loadMessages` — so a caller passing an inline arrow would make every
-  // report re-run the effect, which re-reads and reports again. That loop was
-  // real: the Project chat panel spun on it from first paint.
+  // `loadMessages`. Do not pass an inline arrow. Every report would re-run
+  // the effect, which re-reads and reports again, and the panel spins from
+  // first paint.
   const conversationUpdatedRef = useRef(onConversationUpdated)
   useEffect(() => { conversationUpdatedRef.current = onConversationUpdated }, [onConversationUpdated])
   const onSentRef = useRef(onSent)
@@ -494,11 +492,11 @@ export function ConversationSurface({
       }).catch(error => {
         if (controller.signal.aborted) return
         toast.error(errMsg(error))
-        // A stream that died before the turn settled left a turn on screen
-        // saying the Agent is still working. Nothing else would ever correct
-        // it — the stream is gone, and the read-once effect skips any run a
-        // turn is already held for — so the hold is released and that effect
-        // reads the settled turn back once the Run is terminal.
+        // A stream that dies before the turn settles must not leave a turn on
+        // screen saying the Agent is still working. Nothing else would ever
+        // correct it — the stream is gone, and the read-once effect skips any
+        // run a turn is already held for — so the hold is released and that
+        // effect reads the settled turn back once the Run is terminal.
         setLiveTurns(current => {
           const held = current[runId]
           // Only a turn stranded mid-work — which includes one blocked on the
@@ -518,7 +516,7 @@ export function ConversationSurface({
   }, [loadMessages])
 
   const retryRun = useCallback(async (runId: string) => {
-    if (!conversationId) throw new Error('This conversation is no longer available')
+    if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
     const retried = await roomsApi.retryMessage(roomId, conversationId, runId)
     watchRuns(retried.run_ids)
     await loadMessages({ replace: true })
@@ -588,8 +586,8 @@ export function ConversationSurface({
   useEffect(() => {
     // A terminal Run this surface never streamed — it failed, was cancelled
     // or reaped, or the page was simply opened after it finished. Its turn is
-    // read once: an Agent reply renders *as* its turn, so without this every
-    // reply on a reloaded page would be a plain bubble with its work gone,
+    // read once. An Agent reply renders *as* its turn. Do not skip that read.
+    // Every reply on a reloaded page would be a plain bubble with its work gone,
     // and a Run that failed after writing its reply would lose both its steps
     // and the fact that it failed.
     for (const run of Object.values(runs)) {
@@ -658,29 +656,32 @@ export function ConversationSurface({
     .map(agent => agent.id)
     .sort()
     .join(':')
-  // A persisted Conversation's binding is session-owned. The containing Room
-  // can supply chooser data for a draft, but that pre-initialization catalog
-  // must never override the catalog read back for the initialized session.
-  const backendCatalogs = conversationId
-    ? loadedBackendCatalogs
-    : { ...loadedBackendCatalogs, ...(suppliedBackendCatalogs ?? {}) }
+  // A Conversation's binding is session-owned: its catalogs are read back
+  // for the initialized session, never chosen elsewhere.
+  const backendCatalogs = loadedBackendCatalogs
+  // Who the next message reaches: the manager under coordination or when
+  // nobody is named, otherwise the named Agents.
+  const addressedAgentIds = useMemo(() => routingMode === 'agent_coordination'
+    ? managerAgentId ? [managerAgentId] : []
+    : composer.routingSegments.length > 0
+      ? uniqueIds(composer.routingSegments.flatMap(segment => segment.recipient_agent_ids))
+      : managerAgentId ? [managerAgentId] : [], [composer.routingSegments, managerAgentId, routingMode])
+  // Knowledge retrieval is kept per person and Room recipient: each addressed
+  // Agent's membership row is its Work Context.
+  const retrievalRecipients = (detail?.agent_members ?? [])
+    .filter(member => member.status === 'active' && addressedAgentIds.includes(member.agent_id))
   const inputCapabilityMessage = useMemo(() => {
     if (!inputParts.some(part => part.kind === 'image')) return null
-    const targetIds = routingMode === 'agent_coordination'
-      ? managerAgentId ? [managerAgentId] : []
-      : composer.routingSegments.length > 0
-        ? uniqueIds(composer.routingSegments.flatMap(segment => segment.recipient_agent_ids))
-        : managerAgentId ? [managerAgentId] : []
-    const incompatible = targetIds.flatMap(agentId => {
+    const incompatible = addressedAgentIds.flatMap(agentId => {
       const catalog = backendCatalogs[agentId]
       const binding = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
       const option = catalog?.options.find(candidate => candidate.runtime_profile_id === binding?.runtime_profile_id)
       return option?.prompt_capabilities?.image === false ? [roomAgents.find(agent => agent.id === agentId)?.name ?? agentId] : []
     })
     return incompatible.length > 0
-      ? `Images are not supported by ${incompatible.join(', ')}. Remove the affected image or choose another target.`
+      ? t('conversation_ui.surface.images_unsupported_by', { agents: incompatible.join(', ') })
       : null
-  }, [backendCatalogs, composer.routingSegments, inputParts, managerAgentId, roomAgents, routingMode])
+  }, [addressedAgentIds, backendCatalogs, inputParts, roomAgents])
 
   useEffect(() => {
     const agentIds = configurableAgentKey ? configurableAgentKey.split(':') : []
@@ -692,15 +693,6 @@ export function ConversationSurface({
     // server has created the Conversation.
     const requestedAgentIds = conversationId ? agentIds : []
     if (requestedAgentIds.length === 0) {
-      setSessionConfig(current => Object.fromEntries(agentIds.map(agentId => {
-        const catalog = suppliedBackendCatalogs?.[agentId]
-        const backend = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
-        const option = catalog?.options.find(candidate => candidate.runtime_profile_id === backend?.runtime_profile_id)
-        return [agentId, mergeSessionConfig(option?.session_config_options ?? [], catalog?.session_config ?? current[agentId] ?? [])]
-      })))
-      return
-    }
-    if (agentIds.length === 0) {
       setLoadedBackendCatalogs({})
       setSessionConfig({})
       return
@@ -715,7 +707,7 @@ export function ConversationSurface({
       if (cancelled) return
       const fetched = Object.fromEntries(entries.map(entry => [entry.agentId, entry.catalog]))
       setLoadedBackendCatalogs(fetched)
-      const catalogs = { ...(suppliedBackendCatalogs ?? {}), ...fetched }
+      const catalogs = fetched
       setSessionConfig(current => Object.fromEntries(agentIds.map(agentId => {
         const catalog = catalogs[agentId]
         const backend = catalog.binding ?? catalog.options.find(option => option.usable !== false)
@@ -726,22 +718,18 @@ export function ConversationSurface({
       if (!cancelled) toast.error(errMsg(error))
     })
     return () => { cancelled = true }
-  }, [configurableAgentKey, conversationId, executionReady, suppliedBackendCatalogs])
+  }, [configurableAgentKey, conversationId, executionReady])
 
   const configuredBackendsFor = useCallback((recipientAgentIds: string[]): ConversationBackendSelection[] => {
-    const supplied = new Map((backendsFor?.(recipientAgentIds) ?? []).map(backend => [backend.agent_id, backend]))
     return recipientAgentIds.flatMap(agentId => {
       const catalog = backendCatalogs[agentId]
-      const fallback = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
-      const backend = supplied.get(agentId) ?? (fallback ? {
-        agent_id: agentId,
-        runtime_profile_id: fallback.runtime_profile_id,
-      } : null)
-      if (!backend) return []
+      const bound = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
+      if (!bound) return []
+      const backend = { agent_id: agentId, runtime_profile_id: bound.runtime_profile_id }
       const selected = sessionConfig[agentId] ?? []
       return [{ ...backend, ...(selected.length ? { session_config: selected } : {}) }]
     })
-  }, [backendCatalogs, backendsFor, sessionConfig])
+  }, [backendCatalogs, sessionConfig])
 
   const activeDiscussion = Object.values(discussions).find(item =>
     item.session_id === conversationId && item.status === 'active') ?? null
@@ -764,7 +752,7 @@ export function ConversationSurface({
       let effectiveInputParts = inputParts.filter(part => !implicitInputResource || !sameCurrentFilePart(part, implicitInputResource))
       if (implicitInputResource) {
         const resource = await implicitInputResource.flushForSend()
-        if (!resource) throw new Error('The current file is no longer available to attach')
+        if (!resource) throw new Error(t('conversation_ui.surface.current_file_gone'))
         effectiveInputParts = [...effectiveInputParts, resource]
       }
       if (!text && effectiveInputParts.length === 0) return
@@ -783,9 +771,9 @@ export function ConversationSurface({
         ...(activeDiscussion && discussionSendMode === 'join' ? { discussion_id: activeDiscussion.id } : {}),
         ...(effectiveInputParts.length > 0 ? { input_parts: effectiveInputParts } : {}),
         routing_mode: routingMode,
-        // Mentions route in both places a conversation is read. The panel
-        // once left this out, so an `@Agent` typed there chose which
-        // backends to send and addressed nobody.
+        // Mentions route in both places a conversation is read. Do not omit
+        // `recipient_segments` here: an `@Agent` then chooses backends and
+        // addresses nobody.
         ...(routingMode === 'direct' && segments.length > 0
           ? { recipient_segments: segments }
           : variant === 'full' ? { recipient_segments: null } : {}),
@@ -793,7 +781,7 @@ export function ConversationSurface({
         ...(focusRefs ? { focus_refs: focusRefs } : {}),
         // A turn already running does not refuse this: the message waits for
         // it and is sent when it ends. Attachments are claimed at send, so a
-        // message with any is sent now or refused as before.
+        // message with any is sent now or refused.
         ...(effectiveInputParts.length === 0 ? { queue: true } : {}),
       })
       if ('queued' in dispatched) {
@@ -830,33 +818,27 @@ export function ConversationSurface({
         && (error.code === 'reference_summary_unavailable' || error.code === 'reference_source_unavailable')
         && (references?.length ?? 0) > 0) {
         onReferencesRejected?.()
-        toast.error(`${errMsg(error)} — the message was not sent, and what you picked has been dropped. Send again to post it on its own.`)
+        toast.error(t('conversation_ui.surface.picks_dropped', { error: errMsg(error) }))
         return
-      }
-      if (error instanceof ApiRequestError && error.code === 'conversation_backend_required') {
-        const targets = error.payload?.setup_targets
-        onBackendRequired?.(Array.isArray(targets)
-          ? targets.filter((target): target is string => typeof target === 'string')
-          : [])
       }
       toast.error(errMsg(error))
     } finally {
       sendingRef.current = false
       setSending(false)
     }
-  }, [activeDiscussion, composer, configuredBackendsFor, conversationId, discussionSendMode, executionReady, focusRefs, implicitInputResource, inputParts, managerAgentId, onBackendRequired, onReferencesRejected, references, roomId, routingMode, variant, watchRuns])
+  }, [activeDiscussion, composer, configuredBackendsFor, conversationId, discussionSendMode, executionReady, focusRefs, implicitInputResource, inputParts, managerAgentId, onReferencesRejected, references, roomId, routingMode, variant, watchRuns])
 
   // A decision made here continues the conversation here.
   const continueAfterDecision = useCallback(async (preview: ChatActionPreview, action: ActionDecision) => {
-    if (!preview.proposal_id) throw new Error('The proposal is no longer available')
-    if (sendingRef.current) throw new Error('Wait for the current reply before continuing')
+    if (!preview.proposal_id) throw new Error(t('conversation_ui.surface.proposal_gone'))
+    if (sendingRef.current) throw new Error(t('conversation_ui.surface.wait_reply'))
     sendingRef.current = true
     setSending(true)
     followRef.current = true
     setContinuation({ proposalId: preview.proposal_id, action, phase: 'submitting', runIds: [] })
     try {
       if (action === 'accept') await onBeforeContinue?.(action)
-      if (!conversationId) throw new Error('This conversation is no longer available')
+      if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
       const dispatched = await roomsApi.continueAfterProposal(roomId, conversationId, {
         proposal_id: preview.proposal_id,
         backends: configuredBackendsFor(managerAgentId ? [managerAgentId] : []),
@@ -899,14 +881,14 @@ export function ConversationSurface({
   // "Continue anyway": the held turns are admitted now; their Runs arrive on
   // the next read, and each discussion's header re-reads its hold.
   const continuePastQuota = useCallback(async () => {
-    if (!conversationId) throw new Error('This conversation is no longer available')
+    if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
     setQuota(await roomsApi.continuePastQuota(roomId, conversationId))
     detailVersions.current.clear()
     await loadMessages()
   }, [conversationId, loadMessages, roomId])
 
   const stopDiscussion = useCallback(async (discussionId: string) => {
-    if (!conversationId) throw new Error('This conversation is no longer available')
+    if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
     keepDiscussion(await roomsApi.stopDiscussion(roomId, conversationId, discussionId))
     await loadMessages()
   }, [conversationId, keepDiscussion, loadMessages, roomId])
@@ -914,7 +896,7 @@ export function ConversationSurface({
   // Extending re-posts the held mentions as the next wave; their Runs arrive
   // on the messages the next read brings back.
   const extendDiscussion = useCallback(async (discussionId: string, rounds: number) => {
-    if (!conversationId) throw new Error('This conversation is no longer available')
+    if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
     keepDiscussion(await roomsApi.extendDiscussion(roomId, conversationId, discussionId, { rounds }))
     await loadMessages()
   }, [conversationId, keepDiscussion, loadMessages, roomId])
@@ -922,8 +904,8 @@ export function ConversationSurface({
   // Opening a discussion posts its topic as the person's message, so it lands
   // the way a send does.
   const openDiscussion = useCallback(async (request: OpenRoomDiscussionRequest) => {
-    if (!conversationId) throw new Error('This conversation is no longer available')
-    if (sendingRef.current) throw new Error('Wait for the current message to send')
+    if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
+    if (sendingRef.current) throw new Error(t('conversation_ui.surface.wait_send'))
     sendingRef.current = true
     setSending(true)
     followRef.current = true
@@ -962,7 +944,7 @@ export function ConversationSurface({
         ...(confirmDisclosure ? { confirm_disclosure: confirmDisclosure } : {}),
       })
       setPicked([])
-      toast.success('Attached')
+      toast.success(t('conversation_ui.surface.attached'))
     } catch (error) {
       if (error instanceof ApiRequestError && error.code === 'reference_disclosure_confirmation_required') {
         // Held with the destination, because confirming re-sends to that same
@@ -1094,7 +1076,7 @@ export function ConversationSurface({
       <div
         ref={scrollRef}
         role="log"
-        aria-label="Conversation messages"
+        aria-label={t('conversation_ui.surface.messages')}
         aria-live="polite"
         className={compact ? 'min-h-0 flex-1 space-y-3 overflow-y-auto p-3' : 'min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4'}
         onScroll={event => {
@@ -1104,16 +1086,16 @@ export function ConversationSurface({
       >
         {messagesLoading && (
           <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" />Loading conversation…
+            <Loader2 className="size-4 animate-spin" />{t('conversation_ui.surface.loading')}
           </div>
         )}
         {hasOlderMessages && (
           <div className="text-center">
-            <Button variant="outline" size="sm" onClick={() => void loadOlderMessages()}>Load older</Button>
+            <Button variant="outline" size="sm" onClick={() => void loadOlderMessages()}>{t('conversation_ui.surface.load_older')}</Button>
           </div>
         )}
         {!messagesLoading && messages.length === 0 && (
-          <p className="py-12 text-center text-sm text-muted-foreground">{emptyHint ?? 'No messages yet.'}</p>
+          <p className="py-12 text-center text-sm text-muted-foreground">{emptyHint ?? t('conversation_ui.surface.no_messages')}</p>
         )}
         {timelineItems.map(item => item.kind === 'message'
           ? renderMessage(item.message)
@@ -1154,7 +1136,7 @@ export function ConversationSurface({
           <QueuedMessageCard
             key={item.id}
             message={item}
-            author={humans.find(human => human.user_id === item.user_id)?.display_name ?? 'Someone'}
+            author={humans.find(human => human.user_id === item.user_id)?.display_name ?? t('conversation_ui.surface.someone')}
             canWithdraw={item.user_id === userId}
             onWithdraw={async () => {
               await roomsApi.withdrawQueuedMessage(roomId, conversationId!, item.id)
@@ -1179,23 +1161,22 @@ export function ConversationSurface({
         />
       </div>
       <div className={compact ? 'space-y-2 border-t border-border p-3' : 'space-y-3 border-t border-border bg-card px-5 py-3'}>
-        {/* A draft has to be visible to be a draft; until this, the pick rode
-            the composer with nothing naming it and no way to drop it.
-            On the same condition the send uses, not merely "there are picks":
-            a banner promising content the send would drop is the failure this
-            exists to close. */}
+        {/* A draft has to be visible to be a draft. Name the pick and give it
+            a way to drop. On the same condition the send uses, not merely
+            "there are picks". Do not show a banner for content the send
+            would drop. */}
         {(references?.length ?? 0) > 0 && (
           <div className="flex items-center gap-2 rounded border border-dashed border-border bg-muted/30 px-2 py-1 text-xs text-muted-foreground">
             <Quote className="size-3.5 shrink-0" />
             <span className="min-w-0 flex-1 truncate">
-              {referenceDraftLabel(references!)} will be attached to this conversation before the message
+              {t('conversation_ui.surface.will_attach', { picks: referenceDraftLabel(references!) })}
             </span>
             {onReferencesRejected && (
               <Button
                 variant="ghost"
                 size="sm"
                 className="h-6 px-1"
-                aria-label="Do not carry this in"
+                aria-label={t('conversation_ui.surface.drop_pick')}
                 onClick={onReferencesRejected}
               >
                 <X className="size-3.5" />
@@ -1217,6 +1198,7 @@ export function ConversationSurface({
             // must still let the user write and retain the message.
             disabled={sending}
             resetToken={resetToken}
+            restore={restoredDraft}
             onSubmit={() => void sendMessage()}
             projectId={detail?.room.project_id}
             projectFolderId={detail?.room.project_folder_id}
@@ -1228,15 +1210,18 @@ export function ConversationSurface({
           />}
           controls={(
             <>
+              {retrievalRecipients.map(member => (
+                <KnowledgeRetrievalToggle key={member.id} scopeId={member.id} agentName={member.agent_name} disabled={sending} />
+              ))}
               {activeDiscussion && (
-                <div role="group" aria-label="Message destination" className="flex items-center gap-1 text-xs">
-                  <span className="mr-1 text-muted-foreground">Send to</span>
+                <div role="group" aria-label={t('conversation_ui.surface.destination')} className="flex items-center gap-1 text-xs">
+                  <span className="mr-1 text-muted-foreground">{t('conversation_ui.surface.send_to')}</span>
                   <Button type="button" size="sm" variant={discussionSendMode === 'join' ? 'secondary' : 'ghost'}
                     className="h-7 px-2 text-xs" aria-pressed={discussionSendMode === 'join'}
-                    disabled={sending} onClick={() => setDiscussionSendMode('join')}>Current discussion</Button>
+                    disabled={sending} onClick={() => setDiscussionSendMode('join')}>{t('conversation_ui.surface.current_discussion')}</Button>
                   <Button type="button" size="sm" variant={discussionSendMode === 'separate' ? 'secondary' : 'ghost'}
                     className="h-7 px-2 text-xs" aria-pressed={discussionSendMode === 'separate'}
-                    disabled={sending} onClick={() => setDiscussionSendMode('separate')}>Ordinary message</Button>
+                    disabled={sending} onClick={() => setDiscussionSendMode('separate')}>{t('conversation_ui.surface.ordinary_message')}</Button>
                 </div>
               )}
               {variant === 'full' && detail?.viewer_can_write && !activeDiscussion && (
@@ -1248,7 +1233,7 @@ export function ConversationSurface({
                   disabled={!conversationId || !executionReady || sending}
                   onClick={() => setDiscussionDialogOpen(true)}
                 >
-                  <MessagesSquare className="size-3.5" />Open a discussion
+                  <MessagesSquare className="size-3.5" />{t('conversation_ui.surface.open_discussion')}
                 </Button>
               )}
               <ConversationAgentSessionConfigs
@@ -1268,7 +1253,7 @@ export function ConversationSurface({
               />
             </>
           )}
-          note={!executionReady ? 'Configure the execution context before sending.' : undefined}
+          note={!executionReady ? t('conversation_ui.surface.configure_first') : undefined}
           sending={sending}
           sendDisabled={sending || !executionReady || (!composer.text.trim() && inputParts.length === 0 && !implicitInputResource)}
           onSend={() => void sendMessage()}
@@ -1322,14 +1307,15 @@ function RoomMessageView({
   onRetry: (runId: string) => Promise<void>
   onActionDecision: (preview: ChatActionPreview, action: ActionDecision) => Promise<void>
 }) {
+  const { t } = useAppTranslation()
   const mine = message.role === 'user'
   const system = message.role === 'system'
   const human = humans.find(member => member.user_id === message.user_id)
   const label = system
-    ? 'Execution'
+    ? t('conversation_ui.surface.execution')
     : mine
-    ? (human?.display_name ?? human?.email ?? (message.user_id === viewerUserId ? 'You' : 'Person'))
-    : agents.find(agent => agent.id === message.sender_agent_id)?.name ?? 'Agent'
+    ? (human?.display_name ?? human?.email ?? (message.user_id === viewerUserId ? t('conversation_ui.surface.you') : t('conversation_ui.surface.person')))
+    : agents.find(agent => agent.id === message.sender_agent_id)?.name ?? t('conversation_ui.surface.agent')
   return (
     // Who said it has to be readable at a glance in a column of mixed-language
     // text, so the two sides differ in alignment, fill and edge at once.
@@ -1345,7 +1331,7 @@ function RoomMessageView({
           <input
             type="checkbox"
             checked={picked}
-            aria-label={`Pick this message`}
+            aria-label={t('conversation_ui.surface.pick_message')}
             onChange={event => onPickedChange(event.target.checked)}
           />
         </label>
@@ -1359,12 +1345,11 @@ function RoomMessageView({
           <div className={`mb-1 flex min-w-0 items-center gap-2 text-[11px] font-medium ${mine ? 'text-primary-foreground/70' : 'text-muted-foreground'}`}>
             {!mine && <Bot className="size-3.5 shrink-0" />}
             <span className="truncate">{label}</span>
-            <span className="shrink-0">{new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            <span className="shrink-0">{formatTime(message.created_at)}</span>
           </div>
           {/*
             An Agent reply is its turn, when one is held: the reply with the
-            work that produced it folded above, which is what D3 asks for and
-            what a plain bubble cannot show.
+            work that produced it folded above. A plain bubble cannot show that.
 
             The state is the turn's own. The server decides it in one place
             (`turnReadModel.turnState`) with facts a client does not have — that
@@ -1401,7 +1386,7 @@ function RoomMessageView({
             showStatus={false}
             // If a saved Agent reply ever names several Runs, keep each
             // reply-side control explicitly attributed to its Agent.
-            agentLabel={runIds.length > 1 ? agents.find(agent => agent.id === runs[runId]?.agent_id)?.name ?? 'Agent' : undefined}
+            agentLabel={runIds.length > 1 ? agents.find(agent => agent.id === runs[runId]?.agent_id)?.name ?? t('conversation_ui.surface.agent') : undefined}
           />
         ))}
       </div>
@@ -1410,13 +1395,10 @@ function RoomMessageView({
 }
 
 /**
- * An Agent turn in progress, as its own message.
- *
- * A Run a person's message started used to be shown under that message — a
- * badge, a link, a status line and a box of streaming text. None of that is
- * how a conversation reads: while the Agent works there was no Agent-side
- * bubble at all, and after it replied the status stayed under the person.
- * This is the Agent speaking, in the place the Agent speaks.
+ * An Agent turn in progress, as its own message. The Agent speaks here, not
+ * under the person's message. Do not put the Run's badge, link, status, or
+ * streaming text under the person: while the Agent works there is then no
+ * Agent-side bubble, and after it replies the status stays under the person.
  */
 function RoomAgentTurn({ runId, turn, agentName, delegatedBy, run, projectId, onRetry }: {
   runId: string
@@ -1427,20 +1409,21 @@ function RoomAgentTurn({ runId, turn, agentName, delegatedBy, run, projectId, on
   projectId?: string | null
   onRetry?: (runId: string) => Promise<void>
 }) {
+  const { t } = useAppTranslation()
   const waiting = !run || run.status === 'queued' || run.status === 'waiting_for_dependency'
   return (
     <div className="group flex w-full justify-start pr-6" data-role="agent" data-testid={`turn-${runId}`}>
       <div className="w-full min-w-0">
         <div className="mb-1 flex min-w-0 items-center gap-2 text-[11px] font-medium text-muted-foreground">
           <Bot className="size-3.5 shrink-0" />
-          <span className="truncate">{agentName ?? 'Agent'}</span>
-          {delegatedBy && <span className="shrink-0 font-normal">delegated by {delegatedBy}</span>}
+          <span className="truncate">{agentName ?? t('conversation_ui.surface.agent')}</span>
+          {delegatedBy && <span className="shrink-0 font-normal">{t('conversation_ui.surface.delegated_by', { name: delegatedBy })}</span>}
         </div>
         {waiting
-          ? <p className="text-sm text-muted-foreground">{run?.status === 'waiting_for_dependency' ? 'Waiting for previous Agent…' : run?.status === 'queued' ? 'Queued…' : 'Checking status…'}</p>
+          ? <p className="text-sm text-muted-foreground">{run?.status === 'waiting_for_dependency' ? t('conversation_ui.surface.waiting_previous') : run?.status === 'queued' ? t('conversation_ui.surface.queued') : t('conversation_ui.surface.checking')}</p>
           : turn
             ? <ConversationTurn turn={turn} runHref={`/runs/${runId}`} className="max-w-none" />
-            : <p className="text-sm text-muted-foreground">{run && ['failed', 'succeeded', 'degraded', 'cancelled', 'orphaned'].includes(run.status) ? 'Loading result…' : 'Starting…'}</p>}
+            : <p className="text-sm text-muted-foreground">{run && ['failed', 'succeeded', 'degraded', 'cancelled', 'orphaned'].includes(run.status) ? t('conversation_ui.surface.loading_result') : t('conversation_ui.surface.starting')}</p>}
         {run && <ConversationRunControls runId={runId} run={run} projectId={projectId} onRetry={onRetry} showStatus={false} />}
       </div>
     </div>
@@ -1477,23 +1460,26 @@ function ProposalContinuationStatus({ continuation, turns }: {
 }
 
 function RoomSummaryFreshness({ summary, isOwner }: { summary: RoomConversationSummaryResponse | null; isOwner: boolean }) {
+  const { t } = useAppTranslation()
   if (!summary?.state) return null
   const state = summary.state
   const label = state.status === 'waiting_provider'
-    ? isOwner ? 'Summary not configured — add an API provider to resume' : 'Summary not configured; the Room owner can add a provider'
+    ? isOwner ? t('conversation_ui.surface.summary.owner_unconfigured') : t('conversation_ui.surface.summary.unconfigured')
     : state.status === 'retry_wait'
-      ? `Summary retry scheduled${state.next_attempt_at ? ` for ${new Date(state.next_attempt_at).toLocaleTimeString()}` : ''}`
+      ? state.next_attempt_at
+        ? t('conversation_ui.surface.summary.retry_at', { time: formatTime(state.next_attempt_at) })
+        : t('conversation_ui.surface.summary.retry')
       : state.status === 'running' || state.status === 'queued'
-        ? 'Summary updating…'
+        ? t('conversation_ui.surface.summary.updating')
         : state.status === 'failed'
-          ? 'Summary update stopped after repeated provider failures'
+          ? t('conversation_ui.surface.summary.failed')
           : summary.summary
-            ? `Summary v${summary.summary.version} · covers ${summary.summary.covered_message_count} messages`
-            : 'Summary not created yet'
+            ? t('conversation_ui.surface.summary.covers', { version: summary.summary.version, count: summary.summary.covered_message_count })
+            : t('conversation_ui.surface.summary.none')
   return (
     <div className="border-b border-border px-5 py-2 text-xs text-muted-foreground" role="status">
       <span>{label}</span>
-      {state.status === 'waiting_provider' && isOwner && <Link to="/providers" className="ml-2 underline">Configure provider</Link>}
+      {state.status === 'waiting_provider' && isOwner && <Link to="/providers" className="ml-2 underline">{t('conversation_ui.surface.summary.configure')}</Link>}
     </div>
   )
 }
@@ -1513,6 +1499,7 @@ function QueuedMessageCard({ message, author, canWithdraw, onWithdraw }: {
   canWithdraw: boolean
   onWithdraw: () => Promise<void>
 }) {
+  const { t } = useAppTranslation()
   const [withdrawing, setWithdrawing] = useState(false)
   const failed = message.status === 'failed'
   return (
@@ -1524,7 +1511,7 @@ function QueuedMessageCard({ message, author, canWithdraw, onWithdraw }: {
       <p className="whitespace-pre-wrap">{message.content}</p>
       <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
         <span className={failed ? 'text-destructive' : undefined}>
-          {author} · {message.discussion_id ? 'joining discussion' : 'ordinary message'} · {failed ? `could not be sent: ${message.failure_reason ?? 'unknown reason'}` : 'will be sent when the current turn ends'}
+          {author} · {message.discussion_id ? t('conversation_ui.surface.queued_card.joining') : t('conversation_ui.surface.queued_card.ordinary')} · {failed ? t('conversation_ui.surface.queued_card.failed', { reason: message.failure_reason ?? t('conversation_ui.surface.queued_card.unknown_reason') }) : t('conversation_ui.surface.queued_card.pending')}
         </span>
         {canWithdraw && (
           <button
@@ -1539,7 +1526,7 @@ function QueuedMessageCard({ message, author, canWithdraw, onWithdraw }: {
               })
             }}
           >
-            {failed ? 'Dismiss' : 'Cancel'}
+            {failed ? t('conversation_ui.surface.queued_card.dismiss') : t('conversation_ui.surface.queued_card.cancel')}
           </button>
         )}
       </div>
@@ -1559,7 +1546,7 @@ export function mergeMessages(current: RoomMessage[], incoming: readonly RoomMes
   return uniqueMessages([...merged, ...incoming.filter(message => !held.has(message.id))])
 }
 
-export function uniqueMessages(messages: RoomMessage[]): RoomMessage[] {
+function uniqueMessages(messages: RoomMessage[]): RoomMessage[] {
   const seen = new Set<string>()
   return messages.filter(message => {
     if (seen.has(message.id)) return false
@@ -1601,25 +1588,25 @@ export function delegatedRunIds(message: { metadata_json?: RoomMessage['metadata
   return Array.isArray(delegated) ? delegated.filter((id): id is string => typeof id === 'string') : []
 }
 
-export function metadataActionPreviews(metadata: Record<string, unknown> | null | undefined): ChatActionPreview[] {
+function metadataActionPreviews(metadata: Record<string, unknown> | null | undefined): ChatActionPreview[] {
   const value = metadata?.action_previews
   return Array.isArray(value) ? value as ChatActionPreview[] : []
 }
 
-export function uniqueIds(values: string[]): string[] {
+function uniqueIds(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))]
 }
 
 /** What the composer says it is holding. */
 function referenceDraftLabel(references: readonly ThreadReferencePick[]): string {
-  if (references.length > 1) return `${references.length} picks`
+  if (references.length > 1) return i18n.t('conversation_ui.surface.picks.many', { count: references.length })
   const only = references[0]!
-  const items = only.item_ids?.length ?? 0
+  const count = only.item_ids?.length ?? 0
   switch (only.kind) {
-    case 'thread': return 'A conversation'
-    case 'messages': return `${items} ${items === 1 ? 'message' : 'messages'}`
-    case 'imported_session': return 'An imported session'
-    case 'imported_records': return `${items} imported ${items === 1 ? 'record' : 'records'}`
+    case 'thread': return i18n.t('conversation_ui.surface.picks.thread')
+    case 'messages': return i18n.t('conversation_ui.surface.picks.messages', { count })
+    case 'imported_session': return i18n.t('conversation_ui.surface.picks.imported_session')
+    case 'imported_records': return i18n.t('conversation_ui.surface.picks.imported_records', { count })
   }
 }
 

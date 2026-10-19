@@ -313,7 +313,7 @@ describe("retrievalBriefArtifacts", () => {
 });
 
 describe("retrievalBriefDb", () => {
-  // Context Brief (W6) end-to-end on real Postgres. A deterministic in-process fake
+  // Context Brief end-to-end on real Postgres. A deterministic in-process fake
   // synthesizer (no provider) proves: the brief is built only from revalidated
   // sources (a private object never reaches the synthesizer — invariant 1/2),
   // citations resolve to surfaced sources only (an invented index is dropped), and

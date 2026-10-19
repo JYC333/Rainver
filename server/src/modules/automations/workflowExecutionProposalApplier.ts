@@ -19,8 +19,18 @@ async function applyWorkflowExecutionCheckpoint(context: ProposalApplyContext): 
   if (!node) throw new HttpError(404, "Workflow Execution checkpoint node not found");
   if (node.status !== "waiting_for_review" || node.approval_proposal_id !== context.proposal.id) throw new HttpError(409, "Workflow Execution node is not awaiting this checkpoint proposal");
   const now = new Date().toISOString();
-  await context.db.query(`UPDATE workflow_execution_nodes SET status = 'done', blocked_reason = NULL, approval_proposal_id = NULL, updated_at = $4 WHERE id = $1 AND execution_id = $2 AND space_id = $3`, [nodeId, executionId, context.proposal.space_id, now]);
-  await new WorkflowExecutionService(context.config).reconcile(context.db, context.proposal.space_id, executionId, context.userId);
+  // The approver is audit, recorded on the node beside the proposal's own
+  // `reviewed_by`. The nodes scheduled next run as the execution's
+  // responsible person, not as the approver (plan D10).
+  await context.db.query(
+    `UPDATE workflow_execution_nodes
+        SET status = 'done', blocked_reason = NULL, approval_proposal_id = NULL,
+            metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $5::jsonb, updated_at = $4
+      WHERE id = $1 AND execution_id = $2 AND space_id = $3`,
+    [nodeId, executionId, context.proposal.space_id, now,
+      JSON.stringify({ approved_by_user_id: context.userId, approved_at: now, approval_proposal_id: context.proposal.id })],
+  );
+  await new WorkflowExecutionService(context.config).reconcile(context.db, context.proposal.space_id, executionId);
   return { result_type: "workflow_execution_checkpoint", result: { workflow_execution_id: executionId, node_id: nodeId, status: "completed" } };
 }
 

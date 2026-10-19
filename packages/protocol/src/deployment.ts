@@ -179,7 +179,7 @@ export type DeploymentHeartbeatResponse = z.infer<typeof DeploymentHeartbeatResp
 export const DeploymentStageEventRequestSchema = z.object({
   /**
    * The deployer's own id for this event, kept across its retries. A report
-   * whose response was lost is retried, and without this the append-only audit
+   * whose response was lost is retried. Do not omit the id. The append-only audit
    * would grow a duplicate — or reject the retry of an event it already has.
    */
   event_id: z.string().min(1).max(64),

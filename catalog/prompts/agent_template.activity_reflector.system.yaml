@@ -1,8 +1,6 @@
 asset_key: agent_template.activity_reflector.system
 display_name: Activity Reflector Template System Prompt
-description: >
-  Registry-managed system prompt for the activity_reflector agent template,
-  migrated from the legacy template manifest.
+description: Registry-managed system prompt for the activity_reflector agent template.
 content:
   schema_version: prompt_asset.v1
   prompt_type: agent_system

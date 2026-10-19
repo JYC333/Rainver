@@ -66,6 +66,22 @@ describe('researchResultState', () => {
     expect(result.notices).toContain('arxiv history (1 window) is temporarily unavailable and retrying in the background; collected material can continue through research.')
   })
 
+  it('does not keep announcing a cancelled operation\'s deferred source windows', () => {
+    // Cancelling leaves progress_json as it was; the retries it describes are
+    // no longer scheduled, and the operation that replaced it has none.
+    const result = state({
+      operations: [
+        operation('cancelled', '2026-07-18T08:00:00Z', {
+          current_stage: 'backfill',
+          backfill_progress: { deferred_sources: [{ provider_key: 'arxiv', next_retry_at: '2026-07-18T10:05:00Z' }] },
+        }),
+        operation('active', '2026-07-18T10:00:00Z', { current_stage: 'screening' }),
+      ],
+    })
+    expect(result.kind).toBe('running')
+    expect(result.notices.some(notice => notice.includes('retrying in the background'))).toBe(false)
+  })
+
   it('puts any failed auxiliary operation before a newer running operation', () => {
     const result = state({ operations: [operation('failed', '2026-07-18T08:00:00Z', { run_kind: 'historical_backfill' }), operation('active', '2026-07-18T10:00:00Z')] })
     expect(result.kind).toBe('failure')
@@ -100,11 +116,10 @@ describe('researchResultState', () => {
   })
 
   it('shows the newer running operation, not a stale failed one for the same workflow', () => {
-    // A retry (or an auto-created incremental scan) creates a fresh operation
-    // for the same workflow rather than reusing the old one — the old one
-    // stays "failed" forever in history. This must not be surfaced as the
-    // retriable failure once a newer operation for that same workflow is
-    // already running: the backend allows only one active operation per
+    // A retry creates a fresh operation for the same workflow. The superseded
+    // one stays "failed" in history. Do not surface it as the retriable
+    // failure once a newer operation for that workflow is already running:
+    // the backend allows only one active operation per
     // workflow, so a "Retry" pointed at the stale one would 409.
     const result = state({
       operations: [

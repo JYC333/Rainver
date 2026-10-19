@@ -6,8 +6,7 @@ import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContex
 import {
   authRepositoryFromConfig,
   sessionTokenFromRequest,
-  type AuthFailure,
-} from "../auth/identity.js";
+  type AuthFailure, sessionRefreshSink } from "../auth/identity.js";
 import {
   spaceRepositoryFromConfig,
   type SpaceCreateInput,
@@ -74,7 +73,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId),
       );
     }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const payload = body<SpaceCreateInput>(request);
     const result = await spaces.createSpace(user.id, {
@@ -98,7 +97,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId),
       );
     }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const result = await spaces.listMembers(user.id, params(request).spaceId ?? "");
     if (isSpaceFailure(result)) return reply.code(result.statusCode).send({ detail: result.detail });
@@ -117,7 +116,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId),
       );
     }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const payload = body<InvitationCreateInput>(request);
     const result = await spaces.createInvitation(user.id, params(request).spaceId ?? "", {
@@ -136,7 +135,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!auth || !spaces) {
       return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
     }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const token = jsonBody(request).token;
     if (typeof token !== "string") return reply.code(400).send({ detail: "Invalid invitation" });
@@ -160,7 +159,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         ),
       );
     }
-    const user = await repository.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await repository.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const space = await repository.getSpaceForUser(user.id, params(request).spaceId ?? "");
     if (space === null) return reply.code(404).send({ detail: "Space not found" });
@@ -172,7 +171,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const auth = authRepositoryFromConfig(context.config);
     const spaces = spaceRepositoryFromConfig(context.config);
     if (!auth || !spaces) return reply.code(502).send({ detail: "Database unavailable" });
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const result = await spaces.getSnapshotDefaults(user.id, params(request).spaceId ?? "");
     if (isSpaceFailure(result)) return reply.code(result.statusCode).send({ detail: result.detail });
@@ -183,7 +182,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const auth = authRepositoryFromConfig(context.config);
     const spaces = spaceRepositoryFromConfig(context.config);
     if (!auth || !spaces) return reply.code(502).send({ detail: "Database unavailable" });
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const body = jsonBody(request);
     if (rejectsOversightModeMutation(body)) {
@@ -201,7 +200,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const auth = authRepositoryFromConfig(context.config);
     const spaces = spaceRepositoryFromConfig(context.config);
     if (!auth || !spaces) return reply.code(502).send({ detail: "Database unavailable" });
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const result = await spaces.getContentEgressSetting(user.id, params(request).spaceId ?? "");
     if (isSpaceFailure(result)) return reply.code(result.statusCode).send({ detail: result.detail });
@@ -212,7 +211,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const auth = authRepositoryFromConfig(context.config);
     const spaces = spaceRepositoryFromConfig(context.config);
     if (!auth || !spaces) return reply.code(502).send({ detail: "Database unavailable" });
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const enabled = jsonBody(request).member_copy_out_enabled;
     if (typeof enabled !== "boolean") {
@@ -227,7 +226,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const auth = authRepositoryFromConfig(context.config);
     const spaces = spaceRepositoryFromConfig(context.config);
     if (!auth || !spaces) return reply.code(502).send({ detail: "Database unavailable" });
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const result = await spaces.getRetrievalSettings(user.id, params(request).spaceId ?? "");
     if (isSpaceFailure(result)) return reply.code(result.statusCode).send({ detail: result.detail });
@@ -238,7 +237,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const auth = authRepositoryFromConfig(context.config);
     const spaces = spaceRepositoryFromConfig(context.config);
     if (!auth || !spaces) return reply.code(502).send({ detail: "Database unavailable" });
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     try {
       const rawPayload = jsonBody(request);

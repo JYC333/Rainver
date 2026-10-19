@@ -10,14 +10,14 @@ import { BlockList, isIP } from "node:net";
  * boundary. `::ffff:7f00:1`, `0:0:0:0:0:0:0:1` and `127.0.0.1` are the same
  * host; the first two are what a caller writes when it does not want to be
  * recognised. BlockList parses rather than compares, and folds IPv4-mapped
- * IPv6 onto the IPv4 rules — which is also why `::ffff:0:0/96` must *not* be
- * added as a range of its own: BlockList maps an IPv4 check into that prefix,
+ * IPv6 onto the IPv4 rules. Do not add `::ffff:0:0/96` as a range of its
+ * own: BlockList maps an IPv4 check into that prefix,
  * so listing it would refuse every IPv4 address there is. `::ffff:10.0.0.5` is
  * already refused by the `10.0.0.0/8` rule.
  *
  * This is the one list. The host daemon's egress proxy and the control plane's
  * own outbound fetches both judge by it, so a range added here closes both at
- * once — they used to be two copies kept in step by a comment.
+ * once. Do not keep a second copy in the daemon or the control plane.
  */
 function buildBlockList(): BlockList {
   const list = new BlockList();
@@ -93,9 +93,8 @@ const LOOPBACK = buildLoopbackList();
  *
  * **Fails closed.** Anything this cannot parse as an address is treated as
  * blocked, not as fine: an empty host resolves to `null`, and a block list
- * that answers "not blocked" for what it does not understand is a block list
- * pointed the wrong way. `CONNECT []:PORT` reached loopback through exactly
- * that gap and was recorded as allowed.
+ * that answers "not blocked" for what it does not understand is pointed the
+ * wrong way. `CONNECT []:PORT` is loopback. Do not record it as allowed.
  */
 /**
  * Whether an address is this machine itself.

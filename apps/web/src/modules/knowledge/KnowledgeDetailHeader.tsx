@@ -15,7 +15,7 @@ interface KnowledgeDetailHeaderProps {
   onArchive: () => void
 }
 
-export function knowledgeProvenance(item: KnowledgeItem): { label: string; value: string | null }[] {
+function knowledgeProvenance(item: KnowledgeItem): { label: string; value: string | null }[] {
   return [
     { label: 'item_id', value: item.id },
     { label: 'root_item_id', value: item.root_item_id },

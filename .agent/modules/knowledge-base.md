@@ -1,8 +1,8 @@
 # Module: Knowledge Base
 
 ## Status
-**BACKEND + FRONTEND MVP IMPLEMENTED** — Knowledge is the first-level product module
-(it replaced the old first-level "Wiki"). Backend has the canonical schema,
+Knowledge is a first-level product module.
+Backend has the canonical schema,
 `/api/v1/knowledge` API, and proposal apply handlers. Frontend: `/knowledge` is a thin
 entry that redirects to the last-used workspace (default `/knowledge/notes`);
 `/knowledge/home` is an **optional** overview hub, never the forced landing. Sub-areas
@@ -10,9 +10,9 @@ entry that redirects to the last-used workspace (default `/knowledge/notes`);
 (`Knowledge / Notes ▼`) — there is **no** Knowledge scene sidebar or tab strip, so each
 workspace owns its own layout. Notes is a working-knowledge workspace (configurable
 collection tree + open-note tabs, create / edit + links/backlinks); Wiki is the KnowledgeItem browser under
-`/knowledge/wiki`; Sources lists evidence; Cards is a clean placeholder. The backend
-already supports source list/create/get/update/archive and item-source link CRUD;
-the current web client exposes Sources as list-only evidence browsing. There is
+`/knowledge/wiki`; Sources lists evidence; Cards does not schedule reviews. The backend
+supports source list/create/get/update/archive and item-source link CRUD;
+the web client exposes Sources as list-only evidence browsing. There is
 no automatic generation, assessment, or card-generation path.
 
 ### Frontend information architecture
@@ -40,9 +40,9 @@ no automatic generation, assessment, or card-generation path.
 #### Project notes surface
 
 `/projects/:projectId/notes` mounts the same `NotesPage`, pinned and hoisted to
-that Project's `system_role = 'project'` collection. The former Research Area
-Notebook tab and its weaker `ProjectNoteCard` editor are removed;
-`NotebookChatPanel` lives beside the shared editor on the Project surface.
+that Project's `system_role = 'project'` collection. There is no separate
+notebook editor. `NotebookChatPanel` lives beside the shared editor on the
+Project surface.
 
 Project membership is by placement in that collection subtree, while governance
 ownership remains the note's single `space_objects.primary_project_id`.
@@ -54,10 +54,13 @@ Project collection reads follow the Project ACL, including descendant folders,
 so the global Notes tree does not reveal private Project names or structure.
 Existing workspaces can be opened by Project viewers; creating the workspace or
 mutating its folders and note placements requires Project writer authority.
+Folder moves check the full ancestry for cycles; there is no 64-level cutoff.
+Project ownership also follows the full ancestry to the nearest Project folder,
+with visited-node tracking so corrupt historical cycles cannot loop forever.
 
 #### Hoisting
 
-Borrowed from Trilium. Hoisting makes a chosen folder the temporary tree root:
+Hoisting makes a chosen folder the temporary tree root:
 its subtree is the whole surface, and — the part that matters — the **note query
 is narrowed with it**, not only what is drawn.
 
@@ -89,9 +92,8 @@ into subdomains by *lifecycle*, not just by view:
   graph relations and evidence. Review-gated and versioned. Table `knowledge_items`.
 - **Sources** — external references / evidence. Table `sources`.
 - **Cards** — schema only (`cards`, `card_review_states`, `card_reviews`).
-  No server module, no review API, and no FSRS runtime. Knowledge › Cards is
-  an empty-state placeholder. See
-  [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §3.
+  No server module, no review API, and no FSRS runtime. Knowledge › Cards
+  does not schedule reviews.
 
 Notes and Wiki are **related but not the same**: Wiki is not merely a different view
 of Notes. The working/canonical split is the reason they are separate models — folding
@@ -104,7 +106,7 @@ Backend and API naming uses `knowledge`; space-specific product labels are
 presentation concerns. Knowledge is distinct from Memory: Memory is agent
 context; Knowledge is durable content for people to inspect, revise, relate, and reuse.
 
-No removed route or compatibility alias exists. The API path is `/api/v1/knowledge`;
+The API path is `/api/v1/knowledge`;
 canonical table names are `space_objects`, `notes`, `note_collections`,
 `note_collection_items`, `knowledge_items`, `sources`,
 `knowledge_item_sources`, `claims`, `claim_sources`, and `object_relations`.
@@ -156,8 +158,8 @@ constrained by `(parent_id, space_id)` so folder trees cannot cross spaces.
 #### Placements
 
 `note_collection_items` is unique on `(collection_id, note_id, space_id)`, so
-multi-placement has always been expressible; the reads and the reorder path
-collapsed it. Both are now placement-addressed:
+a note may sit in more than one folder. Reads and reorder address a placement.
+Do not collapse those rows into one folder:
 
 - `NoteSummary.placements` is `[{ collection_id, sort_order }, …]` in placement
   order. There is no scalar `collection_id` on a note — a note is not in "the"
@@ -166,16 +168,43 @@ collapsed it. Both are now placement-addressed:
   Selection, the context menu and reordering all address that row.
 - `PATCH /knowledge/notes/tree/reorder` note updates carry
   `{ note_id, from_collection_id, collection_id, sort_order }`. `from_collection_id`
-  is what identifies the row; matching on `note_id` alone rewrote every placement
+  is what identifies the row. Do not match on `note_id` alone: that moves every placement
   of a note to one folder, destroying the others.
 - Adding a placement is a **separate action** from moving one:
   `POST /knowledge/notes/{id}/placements` (Alt-drop in the tree) versus the
   reorder above. `noteWriter.moveNoteToCollection` replaces every placement and
   backs creation and an explicit `collection_id` on a note update;
   `addNotePlacement` adds one.
-- `DELETE /knowledge/notes/{id}/placements/{collectionId}` removes one and
-  **refuses the last** (422): losing a note is a different decision from taking
-  it out of a folder, and has its own action.
+- **Owning-entry invariant** (`notePlacementInvariant.ts`): a live note bound
+  to Project A keeps at least one placement inside A's own folder subtree,
+  from its first moment; a note outside every Project may start unfiled (a
+  jot with no context) but never loses its last placement to a removal. A
+  cross-Project share's entry in B does not count. Every writer that removes, moves or
+  rewrites placements — `DELETE /knowledge/notes/{id}/placements/{collectionId}`,
+  the tree reorder, `collection_id` / `primary_project_id` on a note update,
+  folder delete, share revoke, and restoring a deleted note (a trashed note
+  holds no folder back, so its folders may be gone; the restore names a
+  `collection_id` or is refused) — locks the note's `space_objects` row first
+  (ascending id order), then its placements, does its work and checks the
+  final state in the same transaction. A violation is 422
+  `code: note_owning_entry_required` with `note_id`, `owning_project_id`,
+  `affected_note_count` and the two actions that actually help:
+  `move_within_owning_project` (or `move_to_folder` for an unbound note) and
+  `delete_note`. The client turns it into a dialog offering exactly those.
+  Losing a note is a different decision from taking it out of a folder.
+- A note created with `primary_project_id` and no `collection_id` is filed in
+  that Project's notes folder (`ensureProjectNotesFolder`); one filed outside
+  its Project is refused by the same invariant.
+- `DELETE /notes/collections/{id}` moves the folder's subfolders up to its
+  parent (so they stay in the same Project subtree) and drops its placements;
+  it is refused with the same 422 when a note would be left without its entry.
+- Adding and dragging answer alike when the folder already holds the note:
+  409 `This note is already in that folder`. The reorder checks before its
+  `UPDATE`, because the unique `(collection_id, note_id)` row it would land on
+  is otherwise a 500; a batch that swaps two placements is not a collision.
+- A folder cannot be moved under itself or under any of its descendants
+  (422). Nothing in the database stops a cycle, and a folder in one has no
+  path to the root, so every note below it disappears from the tree.
 
 #### Cross-Project placement
 
@@ -193,7 +222,9 @@ together or neither does:
   not be able to change who can read something.
 - `GET /knowledge/notes/{id}/shares` lists the Projects a note reaches, and
   `DELETE /knowledge/notes/{id}/shares/{projectId}` withdraws one, taking the
-  note's placements inside that Project with it. Both are surfaced on the
+  note's placements inside that Project with it and nothing else — the owning
+  Project's entries stay, so A still finds the note and B no longer reads it.
+  Reorganizing A's folders never touches B's entry. Both are surfaced on the
   note itself, behind a `Shared` status-bar chip that appears only once a note
   is actually shared. The list filters target Projects through the caller's
   Project read ACL, so access to the owning Note cannot reveal a private target
@@ -216,15 +247,16 @@ The access semantics — scope only, never a grant — are in
 - **Without one** — `project_id` is required and the text appends to that
   Project's `inbox` note, created on first use in the Project's notes folder.
   The inbox is resolved by `project_role = 'inbox'`, never by title, so renaming
-  it does not silently start a second one.
+  it does not silently start a second one; a transaction-level advisory lock
+  on the Project serializes concurrent first captures, which otherwise each
+  create an inbox and displace the other's role.
 
 Neither always-append nor always-create is right on its own: one inbox would
 bury ten papers' annotations together, and a note per thought turns the tree
-into fragments (U11).
+into fragments.
 
-This inbox is the jot's destination, not capture's: the floating composer that
-used to append here was merged into the shell's single capture entry, whose
-Project destinations are marginalia and raw material (see
+This inbox is the jot's destination, not capture's. The shell's single capture
+entry sends Project destinations to marginalia and raw material (see
 [assistant-capture.md](assistant-capture.md)). The inbox note is still what a
 contextless `POST /api/v1/knowledge/notes/jot` appends to.
 
@@ -241,18 +273,18 @@ inserting a row the index rejects.
 
 Reading-list cards offer capture only where the material already has an
 `object_id`, and say why when it does not — material becomes a `space_objects`
-row when it passes triage (R3), so the absence is a state with a remedy rather
+row when it passes triage, so the absence is a state with a remedy rather
 than a missing button.
 
 ## Owns
-- `Note` model (working-knowledge layer; direct CRUD via `NoteService`)
+- `Note` model (working-knowledge layer; direct CRUD through `knowledge/noteWriter.ts` `withNoteWrites`)
 - `NoteCollection` / `NoteCollectionItem` models (space-scoped Notes folder tree)
 - `KnowledgeItem` model (canonical wiki layer)
 - `Source` model (independent provenance/evidence layer)
 - `KnowledgeItemSource` model (item↔source evidence links)
 - `ObjectRelation` model (proposal-gated canonical cross-object graph)
 - `NoteLink` model (`note_links`, direct working-note UI links)
-- `KnowledgeSummaryService` (Overview counts)
+- Overview counts (`PgKnowledgeRepository.summary`, `GET /api/v1/knowledge/summary`)
 - `/api/v1/knowledge` read and proposal API for wiki items; `/api/v1/knowledge/notes`
   + `/api/v1/knowledge/notes/{id}/links|backlinks` direct CRUD for notes;
   `/api/v1/notes/collections` direct CRUD for the Notes collection tree;
@@ -269,13 +301,13 @@ than a missing button.
   rows/proposals/artifacts, never canonical Knowledge, Memory, Claim, Project,
   relation, or retrieval projection rows. The **storage** behind them belongs to
   the `ontology` module (B12I): the paths stay under `/api/v1/knowledge/` and
-  `PgKnowledgeRepository` delegates to `PgOntologyRepository`, so ownership
-  moved without a client-visible URL change.
+  `PgKnowledgeRepository` delegates to `PgOntologyRepository`. The client-visible
+  URL stays under those paths.
 - Note → Knowledge promotion (`POST /api/v1/knowledge/notes/{id}/promote`,
   `GET .../promoted`): a selected passage becomes a normal knowledge-item
   proposal, and the originating Note is recorded as a `provenance_links` row
-  with `source_type='note'`. Governance is unchanged — nothing bypasses the
-  proposal gate — and the Note keeps its content.
+  with `source_type='note'`. Nothing bypasses the proposal gate, and the Note
+  keeps its content.
 - `POST /api/v1/knowledge/notes/jot` (create-or-append a note plus its
   `note_link` in one call) and `GET /api/v1/knowledge/objects/{id}/note-links`
   (what notes cite this object; the note `backlinks` route is note-keyed on
@@ -287,7 +319,7 @@ than a missing button.
 
 Backend source capability is ahead of the visible frontend: `knowledge` routes
 support source CRUD and item-source link CRUD, but `apps/web/src/api/client.ts`
-currently exposes `sourcesApi.list` only and `SourcesPage` is a list view. Treat
+currently exposes `knowledgeSourcesApi.list` only and `SourcesPage` is a list view. Treat
 this as current product scope, not as missing backend support.
 
 ## Does Not Own
@@ -306,17 +338,18 @@ this as current product scope, not as missing backend support.
 | Runtime use | Eligible only through governed Runtime Context acquisition | Must not automatically enter an accepted Delivery |
 | Shape | Scoped context entry | Typed item with versioning and relations |
 | Write path | Proposal -> approval -> active memory | Proposal -> approval -> active KnowledgeItem |
-| Promotion | N/A | Future separate proposal, e.g. `knowledge_promote_to_memory` |
+| Promotion | N/A | A Knowledge write does not create Memory. |
 
-Knowledge items must not be auto-injected into runtime context. Promoting Knowledge into Memory is a separate future flow and is not part of the Knowledge MVP scaffold.
+Knowledge items must not be auto-injected into runtime context. A Knowledge write does not create Memory.
 
 ## Retrieval Substrate
 
-Knowledge is the first consumer of the shared retrieval engine
-(`server/src/modules/retrieval/`), registering a domain adapter
-(`knowledge/retrievalAdapter.ts`) for `KnowledgeItem`, `Note`, `Source`, and
-`Claim`. The engine is generic and domain-agnostic; the adapter owns all
-Knowledge-specific SQL and the visibility revalidation gate. A viewer whose
+The shared retrieval engine (`server/src/modules/retrieval/`) is generic.
+A domain registers an adapter. Do not fork the engine. Knowledge registers
+`knowledge/retrievalAdapter.ts` for `KnowledgeItem`, `Note`, `Source`, and
+`Claim`. Memory, Inquiry, Projects, and Sources register adapters for their
+own object types. The Knowledge adapter owns the Knowledge-specific SQL and
+the visibility revalidation gate. A viewer whose
 effective `access_level` is `summary` receives stored summaries only — detail
 bodies, list `content_preview` slices of the body, and retrieval text are
 withheld. See
@@ -335,12 +368,12 @@ object schema config only; it does not add retrieval object types or write
 canonical Knowledge, Memory, Claim, Project, relation, or retrieval projection
 rows. Follow-up retrieval/context-layer quality work and non-goals are tracked in
 [ROADMAP_AND_FUTURE_RISKS.md](../architecture/ROADMAP_AND_FUTURE_RISKS.md#retrieval-and-context-layer-stabilization).
-Canonical lifecycle ownership does not change:
-KnowledgeItem writes remain proposal-gated, Notes and Sources remain direct CRUD,
+Canonical lifecycle ownership:
+KnowledgeItem writes are proposal-gated. Notes and Sources are direct CRUD,
 and retrieval projection rows are derived indexes that can be rebuilt from the
 canonical tables.
 
-The initial projection indexes:
+The projection indexes:
 
 - `KnowledgeItem` title, slug, aliases, content/plain text, excerpt, source URL,
   item status, visibility, owner, Project Folder, accepted object relations, and
@@ -364,11 +397,13 @@ does not silently block canonical writes.
 
 Full-space retrieval reindex is a maintenance operation exposed at
 `POST /api/v1/knowledge/retrieval/reindex`. It rebuilds derived projection rows
-for the caller's space and requires space owner/admin authority.
+for the caller's space and requires space owner/admin authority. The rebuild
+runs in one transaction, serialized per space: a failure part-way leaves the
+previous index and its embeddings intact.
 
 ## Activity-First Input Boundary
 
-Raw user input, session content, file imports, web captures, and run outputs enter Activity, Run, or Artifact first. Future Knowledge generation normally follows:
+Raw user input, session content, file imports, web captures, and run outputs enter Activity, Run, or Artifact first. A Knowledge write follows:
 
 ```
 Activity / Run / Artifact
@@ -400,13 +435,16 @@ not the proposal-governed `knowledge_items` table. (Daily-capture "experience"
 candidates land as canonical `summary` KnowledgeItems.)
 
 The default `knowledge_kind` for the create proposal is `concept`. Some kinds may later
-gate on assessment flows (e.g. a Feynman/Reflection gate); these are future and must not
-block the MVP persistence/API slice.
+gate on assessment flows (e.g. a Feynman/Reflection gate); do not block the
+create path on them.
 
 ## Proposal Types
 
 - `knowledge_create` creates an active KnowledgeItem.
-- `knowledge_update` creates a new version, not an in-place overwrite.
+- `knowledge_update` creates a new version, not an in-place overwrite. The
+  applier locks the target item row (`FOR UPDATE`), so two accepted updates of
+  one item cannot both read it active and leave two active heads; the second
+  reads the first's supersession and is refused (422).
 - `knowledge_archive` archives an item.
 - `object_relation_create` creates a relation only within the same space.
 - `object_relation_delete` removes or archives a relation.
@@ -416,7 +454,7 @@ These proposal types are supported by `ProposalApplyService`. They remain review
 `knowledge_create` sets `owner_user_id` to the proposal creator. Ownership cannot be assigned to another user through the Knowledge API; sharing is managed through the content-access API.
 
 Proposal creation is viewer-aware, and proposal apply performs defense-in-depth
-authorization again. Malformed, internally seeded, or future system-created
+authorization again. Malformed, internally seeded, or system-created
 proposals cannot update, archive, relate, or archive relations involving another
 user's private or selected-user Knowledge without canonical access. Agent/run
 provenance is not treated as human ownership authority.
@@ -450,25 +488,20 @@ endpoints remain collaborative within the current scope.
 
 ## Source Monitoring
 
-Knowledge proposal apply relies on proposal approval and the `proposal.apply` policy gate. `ProposalApplyService._enforce_source_monitoring()` has an explicit Knowledge branch; a full evaluator for external or untrusted Activity/Artifact-derived Knowledge is not implemented
-([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §9).
+Knowledge proposal apply relies on proposal approval and the `proposal.apply` policy gate (`PgProposalApplyService`). The Knowledge appliers run no source-monitoring evaluation (it exists only in `modules/memory/sourceMonitoring.ts`). There is no evaluator for external or untrusted Activity/Artifact-derived Knowledge.
 
 ## Policy Actions
 
 - `knowledge.create`
 - `knowledge.update`
 - `knowledge.archive`
-- `knowledge.relation_create`
-- `knowledge.relation_delete`
 - `claim.create`
 - `claim.update`
 - `claim.archive`
-- `claim.relation_create`
-- `claim.relation_delete`
 - `object_relation.create`
 - `object_relation.delete`
 
-These actions are `WIRED_VIA_PROPOSAL`: durable mutation is protected by `proposal.apply` and `ProposalApplyService`, not direct `PolicyGateway.enforce()` call sites. Unknown or not-yet-implemented Knowledge actions must fail closed.
+These actions are `WIRED_VIA_PROPOSAL`: durable mutation is protected by `proposal.apply` and `PgProposalApplyService`, not direct per-action policy call sites. Unknown or not-yet-implemented Knowledge actions must fail closed.
 
 ## Project And Project Folder Association
 
@@ -502,11 +535,11 @@ Note:                                 # working-knowledge layer (direct CRUD)
   content_json                    # ProseMirror/Tiptap JSON
   content_format                  # markdown|plain|prosemirror_json
   content_schema_version          # int, default 1
-  plain_text                      # derived projection for preview / future search
+  plain_text                      # derived text; preview and retrieval read it
   status                          # active|archived|deleted (domain-owned)
   version, content_hash           # optimistic version + revision history
   created_from_activity_id        # optional capture provenance (FK activity_records)
-  project_role, role_project_id   # system-reserved Project notebook role (N2/N3):
+  project_role, role_project_id   # system-reserved Project notebook role:
                                   #   understanding|questions|ideas|experiments,
                                   #   one per role per project (partial unique index).
                                   #   Membership is owned by
@@ -541,10 +574,9 @@ ObjectRelation:                       # governed FK-backed graph layer
                                     # declared in modules/ontology/linkTypes.ts.
                                     # The database keeps a format constraint only;
                                     # the registry owns membership (B12F).
-                                    # Renamed from relation_type on ontology edges
-                                    # only — memory_relations.relation_type and
+                                    # memory_relations.relation_type and
                                     # knowledge_item_sources.relation_type are
-                                    # deliberately separate vocabularies (B12A).
+                                    # separate vocabularies (B12A).
   confidence
   status                            # candidate|active|rejected|archived;
                                     # create packets accept candidate|active only
@@ -558,10 +590,10 @@ ObjectRelation:                       # governed FK-backed graph layer
 KnowledgeItem:
   object_id, space_id             # object_id is PK/FK to SpaceObject.id
   root_item_id, supersedes_item_id
-  redirect_to_item_id             # self-FK; readiness for future merge/rename/deprecate
+  redirect_to_item_id             # self-FK; stored and returned; readers do not follow it
   knowledge_kind                  # canonical Wiki kinds above
   slug                            # readable-URL slug; indexed (space_id, slug), NOT unique
-  aliases_json                    # alternate names for future search/linking
+  aliases_json                    # alternate names; relation discovery and retrieval read them
   content
   content_json                    # ProseMirror/Tiptap JSON once a rich editor is wired
   content_format                  # markdown|plain|prosemirror_json
@@ -658,19 +690,16 @@ not replaced by Source.
 - **Every note write goes through `knowledge/noteWriter.ts`.** `withNoteWrites`
   owns the transaction and hands out a scope; creating, writing, applying AI
   block ops, rolling back, and assigning a Project role are its methods, and
-  nothing else in `src/` writes a `notes` row. It exists because the three
-  things around a note write were each the caller's job and each was missed:
-  creation had drifted into two implementations (the Project one wrote no
-  `summary` and filed every note at `sort_order` 0), the retrieval reindex was
-  done by the user-facing path and by no agent path, and the Project role was
-  written from three places of which one knew the rules. Same argument as the
-  `space_objects` writer, one level up (B12H).
+  nothing else in `src/` writes a `notes` row. Do not add a second create
+  path, skip `summary` or file every note at `sort_order` 0, skip the
+  retrieval reindex on an agent write, or write the Project role from a
+  caller that does not know the rules. Same argument as the `space_objects`
+  writer, one level up (B12H).
 - **Binding a note to a Project is a write to that Project.** `primary_project_id`
   on create or update requires `assertProjectWriter`, enforced in the writer.
-  This was unchecked and harmless while the field was a label; it stopped being
-  harmless when `project_role` became the research baseline, because assigning
-  a role deliberately displaces the previous holder, so any Space member could
-  take over another Project's baseline note.
+  Do not leave it unchecked. Assigning a role displaces the previous holder,
+  so a Space member who is not a Project writer must not take over another
+  Project's baseline note.
 - Reindexing happens **after** the transaction commits when the writer owns it,
   and inside the transaction behind a savepoint when it joined someone else's.
   The projection is derived and rebuildable, so a failure is logged rather than
@@ -696,9 +725,9 @@ not replaced by Source.
 - No historical data migration compatibility is required.
 
 **Enforced by tests:**
-- `server/test/leafDomainInvariants.test.ts` — knowledge proposals do not auto-promote into memory and server proposal appliers own accepted knowledge mutations.
+- `server/test/leafDomainRepositoryBehavior.test.ts` — a knowledge create from this path stays a pending `knowledge_create` proposal.
 - `server/test/leafDomainRepositoryBehavior.test.ts` — repository behavior around leaf-domain proposal boundaries.
-- Payload validation is enforced at apply time in `KnowledgeProposalApplier`: `knowledge_kind`, `content_format`, `visibility`, `verification_status`, `reflection_status`, and `confidence` for items; `link_type`, `status`, and `confidence` for relations. `link_type` legality — vocabulary, endpoint types, and whether the write may be direct — is checked by `assertLinkTypeAllowed` against `modules/ontology/linkTypes.ts`, which every `object_relations` writer must call.
+- Payload validation is enforced at apply time by the `apply*Proposal` functions in `knowledge/proposalApplier.ts` (registered by `registerKnowledgeProposalAppliers`): `knowledge_kind`, `content_format`, `visibility`, `verification_status`, `reflection_status`, and `confidence` for items; `link_type`, `status`, and `confidence` for relations. `link_type` legality — vocabulary, endpoint types, and whether the write may be direct — is checked by `assertLinkTypeAllowed` against `modules/ontology/linkTypes.ts`, which every `object_relations` writer must call.
 
 ## Related Files
 - `server/src/modules/knowledge/` - API, service, schemas, read models, and proposal appliers
@@ -718,17 +747,14 @@ not replaced by Source.
 - [spaced-repetition.md](spaced-repetition.md) - Cards schema exists; no review product
 - [proposals.md](proposals.md) - proposal review and apply boundary
 
-Unimplemented Knowledge/Cards ideas:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §3 and §9.
-
 ## Reading and writing a note or a Knowledge object
 
 One read and one write check, and both are the module's own.
 
 - **Read:** the content predicate on `space_objects` plus the effective access
   level (`getNoteRow`, `getSourceRow`, `noteColumnsWithAccess`). `listNotes`,
-  `listSources`, `listItems` and `listClaims` all carry it; a list that answers
-  something the detail page refuses is the defect to watch for.
+  `listSources`, `listItems` and `listClaims` all carry it. A list must not answer
+  something the detail page refuses.
 - **Write:** `assertWritableSpaceObject` (`knowledgeWriteAccess.ts`). Anything
   but `space_shared` belongs to its owner; a Project-bound object also needs
   writer authority in that Project; a reader served the object at `summary` may
@@ -745,4 +771,11 @@ One read and one write check, and both are the module's own.
   only at `full` (`bodyMatchSql`). A search that matched a withheld body handed
   it back a character at a time.
 - **Purge:** `purgeDeletedNotes` deletes only notes its caller could have
-  deleted themselves. It used to be Space-wide.
+  deleted themselves. Do not make the purge Space-wide. The candidate query, oldest
+  deletion first, prefilters on the same rule — owner or `space_shared`, and
+  Project write authority for a Project-bound note — because a batch of 500
+  refusals is not "the next call takes the rest": the refused notes fill the
+  next batch too and the caller's own never come up. In the same transaction it
+  deletes `object_relations` with a purged note as an endpoint and clears
+  `source_object_id` on edges that only cite one, since those foreign keys have
+  no `ON DELETE` and one surviving edge would fail every later purge.

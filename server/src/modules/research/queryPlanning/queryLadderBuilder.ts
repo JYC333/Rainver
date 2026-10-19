@@ -61,11 +61,9 @@ export class ResearchQueryLadderBuilder {
   }
 }
 
-// One relaxation per call: dropping the AND'd qualifier and adding an OR'd
-// expansion in the same step used to take a 59-hit query straight to 17,831
-// in one jump. Try the gentler lever (expansion, when it genuinely broadens
-// for this provider) first; only reach for the qualifier, then core, once
-// that's exhausted.
+// One relaxation per call. Do not drop the AND'd qualifier in the same step
+// that adds an OR'd expansion. Try expansion first, when it genuinely broadens
+// for this provider; reach for the qualifier, then core, only after that.
 function broaden(current: ResearchSemanticQuery, intent: ResearchSemanticQuery, strategy: QueryAdaptationStrategy): ResearchSemanticQuery {
   if (strategy.expansionsBroaden) {
     const expansion = firstMissing(ranked(intent.expansions), current.expansions);

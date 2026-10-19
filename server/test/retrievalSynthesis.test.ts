@@ -35,7 +35,7 @@ function synth(over: Partial<SynthesisResult> = {}): SynthesisResult {
   };
 }
 
-describe("retrieval synthesis: prompt token budget (§2.6)", () => {
+describe("retrieval synthesis: prompt token budget", () => {
   it("caps total document text while keeping every source's title and citation index", () => {
     // 40 sources × 1000 chars each would be 40000 chars of body without a budget.
     const docs = Array.from({ length: 40 }, (_, index) => ({

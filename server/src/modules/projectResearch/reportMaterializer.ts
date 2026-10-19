@@ -4,7 +4,7 @@ import { buildResearchReportReaderProjection } from "./reportProjection.js";
 import { assignReportReferenceIds } from "./reportReferenceNumbering.js";
 import { ProjectResearchAreaService } from "./areaService.js";
 
-export interface MaterializeResearchReportInput {
+interface MaterializeResearchReportInput {
   spaceId: string; projectId: string; workflowId: string; operationId: string; synthesisRunId: string;
   runKind: string; researchQuestion: string; researchQuestionVersion: number;
   report: Record<string, unknown>; archiveArtifactId: string; evidenceMatrixArtifactId: string | null;

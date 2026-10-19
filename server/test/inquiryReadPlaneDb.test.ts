@@ -11,7 +11,7 @@ import { inquiryRetrievalAdapter } from "../src/modules/inquiry/retrievalAdapter
 
 // Real-Postgres coverage for the unified read plane: the Inquiry
 // retrieval adapter feeding `retrieval_objects`, and the Inquiry/Combined
-// Project graph producers. See plan section 15-16.
+// Project graph producers.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -164,6 +164,15 @@ describe("Inquiry unified read plane (real Postgres)", () => {
     const combinedIds = new Set(combined.nodes.map((n) => n.id));
     expect(combinedIds.has(question.id as string)).toBe(true);
     expect(combinedIds.has(hypothesis.id as string)).toBe(true);
+  });
+
+  it("reports the requested node limit on an Inquiry graph, even with no Threads", async () => {
+    if (!db.available) return;
+    const graph = await new InquiryGraphService(db.pool).getInquiryGraph(identity(), PROJECT, { limit: 50 });
+    expect(graph.nodes).toHaveLength(0);
+    // `view.limit` is the request's bound, as every other producer reports it,
+    // and the protocol requires it positive.
+    expect(graph.view.limit).toBe(50);
   });
 
   it("applies the requested node limit across the whole Combined graph", async () => {

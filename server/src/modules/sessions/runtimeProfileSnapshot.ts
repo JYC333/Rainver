@@ -1,7 +1,7 @@
 import { stripSecretFieldsFromRecord } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 
-export interface RuntimeProfileSnapshot {
+interface RuntimeProfileSnapshot {
   runtime_key: string;
   backend_mode: "runtime_native" | "model_provider";
   model_name: string | null;
@@ -16,7 +16,7 @@ export interface RuntimeProfileSnapshot {
  * only through this shape, so the backend mode a consumer branches on is the
  * same field a Conversation binding freezes.
  */
-export interface RunRuntimeProfileSnapshot extends RuntimeProfileSnapshot {
+interface RunRuntimeProfileSnapshot extends RuntimeProfileSnapshot {
   id: string;
   name: string;
   execution_host_id: string | null;
@@ -73,8 +73,7 @@ export function projectRunRuntimeProfileSnapshot(
     // The installation is also inside the adapter config, because that is what
     // a Run's `adapter_config` is built from — the execution-control snapshot,
     // the CLI continuity fingerprint and the usage record all read the copy
-    // from there. The retired `credential_profile_id` was merged in exactly
-    // here, and nothing replaced the merge when it went.
+    // from there. Do not merge a second credential id into this object.
     runtime_config_json: projected.runtime_installation
       ? { ...projected.runtime_config_json, runtime_installation: projected.runtime_installation }
       : projected.runtime_config_json,

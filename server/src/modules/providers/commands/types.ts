@@ -1,3 +1,4 @@
+import type { ProviderDeployment } from "../deployment.js";
 import type { ProviderFailureClass } from "../invocation/resilience.js";
 import type { CredentialSpendAuthorization, CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import type { UsageAttribution, UsageObservation } from "../../usage/index.js";
@@ -36,6 +37,7 @@ export interface ModelProviderCreateInput {
   name: string;
   provider_type: string;
   base_url: string;
+  deployment?: ProviderDeployment;
   network_profile_id?: string | null;
   claude_compatible_base_url?: string | null;
   openai_compatible_base_url?: string | null;
@@ -50,6 +52,7 @@ export interface ModelProviderUpdateInput {
   name?: string;
   provider_type?: string;
   base_url?: string | null;
+  deployment?: ProviderDeployment;
   network_profile_id?: string | null;
   claude_compatible_base_url?: string | null;
   openai_compatible_base_url?: string | null;
@@ -62,11 +65,15 @@ export interface ModelProviderUpdateInput {
 
 export interface ProviderInfo {
   id: string;
+  /** The Space this invocation uses the Provider in (its grant). */
   space_id: string;
+  /** The Space that owns the Provider, where its `trusted_local` declaration was vouched. */
+  home_space_id: string;
   owner_user_id?: string | null;
   name: string;
   provider_type: string;
   base_url: string | null;
+  deployment: ProviderDeployment;
   network_profile_id: string | null;
   claude_compatible_base_url?: string | null;
   openai_compatible_base_url?: string | null;

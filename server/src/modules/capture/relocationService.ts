@@ -6,6 +6,7 @@ import { PgKnowledgeRepository } from "../knowledge/repository.js";
 import { noteBlocks, removeBlocks } from "../knowledge/noteBlockIds.js";
 import { withNoteWrites } from "../knowledge/noteWriter.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import { resolveContentCreationContext } from "../access/creationContext.js";
 import { CaptureService, type CaptureDestination } from "./service.js";
 import {
@@ -19,7 +20,7 @@ import {
   type RelocationMode,
 } from "./relocation.js";
 
-export interface RelocationPreview {
+interface RelocationPreview {
   activity_id: string;
   note_id: string;
   blocks: RelocationBlock[];
@@ -27,7 +28,7 @@ export interface RelocationPreview {
   can_copy_out: boolean;
 }
 
-export interface RelocationResult {
+interface RelocationResult {
   activity_id: string;
   destination: CaptureDestination;
   mode: RelocationMode;
@@ -94,18 +95,18 @@ export class RelocationService {
         throw new HttpError(409, "This capture was not projected into a note, so there is nothing to relocate");
       }
       // Locked before its text is read, and held for the rest of the
-      // transaction. Reading the blocks unlocked left a window in which a
-      // concurrent editor could rewrite the paragraph between the read and the
-      // removal: the relocation would carry the *pre-edit* text while deleting
-      // the post-edit block, silently losing the other person's edit.
+      // transaction. Do not read the blocks unlocked. A concurrent editor could
+      // rewrite the paragraph between the read and the removal: the relocation
+      // would carry the pre-edit text while deleting the post-edit block, and
+      // the other person's edit would be lost.
       await lockNote(client, capture);
       const { blocks, otherAnchors } = await noteState(client, input.userId, capture);
       const offered = new Set(
         relocationCandidates(blocks, capture.block_id, otherAnchors).map((block) => block.block_id),
       );
-      // Only the blocks the preview offered. Without this the client could name
-      // any block in the note — including a colleague's paragraph — and have it
-      // carried out of the Space.
+      // Only the blocks the preview offered. Do not accept a block the preview
+      // did not name. The client could carry a colleague's paragraph out of
+      // the Space.
       for (const id of input.blockIds) {
         if (!offered.has(id)) throw new HttpError(422, "Block is not part of this capture's selection");
       }
@@ -113,9 +114,9 @@ export class RelocationService {
       // Where the content actually lands, resolved before anything is written
       // and before anything is authorised.
       //
-      // Gating on the requested *destination name* was wrong in a way that
-      // reads as fine: `personal_inbox` is not the only destination that can
-      // leave the Space. Every Project destination resolves its Space from the
+      // Do not gate on the requested destination name. `personal_inbox` is
+      // not the only destination that can leave the Space. Every Project
+      // destination resolves its Space from the
       // caller-supplied `project_id`, and a caller who belongs to two Spaces
       // could name a Project in the other one — carrying the content across
       // the boundary with the copy-out gate never consulted, because the
@@ -129,12 +130,9 @@ export class RelocationService {
       }
       // The Space gate applies to *other people's* content, not your own.
       //
-      // Taking your own misfiled thought back out is the remedy that makes
-      // capture's inferred defaults acceptable in the first place — a paste
-      // defaults to the Project's team-visible raw material, and if that guess
-      // cannot be undone the guess should never have been made. Gating it
-      // behind a Space setting that is off by default would remove exactly the
-      // capability the outward direction exists for.
+      // Taking your own misfiled thought back out is allowed. A paste defaults
+      // to the Project's team-visible raw material, and that guess has to be
+      // undoable. Do not gate it behind a Space setting that is off by default.
       //
       // Someone else's content is the case the setting is for: a second holder
       // outside the boundary, which is the Space's decision to permit.
@@ -210,12 +208,14 @@ async function resolveDestinationSpace(
  * The capture must be one the caller can actually read, and must be a real
  * capture.
  *
- * The read gate is applied here rather than left to the note read downstream.
- * It was in fact enforced — `noteState` goes through `getNote`, which gates —
- * but by a different module for an unrelated reason, and the "was this ever
- * projected into a note" check runs first, so a colleague's private capture
- * answered 409 where a nonexistent one answered 404. A small oracle, and a real
- * hole the moment a relocation path appears that does not read the note.
+ * Apply the read gate here. Do not leave it to the note read downstream.
+ * The projection check runs first, so a colleague's private capture would
+ * answer 409 where a missing one answers 404. A relocation path that does
+ * not read the note would skip the gate.
+ *
+ * Read without oversight: a relocated block becomes a row other people read,
+ * so an admin's audit reach must not be what makes a colleague's private
+ * capture relocatable.
  */
 async function loadCapture(db: Queryable, userId: string, activityId: string): Promise<CaptureRow> {
   const result = await db.query<CaptureRow & { marginalia: { note_id?: string; block_id?: string } | null }>(
@@ -227,7 +227,7 @@ async function loadCapture(db: Queryable, userId: string, activityId: string): P
         AND membership.user_id = $2
         AND membership.status = 'active'
       WHERE ar.id = $1 AND ar.discarded_at IS NULL
-        AND ${contentReadSql("activity", "ar", "$2")}
+        AND ${contentReadSql("activity", "ar", "$2", { includeOversight: false })}
       LIMIT 1
       FOR UPDATE OF ar`,
     [activityId, userId],
@@ -250,10 +250,14 @@ async function loadCapture(db: Queryable, userId: string, activityId: string): P
  * the boundary a run of orphan blocks stops at.
  */
 async function noteState(db: Queryable, userId: string, capture: CaptureRow) {
-  const note = await new PgKnowledgeRepository(db).getNote(
-    { spaceId: capture.space_id, userId },
-    capture.note_id!,
-  );
+  const identity = { spaceId: capture.space_id, userId };
+  // The body is read as the caller alone, like the capture above: relocation
+  // turns it into a copy other people read, and oversight is audit, not a
+  // route to publish (SECURITY_AND_ACCESS_BOUNDARIES.md).
+  if (await contentDecisionFromDb(db, identity, "space_object", capture.note_id!, { includeOversight: false }) !== "full") {
+    throw new HttpError(404, "Capture note not found");
+  }
+  const note = await new PgKnowledgeRepository(db).getNote(identity, capture.note_id!);
   if (!note) throw new HttpError(404, "Capture note not found");
   const anchors = await db.query<{ block_id: string }>(
     `SELECT payload_json -> 'marginalia' ->> 'block_id' AS block_id
@@ -296,8 +300,8 @@ async function removeFromSourceNote(
       spaceId: capture.space_id,
       noteId: capture.note_id!,
       // The version is passed rather than omitted. Without it `writeNote` skips
-      // the check and can only ever answer "written", which made the conflict
-      // branch below unreachable — a guard that reads as protection while
+      // the check and can only ever answer "written", and the conflict branch
+      // below is unreachable — a guard that reads as protection while
       // protecting nothing.
       expectVersion: current.rows[0].version,
       content: { kind: "doc", doc: removeBlocks(current.rows[0].content_json, blockIds) },

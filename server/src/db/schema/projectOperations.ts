@@ -21,9 +21,9 @@ export const projectOperations = pgTable("project_operations", {
 	progressJson: jsonb("progress_json").default({}).notNull(),
 	version: integer().default(1).notNull(),
 	// The operation's current (or most recent) pass. A retry/resume/rescan
-	// creates a new WorkflowExecution and repoints this rather than reopening
-	// the old one — WorkflowExecution's engine is a strict per-pass DAG, not
-	// a cyclic state machine, so a "pass" is never revisited.
+	// creates a new WorkflowExecution and repoints this. Do not reopen the
+	// previous pass: the engine is a strict per-pass DAG, so a pass is never
+	// revisited.
 	currentExecutionId: varchar("current_execution_id", { length: 36 }),
 	// Incremented each time a new WorkflowExecution pass is started for this
 	// operation. Purely observational bookkeeping — correctness against

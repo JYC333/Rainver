@@ -51,7 +51,7 @@ export default function SettingsPage() {
       setNewSpaceName('')
       setNewSpaceOversightMode('none')
       await reloadSpaces()
-      // Enter the new Space by navigating to its URL (the active Space is now URL-derived).
+      // Enter the new Space by navigating to its URL. The active Space is the route.
       navigate(`/spaces/${space.id}/today`)
     } catch (err) {
       toast.error(errMsg(err))

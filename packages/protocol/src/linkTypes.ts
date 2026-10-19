@@ -1,20 +1,11 @@
 import { z } from "zod";
 
 /**
- * The single Link Type vocabulary.
- *
- * Before this file there were four overlapping lists that nothing reconciled:
- * `OBJECT_RELATION_TYPE_VALUES` (12), the `object_relations` CHECK (15, adding
- * `affiliated_with` / `cites` / `authored_by`), `OBJECT_SCHEMA_RELATION_TYPE_VALUES`
- * (18, adding `explains` / `prerequisite_of` / `example_of` / `applies_to` /
- * `summarizes` / `updates`), and `inquiry_thread_relations` (7, adding
- * `decomposes_into` / `proposes`). The gaps were live defects: a relation hint
- * could be declared for a type `object_relations` would reject on write, and
- * `authored_by` was a real edge type no hint could reference.
- *
- * This is the union. Endpoint constraints and governance are declared per link
- * type in the server-side registry (`modules/ontology/linkTypes.ts`); this
- * module is contracts-only, so it carries the vocabulary and nothing else.
+ * The single Link Type vocabulary. Endpoint constraints and governance are
+ * declared per link type in the server-side registry
+ * (`modules/ontology/linkTypes.ts`); this module is contracts-only.
+ * Do not keep a second list: a hint can then name a type the write rejects,
+ * or a real edge type no hint can reference.
  */
 export const LINK_TYPE_VALUES = [
   // Generic association

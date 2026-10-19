@@ -26,7 +26,6 @@ function sourcesConfig(): ServerConfig {
     sandboxRunnerServerHost: "server",
     builtinHostMaxConcurrentRuns: 3,
     sandboxRoot: "/tmp/rainver/sandboxes",
-    deployerSocketPath: "/tmp/rainver/run/deployer.sock",
     artifactStorageRoot: "/tmp/rainver/storage/artifacts",
     internalToken: null,
     betterAuthSecret: null,
@@ -966,8 +965,9 @@ describe("Leaf domain repository behavior", () => {
     expect(itemSelect?.sql).toContain("si.owner_user_id = $3");
     expect(itemSelect?.sql).toContain("FROM content_access_grants content_grant");
     expect(itemSelect?.sql).toContain("FROM space_memberships content_member");
-    expect(itemSelect?.sql).toContain("FROM source_channel_user_subscriptions scus_read");
-    expect(itemSelect?.sql).toContain("scus_read.status = 'subscribed'");
+    expect(itemSelect?.sql).toContain("FROM source_channel_user_subscriptions live_subscription");
+    expect(itemSelect?.sql).toContain("live_subscription.status = 'subscribed'");
+    expect(itemSelect?.sql).toContain("FROM source_channel_subscription_windows delivered_window");
   });
 
   it("allows source-derived summary proposals when the source policy opts in", async () => {
@@ -1115,11 +1115,42 @@ describe("Leaf domain repository behavior", () => {
     });
   });
 
+  it("keeps a relation proposal private when its target is narrower than its source", async () => {
+    const visibilities: unknown[] = [];
+    const db = new FakeDb((sql, params) => {
+      if (sql.includes("FROM space_objects")) {
+        return [{
+          id: params[0],
+          space_id: "space-1",
+          object_type: "claim",
+          title: params[0] === "claim-private" ? "Private title" : "Shared title",
+          status: "active",
+          visibility: params[0] === "claim-private" ? "private" : "space_shared",
+          owner_user_id: "user-1",
+          primary_project_id: null,
+          project_folder_id: null,
+          created_by_user_id: "user-1",
+        }];
+      }
+      if (sql.includes("INSERT INTO proposals")) {
+        visibilities.push(params[15]);
+        return [proposalRow(params)];
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+    const repository = new PgKnowledgeRepository(db);
+
+    await repository.proposeObjectRelation(identity, { from_object_id: "claim-shared", to_object_id: "claim-private", link_type: "supports" });
+    await repository.proposeObjectRelation(identity, { from_object_id: "claim-shared", to_object_id: "claim-other", link_type: "supports" });
+
+    expect(visibilities).toEqual(["private", "space_shared"]);
+  });
+
   it("counts only what the viewer can read, in every part of the knowledge summary", async () => {
-    // Three of these four used to be gated by Space membership alone while the
-    // fourth applied the content gate. A count is a weaker leak than a list, but
-    // it is still an answer about content the viewer cannot open — and one
-    // gated count beside three ungated ones is how the gap stayed invisible.
+    // Every part of the knowledge summary applies the content gate, not Space
+    // membership alone. A count is still an answer about content the viewer
+    // cannot open. Do not leave one count gated and the others not: that is
+    // how the gap stays invisible.
     const gated = (sql: string, params: readonly unknown[]) => {
       expect(sql).toContain("so.visibility = 'space_shared'");
       expect(sql).toContain("content_access_grants");
@@ -1317,6 +1348,16 @@ describe("Leaf domain repository behavior", () => {
       if (norm.includes("WITH RECURSIVE ancestry AS")) {
         expect(params).toEqual(["space-1", "collection-1"]);
         return [];
+      }
+      // The placement invariant locks the note, then reads where its
+      // placements land; an unbound note needs one entry anywhere.
+      if (norm.includes("FOR UPDATE OF so")) {
+        expect(params).toEqual(["space-1", ["note-1"]]);
+        return [{ note_id: "note-1", title: "Note", primary_project_id: null, status: "active" }];
+      }
+      if (norm.includes("WITH RECURSIVE placed AS")) {
+        expect(params).toEqual(["space-1", ["note-1"]]);
+        return [{ note_id: "note-1", placement_id: "placement-1", project_id: null }];
       }
       if (sql.includes("DELETE FROM note_collection_items")) {
         expect(sql).toContain("space_id = $2");

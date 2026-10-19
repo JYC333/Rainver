@@ -23,8 +23,8 @@ import type { HostEgressTransport } from "@rainver/protocol";
  * fetches — because the proxy declines rather than the client neglecting to ask. Nothing dialled
  * through this reaches the instance's own network, a sibling container, a
  * cloud metadata endpoint, or loopback — under every profile, `install`
- * included. That is the difference between "we asked it not to" and "it
- * cannot".
+ * included. That is the difference between asking a client not to dial
+ * and the proxy refusing the dial.
  */
 export type EgressProfile = "none" | "default" | "install";
 
@@ -127,14 +127,14 @@ export interface EgressProxyHandle {
   close(): Promise<void>;
 }
 
-export interface UpstreamProxyConfig {
+interface UpstreamProxyConfig {
   url: URL;
   noProxy: string | null;
 }
 
 type TargetLookup = (hostname: string) => Promise<Array<{ address: string; family: number }>>;
 
-export interface EgressProxyOptions {
+interface EgressProxyOptions {
   /** Test seam; production resolves every answer through the operating system. */
   lookup?: TargetLookup;
 }
@@ -184,9 +184,9 @@ export async function startEgressProxy(
   server.on("connection", (client: Socket) => {
     clients.add(client);
     client.once("close", () => clients.delete(client));
-    // Accumulated, not read from the first chunk: a CONNECT request arrives
-    // split whenever the client writes its headers separately, and reading one
-    // chunk turned that into a 405 or a 407 depending on where the split fell.
+    // Accumulated, not read from the first chunk. A CONNECT request arrives
+    // split whenever the client writes its headers separately. Reading one
+    // chunk answers 405 or 407 depending on where the split falls.
     let head = Buffer.alloc(0);
     const onData = (chunk: Buffer) => {
       head = Buffer.concat([head, chunk]);
@@ -226,17 +226,16 @@ export async function startEgressProxy(
       return refuse(client, 407, "This Run is not authorized to use the host's egress proxy.");
     }
     const separator = target.lastIndexOf(":");
-    // `[::1]:443` is how a client writes an IPv6 literal; without stripping the
-    // brackets the host is never recognised as an address at all — which both
-    // broke every IPv6 target and skipped the block list for it.
+    // `[::1]:443` is how a client writes an IPv6 literal. Do not leave the
+    // brackets on. The host is never recognised as an address, so every IPv6
+    // target fails and the block list is skipped for it.
     const rawHost = separator > 0 ? target.slice(0, separator) : target;
     const host = rawHost.startsWith("[") && rawHost.endsWith("]") ? rawHost.slice(1, -1) : rawHost;
     const port = separator > 0 ? Number(target.slice(separator + 1)) : 443;
     const at = new Date().toISOString();
-    // Validated before anything is recorded: a non-integer port used to be
-    // written into the log as `NaN`, which serializes as null, which the
-    // `complete` frame's schema rejects — discarding the whole frame, leaving
-    // the Run running forever and never releasing its concurrency slot.
+    // Validate before recording. A non-integer port logged as `NaN` serializes
+    // as null, the `complete` frame's schema rejects it, and the Run never
+    // releases its concurrency slot.
     if (!host || !Number.isInteger(port) || port <= 0 || port > 65_535) {
       record(grant.runId, { allowed: false, host: host || "(malformed)", port: 0, reason: "Malformed CONNECT target.", at });
       return refuse(client, 400, `${target} is not a host and port this proxy can dial.`);
@@ -333,7 +332,13 @@ export async function startEgressProxy(
     if (useUpstream) {
       const opening = openUpstreamTunnel(upstreamProxy!, host, port);
       pendingRequest = opening.request;
-      opening.socket.then(onConnected, onConnectError);
+      // The HTTP client drops its own error listener when it hands over a
+      // CONNECT tunnel, so a reset after that is unhandled and ends the
+      // daemon unless the tunnel gets the same listener the direct socket has.
+      opening.socket.then((tunnel) => {
+        tunnel.on("error", onConnectError);
+        onConnected(tunnel);
+      }, onConnectError);
     } else {
       const direct = connect({ host: address, port }, () => onConnected(direct));
       upstream = direct;
@@ -488,13 +493,11 @@ function openUpstreamTunnel(
  * break the Run on the *default* path and log a refusal for every attempt, so
  * they bypass the proxy rather than being blocked by it.
  *
- * Read out of what is actually handed over, not from a list somebody has to
- * remember to update — and that means **both** channels. Only `claude_code`
- * takes its lease URL through the environment; `codex_cli` and `opencode`
- * receive theirs inside a config file the daemon writes, so scanning the
- * environment alone covered one adapter in three. It happened to work because
- * both URLs are built from the same host, which is exactly the kind of
- * accident that survives until someone sets `provider_proxy_base_url`.
+ * Read the hostnames from what is actually handed over, on both channels.
+ * Only `claude_code` takes its lease URL through the environment; `codex_cli`
+ * and `opencode` receive theirs inside a config file the daemon writes. Do
+ * not scan the environment alone. The two URLs can name different hosts when
+ * `provider_proxy_base_url` is set.
  */
 export function proxyBypassHosts(sources: readonly string[]): string[] {
   const hosts = new Set<string>();

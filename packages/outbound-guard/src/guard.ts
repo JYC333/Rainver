@@ -126,12 +126,11 @@ export function createOutboundGuard(
         answers = await withTimeout(lookup(host), dnsTimeoutMs, signal);
       } catch (error) {
         if (error instanceof OutboundGuardError) throw error;
-        // A budget that ran out is not an address decision. Folding it into the
-        // refusal would persist a deadline as `failure_kind: "network"`, which
-        // is the conflation of "answered slowly" with "could not be reached"
-        // that `sourceConnectionFetch` exists to keep apart. The block-list and
-        // unresolvable cases still answer alike; only this one is let through
-        // as the timeout it is.
+        // A budget that ran out is not an address decision. Do not fold it
+        // into the refusal. A deadline would be persisted as
+        // `failure_kind: "network"`, the same record as an unreachable host.
+        // The block-list and unresolvable cases still answer alike; only this
+        // one is let through as the timeout it is.
         if (signal?.aborted) throw error;
         throw outboundRefused();
       }

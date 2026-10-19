@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectBoardPage from '../board/ProjectBoardPage'
@@ -19,6 +19,24 @@ vi.mock('../../../api/client', async () => {
     agentsApi: { list: vi.fn().mockResolvedValue([]) },
   }
 })
+
+// A drop is a pointer gesture jsdom cannot produce; the Board's own drop
+// handler is captured from the context it hands it to and called directly.
+const dnd = vi.hoisted(() => ({ onDragEnd: null as null | ((event: unknown) => void) }))
+vi.mock('@dnd-kit/core', async () => {
+  const actual = await vi.importActual<typeof import('@dnd-kit/core')>('@dnd-kit/core')
+  return {
+    ...actual,
+    DndContext: (props: Parameters<typeof actual.DndContext>[0]) => {
+      dnd.onDragEnd = props.onDragEnd as (event: unknown) => void
+      return <actual.DndContext {...props} />
+    },
+  }
+})
+
+function drop(cardId: string, columnKey: string) {
+  act(() => dnd.onDragEnd?.({ active: { id: cardId }, over: { id: columnKey } }))
+}
 
 function card(overrides: Partial<ProjectBoardCard> & Pick<ProjectBoardCard, 'id' | 'title' | 'status'>): ProjectBoardCard {
   return {
@@ -98,8 +116,8 @@ beforeEach(() => {
 
 describe('Project Board', () => {
   it('re-reads the Board on an interval and when the tab comes back, without a skeleton', async () => {
-    // Cards an Agent creates from the Room arrive while this page is open;
-    // it used to load once on arrival and show them only after leaving.
+    // Cards an Agent creates from the Room arrive while this page is open.
+    // The page polls; it does not load once on arrival.
     const intervals: Array<() => void> = []
     const spy = vi.spyOn(window, 'setInterval').mockImplementation(((fn: () => void) => {
       intervals.push(fn)
@@ -191,6 +209,25 @@ describe('Project Board', () => {
     expect(screen.getByText('Waiting for the licence')).toBeInTheDocument()
   })
 
+  it('leaves a blocked card blocked when it is dropped back into its own lane', async () => {
+    renderBoard()
+    await screen.findByTestId('board-card-task-blocked')
+    drop('task-blocked', 'in_progress')
+    await act(() => Promise.resolve())
+    expect(tasksApi.update).not.toHaveBeenCalled()
+  })
+
+  it('puts a refused blocked card back still blocked', async () => {
+    vi.mocked(tasksApi.update).mockRejectedValue(new ApiRequestError('Not allowed', 409))
+    renderBoard()
+    await screen.findByTestId('board-card-task-blocked')
+    drop('task-blocked', 'done')
+    await waitFor(() => expect(tasksApi.update).toHaveBeenCalledWith('task-blocked', { status: 'done' }))
+
+    await waitFor(() => expect(screen.getByTestId('board-column-in_progress')).toContainElement(screen.getByTestId('board-card-task-blocked')))
+    expect(screen.getByText('Waiting for the licence')).toBeInTheDocument()
+  })
+
   it('treats a refusal that names nothing as an ordinary error', () => {
     // An empty dialog whose only button re-fails is worse than a message.
     expect(blockedCompletion(new ApiRequestError('x', 422, 'completion_requirements_unmet', {}))).toBeNull()
@@ -233,8 +270,8 @@ describe('Project Board', () => {
   })
 
   it('creates a Task here, in the Project', async () => {
-    // Putting work on the Board is the daily action; before this it meant
-    // leaving the Project for the cross-Project Tasks list.
+    // A Task is created on the Board, in the Project. Do not send the person
+    // to the cross-Project Tasks list for that.
     vi.mocked(tasksApi.create).mockResolvedValue({ id: 'task-new' } as never)
     renderBoard()
     fireEvent.click(await screen.findByRole('button', { name: 'New Task' }))
@@ -267,8 +304,8 @@ describe('Project Board', () => {
     vi.mocked(projectsApi.getBoard).mockResolvedValue({ ...board, viewer_can_write: false })
     renderBoard()
     expect(await screen.findByText('Draft the protocol')).toBeInTheDocument()
-    // Before this a viewer could drag any card to Done and get a 403 after
-    // the drop; the honest surface is one that offers no drag at all.
+    // A viewer is offered no drag. Do not let them drag a card to Done and
+    // answer 403 after the drop.
     expect(screen.queryByRole('button', { name: /^Move / })).not.toBeInTheDocument()
   })
 

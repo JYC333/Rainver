@@ -26,13 +26,12 @@ interface RelationEdgeRow {
 }
 
 /**
- * Inquiry graph producer (plan section graph projection).
+ * Inquiry graph producer.
  *
  * Threads are `space_objects` rows and their edges are `object_relations`
  * (ADR 0011 decision 1/3), so this reads the same substrate as every other
- * domain. It still exists as a producer because Inquiry adds domain metadata to
- * each node — lifecycle and attention state — that the generic projection has
- * no reason to know about. It never writes.
+ * domain. This producer adds lifecycle and attention state the generic
+ * projection does not know. It never writes.
  */
 export class InquiryGraphService {
   constructor(private readonly db: Queryable) {}
@@ -95,8 +94,8 @@ export class InquiryGraphService {
         updatedAt: isoOrNull(row.updated_at),
       },
     }));
-    // Working relations only (plan section 9.3: "working Project relations,
-    // not proposal-gated canonical Ontology relations") — every edge this
+    // Working relations only, not proposal-gated canonical Ontology relations.
+    // Every edge this
     // producer emits is tagged `tier: "working"` so a combined view can
     // visually distinguish it from canonical/derived edges sourced elsewhere.
     const edges: GraphProjectionEdge[] = relations.rows
@@ -114,7 +113,7 @@ export class InquiryGraphService {
       edges,
       view: {
         mode: "local",
-        limit: nodes.length,
+        limit: options.limit,
         generatedAt: new Date().toISOString(),
         truncated: (total.rows[0]?.count ?? 0) > nodes.length,
         totalNodeCount: total.rows[0]?.count ?? nodes.length,
@@ -125,11 +124,9 @@ export class InquiryGraphService {
   /**
    * The Project graph.
    *
-   * This used to union an Inquiry-specific projection with the
-   * `space_objects`/`object_relations` one, because Threads lived outside the
-   * ontology and the generic projection could not see them. They are ontology
-   * objects now, so the generic projection already covers them — keeping the
-   * union would double every Thread node.
+   * Threads are ontology objects, so the generic `space_objects` /
+   * `object_relations` projection already covers them. Do not union a second
+   * Inquiry projection: every Thread node would appear twice.
    */
   async getCombinedProjectGraph(
     identity: SpaceUserIdentity,

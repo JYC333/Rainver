@@ -4,9 +4,9 @@ import type { SystemActionId } from "@rainver/protocol";
  * Scenario tool allowances.
  *
  * `buildRunToolGrants` intersects what a Run declares with what it is
- * *allowed*, and fails closed when the allowance is missing. Until now the
- * allowance could only come from one place: the immutable AgentVersion's
- * `tool_permissions_json`. That models a tool as a property of the Agent —
+ * *allowed*, and fails closed when the allowance is missing. The allowance
+ * comes from two places. The immutable AgentVersion's
+ * `tool_permissions_json` models a tool as a property of the Agent —
  * "this Agent is permitted to do X" — which is right for an Agent's own
  * standing skills, and wrong for a capability that belongs to a *place*.
  *
@@ -33,12 +33,11 @@ import type { SystemActionId } from "@rainver/protocol";
  * coordination actions — `agent.delegate` is independently constrained by
  * the Room's one-level/two-specialist delegation budget, and
  * `research.start_acquisition` is idempotency-guarded rather than
- * proposal-gated (the retired room-advancement-reliability plan, Phase 4: the Thread was
- * already human-accepted at creation). `research.cancel_acquisition` is its
- * stop lever, listed here so a Room notification about running research
- * always has a matching in-Room action — a report the user can
- * only act on by leaving for the web UI is the interruption the reform
- * removed, moved rather than deleted. The two are not mutually exclusive —
+ * proposal-gated: the Thread was already human-accepted at creation.
+ * `research.cancel_acquisition` is its stop lever, listed here so a Room
+ * notification about running research always has a matching in-Room action.
+ * Do not leave a report the user can only act on by leaving for the web UI.
+ * The two are not mutually exclusive —
  * an ad hoc delegated investigation and a tracked acquisition Workflow may
  * run on the same Thread at once; choosing between (or combining) them is
  * the Manager Agent's judgment, never a server-side gate.
@@ -110,8 +109,7 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "proposal.list_pending",
   "proposal.decide",
   // Bringing a Source into the Project. Both are proposals (ADR 0017 §1), so
-  // they widen nothing that skips approval. They were the whole of what a
-  // direct chat could do before it shared this list.
+  // they widen nothing that skips approval.
   "project.source.propose_bind",
   "source.backfill.propose_start",
 ];
@@ -120,9 +118,10 @@ const ROOM_PROJECT_TOOL_ALLOWANCE: readonly SystemActionId[] = [
  * What an Agent may do because Rainver dispatched it to work on a Task.
  *
  * A dispatched Run is not a conversation, which is what decides the shape of
- * this list. It carries the Project write surface, because advancing a Task is
- * the whole point of dispatching one, and `artifact.submit`, without which a
- * Task with a declared required output can never be satisfied by an agent.
+ * this list. It carries the Project write surface a Task needs, and
+ * `artifact.submit`. Do not omit `artifact.submit`. A
+ * Task with a declared required output can never be satisfied by an agent
+ * without it.
  *
  * `memory.remember` / `memory.revise` are deliberately absent even though
  * `CONVERSATION_TOOL_ALLOWANCE` carries them: remembering what someone told
@@ -150,15 +149,9 @@ const DISPATCH_BASE_TOOL_ALLOWANCE: readonly SystemActionId[] = [
 /**
  * What a dispatched Run may call, given where it executes.
  *
- * `artifact.submit` is offered only on a remote host, because that is the only
- * path that applies a declaration today: the executing host uploads its output
- * directory and `recordOutputArtifacts` gives those files the type and Task
- * link the Run declared. A server-host Run's artifacts come through
- * `materializationService` instead, which does not consume declarations yet
- * (the retired agent-work-surface plan, P2; see `.agent/modules/hosts.md`).
- * Granting it there would let an agent be
- * told its deliverable was recorded when nothing would ever act on it, which
- * is worse than not offering the action at all.
+ * `artifact.submit` is offered only for `trusted_host`. The paired host
+ * uploads its output directory and `recordOutputArtifacts` applies the
+ * declared type and Task link. Do not grant it on a `sandboxed` Run.
  */
 export function dispatchToolAllowance(
   trustMode: "sandboxed" | "trusted_host",
@@ -178,10 +171,9 @@ export const ROOM_CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
  *
  * One function for every way a person or a Room talks to an Agent — a Room
  * message, a delegation the Room's Agent makes, a direct chat — so the
- * allowance is decided once. Before this each path computed it on its own:
- * direct chat kept a three-action list from before scenario allowances
- * existed, and a delegated child declared nothing and so could call nothing,
- * not even the actions its parent was granted in the same conversation.
+ * allowance is decided once. Do not give direct chat its own list, and do
+ * not let a delegated child declare nothing: it then cannot call the actions
+ * its parent was granted in the same conversation.
  *
  * Host kind is intentionally absent. It selects how the Run-scoped tool
  * surface is delivered, not what a conversation may do.

@@ -83,18 +83,15 @@ export interface PromptSyncResult {
  * Idempotent built-in prompt sync: ensures every manifest has a matching
  * system-scope (space_id NULL) evolvable asset, and adds a new immutable
  * 'approved' 'built_in' version whenever the manifest content_hash changes.
- * Existing versions are never overwritten. Callable from a bootstrap script
- * or tests — not wired into automatic server startup, so it never changes
- * runtime behavior on its own (no prompt consumer resolves through this
- * registry yet; that migration starts at M3).
+ * Existing versions are never overwritten. A bootstrap script or a test calls
+ * it. Startup does not, so it never changes runtime behavior on its own. No
+ * prompt consumer resolves through this registry.
  *
- * Built-in versions are written with status='approved' directly, bypassing
- * EvolvableAssetRepository's proposal-gated promotion path: that gate exists
- * for user-facing edits, whereas built-in prompt review already happened as
- * a normal source-control change to the manifest file (see the plan's
- * Permission Boundaries: "System baseline prompt changes should be treated
- * as code/catalog changes"). This mirrors server/src/db/seeds.ts, which
- * seeds other built-in tables the same way.
+ * Built-in versions are written with status='approved' directly. Do not send
+ * them through EvolvableAssetRepository's proposal-gated promotion path. That
+ * gate is for user-facing edits. A built-in prompt changes when its manifest
+ * file changes. System baseline prompt changes are code and catalog changes.
+ * This follows the same direct write as server/src/db/seeds.ts.
  */
 export async function syncBuiltinPrompts(db: Queryable, catalogRoot: string): Promise<PromptSyncResult> {
   const manifests = await loadPromptManifests(catalogRoot);
@@ -119,9 +116,9 @@ async function upsertBuiltinAsset(db: Queryable, manifest: PromptManifest): Prom
      ON CONFLICT (asset_key) WHERE space_id IS NULL DO UPDATE SET
        display_name = EXCLUDED.display_name,
        description = EXCLUDED.description,
-       -- Merge, don't overwrite: a future write path (M4+) may add metadata
-       -- keys sync doesn't manage (e.g. allow_user_override); re-syncing must
-       -- not silently discard them. Sync's own key (prompt_type) still wins.
+       -- Merge, don't overwrite. Keys sync does not manage (allow_user_override
+       -- is one) must survive re-sync. Do not replace metadata_json outright.
+       -- Sync's own key (prompt_type) still wins.
        metadata_json = COALESCE(evolvable_assets.metadata_json, '{}'::jsonb) || EXCLUDED.metadata_json,
        updated_at = EXCLUDED.updated_at
      WHERE evolvable_assets.asset_type = EXCLUDED.asset_type`,
@@ -141,8 +138,16 @@ async function ensureBuiltinVersion(db: Queryable, manifest: PromptManifest): Pr
   const asset = await assetForKey(db, manifest.assetKey);
   if (!asset) throw new HttpError(500, `Prompt asset '${manifest.assetKey}' was not created before version sync`);
 
+  // Only the catalog's own versions count as "this content already exists".
+  // A Space can add versions to a built-in asset, and its content_hash can
+  // match a manifest; adopting one would make a Space's draft the baseline
+  // every Space resolves through.
   const existing = await db.query<{ id: string }>(
-    `SELECT id FROM evolvable_asset_versions WHERE asset_id = $1 AND content_hash = $2 LIMIT 1`,
+    `SELECT id FROM evolvable_asset_versions
+      WHERE asset_id = $1 AND content_hash = $2
+        AND space_id IS NULL AND scope_type = 'system' AND source = 'built_in'
+      ORDER BY version DESC
+      LIMIT 1`,
     [asset.id, manifest.contentHash],
   );
   const existingVersionId = existing.rows[0]?.id ?? null;

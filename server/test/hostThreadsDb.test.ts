@@ -9,6 +9,7 @@ import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js
 import { recordHostThreadOutcome } from "../src/modules/hosts/threadOutcome.js";
 import { resolveRuntimeProfileScope, runtimeProfileKey } from "../src/modules/runs/remoteProviderBinding.js";
 import { PgHostThreadEventRepository } from "../src/modules/hosts/threadEventRepository.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { PgRoomRepository } from "../src/modules/rooms/repository.js";
 import { PgWorkspaceLocationRepository } from "../src/modules/projectFolders/workspaceLocations.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
@@ -350,13 +351,43 @@ describe("host_threads owner constraints", () => {
     expect(await vendorSession()).toMatchObject({ status: "session_reset", vendor_session_id: null });
   });
 
+  it("tells the Room about every context reset, not only the thread's first", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    const repository = new PgHostThreadRepository(db.pool);
+    const thread = await repository.getOrCreateForConversationAgent({
+      executionHostId: HOST,
+      workspaceMode: "managed",
+      spaceId: SPACE,
+      sessionId: CONVERSATION,
+      agentId: AGENT,
+      runtimeKey: "claude_code",
+      runtimeInstallation: "own",
+      createdByUserId: OWNER,
+    });
+    await db.pool.query(`UPDATE host_threads SET last_session_id = $2 WHERE id = $1`, [thread.id, CONVERSATION]);
+    const notices = async () => (await db.pool.query<{ run_id: string | null }>(
+      `SELECT metadata_json->>'host_thread_run_id' AS run_id FROM messages
+        WHERE session_id = $1 AND metadata_json->>'host_thread_event' = 'session_reset' ORDER BY created_at`,
+      [CONVERSATION],
+    )).rows.map((row) => row.run_id);
+    // The thread keeps its id across resets, so each reset is a new fact.
+    const first = randomUUID();
+    const second = randomUUID();
+    await recordHostThreadOutcome(config, thread.id, { id: first, status: "failed", error_json: { error_code: "runtime_session_invalid" } }, true);
+    await repository.recordRunOutcome(thread.id, { lastRunId: randomUUID(), vendorSessionId: "vendor-again", sessionReset: false });
+    await recordHostThreadOutcome(config, thread.id, { id: second, status: "failed", error_json: { error_code: "runtime_session_invalid" } }, true);
+    // The same Run reported twice is still one reset.
+    await recordHostThreadOutcome(config, thread.id, { id: second, status: "failed", error_json: { error_code: "runtime_session_invalid" } }, true);
+    expect(await notices()).toEqual([first, second]);
+  });
+
   it("gives every Agent × container its own runtime profile, and the machine's own to none of them", async (ctx) => {
     if (!db.available) return ctx.skip();
-    // The leak this closes: `profiles/<adapter>/<provider>` was shared by every
-    // run with that adapter and provider on a machine, and an unbound run had
-    // no profile at all, so it read the machine's own `~/.claude`. Two Agents
-    // in one Room and one Agent in two Rooms are the two ways that mixed what
-    // a vendor CLI remembers.
+    // Do not share `profiles/<adapter>/<provider>` across runs. An unbound
+    // run must not read the machine's own `~/.claude`. Two Agents in one
+    // Room and one Agent in two Rooms are the two ways a shared profile
+    // mixes what a vendor CLI remembers.
     const otherAgent = "77777777-7777-4777-8777-777777777777";
     const otherVersion = "99999999-9999-4999-8999-999999999999";
     const otherConversation = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
@@ -426,8 +457,7 @@ describe("host_threads owner constraints", () => {
 
     // A Run whose Agent is not the thread's would write into another Agent's
     // profile and archive the wrong one. The two are the same on every path
-    // that creates a thread, so this fails loudly rather than failing open —
-    // the boundary is the whole point.
+    // that creates a thread, so this fails loudly rather than failing open.
     await expect(resolveRuntimeProfileScope(db.pool, { agent_id: otherAgent, host_task_thread_id: direct.id }, LOCATION))
       .rejects.toThrow(/belongs to Agent/);
   });
@@ -519,10 +549,9 @@ describe("host_threads owner constraints", () => {
       runtimeKey: "claude_code",
       createdByUserId: OWNER,
     });
-    await db.pool.query(
-      `UPDATE host_threads SET execution_host_id = $2, vendor_session_id = 'vendor-task' WHERE id = $1`,
-      [taskThread.id, HOST],
-    );
+    // As production creates it: a Task thread carries no `execution_host_id`
+    // of its own; the Location names the machine.
+    await db.pool.query(`UPDATE host_threads SET vendor_session_id = 'vendor-task' WHERE id = $1`, [taskThread.id]);
     await db.pool.query(
       `INSERT INTO runs (
          id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
@@ -568,10 +597,9 @@ describe("host_threads owner constraints", () => {
     const taskThread = await repository.create({
       workspaceLocationId: LOCATION, taskId: TASK, runtimeKey: "claude_code", createdByUserId: OWNER,
     });
-    await db.pool.query(
-      `UPDATE host_threads SET execution_host_id = $2, vendor_session_id = 'vendor-task' WHERE id = $1`,
-      [taskThread.id, HOST],
-    );
+    // As production creates it: a Task thread carries no `execution_host_id`
+    // of its own; the Location names the machine.
+    await db.pool.query(`UPDATE host_threads SET vendor_session_id = 'vendor-task' WHERE id = $1`, [taskThread.id]);
     const otherAgent = "77777777-7777-4777-8777-777777777777";
     const otherVersion = "99999999-9999-4999-8999-999999999999";
     await seedAgentWithVersion(db.pool, {
@@ -801,6 +829,48 @@ describe("host_threads owner constraints", () => {
     });
   });
 
+  it("keeps a superseded attempt's late events out of the retried attempt's turn", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const thread = await new PgHostThreadRepository(db.pool).getOrCreateForDirect({
+      executionHostId: HOST,
+      workspaceLocationId: null,
+      workspaceMode: "managed",
+      agentId: AGENT,
+      userId: OWNER,
+      runtimeKey: "claude_code",
+      runtimeInstallation: "own",
+      createdByUserId: OWNER,
+    });
+    const runId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode,
+         model_override_json, owner_user_id, created_at, updated_at, execution_kind)
+       VALUES ($1,$2,$3::varchar,(SELECT current_version_id FROM agents WHERE id=$3::varchar),'agent','manual','queued','live',
+         '{}'::jsonb,$4,now(),now(), 'agent')`,
+      [runId, SPACE, AGENT, OWNER],
+    );
+    for (const attempt of [1, 2]) {
+      await db.pool.query(
+        `INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,now(),now())`,
+        [randomUUID(), SPACE, runId, attempt, attempt === 1 ? "failed" : "running"],
+      );
+    }
+    const events = new PgHostThreadEventRepository(db.pool);
+    // Attempt 1 is still unwinding after attempt 2 started: dropped.
+    await expect(events.append(thread.id, runId, [{ event_type: "status", status: "timed_out" }], 1)).resolves.toEqual([]);
+    const current = await events.append(thread.id, runId, [{ event_type: "status", status: "run_started" }], 2);
+    expect(current).toEqual([expect.objectContaining({ attempt_number: 2, status: "run_started" })]);
+
+    const runs = new PgRunRepository(db.pool);
+    await expect(runs.appendRunEvent({ run_id: runId, space_id: SPACE, attempt_number: 1, event_type: "tool_call_started", status: "running" }))
+      .resolves.toBeNull();
+    await expect(runs.appendRunEvent({ run_id: runId, space_id: SPACE, attempt_number: 2, event_type: "tool_call_started", status: "running" }))
+      .resolves.toMatchObject({ event_type: "tool_call_started" });
+    const stored = await db.pool.query<{ attempt_number: number }>(`SELECT attempt_number FROM run_events WHERE run_id = $1`, [runId]);
+    expect(stored.rows).toEqual([{ attempt_number: 2 }]);
+  });
+
   it("rejects a host binding when the caller or installation is not authorized", async (ctx) => {
     if (!db.available) return ctx.skip();
 
@@ -928,8 +998,8 @@ describe("admitting a Run onto a Task thread", () => {
 
     await dispatch(threadId);
     // `waiting_for_review` is terminal for this purpose: the Run stopped and
-    // is waiting on a person. A hand-rolled status list here once missed it
-    // and deadlocked the thread forever after any Run that landed in review.
+    // is waiting on a person. Do not keep a second status list: a Run that
+    // landed in review must not deadlock the thread.
     // A Run that reached review has started and carries the Profile snapshot
     // the router stamps on it; `ck_runs_execution_shape` refuses the state
     // without them, so the fixture writes what production would have.

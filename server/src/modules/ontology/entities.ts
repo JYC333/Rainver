@@ -1,36 +1,31 @@
 /**
  * The entity registry and its interface declarations.
  *
- * ADR 0012 decision 6. Before this, participation in a cross-cutting mechanism
- * was recorded in three unrelated places at incompatible granularity:
- * `CONTENT_RESOURCE_DEFINITIONS` (14 entries, table-level, with a `publishable`
- * flag), the `retrieval_object_type` enum (9 entries, subtype-level), and
- * `GraphProjectionRepository`'s hardcoded assumption that only
- * `space_objects` / `object_relations` exist. Nothing could cross-validate them,
- * because they were not even describing the same units, so every new domain had
- * to be added to each by hand with no mechanism to catch an omission.
+ * ADR 0012 decision 6. One entity registry. Do not record participation in
+ * separate lists at different granularity: a content-resource table, a
+ * retrieval enum, and a hardcoded graph assumption cannot cross-validate,
+ * and a new domain has to be added to each by hand.
  *
  * The subject here is an **Entity**, not only an ontology object. `run`,
- * `proposal`, `artifact`, `task`, and `memory_entry` are entities too — which is
- * why unification never required a domain to become a `space_objects` row.
+ * `proposal`, `artifact`, `task`, and `memory_entry` are entities too. A
+ * domain does not have to be a `space_objects` row.
  *
  * **Declaration granularity is chosen by the interface, not fixed globally.**
  * `ContentAccessible` is declared once on `space_object` and inherited by every
- * subtype, because the read gate reads root-table columns; splitting it per
- * object type would fragment a registry that is correctly unified today.
+ * subtype, because the read gate reads root-table columns. Do not split it
+ * per object type.
  * `Retrievable` is declared per object type, because retrieval policy and
  * adapters genuinely differ per subtype. Inheritance walks `rootEntity`.
  */
 
 /**
- * Where a resource's *additional* Project scopes live (U9).
+ * Where a resource's *additional* Project scopes live.
  *
  * `projectColumn` is governance ownership and single-valued; this names a table
  * that widens the scope half of the read predicate with further Projects. It is
- * a declaration rather than a notes-only clause because the registry exists to
- * stop each domain writing its own access predicate (B12G) — and because the
- * read gate works at `space_objects` granularity, one declaration serves every
- * ontology subtype.
+ * a declaration rather than a notes-only clause. Do not let each domain write
+ * its own access predicate (B12G). The read gate works at `space_objects`
+ * granularity, so one declaration serves every ontology subtype.
  *
  * Only identifiers are named here. The registry composes the SQL, so no caller
  * ever passes a fragment.
@@ -60,8 +55,9 @@ export interface ContentAccessibleDeclaration {
   contextTaintColumn?: string;
   /**
    * Additional Project scopes. Absent for every resource that has no sharing
-   * story — and absent means the term is *not emitted*, not emitted as false,
-   * so an undeclared resource's predicate is byte-identical to before.
+   * story — and absent means the term is *not emitted*, not emitted as false.
+   * Do not emit `false`. The predicate for an undeclared resource would gain
+   * a term it does not have.
    */
   projectShare?: ContentProjectShareDeclaration;
   /** Predicate that excludes rows the gate should treat as gone. */
@@ -70,7 +66,7 @@ export interface ContentAccessibleDeclaration {
   publishable: boolean;
 }
 
-export interface EntityDefinition {
+interface EntityDefinition {
   entityType: string;
   /** Inherit interface declarations from this entity when absent here. */
   rootEntity?: string;
@@ -98,9 +94,9 @@ export interface EntityDefinition {
   provenanceSourceable?: { sourceType: string };
   /**
    * Where this object type keeps its domain status, for polymorphic readers.
-   * Declared rather than hardcoded so a new domain cannot be forgotten by the
-   * shared status helper — which is exactly how Inquiry Threads first vanished
-   * from the generic graph projection.
+   * Declared rather than hardcoded. Do not forget a new domain in the
+   * shared status helper. Inquiry Threads would vanish from the generic
+   * graph projection.
    */
   domainStatus?: { table: string; column: string };
   /** Canonical writes go through the proposal flow. */
@@ -116,7 +112,7 @@ export interface EntityDefinition {
 
 const registry = new Map<string, EntityDefinition>();
 
-export function registerEntity(definition: EntityDefinition): void {
+function registerEntity(definition: EntityDefinition): void {
   const existing = registry.get(definition.entityType);
   if (existing && existing.owner !== definition.owner) {
     throw new Error(`Entity ${definition.entityType} already registered by ${existing.owner}`);
@@ -136,8 +132,8 @@ export function registeredEntities(): readonly EntityDefinition[] {
  * The `content_access_grants.resource_type` key an entity is gated under.
  *
  * Not the entity type: a `space_objects` subtype inherits the root's
- * declaration, so an Experiment is gated as `space_object`. Callers that
- * guessed the entity type got "Unknown content resource type" at runtime.
+ * declaration, so an Experiment is gated as `space_object`. Do not guess
+ * the entity type. That is "Unknown content resource type".
  */
 export function resolveContentResourceType(entityType: string): string | null {
   let current = registry.get(entityType);
@@ -195,8 +191,7 @@ export function retrievableEntityTypes(): readonly string[] {
  * resolved against `space_objects`, so an entity without a root row — a
  * `source_item`, an `extracted_evidence`, a `memory_entry` — cannot be linked
  * however wide the storage column's type is. The note editor's target list is
- * derived from this rather than hand-maintained, because the hand-maintained
- * version is precisely what drifted from the backend before.
+ * derived from this. Do not keep a second list: it drifts from the backend.
  */
 export function spaceObjectSubtypes(): readonly string[] {
   return entitiesImplementing((definition) => definition.rootEntity === "space_object");
@@ -227,7 +222,7 @@ export function cardSourceTypes(): readonly string[] {
  *
  * Exactly one, named here rather than left implicit so the list stays auditable.
  */
-export const PROVENANCE_SOURCE_SENTINELS: readonly string[] = ["external_source"];
+const PROVENANCE_SOURCE_SENTINELS: readonly string[] = ["external_source"];
 
 /** Stored `provenance_links.source_type` tokens: declarations plus sentinels. */
 export function provenanceSourceTypes(): readonly string[] {
@@ -245,9 +240,9 @@ let provenanceSourceTypeSet: Set<string> | null = null;
  * Registry-backed check for `provenance_links.source_type`.
  *
  * The database keeps only a format constraint (B12F), so this is what makes a
- * bad value an error rather than a row. Callers should not re-implement it:
- * three separate copies of this list existed, two of which *silently dropped*
- * unrecognized entries, so a divergence lost provenance without an error.
+ * bad value an error rather than a row. Do not re-implement the list. A
+ * second copy that drops an unrecognized entry loses provenance without an
+ * error.
  */
 export function isProvenanceSourceType(value: unknown): value is string {
   provenanceSourceTypeSet ??= new Set(provenanceSourceTypes());
@@ -261,9 +256,8 @@ const CONTEXT_ITEM_TYPES: Record<string, string | undefined> = {
   memory_entry: "memory",
   knowledge_item: "knowledge_item",
   // `note` is a first-class runtime-context source-reference type.
-  // while the chat candidate collector produced note items, so persisting such
-  // a snapshot would have failed the constraint. Registry validation surfaced
-  // it; the entity list is the correct one.
+  // Do not omit it from this list. Persisting a snapshot that names a note
+  // would fail the constraint.
   note: "note",
   source: "source",
   extracted_evidence: "extracted_evidence",
@@ -290,22 +284,19 @@ const CARD_SOURCE_TYPES: Record<string, string | undefined> = {
 /**
  * Stored `provenance_links.source_type` token per entity.
  *
- * This list was audited on 2026-08-06 by asking, for each member, what writes
- * it and what `source_id` actually holds. The answers did not match the names:
+ * The token is not always the entity name:
  *
- * - `run_step` was written only from `payload.source_run_id` and read back as
- *   a run id. It is the `run` entity, so it is called that now.
+ * - `run` is a run id. Do not record `run_step`.
  * - `user_confirmation` stores a user id, so the entity behind it is `user`.
  *   The token keeps its name — it is a stored identifier with rows behind it,
  *   the same reason `memory_entry` is stored as `memory` — but it is declared
  *   rather than free-floating, so the registry can say what `source_id`
  *   resolves to.
- * - `run_event` had neither a writer nor a reader, and would have been an
- *   aggregate's internal structure rather than an entity (B12C). Dropped, as
- *   `idea` was from the context item types.
+ * - `run_event` is not a type. A run's internal structure is not an entity
+ *   (B12C). Do not add it, and do not add `idea` as a context item type.
  *
- * Two members stay despite having no writer, for different reasons.
- * `source_snapshot` has a live *reader*: `retrieval/sourcePolicy.ts` joins
+ * Two members have no writer. Do not drop them.
+ * `source_snapshot` has a live reader: `retrieval/sourcePolicy.ts` joins
  * `source_snapshots` on it to recover a connection id. `external_source` is a
  * genuine sentinel — material from outside the system with no row to point at
  * and the memory trust gate has a covered path for an untrusted external
@@ -378,8 +369,8 @@ function registerCoreEntities(): void {
     });
   }
 
-  // Entities that are not `space_objects` rows. Their presence here is the
-  // point: unification is about one registry, not one table.
+  // Entities that are not `space_objects` rows belong in this registry.
+  // Do not require every entity to be a `space_objects` row.
   const independentRoots: readonly (Omit<EntityDefinition, "owner"> & { owner: string })[] = [
     {
       entityType: "memory_entry",
@@ -438,6 +429,8 @@ function registerCoreEntities(): void {
         ownerColumn: "owner_user_id",
         projectColumn: "project_id",
         projectFolderColumn: "project_folder_id",
+        // A Run-derived proposal carries its Run's taint in the payload.
+        contextTaintColumn: "payload_json",
         publishable: false,
       },
     },
@@ -533,8 +526,8 @@ function registerCoreEntities(): void {
         projectFolderColumn: "project_folder_id",
         publishable: false,
       },
-      // A memory extracted from imported history says where it came from, and
-      // without this declaration that provenance is silently dropped and the
+      // A memory extracted from imported history says where it came from.
+      // Do not omit that declaration. The provenance is silently dropped and the
       // memory is then rejected for having none.
       provenanceSourceable: { sourceType: "imported_session" },
     },

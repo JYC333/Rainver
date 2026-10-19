@@ -17,6 +17,7 @@ import type { WithAccessLevel } from "../access/contentAccessTypes.js";
 import { resolveOversightLevel } from "../access/oversightResolver.js";
 import { memoryAgentScopeReadSql, memorySensitivityReadSql } from "./memorySensitivitySql.js";
 import { ContentAccessAuditService } from "../contentAccess/audit.js";
+import { escapeLikePattern } from "../routeUtils/common.js";
 
 export interface QueryResult<Row> {
   rows: Row[];
@@ -30,7 +31,7 @@ export interface Queryable {
   ): Promise<QueryResult<Row>>;
 }
 
-export interface MemoryListFilters {
+interface MemoryListFilters {
   scope?: string | null;
   namespace?: string | null;
   memoryType?: string | null;
@@ -54,7 +55,7 @@ export interface MemoryListFilters {
   offset: number;
 }
 
-export interface MemorySearchFilters {
+interface MemorySearchFilters {
   query: string;
   scope?: string | null;
   namespace?: string | null;
@@ -72,7 +73,8 @@ export const MEMORY_COLUMNS = `id, space_id, subject_user_id, owner_user_id,
   sensitivity_level, last_confirmed_at, confidence, importance,
   source_id, created_by, created_at, updated_at, deleted_at, version, tags,
   memory_layer, source_trust, created_from_proposal_id,
-  root_memory_id, supersedes_memory_id, project_id, agent_id, origin_room_id`;
+  root_memory_id, supersedes_memory_id, project_id, agent_id, origin_room_id,
+  approved_by, access_count, last_accessed_at`;
 
 export interface MemoryRow extends MemoryAuthFields {
   id: string;
@@ -99,6 +101,11 @@ export interface MemoryRow extends MemoryAuthFields {
   project_id: string | null;
   agent_id: string | null;
   origin_room_id: string | null;
+  /** Who accepted the write; null for an automatic write nobody approved. */
+  approved_by: string | null;
+  /** Kept by the read audit (`contentAccess/audit.ts`), never by a content write. */
+  access_count: number | string | null;
+  last_accessed_at: unknown;
 }
 
 const MEMORY_DEFINITION = contentResourceDefinition("memory")!;
@@ -270,9 +277,9 @@ export class PgMemoryReadRepository {
       `space_id = $1`,
       `status = 'active'`,
       `deleted_at IS NULL`,
-      `(title ILIKE $2 OR content ILIKE $2)`,
+      `(title ILIKE $2 ESCAPE '\\' OR content ILIKE $2 ESCAPE '\\')`,
     ];
-    const params: unknown[] = [spaceId, `%${filters.query}%`];
+    const params: unknown[] = [spaceId, `%${escapeLikePattern(filters.query)}%`];
     if (filters.scope) {
       params.push(filters.scope);
       where.push(`scope_type = $${params.length}`);
@@ -440,6 +447,9 @@ export class PgMemoryReadRepository {
          ) prov ON true
         WHERE me.space_id = $1 AND me.deleted_at IS NULL
           AND (me.id = $2 OR me.root_memory_id = $2)
+          AND ${contentReadSql("memory", "me", "$3")}
+          AND ${memorySensitivityReadSql("me", "$3")}
+          AND ${memoryAgentScopeReadSql("me", "$3")}
         ORDER BY me.created_at ASC`,
       [spaceId, rootId, userId],
     );
@@ -511,6 +521,11 @@ export function serializeMemoryRow(row: WithAccessLevel<MemoryRow>, viewerUserId
       agent_id: row.agent_id ?? null,
       origin_room_id: row.origin_room_id ?? null,
       project_id: row.project_id,
+      approved_by: row.approved_by ?? null,
+      // How often an entry is read says something about its readers: the
+      // owner sees it, nobody else.
+      access_count: row.owner_user_id === viewerUserId ? Number(row.access_count ?? 0) : null,
+      last_accessed_at: row.owner_user_id === viewerUserId ? isoOrNull(row.last_accessed_at) : null,
     };
 }
 

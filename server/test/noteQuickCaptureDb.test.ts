@@ -6,16 +6,15 @@ import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
- * S5 quick capture (U11). Two shapes, and the reason there are two:
+ * Quick capture. Two shapes, and the reason there are two:
  *
  * - **With a context object** — one note per object, appending on repeat. Ten
  *   papers' annotations must not end up in one note.
  * - **Without one** — append to the Project's `inbox` note. A new note per
  *   captured thought would turn the tree into fragments.
  *
- * The inbox is found by `project_role`, never by title: the previous work
- * removed title-based note resolution and `noteProjectRoleGuard.test.ts` fails
- * if it comes back.
+ * The inbox is found by `project_role`, never by title.
+ * `noteProjectRoleGuard.test.ts` fails if title lookup comes back.
  */
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -110,7 +109,7 @@ describe("quick capture (real Postgres)", () => {
     const first = await repository.jotNoteForObject(identity, {
       project_id: projectId, text: "First thought.",
     }) as { id: string };
-    // The whole point of the role: a rename must not orphan the inbox and
+    // A rename must not orphan the inbox and
     // silently start a second one.
     await repository.updateNote(identity, first.id, { title: "Scratch" });
 

@@ -30,30 +30,35 @@ export const runs = pgTable("runs", {
 	requestedRuntimeProfileId: varchar("requested_runtime_profile_id", { length: 36 }),
 	selectedRuntimeProfileId: varchar("runtime_profile_id", { length: 36 }),
 	runtimeProfileSelectionSource: varchar("runtime_profile_selection_source", { length: 16 }),
-	// execution-topology-and-project-control-plane-plan.md P1 / D3: kept as a
-	// write-once denormalized copy of `workspace_location_id`'s own Folder —
-	// a Location's Folder never changes after creation, so this cannot drift,
+	// Write-once denormalized copy of `workspace_location_id`'s own Folder.
+	// A Location's Folder never changes after creation, so this cannot drift,
 	// and a composite FK below enforces it at the database level. Read
 	// through this column when only the logical Folder matters (most
 	// queries); read `workspace_location_id` when the physical execution
 	// site matters.
 	projectFolderId: varchar("project_folder_id", { length: 36 }),
-	// D3: where this Run actually executed. Null for a Run that predates P1
-	// or that was never bound to a specific Location. No `host_id` column —
+	// Where this Run actually executed. Null when the Run was never bound
+	// to a specific Location. No `host_id` column —
 	// fully determined by the Location, which never changes host.
 	workspaceLocationId: varchar("workspace_location_id", { length: 36 }),
-	// D5: `sandboxed` (server host, full isolation) or `trusted_host`
-	// (personal machine, ADR 0016's trusted-host mode) — surfaced in the UI
-	// so a merged dispatch endpoint never leaves the trust model implicit.
+	// `sandboxed` is a built-in-host Task Run. `trusted_host` is a paired
+	// machine. A Conversation on the built-in host may leave this null.
 	trustMode: varchar("trust_mode", { length: 16 }),
-	// ADR 0016 D14: set only for a run dispatched into a host task thread
-	// (remote-host runs); null for every server-host run.
+	// Set when the Run is dispatched into a host thread, on the built-in host
+	// or a paired machine. Null when the Run has no host thread. Do not treat
+	// a built-in-host CLI Run as threadless.
 	hostTaskThreadId: varchar("host_task_thread_id", { length: 36 }),
 	sessionId: varchar("session_id", { length: 36 }),
 	parentRunId: varchar("parent_run_id", { length: 36 }),
 	rootRunId: varchar("root_run_id", { length: 36 }),
 	runGroupId: varchar("run_group_id", { length: 36 }),
 	delegationId: varchar("delegation_id", { length: 36 }),
+	// A `continuation` Run's cause: the Run whose outcome this system-started
+	// turn reports on (a delegated child, the turn that started a research
+	// acquisition, the previous discussion wave). Its effective origin is the
+	// cause's (`effectiveRunTrigger`). Null on a continuation means its
+	// lineage is not verifiable or it ran past its budget: it is unattended.
+	causeRunId: varchar("cause_run_id", { length: 36 }),
 	instructedBy: varchar("instructed_by", { length: 128 }),
 	instructedByUserId: varchar("instructed_by_user_id", { length: 36 }),
 	instructedByAgentId: varchar("instructed_by_agent_id", { length: 36 }),
@@ -112,6 +117,7 @@ export const runs = pgTable("runs", {
 	index("ix_runs_parent_run_space").using("btree", table.spaceId.asc().nullsLast(), table.parentRunId.asc().nullsLast()),
 	index("ix_runs_project_id").using("btree", table.projectId.asc().nullsLast()),
 	index("ix_runs_root_run_id").using("btree", table.spaceId.asc().nullsLast(), table.rootRunId.asc().nullsLast()),
+	index("ix_runs_cause_run_id").using("btree", table.spaceId.asc().nullsLast(), table.causeRunId.asc().nullsLast()),
 	index("ix_runs_run_type").using("btree", table.runType.asc().nullsLast()),
 	index("ix_runs_requested_runtime_profile_id").using("btree", table.requestedRuntimeProfileId.asc().nullsLast()),
 	index("ix_runs_runtime_profile_id").using("btree", table.selectedRuntimeProfileId.asc().nullsLast()),
@@ -124,6 +130,7 @@ export const runs = pgTable("runs", {
 	index("ix_runs_workspace_location_id").using("btree", table.workspaceLocationId.asc().nullsLast()),
 	index("ix_runs_host_task_thread_id").using("btree", table.hostTaskThreadId.asc().nullsLast()),
 	foreignKey({ columns: [table.workflowVersionId], foreignColumns: [evolvableAssetVersions.id], name: "runs_workflow_version_fkey" }),
+	foreignKey({ columns: [table.causeRunId, table.spaceId], foreignColumns: [table.id, table.spaceId], name: "runs_cause_run_space_fkey" }),
 	foreignKey({
 			columns: [table.ownerUserId],
 			foreignColumns: [users.id],
@@ -214,7 +221,7 @@ export const runs = pgTable("runs", {
 			foreignColumns: [projectFolders.id, projectFolders.spaceId],
 			name: "runs_project_folder_id_fkey"
 		}),
-	// D3: enforced at the database level, not just by convention — a Run's
+	// Enforced at the database level, not just by convention — a Run's
 	// write-once `project_folder_id` must name the same Folder its
 	// `workspace_location_id` actually belongs to. Postgres skips a
 	// composite FK check when any column is NULL (MATCH SIMPLE), so this is
@@ -307,9 +314,10 @@ export const runs = pgTable("runs", {
 	check("ck_runs_run_type", sql`(run_type)::text = ANY (ARRAY[('agent'::character varying)::text, ('planning'::character varying)::text, ('system'::character varying)::text, ('workflow'::character varying)::text, ('validation'::character varying)::text, ('reflection'::character varying)::text, ('export'::character varying)::text, ('evolution'::character varying)::text])`),
 	check("ck_runs_source", sql`(source IS NULL) OR ((source)::text = ANY (ARRAY[('managed'::character varying)::text, ('ide_assist'::character varying)::text, ('manual_import'::character varying)::text, ('remote_import'::character varying)::text, ('scheduled'::character varying)::text, ('webhook'::character varying)::text]))`),
 	check("ck_runs_status", sql`(status)::text = ANY (ARRAY[('queued'::character varying)::text, ('running'::character varying)::text, ('cancelling'::character varying)::text, ('succeeded'::character varying)::text, ('degraded'::character varying)::text, ('failed'::character varying)::text, ('cancelled'::character varying)::text, ('orphaned'::character varying)::text, ('waiting_for_review'::character varying)::text, ('waiting_for_dependency'::character varying)::text])`),
-	check("ck_runs_trigger_origin", sql`(trigger_origin)::text = ANY (ARRAY[('manual'::character varying)::text, ('automation'::character varying)::text, ('autonomous'::character varying)::text, ('job'::character varying)::text, ('system'::character varying)::text, ('delegation'::character varying)::text])`),
+	check("ck_runs_trigger_origin", sql`(trigger_origin)::text = ANY (ARRAY[('manual'::character varying)::text, ('automation'::character varying)::text, ('autonomous'::character varying)::text, ('job'::character varying)::text, ('system'::character varying)::text, ('delegation'::character varying)::text, ('continuation'::character varying)::text])`),
+	check("ck_runs_cause_run_continuation", sql`cause_run_id IS NULL OR trigger_origin = 'continuation'`),
 	check("ck_runs_trust_level", sql`(trust_level IS NULL) OR ((trust_level)::text = ANY (ARRAY[('high'::character varying)::text, ('medium'::character varying)::text, ('low'::character varying)::text, ('unknown'::character varying)::text]))`),
-	// D5: distinct from `trust_level` above (a data/provenance trust rating) —
+	// Distinct from `trust_level` above (a data/provenance trust rating) —
 	// `trust_mode` names which ADR 0016 execution/isolation model this Run
 	// ran under.
 	check("ck_runs_trust_mode", sql`trust_mode IS NULL OR trust_mode IN ('sandboxed', 'trusted_host')`),
@@ -333,9 +341,14 @@ export const runAttempts = pgTable("run_attempts", {
 	exitCode: integer("exit_code"),
 	errorCode: varchar("error_code", { length: 128 }),
 	errorJson: jsonb("error_json"),
+	// The nonce the host launch frame carried for this attempt. A host's
+	// diff/output upload names it, so the upload binds to this attempt and
+	// nothing an earlier or later attempt of the same Run sent.
+	launchId: varchar("launch_id", { length: 36 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
+	uniqueIndex("uq_run_attempts_launch_id").using("btree", table.launchId.asc().nullsLast()).where(sql`launch_id IS NOT NULL`),
 	index("ix_run_attempts_run_status").using("btree", table.spaceId.asc().nullsLast(), table.runId.asc().nullsLast(), table.status.asc().nullsLast()),
 	index("ix_run_attempts_activity").using("btree", table.status.asc().nullsLast(), table.lastActivityAt.asc().nullsLast()),
 	unique("uq_run_attempts_id_space").on(table.id, table.spaceId),
@@ -691,8 +704,18 @@ export const runFinalizations = pgTable("run_finalizations", {
 	metadataJson: jsonb("metadata_json"),
 	finalizedAt: timestamp("finalized_at", { withTimezone: true, mode: 'string' }).notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
+	// The completion gate: set once every settlement reconciler (the execution
+	// graph and the registry reconcilers) has succeeded for this finalization.
+	// Null on a completed finalization is settlement still owed, which the
+	// worker sweep resumes; the Agent and its output are never redone.
+	settledAt: timestamp("settled_at", { withTimezone: true, mode: 'string' }),
+	settlementAttempts: integer("settlement_attempts").default(0).notNull(),
+	// `{ completed: [reconciler keys], last_failure: { key, error_code, message, at } }`:
+	// a resumed settlement skips the reconcilers already completed.
+	settlementJson: jsonb("settlement_json").default({}).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_run_finalizations_finalized_at").using("btree", table.finalizedAt.asc().nullsLast()),
+	index("ix_run_finalizations_unsettled").using("btree", table.finalizedAt.asc().nullsLast()).where(sql`status = 'completed' AND settled_at IS NULL`),
 	index("ix_run_finalizations_run_evaluation_id").using("btree", table.runEvaluationId.asc().nullsLast()),
 	index("ix_run_finalizations_run_id").using("btree", table.runId.asc().nullsLast()),
 	index("ix_run_finalizations_space_id").using("btree", table.spaceId.asc().nullsLast()),

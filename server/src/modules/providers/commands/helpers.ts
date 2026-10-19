@@ -1,3 +1,4 @@
+import { providerDeployment, SELF_HOSTABLE_PROVIDER_TYPES, type ProviderDeployment } from "../deployment.js";
 import type { mapProviderRowToDto } from "../dbReader.js";
 import { listProviderVendors, providerVendor } from "../vendors.js";
 import {
@@ -9,12 +10,10 @@ import {
 
 /**
  * Vendor identity, credentialing, and published endpoints all come from the
- * registry. These used to be three hand-maintained lists here, next to a fourth
- * in the web client and a fifth in the provider-task table — which is how the
- * copies drifted.
+ * registry. Do not keep a second list here or in the web client.
  */
-export const PROVIDER_TYPES = new Set(listProviderVendors().map((vendor) => vendor.id));
-export const CLOUD_PROVIDER_TYPES = new Set(
+const PROVIDER_TYPES = new Set(listProviderVendors().map((vendor) => vendor.id));
+const CLOUD_PROVIDER_TYPES = new Set(
   listProviderVendors().filter((vendor) => vendor.apiKeyRequired).map((vendor) => vendor.id),
 );
 export const ROTATION_STRATEGIES = new Set(["fill_first", "round_robin", "least_used", "random"]);
@@ -70,6 +69,19 @@ export function validateBaseUrl(providerType: string, baseUrl: string | null): v
   normalizeBaseUrl(providerType, baseUrl);
 }
 
+/**
+ * Only a vendor that can be self-hosted may be declared a trusted local
+ * deployment. A hosted vendor's endpoint is the cloud whatever URL it is
+ * reached through, so the declaration is refused rather than recorded.
+ */
+export function validateDeployment(providerType: string, deployment: ProviderDeployment): void {
+  if (deployment === "trusted_local" && !SELF_HOSTABLE_PROVIDER_TYPES.has(providerType)) {
+    throw new ProviderCommandValidationError(
+      `provider_type '${providerType}' is a hosted service and cannot be declared a trusted local deployment`,
+    );
+  }
+}
+
 export function configuredModelsFromRow(row: ProviderRow): string[] {
   const caps = row.capabilities_json;
   if (Array.isArray(caps)) return caps.filter((m): m is string => typeof m === "string");
@@ -106,12 +118,12 @@ export function fallbackProviderIdsFromRow(row: ProviderRow): string[] {
   return value.filter((id): id is string => typeof id === "string");
 }
 
-export function claudeCompatibleBaseUrlFromRow(row: ProviderRow): string | null {
+function claudeCompatibleBaseUrlFromRow(row: ProviderRow): string | null {
   const value = configRecord(row).claude_compatible_base_url;
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-export function openAiCompatibleBaseUrlFromRow(row: ProviderRow): string | null {
+function openAiCompatibleBaseUrlFromRow(row: ProviderRow): string | null {
   const value = configRecord(row).openai_compatible_base_url;
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
@@ -119,7 +131,7 @@ export function openAiCompatibleBaseUrlFromRow(row: ProviderRow): string | null 
 /**
  * Ollama and a custom OpenAI-compatible endpoint publish no single address — a
  * local server may be anywhere, and a gateway is whatever the operator points
- * it at. Their registry entry still offers a starting point for the form, but
+ * it at. Their registry entry offers a starting point for the form, but
  * the server will not silently apply one: an omitted base URL for those two is
  * a validation error rather than a guess.
  */
@@ -145,10 +157,12 @@ export function providerInfoFromRow(row: ProviderRow): ProviderInfo {
   return {
     id: row.id,
     space_id: row.space_id,
+    home_space_id: String(row.home_space_id),
     owner_user_id: row.owner_user_id ?? null,
     name: row.name,
     provider_type: providerType,
     base_url: normalizeBaseUrl(providerType, row.base_url),
+    deployment: providerDeployment(row.config_json),
     network_profile_id: row.network_profile_id ?? null,
     claude_compatible_base_url: claudeCompatibleBaseUrlFromRow(row),
     openai_compatible_base_url: openAiCompatibleBaseUrlFromRow(row),

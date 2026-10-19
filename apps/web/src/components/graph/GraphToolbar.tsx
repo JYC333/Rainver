@@ -2,10 +2,14 @@ import { ChevronDown } from 'lucide-react'
 import { graphLayoutModes } from './core/graphLayouts'
 import type { GraphProjectionLayoutMode } from '@rainver/protocol'
 import type { GraphRendererMode } from './types'
+import type { GraphLayoutWarning } from './core/graphLayouts'
+import { useAppTranslation } from '../../i18n'
+import i18n from '../../i18n'
 
 interface GraphToolbarProps {
   layout: GraphProjectionLayoutMode
   renderer: GraphRendererMode
+  /** Already-worded warnings for the toolbar; empty when there are none. */
   warning?: string | null
   onLayoutChange: (layout: GraphProjectionLayoutMode) => void
   onRendererChange: (renderer: GraphRendererMode) => void
@@ -18,22 +22,23 @@ export function GraphToolbar({
   onLayoutChange,
   onRendererChange,
 }: GraphToolbarProps) {
+  const { t } = useAppTranslation()
   return (
     <div className="flex min-h-11 flex-wrap items-center gap-2 border-b border-border bg-card/80 px-3 py-2 backdrop-blur">
       <ToolbarSelect
-        label="Graph layout"
+        label={t('core_ui.graph.layout')}
         value={layout}
         onChange={(value) => onLayoutChange(value as GraphProjectionLayoutMode)}
         options={graphLayoutModes().map((value) => ({ value, label: labelForLayout(value) }))}
         className="w-36"
       />
       <ToolbarSelect
-        label="Graph renderer"
+        label={t('core_ui.graph.renderer')}
         value={renderer}
         onChange={(value) => onRendererChange(value as GraphRendererMode)}
         options={[
-          { value: 'canvas', label: 'Canvas' },
-          { value: 'webgl', label: 'WebGL' },
+          { value: 'canvas', label: t('core_ui.graph.canvas') },
+          { value: 'webgl', label: t('core_ui.graph.webgl') },
         ]}
         className="w-28"
       />
@@ -75,20 +80,10 @@ function ToolbarSelect({
 }
 
 function labelForLayout(layout: GraphProjectionLayoutMode): string {
-  switch (layout) {
-    case 'force':
-      return 'Force'
-    case 'circular':
-      return 'Circular'
-    case 'radial':
-      return 'Radial'
-    case 'concentric':
-      return 'Concentric'
-    case 'clustered':
-      return 'Clustered'
-    case 'preset':
-      return 'Preset'
-    default:
-      return layout
-  }
+  return i18n.t(`core_ui.graph.layout_mode.${layout}`, { defaultValue: layout })
+}
+
+/** The words for a layout warning code. */
+export function graphLayoutWarningText(warning: GraphLayoutWarning): string {
+  return i18n.t(`core_ui.graph.warning.${warning}`)
 }

@@ -26,6 +26,12 @@ export const DEFAULT_INTEREST_PROFILE_SETTINGS: InterestProfileSettings = {
   probe_domain_budget: 3,
 };
 
+/**
+ * At most this many external requests per weekly probe: the
+ * `information_digest_probe_runs.request_count` CHECK holds the same bound.
+ */
+const MAX_PROBE_DOMAIN_BUDGET = 3;
+
 const RANGES: Record<keyof InterestProfileSettings, readonly [number, number]> = {
   coverage_half_life_days: [1, 3_650],
   new_topic_occurrence_threshold: [1, 100],
@@ -37,7 +43,7 @@ const RANGES: Record<keyof InterestProfileSettings, readonly [number, number]> =
   serendipity_slots: [0, 10],
   interesting_cooldown_days: [1, 365],
   neutral_cooldown_days: [1, 365],
-  probe_domain_budget: [1, 10],
+  probe_domain_budget: [1, MAX_PROBE_DOMAIN_BUDGET],
 };
 
 export function resolveInterestProfileSettings(value: unknown): InterestProfileSettings {

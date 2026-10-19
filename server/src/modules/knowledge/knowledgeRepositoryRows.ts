@@ -182,7 +182,7 @@ export interface ProvenanceLinkRow {
   created_at: unknown;
 }
 
-export const KNOWLEDGE_ITEM_COLUMNS = `
+const KNOWLEDGE_ITEM_COLUMNS = `
   ki.object_id AS id, ki.space_id, so.primary_project_id AS project_id,
   so.project_folder_id, so.focus_area_id, ki.root_item_id, ki.supersedes_item_id,
   ki.redirect_to_item_id, ki.knowledge_kind, ki.slug, ki.aliases_json,
@@ -251,7 +251,7 @@ export const SOURCE_FROM = `
    AND so.object_type = 'source'
 `;
 
-export const NOTE_COLUMNS = `
+const NOTE_COLUMNS = `
   n.object_id AS id, n.space_id, so.title, n.content_json, n.content_format,
   n.content_schema_version, n.plain_text, so.summary AS excerpt, n.status,
   so.primary_project_id, so.focus_area_id, n.created_from_activity_id, so.created_by_user_id,
@@ -270,10 +270,10 @@ function spaceObjectAccessLevelSql(userExpr: string): string {
 /**
  * A free-text search term matched against a body, for a reader who may read it.
  *
- * Phase 2 stopped serving bodies to a `summary`-level reader, but a search that
- * still *matched* on the body handed the same content back a character at a
- * time: ask for "password: a", "password: b", and the hit list answers. The
- * title stays searchable at every level; the body is searchable only at `full`.
+ * A `summary`-level reader is not served the body. Search must not match on
+ * it either: asking for "password: a", then "password: b", would hand the
+ * body back a character at a time. The title stays searchable at every level;
+ * the body is searchable only at `full`.
  */
 export function bodyMatchSql(bodyExpr: string, slot: string, userExpr: string): string {
   return `(${spaceObjectAccessLevelSql(userExpr)}) = 'full' AND ${bodyExpr} ILIKE ${slot}`;
@@ -316,10 +316,9 @@ export const NOTE_FROM = `
  * Every folder a note is placed in, not just the first one.
  *
  * `note_collection_items` is unique on `(collection_id, note_id, space_id)`, so
- * the schema has always allowed a note to sit in several folders at once — the
- * reads collapsed it. A single `collection_id` column made a second placement
- * invisible, and the reorder path then rewrote both rows because it had no way
- * to say which one moved.
+ * a note may sit in several folders. Return every placement. Do not collapse
+ * the read to one `collection_id`, and do not reorder by `note_id` alone:
+ * that moves every placement.
  */
 export const NOTE_PLACEMENTS_JOIN = `
   LEFT JOIN LATERAL (
@@ -352,6 +351,5 @@ export const CLAIM_RESOLUTION_STATES = new Set(["unreviewed", "confirmed", "cont
 export const CLAIM_EVIDENCE_ROLES = new Set(["supports", "contradicts", "mentions", "derived_from", "cites", "summarizes"]);
 export const CLAIM_SOURCE_REF_TYPES = new Set(["activity", "artifact", "run_event", "extracted_evidence", "source_snapshot", "external_pointer", "source_item"]);
 export const CLAIM_SOURCE_TRUST_LEVELS = new Set(["trusted", "normal", "untrusted", "unknown"]);
-export const OBJECT_RELATION_STATUSES = new Set(["candidate", "active", "rejected", "archived"]);
 export const SOURCE_TYPES = new Set(["activity_record", "chat_capture", "webpage", "article", "paper", "pdf", "file", "email", "manual_reference", "external_note"]);
 export const SOURCE_STATUSES = new Set(["raw", "processing", "processed", "archived", "error"]);

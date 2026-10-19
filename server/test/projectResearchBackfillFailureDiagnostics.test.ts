@@ -68,9 +68,9 @@ describe("Project Research backfill failure diagnostics", () => {
 });
 
 /**
- * A provider that answered slowly and one that could not be reached produced
- * the same sentence, which is what made a 30s arXiv 5xx read as a network
- * outage. The wording now follows the recorded failure kind.
+ * A slow answer and an unreachable provider must not share a sentence. A 30s
+ * arXiv 5xx is not a network outage. The wording follows the recorded failure
+ * kind.
  */
 describe("backfill failure wording by failure kind", () => {
   const row = (diagnostics: Record<string, unknown>) => ({

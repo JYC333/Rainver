@@ -12,7 +12,7 @@ import type { RunTurn } from '../../types/api'
  * the server writes one at the pause as well (`chatTurnFinalizer` posts the
  * "waiting for review" notice under the Agent's name), so a turn that decides
  * for itself would collapse `blocked` to `done` and take the approval link
- * with it — the one thing a paused turn exists to show.
+ * with it. Do not collapse a paused turn. That link is what it shows.
  */
 export function settledTurn(
   streamed: RunTurn | null | undefined,
@@ -21,13 +21,17 @@ export function settledTurn(
 ): RunTurn | null {
   if (!streamed) return null
   const steps = streamed.parts.filter(part => part.type !== 'text')
+  // Steps keep their stream positions (a host turn interleaves text with
+  // them), so the reply takes the first index above every kept step rather
+  // than `steps.length`, which can land on a step and double a React key.
+  const textIndex = steps.reduce((max, part) => Math.max(max, part.index), -1) + 1
   return {
     ...streamed,
     state,
     // Only a settled turn has nothing left to wait on. A blocked one keeps
     // what it is blocked on, because that is what names the link out.
     blocked_on: state === 'blocked' ? streamed.blocked_on : null,
-    parts: [...steps, { type: 'text', index: steps.length, text }],
+    parts: [...steps, { type: 'text', index: textIndex, text }],
   }
 }
 
@@ -42,10 +46,10 @@ export function settledTurn(
  * correct it, and the reply would sit under a permanent "Working…" with its
  * work withheld.
  *
- * `blocked` is kept — that one is still true, and it carries the link out —
- * except `blocked` on the workspace, which is a turn still running (its host
- * queued it behind another writer of the directory) and reads back like
- * `working`: a reply exists, so it is over.
+ * `blocked` stays. It carries the link out. The exception is `blocked` on
+ * the workspace, which is a turn still running (its host queued it behind
+ * another writer of the directory) and reads back like `working`: a reply
+ * exists, so it is over.
  */
 export function readBackTurnState(
   state: RunTurn['state'],

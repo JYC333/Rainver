@@ -22,11 +22,9 @@ describe("runtime sandbox resolution", () => {
   });
 
   it("lets low-risk CLI work write the Folder it was dispatched against", () => {
-    // Was `read_only`, which only made sense while the server mounted the
-    // Folder read-only and provisioned a separate worktree for the writes.
-    // On a host daemon the registered Location is the working copy, so a
-    // low-risk run that cannot write it cannot do its work at all — and the
-    // levels came out inverted, since a *higher*-risk run could write.
+    // On a host daemon the registered Location is the working copy. A
+    // low-risk run has to be able to write it. Do not resolve that level to
+    // `read_only`. A higher-risk run would be the one allowed to write.
     expect(resolveSandboxLevelForRuntime({
       runtimeKey: "claude_code",
       configuredLevel: "none",
@@ -38,11 +36,10 @@ describe("runtime sandbox resolution", () => {
   it.each(["low", "medium", "high", "critical"])(
     "gives a Folder-bound %s-risk run a workspace it can write",
     (riskLevel) => {
-      // The invariant that was broken: only `read_only` narrows the bind, so
-      // leaving the low/medium floor there meant the safer a run was, the less
-      // it could do — a low-risk run could not write while a critical one
-      // could. Risk may decide how a run is contained; it must not decide
-      // whether the run can work at all.
+      // Only `read_only` narrows the bind. Risk may decide how a run is
+      // contained. It must not decide whether the run can work. Do not leave
+      // a low/medium floor that withholds a writable workspace from the
+      // safer run while a critical one can write.
       const level = resolveSandboxLevelForRuntime({
         runtimeKey: "claude_code",
         configuredLevel: "none",

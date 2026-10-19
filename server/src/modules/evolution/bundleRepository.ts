@@ -6,6 +6,7 @@ import { insertProposalRow } from "../proposals/reviewPackets.js";
 import type { ProposalTransactionResult } from "../proposals/applyService.js";
 import { lockEvolutionAssets } from "./assetLocks.js";
 import { stableJsonStringify } from "./hash.js";
+import { proposalTitleParts, proposalTitlePayloadSql } from "../proposals/titleParts.js";
 
 const RISK_ORDER = ["low", "medium", "high", "critical"] as const;
 
@@ -18,7 +19,7 @@ export interface EvolutionBundleDecision {
   note?: string | null;
 }
 
-export interface ProposalDecisionPort {
+interface ProposalDecisionPort {
   acceptInTransaction(
     client: PoolClient,
     proposalId: string,
@@ -65,6 +66,7 @@ interface BundleMemberRow {
   proposal_status: string;
   proposal_risk_level: string;
   proposal_title: string;
+  title_payload: Record<string, unknown> | null;
   proposal_summary: string | null;
   proposal_created_at: unknown;
 }
@@ -115,7 +117,6 @@ interface PromotionSnapshot {
   kind: "evolvable_asset_promotion";
   space_id: string;
   asset_id: string;
-  current_system_version_id: string | null;
   versions: PromotionVersionSnapshot[];
   active_pins: PromotionPinSnapshot[];
   active_deployment_refs: PromotionDeploymentSnapshot[];
@@ -359,7 +360,8 @@ export class EvolutionBundleRepository {
   ): Promise<BundleMemberRow | null> {
     const result = await db.query<BundleMemberRow>(
       `SELECT bm.*, p.proposal_type, p.status AS proposal_status, p.risk_level AS proposal_risk_level,
-              p.title AS proposal_title, p.summary AS proposal_summary, p.created_at AS proposal_created_at
+              p.title AS proposal_title, p.summary AS proposal_summary, p.created_at AS proposal_created_at,
+              ${proposalTitlePayloadSql("p")}
          FROM evolution_bundle_members bm
          JOIN evolution_bundles b ON b.id = bm.bundle_id AND b.space_id = $1
          JOIN proposals p ON p.id = bm.proposal_id AND p.space_id = b.space_id
@@ -448,9 +450,15 @@ export class EvolutionBundleRepository {
       throw new HttpError(409, `Evolution bundle is already ${String(initial.status)}`);
     }
 
+    // One request approves its members in position order, so a rollback that
+    // undoes approvals newest first meets them in reverse.
+    const positions = new Map((await this.memberRows(identity, bundleId)).map((member) => [member.proposal_id, member.position]));
+    const ordered = [...unique.values()].sort(
+      (left, right) => (positions.get(left.proposalId) ?? 0) - (positions.get(right.proposalId) ?? 0),
+    );
     const client = await this.db.connect();
     try {
-      for (const decision of unique.values()) {
+      for (const decision of ordered) {
         await client.query("BEGIN");
         let transactionResult: ProposalTransactionResult<unknown> | null = null;
         try {
@@ -549,7 +557,6 @@ export class EvolutionBundleRepository {
           });
         }
 
-        const systemScoped = await this.hasSystemScopedPromotion(client, bundleId, identity.spaceId);
         const pending = await client.query<{ id: string }>(
           `SELECT id
              FROM proposals
@@ -577,8 +584,8 @@ export class EvolutionBundleRepository {
               rationale: "Bundle rollback requires the standard proposal.apply policy gate and durable audit trail.",
               createdByUserId: identity.userId,
               visibility: "space_shared",
-              riskLevel: systemScoped ? "critical" : "high",
-              requiredApproverRole: systemScoped ? "owner" : null,
+              riskLevel: "high",
+              requiredApproverRole: null,
             });
         transactionResult = await proposalService.acceptInTransaction(
           client,
@@ -604,22 +611,6 @@ export class EvolutionBundleRepository {
     }
   }
 
-  private async hasSystemScopedPromotion(db: Queryable, bundleId: string, spaceId: string): Promise<boolean> {
-    const result = await db.query<{ exists: boolean }>(
-      `SELECT EXISTS (
-         SELECT 1
-           FROM evolution_bundle_members bm
-           JOIN proposals p ON p.id = bm.proposal_id AND p.space_id = $2
-          WHERE bm.bundle_id = $1
-            AND bm.status = 'approved'
-            AND p.proposal_type = 'evolvable_asset_version_promote'
-            AND p.payload_json->>'target_scope_type' = 'system'
-       ) AS exists`,
-      [bundleId, spaceId],
-    );
-    return result.rows[0]?.exists === true;
-  }
-
   private async memberRows(identity: SpaceUserIdentity, bundleId: string): Promise<BundleMemberRow[]> {
     return this.memberRowsFromDb(this.db, identity, bundleId);
   }
@@ -627,7 +618,8 @@ export class EvolutionBundleRepository {
   private async memberRowsFromDb(db: Queryable, identity: SpaceUserIdentity, bundleId: string): Promise<BundleMemberRow[]> {
     const result = await db.query<BundleMemberRow>(
       `SELECT bm.*, p.proposal_type, p.status AS proposal_status, p.risk_level AS proposal_risk_level,
-              p.title AS proposal_title, p.summary AS proposal_summary, p.created_at AS proposal_created_at
+              p.title AS proposal_title, p.summary AS proposal_summary, p.created_at AS proposal_created_at,
+              ${proposalTitlePayloadSql("p")}
          FROM evolution_bundle_members bm
          JOIN evolution_bundles b ON b.id = bm.bundle_id AND b.id = $1 AND b.space_id = $2
          JOIN proposals p ON p.id = bm.proposal_id AND p.space_id = b.space_id
@@ -698,18 +690,20 @@ export class EvolutionBundleRepository {
     // otherwise another promotion could commit between the snapshot read and
     // the applier's lock acquisition.
     await lockEvolutionAssets(db, [assetId]);
-    const asset = await db.query<{ current_system_version_id: string | null }>(
-      `SELECT current_system_version_id FROM evolvable_assets WHERE id = $1 AND (space_id = $2 OR space_id IS NULL) LIMIT 1`,
+    const asset = await db.query<{ id: string }>(
+      `SELECT id FROM evolvable_assets WHERE id = $1 AND (space_id = $2 OR space_id IS NULL) LIMIT 1`,
       [assetId, spaceId],
     );
-    const assetRow = asset.rows[0];
-    if (!assetRow) throw new HttpError(404, "Promotion asset not found in this space");
+    if (!asset.rows[0]) throw new HttpError(404, "Promotion asset not found in this space");
+    // A promotion changes only this Space's versions, pins and deployment
+    // refs; a shared built-in asset's other Spaces and its baseline are
+    // outside what a rollback here may restore.
     const versions = await db.query<PromotionVersionSnapshot>(
       `SELECT id, status, scope_type, scope_id, promotion_proposal_id, approved_by_user_id
          FROM evolvable_asset_versions
-        WHERE asset_id = $1
+        WHERE asset_id = $1 AND space_id = $2
         ORDER BY version ASC, id ASC`,
-      [assetId],
+      [assetId, spaceId],
     );
     const pins = await db.query<PromotionPinSnapshot>(
       `SELECT id, space_id, asset_id, scope_type, scope_id, version_id, pinned_by_user_id, reason
@@ -721,15 +715,14 @@ export class EvolutionBundleRepository {
     const deployments = await db.query<PromotionDeploymentSnapshot>(
       `SELECT id, space_id, asset_id, scope_type, scope_id, label, version_id, promoted_by_user_id, promoted_from_proposal_id
          FROM prompt_deployment_refs
-        WHERE asset_id = $1 AND status = 'active'
-        ORDER BY label ASC, scope_type ASC, scope_id ASC NULLS FIRST, id ASC`,
-      [assetId],
+        WHERE asset_id = $1 AND space_id = $2 AND status = 'active'
+        ORDER BY label ASC, scope_type ASC, scope_id ASC, id ASC`,
+      [assetId, spaceId],
     );
     return {
       kind: "evolvable_asset_promotion",
       space_id: spaceId,
       asset_id: assetId,
-      current_system_version_id: assetRow.current_system_version_id,
       versions: versions.rows,
       active_pins: pins.rows,
       active_deployment_refs: deployments.rows,
@@ -785,6 +778,7 @@ export class EvolutionBundleRepository {
         status: row.proposal_status,
         risk_level: row.proposal_risk_level,
         title: row.proposal_title,
+        title_parts: proposalTitleParts(row.proposal_type, row.title_payload ?? {}),
         summary: row.proposal_summary,
         created_at: dateOut(row.proposal_created_at),
       },
@@ -829,11 +823,14 @@ export async function applyEvolutionBundleRollback(
 
   const members = await db.query<BundleMemberRow>(
     `SELECT bm.*, p.proposal_type, p.status AS proposal_status, p.risk_level AS proposal_risk_level,
-            p.title AS proposal_title, p.summary AS proposal_summary, p.created_at AS proposal_created_at
+            p.title AS proposal_title, p.summary AS proposal_summary, p.created_at AS proposal_created_at,
+              ${proposalTitlePayloadSql("p")}
        FROM evolution_bundle_members bm
        JOIN proposals p ON p.id = bm.proposal_id AND p.space_id = $2
       WHERE bm.bundle_id = $1 AND bm.status = 'approved'
-      ORDER BY bm.position DESC
+      -- Each snapshot is the asset as that approval left it, so members are
+      -- undone in the reverse of the order they were approved in.
+      ORDER BY bm.decided_at DESC, bm.position DESC
       FOR UPDATE OF bm`,
     [bundleId, identity.spaceId],
   );
@@ -916,13 +913,11 @@ async function restorePromotionSnapshot(
   for (const version of before.versions) {
     await client.query(
       `UPDATE evolvable_asset_versions
-          SET status = $2, scope_type = $3, scope_id = $4, promotion_proposal_id = $5,
-              approved_by_user_id = $6, updated_at = $7
-        WHERE id = $1 AND asset_id = $8`,
-      [version.id, version.status, version.scope_type, version.scope_id, version.promotion_proposal_id, version.approved_by_user_id, now, before.asset_id],
+          SET status = $2, promotion_proposal_id = $3, approved_by_user_id = $4, updated_at = $5
+        WHERE id = $1 AND asset_id = $6 AND space_id = $7`,
+      [version.id, version.status, version.promotion_proposal_id, version.approved_by_user_id, now, before.asset_id, before.space_id],
     );
   }
-  await client.query(`UPDATE evolvable_assets SET current_system_version_id = $2, updated_at = $3 WHERE id = $1`, [before.asset_id, before.current_system_version_id, now]);
   await client.query(`UPDATE evolvable_asset_pins SET status = 'archived', updated_at = $3 WHERE asset_id = $1 AND space_id = $2 AND status = 'active'`, [before.asset_id, before.space_id, now]);
   for (const pin of before.active_pins) {
     await client.query(
@@ -932,7 +927,7 @@ async function restorePromotionSnapshot(
       [pin.id, pin.space_id, pin.asset_id, pin.scope_type, pin.scope_id, pin.version_id, pin.pinned_by_user_id, pin.reason, now],
     );
   }
-  await client.query(`UPDATE prompt_deployment_refs SET status = 'archived', updated_at = $2 WHERE asset_id = $1 AND status = 'active'`, [before.asset_id, now]);
+  await client.query(`UPDATE prompt_deployment_refs SET status = 'archived', updated_at = $3 WHERE asset_id = $1 AND space_id = $2 AND status = 'active'`, [before.asset_id, before.space_id, now]);
   for (const ref of before.active_deployment_refs) {
     await client.query(
       `INSERT INTO prompt_deployment_refs (id, space_id, asset_id, scope_type, scope_id, label, version_id, status, promoted_by_user_id, promoted_from_proposal_id, created_at, updated_at)
@@ -943,18 +938,14 @@ async function restorePromotionSnapshot(
   }
 }
 
-async function capturePromotionSnapshot(client: Queryable, assetId: string, spaceId: string | null): Promise<PromotionSnapshot> {
-  const asset = await client.query<{ current_system_version_id: string | null }>(`SELECT current_system_version_id FROM evolvable_assets WHERE id = $1`, [assetId]);
-  const versions = await client.query<PromotionVersionSnapshot>(`SELECT id, status, scope_type, scope_id, promotion_proposal_id, approved_by_user_id FROM evolvable_asset_versions WHERE asset_id = $1 ORDER BY version ASC, id ASC`, [assetId]);
-  const pins = spaceId
-    ? await client.query<PromotionPinSnapshot>(`SELECT id, space_id, asset_id, scope_type, scope_id, version_id, pinned_by_user_id, reason FROM evolvable_asset_pins WHERE asset_id = $1 AND space_id = $2 AND status = 'active' ORDER BY scope_type ASC, scope_id ASC, id ASC`, [assetId, spaceId])
-    : { rows: [] as PromotionPinSnapshot[] };
-  const deployments = await client.query<PromotionDeploymentSnapshot>(`SELECT id, space_id, asset_id, scope_type, scope_id, label, version_id, promoted_by_user_id, promoted_from_proposal_id FROM prompt_deployment_refs WHERE asset_id = $1 AND status = 'active' ORDER BY label ASC, scope_type ASC, scope_id ASC NULLS FIRST, id ASC`, [assetId]);
+async function capturePromotionSnapshot(client: Queryable, assetId: string, spaceId: string): Promise<PromotionSnapshot> {
+  const versions = await client.query<PromotionVersionSnapshot>(`SELECT id, status, scope_type, scope_id, promotion_proposal_id, approved_by_user_id FROM evolvable_asset_versions WHERE asset_id = $1 AND space_id = $2 ORDER BY version ASC, id ASC`, [assetId, spaceId]);
+  const pins = await client.query<PromotionPinSnapshot>(`SELECT id, space_id, asset_id, scope_type, scope_id, version_id, pinned_by_user_id, reason FROM evolvable_asset_pins WHERE asset_id = $1 AND space_id = $2 AND status = 'active' ORDER BY scope_type ASC, scope_id ASC, id ASC`, [assetId, spaceId]);
+  const deployments = await client.query<PromotionDeploymentSnapshot>(`SELECT id, space_id, asset_id, scope_type, scope_id, label, version_id, promoted_by_user_id, promoted_from_proposal_id FROM prompt_deployment_refs WHERE asset_id = $1 AND space_id = $2 AND status = 'active' ORDER BY label ASC, scope_type ASC, scope_id ASC, id ASC`, [assetId, spaceId]);
   return {
     kind: "evolvable_asset_promotion",
-    space_id: spaceId ?? "",
+    space_id: spaceId,
     asset_id: assetId,
-    current_system_version_id: asset.rows[0]?.current_system_version_id ?? null,
     versions: versions.rows,
     active_pins: pins.rows,
     active_deployment_refs: deployments.rows,

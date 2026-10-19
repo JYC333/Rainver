@@ -1,5 +1,5 @@
 /**
- * Hybrid-retrieval (Phase 2, step 8) query-rewrite configuration.
+ * Hybrid-retrieval query-rewrite configuration.
  *
  * Query rewriting is a space-setting-gated, skippable LLM stage that operates on the query
  * string only. It routes through the provider task-policy + credential channel

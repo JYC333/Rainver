@@ -11,10 +11,10 @@ import {
  * tagged with `primary_project_id`. Nothing prevents a project from having
  * more notes than the four role-carrying ones, or from having none of them.
  *
- * What identifies the four is `notes.project_role`, not their title (N2). The
- * old binding matched `space_objects.title` against literal English strings,
- * so a rename silently removed a note from the research baseline and the
- * comparison degraded without reporting anything.
+ * What identifies the four is `notes.project_role`, not their title. Do not
+ * match `space_objects.title` against literal English strings: a rename then
+ * removes a note from the research baseline and the comparison degrades
+ * without reporting anything.
  */
 /**
  * The four the research baseline is made of — deliberately *not* every note
@@ -38,11 +38,11 @@ export interface NotebookNoteRow {
 
 /**
  * The two outcomes a role lookup has. A caller that treats "this project has
- * no note in that role" as an empty string is exactly the silent degradation
- * the role marker exists to prevent, so the absence is a value the caller has
- * to destructure rather than a `null` that reads like "nothing to add".
+ * no note in that role" as an empty string is silent degradation. The
+ * absence is a value the caller has to destructure rather than a `null`
+ * that reads like "nothing to add".
  */
-export type NotebookNoteResolution =
+type NotebookNoteResolution =
   | { readonly present: true; readonly note: NotebookNoteRow }
   | { readonly present: false; readonly role: NoteProjectRole; readonly reason: "no_note_in_role" };
 
@@ -65,12 +65,11 @@ export async function resolveNotebookNote(
    * reader of every note filed under that Project.
    *
    * `null` is the standing and monitor comparison jobs, which read the
-   * Project's baseline to build the Project's own report. Accepted leftover:
-   * that report's Run is created for a Project writer, so a member who gave
-   * their own `private` note the `understanding` role has its body reach that
-   * person's Run. Unchanged here — these paths had no viewer at all before —
-   * and recorded rather than tightened, because the baseline role is a Project
-   * fixture and narrowing it would silently empty the comparison instead.
+   * Project's baseline to build the Project's own report. That report's Run
+   * is created for a Project writer, so a member who gave their own `private`
+   * note the `understanding` role has its body reach that person's Run. Do
+   * not narrow this read: the baseline role is a Project fixture, and an
+   * empty comparison would be the result.
    */
   viewerUserId: string | null,
 ): Promise<NotebookNoteResolution> {

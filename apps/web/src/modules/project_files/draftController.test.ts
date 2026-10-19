@@ -94,6 +94,80 @@ describe('ProjectFileDraftController', () => {
     controller.destroy()
     vi.useRealTimers()
   })
+
+  it('does not autosave over a recovery draft that arrived during unsaved edits', async () => {
+    vi.useFakeTimers()
+    try {
+      const save = vi.fn().mockResolvedValue(draft('typed', 4))
+      const controller = new ProjectFileDraftController({
+        initialContent: 'disk',
+        buildMutation: async (content, current) => mutation(content, current?.version ?? null),
+        save,
+      })
+      controller.setContent('disk + typed')
+      expect(controller.hydrate(draft('recovered', 3))).toBe(false)
+      expect(controller.snapshot()).toMatchObject({ status: 'conflict', draft: { version: 3 } })
+
+      await vi.advanceTimersByTimeAsync(DRAFT_MAX_MS + DRAFT_IDLE_MS)
+      await expect(controller.flush()).rejects.toBeTruthy()
+      expect(save).not.toHaveBeenCalled()
+      controller.destroy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('takes the version a refused save names, so the conflict can be resolved', async () => {
+    vi.useFakeTimers()
+    try {
+      const refusal = Object.assign(new Error('The draft changed in another tab'), {
+        code: 'draft_version_conflict',
+        payload: { code: 'draft_version_conflict', current: draft('from the other tab', 2) },
+      })
+      const save = vi.fn().mockRejectedValue(refusal)
+      const controller = new ProjectFileDraftController({
+        initialContent: 'disk',
+        initialDraft: draft('mine', 1),
+        buildMutation: async (content, current) => mutation(content, current?.version ?? null),
+        save,
+      })
+      controller.setContent('mine, edited')
+      await expect(controller.flush()).rejects.toBe(refusal)
+      expect(controller.snapshot()).toMatchObject({ status: 'conflict', draft: { version: 2 } })
+
+      // "Keep this draft": the rebase the editor sent on version 2 succeeded.
+      controller.adopt(draft('mine, edited', 3))
+      expect(controller.snapshot()).toMatchObject({ status: 'saved', content: 'mine, edited', draft: { version: 3 } })
+      await vi.advanceTimersByTimeAsync(DRAFT_MAX_MS)
+      expect(save).toHaveBeenCalledTimes(1)
+      controller.destroy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('returns to the Folder file when the conflicting draft is discarded', async () => {
+    vi.useFakeTimers()
+    try {
+      const save = vi.fn()
+      const controller = new ProjectFileDraftController({
+        initialContent: 'disk',
+        buildMutation: async (content, current) => mutation(content, current?.version ?? null),
+        save,
+      })
+      controller.setContent('typed')
+      controller.hydrate(draft('recovered', 3))
+
+      controller.adopt(null)
+      expect(controller.snapshot()).toMatchObject({ status: 'clean', content: 'disk', draft: null })
+      await vi.advanceTimersByTimeAsync(DRAFT_MAX_MS)
+      await controller.flush()
+      expect(save).not.toHaveBeenCalled()
+      controller.destroy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 function deferred<T>() {

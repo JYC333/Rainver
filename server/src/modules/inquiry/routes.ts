@@ -52,7 +52,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // NE: raise a passage of a note as a Question — creates the Thread and the
+  // Raise a passage of a note as a Question — creates the Thread and the
   // link back to the note in one call, so the Question keeps a route to the
   // reasoning it came from.
   app.post("/api/v1/projects/:projectId/inquiry/threads/from-note", async (request, reply) => {
@@ -544,7 +544,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // Combined Project graph composer (plan section 16): unions the Inquiry
+  // Combined Project graph composer: unions the Inquiry
   // producer with the existing space_objects/object_relations projection for
   // this Project. Lives here (not modules/graph or modules/projects) because
   // Inquiry is currently the only non-space_objects producer; move ownership

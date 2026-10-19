@@ -6,8 +6,8 @@ import { InquiryThreadService } from "../../src/modules/inquiry/threadService.js
 /**
  * Rows the Project Research files seed the same way: an arXiv source chain,
  * a relevant corpus item, a research Operation, a pending screening gate,
- * and a question Thread with its scope tuple. Literals match what the files
- * used to inline; pass an option when a test needs a different one.
+ * and a question Thread with its scope tuple. Literals are the names
+ * assertions check; pass an option when a test needs a different one.
  */
 
 /** connector → provider → mapping → connection → channel, all arXiv. */

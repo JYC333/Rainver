@@ -8,6 +8,7 @@ import {
   type RunPolicyEnforcer,
 } from "../src/modules/runs/orchestrationService.js";
 import type { RunMaterializationService } from "../src/modules/runs/materializationService.js";
+import { PgHostRepository } from "../src/modules/hosts/repository.js";
 import type {
   RunEventInput,
   RunRecord,
@@ -69,10 +70,8 @@ function invocationDelivery(prompt = "Say hello"): InvocationDelivery {
 }
 
 /**
- * ACP runtime replatform P3: codex_cli drives the general AcpController now
- * (CodexAppServerController's bespoke NDJSON-RPC handshake is deleted) — this
- * helper drives a single ACP turn to completion, same as it did for the old
- * protocol, just speaking session/new + session/prompt instead.
+ * codex_cli drives the general AcpController. This helper drives a single
+ * ACP turn to completion: session/new, then session/prompt.
  */
 async function completeCodexProtocol(
   controller: CliStdioController | undefined,
@@ -191,6 +190,8 @@ class FakeRepo implements RunExecutionRepositoryPort {
   dispatchAllowed = true;
   executionAllowed = true;
   dispatchHook: (() => Promise<void>) | null = null;
+  authorizationHook: (() => Promise<void>) | null = null;
+  runningHook: (() => Promise<void>) | null = null;
   failEvents = false;
   failSteps = false;
   executionLocked = false;
@@ -228,7 +229,9 @@ class FakeRepo implements RunExecutionRepositoryPort {
     this.calls.push(`running:${input.run_id}`);
     if (!this.run || this.run.status !== "queued") return null;
     this.run = { ...this.run, status: "running", started_at: input.started_at };
-    return this.run;
+    const running = this.run;
+    await this.runningHook?.();
+    return running;
   }
 
   async checkRunDispatchContract(): Promise<{ allowed: boolean; error_code?: string; error_message?: string }> {
@@ -244,6 +247,7 @@ class FakeRepo implements RunExecutionRepositoryPort {
     error_message?: string;
   }> {
     this.authorizationRuns.push(candidate);
+    await this.authorizationHook?.();
     return this.executionAllowed
       ? { allowed: true }
       : {
@@ -464,14 +468,10 @@ class FakeRuntimeContextGateway {
 }
 
 /**
- * A CLI run's adapter seams, now that every CLI run is dispatched to a host
- * daemon rather than spawned here.
- *
- * The tests that used this used to inject a credential broker and a runtime
- * tool registry too — both server-host concerns the daemon path has no
- * equivalent for: a copy's login lives with the copy, and the daemon launches
- * the copy it installed. What is left is the one thing that still matters to
- * these tests, the command's result, plus a built-in host to dispatch to.
+ * A CLI run's adapter seams. Every CLI run is dispatched to a host daemon.
+ * A copy's login lives with the copy. Do not inject a server-side credential
+ * broker or a runtime-tool registry. These tests check the command's
+ * result, plus a built-in host to dispatch to.
  */
 /**
  * A Location on the instance's own host: the realistic shape for a CLI run
@@ -626,6 +626,29 @@ class FakeDelegationProjector implements RunDelegationLifecycleProjectorPort {
 }
 
 describe("RunOrchestrationService", () => {
+  it("asks the database for the built-in host again after a transient failure", async () => {
+    // The resolved id is cached for the worker's lifetime. Caching the
+    // rejection too would fail every later unbound CLI Run in this process
+    // until a restart, long after the database came back.
+    const ensure = vi.spyOn(PgHostRepository.prototype, "ensureServerHostId")
+      .mockRejectedValueOnce(new Error("connection terminated unexpectedly"))
+      .mockResolvedValueOnce("host-builtin");
+    try {
+      const { builtinHostResolver: _unused, ...adapters } = daemonCli({
+        async runCommand() {
+          return { returncode: 0, stdout: "", stderr: "", timed_out: false };
+        },
+      });
+      const service = new RunOrchestrationService(config(true), new FakeRepo(), adapters);
+      const resolve = () => (service as unknown as { builtinHostId(): Promise<string> }).builtinHostId();
+      await expect(resolve()).rejects.toThrow("connection terminated unexpectedly");
+      await expect(resolve()).resolves.toBe("host-builtin");
+      expect(ensure).toHaveBeenCalledTimes(2);
+    } finally {
+      ensure.mockRestore();
+    }
+  });
+
   it("admits delegated children and reconciles dependency waits after releasing the active execution lock", async () => {
     const repo = new FakeRepo();
     repo.run = run({ run_group_id: "group-1" });
@@ -792,6 +815,9 @@ describe("RunOrchestrationService", () => {
       "actor:user-1",
       "step:adapter_started:running",
       "event:adapter_invoked:running",
+      // Re-read before dispatch: a stop that arrived while preparing is
+      // published instead of running the turn.
+      "get:space-1:run-1",
       "get:space-1:run-1",
       // Settling the turn reads the Run's own governed-tool evidence before it
       // decides between `succeeded` and `degraded`.
@@ -1106,16 +1132,16 @@ describe("RunOrchestrationService", () => {
       space_id: "space-1",
       worker_id: "worker-1",
       command_source: "job",
-      // A path on *this* machine, which the run will never see. It used to
-      // reach `prepareRunExchange`, whose port throws for a daemon run — so a
-      // caller supplying one failed the whole run at preparation.
+      // A path on *this* machine, which the run will never see. Do not send it
+      // through Run Exchange: that port throws for a daemon run and fails
+      // preparation.
       sandbox_cwd: "/tmp",
     });
 
     expect(result).toMatchObject({ status: "succeeded" });
-    // Declared outputs still settle; they arrive as the daemon's own uploads
-    // (`recordOutputArtifacts`) rather than through a directory pair the server
-    // stages and reads back, which has no meaning on another machine.
+    // Declared outputs settle. They arrive as the daemon's own uploads
+    // (`recordOutputArtifacts`). Do not stage a directory pair the server
+    // reads back. That pair has no meaning on another machine.
     expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
   });
 
@@ -1147,15 +1173,14 @@ describe("RunOrchestrationService", () => {
       command_source: "job",
     });
 
-    // The server used to check out a worktree and stage a context directory for
-    // the CLI it was about to spawn. It spawns none: the workspace belongs to
-    // the daemon, and on the built-in host it is wrapped in a namespace the
-    // daemon builds.
+    // The workspace belongs to the daemon. On the built-in host it is wrapped
+    // in a namespace the server does not check out. Do not check out a
+    // worktree or stage a context directory here.
     expect(workspaceManager.calls).toEqual([]);
     expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
   });
 
-  it("never touches the local workspace manager for a run bound to a remote-host Folder, regardless of its sandbox level (ADR 0016 P2/P3)", async () => {
+  it("never touches the local workspace manager for a run bound to a remote-host Folder, regardless of its sandbox level", async () => {
     const repo = new FakeRepo();
     repo.run = run({
       runtime_key: "codex_cli",
@@ -1174,7 +1199,7 @@ describe("RunOrchestrationService", () => {
       },
       ...daemonCli({
           async runCommand() {
-            throw new Error("must not spawn a process through the server-host executor for a remote run");
+            throw new Error("must not spawn a process in the server for a daemon run");
           },
         }),
     });
@@ -1200,7 +1225,7 @@ describe("RunOrchestrationService", () => {
     expect(workspaceManager.calls).toEqual([]);
   });
 
-  it("routes a supported (ACP) adapter's remote-host run to the remote branch with no local sandbox prep (ADR 0016 P3)", async () => {
+  it("routes a supported (ACP) adapter's remote-host run to the remote branch with no local sandbox prep", async () => {
     const repo = new FakeRepo();
     repo.run = run({
       runtime_key: "claude_code",
@@ -1659,6 +1684,79 @@ describe("RunOrchestrationService", () => {
     ]);
   });
 
+  it("publishes a cancellation that arrived while the Run was being prepared", async () => {
+    // Stop lands after the worker took the execution lock and before the Run
+    // went running: the public cancel cannot publish under that lock, and the
+    // Run is no longer queued, so only the execution owner can end it.
+    const repo = new FakeRepo();
+    let service: RunOrchestrationService;
+    repo.dispatchHook = async () => {
+      await service.cancelRun({ run_id: "run-1", space_id: "space-1", reason: "stopped while routing" });
+    };
+    service = orchestration(repo, { policyEnforcer: allowPolicy });
+
+    await expect(service.executeRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      worker_id: "worker-1",
+      command_source: "job",
+    })).resolves.toMatchObject({ status: "cancelled" });
+    expect(repo.run?.status).toBe("cancelled");
+    expect(repo.executionLocked).toBe(false);
+  });
+
+  it("does not dispatch a turn stopped while its runtime was being prepared", async () => {
+    // Stop lands after the Run went running and before the adapter registered
+    // anything to terminate. The cancel cannot reach a process and cannot
+    // publish under the lock. Do not dispatch anyway. That would run the
+    // whole turn.
+    const repo = new FakeRepo();
+    let dispatched = false;
+    let service: RunOrchestrationService;
+    repo.runningHook = async () => {
+      await service.cancelRun({ run_id: "run-1", space_id: "space-1", reason: "stopped while preparing" });
+    };
+    service = orchestration(repo, {
+      policyEnforcer: allowPolicy,
+      ...daemonCli({
+        async runCommand(input) {
+          dispatched = true;
+          await completeCodexProtocol(input.stdio_controller, "ACP run completed");
+          return { returncode: 0, stdout: "ACP run completed", stderr: "", timed_out: false };
+        },
+      }),
+    });
+
+    await expect(service.executeRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      worker_id: "worker-1",
+      command_source: "job",
+    })).resolves.toMatchObject({ status: "cancelled" });
+    expect(dispatched).toBe(false);
+    expect(repo.run?.status).toBe("cancelled");
+    expect(repo.executionLocked).toBe(false);
+  });
+
+  it("publishes a cancellation that raced a revoked execution authorization", async () => {
+    const repo = new FakeRepo();
+    repo.executionAllowed = false;
+    let service: RunOrchestrationService;
+    repo.authorizationHook = async () => {
+      await service.cancelRun({ run_id: "run-1", space_id: "space-1", reason: "stopped while authorizing" });
+    };
+    service = orchestration(repo, { policyEnforcer: allowPolicy });
+
+    await expect(service.executeRun({
+      run_id: "run-1",
+      space_id: "space-1",
+      worker_id: "worker-1",
+      command_source: "job",
+    })).resolves.toMatchObject({ status: "cancelled" });
+    expect(repo.run?.status).toBe("cancelled");
+    expect(repo.executionLocked).toBe(false);
+  });
+
   it("still resolves a CLI run's sandbox level from risk, and provisions nothing for it", async () => {
     const repo = new FakeRepo();
     repo.run = run({
@@ -1688,17 +1786,15 @@ describe("RunOrchestrationService", () => {
       command_source: "job",
     });
 
-    // Escalating to a level the server never prepares is what this used to do:
-    // `one_shot_docker` for a critical run, provisioned here. Isolation is the
-    // daemon's now, from the dispatch's `isolation` policy, so the level the
-    // run was created at stands and the server provisions nothing.
-    // The server provisions nothing for a daemon run — the workspace is the
-    // daemon's, and on the built-in host the namespace is built there.
+    // Isolation comes from the dispatch's `isolation` policy. The level the
+    // run was created at stands. The server provisions nothing for a daemon
+    // run. Do not escalate `one_shot_docker` here.
     expect(workspaceManager.calls).toEqual([]);
-    // But risk still decides the level, and the level still travels: skipping
-    // the resolution for daemon runs left every CLI run at the creation-time
-    // `none`, so a critical Folder-bound run got a read-write workspace with
-    // nothing recording that risk had stopped mattering.
+    // Risk decides the level, and the level travels. Do not
+    // skip the resolution for daemon runs. Every CLI run would stay at the
+    // creation-time `none`, so a critical Folder-bound run would get a
+    // read-write workspace with nothing recording that risk had stopped
+    // mattering.
     expect(repo.run.required_sandbox_level).toBe("one_shot_docker");
     expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
   });
@@ -1736,8 +1832,8 @@ describe("RunOrchestrationService", () => {
       }),
     ).resolves.toMatchObject({ status: "succeeded" });
     // The argv is rendered from the adapter spec, and the daemon resolves the
-    // executable from the copy it installed — so a caller-supplied path is not
-    // merely ignored, there is no longer a place for it to take effect.
+    // executable from the copy it installed — so a caller-supplied path has
+    // no place to take effect.
     expect(adapterConfigs[0].command).toEqual(["codex-acp"]);
   });
 
@@ -1833,6 +1929,24 @@ describe("RunOrchestrationService", () => {
       .resolves.toMatchObject({ status: "cancelled", skipped: true, skip_reason: "run_already_terminal" });
 
     expect(attempts).toBe(2);
+    expect(projector.terminal).toHaveLength(1);
+  });
+
+  it("closes a cancelled delegated Run whose settlement is only owed, without reporting a failed finalization", async () => {
+    const repo = new FakeRepo();
+    repo.run = run({ status: "cancelled", run_group_id: "group-1" });
+    const projector = new FakeDelegationProjector();
+    const materializer = {
+      async finalizeRun() {
+        return { kind: "activity", status: "failed", error_code: "settlement_pending", error_message: "settlement owed" };
+      },
+    } as unknown as RunMaterializationService;
+    const service = orchestration(repo, { materializer, delegationProjector: projector });
+
+    const result = await service.cancelRun({ run_id: "run-1", space_id: "space-1" });
+    expect(result).toMatchObject({ status: "cancelled" });
+    expect(result).not.toMatchObject({ error_code: "finalization_failed" });
+    // The sweep settles the rest; the delegation is closed now, once.
     expect(projector.terminal).toHaveLength(1);
   });
 
@@ -1982,9 +2096,8 @@ describe("RunOrchestrationService", () => {
     });
 
     // A run on the copy's own subscription is metered nowhere else — the
-    // provider proxy sees nothing, because there is no provider. It used to be
-    // gated on a brokered credential profile id, which no run has had since
-    // credentials moved to the host, so every such run went unrecorded.
+    // provider proxy sees nothing, because there is no provider. Meter it
+    // here. Do not gate the observation on a brokered credential profile id.
     expect(usageObservations).toHaveLength(1);
     expect(usageObservations[0]).toMatchObject({
       execution_channel: "local_cli",
@@ -2191,8 +2304,8 @@ describe("RunOrchestrationService", () => {
 
 // A managed run's prompt can be an entire rendered batch (Source screening
 // sends sixteen items at once), while `retrieval_intent` is only the turn's
-// retrieval query and is bounded by the protocol. An unbounded prompt used to
-// fail envelope validation and fail the whole run with a Zod error.
+// retrieval query and is bounded by the protocol. A prompt that does not fit
+// is truncated. Do not fail the whole run with a Zod error.
 describe("retrievalIntentFor", () => {
   it("passes short prompts through untouched", async () => {
     expect(await retrievalIntentFor("  compare memory architectures  ")).toBe("compare memory architectures");

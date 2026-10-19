@@ -238,9 +238,8 @@ describe('InquiryAreaPage', () => {
   })
 
   it('keeps recommending while a step is in progress, instead of falling silent', async () => {
-    // The old card replaced its guidance with the chosen step, which is exactly
-    // when the system knows the most. A step in progress and a different
-    // recommendation must both be on screen.
+    // Do not replace the guidance with the chosen step. A step in progress and
+    // a different recommendation must both be on screen.
     vi.mocked(inquiryApi.getThread).mockResolvedValue({
       ...QUESTION_DETAIL, attention_state: 'focused', next_focus_kind: 'synthesize',
     })
@@ -254,7 +253,8 @@ describe('InquiryAreaPage', () => {
     // what puts the Thread in Digest while a different step is in progress.
     vi.mocked(inquiryApi.listSignals).mockResolvedValue([{
       id: 'signal-1', space_id: 'space-1', project_id: 'project-1', thread_id: 'thread-1',
-      corpus_item_id: 'corpus-1', classification: 'supports', is_material: true, confidence: 0.8,
+      corpus_item_id: 'corpus-1',
+      experiment_interpretation_id: null, classification: 'supports', is_material: true, confidence: 0.8,
       model_version: 'v1', source_provenance: {}, dedupe_key: 'k1', producer_idempotency_key: null,
       status: 'consolidated', candidate_id: null, created_by_user_id: null, created_by_run_id: null,
       created_at: '2026-07-23T00:00:00.000Z',
@@ -350,7 +350,8 @@ describe('InquiryAreaPage', () => {
     }])
     vi.mocked(inquiryApi.listSignals).mockResolvedValue([{
       id: 'signal-1', space_id: 'space-1', project_id: 'project-1', thread_id: 'thread-1',
-      corpus_item_id: 'corpus-1', classification: 'supports', is_material: true, confidence: 0.8,
+      corpus_item_id: 'corpus-1',
+      experiment_interpretation_id: null, classification: 'supports', is_material: true, confidence: 0.8,
       model_version: 'v1', source_provenance: {}, dedupe_key: 'k1', producer_idempotency_key: null,
       status: 'consolidated', candidate_id: null, created_by_user_id: null, created_by_run_id: null,
       created_at: '2026-07-23T00:00:00.000Z',
@@ -513,7 +514,8 @@ describe('InquiryAreaPage', () => {
     vi.mocked(inquiryApi.listSignals).mockResolvedValue([
       {
         id: 'signal-1', space_id: 'space-1', project_id: 'project-1', thread_id: 'thread-1',
-        corpus_item_id: 'corpus-1', classification: 'contradicts', is_material: true, confidence: 0.8,
+        corpus_item_id: 'corpus-1',
+        experiment_interpretation_id: null, classification: 'contradicts', is_material: true, confidence: 0.8,
         model_version: 'v1', source_provenance: {}, dedupe_key: 'k1', producer_idempotency_key: null,
         status: 'consolidated', candidate_id: null, created_by_user_id: null, created_by_run_id: null,
         created_at: '2026-07-23T00:00:00.000Z',
@@ -551,6 +553,81 @@ describe('InquiryAreaPage', () => {
 
     expect(await screen.findByText('New evidence contradicts the position')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Start a review checkpoint' })).toBeInTheDocument()
+  })
+
+  it('closes a review checkpoint whose last two Candidates were decided at once', async () => {
+    const first = candidate()
+    const second = candidate({ id: 'candidate-2', title: 'A second change to review' })
+    const decided = new Set<string>()
+    vi.mocked(inquiryApi.listCandidates).mockImplementation(async (_projectId, status = 'pending') =>
+      (status === 'pending' ? [first, second].filter(item => !decided.has(item.id)) : []))
+    vi.mocked(inquiryApi.openReviewPacket).mockResolvedValue({
+      id: 'packet-1', project_id: 'project-1', status: 'open', candidates: [first, second],
+      created_at: '2026-07-23T00:00:00.000Z', closed_at: null,
+    } as never)
+    vi.mocked(inquiryApi.closeReviewPacket).mockResolvedValue({} as never)
+    let answerFirst = () => {}
+    vi.mocked(inquiryApi.decideCandidate).mockImplementation((_projectId, candidateId) => {
+      if (candidateId !== 'candidate-1') { decided.add(candidateId); return Promise.resolve({} as never) }
+      return new Promise(resolve => { answerFirst = () => { decided.add(candidateId); resolve({} as never) } })
+    })
+    renderPage('/spaces/space-1/projects/project-1/inquiry?view=review')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start a review checkpoint' }))
+    const dismiss = await screen.findAllByRole('button', { name: 'Dismiss' })
+    expect(dismiss).toHaveLength(2)
+    fireEvent.click(dismiss[0]!)
+    fireEvent.click(dismiss[1]!)
+    await waitFor(() => expect(inquiryApi.decideCandidate).toHaveBeenCalledTimes(2))
+    answerFirst()
+
+    // Both decisions landed, so the packet is empty and closes — the slower
+    // first decision must not put the already-dismissed second one back.
+    await waitFor(() => expect(inquiryApi.closeReviewPacket).toHaveBeenCalledWith('project-1', 'packet-1'))
+    expect(screen.queryByText('A second change to review')).not.toBeInTheDocument()
+  })
+
+  it('keeps a change summary being typed when a refresh brings the same Candidate again', async () => {
+    vi.mocked(inquiryApi.listCandidates).mockImplementation(async (_projectId, status = 'pending') =>
+      (status === 'pending' ? [candidate()] : []))
+    renderPage('/spaces/space-1/projects/project-1/inquiry?view=review')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Accept this change' })
+    const summary = within(dialog).getByRole('textbox')
+    expect(summary).toHaveValue('Two papers disagree')
+    fireEvent.change(summary, { target: { value: 'My own wording of the change' } })
+
+    // A visibility refresh re-reads the Candidates: same ids, new objects.
+    const before = vi.mocked(inquiryApi.listCandidates).mock.calls.length
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    document.dispatchEvent(new Event('visibilitychange'))
+    await waitFor(() => expect(vi.mocked(inquiryApi.listCandidates).mock.calls.length).toBeGreaterThan(before))
+
+    expect(within(dialog).getByRole('textbox')).toHaveValue('My own wording of the change')
+  })
+
+  it('shows the parent of the Thread now selected on the Relations tab, not the previous one', async () => {
+    // thread-1 (selected first) sits under thread-2; thread-2 is a root.
+    const parent = { ...QUESTION, id: 'thread-2', statement: 'Is eviction correct?' }
+    const nested = { ...QUESTION, primary_parent_id: 'thread-2' }
+    vi.mocked(inquiryApi.listThreads).mockResolvedValue([nested, parent])
+    vi.mocked(inquiryApi.getThread).mockImplementation(async (_projectId, id) => (id === 'thread-2'
+      ? { ...QUESTION_DETAIL, ...parent }
+      : { ...QUESTION_DETAIL, ...nested }) as never)
+    const user = userEvent.setup({ delay: null })
+    renderPage()
+
+    await screen.findByRole('tab', { name: /Relations/ })
+    await user.click(screen.getByRole('tab', { name: /Relations/ }))
+    expect(await screen.findByLabelText('Primary parent')).toHaveTextContent('Is eviction correct?')
+
+    // The Backlog group starts collapsed; open it to reach the other Thread.
+    const backlog = screen.getByRole('region', { name: 'Backlog' })
+    if (!within(backlog).queryByText('Is eviction correct?')) fireEvent.click(within(backlog).getByRole('button', { name: /Backlog/ }))
+    fireEvent.click(within(backlog).getByText('Is eviction correct?'))
+    await waitFor(() => expect(inquiryApi.getThread).toHaveBeenCalledWith('project-1', 'thread-2'))
+    await waitFor(() => expect(screen.getByLabelText('Primary parent')).toHaveTextContent('No primary parent'))
   })
 
   it('continues the delta window from the previous Brief instead of re-summarizing everything', async () => {

@@ -1,5 +1,5 @@
 /**
- * Ask Space contracts (Slice A).
+ * Ask Space contracts.
  *
  * Ask Space is the unified, user-facing "ask the space a question" entry point. It
  * gathers across the viewer-visible retrieval domains (Knowledge always; Memory
@@ -50,7 +50,7 @@ export const AskSpaceRequestSchema = z
     // durable and can seed a Claim Candidate Packet.
     persist: z.boolean().optional(),
     // Attach advisory claim trajectory (change-over-time) signals for any claim
-    // the answer cited (Slice E). Read-only and access-safe: it only loads
+    // the answer cited. Read-only and access-safe: it only loads
     // viewer-visible sibling claims. Default off.
     include_claim_trajectory: z.boolean().optional(),
   })
@@ -122,7 +122,7 @@ export const AskSpaceFollowUpSchema = z
   .strict();
 export type AskSpaceFollowUp = z.infer<typeof AskSpaceFollowUpSchema>;
 
-// Advisory claim trajectory attached to a cited claim (Slice E). Signals only —
+// Advisory claim trajectory attached to a cited claim. Signals only —
 // no canonical writes, no hidden-claim leakage (the underlying scan reads only
 // viewer-visible sibling claims).
 export const AskSpaceClaimTrajectorySchema = z

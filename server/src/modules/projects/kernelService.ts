@@ -87,10 +87,10 @@ function instructionVersionToOut(row: InstructionVersionRow): Record<string, unk
 
 /**
  * Project Brief versioning and Primary Mode transitions. Both are Project
- * Kernel concerns (plan section 5): a Brief Version is a versioned statement
+ * Kernel concerns: a Brief Version is a versioned statement
  * of goal/scope/success/constraints/assumptions, and a Mode transition is a
  * focus/projection change only — it never migrates, copies, or deletes any
- * other domain's rows (ADR 0011 / plan section 5.1).
+  * other domain's rows (ADR 0011).
  */
 export class ProjectKernelService {
   constructor(private readonly db: Queryable) {}

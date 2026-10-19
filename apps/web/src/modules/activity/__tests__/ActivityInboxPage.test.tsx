@@ -2,9 +2,12 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Link, Route, Routes } from 'react-router-dom'
+import { toast } from 'sonner'
 import ActivityInboxPage from '../ActivityInboxPage'
 import { activityApi, projectsApi } from '../../../api/client'
 import type { ActivityInboxRecord, Project } from '../../../types/api'
+import i18n from '../../../i18n'
+import { formatDateTime } from '../../../i18n/format'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
@@ -117,6 +120,20 @@ describe('ActivityInboxPage', () => {
     expect(screen.queryByRole('link', { name: 'Generate proposals' })).not.toBeInTheDocument()
   })
 
+  it('empties the queue and reports the failure when a filter change cannot load', async () => {
+    vi.mocked(activityApi.list)
+      .mockResolvedValueOnce([activityRecord()])
+      .mockRejectedValueOnce(new Error('500 Internal Server Error'))
+
+    renderPage()
+    expect(await screen.findByText('Captured note')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'archived' }))
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('500 Internal Server Error'))
+    expect(screen.queryByText('Captured note')).not.toBeInTheDocument()
+  })
+
   it('keeps ordinary activity rows on the Activity detail flow', async () => {
     vi.mocked(activityApi.list).mockResolvedValue([
       activityRecord(),
@@ -202,5 +219,36 @@ describe('ActivityInboxPage project ownership', () => {
 
     expect(await screen.findByText('Captured note')).toBeInTheDocument()
     expect(screen.queryByText('Marginalia')).toBeNull()
+  })
+
+  it('reads in Chinese: labels, briefing counts for 0, 1 and many, runs and the capture time', async () => {
+    await i18n.changeLanguage('zh-CN')
+    try {
+      vi.mocked(activityApi.list).mockResolvedValue([
+        activityRecord({
+          id: 'briefing-zh',
+          source_type: 'source',
+          title: '每日简报',
+          metadata_json: {
+            briefing_date: '2026-07-08',
+            source_connection_id: 'conn-1',
+            decision_counts: { relevant: 1, maybe: 3, not_relevant: 0 },
+            run_count: 2,
+          },
+        }),
+      ])
+      renderPage()
+
+      expect(await screen.findByRole('heading', { name: '活动收件箱' })).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: '打开摘要' })).toBeInTheDocument()
+      expect(screen.getByText('1 条相关')).toBeInTheDocument()
+      expect(screen.getByText('3 条可能相关')).toBeInTheDocument()
+      expect(screen.getByText('0 条不相关')).toBeInTheDocument()
+      expect(screen.getByText('2 次运行')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '待处理' })).toBeInTheDocument()
+      expect(screen.getByText(formatDateTime('2026-07-08T10:00:00.000Z'))).toHaveTextContent('2026')
+    } finally {
+      await i18n.changeLanguage('en')
+    }
   })
 })

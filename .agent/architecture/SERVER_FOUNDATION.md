@@ -10,8 +10,8 @@
 
 It has two distinct parts:
 
-- `server`: the permanent service.
-- `gateway`: the permanent entry/routing layer inside the service.
+- `server`: the Compose/API service name.
+- `gateway`: the module that owns routing and request context. Do not add a second entry layer.
 
 Unknown `/api/v1/*` traffic hits the local catch-all and returns
 `404 { "detail": "Route not found" }`.
@@ -23,9 +23,9 @@ server/src/
   index.ts
   server.ts
   config.ts
+  db/
   gateway/
   modules/
-  ports/
 ```
 
 Modules use the convention documented in
@@ -61,7 +61,8 @@ command, not a startup hook.
 
 `server/migrations/` is the append-only migration chain: the frozen
 `0000_baseline.sql` plus one numbered file per schema change. That baseline
-starts the 2026-09-26 host-thread-tool-field schema epoch (B59):
+starts the 2026-10-15 access, reading and execution integrity schema epoch
+(B59, ADR 0024):
 a pre-epoch database has no upgrade path and must be recreated from it, while
 everything after it is append-only. Ordinary schema
 changes start in `server/src/db/schema/`, run through

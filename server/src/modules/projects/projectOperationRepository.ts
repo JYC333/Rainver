@@ -52,9 +52,9 @@ export class ProjectOperationRepository {
     input: {
       title: string;
       intentText: string;
-      /** `failed` records an acquisition that never started — the pipeline
-       *  failing before an Operation existed used to leave nothing visible
-       *  anywhere, only a `jobs.result_json` row. */
+      /** `failed` records an acquisition that never started. A pipeline that
+       *  fails before an Operation exists must still leave a visible row, not
+       *  only a `jobs.result_json`. */
       status: "active" | "waiting_review" | "failed";
       progress: Record<string, unknown>;
       steps: Array<{ title: string; status: "pending" | "active" | "blocked" | "done" | "skipped"; detail?: Record<string, unknown> }>;
@@ -337,7 +337,7 @@ export class ProjectOperationRepository {
   }
 }
 
-function isUniqueViolation(error: unknown, constraint: string): boolean {
+export function isUniqueViolation(error: unknown, constraint: string): boolean {
   if (!error || typeof error !== "object") return false;
   const value = error as { code?: unknown; constraint?: unknown };
   return value.code === "23505" && value.constraint === constraint;

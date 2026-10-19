@@ -2,22 +2,25 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { enforce } from "../policy/service.js";
-import { proposalToOut } from "../proposals/repository.js";
+import { PgProposalRepository, proposalToOut } from "../proposals/repository.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { canReadMemory, type MemoryAuthFields } from "./memoryReadAuth.js";
 import { canAccessProject } from "./projectAccess.js";
+import { canWriteProject } from "../projects/access.js";
+import { withQueryableTransaction } from "../routeUtils/common.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
 
 import type {
   MemoryProposalArchiveCommand,
   MemoryProposalCreateCommand,
+  MemoryProposalRevisionRequest,
   MemoryProposalUpdateCommand,
   ProposalOut,
 } from "@rainver/protocol";
 import type { PolicyCheckRequest } from "@rainver/protocol";
 
-export interface QueryResult<Row> {
+interface QueryResult<Row> {
   rows: Row[];
   rowCount: number | null;
 }
@@ -30,15 +33,16 @@ export interface Queryable {
 }
 
 /**
- * An Agent's own write that had to become a proposal
+ * An Agent's own write is a proposal
  * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §1).
  *
  * Threaded through so the proposal records who actually wrote it and why. The
  * public-API path stamps a user confirmation, which for an Agent's write
- * would be a false record of a person's action — the same falsehood
- * `approved_by = null` exists to avoid on the direct path.
+ * would be a false record of a person's action. Do not stamp that confirmation
+ * on an Agent's write. The direct path leaves `approved_by` null for the same
+ * reason.
  */
-export interface AgentProposalOrigin {
+interface AgentProposalOrigin {
   agentId: string;
   runId: string;
   rationale: string;
@@ -226,11 +230,6 @@ export class PgMemoryProposalRepository {
       if (agentOrigin?.instructedByUserId) {
         payload.requested_by_user_id = agentOrigin.instructedByUserId;
       }
-      // Only this Agent's owner may accept it. Role is what proposal apply
-      // normally arbitrates on, and a Space owner or admin satisfies any role
-      // a persona proposal could require — which is exactly the person ADR
-      // 0003 §5 says must not be able to accept someone else's Agent's.
-      payload.required_owner_user_id = ownerUserId;
     }
 
     await this.enforceProposalCreate({
@@ -349,9 +348,10 @@ export class PgMemoryProposalRepository {
     }
     if (target.scope_type === "agent") {
       // An Agent proposes changes to its own memory only. The applier already
-      // refuses the direct write; without this, its fallback proposal would
-      // carry one Agent's revision of another's persona to the owner they
-      // share, and an accept would hand the entry's authorship across.
+      // refuses the direct write. Do not omit the same check on the proposal.
+      // Its fallback would carry one Agent's revision of another's persona to
+      // the owner they share, and an accept would hand the entry's authorship
+      // across.
       if (agentOrigin && agentOrigin.agentId !== target.agent_id) {
         throw new MemoryProposalValidationError(
           "an Agent may propose changes only to its own memory, not another Agent's",
@@ -366,14 +366,8 @@ export class PgMemoryProposalRepository {
       if (agentOrigin?.instructedByUserId) {
         payload.requested_by_user_id = agentOrigin.instructedByUserId;
       }
-      // The same rule a create carries, and for the same reason: decided by
-      // the Agent's owner alone, by identity and not by role. Setting it only
-      // on creates left every persona *revision* decidable by any Space
-      // owner or admin — including the member who asked for it, which is the
-      // one person ADR 0003 §5 names.
-      payload.required_owner_user_id = target.owner_user_id;
     }
-    validateUpdatePayload(payload);
+    validateUpdatePayload(payload, target.visibility);
 
     const title =
       typeof changeData.title === "string" && changeData.title.length > 0
@@ -464,6 +458,67 @@ export class PgMemoryProposalRepository {
       targetScope: target.scope_type,
       targetVisibility: target.visibility,
       sensitivityLevel: null,
+    });
+  }
+
+  /**
+   * A person writing the revision a maintenance finding asked for into its
+   * pending update. Only someone who decides what the entry says may write it
+   * — its owner, or a Project writer for Project Memory — and the revision
+   * records that they did, which is the confirmation the content then rests
+   * on. Accepting the proposal is still a separate decision.
+   */
+  async reviseOperatorEditProposal(
+    spaceId: string,
+    userId: string,
+    proposalId: string,
+    revision: MemoryProposalRevisionRequest,
+  ): Promise<ProposalOut> {
+    return withQueryableTransaction(this.db as never, async (tx: Queryable) => {
+      if (!(await new PgProposalRepository(tx as never).getVisible(spaceId, userId, proposalId))) {
+        throw new MemoryProposalNotFoundError("Proposal not found");
+      }
+      const locked = await tx.query<{ status: string; proposal_type: string; payload_json: Record<string, unknown> | null }>(
+        `SELECT status, proposal_type, payload_json FROM proposals WHERE id = $1 AND space_id = $2 FOR UPDATE`,
+        [proposalId, spaceId],
+      );
+      const proposal = locked.rows[0];
+      const payload = proposal?.payload_json ?? {};
+      if (!proposal || proposal.proposal_type !== "memory_update" || payload.requires_operator_edit !== true) {
+        throw new MemoryProposalValidationError("Only a maintenance update that asks for a revision can be revised here");
+      }
+      if (proposal.status !== "pending") {
+        throw new MemoryProposalValidationError("This proposal has already been decided");
+      }
+      const targetId = stringValue(payload.target_memory_id);
+      const target = targetId
+        ? await new PgMemoryProposalRepository(tx, this.config).getVisibleTargetMemory(spaceId, userId, targetId)
+        : null;
+      if (!target) throw new MemoryProposalNotFoundError("Memory not found");
+      const decides = target.scope_type === "project" && target.project_id
+        ? await canWriteProject(tx as never, spaceId, target.project_id, userId)
+        : target.owner_user_id === userId;
+      if (!decides) {
+        throw new MemoryProposalForbiddenError("Only the owner of this memory can revise what it says");
+      }
+      const editedAt = new Date().toISOString();
+      const revised: Record<string, unknown> = {
+        ...payload,
+        proposed_content: revision.content,
+        ...(revision.title ? { proposed_title: revision.title } : {}),
+        operator_edit: { edited_by_user_id: userId, edited_at: editedAt },
+        provenance_entries: mergeDistinctProvenanceEntries([
+          ...(Array.isArray(payload.provenance_entries) ? payload.provenance_entries as Array<Record<string, unknown>> : []),
+          userConfirmationEntry(userId, { method: "POST", path: `/memory/proposals/${proposalId}/revision` }),
+        ]),
+      };
+      await tx.query(
+        `UPDATE proposals SET payload_json = $3::jsonb, updated_at = $4 WHERE id = $1 AND space_id = $2`,
+        [proposalId, spaceId, JSON.stringify(revised), editedAt],
+      );
+      const out = await new PgProposalRepository(tx as never).getVisible(spaceId, userId, proposalId);
+      if (!out) throw new MemoryProposalNotFoundError("Proposal not found");
+      return out;
     });
   }
 
@@ -573,10 +628,9 @@ export class PgMemoryProposalRepository {
       projectFolderId: input.projectFolderId,
       projectId: input.projectId,
       createdByUserId: input.userId,
-      // The Agent is recorded as the author when it is one. Without this the
-      // applied entry would carry the person as `created_by` and no
-      // `agent_id`: an Agent-authored memory attributed to someone who never
-      // wrote it.
+      // The Agent is recorded as the author when it is one. Do not record the
+      // person as `created_by` with no `agent_id`. An Agent-authored memory
+      // would be attributed to someone who never wrote it.
       ...(input.agentOrigin
         ? { createdByAgentId: input.agentOrigin.agentId, createdByRunId: input.agentOrigin.runId }
         : {}),
@@ -642,10 +696,15 @@ function normalizeMemoryScope(value: string): "user" | "project" | "agent" {
   return scope;
 }
 
-function validateUpdatePayload(payload: Record<string, unknown>): void {
+/**
+ * `targetVisibility` is the visibility the entry has: an update command may
+ * not carry one (permissions go through the content-access API), so without
+ * it no update could ever raise a private memory to `highly_restricted`.
+ */
+function validateUpdatePayload(payload: Record<string, unknown>, targetVisibility: string | null): void {
   const sensitivity = stringValue(payload.sensitivity_level);
   const visibility =
-    stringValue(payload.target_visibility) ?? stringValue(payload.visibility);
+    stringValue(payload.target_visibility) ?? stringValue(payload.visibility) ?? targetVisibility;
   if (sensitivity === "highly_restricted" && visibility !== "private") {
     throw new MemoryProposalValidationError(
       "highly_restricted memories must use private visibility",

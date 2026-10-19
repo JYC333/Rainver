@@ -2,6 +2,7 @@ import type { ServerConfig } from "../../../config.js";
 import type { CredentialSpendBasis } from "../../policy/credentialSpend.js";
 import { loadViewerSpaceRole } from "../../retrieval/sourcePolicy.js";
 import { getDbPool, type Pool } from "../../../db/pool.js";
+import { tryWithDedicatedSessionAdvisoryLock } from "../../../db/advisoryLock.js";
 import type {
   RetrievalObjectType,
   RetrievalSearchResult,
@@ -23,6 +24,8 @@ import {
   requiredString,
   type Queryable,
   type SpaceUserIdentity,
+  withQueryableTransaction,
+  bestEffortStep,
 } from "../../routeUtils/common.js";
 import { normalizeThreadScope, checkPinnedThreadDrift } from "../../projectResearch/threadScope.js";
 import {
@@ -39,6 +42,9 @@ import { readSpaceRetrievalSettings } from "../../retrieval/settings.js";
 import { resolveProviderCommandStore } from "../../providers/commands/store.js";
 import { contentDecisionFromDb } from "../../access/contentAccessQuery.js";
 import { assertSourcePromptEgressAllowed } from "../sourcePromptEgress.js";
+import { assertSourceConnectionManageable, assertSourceConnectionReadable } from "../sourceConnectionAccess.js";
+import { assertProjectReadable, assertProjectWriter } from "../../projects/access.js";
+import { canReadAgent } from "../../agents/agentAccess.js";
 import { sourceItemFullContentReadClause } from "../sourceItemAccess.js";
 import { itemColumnsForAlias, type EvidenceRow, type SourceItemRow, type SourceConnectionRow } from "../sourceRepositoryRows.js";
 import { sourceRetrievalRegistry } from "../retrievalAdapter.js";
@@ -117,6 +123,25 @@ const SOURCE_POST_PROCESSING_PROMPT_BYTES_PER_CHAR = 3;
 const SOURCE_POST_PROCESSING_PROMPT_FIXED_RESERVE_CHARS = 12_000;
 const SOURCE_POST_PROCESSING_EXTRACTED_TEXT_SNIPPET_RESERVE_CHARS = 2_400;
 
+/**
+ * Only the cursor window moves between runs. A time window (`local_day`,
+ * `last_24h`) hands every run the same batch, so draining one would repeat
+ * that batch until the batch limit.
+ */
+/**
+ * One claim per rule, held as a PostgreSQL session advisory lock on its own
+ * connection for the whole run, so a manual run, a scheduled fire, and a
+ * source-event drain never read the same cursor window twice, and a crashed
+ * process releases its claim with its connection.
+ */
+function ruleClaimKey(spaceId: string, ruleId: string): string {
+  return `source_post_processing_rule:${spaceId}:${ruleId}`;
+}
+
+function windowMovesWithCursor(rule: SourcePostProcessingRuleRow): boolean {
+  return normalizeInputConfig(rule.input_config_json).window === "new_since_last_success";
+}
+
 export class SourcePostProcessingService {
   constructor(
     private readonly db: Queryable,
@@ -124,7 +149,7 @@ export class SourcePostProcessingService {
   ) {}
 
   async listRules(identity: SpaceUserIdentity, connectionId: string): Promise<SourcePostProcessingRuleOut[]> {
-    await this.requireConnection(identity.spaceId, connectionId);
+    await this.requireReadableConnection(identity, connectionId);
     return new PgSourcePostProcessingRepository(this.db).listRules(identity.spaceId, connectionId);
   }
 
@@ -133,7 +158,7 @@ export class SourcePostProcessingService {
     connectionId: string,
     body: Record<string, unknown>,
   ): Promise<SourcePostProcessingRuleOut> {
-    const connection = await this.requireConnection(identity.spaceId, connectionId);
+    const connection = await this.requireManagedConnection(identity, connectionId);
     const triggerType = normalizeTriggerType(body.trigger_type);
     const triggerConfig = normalizeTriggerConfig(body.trigger_config_json, triggerType);
     const inputConfig = normalizeInputConfig(body.input_config_json);
@@ -142,7 +167,7 @@ export class SourcePostProcessingService {
     await this.enforceSourceTargets(connection, actions);
     const agentId = await this.resolveAgentId(identity, optionalString(body.agent_id));
     const projectId = optionalString(body.project_id);
-    if (projectId) await this.assertProjectInSpace(identity.spaceId, projectId);
+    if (projectId) await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     this.validateInputContextBinding(projectId, inputConfig, actions);
     const name = optionalString(body.name) ?? defaultRuleName(triggerType, actions);
     return new PgSourcePostProcessingRepository(this.db).createRule({
@@ -170,7 +195,7 @@ export class SourcePostProcessingService {
     if (!existing || existing.source_channel_id !== connectionId) {
       throw new HttpError(404, "Post-processing rule not found");
     }
-    const connection = await this.requireConnection(identity.spaceId, connectionId);
+    const connection = await this.requireManagedConnection(identity, connectionId);
     const triggerType = Object.hasOwn(body, "trigger_type")
       ? normalizeTriggerType(body.trigger_type)
       : existing.trigger_type;
@@ -191,7 +216,7 @@ export class SourcePostProcessingService {
       ? await this.resolveAgentId(identity, optionalString(body.agent_id))
       : undefined;
     const projectId = Object.hasOwn(body, "project_id") ? optionalString(body.project_id) : undefined;
-    if (projectId) await this.assertProjectInSpace(identity.spaceId, projectId);
+    if (projectId) await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     this.validateInputContextBinding(
       projectId === undefined ? existing.project_id : projectId,
       inputConfig ?? normalizeInputConfig(existing.input_config_json),
@@ -219,10 +244,16 @@ export class SourcePostProcessingService {
     if (!rule || rule.source_channel_id !== connectionId) {
       throw new HttpError(404, "Post-processing rule not found");
     }
-    return this.executeRule(rule, {
-      triggerType: "manual",
-      actorUserId: identity.userId,
-      force: true,
+    await this.requireManagedConnection(identity, connectionId);
+    return this.claimForManualRun(identity.spaceId, ruleId, async () => {
+      // Re-read under the claim: a run that just finished moved the cursor.
+      const current = await repo.getRule(identity.spaceId, ruleId);
+      if (!current || current.source_channel_id !== connectionId) throw new HttpError(404, "Post-processing rule not found");
+      return this.executeRule(current, {
+        triggerType: "manual",
+        actorUserId: identity.userId,
+        force: true,
+      });
     });
   }
 
@@ -346,33 +377,41 @@ export class SourcePostProcessingService {
       throw new HttpError(404, "Post-processing rule not found");
     }
     const maxBatches = normalizeInputConfig(firstRule.input_config_json).max_batches_per_event;
-    const runs: SourcePostProcessingRunOut[] = [];
-    let stoppedReason = "max_batches_reached";
-    for (let index = 0; index < maxBatches; index += 1) {
-      const rule = await repo.getRule(identity.spaceId, ruleId);
-      if (!rule || rule.source_channel_id !== connectionId) {
-        stoppedReason = "rule_missing";
-        break;
+    const { runs, stoppedReason: drainedReason } = await this.claimForManualRun(identity.spaceId, ruleId, async () => {
+      const runs: SourcePostProcessingRunOut[] = [];
+      let stoppedReason = "max_batches_reached";
+      for (let index = 0; index < maxBatches; index += 1) {
+        const rule = await repo.getRule(identity.spaceId, ruleId);
+        if (!rule || rule.source_channel_id !== connectionId) {
+          stoppedReason = "rule_missing";
+          break;
+        }
+        const run = await this.executeRule(rule, {
+          triggerType: "manual",
+          actorUserId: identity.userId,
+          force: true,
+        });
+        runs.push(run);
+        if (run.status === "skipped") {
+          stoppedReason = "no_inputs";
+          break;
+        }
+        if (run.status !== "succeeded") {
+          stoppedReason = "run_failed";
+          break;
+        }
+        if (run.input_item_ids.length === 0) {
+          stoppedReason = "no_inputs";
+          break;
+        }
+        if (!windowMovesWithCursor(rule)) {
+          stoppedReason = "window_processed";
+          break;
+        }
       }
-      const run = await this.executeRule(rule, {
-        triggerType: "manual",
-        actorUserId: identity.userId,
-        force: true,
-      });
-      runs.push(run);
-      if (run.status === "skipped") {
-        stoppedReason = "no_inputs";
-        break;
-      }
-      if (run.status !== "succeeded") {
-        stoppedReason = "run_failed";
-        break;
-      }
-      if (run.input_item_ids.length === 0) {
-        stoppedReason = "no_inputs";
-        break;
-      }
-    }
+      return { runs, stoppedReason };
+    });
+    let stoppedReason = drainedReason;
     const backlog = await repo.backlog(identity.spaceId, connectionId);
     const ruleBacklog = backlog.rules.find((item) => item.rule_id === ruleId);
     if ((ruleBacklog?.pending_item_count ?? 0) === 0 && stoppedReason === "max_batches_reached") {
@@ -391,12 +430,12 @@ export class SourcePostProcessingService {
     limit: number,
     offset: number,
   ): Promise<{ items: SourcePostProcessingRunOut[]; total: number; limit: number; offset: number }> {
-    await this.requireConnection(identity.spaceId, connectionId);
+    await this.requireReadableConnection(identity, connectionId);
     return new PgSourcePostProcessingRepository(this.db).listRuns(identity.spaceId, connectionId, limit, offset);
   }
 
   async backlog(identity: SpaceUserIdentity, connectionId: string): Promise<SourcePostProcessingBacklogOut> {
-    await this.requireConnection(identity.spaceId, connectionId);
+    await this.requireReadableConnection(identity, connectionId);
     return new PgSourcePostProcessingRepository(this.db).backlog(identity.spaceId, connectionId);
   }
 
@@ -412,8 +451,8 @@ export class SourcePostProcessingService {
       offset: number;
     },
   ): Promise<{ items: SourcePostProcessingItemDecisionOut[]; total: number; limit: number; offset: number }> {
-    if (filters.connectionId) await this.requireConnection(identity.spaceId, filters.connectionId);
-    if (filters.projectId) await this.assertProjectInSpace(identity.spaceId, filters.projectId);
+    if (filters.connectionId) await this.requireReadableConnection(identity, filters.connectionId);
+    if (filters.projectId) await assertProjectReadable(this.db, identity.spaceId, filters.projectId, identity.userId);
     return new PgSourcePostProcessingRepository(this.db).listDecisions({
       spaceId: identity.spaceId,
       userId: identity.userId,
@@ -437,8 +476,8 @@ export class SourcePostProcessingService {
       offset: number;
     },
   ): Promise<{ items: SourcePostProcessingBriefingDaySummaryOut[]; total: number; limit: number; offset: number }> {
-    if (filters.connectionId) await this.requireConnection(identity.spaceId, filters.connectionId);
-    if (filters.projectId) await this.assertProjectInSpace(identity.spaceId, filters.projectId);
+    if (filters.connectionId) await this.requireReadableConnection(identity, filters.connectionId);
+    if (filters.projectId) await assertProjectReadable(this.db, identity.spaceId, filters.projectId, identity.userId);
     return new PgSourcePostProcessingRepository(this.db).listBriefings({
       spaceId: identity.spaceId,
       userId: identity.userId,
@@ -457,7 +496,7 @@ export class SourcePostProcessingService {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       throw new HttpError(422, "date must be an ISO calendar date (YYYY-MM-DD)");
     }
-    await this.requireConnection(identity.spaceId, connectionId);
+    await this.requireReadableConnection(identity, connectionId);
     const briefing = await new PgSourcePostProcessingRepository(this.db).getBriefing({
       spaceId: identity.spaceId,
       userId: identity.userId,
@@ -697,7 +736,7 @@ export class SourcePostProcessingService {
     await this.enforceSourceTargets(connection, actions);
     const agentId = await this.resolveAgentId(identity, optionalString(body.agent_id));
     const projectId = optionalString(body.project_id);
-    if (projectId) await this.assertProjectInSpace(identity.spaceId, projectId);
+    if (projectId) await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     this.validateInputContextBinding(projectId, normalizeInputConfig(body.input_config_json), actions);
     const batch = await repo.collectInputBatch({
       spaceId: identity.spaceId,
@@ -762,12 +801,17 @@ export class SourcePostProcessingService {
         skipped.push({ rule_id: rule.id, reason: "cooldown" });
         continue;
       }
-      if (await repo.hasInFlightRun(rule.space_id, rule.id)) {
-        skipped.push({ rule_id: rule.id, reason: "run_in_flight" });
-        continue;
-      }
       try {
-        const result = await this.drainActiveRuleFromEvent(rule);
+        const claimed = await tryWithDedicatedSessionAdvisoryLock(this.db, ruleClaimKey(rule.space_id, rule.id), async () => {
+          // Re-read under the claim: a run that just finished moved the cursor.
+          const current = await repo.getRule(rule.space_id, rule.id);
+          return current && current.status === "active" ? this.drainActiveRuleFromEvent(current) : null;
+        });
+        if (!claimed.acquired) {
+          skipped.push({ rule_id: rule.id, reason: "run_in_flight" });
+          continue;
+        }
+        const result = claimed.value ?? { runs: [], stopped_reason: "rule_inactive" };
         if (result.runs.length === 0 || result.runs.every((run) => run.status === "skipped")) {
           skipped.push({ rule_id: rule.id, reason: "no_inputs" });
         } else {
@@ -790,11 +834,32 @@ export class SourcePostProcessingService {
     return { matched: rules.length, fired, skipped, successful_runs: successfulRuns };
   }
 
-  async fireScheduledRule(rule: SourcePostProcessingRuleRow): Promise<SourcePostProcessingRunOut> {
-    return this.executeRule(rule, {
-      triggerType: "schedule",
-      actorUserId: rule.created_by_user_id,
+  /**
+   * A scheduled fire of `rule`, or null when a run of the same rule is
+   * already in hand (another fire, an event drain, or a person's manual run):
+   * that run reads the same cursor, so a second pass would only repeat it.
+   */
+  async fireScheduledRule(rule: SourcePostProcessingRuleRow): Promise<SourcePostProcessingRunOut | null> {
+    const claimed = await tryWithDedicatedSessionAdvisoryLock(this.db, ruleClaimKey(rule.space_id, rule.id), async () => {
+      const current = await new PgSourcePostProcessingRepository(this.db).getRule(rule.space_id, rule.id);
+      if (!current) return null;
+      return this.executeRule(current, {
+        triggerType: "schedule",
+        actorUserId: current.created_by_user_id,
+      });
     });
+    return claimed.acquired ? claimed.value : null;
+  }
+
+  /**
+   * A person's run of a rule holds the rule's claim for its whole length. A
+   * rule already being run (by anyone, or by the scheduler or a source event)
+   * is refused rather than run twice over the same cursor window.
+   */
+  private async claimForManualRun<T>(spaceId: string, ruleId: string, fn: () => Promise<T>): Promise<T> {
+    const claimed = await tryWithDedicatedSessionAdvisoryLock(this.db, ruleClaimKey(spaceId, ruleId), fn);
+    if (!claimed.acquired) throw new HttpError(409, "This post-processing rule is already running; wait for that run to finish.");
+    return claimed.value;
   }
 
   private async drainActiveRuleFromEvent(
@@ -825,6 +890,10 @@ export class SourcePostProcessingService {
       }
       if (run.input_item_ids.length === 0) {
         stoppedReason = "no_inputs";
+        break;
+      }
+      if (!windowMovesWithCursor(rule)) {
+        stoppedReason = "window_processed";
         break;
       }
     }
@@ -1094,32 +1163,39 @@ export class SourcePostProcessingService {
         retrievalContextRefs(retrievalContext),
       );
       result.item_decisions = mergeSyntheticItemDecisions(result.item_decisions, prefilter.syntheticDecisions);
-      const materialized = await this.materializeOutputs({
-        triggerType: input.triggerType,
-        sourceChannelId: input.sourceChannelId,
-        connection: input.connection,
-        rule: input.rule,
-        postProcessingRunId: postRun.id,
-        agentRun,
-        actorUserId: input.actorUserId,
-        items: batch.items,
-        evidence: batch.evidence,
-        actions: input.actions,
-        inputConfig: input.inputConfig,
-        cursorBefore: batch.cursorBefore,
-        cursorAfter: batch.cursorAfter,
-        retrievalContext,
-        result,
-        evidenceCardPromptHash,
-      });
-      if (input.rule && input.inputConfig.window !== "explicit") {
-        await repo.advanceRuleCursor({
-          spaceId: input.rule.space_id,
-          ruleId: input.rule.id,
-          cursor: batch.cursorAfter,
+      // A run's outputs and its cursor advance commit together: a step that
+      // fails part-way must not leave a digest or Evidence behind for a batch
+      // the cursor will hand to the next run again.
+      const materialized = await withQueryableTransaction(this.db, async (db) => {
+        const outputs = await new SourcePostProcessingService(db, this.config).materializeOutputs({
+          triggerType: input.triggerType,
+          sourceChannelId: input.sourceChannelId,
+          connection: input.connection,
+          rule: input.rule,
+          postProcessingRunId: postRun.id,
+          agentRun,
+          actorUserId: input.actorUserId,
+          items: batch.items,
+          evidence: batch.evidence,
+          actions: input.actions,
+          inputConfig: input.inputConfig,
+          cursorBefore: batch.cursorBefore,
+          cursorAfter: batch.cursorAfter,
+          retrievalContext,
+          result,
+          evidenceCardPromptHash,
         });
-        await repo.recordRuleFire(input.rule.space_id, input.rule.id);
-      }
+        if (input.rule && input.inputConfig.window !== "explicit") {
+          const txRepo = new PgSourcePostProcessingRepository(db);
+          await txRepo.advanceRuleCursor({
+            spaceId: input.rule.space_id,
+            ruleId: input.rule.id,
+            cursor: batch.cursorAfter,
+          });
+          await txRepo.recordRuleFire(input.rule.space_id, input.rule.id);
+        }
+        return outputs;
+      });
       return repo.markRunFinished({
         runId: postRun.id,
         spaceId: input.connection.space_id,
@@ -1555,10 +1631,9 @@ export class SourcePostProcessingService {
               ps.topics_json,
               ps.highlights_json
          FROM projects p
-         LEFT JOIN project_public_summaries ps
+         LEFT JOIN project_public_summary_publications ps
            ON ps.space_id = p.space_id
           AND ps.project_id = p.id
-          AND ps.review_status = 'approved'
         WHERE p.space_id = $1
           AND p.id = $2
           AND p.status <> 'deleted'
@@ -1709,6 +1784,7 @@ export class SourcePostProcessingService {
       }
     }
     if (input.inputConfig.deep_analysis.enabled && input.rule) {
+      const rule = input.rule;
       const deepConfig = input.inputConfig.deep_analysis;
       const candidateItemIds = input.result.item_decisions
         .filter((decision) => deepConfig.trigger_relevance.includes(decision.relevance as "relevant" | "maybe"))
@@ -1717,14 +1793,14 @@ export class SourcePostProcessingService {
         .filter((id) => itemById.has(id))
         .slice(0, deepConfig.max_candidates_per_run);
       const uniqueCandidateItemIds = [...new Set(candidateItemIds)];
-      try {
+      await bestEffortStep(this.db, "source_deep_analysis_followup", async () => {
         const alreadyExtracted = await repo.loadExtractedTextSnippets(input.connection.space_id, uniqueCandidateItemIds, 1);
         const readyItemIds = uniqueCandidateItemIds.filter((id) => alreadyExtracted.has(id));
         if (readyItemIds.length > 0) {
           const followUp = await this.enqueueDeepAnalysisFollowUp({
             spaceId: input.connection.space_id,
             sourceChannelId: input.sourceChannelId,
-            ruleId: input.rule.id,
+            ruleId: rule.id,
             itemIds: readyItemIds,
             sourceRunId: input.postProcessingRunId,
             userId: input.actorUserId,
@@ -1741,16 +1817,16 @@ export class SourcePostProcessingService {
             source_post_processing_followups: [{
               phase: "deep_analysis",
               source_post_processing_run_id: input.postProcessingRunId,
-              source_post_processing_rule_id: input.rule.id,
+              source_post_processing_rule_id: rule.id,
               triggered_by_user_id: input.actorUserId,
               trigger_type: input.triggerType,
               content_source: deepConfig.content_source,
             }],
           },
         }));
-      } catch (error) {
+      }, (error) => {
         if (input.inputConfig.deep_analysis.content_source === "require_extracted_text") throw error;
-      }
+      });
     }
     if (input.actions.create_proposals) {
       const proposalMarkdown = input.result.proposal_markdown ?? input.result.digest_markdown;
@@ -1786,7 +1862,7 @@ export class SourcePostProcessingService {
 
   private async resolveAgentId(identity: SpaceUserIdentity, requestedAgentId: string | null): Promise<string> {
     if (requestedAgentId) {
-      await this.assertAgentUsable(identity.spaceId, requestedAgentId);
+      await this.assertAgentUsable(identity, requestedAgentId);
       return requestedAgentId;
     }
     const pool = this.requirePool();
@@ -1794,25 +1870,34 @@ export class SourcePostProcessingService {
     return agent.id;
   }
 
-  private async assertAgentUsable(spaceId: string, agentId: string): Promise<void> {
+  /** A rule runs its Agent on its author's behalf, so the author must be able to read it. */
+  private async assertAgentUsable(identity: SpaceUserIdentity, agentId: string): Promise<void> {
     const row = await this.db.query<{ id: string }>(
       `SELECT id FROM agents WHERE space_id = $1 AND id = $2 AND status = 'active' LIMIT 1`,
-      [spaceId, agentId],
+      [identity.spaceId, agentId],
     );
-    if (!row.rows[0]) throw new HttpError(404, "Agent not found or inactive");
-  }
-
-  private async assertProjectInSpace(spaceId: string, projectId: string): Promise<void> {
-    const row = await this.db.query<{ id: string }>(
-      `SELECT id FROM projects WHERE space_id = $1 AND id = $2 AND status <> 'deleted' LIMIT 1`,
-      [spaceId, projectId],
-    );
-    if (!row.rows[0]) throw new HttpError(404, "Project not found");
+    if (!row.rows[0] || !(await canReadAgent(this.db, identity, agentId))) {
+      throw new HttpError(404, "Agent not found or inactive");
+    }
   }
 
   private async requireConnection(spaceId: string, connectionId: string): Promise<SourceConnectionRow> {
     const connection = await new PgSourcePostProcessingRepository(this.db).getConnection(spaceId, connectionId);
     if (!connection) throw new HttpError(404, "Source connection not found");
+    return connection;
+  }
+
+  /** A channel's rules, runs and briefings are read under its connection's read decision. */
+  private async requireReadableConnection(identity: SpaceUserIdentity, channelId: string): Promise<SourceConnectionRow> {
+    const connection = await this.requireConnection(identity.spaceId, channelId);
+    await assertSourceConnectionReadable(this.db, identity, connection.id);
+    return connection;
+  }
+
+  /** Writing or running a channel's rules takes authority over its connection. */
+  private async requireManagedConnection(identity: SpaceUserIdentity, channelId: string): Promise<SourceConnectionRow> {
+    const connection = await this.requireConnection(identity.spaceId, channelId);
+    await assertSourceConnectionManageable(this.db, identity, connection.id);
     return connection;
   }
 
@@ -1945,7 +2030,7 @@ export function sourcePostProcessingExecutionRequest(postProcessingRunId: string
   };
 }
 
-export function sourcePostProcessingRuntimePrompt(instruction: string): string {
+function sourcePostProcessingRuntimePrompt(instruction: string): string {
   return instruction;
 }
 
@@ -2195,13 +2280,9 @@ function effectiveInputConfig(rule: SourcePostProcessingRuleRow): SourcePostProc
 /**
  * How much prompt one screening run may spend, in characters.
  *
- * This used to be a flat 48k — a figure from when every model was assumed to
- * have a ~16k context window. On a model with a half-million-token window it
- * trimmed a sixteen-item intake to four items per run, and because the trim is
- * silent the leftovers came back as fresh recovery batches: one research pass
- * turned into five screening runs and the reviewer was asked to approve the
- * same intake more than once. The window is the real constraint, so read it
- * from the model registry.
+ * The window is the model's, read from the model registry. A flat character
+ * cap silently splits one intake into repeated screening runs and asks the
+ * reviewer to approve the same intake more than once.
  */
 export function promptBudgetCharsFor(model: string | null): number {
   if (!model) return SOURCE_POST_PROCESSING_PROMPT_BUDGET_FLOOR_CHARS;
@@ -2418,19 +2499,17 @@ function contextRefKey(
 /**
  * How widely a Proposal that quotes several Source items may be published.
  *
- * The narrowest of what it quotes. A run that summarised one restricted
- * candidate alongside ten shared ones used to publish the lot at
- * `space_shared`, which is the copy-across-a-boundary the item's own gate
- * exists to prevent.
+ * The narrowest of what it quotes. One restricted candidate beside shared
+ * ones must not publish the lot at `space_shared`.
  */
 function narrowestItemVisibility(items: readonly { visibility: string; access_level?: string | null }[]): string {
   const order = ["private", "selected_users", "space_shared"];
   let narrowest = order.length - 1;
   for (const item of items) {
     const index = order.indexOf(item.visibility);
-    // An unrecognised value is treated as the narrowest there is, not as a
-    // value narrower than all of them: `indexOf` returns -1, which used to win
-    // the comparison and then be rejected by `ck_proposals_visibility`.
+    // An unrecognised value is the narrowest known level. `indexOf` returns
+    // -1 for it; treating -1 as narrower than every known level then fails
+    // `ck_proposals_visibility`.
     narrowest = Math.min(narrowest, index === -1 ? 0 : index);
     // A `space_shared` item served at `summary` is withheld from most readers;
     // republishing its excerpt Space-wide is that withholding undone.

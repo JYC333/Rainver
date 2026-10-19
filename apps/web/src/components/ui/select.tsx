@@ -6,7 +6,7 @@ import { cn } from '../../lib/utils'
 export interface SelectOption {
   value: string
   label: string
-  /** Shown but not choosable — e.g. an offline host, a "next phase" runtime. */
+  /** Shown but not choosable — for example an offline host. */
   disabled?: boolean
 }
 
@@ -57,9 +57,10 @@ export function Select({ options, value, onChange, className, size = 'md', dropU
       const viewportPadding = 8
       // Measure the menu's own natural content width (it's mounted off-screen with
       // `width: max-content` via measureStyle below until the first position is computed)
-      // instead of assuming a fixed width. A fixed floor wider than the actual content forced
-      // the menu wider than narrow trigger/viewport combinations could fit, which made the
-      // final viewport clamp below pin it far from the trigger regardless of alignment.
+      // instead of assuming a fixed width. Do not use a fixed floor wider than
+      // the content. The menu would be wider than narrow trigger/viewport
+      // combinations can fit, and the viewport clamp would pin it far from
+      // the trigger.
       const naturalWidth = menuRef.current?.getBoundingClientRect().width ?? rect.width
       const maxWidth = Math.min(Math.max(rect.width, naturalWidth), window.innerWidth - viewportPadding * 2)
       // Prefer aligning the menu's left edge with the trigger's left edge. If that would

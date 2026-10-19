@@ -12,8 +12,8 @@ import type { StrictNamespaceRequest } from "../src/strictNamespace.js";
  * a Run on the built-in host is reachable by anyone allowed to dispatch in its
  * Space, and this argv is the only thing between them. These assertions are on
  * the argv rather than on a live `bwrap`, because CI has no bubblewrap and a
- * test that silently skipped would assert nothing at all; a real namespace is
- * part of this phase's on-machine verification.
+ * test that silently skipped would assert nothing at all. A real namespace
+ * is verified on a machine.
  */
 const base: StrictNamespaceRequest = {
   command: "/usr/bin/agent",
@@ -190,8 +190,7 @@ describe("what a strict Run is given besides its workspace", () => {
  *
  * This is where a shared execution host's isolation is decided — the
  * environment, the HOME, the binds — and none of it is observable from a test
- * that would have to spawn `bwrap` to see it. Each assertion here stands for a
- * defect that was in the first cut of this phase.
+ * that would have to spawn `bwrap` to see it.
  */
 describe("planning a strict launch", () => {
   const plan = (overrides: Partial<Parameters<typeof planStrictLaunch>[0]> = {}) => planStrictLaunch({ egress: {},
@@ -211,6 +210,8 @@ describe("planning a strict launch", () => {
       // routes, from the very network this namespace shares.
       SANDBOX_RUNNER_TOKEN: "the-instance-internal-token",
       RAINVER_BUILTIN_HOST_CREDENTIAL: "/runner/builtin-host/registration.json",
+      ANTHROPIC_API_KEY: "sk-machine",
+      CLAUDE_CODE_OAUTH_TOKEN: "oauth-from-this-machine",
     },
     isolation: { sandbox_mode: "read_write", egress_profile: "default" },
     profileDir: "/profile",
@@ -228,7 +229,11 @@ describe("planning a strict launch", () => {
     // is the instance's.
     expect(env).not.toHaveProperty("SANDBOX_RUNNER_TOKEN");
     expect(env).not.toHaveProperty("RAINVER_BUILTIN_HOST_CREDENTIAL");
+    expect(env).not.toHaveProperty("ANTHROPIC_API_KEY");
+    expect(env).not.toHaveProperty("CLAUDE_CODE_OAUTH_TOKEN");
     expect(Object.values(env)).not.toContain("the-instance-internal-token");
+    expect(Object.values(env)).not.toContain("sk-machine");
+    expect(Object.values(env)).not.toContain("oauth-from-this-machine");
   });
 
   it("gives each Run its own HOME instead of one the whole instance shares", () => {
@@ -262,9 +267,8 @@ describe("planning a strict launch", () => {
   });
 
   it("refuses a run id that would place the run directory outside the daemon's own", () => {
-    // `join` normalizes `../..` away, so the escaped path looks perfectly
-    // ordinary by the time a namespace is built around it — which is why the
-    // guard is on the id, as it was on the Runner's mount ids.
+    // `join` normalizes `../..` away, so the escaped path looks ordinary by
+    // the time a namespace is built around it. The guard is on the id.
     expect(() => runDir("../..")).toThrow(/usable directory name/);
     expect(() => runDir("run/../../etc")).toThrow(/usable directory name/);
   });

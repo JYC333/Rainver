@@ -4,11 +4,10 @@ import type { RunRecord } from "./runRepositoryTypes.js";
  * What this Run was asked to do, as opposed to everything it was told.
  *
  * A Room turn's `runs.prompt` is the whole assembled prompt: the Project's
- * state, the conversation's recent messages, the execution rules, and — since
- * the Agent identity work — that Agent's own persona and the notes it learned
- * in this Room. Handing that to a *different* Agent, which is what a fan-out
- * handover and `agent.wait_for_results` used to do, carries one Agent's memory
- * of itself into another's vendor session and its CLI's auto-memory. The
+ * state, the conversation's recent messages, the execution rules, and that
+ * Agent's own persona and the notes it learned in this Room. Handing that
+ * whole prompt to a different Agent carries one Agent's memory of itself
+ * into another's vendor session and its CLI's auto-memory. Do not hand one Agent's identity block to a sibling. The
  * Agent is the memory boundary
  * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §4,
  * B68), and a sibling needs the task, not the identity.

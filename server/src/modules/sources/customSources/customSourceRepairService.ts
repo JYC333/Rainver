@@ -1,3 +1,4 @@
+import { assertSourceConnectionManageable } from "../sourceConnectionAccess.js";
 import type { CustomSourcePolicyEnvelope } from "@rainver/protocol";
 import type { ServerConfig } from "../../../config.js";
 import { HttpError, optionalString, withDbTransaction, type Pool, type SpaceUserIdentity } from "../../routeUtils/common.js";
@@ -25,7 +26,7 @@ interface RepairableConnection {
 }
 
 /**
- * Phase 9: repair (regenerate + retest + auto-activate-or-propose) and
+ * Repair (regenerate + retest + auto-activate-or-propose) and
  * rollback. Repair never mutates the active version in place — it always
  * produces a new draft version through the same `generateHandler`/
  * `testHandler` path `CustomSourceCreateFlowService` already exposes, then
@@ -99,8 +100,8 @@ export class CustomSourceRepairService {
       });
     } catch (error) {
       // testHandler can throw uncaught (e.g. recordTestOutcome's "no longer
-      // testable" guard, or a raw DB error) — without this catch,
-      // repair_status would be left at repair_pending forever, since the
+      // testable" guard, or a raw DB error). Do not let it escape.
+      // repair_status would be left at repair_pending, since the
       // automatic scan-worker trigger deliberately never touches
       // repair_pending.
       await this.resetRepairStatusAfterFailure(identity, connectionId, connection.repair_status, error);
@@ -133,7 +134,7 @@ export class CustomSourceRepairService {
   }
 
   /**
-   * A 429 from the Phase 12 generate-rate-limit is a transient throttle, not
+   * A 429 from the generate rate limit is a transient throttle, not
    * a real generation/test/activation failure — flipping repair_status to
    * `repair_required` for it would mislead `getHandlerSummary`'s
    * `repair_status` field (and any operator/dashboard reading it) into
@@ -173,7 +174,7 @@ export class CustomSourceRepairService {
     });
 
     if (evaluation.withinEnvelope && settings.space.same_envelope_repair_auto_apply) {
-      await activateCustomSourceHandlerVersion(this.pool, identity, connectionId, newVersion.id, activeVersion.id);
+      await activateCustomSourceHandlerVersion(this.pool, identity, connectionId, newVersion.id, activeVersion.id, "draft");
       const activated = await new PgCustomSourceHandlerRepository(this.pool, this.config).getHandlerVersion(
         identity,
         connectionId,
@@ -294,6 +295,7 @@ export class CustomSourceRepairService {
       connectionId,
       target.id,
       connection.active_handler_version_id,
+      "superseded",
     );
     const activated = await new PgCustomSourceHandlerRepository(this.pool, this.config).getHandlerVersion(
       identity,
@@ -327,6 +329,7 @@ export class CustomSourceRepairService {
     );
     const row = result.rows[0];
     if (!row) throw new HttpError(404, "Source connection not found");
+    await assertSourceConnectionManageable(this.pool, identity, row.id);
     if (row.handler_kind !== "generated_custom") throw new HttpError(422, "Source connection is not a Custom Source");
     if (!row.active_handler_version_id) {
       throw new HttpError(409, "Custom Source has no active handler version to repair or roll back");

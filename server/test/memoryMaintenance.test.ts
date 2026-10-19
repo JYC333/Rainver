@@ -17,6 +17,10 @@ function fakeDb(rows: MemoryRow[], accessibleProjects: readonly string[] = []): 
     calls,
     async query<Row = Record<string, unknown>>(sql: string, params: readonly unknown[] = []) {
       calls.push({ sql, params });
+      if (/FROM memory_entries/.test(sql) && /AND id = \$2/.test(sql)) {
+        const entry = rows.filter((candidate) => candidate.id === params[1]);
+        return { rows: entry as Row[], rowCount: entry.length };
+      }
       if (/FROM memory_entries/.test(sql)) {
         const limit = typeof params[2] === "number" ? params[2] : rows.length;
         const cursorUpdatedAt = typeof params[4] === "string" ? params[4] : null;
@@ -87,6 +91,9 @@ function row(overrides: Partial<MemoryRow> = {}): MemoryRow {
     project_id: null,
     agent_id: null,
     origin_room_id: null,
+    approved_by: null,
+    access_count: 0,
+    last_accessed_at: null,
     ...overrides,
   };
 }
@@ -107,7 +114,7 @@ function scan(
 }
 
 describe("Memory maintenance scan", () => {
-  it("detects duplicate, stale, thin, and lifecycle findings without raw content", async () => {
+  it("reports duplicates as a change and age or short content as hints, without raw content", async () => {
     const db = fakeDb([
       row({
         id: "memory-1",
@@ -116,27 +123,15 @@ describe("Memory maintenance scan", () => {
         updated_at: "2020-01-01T00:00:00.000Z",
       }),
       row({ id: "memory-2", title: "Shared title", content: "This content is long enough." }),
-      row({
-        id: "memory-3",
-        title: "Superseded without target",
-        status: "superseded",
-        content: "Historical memory",
-        supersedes_memory_id: null,
-      }),
     ]);
 
     const result = await scan(db);
 
-    expect(result.report.counts).toMatchObject({
-      duplicate: 1,
-      stale: 1,
-      thin: 1,
-      lifecycle_drift: 1,
-    });
+    expect(result.report.counts).toMatchObject({ duplicate: 1, stale: 1, thin: 1 });
     expect(result.report.candidate_limit).toBe(100);
-    expect(result.report.candidates_examined).toBe(3);
-    expect(result.report.scanned).toBe(3);
-    expect(result.contributingMemoryIds).toEqual(["memory-1", "memory-2", "memory-3"]);
+    expect(result.report.candidates_examined).toBe(2);
+    expect(result.report.scanned).toBe(2);
+    expect(result.contributingMemoryIds).toEqual(["memory-1", "memory-2"]);
     expect(JSON.stringify(result.report)).not.toContain("tiny");
     expect(JSON.stringify(result.report)).not.toContain("This content is long enough.");
     expect(result.report.access_safety).toMatchObject({
@@ -151,6 +146,18 @@ describe("Memory maintenance scan", () => {
         target_memory_ids: ["memory-2"],
       },
     });
+    // Age and length are what an entry is, not something wrong with it: no
+    // finding of either kind asks anyone to do anything.
+    for (const kind of ["stale", "thin"]) {
+      expect(result.report.findings.find((finding) => finding.kind === kind)?.proposed_action).toBeNull();
+    }
+  });
+
+  it("scans only active entries, so a version chain is not reported as drift", async () => {
+    const db = fakeDb([row({ id: "memory-1" })]);
+    await scan(db);
+    const select = db.calls.find((call) => /FROM memory_entries/.test(call.sql));
+    expect(select?.params[1]).toBe("active");
   });
 
   it("excludes unsafe scopes and project-inaccessible rows before reporting", async () => {
@@ -235,28 +242,14 @@ describe("Memory maintenance scan", () => {
     expect(JSON.stringify(result.report)).not.toContain("tiny");
   });
 
-  it("detects project, source-policy, archived-state, and contradiction drift without content", async () => {
+  it("asks for a revision of source-policy and contradiction drift without content", async () => {
     const db = fakeDb([
-      row({
-        id: "project-drift",
-        title: "Project-scoped fact",
-        scope_type: "user",
-        project_id: "project-1",
-        content: "Project memory has enough content for the maintenance threshold.",
-      }),
       row({
         id: "source-policy-drift",
         title: "External source fact",
         source_trust: "trusted_external",
         source_id: null,
         content: "External source fact has enough content for the maintenance threshold.",
-      }),
-      row({
-        id: "archived-drift",
-        title: "Archived lifecycle fact",
-        status: "archived",
-        root_memory_id: "root-memory",
-        content: "Archived content should not appear in the report.",
       }),
       row({
         id: "feature-yes",
@@ -268,60 +261,35 @@ describe("Memory maintenance scan", () => {
         title: "Feature state",
         content: "Feature state is not enabled for the workspace.",
       }),
-    ], ["project-1"]);
+    ]);
 
     const result = await scan(db);
 
-    expect(result.report.counts).toMatchObject({
-      project_drift: 1,
-      source_policy_drift: 1,
-      archived_state_drift: 1,
-      contradiction: 1,
-    });
+    expect(result.report.counts).toMatchObject({ source_policy_drift: 1, contradiction: 1 });
     expect(result.report.findings).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        kind: "project_drift",
-        confidence_tier: "medium",
-        proposed_action: expect.objectContaining({
-          proposal_type: "memory_update",
-          target_memory_id: "project-drift",
-          target_scope: "project",
-          project_id: "project-1",
-        }),
-      }),
       expect.objectContaining({
         kind: "source_policy_drift",
         confidence_tier: "low",
-        proposed_action: expect.objectContaining({
+        proposed_action: {
           proposal_type: "memory_update",
           target_memory_id: "source-policy-drift",
-          requires_operator_edit: true,
-        }),
-      }),
-      expect.objectContaining({
-        kind: "archived_state_drift",
-        confidence_tier: "low",
-        proposed_action: expect.objectContaining({
-          proposal_type: "memory_update",
-          target_memory_id: "archived-drift",
-          requires_operator_edit: true,
-        }),
+          maintenance_action: "attach_or_review_external_source",
+        },
       }),
       expect.objectContaining({
         kind: "contradiction",
         confidence_tier: "low",
-        proposed_action: expect.objectContaining({
+        proposed_action: {
           proposal_type: "memory_update",
           target_memory_id: "feature-yes",
+          maintenance_action: "review_contradiction",
           related_memory_ids: ["feature-no"],
-          requires_operator_edit: true,
-        }),
+        },
       }),
     ]));
     const serialized = JSON.stringify(result.report);
     expect(serialized).not.toContain("Feature state is enabled");
     expect(serialized).not.toContain("Feature state is not enabled");
-    expect(serialized).not.toContain("Archived content should not appear");
   });
 
   it("returns and accepts a visible-boundary cursor for full scans", async () => {
@@ -402,5 +370,51 @@ describe("Memory maintenance scan", () => {
     expect(memorySelects.length).toBeGreaterThanOrEqual(3);
     expect(memorySelects.at(-1)?.params[4]).toBe("2026-02-01T00:00:00.000Z");
     expect(memorySelects.at(-1)?.params[5]).toBe("hidden-a");
+  });
+
+  it("resumes a capped page at the first entry it did not report, until every finding is out", async () => {
+    // Each entry is old and short: two findings apiece, newest first.
+    const db = fakeDb(["d", "c", "b", "a"].map((id, index) => row({
+      id: `memory-${id}`,
+      title: `Entry ${id}`,
+      content: "tiny",
+      updated_at: `2020-0${4 - index}-01T00:00:00.000Z`,
+    })));
+
+    const pages: Array<{ findings: string[]; truncated: boolean }> = [];
+    let cursor: string | null | undefined;
+    do {
+      const page = await scan(db, { limit: 4, scanMode: "full", maxFindings: 3, cursor });
+      pages.push({
+        findings: page.report.findings.map((finding) => `${finding.kind}:${finding.objects[0]!.object_id}`),
+        truncated: page.report.truncated,
+      });
+      cursor = page.report.next_cursor;
+    } while (cursor && pages.length < 10);
+
+    expect(pages[0]).toEqual({ findings: ["stale:memory-d", "thin:memory-d"], truncated: true });
+    expect(pages.flatMap((page) => page.findings).sort()).toEqual(
+      ["a", "b", "c", "d"].flatMap((id) => [`stale:memory-${id}`, `thin:memory-${id}`]).sort(),
+    );
+  });
+
+  it("splits one entry's findings across pages when they alone exceed the cap", async () => {
+    const db = fakeDb([row({ id: "memory-1", content: "tiny", updated_at: "2020-01-01T00:00:00.000Z" })]);
+
+    const first = await scan(db, { limit: 10, scanMode: "full", maxFindings: 1 });
+    expect(first.report.findings.map((finding) => finding.kind)).toEqual(["stale"]);
+    expect(first.report.truncated).toBe(true);
+    expect(JSON.parse(Buffer.from(first.report.next_cursor!, "base64url").toString("utf8"))).toMatchObject({
+      id: "memory-1",
+      finding_offset: 1,
+    });
+
+    const second = await scan(db, { limit: 10, scanMode: "full", maxFindings: 1, cursor: first.report.next_cursor });
+    expect(second.report.findings.map((finding) => finding.kind)).toEqual(["thin"]);
+    expect(second.report.truncated).toBe(false);
+
+    const third = await scan(db, { limit: 10, scanMode: "full", maxFindings: 1, cursor: second.report.next_cursor });
+    expect(third.report.findings).toEqual([]);
+    expect(third.report.next_cursor).toBeNull();
   });
 });

@@ -19,8 +19,17 @@ a vendor CLI's own auto-memory.
   the Agent itself for an agent-scope one. A person importing a published
   user-memory snapshot also goes through the same repository
   (`applyPublicationImport`): private, normal-sensitivity, attributed to the
-  importer, with user-confirmation provenance. No adapter, job or route inserts
-  around it.
+  importer, with user-confirmation provenance. The owner changing who may read
+  their own entry is the same applier too (`applyOwnerAccessChange`, reached
+  from the content-access API): a new version with the same content and
+  provenance under the new reach, grants moved with it. No adapter, job or
+  route inserts around it.
+- Grants follow the active head, and the applier re-checks the audience at
+  accept time: only the owner widens a person's entry (moving it into a
+  Project or to another owner included), a revision never moves an entry into
+  or out of an Agent's scope, and every added reader
+  must already read the entry's sources (`memoryAudience.ts`). An accepted
+  update that changes nothing writes no version.
 - User Memory is human-owned and Project-free. Project Memory is Project-owned
   and shared only through the Project access boundary. Agent Memory
   (`scope_type = 'agent'`) is Agent-owned: there, and only there, `agent_id` is
@@ -64,9 +73,8 @@ source refs for audit and content-demotion disclosure. Context Events and
 checkpoints never promote content into Memory; promotion is a write under ADR
 0003, and one that carries no rationale of its own is a proposal.
 
-The retired Context Builder/Compiler/Prepare service, Context Snapshots/Digests,
-manual context attachments, chat candidate bundle, and vendor context files are
-not Memory responsibilities and must not be reintroduced.
+Context compilation, snapshots, manual attachments, and vendor context files
+are not Memory responsibilities. Do not reintroduce them here.
 
 ## Main write flows
 
@@ -78,7 +86,13 @@ entry outright and answers 200 with it (ADR 0003 §3 — a proposal there was
 the person filing a request with themselves); someone else's still creates an
 archive proposal and answers 202. `POST /memory/{id}/restore` is the reverse,
 owner-only, and also restores the version a revision replaced once no newer
-version is active.
+version is active. Both lock the entry row and serialize on the version chain
+(a transaction advisory lock on its root), and the write is refused if the
+status moved since it was read: two restores on one chain cannot both pass
+the active-head check, and an owner's archive ordered behind an Agent's
+in-flight revision archives nothing it did not read. An update proposal's
+`highly_restricted` rule reads the target's own visibility, since the command
+may not carry one.
 
 **An Agent, in a person's turn.** `memory.remember` / `memory.revise` go
 through `applyDirect`: a new version, `created_by = agent:<id>`,

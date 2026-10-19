@@ -16,8 +16,8 @@ export const AgentRuntimeBackendModeSchema = z.enum(["runtime_native", "model_pr
 export type AgentRuntimeBackendMode = z.infer<typeof AgentRuntimeBackendModeSchema>;
 
 /**
- * The two durable Run shapes; `run_role` remains an independent dimension, so
- * a coordinator is still an Agent Run and not a third execution authority.
+ * The two durable Run shapes. `run_role` is an independent dimension.
+ * A coordinator is an Agent Run. Do not add a third execution authority.
  * Which columns each shape may carry is stated once, by the database:
  * `ck_runs_execution_shape` in `server/src/db/schema/runs.ts`.
  */

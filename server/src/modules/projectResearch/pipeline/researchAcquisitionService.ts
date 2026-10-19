@@ -1,9 +1,11 @@
 import type { Queryable, SpaceUserIdentity } from "../../routeUtils/common.js";
 import { HttpError, withQueryableTransaction } from "../../routeUtils/common.js";
 import { PgJobQueueRepository } from "../../jobs/repository.js";
+import { assertProjectWriter } from "../../projects/access.js";
+import { assertThreadReadable } from "../../inquiry/threadAccess.js";
 import { RESEARCH_PIPELINE_START_JOB } from "./researchAcquisitionPipelineJob.js";
 
-export interface StartResearchAcquisitionInput {
+interface StartResearchAcquisitionInput {
   threadId: string;
   intentNote?: string | null;
   originRoomId: string | null;
@@ -20,12 +22,12 @@ export interface StartResearchAcquisitionInput {
   since?: string | null;
 }
 
-export type StartResearchAcquisitionResult =
+type StartResearchAcquisitionResult =
   | { status: "queued"; thread_id: string }
   | { status: "already_starting"; thread_id: string };
 
 /**
- * The synchronous half of `research.start_acquisition` (Phase 4): validates
+ * The synchronous half of `research.start_acquisition`: validates
  * the target Thread, applies the "already starting" idempotency guard, and
  * enqueues the background pipeline job. It does not itself run any stage of
  * the pipeline (assessment, evaluate, activate, startInitialIntake) — those
@@ -50,6 +52,12 @@ export class ResearchAcquisitionService {
     input: StartResearchAcquisitionInput,
   ): Promise<StartResearchAcquisitionResult> {
     return withQueryableTransaction(this.db, async (db) => {
+      // The person whose turn this is must be able to write the Project and
+      // reach the Thread themselves — Project membership is necessary but not
+      // sufficient for a Thread (`threadAccess.ts`), and the pipeline that
+      // follows reads the Thread's statement into Project-visible records.
+      await assertProjectWriter(db, identity.spaceId, projectId, identity.userId);
+      await assertThreadReadable(db, identity, projectId, input.threadId, "change");
       const thread = await db.query<{ object_id: string }>(
         `SELECT object_id FROM inquiry_threads
           WHERE object_id=$1 AND space_id=$2 AND project_id=$3
@@ -59,11 +67,11 @@ export class ResearchAcquisitionService {
       if (!thread.rows[0]) {
         throw new HttpError(404, "Inquiry Thread not found or is not an active Question");
       }
-      // Serializes the "already starting" check against the enqueue below —
-      // without this, two near-simultaneous calls can both see no active job
-      // and both enqueue one, each burning a real LLM assessment/live-search
-      // pipeline run before either row is visible to the other. Same idiom as
-      // the Inquiry Thread creation path's coalesce lock.
+      // Serializes the "already starting" check against the enqueue below.
+      // Do not check without this lock. Two near-simultaneous calls would
+      // both see no active job and both enqueue one, each burning a real LLM
+      // assessment or live-search pipeline run before either row is visible
+      // to the other.
       await db.query(
         "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
         [`research-start-acquisition:${identity.spaceId}:${input.threadId}`],

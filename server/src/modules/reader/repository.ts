@@ -3,12 +3,15 @@ import { createHash } from "node:crypto";
 import { stat, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ServerConfig } from "../../config.js";
-import { HttpError, dateIso, objectValue, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, dateIso, objectValue, optionalString, withQueryableTransaction, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { normalizeSourceConnectionReadGovernance, enforceSourceDerivedImportTarget } from "../sources/sourceConsent.js";
 import type { SourceItemRow } from "../sources/sourceRepositoryRows.js";
 import { ITEM_COLUMNS } from "../sources/sourceRepositoryRows.js";
 import { isSpaceOwnerOrAdmin } from "../access/roles.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { sourceConnectionDeliveredToReaderClause, sourceConnectionLiveSubscriberClause, sourceConnectionReaderConsentClause } from "../sources/sourceItemAccess.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
+import { bodyWithheld, type WithAccessLevel } from "../access/contentAccessTypes.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
 import { inheritContentAccessGrants } from "../access/contentAccessInheritance.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
@@ -156,11 +159,12 @@ interface SourceSnapshotRow {
   artifact_id: string | null;
   content_hash: string | null;
   source_uri: string | null;
+  captured_at: unknown;
 }
 
 // ── Reader document output ────────────────────────────────────────────────────
 
-export interface ReaderDocumentOut {
+interface ReaderDocumentOut {
   document_type: string;
   document_id: string;
   space_id: string;
@@ -188,26 +192,48 @@ export interface ReaderDocumentOut {
 
 // ── Source consent check ──────────────────────────────────────────────────────
 
+function isoTimestamp(value: unknown): string {
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(date.getTime())) throw new HttpError(404, "Not found");
+  return date.toISOString();
+}
+
 interface ConsentCheckInput {
   db: Queryable;
   identity: SpaceUserIdentity;
   item: SourceItemRow;
 }
 
+/**
+ * The Reader's connection gate for content the connection delivered at
+ * `deliveredAt` (an item's first sighting, or a connection-only snapshot's
+ * capture): its owner or a named reader, a live subscriber of a live channel,
+ * someone it was delivered to inside a subscription window (historical
+ * eligibility), or a Space owner/admin when the consent allows them. The
+ * subscriber branches hold only while the connection itself still admits
+ * the reader.
+ */
 async function enforceConnectionReadConsent(
   db: Queryable,
   identity: SpaceUserIdentity,
   connectionId: string,
+  deliveredAt: string,
 ): Promise<void> {
-  const conn = await db.query<{ project_id: string | null; consent_json: unknown; policy_json: unknown; owner_user_id: string }>(
-    `SELECT project_id, consent_json, policy_json, owner_user_id
+  const conn = await db.query<{
+    project_id: string | null; consent_json: unknown; policy_json: unknown; owner_user_id: string;
+    status: string; deleted_at: unknown;
+  }>(
+    `SELECT project_id, consent_json, policy_json, owner_user_id, status, deleted_at
        FROM source_connections WHERE space_id = $1 AND id = $2`,
     [identity.spaceId, connectionId],
   );
-  // Intentionally omits deleted_at IS NULL: soft-deleted connections still carry
-  // consent_json and should continue to gate access to their derived snapshots.
-  // A missing row (hard-deleted or wrong space) is treated as fail-closed.
-  if (!conn.rows[0]) throw new HttpError(404, "Not found");
+  // A missing row (hard-deleted or wrong space) is fail-closed, and so is a
+  // withdrawn one: an archived or soft-deleted connection admits nobody — not
+  // its subscribers, its consent-listed readers or Space admins, nor its owner
+  // — exactly as the shared Source item gate decides.
+  if (!conn.rows[0] || conn.rows[0].status === "archived" || conn.rows[0].deleted_at) {
+    throw new HttpError(404, "Not found");
+  }
   const gov = normalizeSourceConnectionReadGovernance({
     ...conn.rows[0],
     id: connectionId,
@@ -232,19 +258,20 @@ async function enforceConnectionReadConsent(
     updated_at: null,
   });
   const consent = gov.consent;
+  // The owner reads directly while the connection is live, as the shared
+  // Source item gate decides (`sourceItemConnectionGateClause`).
   if (identity.userId === consent.owner_user_id) return;
-  const subscription = await db.query<{ id: string }>(
-    `SELECT scus.id
-       FROM source_channel_user_subscriptions scus
-       JOIN source_channels sch ON sch.id = scus.source_channel_id
-      WHERE scus.space_id = $1
-        AND sch.source_connection_id = $2
-        AND scus.user_id = $3
-        AND scus.status = 'subscribed'
-      LIMIT 1`,
-    [identity.spaceId, connectionId, identity.userId],
+  const subscriber = await db.query(
+    `SELECT 1
+       FROM source_connections reader_connection
+      WHERE reader_connection.space_id = $1 AND reader_connection.id = $2
+        AND (
+          ${sourceConnectionLiveSubscriberClause("reader_connection", "$3")}
+          OR ${sourceConnectionDeliveredToReaderClause("reader_connection", "$3", "$4::timestamptz")}
+        )`,
+    [identity.spaceId, connectionId, identity.userId, deliveredAt],
   );
-  if (subscription.rows[0]) return;
+  if (subscriber.rows[0]) return;
   if (consent.allowed_reader_user_ids.includes(identity.userId)) return;
   if (consent.allow_space_admins) {
     const roleRow = await db.query<{ role: string }>(
@@ -259,25 +286,29 @@ async function enforceConnectionReadConsent(
 async function enforceSourceItemReadConsent({ db, identity, item }: ConsentCheckInput): Promise<void> {
   if (item.space_id !== identity.spaceId) throw new HttpError(404, "Not found");
   if (item.connection_id) {
-    await enforceConnectionReadConsent(db, identity, item.connection_id);
+    await enforceConnectionReadConsent(db, identity, item.connection_id, isoTimestamp(item.first_seen_at));
     return;
   }
   if (item.created_by_user_id !== identity.userId) throw new HttpError(404, "Not found");
 }
 
+/** Where a reader reached an item from; decides whether the read is interest evidence (B54). */
+export type ReadOrigin = "library" | "serendipity";
+
 async function markSourceItemOpened(
   db: Queryable,
   identity: SpaceUserIdentity,
   itemId: string,
+  origin: ReadOrigin,
 ): Promise<void> {
   const now = new Date().toISOString();
   await db.query(
     `INSERT INTO source_item_user_states (
        id, space_id, source_item_id, user_id, library_status, read_status,
-       first_opened_at, last_opened_at, progress_json, created_at, updated_at
+       first_opened_at, last_opened_at, read_origin, progress_json, created_at, updated_at
      ) VALUES (
        $1, $2, $3, $4, 'new', 'skimmed',
-       $5, $5, '{}'::jsonb, $5, $5
+       $5, $5, $6, '{}'::jsonb, $5, $5
      )
      ON CONFLICT (space_id, source_item_id, user_id) DO UPDATE SET
        first_opened_at = COALESCE(source_item_user_states.first_opened_at, $5::timestamptz),
@@ -286,8 +317,14 @@ async function markSourceItemOpened(
          WHEN source_item_user_states.read_status = 'unread' THEN 'skimmed'
          ELSE source_item_user_states.read_status
        END,
+       -- An open from the serendipity section never becomes evidence by
+       -- itself; a later open the reader reached on their own does.
+       read_origin = CASE
+         WHEN $6 = 'serendipity' THEN COALESCE(source_item_user_states.read_origin, 'serendipity')
+         ELSE 'library'
+       END,
        updated_at = $5`,
-    [randomUUID(), identity.spaceId, itemId, identity.userId, now],
+    [randomUUID(), identity.spaceId, itemId, identity.userId, now, origin],
   );
 }
 
@@ -303,9 +340,10 @@ export class PgReaderRepository {
     identity: SpaceUserIdentity,
     documentType: string,
     documentId: string,
+    options: { origin?: ReadOrigin } = {},
   ): Promise<ReaderDocumentOut | null> {
     if (documentType === "source_item") {
-      return this.resolveSourceItem(identity, documentId);
+      return this.resolveSourceItem(identity, documentId, options.origin ?? "library");
     }
     if (documentType === "source_snapshot") {
       return this.resolveSourceSnapshot(identity, documentId);
@@ -324,6 +362,7 @@ export class PgReaderRepository {
   private async resolveSourceItem(
     identity: SpaceUserIdentity,
     itemId: string,
+    origin: ReadOrigin,
   ): Promise<ReaderDocumentOut | null> {
     if ((await contentDecisionFromDb(this.db, identity, "source_item", itemId)) !== "full") return null;
     const result = await this.db.query<SourceItemRow>(
@@ -334,7 +373,7 @@ export class PgReaderRepository {
     if (!item) return null;
 
     await enforceSourceItemReadConsent({ db: this.db, identity, item });
-    await markSourceItemOpened(this.db, identity, itemId);
+    await markSourceItemOpened(this.db, identity, itemId, origin);
 
     // Priority 1: extracted_artifact_id
     if (item.extracted_artifact_id) {
@@ -424,7 +463,7 @@ export class PgReaderRepository {
   ): Promise<ReaderDocumentOut | null> {
     if ((await contentDecisionFromDb(this.db, identity, "source_snapshot", snapshotId)) !== "full") return null;
     const result = await this.db.query<SourceSnapshotRow>(
-      `SELECT id, space_id, project_id, source_item_id, connection_id, snapshot_type, artifact_id, content_hash, source_uri
+      `SELECT id, space_id, project_id, source_item_id, connection_id, snapshot_type, artifact_id, content_hash, source_uri, captured_at
          FROM source_snapshots WHERE space_id = $1 AND id = $2`,
       [identity.spaceId, snapshotId],
     );
@@ -442,12 +481,12 @@ export class PgReaderRepository {
         await enforceSourceItemReadConsent({ db: this.db, identity, item: itemResult.rows[0] });
       } else if (snap.connection_id) {
         // Item soft-deleted: fall back to connection gate rather than opening access.
-        await enforceConnectionReadConsent(this.db, identity, snap.connection_id);
+        await enforceConnectionReadConsent(this.db, identity, snap.connection_id, isoTimestamp(snap.captured_at));
       } else {
         throw new HttpError(404, "Not found");
       }
     } else if (snap.connection_id) {
-      await enforceConnectionReadConsent(this.db, identity, snap.connection_id);
+      await enforceConnectionReadConsent(this.db, identity, snap.connection_id, isoTimestamp(snap.captured_at));
     }
 
     if (!snap.artifact_id) return null;
@@ -593,7 +632,7 @@ function persistedVisibility(value: string): "private" | "space_shared" | "selec
   throw new Error(`Invalid persisted Reader visibility: ${value}`);
 }
 
-export interface ReaderAnnotationRow {
+interface ReaderAnnotationRow {
   id: string;
   space_id: string;
   project_id: string | null;
@@ -618,17 +657,33 @@ const ANNOTATION_COLUMNS = `id, space_id, project_id, document_type, document_id
   annotation_type, quote_text, anchor_json, color, label, visibility, access_level, status, anchor_state,
   created_by_user_id, owner_user_id, created_at, updated_at`;
 
+/**
+ * An annotation's comments are its body, and acting on it — commenting,
+ * filing evidence or a proposal from it — builds on that body, so both need
+ * `full` access. Writes answer as the person alone: Space oversight is a
+ * read-only audit capability and never a route to write on someone else's
+ * private margin (`architecture/SECURITY_AND_ACCESS_BOUNDARIES.md`).
+ */
 async function assertAnnotationReadable(
   db: Queryable,
   identity: SpaceUserIdentity,
   annotation: ReaderAnnotationRow,
+  purpose: "read" | "write",
 ): Promise<void> {
-  if ((await contentDecisionFromDb(db, identity, "reader_annotation", annotation.id)) === "deny") {
-    throw new HttpError(404, "Not found");
-  }
+  const decision = await contentDecisionFromDb(db, identity, "reader_annotation", annotation.id, {
+    includeOversight: purpose === "read",
+  });
+  if (decision !== "full") throw new HttpError(404, "Not found");
 }
 
-export interface ReaderAnnotationOut {
+const READER_ANNOTATION_ACCESS = contentResourceDefinition("reader_annotation")!;
+
+/** The viewer's level on a listed annotation, which `annotationOut` honours. */
+function annotationAccessLevelSql(alias: string, userExpr: string): string {
+  return contentAccessLevelSql({ definition: READER_ANNOTATION_ACCESS, alias, userExpr });
+}
+
+interface ReaderAnnotationOut {
   id: string;
   space_id: string;
   project_id: string | null;
@@ -649,7 +704,12 @@ export interface ReaderAnnotationOut {
   updated_at: string;
 }
 
-function annotationOut(row: ReaderAnnotationRow): ReaderAnnotationOut {
+/**
+ * A `summary` viewer learns that an annotation exists, not what it marks:
+ * the quote, its anchor context, and the label are withheld.
+ */
+function annotationOut(row: WithAccessLevel<ReaderAnnotationRow>): ReaderAnnotationOut {
+  const withheld = bodyWithheld(row.effective_access_level);
   return {
     id: row.id,
     space_id: row.space_id,
@@ -657,10 +717,10 @@ function annotationOut(row: ReaderAnnotationRow): ReaderAnnotationOut {
     document_type: row.document_type,
     document_id: row.document_id,
     annotation_type: row.annotation_type,
-    quote_text: row.quote_text,
-    anchor_json: objectValue(row.anchor_json),
+    quote_text: withheld ? "" : row.quote_text,
+    anchor_json: withheld ? {} : objectValue(row.anchor_json),
     color: row.color,
-    label: row.label,
+    label: withheld ? null : row.label,
     visibility: row.visibility,
     access_level: row.access_level,
     owner_user_id: row.owner_user_id,
@@ -739,8 +799,8 @@ async function assertDocumentReadable(
     if ((await contentDecisionFromDb(db, identity, "source_snapshot", documentId)) !== "full") {
       throw new HttpError(404, "Document not found");
     }
-    const r = await db.query<{ project_id: string | null; visibility: string; access_level: string; source_item_id: string | null; connection_id: string | null; artifact_id: string | null }>(
-      `SELECT project_id, visibility, access_level, source_item_id, connection_id, artifact_id FROM source_snapshots WHERE space_id = $1 AND id = $2`,
+    const r = await db.query<{ project_id: string | null; visibility: string; access_level: string; source_item_id: string | null; connection_id: string | null; artifact_id: string | null; captured_at: unknown }>(
+      `SELECT project_id, visibility, access_level, source_item_id, connection_id, artifact_id, captured_at FROM source_snapshots WHERE space_id = $1 AND id = $2`,
       [identity.spaceId, documentId],
     );
     if (!r.rows[0]) throw new HttpError(404, "Document not found");
@@ -753,14 +813,14 @@ async function assertDocumentReadable(
         await enforceSourceItemReadConsent({ db, identity, item: itemR.rows[0] });
       } else if (r.rows[0].connection_id) {
         // Item soft-deleted: fall back to connection gate so access is not silently opened.
-        await enforceConnectionReadConsent(db, identity, r.rows[0].connection_id);
+        await enforceConnectionReadConsent(db, identity, r.rows[0].connection_id, isoTimestamp(r.rows[0].captured_at));
       } else {
         // Source item referenced but no longer exists and no connection fallback: fail closed.
         throw new HttpError(404, "Not found");
       }
     } else if (r.rows[0].connection_id) {
       // Connection-only snapshot: enforce the connection's own consent gate.
-      await enforceConnectionReadConsent(db, identity, r.rows[0].connection_id);
+      await enforceConnectionReadConsent(db, identity, r.rows[0].connection_id, isoTimestamp(r.rows[0].captured_at));
     }
     // Snapshot content comes from its artifact; verify the caller can read it.
     // This mirrors resolveSourceSnapshot so annotation gate matches document gate.
@@ -883,8 +943,8 @@ export class PgAnnotationRepository {
     // Verify caller can read the underlying document before returning any annotations.
     await assertDocumentReadable(this.db, identity, documentType, documentId);
 
-    const result = await this.db.query<ReaderAnnotationRow>(
-      `SELECT ${ANNOTATION_COLUMNS}
+    const result = await this.db.query<WithAccessLevel<ReaderAnnotationRow>>(
+      `SELECT ${ANNOTATION_COLUMNS}, ${annotationAccessLevelSql("ra", "$4")} AS effective_access_level
          FROM reader_annotations ra
         WHERE space_id = $1
           AND document_type = $2
@@ -963,7 +1023,17 @@ export class PgAnnotationRepository {
     const now = new Date().toISOString();
     const id = randomUUID();
 
-    const result = await this.db.query<ReaderAnnotationRow>(
+    // A selected_users annotation takes its readers from its document's
+    // grants. A document type that is not a content resource (a research
+    // report) has none to inherit, so the request is refused before the row
+    // exists rather than written and then failed.
+    const sourceResourceType = documentType === "research_notebook" ? "space_object" : documentType;
+    if (visibility === "selected_users" && !contentResourceDefinition(sourceResourceType)) {
+      throw new HttpError(422, `selected_users is not available on ${documentType} documents`);
+    }
+
+    return withQueryableTransaction(this.db, async (tx) => {
+    const result = await tx.query<ReaderAnnotationRow>(
       `INSERT INTO reader_annotations (
          id, space_id, project_id, document_type, document_id,
          annotation_type, quote_text, anchor_json, color, label,
@@ -981,8 +1051,7 @@ export class PgAnnotationRepository {
     );
     const annotation = result.rows[0]!;
     if (visibility === "selected_users") {
-      const sourceResourceType = documentType === "research_notebook" ? "space_object" : documentType;
-      await inheritContentAccessGrants(this.db, {
+      await inheritContentAccessGrants(tx, {
         spaceId: identity.spaceId,
         sourceResourceType,
         sourceResourceId: documentId,
@@ -991,7 +1060,8 @@ export class PgAnnotationRepository {
         inheritedAt: now,
       });
     }
-    return annotationOut(annotation);
+    return annotationOut({ ...annotation, effective_access_level: "full" });
+    });
   }
 
   async updateAnnotation(
@@ -1031,7 +1101,8 @@ export class PgAnnotationRepository {
         WHERE space_id = $1 AND id = $2 RETURNING ${ANNOTATION_COLUMNS}`,
       params,
     );
-    return annotationOut(result.rows[0]!);
+    // Only the annotation's creator reaches this point.
+    return annotationOut({ ...result.rows[0]!, effective_access_level: "full" });
   }
 
   async archiveAnnotation(
@@ -1058,7 +1129,7 @@ export class PgAnnotationRepository {
 
 // ── Comment/Thread repository ─────────────────────────────────────────────────
 
-export interface ReaderCommentThreadRow {
+interface ReaderCommentThreadRow {
   id: string;
   space_id: string;
   annotation_id: string;
@@ -1068,7 +1139,7 @@ export interface ReaderCommentThreadRow {
   updated_at: unknown;
 }
 
-export interface ReaderCommentRow {
+interface ReaderCommentRow {
   id: string;
   space_id: string;
   thread_id: string;
@@ -1079,7 +1150,7 @@ export interface ReaderCommentRow {
   updated_at: unknown;
 }
 
-export interface ReaderCommentThreadOut {
+interface ReaderCommentThreadOut {
   id: string;
   space_id: string;
   annotation_id: string;
@@ -1090,7 +1161,7 @@ export interface ReaderCommentThreadOut {
   comments: ReaderCommentOut[];
 }
 
-export interface ReaderCommentOut {
+interface ReaderCommentOut {
   id: string;
   space_id: string;
   thread_id: string;
@@ -1147,7 +1218,7 @@ export class PgCommentRepository {
     );
     const ann = annResult.rows[0];
     if (!ann) throw new HttpError(404, "Annotation not found");
-    await assertAnnotationReadable(this.db, identity, ann);
+    await assertAnnotationReadable(this.db, identity, ann, "read");
     // Also verify the caller can still read the underlying document (e.g. space_shared
     // annotations remain accessible only while the document itself is accessible).
     const annDoc = annotationDocumentTarget(ann);
@@ -1195,7 +1266,7 @@ export class PgCommentRepository {
     const ann = annotation.rows[0];
     if (!ann) throw new HttpError(404, "Annotation not found");
 
-    await assertAnnotationReadable(this.db, identity, ann);
+    await assertAnnotationReadable(this.db, identity, ann, "write");
     const annDoc = annotationDocumentTarget(ann);
     if (annDoc) {
       await assertDocumentReadable(this.db, identity, annDoc.documentType, annDoc.documentId);
@@ -1206,34 +1277,37 @@ export class PgCommentRepository {
 
     const now = new Date().toISOString();
 
-    // Create or reuse open thread
-    let threadRow: ReaderCommentThreadRow;
-    const existingThread = await this.db.query<ReaderCommentThreadRow>(
-      `SELECT ${THREAD_COLUMNS} FROM reader_comment_threads
-        WHERE space_id = $1 AND annotation_id = $2 AND status = 'open' LIMIT 1`,
-      [identity.spaceId, annotationId],
-    );
-    if (existingThread.rows[0]) {
-      threadRow = existingThread.rows[0];
-    } else {
-      const threadResult = await this.db.query<ReaderCommentThreadRow>(
-        `INSERT INTO reader_comment_threads (id, space_id, annotation_id, status, created_by_user_id, created_at, updated_at)
-           VALUES ($1, $2, $3, 'open', $4, $5, $5) RETURNING ${THREAD_COLUMNS}`,
-        [randomUUID(), identity.spaceId, annotationId, identity.userId, now],
+    // Create or reuse the open thread, under the annotation's row lock: two
+    // first comments at once must land in one thread, and nothing else keeps
+    // the thread unique.
+    const threadRow = await withQueryableTransaction(this.db, async (tx) => {
+      await tx.query(`SELECT id FROM reader_annotations WHERE space_id = $1 AND id = $2 FOR UPDATE`, [identity.spaceId, annotationId]);
+      const existingThread = await tx.query<ReaderCommentThreadRow>(
+        `SELECT ${THREAD_COLUMNS} FROM reader_comment_threads
+          WHERE space_id = $1 AND annotation_id = $2 AND status = 'open'
+          ORDER BY created_at ASC, id ASC LIMIT 1`,
+        [identity.spaceId, annotationId],
       );
-      threadRow = threadResult.rows[0]!;
-    }
-
-    await this.db.query(
-      `INSERT INTO reader_comments (id, space_id, thread_id, body, status, created_by_user_id, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'active', $5, $6, $6)`,
-      [randomUUID(), identity.spaceId, threadRow.id, commentBody, identity.userId, now],
-    );
-
-    await this.db.query(
-      `UPDATE reader_comment_threads SET updated_at = $3 WHERE space_id = $1 AND id = $2`,
-      [identity.spaceId, threadRow.id, now],
-    );
+      let thread = existingThread.rows[0];
+      if (!thread) {
+        const threadResult = await tx.query<ReaderCommentThreadRow>(
+          `INSERT INTO reader_comment_threads (id, space_id, annotation_id, status, created_by_user_id, created_at, updated_at)
+             VALUES ($1, $2, $3, 'open', $4, $5, $5) RETURNING ${THREAD_COLUMNS}`,
+          [randomUUID(), identity.spaceId, annotationId, identity.userId, now],
+        );
+        thread = threadResult.rows[0]!;
+      }
+      await tx.query(
+        `INSERT INTO reader_comments (id, space_id, thread_id, body, status, created_by_user_id, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 'active', $5, $6, $6)`,
+        [randomUUID(), identity.spaceId, thread.id, commentBody, identity.userId, now],
+      );
+      await tx.query(
+        `UPDATE reader_comment_threads SET updated_at = $3 WHERE space_id = $1 AND id = $2`,
+        [identity.spaceId, thread.id, now],
+      );
+      return thread;
+    });
 
     const allComments = await this.db.query<ReaderCommentRow>(
       `SELECT ${COMMENT_COLUMNS} FROM reader_comments WHERE space_id = $1 AND thread_id = $2 AND status = 'active' ORDER BY created_at ASC`,
@@ -1297,7 +1371,7 @@ export class PgCommentRepository {
     );
     const ann = annResult.rows[0];
     if (!ann) throw new HttpError(404, "Not found");
-    await assertAnnotationReadable(this.db, identity, ann);
+    await assertAnnotationReadable(this.db, identity, ann, "write");
     const annDoc = annotationDocumentTarget(ann);
     if (annDoc) {
       await assertDocumentReadable(this.db, identity, annDoc.documentType, annDoc.documentId);
@@ -1327,7 +1401,7 @@ export class PgCommentRepository {
 
 // ── Reader action result types ─────────────────────────────────────────────────
 
-export interface ReaderEvidenceResult {
+interface ReaderEvidenceResult {
   id: string;
   title: string;
   status: string;
@@ -1337,7 +1411,7 @@ export interface ReaderEvidenceResult {
   source_object_id: string;
 }
 
-export interface ReaderProposalResult {
+interface ReaderProposalResult {
   id: string;
   proposal_type: string;
   status: string;
@@ -1390,7 +1464,7 @@ export class PgReaderActionRepository {
     );
     const ann = annResult.rows[0];
     if (!ann) throw new HttpError(404, "Not found");
-    await assertAnnotationReadable(this.db, identity, ann);
+    await assertAnnotationReadable(this.db, identity, ann, "write");
     const doc = annotationDocumentTarget(ann);
     if (doc) await assertDocumentReadable(this.db, identity, doc.documentType, doc.documentId);
 
@@ -1474,7 +1548,7 @@ export class PgReaderActionRepository {
     );
     const ann = annResult.rows[0];
     if (!ann) throw new HttpError(404, "Not found");
-    await assertAnnotationReadable(this.db, identity, ann);
+    await assertAnnotationReadable(this.db, identity, ann, "write");
     const doc = annotationDocumentTarget(ann);
     if (doc) await assertDocumentReadable(this.db, identity, doc.documentType, doc.documentId);
 
@@ -1549,40 +1623,37 @@ export class PgReaderActionRepository {
       throw new HttpError(404, "Project not found");
     }
     // Prefix all annotation columns with ra. to avoid ambiguity with joined tables.
-    const cols = `ra.id, ra.space_id, ra.document_type, ra.document_id,
+    const cols = `ra.id, ra.space_id, ra.project_id, ra.document_type, ra.document_id,
   ra.annotation_type, ra.quote_text, ra.anchor_json, ra.color, ra.label, ra.visibility, ra.access_level,
   ra.status, ra.anchor_state, ra.created_by_user_id, ra.owner_user_id, ra.created_at, ra.updated_at`;
-    const r = await this.db.query<ReaderAnnotationRow>(
-      `SELECT ${cols}
+    // The Project link is an existence test, not a join: one item may be
+    // linked through several active bindings, and a join would return the
+    // annotation once per binding. The consent branches are those of
+    // enforceConnectionReadConsent, the single-document gate, including a
+    // subscriber of one of the connection's channels.
+    const r = await this.db.query<WithAccessLevel<ReaderAnnotationRow>>(
+      `SELECT ${cols}, ${annotationAccessLevelSql("ra", "$3")} AS effective_access_level
          FROM reader_annotations ra
          JOIN source_items ii ON ii.id = ra.document_id AND ra.document_type = 'source_item'
               AND ii.space_id = $1 AND ii.deleted_at IS NULL
          JOIN source_connections sc ON sc.id = ii.connection_id
-         JOIN project_source_item_links psil
-              ON psil.space_id = ii.space_id
-             AND psil.source_item_id = ii.id
-             AND psil.project_id = $2
-             AND psil.status = 'active'
-         JOIN project_source_bindings psb
-              ON psb.space_id = psil.space_id
-             AND psb.id = psil.project_source_binding_id
-             AND psb.status = 'active'
         WHERE ra.space_id = $1
           AND ra.status = 'active'
+          AND EXISTS (
+            SELECT 1
+              FROM project_source_item_links psil
+              JOIN project_source_bindings psb
+                ON psb.space_id = psil.space_id
+               AND psb.id = psil.project_source_binding_id
+               AND psb.status = 'active'
+             WHERE psil.space_id = ii.space_id
+               AND psil.source_item_id = ii.id
+               AND psil.project_id = $2
+               AND psil.status = 'active'
+          )
           AND ${contentReadSql("reader_annotation", "ra", "$3")}
           AND ${contentReadSql("source_item", "ii", "$3")}
-          AND (
-            sc.consent_json->>'owner_user_id' = $3
-            OR sc.consent_json->'allowed_reader_user_ids' @> to_jsonb($3::text)
-            OR (
-              (sc.consent_json->>'allow_space_admins')::boolean = true
-              AND EXISTS (
-                SELECT 1 FROM space_memberships sm
-                 WHERE sm.user_id = $3 AND sm.space_id = $1
-                   AND sm.status = 'active' AND sm.role IN ('owner', 'admin')
-              )
-            )
-          )
+          AND ${sourceConnectionReaderConsentClause("sc", "$3", "ii.first_seen_at")}
         ORDER BY ra.created_at DESC
         LIMIT $4`,
       [identity.spaceId, projectId, identity.userId, limit],

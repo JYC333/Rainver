@@ -42,10 +42,10 @@ export async function reconcileInformationDigestAutomations(db: Queryable): Prom
         [scope.space_id, scopeType, scopeKey, operation],
       );
         if (existing.rows[0]) {
-          // Older reconciliation could bind a native digest to the managed
-          // Personal Assistant when no annotator existed yet. That Assistant
-          // is Room-only, so repair the attribution binding instead of letting
-          // every schedule fail before an Automation Run can be created.
+          // A native digest can be bound to the managed Personal Assistant when
+          // no annotator is present. That Assistant is Room-only. Do not leave
+          // that binding. Repair it, or every schedule fails before an
+          // Automation Run can be created.
           if (existing.rows[0].agent_id !== scope.agent_id) {
             await tx.query(
               `UPDATE automations

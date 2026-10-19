@@ -11,7 +11,7 @@ export const ROOM_DELEGATION_COMPLETION_RETRY_JOB = "room_delegation_completion_
 const TURN_BUSY_RETRY_DELAY_MS = 8_000;
 
 /**
- * Retries the Phase 3 delegate-completion Room notification
+ * Retries the delegate-completion Room notification
  * (`AgentGroupRunLifecycleProjector.notifyRoomOfDelegationCompletion`) when
  * its first attempt lost the conversation's turn-claim to a concurrent
  * notification — the case a Room fanning out to more than one specialist

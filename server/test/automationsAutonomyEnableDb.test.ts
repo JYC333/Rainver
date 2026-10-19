@@ -8,12 +8,9 @@ import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 
 /**
- * Before this route existed, no code path anywhere could create an
- * `autonomous_tick` Automation: the generic create endpoint rejects it
- * (`user_selectable: false`), and nothing provisioned one automatically. The
- * Phase 3-5 autonomy lifecycle was fully implemented and covered by
- * `autonomyLaunchDb.test.ts`, but only reachable by inserting the Automation
- * row directly via SQL in a test — never by any real user or admin action.
+ * This route is how an `autonomous_tick` Automation is created. The generic
+ * create endpoint rejects it (`user_selectable: false`), and nothing
+ * provisions one automatically. Do not insert the row with SQL.
  * This suite proves the self-service activation path an ordinary Space
  * member (not owner/admin) actually reaches end to end.
  */
@@ -52,9 +49,8 @@ beforeEach(async () => {
      VALUES ($1, 'Space', 'team', $2, $3, $3)`,
     [SPACE, MEMBER, NOW],
   );
-  // Deliberately 'member', not 'owner'/'admin' — the whole point of this
-  // suite is proving an ordinary member can self-service enable their own
-  // Always-on without elevated Space authority.
+  // Deliberately 'member', not 'owner'/'admin'. An ordinary member can
+  // self-service enable their own Always-on without elevated Space authority.
   await db.pool.query(
     `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
      VALUES ($1, $2, $3, 'member', 'active', $4, $4), ($5, $2, $6, 'member', 'active', $4, $4)`,
@@ -170,20 +166,21 @@ describe("self-service Always-on activation (autonomous_tick)", () => {
     expect(otherRead.statusCode).toBe(404);
 
     // A plain member (not admin/owner, not the tick's own owner) must not be
-    // able to reconfigure or manually fire someone else's tick.
+    // able to reconfigure or manually fire someone else's tick — it is absent
+    // to them.
     const otherUpdate = await app!.inject({
       method: "PATCH",
       url: `/api/v1/spaces/${SPACE}/automations/${automationId}`,
       payload: { status: "paused" },
     });
-    expect(otherUpdate.statusCode).toBe(403);
+    expect(otherUpdate.statusCode).toBe(404);
 
     const otherFire = await app!.inject({
       method: "POST",
       url: `/api/v1/spaces/${SPACE}/automations/${automationId}/fire`,
       payload: {},
     });
-    expect(otherFire.statusCode).toBe(403);
+    expect(otherFire.statusCode).toBe(404);
   });
 
   it("reaches the autonomy dispatch end to end when the owner fires their own tick", async (ctx) => {
@@ -209,6 +206,44 @@ describe("self-service Always-on activation (autonomous_tick)", () => {
       [SPACE],
     );
     expect(ticks.rows).toEqual([{ owner_user_id: MEMBER, mode: "observe_only", status: "succeeded" }]);
+  });
+
+  it("lets the owner pause and archive a tick whose Agent can no longer run it", async (ctx) => {
+    if (!db.available || !db.pool || !app) return ctx.skip();
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: MEMBER });
+    const enabled = await app!.inject({
+      method: "PUT",
+      url: `/api/v1/spaces/${SPACE}/automations/autonomy`,
+      payload: { agent_id: AGENT },
+    });
+    const automationId = enabled.json().id as string;
+    // The tick now fails every fire. Stopping it must not depend on it being
+    // runnable, or the only way out of a failing schedule is closed.
+    await db.pool.query(`UPDATE agents SET status = 'archived' WHERE id = $1`, [AGENT]);
+
+    const paused = await app!.inject({
+      method: "PATCH",
+      url: `/api/v1/spaces/${SPACE}/automations/${automationId}`,
+      payload: { status: "paused" },
+    });
+    expect(paused.statusCode).toBe(200);
+    expect(paused.json()).toMatchObject({ status: "paused" });
+
+    // Turning it back on is where runnability is checked.
+    const resumed = await app!.inject({
+      method: "PATCH",
+      url: `/api/v1/spaces/${SPACE}/automations/${automationId}`,
+      payload: { status: "active" },
+    });
+    expect(resumed.statusCode).toBe(422);
+
+    const archived = await app!.inject({
+      method: "PATCH",
+      url: `/api/v1/spaces/${SPACE}/automations/${automationId}`,
+      payload: { status: "archived" },
+    });
+    expect(archived.statusCode).toBe(200);
+    expect(archived.json()).toMatchObject({ status: "archived" });
   });
 
   it("requires a complete autonomy_budget before enabling launch mode", async (ctx) => {

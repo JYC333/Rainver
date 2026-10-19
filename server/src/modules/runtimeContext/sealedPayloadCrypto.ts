@@ -3,7 +3,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
 
-export interface SealedPayloadBinding {
+interface SealedPayloadBinding {
   spaceId: string;
   snapshotId: string;
   payloadId: string;

@@ -10,18 +10,17 @@ import type { AgentActionContext } from "./taskActions.js";
  * Settlement (`architecture/PROJECT_WORK.md` §4) closes a Task only when the
  * `artifact_type` of one of its `role = 'output'` artifacts matches each entry
  * of `required_outputs_json`. Files collected from a CLI Run arrive as
- * anonymous paths typed `adapter_file`, so without this an agent can finish
- * the work and still leave every such Task parked for review.
+ * anonymous paths typed `adapter_file`. Do not leave them untyped. An agent
+ * can finish the work and still leave every such Task parked for review.
  *
- * The declaration carries no content and uploads nothing: the file's final
- * state is collected after the run — by the executing host for a remote run,
- * by materialization for a server-host one — and the declared type and role
- * are applied to what actually arrived. A file declared but never written
- * therefore closes nothing: the Task still needs the artifact to exist.
+ * The declaration carries no content and uploads nothing. The executing host
+ * uploads the file afterward, and `applyRunArtifactDeclarations` applies the
+ * type and role to what arrived. Materialization does not. A file declared
+ * but never written closes nothing: the Task still needs the artifact to exist.
  */
 export type RunArtifactRole = "output" | "evidence" | "draft";
 
-export interface RunArtifactDeclaration {
+interface RunArtifactDeclaration {
   id: string;
   task_id: string;
   path: string;
@@ -114,7 +113,7 @@ export async function declareRunArtifact(
 }
 
 /** Every declaration this Run made, for materialization to apply. */
-export async function listRunArtifactDeclarations(
+async function listRunArtifactDeclarations(
   db: Queryable,
   spaceId: string,
   runId: string,
@@ -139,7 +138,7 @@ export async function listRunArtifactDeclarations(
  * settlement match it against `required_outputs_json` and close the Task.
  *
  * An undeclared upload keeps whatever type the uploader gave it and links to
- * no Task — the pre-existing behavior, unchanged. A declaration whose file
+ * no Task. A declaration whose file
  * never arrived is reported into the Task's stream rather than dropped: the
  * agent believed it had delivered something, and the difference between that
  * and having delivered it is exactly what a person needs to see.
@@ -213,8 +212,8 @@ async function reportMissingDeclarations(
   if (!agentId) return;
   const actorId = await resolveAgentActorId(db, run.space_id, agentId);
   // The Task's Project, not the Run's: `declareRunArtifact` files its event
-  // under the Task's, and a report that lands in a different stream than the
-  // declaration it is about is the silent drop this function exists to end.
+  // under the Task's. Do not report into a different stream. The declaration
+  // would have no matching report.
   const projects = await db.query<{ id: string; project_id: string | null }>(
     `SELECT id, project_id FROM tasks WHERE space_id = $1 AND id = ANY($2::varchar[])`,
     [run.space_id, [...byTask.keys()]],

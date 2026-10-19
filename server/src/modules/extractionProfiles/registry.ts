@@ -13,12 +13,12 @@ export interface ExtractionProfileMaterializationResult {
   created: boolean;
 }
 
-export type ExtractionProfileMaterializer = (
+type ExtractionProfileMaterializer = (
   db: Queryable,
   input: ExtractionProfileMaterializationInput,
 ) => Promise<ExtractionProfileMaterializationResult | null>;
 
-export interface ExtractionProfileEntry {
+interface ExtractionProfileEntry {
   key: string;
   displayName: string;
   /**
@@ -37,7 +37,7 @@ export interface ExtractionProfileEntry {
   /** Optional graph presentation contributed by this domain edge. */
   graphLensId?: string;
   /**
-   * Domain-specific screening criteria this profile understands (R4/D12).
+   * Domain-specific screening criteria this profile understands.
    *
    * `methods` is meaningful when screening papers and meaningless when screening
    * web pages, so it cannot be a column on a shared table — but it also must not

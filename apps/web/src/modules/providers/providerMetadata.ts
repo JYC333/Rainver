@@ -1,14 +1,12 @@
 import type { ModelProviderOut, ProviderType, ProviderVendorOut } from '../../api/client'
 import type { AddProviderMode, ModelFieldCopy, ProviderCapability } from './types'
+import i18n from '../../i18n'
 
 /**
  * Vendor facts come from the server's registry, read through
  * `providersApi.vendors()` and threaded down from the providers page. Only
  * presentation lives here — copy, placeholders, and embedding dimension
- * options. The lists this file used to hardcode were a second, hand-maintained
- * answer to questions `VendorDescriptor` already answers, and had drifted:
- * DeepSeek was offered with no base URL to pre-fill, and a branch existed for
- * a vendor the form never showed.
+ * options. Do not hardcode vendor lists here. `VendorDescriptor` answers them.
  */
 export function providerTypeOptionsForMode(
   mode: AddProviderMode,
@@ -63,109 +61,68 @@ export function providerCapabilities(
 ): ProviderCapability[] {
   const vendor = vendors.find(candidate => candidate.id === providerType)
   if (!vendor) return []
+  const t = i18n.t.bind(i18n)
   const capabilities: ProviderCapability[] = []
   if (mode !== 'embedding' && mode !== 'rerank' && vendor.supports_chat) {
     capabilities.push({
       key: 'chat',
-      label: 'Chat',
-      detail: 'Can be used for normal assistant/model calls and query rewrite.',
+      label: t('workspace_ui.providers.capability.chat_label'),
+      detail: t('workspace_ui.providers.capability.chat_detail'),
       variant: 'default',
     })
   }
   if (mode !== 'chat' && mode !== 'rerank' && vendor.supports_embedding) {
     capabilities.push({
       key: 'embeddings',
-      label: 'Embeddings',
-      detail: 'Can be used by retrieval vector search.',
+      label: t('workspace_ui.providers.capability.embeddings_label'),
+      detail: t('workspace_ui.providers.capability.embeddings_detail'),
       variant: 'secondary',
     })
   }
   if (mode !== 'chat' && mode !== 'embedding' && vendor.supports_rerank) {
     capabilities.push({
       key: 'native_rerank',
-      label: 'Native rerank',
-      detail: 'Can be used by retrieval hybrid rerank.',
+      label: t('workspace_ui.providers.capability.rerank_label'),
+      detail: t('workspace_ui.providers.capability.rerank_detail'),
       variant: 'outline',
     })
   }
   return capabilities
 }
 
+/**
+ * Labels and help for the model fields of a provider. Model names in the
+ * placeholders are vendor identifiers and stay as they are.
+ */
 export function modelFieldCopy(providerType: ProviderType | string, mode?: AddProviderMode): ModelFieldCopy {
-  if (providerType === 'zeroentropy' && mode === 'rerank') {
-    return {
-      defaultLabel: 'Default rerank model',
-      availableLabel: 'Available rerank models',
-      defaultPlaceholder: 'zerank-2',
-      availablePlaceholder: 'zerank-2, zerank-1, zerank-1-small',
-      help: 'Use zerank-* models for native rerank in Retrieval Settings.',
-    }
-  }
-  if (providerType === 'zeroentropy' && mode === 'embedding') {
-    return {
-      defaultLabel: 'Default embedding model',
-      availableLabel: 'Available embedding models',
-      defaultPlaceholder: 'zembed-1',
-      availablePlaceholder: 'zembed-1',
-      help: 'Use zembed-* models for retrieval embeddings.',
-    }
-  }
-  if (providerType === 'zeroentropy') {
-    return {
-      defaultLabel: 'Default retrieval model',
-      availableLabel: 'Available retrieval models',
-      defaultPlaceholder: 'zembed-1',
-      availablePlaceholder: 'zembed-1, zerank-2, zerank-1, zerank-1-small',
-      help: 'Use zembed-* for embeddings and zerank-* for native rerank.',
-    }
-  }
-  if (providerType === 'cohere' && mode === 'rerank') {
-    return {
-      defaultLabel: 'Default rerank model',
-      availableLabel: 'Available rerank models',
-      defaultPlaceholder: 'rerank-v4.0-pro',
-      availablePlaceholder: 'rerank-v4.0-pro',
-      help: 'Use Cohere rerank models for native rerank in Retrieval Settings.',
-    }
-  }
-  if (providerType === 'cohere' && mode === 'embedding') {
-    return {
-      defaultLabel: 'Default embedding model',
-      availableLabel: 'Available embedding models',
-      defaultPlaceholder: 'embed-v4.0',
-      availablePlaceholder: 'embed-v4.0',
-      help: 'Use Cohere embed models for retrieval embeddings. Cohere embed-v4 supports 1536, 1024, 512, or 256 dimensions.',
-    }
-  }
-  if (providerType === 'cohere') {
-    return {
-      defaultLabel: 'Default retrieval model',
-      availableLabel: 'Available retrieval models',
-      defaultPlaceholder: 'embed-v4.0',
-      availablePlaceholder: 'embed-v4.0, rerank-v4.0-pro',
-      help: 'Use Cohere embed models for embeddings and Cohere rerank models for native rerank.',
-    }
-  }
+  const t = i18n.t.bind(i18n)
+  const copy = (kind: 'rerank' | 'embedding' | 'retrieval' | 'chat', help: string, defaultPlaceholder: string, availablePlaceholder: string): ModelFieldCopy => ({
+    defaultLabel: t(`workspace_ui.providers.model.default_${kind}`),
+    availableLabel: t(`workspace_ui.providers.model.available_${kind}`),
+    defaultPlaceholder,
+    availablePlaceholder,
+    help: t(`workspace_ui.providers.model.help_${help}`),
+  })
+  if (providerType === 'zeroentropy' && mode === 'rerank') return copy('rerank', 'zeroentropy_rerank', 'zerank-2', 'zerank-2, zerank-1, zerank-1-small')
+  if (providerType === 'zeroentropy' && mode === 'embedding') return copy('embedding', 'zeroentropy_embedding', 'zembed-1', 'zembed-1')
+  if (providerType === 'zeroentropy') return copy('retrieval', 'zeroentropy_any', 'zembed-1', 'zembed-1, zerank-2, zerank-1, zerank-1-small')
+  if (providerType === 'cohere' && mode === 'rerank') return copy('rerank', 'cohere_rerank', 'rerank-v4.0-pro', 'rerank-v4.0-pro')
+  if (providerType === 'cohere' && mode === 'embedding') return copy('embedding', 'cohere_embedding', 'embed-v4.0', 'embed-v4.0')
+  if (providerType === 'cohere') return copy('retrieval', 'cohere_any', 'embed-v4.0', 'embed-v4.0, rerank-v4.0-pro')
   if (mode === 'embedding') {
-    return {
-      defaultLabel: 'Default embedding model',
-      availableLabel: 'Available embedding models',
-      defaultPlaceholder: providerType === 'ollama' ? 'nomic-embed-text' : 'text-embedding-3-large',
-      availablePlaceholder: providerType === 'ollama'
-        ? 'nomic-embed-text'
-        : 'text-embedding-3-large, text-embedding-3-small',
-      help: 'Use an embeddings-capable model for retrieval. Native rerank only appears for providers with a dedicated rerank endpoint.',
-    }
+    return copy(
+      'embedding',
+      'embedding',
+      providerType === 'ollama' ? 'nomic-embed-text' : 'text-embedding-3-large',
+      providerType === 'ollama' ? 'nomic-embed-text' : 'text-embedding-3-large, text-embedding-3-small',
+    )
   }
-  return {
-    defaultLabel: 'Default chat model',
-    availableLabel: 'Available chat models',
-    defaultPlaceholder: providerType === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o',
-    availablePlaceholder: providerType === 'anthropic'
-      ? 'claude-3-5-sonnet-latest, claude-3-5-haiku-latest'
-      : 'gpt-4o, gpt-4o-mini',
-    help: 'Comma-separated model names shown in provider and task selectors.',
-  }
+  return copy(
+    'chat',
+    'chat',
+    providerType === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gpt-4o',
+    providerType === 'anthropic' ? 'claude-3-5-sonnet-latest, claude-3-5-haiku-latest' : 'gpt-4o, gpt-4o-mini',
+  )
 }
 
 export function embeddingDimensionOptions(providerType: ProviderType | string): number[] {

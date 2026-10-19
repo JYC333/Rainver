@@ -56,8 +56,9 @@ describe("maintenance-only migrations", () => {
 /**
  * The marker means "incompatible with the release that is running". A database
  * with nothing applied has no running release, so the whole chain is an
- * ordinary first migration — gating it sent a first-time operator to a
- * maintenance command that needs a running instance to drain.
+ * ordinary first migration. Do not gate that chain on the maintenance
+ * command. A first-time operator would be sent to a command that needs a
+ * running instance to drain.
  */
 describe("what counts as pending maintenance", () => {
   function pendingFor(rows: Array<{ applied: boolean; maintenance: boolean }>): number {

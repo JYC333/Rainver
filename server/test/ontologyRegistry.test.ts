@@ -30,11 +30,9 @@ import {
   assertLinkTypeAllowed,
 } from "../src/modules/ontology/validation.js";
 
-// B12G: one registry, no parallel per-mechanism type lists. These assertions are
-// the mechanism that catches an omission — the previous arrangement had three
-// lists at incompatible granularity and nothing that could compare them, which
-// is how a relation hint came to be declarable for an edge type
-// `object_relations` would reject on write.
+// B12G: one registry. Do not keep a second per-mechanism type list. These
+// assertions catch an omission. A relation hint must not be declarable for an
+// edge type `object_relations` rejects on write.
 describe("ontology registry", () => {
   it("declares every link type in the protocol vocabulary", async () => {
     const { LINK_TYPE_VALUES } = await import("@rainver/protocol");
@@ -65,9 +63,8 @@ describe("ontology registry", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("preserves the governance the edges had before the registry existed", () => {
-    // Thread structure was direct-write as a domain table and must stay direct;
-    // routing it through proposals would be a behaviour change, not a refactor.
+  it("keeps Thread structure a direct write", () => {
+    // Thread structure is a direct write. Do not route it through proposals.
     const thread = ["inquiry_thread", "inquiry_thread"] as const;
     expect(linkTypeDefinition("decomposes_into", ...thread)?.governance).toBe("direct");
     expect(linkTypeDefinition("proposes", ...thread)?.governance).toBe("direct");
@@ -91,8 +88,8 @@ describe("ontology registry", () => {
   });
 
   it("keeps the SQL retrieval enum agreeing with the Retrievable interface", () => {
-    // The consistency test compared the registry with the protocol enum but not
-    // with the database's own list, leaving a third copy free to drift.
+    // Compare the registry with the database's own list as well as the
+    // protocol enum. Do not leave a third copy free to drift.
     const schema = readFileSync(join(import.meta.dirname, "..", "src", "db", "schema", "_types.ts"), "utf8");
     const declared = new RegExp('pgEnum\\("retrieval_object_type", \\[([^\\]]*)\\]').exec(schema)?.[1] ?? "";
     const sqlValues = [...declared.matchAll(/"([a-z_]+)"/g)].map((match) => match[1]!).sort();
@@ -120,11 +117,9 @@ describe("ontology registry", () => {
     ).toBeUndefined();
   });
 
-  // P2.5: the remaining per-mechanism lists. These were three further type
-  // universes that nothing reconciled; they converge here because the registry's
-  // subject is an Entity, so members that are not `space_objects` rows —
-  // activity records, runs, proposals, artifacts, project folders — belong
-  // without any of them becoming one.
+  // One registry. Do not keep a second per-mechanism type list. Members that
+  // are not `space_objects` rows — activity records, runs, proposals,
+  // artifacts, project folders — belong without any of them becoming one.
   it("covers every Runtime Context item type except the inline sentinel", () => {
     const declared = new Set(contextIncludableItemTypes());
     for (const itemType of [
@@ -134,7 +129,8 @@ describe("ontology registry", () => {
     ]) {
       expect(declared.has(itemType), `${itemType} must be ContextIncludable`).toBe(true);
     }
-    // `idea` had no table and no writer; it is not resurrected here.
+    // `idea` is not a context-includable type. It has no table and no writer.
+    // Do not add it here.
     expect(declared.has("idea")).toBe(false);
   });
 
@@ -145,12 +141,13 @@ describe("ontology registry", () => {
   });
 
   it("keeps the ontology root's active predicate on the timestamp, not a status column", () => {
-    // P1 moved domain status off the root; the gate must not reach for it again.
+    // Domain status is not on the root. The gate reads the timestamp. Do not
+    // reach for a status column.
     expect(resolveContentAccessible("space_object")?.activePredicate?.("so")).toBe("so.deleted_at IS NULL");
   });
 
-  // The demoted CHECKs are only safely demoted if something asks the registry.
-  it("rejects values the demoted CHECK constraints used to reject", () => {
+  // The registry is the closed set. Do not leave it unasked.
+  it("rejects values outside the registry", () => {
     expect(() => assertContextItemType("nonsense")).toThrow();
     expect(() => assertCardSourceType("nonsense")).toThrow();
     expect(() => assertCardSourceType(null)).not.toThrow();
@@ -160,7 +157,7 @@ describe("ontology registry", () => {
 
   it("routes an edge by its declared governance rather than by table", () => {
     // A structural edge proposed for review, or an assertion written directly,
-    // is a category error the registry can now catch.
+    // is a category error the registry catches.
     expect(() => assertLinkTypeAllowed({
       linkType: "decomposes_into", fromObjectType: "inquiry_thread", toObjectType: "inquiry_thread", via: "proposal",
     })).toThrow(/written directly/);
@@ -186,10 +183,10 @@ describe("ontology registry", () => {
   });
 
   // B12F/B12I claim modules — including plugins — register their own entities.
-  // The access list used to be snapshotted at module load, so a plugin
-  // registering later was silently invisible. Proving it recomputes does not
-  // require registering anything: these registries are module-level singletons,
-  // and a test that mutates them leaks into every other file sharing the worker.
+  // The access list is recomputed on each read. Do not snapshot it at module
+  // load: a plugin registering later is then invisible. These registries are
+  // module-level singletons, and a test that mutates them leaks into every
+  // other file sharing the worker.
   it("recomputes the access list on each read instead of snapshotting it", () => {
     const first = contentResourceDefinitions();
     const second = contentResourceDefinitions();
@@ -219,8 +216,8 @@ describe("ontology registry", () => {
     const graphable = graphableEntityTypes();
     expect(graphable).toContain("space_object");
     expect(graphable).toContain("inquiry_thread");
-    // Not graphable: it has no node representation, and the graph's lens filter
-    // now refuses to widen into a type the registry never declared.
+    // Not graphable: it has no node representation. The graph's lens filter
+    // refuses to widen into a type the registry never declared.
     expect(graphable).not.toContain("run");
   });
 
@@ -247,10 +244,8 @@ describe("ontology registry", () => {
     }
   });
 
-  // ND collapsed the provenance vocabulary from four copies to one, but the
-  // one it kept was a parallel list rather than an interface declaration, so
-  // this test could not see it and two of the copies survived unnoticed. It is
-  // a declaration now, which is what puts it in front of these assertions.
+  // Provenance source types are declared on the entity. Do not keep a
+  // free-floating list beside that declaration.
   it("declares provenance source types on entities, with no free-floating list", () => {
     const declared = provenanceSourceTypes();
     expect(declared.length).toBeGreaterThan(0);
@@ -258,13 +253,14 @@ describe("ontology registry", () => {
     for (const token of declared) {
       expect(isProvenanceSourceType(token)).toBe(true);
     }
-    // Renamed because it lied: it stored a run id under a step's name.
+    // `run_step` is not a provenance source type. Do not accept it. It would
+    // store a run id under a step's name.
     expect(isProvenanceSourceType("run_step")).toBe(false);
-    // Dropped: no writer, no reader, and a run's internal structure is not an
-    // entity (B12C).
+    // `run_event` is not a provenance source type. It has no writer and no
+    // reader, and a run's internal structure is not an entity (B12C).
     expect(isProvenanceSourceType("run_event")).toBe(false);
     expect(isProvenanceSourceType("nonsense")).toBe(false);
-    // Kept, for reasons recorded on the declaration: a stored token whose
+    // These stay. The declaration records why: a stored token whose
     // entity is `user`, a value with a live reader, and the one sentinel.
     expect(isProvenanceSourceType("user_confirmation")).toBe(true);
     expect(isProvenanceSourceType("source_snapshot")).toBe(true);
@@ -272,10 +268,8 @@ describe("ontology registry", () => {
   });
 
   it("keeps no second copy of the provenance vocabulary in src", () => {
-    // The specific failure this prevents: a module keeping its own Set and
-    // *silently dropping* what it does not recognize, which is how a
-    // divergence lost provenance without an error. Two modules did exactly
-    // that until 2026-08-06.
+    // Do not keep a second Set that silently drops what it does not
+    // recognize. A divergence then loses provenance with no error.
     const srcDir = join(import.meta.dirname, "..", "src");
     const files: string[] = [];
     const walk = (dir: string): void => {

@@ -1,16 +1,15 @@
 /**
- * Deterministic, config-driven generator for MVP Custom Source handler code.
+ * Deterministic, config-driven generator for Custom Source handler code.
  *
  * "Generation" here is template-based, not LLM/agent-driven: the source
  * config supplied at draft time (`list_selector`) is enough to produce a
  * genuinely source-specific handler without pulling the full agent/workspace
  * Run pipeline into this feature. See
- * `.agent/architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md` (Level 3 fallback;
- * frozen).
+ * `.agent/architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md` (Level 3 fallback).
  *
  * The generated handler never calls `fetch`/`http`/`net` itself — the
  * sandbox bootstrap in `customSourceRunner.ts` unconditionally blocks those
- * APIs (Phase 4 shipped "blocked network", not a controlled fetch channel).
+ * APIs. There is no controlled fetch channel.
  * Instead, trusted server code (`customSourceCreateFlowService.ts` /
  * `customSourceScanWorker.ts`) fetches `endpoint_url` itself and embeds the
  * fetched (or fixture) HTML directly into `input.json` as
@@ -19,7 +18,7 @@
  * `require(entrypointPath)` with no compile step.
  */
 
-export interface CustomSourceHandlerTemplateConfig {
+interface CustomSourceHandlerTemplateConfig {
   /** CSS class name (e.g. "article" or ".article") identifying repeated list items. Single-page mode is used when omitted. */
   listSelector?: string | null;
 }
@@ -127,12 +126,14 @@ function buildListItems(input, html, maxItems) {
   const blocks = splitBlocksByClass(html || '', LIST_SELECTOR).slice(0, Math.max(1, maxItems));
   return blocks.map((block, index) => {
     const href = extractHref(block);
-    const link = resolveUrl(href, baseUrl) || baseUrl || input.source.name;
+    const resolved = resolveUrl(href, baseUrl);
+    const ownLink = href && resolved && resolved !== baseUrl ? resolved : null;
+    const link = resolved || baseUrl || input.source.name;
     const title =
       extractTagText(block, 'a') || extractTagText(block, 'h2') || extractTagText(block, 'h3') || ('Item ' + (index + 1));
     const excerpt = stripTags(block).slice(0, 2000) || null;
     return {
-      external_id: sha256(link + '#' + index),
+      external_id: sha256(ownLink || (link + '#' + index)),
       title: String(title).slice(0, 512),
       source_uri: link,
       excerpt,

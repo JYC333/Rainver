@@ -218,12 +218,40 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     expect(updated.rows[0]?.state_json).toMatchObject({ monitoring: { active: true, channel_ids: [] } });
   });
 
+  it("needs a binding and a rule for every channel of a multi-channel Workflow", async () => {
+    if (!db.available) return;
+    // One Workflow per Inquiry Thread, so each case asks its own question.
+    const seed = async (bindings: string[], rules: string[]) => {
+      const thread = await new InquiryThreadService(db.pool).createThread(
+        identity, PROJECT, { kind: "question", statement: `Does X improve Y (${bindings.length})?` },
+      );
+      return seedWorkflow({
+        research_question: thread.statement,
+        thread_scope: [{ thread_id: thread.id, version: thread.version, kind: "question", statement: thread.statement }],
+        channel_ids: ["channel-1", "channel-2"],
+        project_source_binding_ids: bindings,
+        source_post_processing_rule_ids: rules,
+        report_depth: "quick",
+        agent_id: AGENT,
+        monitoring: { active: true },
+      }, String(thread.id));
+    };
+    const extend = (workflowId: string) => new ProjectResearchOrchestrator(db.pool, CONFIG)
+      .startHistoricalBackfill(identity, PROJECT, workflowId, { from: "2025-01-01", to: "2025-02-01" })
+      .then(() => null, (error: Error) => error.message);
+
+    // One channel's binding and rule are not the Workflow's monitor setup.
+    expect(await extend(await seed(["binding-1"], ["rule-1"]))).toContain("has not completed monitor setup");
+    // Whatever else stops it, monitor setup is not what is missing.
+    const complete = await extend(await seed(["binding-1", "binding-2"], ["rule-1", "rule-2"]));
+    expect(complete ?? "").not.toContain("has not completed monitor setup");
+  });
+
   it("bounds a daily update and defers the rest to the next one, without asking anybody", async () => {
     if (!db.available) return;
-    // A daily update is bounded the same way a baseline is — an unbounded run
-    // put 873 documents through an LLM before anyone saw a number — but it
-    // answers differently: nobody is awake at 4am to approve anything, so the
-    // overflow waits for tomorrow instead of a decision.
+    // A daily update is bounded the same way a baseline is. Do not run it
+    // unbounded. It answers differently: nobody is awake at 4am to approve
+    // anything, so the overflow waits for tomorrow instead of a decision.
     const thread = await new InquiryThreadService(db.pool).createThread(
       identity, PROJECT, { kind: "question", statement: "Does X improve Y?" },
     );
@@ -385,6 +413,12 @@ describe("ProjectResearchRepository (real Postgres)", () => {
       reason: "looks good",
     });
     expect(decided).toMatchObject({ status: "approved", user_decision: "approved", decision_reason: "looks good" });
+    // A decided checkpoint is not decided again the other way; replaying the
+    // same decision stays allowed.
+    await expect(repo().decideCheckpoint(identity, PROJECT, workflowId, checkpoint.id as string, { decision: "rejected" }))
+      .rejects.toMatchObject({ statusCode: 409 });
+    await expect(repo().decideCheckpoint(identity, PROJECT, workflowId, checkpoint.id as string, { decision: "approved" }))
+      .resolves.toMatchObject({ status: "approved", user_decision: "approved" });
 
     const checkpoints = await repo().listCheckpoints(identity, PROJECT, workflowId);
     expect(checkpoints).toHaveLength(1);
@@ -450,10 +484,10 @@ describe("ProjectResearchRepository (real Postgres)", () => {
     const saved = await repo().upsertScreeningCriteria(identity, PROJECT, {
       include_keywords: ["transformer", "attention"],
       exclude_keywords: ["survey"],
-      // `venues` generalized to a source restriction (R4/D12) — journals,
-      // outlets and sites are one concept. `methods` moved into the
-      // profile-declared bag, which this Project binds no source for, so it is
-      // covered by researchScreeningCriteriaDb rather than here.
+      // `venues` is a source restriction: journals, outlets and sites are one
+      // concept. `methods` lives in the profile-declared bag, which this
+      // Project binds no source for, so it is covered by
+      // researchScreeningCriteriaDb rather than here.
       source_restrictions: ["NeurIPS"],
       date_range_start: "2020-01-01T00:00:00.000Z",
       date_range_end: "2024-01-01T00:00:00.000Z",

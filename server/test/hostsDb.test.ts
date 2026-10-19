@@ -142,11 +142,8 @@ describe("hosts repository", () => {
     expect(staleHost?.status).toBe("offline");
   });
 
-  // The built-in host used to be reported permanently `online` because it was
-  // an in-process execution boundary with no heartbeat to be stale. It is a
-  // daemon connection now — `rainver-host` in strict mode inside
-  // `sandbox-runner` — so reporting that would hide the one failure an
-  // operator most needs to see: the instance's own execution host not being up.
+  // The built-in host is a daemon connection. Do not report it permanently
+  // `online`: that hides the instance's own execution host being down.
   it("reports the built-in host offline until its daemon has connected", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const repo = new PgHostRepository(db.pool);

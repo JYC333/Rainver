@@ -1,9 +1,9 @@
 /**
  * Reads a response body with a hard byte ceiling, cancelling the rest.
  *
- * `await response.text()` buffers whatever the upstream chooses to send before
- * anyone can truncate it, so the ceiling a caller thought it had applied was
- * only ever applied to memory it had already taken.
+ * Do not `await response.text()`. That buffers whatever the upstream sends
+ * before anyone can truncate it, so a ceiling applies only to memory already
+ * taken.
  */
 export async function readBodyUpTo(
   response: Response,

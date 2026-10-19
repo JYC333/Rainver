@@ -7,8 +7,8 @@
  *
  * Read-only descriptors of the on-disk `catalog/` definitions. Product
  * capability APIs live in `modules/capabilities` under
- * `/api/v1/capability-definitions`; catalog is no longer a public capability
- * surface.
+ * `/api/v1/capability-definitions`. This catalog is read-only descriptors,
+ * not a public capability surface.
  */
 
 import type { FastifyInstance } from "fastify";

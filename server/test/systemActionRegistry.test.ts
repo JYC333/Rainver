@@ -81,11 +81,10 @@ describe("system action registry loading", () => {
   });
 
   it("declares one resource type per action across both registries", () => {
-    // The dispatcher passes the System Action's declared resource, so a
-    // mismatch is silent: the policy registry's entry is documentation that
-    // has drifted, and drifted documentation about authorization is worse
-    // than none. `task.create` was declared `task` in one and `project` in the
-    // other — a Task has no id yet when it is created, so `project` is right.
+    // The dispatcher passes the System Action's declared resource. Do not let
+    // the two registries disagree. The policy entry would document a resource
+    // the dispatcher does not use. A Task has no id yet when it is created,
+    // so `project` is the resource for `task.create`.
     const policyResources = new Map(
       actualProtocol.POLICY_ACTION_REGISTRY.map((entry) => [entry.action, entry.resource_type]),
     );

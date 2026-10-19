@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { NOTE_CROSS_PROJECT_SHARE_REQUIRED_CODE } from "@rainver/protocol";
 import { HttpError, type Queryable, withQueryableTransaction } from "../routeUtils/common.js";
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import { assertProjectWriter } from "../projects/access.js";
@@ -6,7 +7,8 @@ import { RetrievalProjectionService } from "../retrieval/index.js";
 import { knowledgeRetrievalRegistry } from "./retrievalAdapter.js";
 import { blockIds, withBlockIds } from "./noteBlockIds.js";
 import { normalizePmText, type NoteOp } from "./noteDocument.js";
-import { projectOwningCollection } from "./noteProjectFolders.js";
+import { ensureProjectNotesFolder, projectOwningCollection } from "./noteProjectFolders.js";
+import { assertNoteEntryInvariant, lockNotesForPlacementChange } from "./notePlacementInvariant.js";
 import { shareSpaceObjectWithProject } from "./spaceObjectProjectShares.js";
 import { assertNoteProjectRole } from "./noteProjectRoles.js";
 import {
@@ -21,30 +23,16 @@ import {
 } from "./noteRevisionService.js";
 
 /**
- * The one way to create or change a note.
+ * The one way to create or change a note. Content goes through
+ * `noteRevisionService`: every version gets a revision row, which is what
+ * makes rollback trustworthy.
  *
- * `noteRevisionService` already owned note *content* — every version gets a
- * revision row, which is what makes rollback trustworthy. What it did not own
- * was everything around a write, and each caller carried its own copy of that:
- *
- * - Creation existed twice. `PgKnowledgeRepository.createNote` and
- *   `projectResearch/areaService.createProjectNote` each assembled the root
- *   row, the extension row, the first revision, and collection membership by
- *   hand. They had drifted: the project one wrote no `summary` and filed every
- *   note at `sort_order` 0, so a Project's four starter notes were ordered by
- *   tie-break.
- * - Reindexing was the caller's job, and only one caller did it. User saves
- *   went through `createNote`/`updateNote` and refreshed the retrieval
- *   projection; every AI write went through `areaService` and did not. A
- *   "current understanding" note an agent had been maintaining for weeks was
- *   stale in search until a human happened to save it by hand.
- * - The Project role was written from three places, one of which knew about
- *   the registry and about displacing the previous holder, and two of which
- *   did not.
- *
- * This is the same argument the `space_objects` writer settles one level down
- * (B12H): a rule enforced at N call sites is missed at the N+1th, and the miss
- * is silent.
+ * Do not assemble the root row, the extension row, the first revision, and
+ * collection membership in a second caller. Do not skip `summary` or file
+ * every note at `sort_order` 0. Do not skip the retrieval projection on an
+ * AI write. Do not write the Project role from a caller that does not know
+ * the registry or displace the previous holder. A rule enforced at N call
+ * sites is missed at the N+1th, and the miss is silent.
  *
  * **Reindexing runs after the transaction commits, not inside it.** The
  * projection is a derived index that can be rebuilt, so a projection failure
@@ -59,7 +47,7 @@ export interface NoteWriteScope {
   write(input: NoteContentInput): Promise<NoteWriteResult>;
   applyOps(input: NoteOpsInput): Promise<{ note: NoteContentRow; conflict: boolean } | null>;
   rollback(input: NoteRollbackInput): Promise<NoteContentRow>;
-  /** Assign or clear the note's Project notebook role (N2/N3). */
+  /** Assign or clear the note's Project notebook role. */
   setProjectRole(input: NoteProjectRoleInput): Promise<void>;
   /**
    * Marks a note as changed without writing its content — a rename, an
@@ -142,6 +130,8 @@ export interface NoteRollbackInput {
   noteId: string;
   toVersion: number;
   userId: string;
+  /** Refuse unless the note is still at this version (undoing one edit). */
+  expectVersion?: number | null;
 }
 
 export interface NoteProjectRoleInput {
@@ -167,9 +157,9 @@ export interface NoteProjectRoleInput {
  * cases are load-bearing:
  *
  * - **Given a pool**, this opens the transaction and reindexes after it
- *   commits, on the pool. A projection failure is then logged and dropped,
- *   which is what we want: the index is derived and rebuildable, so losing a
- *   refresh must not undo a write the user already saw succeed.
+ *   commits, on the pool. A projection failure is logged and dropped. The
+ *   index is derived and rebuildable, so losing a refresh must not undo a
+ *   write the user already saw succeed.
  * - **Given an already checked-out client** — `withQueryableTransaction` joins
  *   rather than nests, and several callers (report materialization, area
  *   initialization) are already inside someone's transaction — there is no
@@ -295,11 +285,9 @@ async function insertNote(
   const at = input.at ?? new Date().toISOString();
   const actorUserId = actingUserId(input.actor);
   const projectId = input.primaryProjectId ?? null;
-  // The rule the Project role made load-bearing: binding a note to a Project
-  // is a write to that Project. Before this, any member of the Space could
-  // file a note under any Project and then claim its baseline role, which
-  // displaces the note the Project's research monitoring reads. A `system`
-  // actor has no user to check and is trusted by construction.
+  // Binding a note to a Project is a write to that Project. A Space member
+  // who is not a Project writer must not file a note there and claim its
+  // baseline role. A `system` actor has no user to check and is trusted.
   if (projectId && actorUserId) {
     await assertProjectWriter(db, input.spaceId, projectId, actorUserId);
   }
@@ -362,8 +350,20 @@ async function insertNote(
     at,
     userId: createdByUserId,
   });
-  if (input.collectionId) {
-    await moveNoteToCollection(db, input.spaceId, objectId, input.collectionId, input.actor);
+  // A Project note's first entry is in its Project: a caller that names no
+  // folder gets the Project's notes folder, and a folder it does name has to
+  // satisfy the entry invariant below — a note bound to A but filed only
+  // outside A would be unreachable from the Project that owns it.
+  const collectionId = input.collectionId
+    ?? (projectId ? await ensureProjectNotesFolder(db, input.spaceId, projectId) : null);
+  if (collectionId) {
+    await moveNoteToCollection(db, input.spaceId, objectId, collectionId, input.actor);
+  }
+  // A note outside every Project may start unfiled (a jot with no context, a
+  // link target); the entry rule only ever refuses taking its last folder
+  // away. A Project note has an owning entry from its first moment.
+  if (projectId) {
+    await assertNoteEntryInvariant(db, input.spaceId, await lockNotesForPlacementChange(db, input.spaceId, [objectId]));
   }
   if (input.projectRole) {
     await assignNoteProjectRole(db, {
@@ -384,8 +384,8 @@ async function insertNote(
  * This is the "file it here" write behind note creation and an explicit
  * `collection_id` on a note update. Adding a note to a further folder without
  * removing it from the ones it is already in is a different action with
- * different intent — {@link addNotePlacement} — and conflating the two is how
- * a multi-placement schema ends up behaving as if it were single-placement.
+ * different intent — {@link addNotePlacement}. Do not use this write to add a
+ * placement. A multi-placement note would then behave as if it had one.
  */
 export async function moveNoteToCollection(
   db: Queryable,
@@ -395,6 +395,7 @@ export async function moveNoteToCollection(
   actor: NoteActor = { system: true },
 ): Promise<void> {
   await requireNoteCollectionRow(db, spaceId, collectionId);
+  const locked = await lockNotesForPlacementChange(db, spaceId, [noteId]);
   const currentPlacements = await db.query<{ collection_id: string }>(
     `SELECT collection_id FROM note_collection_items
       WHERE note_id = $1 AND space_id = $2
@@ -407,6 +408,10 @@ export async function moveNoteToCollection(
   await bindNoteToPlacementProject(db, { spaceId, noteId, collectionId, actor });
   await db.query(`DELETE FROM note_collection_items WHERE note_id = $1 AND space_id = $2`, [noteId, spaceId]);
   await insertNotePlacement(db, spaceId, noteId, collectionId);
+  // Replacing every placement can take a Project note out of its Project —
+  // "file it in Inbox" for a note Project A owns — and that is the refusal,
+  // not a silent move out of A.
+  await assertNoteEntryInvariant(db, spaceId, locked);
 }
 
 /**
@@ -422,12 +427,13 @@ export async function addNotePlacement(
   actor: NoteActor = { system: true },
   /**
    * Confirms the cross-Project case: the caller has been told that this also
-   * makes the note readable by the other Project's members, and said yes (U8).
+   * makes the note readable by the other Project's members, and said yes.
    * Absent, a placement into another Project's subtree is still refused.
    */
   shareWithProject = false,
 ): Promise<void> {
   await requireNoteCollectionRow(db, spaceId, collectionId);
+  await lockNotesForPlacementChange(db, spaceId, [noteId]);
   const existing = await db.query<{ id: string }>(
     `SELECT id FROM note_collection_items WHERE space_id = $1 AND collection_id = $2 AND note_id = $3`,
     [spaceId, collectionId, noteId],
@@ -438,8 +444,8 @@ export async function addNotePlacement(
 }
 
 /**
- * Governance ownership follows the *first* placement into a Project's subtree
- * (U7), and never moves after that.
+ * Governance ownership follows the *first* placement into a Project's subtree,
+ * and never moves after that.
  *
  * Display ownership is by placement and may be plural: a note in two Projects'
  * folders shows up in both views. `primary_project_id` is not — it is the
@@ -455,22 +461,14 @@ export async function addNotePlacement(
  *   the first Project. What the confirmation adds is a
  *   `space_object_project_shares` row, which widens the scope half of the read
  *   gate so the second Project's members can actually see what was placed in
- *   their tree. Without it the placement would be a silent absence rather than a
- *   placement, which is why the refusal remains the default (U8: never silent
- *   widening).
+ *   their tree. Without it the placement would be a silent absence. The
+ *   refusal stays the default. Do not widen silently.
  *
  * A Project change also invalidates any baseline role scoped to the old one —
- * a note cannot hold a slot in a Project it no longer belongs to. That guard
- * used to run only when `primary_project_id` was set explicitly through the
- * note update, so a drag carried the role along; it runs here too now.
+ * a note cannot hold a slot in a Project it no longer belongs to. The guard
+ * runs for every Project change, including a drag. Do not limit it to an
+ * explicit `primary_project_id` on the note update.
  */
-/**
- * The client's cue to ask rather than to show an error: it re-issues the
- * placement with the share confirmed. A code because matching on prose is how
- * error handling rots.
- */
-export const NOTE_CROSS_PROJECT_SHARE_REQUIRED = "note_cross_project_share_required";
-
 export async function bindNoteToPlacementProject(
   db: Queryable,
   input: {
@@ -506,7 +504,7 @@ export async function bindNoteToPlacementProject(
       const detail = "This note belongs to another project. Placing it here also makes it readable by this project's members.";
       throw new HttpError(409, detail, {
         detail,
-        code: NOTE_CROSS_PROJECT_SHARE_REQUIRED,
+        code: NOTE_CROSS_PROJECT_SHARE_REQUIRED_CODE,
         owner_project_id: currentProjectId,
       });
     }
@@ -551,9 +549,12 @@ export async function assertNoteCollectionProjectWriter(
 }
 
 /**
- * Removes one placement. Removing the last one is refused rather than silently
- * turning the note into something no tree can show: losing a note is a
- * different decision from taking it out of a folder, and has its own action.
+ * Removes one placement. Removing the note's last entry in the Project that
+ * owns it — or its last folder, for a note outside every Project — is refused
+ * rather than silently turning the note into something its own Project's tree
+ * cannot show: losing a note is a different decision from taking it out of a
+ * folder, and has its own action. The refusal names the two actions that are
+ * actually available (`notePlacementInvariant`).
  */
 export async function removeNotePlacement(
   db: Queryable,
@@ -563,25 +564,25 @@ export async function removeNotePlacement(
   actor: NoteActor = { system: true },
 ): Promise<void> {
   await assertNoteCollectionProjectWriter(db, spaceId, collectionId, actor);
-  const placements = await db.query<{ collection_id: string }>(
-    `SELECT collection_id FROM note_collection_items WHERE space_id = $1 AND note_id = $2 FOR UPDATE`,
-    [spaceId, noteId],
-  );
-  if (!placements.rows.some((row) => row.collection_id === collectionId)) {
-    throw new HttpError(404, "This note is not in that folder");
-  }
-  if (placements.rows.length <= 1) {
-    throw new HttpError(422, "A note must stay in at least one folder; delete the note instead");
-  }
-  await db.query(
+  const locked = await lockNotesForPlacementChange(db, spaceId, [noteId]);
+  const removed = await db.query(
     `DELETE FROM note_collection_items WHERE space_id = $1 AND collection_id = $2 AND note_id = $3`,
     [spaceId, collectionId, noteId],
   );
+  if ((removed.rowCount ?? 0) === 0) throw new HttpError(404, "This note is not in that folder");
+  await assertNoteEntryInvariant(db, spaceId, locked);
 }
 
-async function requireNoteCollectionRow(db: Queryable, spaceId: string, collectionId: string): Promise<void> {
+/**
+ * Also pins the folder row (`FOR KEY SHARE`) before any note row is locked:
+ * folder deletion takes the folder `FOR UPDATE` and then the notes in it, so a
+ * placement writer that locked the note first and then touched the folder's
+ * row through the placement's foreign key would deadlock with it. Folders
+ * before notes, everywhere (`notePlacementInvariant`).
+ */
+export async function requireNoteCollectionRow(db: Queryable, spaceId: string, collectionId: string): Promise<void> {
   const exists = await db.query<{ id: string }>(
-    `SELECT id FROM note_collections WHERE id = $1 AND space_id = $2`,
+    `SELECT id FROM note_collections WHERE id = $1 AND space_id = $2 FOR KEY SHARE`,
     [collectionId, spaceId],
   );
   if (!exists.rows[0]) throw new HttpError(404, "Note collection not found");
@@ -612,21 +613,18 @@ async function insertNotePlacement(
 }
 
 /**
- * Assigns or clears a note's Project notebook role (N2/N3).
+ * Assigns or clears a note's Project notebook role.
  *
- * Three code paths used to write `notes.project_role`: this one, the starter
- * note creator, and the one-shot title adoption. Only this one validated the
- * role against the registry and displaced the previous holder, which the
- * partial unique index would otherwise reject — and a silent second baseline
- * is exactly the failure the marker exists to prevent. All three now come
- * here.
+ * This is the only writer of `notes.project_role`. It validates the role
+ * against the registry and displaces the previous holder. A second writer
+ * hits the partial unique index, or leaves a silent second baseline.
  *
  * The role needs a Project: a note with no `primary_project_id` has no
  * Project to hold a role in. Displacing the previous holder is a write to
  * that Project's research baseline, so a user actor has to be able to write
  * to it.
  */
-export async function assignNoteProjectRole(db: Queryable, input: NoteProjectRoleInput): Promise<void> {
+async function assignNoteProjectRole(db: Queryable, input: NoteProjectRoleInput): Promise<void> {
   const at = input.at ?? new Date().toISOString();
   const role = input.role === null || input.role === undefined || input.role === "" ? null : input.role;
   if (role === null) {

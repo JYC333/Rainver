@@ -1,10 +1,10 @@
-export interface ExecutionGraphNode {
+interface ExecutionGraphNode {
   id: string;
   status: string;
   dependsOn: string[];
 }
 
-export type ProjectedNodeStatus = "done" | "failed" | null;
+type ProjectedNodeStatus = "done" | "failed" | null;
 
 /**
  * Shared deterministic state rules for Plan and fixed Workflow graphs.

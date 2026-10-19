@@ -3,6 +3,7 @@ import { Search } from 'lucide-react'
 import type { GraphProjection, GraphProjectionNode } from '@rainver/protocol'
 import { Button } from '../ui/button'
 import { Input } from '../ui/input'
+import { useAppTranslation } from '../../i18n'
 
 interface GraphSearchBoxProps {
   projection: GraphProjection
@@ -28,6 +29,7 @@ export function GraphSearchBox({ projection, onFocusNode }: GraphSearchBoxProps)
     if (first) onFocusNode(first)
   }
 
+  const { t } = useAppTranslation()
   return (
     <div className="relative flex w-full max-w-72 items-center gap-1">
       <Input
@@ -36,7 +38,7 @@ export function GraphSearchBox({ projection, onFocusNode }: GraphSearchBoxProps)
         onKeyDown={(event) => {
           if (event.key === 'Enter') submit()
         }}
-        placeholder="Search nodes"
+        placeholder={t('core_ui.graph.search_placeholder')}
         className="h-8 pr-8"
       />
       <Button
@@ -45,8 +47,8 @@ export function GraphSearchBox({ projection, onFocusNode }: GraphSearchBoxProps)
         size="sm"
         className="absolute right-1 h-6 w-6 px-0"
         onClick={submit}
-        title="Focus node"
-        aria-label="Focus node"
+        title={t('core_ui.graph.focus_node')}
+        aria-label={t('core_ui.graph.focus_node')}
       >
         <Search className="size-3.5" />
       </Button>

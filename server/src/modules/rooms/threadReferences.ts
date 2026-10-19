@@ -39,7 +39,7 @@ import type {
   ThreadReferenceDisclosureRequired,
 } from "@rainver/protocol";
 
-export interface ResolvedThreadReference {
+interface ResolvedThreadReference {
   content: string;
   provenance: ThreadReferenceProvenance;
   /** Who can read the source, asked of the same gate the read itself uses. */
@@ -71,8 +71,7 @@ export const REFERENCE_BATCH_TOKEN_BUDGET = ROOM_SUMMARY_TOKEN_BUDGET;
  * holds in the prompt, the CLI replay and any later summary of the thread
  * without each of them having to know about references.
  *
- * Two things the fence has to survive, because the content inside it is the
- * thing it exists to contain:
+ * Two things the fence has to survive. The content inside it is untrusted:
  *
  * - **A forged closing marker.** The markers carry a per-attach nonce, so a
  *   transcript cannot close the fence early by containing the literal text —
@@ -170,8 +169,7 @@ export function assertSameProject(
   targetProjectId: string,
 ): void {
   if (sourceProjectId && sourceProjectId === targetProjectId) return;
-  // A reference into another Project is a non-goal, and it is the one
-  // containment the removed `imported_session` resolver used to enforce.
+  // A reference into another Project is a non-goal.
   throw new HttpError(422, "A reference must come from the same Project");
 }
 
@@ -228,10 +226,10 @@ async function roomAudience(
     // itself requires — not the roster alone. Removing somebody from a
     // Project deletes their `project_members` row and leaves every
     // `room_user_members` row active, so a roster-only audience counts people
-    // who can no longer read anything here. Today that only over-warns,
-    // because same-Project containment keeps such a phantom out of the target
-    // audience too; asking the predicate is what stops that from being one
-    // rule-change away from a missed disclosure.
+    // who can no longer read anything here. A roster-only count over-warns
+    // while same-Project containment also keeps that person out of the target.
+    // Do not drop the predicate. One rule change would turn the warning into
+    // a missed disclosure.
     `SELECT member.user_id
        FROM room_user_members member
        JOIN users u ON u.id = member.user_id AND u.status = 'active'
@@ -300,12 +298,10 @@ async function resolveConversationPick(
       .map((message) => `${message.role}:\n${message.content}`)
       .join("\n\n");
     const fitted = fitRoomSummaryToBudget(body, budget);
-    // Trust follows provenance, and provenance is more than one hop deep. A
-    // `reference` message is itself pickable, and so is an Agent's reply
-    // quoting one — which is why this asks about the whole conversation
-    // rather than only the rows that were picked. Either way the reader would
-    // otherwise be told the opposite of the truth while the content travelled
-    // on unchanged.
+    // Trust was decided for the whole conversation above. Do not recompute it
+    // from the picked rows alone. A `reference` message is itself pickable,
+    // and so is an Agent's reply quoting one. The reader would be told the
+    // opposite of the truth while the content travelled on unchanged.
     return {
       content: fenced(`From “${label}” — ${messages.rows.length} message${messages.rows.length === 1 ? "" : "s"}:`, fitted, trust),
       provenance: provenance(pick.kind, source.id, source.room_id, label, messages.rows.map((m) => m.id), trust, fitted !== body.trim(), identity),
@@ -406,8 +402,8 @@ async function resolveImportedPick(
   const fitted = fitRoomSummaryToBudget(body, budget);
   return {
     content: fenced(`From imported session “${label}”:`, fitted, "external_untrusted"),
-    // A vendor transcript is not Rainver's own record of anything. That level
-    // exists for exactly this.
+    // A vendor transcript is not Rainver's own record. Mark it
+    // `external_untrusted`.
     provenance: provenance(pick.kind, read.session.id, null, label, records.map((r) => r.id), "external_untrusted", fitted !== body.trim(), identity),
     sourceAudienceUserIds: await importedSessionAudience(db, identity.spaceId, read.session.id),
   };
@@ -440,13 +436,13 @@ function provenance(
  * Who can read this imported session's transcript.
  *
  * Asked of the same predicate the read itself uses, at the same `full` level
- * and with oversight off — not derived from `visibility`. Mapping "not
- * private" to "every Project reader" was wrong twice over: `selected_users`
+ * and with oversight off — not derived from `visibility`. Do not map "not
+ * private" to "every Project reader". `selected_users`
  * means the owner plus grantees, and a `space_shared` session whose
  * `access_level` is `summary` opens to nobody but its owner, because a
  * transcript needs `full`. Both overstate the source's audience, and
- * overstating it understates who a copy discloses to — the same failure the
- * mainline roster had.
+ * overstating it understates who a copy discloses to — the same miss as
+ * reading a mainline's roster instead of its Project readers.
  */
 async function importedSessionAudience(
   db: Queryable,

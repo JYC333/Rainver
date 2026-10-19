@@ -52,6 +52,8 @@ export interface InsertProposalRowInput {
   createdAt?: string;
   requiredApproverRole?: string | null;
   actionIdempotencyKey?:string|null;
+  /** A person's pending request identity; unique among pending proposals of a type in a Space. */
+  pendingOperationKey?: string | null;
 }
 
 export async function insertProposalRow(db: Queryable, input: InsertProposalRowInput): Promise<ProposalRow> {
@@ -63,13 +65,15 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
        urgency, preview, title, summary, payload_json, review_deadline,
        expires_at, created_at, updated_at, reviewed_at, reviewed_by,
        project_folder_id, rationale, created_by_agent_id, created_by_user_id, owner_user_id,
-       required_approver_role, visibility, project_id, access_level, action_idempotency_key
+       required_approver_role, visibility, project_id, access_level, action_idempotency_key,
+       pending_operation_key
      ) VALUES (
        $1, $2, $3, $4, $5, $6,
        $7, $8, $9, $10, $11::jsonb, NULL,
        NULL, $12, $12, NULL, NULL,
        $13, $14, $18, $15, $22,
-       $19, $16, $17, $20, $21
+       $19, $16, $17, $20, $21,
+       $23
      )
      RETURNING id, space_id, created_by_user_id, project_folder_id,
                created_by_run_id, proposal_type, status, risk_level, urgency,
@@ -101,6 +105,7 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
       input.accessLevel ?? "full",
       input.actionIdempotencyKey??null,
       input.ownerUserId === undefined ? input.createdByUserId : input.ownerUserId,
+      input.pendingOperationKey ?? null,
     ],
   );
   return result.rows[0]!;
@@ -108,27 +113,40 @@ export async function insertProposalRow(db: Queryable, input: InsertProposalRowI
 
 /**
  * Look up an existing pending packet proposal by lineage_key.
- * Returns the existing proposal id if found, null otherwise.
+ * Returns the existing proposal if found, null otherwise.
  *
  * Packet generators embed a deterministic `lineage_key` in their payload so
  * callers can skip creation when equivalent work is already pending review.
+ * Equivalent means the same creator and the same review audience too: a
+ * private packet is reviewable by its creator alone, so another person's
+ * packet — or the same person's packet at a different scope — is not the one
+ * this caller asked for, and its id is not theirs to be handed. Callers run
+ * inside a transaction; the lock makes a concurrent caller with the same
+ * lineage wait and then find this one's packet instead of inserting its own.
  */
 export async function lookupExistingPendingPacket(
   db: Queryable,
   spaceId: string,
   proposalType: string,
   lineageKey: string,
-): Promise<string | null> {
-  const result = await db.query<{ id: string }>(
-    `SELECT id FROM proposals
+  audience: { createdByUserId: string; visibility: string },
+): Promise<{ id: string; payload_json: Record<string, unknown> } | null> {
+  await db.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+    `review-packet:${spaceId}:${proposalType}:${lineageKey}:${audience.createdByUserId}:${audience.visibility}`,
+  ]);
+  const result = await db.query<{ id: string; payload_json: Record<string, unknown> | null }>(
+    `SELECT id, payload_json FROM proposals
       WHERE space_id = $1
         AND proposal_type = $2
         AND payload_json->>'lineage_key' = $3
         AND status = 'pending'
+        AND created_by_user_id = $4
+        AND visibility = $5
       LIMIT 1`,
-    [spaceId, proposalType, lineageKey],
+    [spaceId, proposalType, lineageKey, audience.createdByUserId, audience.visibility],
   );
-  return result.rows[0]?.id ?? null;
+  const row = result.rows[0];
+  return row ? { id: row.id, payload_json: row.payload_json ?? {} } : null;
 }
 
 export interface ChildProposalDraft {
@@ -145,7 +163,7 @@ export interface ChildProposalDraft {
 }
 
 /** Insert one child proposal generated from an accepted packet. */
-export async function insertChildProposalRow(
+async function insertChildProposalRow(
   context: ProposalApplyContext,
   draft: ChildProposalDraft,
 ): Promise<string> {
@@ -166,7 +184,7 @@ export async function insertChildProposalRow(
   return row.id;
 }
 
-export interface AcceptReviewPacketBuild {
+interface AcceptReviewPacketBuild {
   children: ChildProposalDraft[];
   /** Optional per-candidate skip records (claim/relation packets track these). */
   skipped?: Record<string, unknown>[];
@@ -176,7 +194,7 @@ export interface AcceptReviewPacketBuild {
   resultExtra?: Record<string, unknown>;
 }
 
-export interface AcceptReviewPacketOptions {
+interface AcceptReviewPacketOptions {
   expectedOperation: string;
   resultType: ProposalAcceptResultType;
   privateMessage: string;

@@ -7,12 +7,12 @@
  * distribution can only ever draw from material their own sources already
  * surfaced, and the source pool is itself a product of their interests — the
  * ceiling is the bubble. Against a fixed external frame, "you cover 12 of 60
- * domains" holds on day one and needs no history at all, which is also why cold
- * start stops being a special case.
+ * domains" holds on day one and needs no history. Cold start is not a
+ * special case.
  *
  * This is deliberately the opposite of the topic axis in the interest profile.
  * There, a fixed taxonomy would *be* the bubble, so topics grow under control
- * from what the reader actually reads. Here, a fixed taxonomy is the point.
+ * from what the reader actually reads. Here the taxonomy stays fixed.
  * Both statements are true because they act on different things: the skeleton
  * is coarse, code-owned, and about the world; the topic axis is fine, user
  * data, and about the person. Topics map onto domains, so "which cells are
@@ -197,7 +197,7 @@ const BUILTIN_DOMAINS: readonly Omit<DomainDefinition, "owner">[] = [
   { key: "parenting_relationships", label: "Parenting and relationships", group: "practice", hint: "raising children, friendship, partnership, caregiving" },
 ];
 
-export function registerBuiltinDomains(): void {
+function registerBuiltinDomains(): void {
   for (const domain of BUILTIN_DOMAINS) registerDomain({ ...domain, owner: "sourceAnnotation" });
 }
 

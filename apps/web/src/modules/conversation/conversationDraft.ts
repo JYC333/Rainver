@@ -1,10 +1,10 @@
 import { ConversationMessageInputSchema, type ConversationInputPart } from '@rainver/protocol'
 
-export const CONVERSATION_DRAFT_VERSION = 1
-export const CONVERSATION_DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+const CONVERSATION_DRAFT_VERSION = 1
+const CONVERSATION_DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 const DRAFT_PREFIX = 'rainver:conversation-draft:v1:'
 
-export interface ConversationDraft {
+interface ConversationDraft {
   version: typeof CONVERSATION_DRAFT_VERSION
   destination: string
   text: string
@@ -34,8 +34,9 @@ export function readConversationDraft(destination: string, storage: Storage | nu
     const age = Date.now() - savedAt
     if (!Number.isFinite(savedAt) || age > CONVERSATION_DRAFT_MAX_AGE_MS || age < -5 * 60 * 1000) return null
     const input = ConversationMessageInputSchema.safeParse({ text: record.text, input_parts: record.input_parts })
-    // An empty draft is not useful, and parsing it through the same input
-    // contract also rejects unknown/old part kinds before they reach a send.
+    // An empty draft is not useful. Parsing through the send contract rejects
+    // unknown part kinds before they reach a send. Do not restore a draft the
+    // contract refuses.
     if (!input.success) return null
     return {
       version: CONVERSATION_DRAFT_VERSION,
@@ -54,11 +55,15 @@ export function writeConversationDraft(
   storage: Storage | null = safeSessionStorage(),
 ): void {
   if (!storage || !draft.destination.trim()) return
-  const input = ConversationMessageInputSchema.safeParse({ text: draft.text, input_parts: draft.input_parts })
-  if (!input.success || (!input.data.text && input.data.input_parts.length === 0)) {
+  if (!draft.text.trim() && draft.input_parts.length === 0) {
     clearConversationDraft(draft.destination, storage)
     return
   }
+  // Text that cannot be sent as written (over the length cap, too many
+  // attachments) is still what the person is working on: leave the last
+  // sendable draft in place rather than deleting it.
+  const input = ConversationMessageInputSchema.safeParse({ text: draft.text, input_parts: draft.input_parts })
+  if (!input.success) return
   try {
     storage.setItem(storageKey(draft.destination), JSON.stringify({
       version: CONVERSATION_DRAFT_VERSION,
@@ -82,10 +87,21 @@ export function clearConversationDraft(destination: string, storage: Storage | n
   }
 }
 
-export function safeSessionStorage(): Storage | null {
+function safeSessionStorage(): Storage | null {
   try {
     return typeof window === 'undefined' ? null : window.sessionStorage
   } catch {
     return null
   }
+}
+
+/**
+ * What to search for when re-validating a restored file reference: the file
+ * name, since `GET /sessions/:id/input-files` takes a `q` of at most 200
+ * characters while a `relative_path` may run to 4096. The caller then matches
+ * the full path against the candidates.
+ */
+export function draftFileSearchQuery(relativePath: string): string {
+  const name = relativePath.split('/').filter(Boolean).pop() ?? relativePath
+  return name.slice(0, 200)
 }

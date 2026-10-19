@@ -8,15 +8,13 @@ import { RetrievalToolService } from "../src/modules/retrieval/tool/service.js";
 import { enforceRetrievalToolCallPolicy } from "../src/modules/retrieval/tool/policy.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
-// W10 rainver-controlled retrieval tool surface. A managed run calls retrieval
-// through RetrievalToolService, which forces the viewer to the run's INSTRUCTING
-// USER (the agent cannot widen its own access). Policy enforcement and the audit
-// write happen one layer up, at the SystemActionGateway dispatch step (action
-// authority consolidation plan, D6/D7) — RetrievalToolService itself performs no
+// A managed run calls retrieval through RetrievalToolService, which forces the
+// viewer to the run's instructing user (the agent cannot widen its own access).
+// Policy enforcement and the audit write happen one layer up, at the
+// SystemActionGateway dispatch step. RetrievalToolService performs no
 // enforcement of its own, matching every other domain service the gateway calls.
 // The audit-behavior tests below call enforceRetrievalToolCallPolicy directly,
-// mirroring that real two-step production order (gateway enforces, then the
-// executor runs), since RetrievalToolService no longer does both internally.
+// in that same order: the gateway enforces, then the executor runs.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

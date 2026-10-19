@@ -14,8 +14,10 @@ import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSo
 import { pruneSupersededCustomSourceHandlerArtifacts } from "../src/modules/sources/customSources/customSourceArtifactRetention.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
 
-// Real-Postgres integration tests for Phase 12 (rate limiting, artifact
-// retention, and observability). Skips gracefully when Docker is unavailable.
+// Real-Postgres integration tests for rate limiting, artifact
+// retention, and observability. The suite skips when that database is
+// unreachable. CI sets REQUIRE_TEST_POSTGRES, which fails the run instead
+// of skipping.
 
 const SPACE_A = "space-a";
 const IDENTITY = { spaceId: SPACE_A, userId: "user-1" };
@@ -298,7 +300,7 @@ describe("pruneSupersededCustomSourceHandlerArtifacts", () => {
     // never disagree about which superseded version is "most recent" —
     // otherwise retention could prune the exact version a no-argument
     // rollback would target. Both use version_number DESC as a tiebreaker
-    // for this reason; this test forces the tie the tiebreaker exists for.
+    // for this reason. This test forces that tie.
     const permissiveConfig = { ...config!, customSourceGenerateRateLimitPerHour: 10 };
     const flow = new CustomSourceCreateFlowService(db.pool, permissiveConfig);
     const repairService = new CustomSourceRepairService(db.pool, permissiveConfig);

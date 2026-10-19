@@ -9,7 +9,7 @@ import {
   contentVisibilityFilterSql,
 } from "../access/contentAccessSql.js";
 import { countFromRow, type Queryable } from "../routeUtils/common.js";
-import type { NormalizedUsageObservation } from "./types.js";
+import { IMPORTED_USAGE_SOURCE_TYPES, type NormalizedUsageObservation } from "./types.js";
 import { accuracyMixZero } from "./normalizer.js";
 
 export interface UsageEventRecord {
@@ -59,7 +59,7 @@ export interface UsageEventRecord {
   created_at: string;
 }
 
-export interface UsageTotals {
+interface UsageTotals {
   event_count: number;
   request_count: number;
   input_tokens: number;
@@ -83,7 +83,7 @@ export interface UsageRunSummaryRecord {
   model_names: string[] | null;
 }
 
-export interface UsageBreakdownRow {
+interface UsageBreakdownRow {
   group_key: string;
   group_label: string;
   totals: UsageTotals;
@@ -91,7 +91,7 @@ export interface UsageBreakdownRow {
   last_seen_at: string | null;
 }
 
-export interface UsageTimeseriesRow extends UsageBreakdownRow {
+interface UsageTimeseriesRow extends UsageBreakdownRow {
   bucket_start: string;
 }
 
@@ -119,7 +119,7 @@ export interface UsageQueryFilters {
   offset?: number;
 }
 
-export interface UsageImportBatchRecord {
+interface UsageImportBatchRecord {
   id: string;
   instance_id: string;
   target_space_id: string;
@@ -137,7 +137,7 @@ export interface UsageImportBatchRecord {
   updated_at: string;
 }
 
-export interface UsageImportBatchCreateInput {
+interface UsageImportBatchCreateInput {
   instanceId: string;
   targetSpaceId: string;
   ownerUserId: string;
@@ -603,7 +603,7 @@ export class PgUsageRepository {
     return new Map(result.rows.map((row) => [row.run_id, row]));
   }
 
-  async aggregate(filters: UsageQueryFilters): Promise<{ totals: UsageTotals; items: UsageBreakdownRow[] }> {
+  async aggregate(filters: UsageQueryFilters): Promise<{ totals: UsageTotals; items: UsageBreakdownRow[]; total: number }> {
     const group = groupExpression(filters.groupBy ?? "provider", effectiveAccessLevelSql(filters));
     const where = buildWhere(filters);
     const params = where.params;
@@ -628,9 +628,20 @@ export class PgUsageRepository {
        ${where.sql}`,
       params,
     );
+    // The number of groups matched, counted apart from the page: a page past
+    // the end still knows how many there are.
+    const groupCount = await this.db.query<{ total: string | number }>(
+      `SELECT count(*) AS total
+         FROM (SELECT ${group.keySql}, ${group.labelSql}
+                 FROM token_usage_events e
+                 ${where.sql}
+                GROUP BY 1, 2) matched`,
+      params,
+    );
     return {
       totals: aggregateRowToBreakdown(totalRows.rows[0]).totals,
       items: rows.rows.map(aggregateRowToBreakdown),
+      total: intValue(groupCount.rows[0]?.total ?? 0),
     };
   }
 
@@ -681,7 +692,7 @@ export class PgUsageRepository {
         metadata_json, created_at
        FROM token_usage_events e
        ${where.sql}
-       ORDER BY occurred_at DESC, created_at DESC
+       ORDER BY occurred_at DESC, created_at DESC, id DESC
        LIMIT ${limit} OFFSET ${offset}`,
       where.params,
     );
@@ -782,7 +793,7 @@ export class PgUsageRepository {
 
   async subjects(filters: UsageQueryFilters): Promise<{ items: UsageBreakdownRow[]; total: number }> {
     const rows = await this.aggregate({ ...filters, groupBy: "subject", limit: filters.limit ?? 100 });
-    return { items: rows.items, total: rows.items.length };
+    return { items: rows.items, total: rows.total };
   }
 
   async sessions(filters: UsageQueryFilters): Promise<{
@@ -796,6 +807,7 @@ export class PgUsageRepository {
       last_seen_at: string | null;
     }>;
     total: number;
+    totals: UsageTotals;
   }> {
     const where = buildWhere(filters, { fullOnly: true });
     const rows = await this.db.query<AggregateRow & {
@@ -831,7 +843,21 @@ export class PgUsageRepository {
         totals: aggregateRowToBreakdown(row).totals,
         last_seen_at: dateIsoOrNull(row.last_seen_at),
       })),
-      total: rows.rows.length,
+      total: intValue((await this.db.query<{ total: string | number }>(
+        `SELECT count(*) AS total
+           FROM (SELECT 1
+                   FROM token_usage_events e
+                   ${where.sql}
+                  GROUP BY session_id, external_session_id, session_path, session_name) matched`,
+        where.params,
+      )).rows[0]?.total ?? 0),
+      // Same rows and access level as the sessions themselves.
+      totals: aggregateRowToBreakdown((await this.db.query<AggregateRow>(
+        `SELECT 'all' AS group_key, 'All sessions' AS group_label, ${aggregateSelectSql()}
+           FROM token_usage_events e
+           ${where.sql}`,
+        where.params,
+      )).rows[0]).totals,
     };
   }
 
@@ -890,15 +916,22 @@ export class PgUsageRepository {
         last_seen_at: breakdown.last_seen_at,
       };
     });
-    const projectedCosts = items
-      .map((item) => item.projected_estimated_cost_usd)
-      .filter((value): value is number => value !== null);
+    // The total is over every subject the filters match, not the page of
+    // subjects returned: the page is the top N, the total is what the
+    // Space is projected to spend.
+    const total = await this.db.query<{ estimated_cost_usd: string | number | null }>(
+      `SELECT sum(e.estimated_cost_usd) AS estimated_cost_usd
+         FROM token_usage_events e
+         ${where.sql}`,
+      where.params,
+    );
+    const totalCost = numberOrNull(total.rows[0]?.estimated_cost_usd ?? null);
     return {
       observed_days: observedDays,
       projection_window_days: projectionWindowDays,
-      total_projected_estimated_cost_usd: projectedCosts.length
-        ? roundCost(projectedCosts.reduce((sum, value) => sum + value, 0))
-        : null,
+      total_projected_estimated_cost_usd: totalCost === null
+        ? null
+        : roundCost((totalCost / observedDays) * projectionWindowDays),
       items,
     };
   }
@@ -941,7 +974,7 @@ function buildWhere(
     clauses.push(`${contentAccessLevelSql({ definition, alias: "e", userExpr })} = 'full'`);
   }
   if (filters.includeImported === false) {
-    clauses.push(`e.source_type NOT IN ('cli_history_import', 'cross_instance_import', 'manual_import')`);
+    clauses.push(`e.source_type NOT IN (${IMPORTED_USAGE_SOURCE_TYPES.map((type) => `'${type}'`).join(", ")})`);
   }
   if (filters.accuracy) {
     params.push(filters.accuracy);

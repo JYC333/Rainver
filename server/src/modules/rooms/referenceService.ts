@@ -1,13 +1,12 @@
 /**
  * Copying picked content into a Room conversation.
  *
- * Split out of `RoomService` the way the roster service is: the reference
- * machinery has its own gates, its own cost (a model call per unsummarized
- * whole-session pick) and its own ordering rules, and shares nothing with the
- * rest of the service but the pool and the config. The public endpoint stays
- * on `RoomService`, which delegates the two halves here — the pre-transaction
- * preparation and the in-transaction copy — so the transaction boundary is
- * visible in one place.
+ * The reference machinery has its own gates, its own cost (a model call per
+ * unsummarized whole-session pick) and its own ordering rules, and shares
+ * nothing with the rest of RoomService but the pool and the config. The
+ * public endpoint stays on `RoomService`, which delegates the two halves
+ * here — the pre-transaction preparation and the in-transaction copy — so
+ * the transaction boundary is visible in one place.
  */
 
 import type { ServerConfig } from "../../config.js";
@@ -43,9 +42,9 @@ export class RoomReferenceService {
    * something that simply exists.
    *
    * The access gate runs first and under the attacher's own identity. A
-   * summary is a metered call charged to the session's *owner*, so without
-   * this anyone could spend a colleague's budget by naming their session id —
-   * and would learn from the timing whether it exists. `includeOversight`
+   * summary is a metered call charged to the session's *owner*. Do not skip
+   * the gate. Naming a session id would spend a colleague's budget, and the
+   * timing would say whether it exists. `includeOversight`
    * stays false for the same reason the copy does: oversight is audit, not a
    * licence to publish, still less to spend.
    */
@@ -57,9 +56,9 @@ export class RoomReferenceService {
     const wanted = (picks ?? []).filter((pick) => pick.kind === "imported_session");
     if (wanted.length === 0) return;
     // The destination first. Reading a session is not licence to spend its
-    // owner's budget on behalf of a Room the asker cannot reach: without this,
-    // naming any Room id would generate — and bill — a summary per pick before
-    // the transaction got as far as its 404.
+    // owner's budget on behalf of a Room the asker cannot reach. Do not
+    // generate the summary first. Naming any Room id would generate — and
+    // bill — a summary per pick before the transaction got as far as its 404.
     //
     // Not a second authority. `requireRoom` inside the caller's own
     // transaction still decides, and holds the row lock while it does; this is
@@ -120,8 +119,8 @@ export class RoomReferenceService {
     //
     // `new Date(...)`, not `Date.parse(...)`: pg decodes `timestamptz` to a
     // JS Date, and `Date.parse` on one round-trips through `toString()` and
-    // drops the milliseconds — which floored the value to the whole second
-    // and left the guard never engaging.
+    // drops the milliseconds. Do not floor the value to the whole second.
+    // The guard would never engage.
     const raw = latest.rows[0]?.created_at;
     const existing = raw ? new Date(raw as string | Date).getTime() : 0;
     const base = Math.max(Date.now(), existing + 1);

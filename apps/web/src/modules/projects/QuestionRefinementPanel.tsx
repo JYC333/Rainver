@@ -167,6 +167,7 @@ export function QuestionRefinementPanel({ projectId, thread, linkedDraftWorkflow
   const [composer, setComposer] = useState('')
   const [refining, setRefining] = useState(false)
   const [confirming, setConfirming] = useState(false)
+  const revisedStatementRef = useRef<string | null>(null)
   const [refineError, setRefineError] = useState<string | null>(null)
   const [confirmationLookupLoading, setConfirmationLookupLoading] = useState(true)
   const [confirmedSnapshot, setConfirmedSnapshot] = useState<ProjectResearchQuestionAssessmentConfirmation | null>(null)
@@ -454,13 +455,18 @@ export function QuestionRefinementPanel({ projectId, thread, linkedDraftWorkflow
     const finalStatement = draft.research_question.trim()
     setConfirming(true)
 
-    if (finalStatement && finalStatement !== thread.statement.trim()) {
+    // The wording is written to the Thread before the confirmation. When the
+    // confirmation then fails, `thread` still carries the old wording until
+    // the next refresh; a retry must confirm, not record the same revision
+    // again.
+    if (finalStatement && finalStatement !== thread.statement.trim() && revisedStatementRef.current !== finalStatement) {
       try {
         await inquiryApi.reviseDefinition(projectId, thread.id, {
           revision_kind: 'semantic_change',
           structure_action: 'narrow',
           new_statement: finalStatement,
         })
+        revisedStatementRef.current = finalStatement
       } catch (error) {
         toast.error(`Could not update the Inquiry wording: ${errMsg(error)}`)
         setConfirming(false)

@@ -9,7 +9,7 @@
  * and inventing one to satisfy a lookup would be contorting the mechanism to
  * fit rather than reusing it.
  *
- * Two rules the output has to obey, both from the plan and both load-bearing:
+ * Two rules the output has to obey:
  *
  * - Only sessions the person marked shared feed this. The Brief has no
  *   per-object visibility, so a private session's content would reach every
@@ -44,16 +44,16 @@ export const IMPORTED_HISTORY_PACKET_PROPOSAL_TYPE = "imported_history_memory_pa
  *
  * A month of a real folder's history is thousands of records; the window
  * planner is not in this path, so the bound is explicit. Records not covered
- * stay unextracted and are picked up by the next run, which is why this is a
- * batch size rather than a truncation.
+ * stay unextracted and are picked up by the next run. This is a batch size,
+ * not a truncation.
  */
 const MAX_RECORDS_PER_EXTRACTION = 400;
 /**
  * And by size, because a count is not a budget: one message may be 64 KB
  * (`AMBIENT_TEXT_MAX_BYTES`), so 400 of them can exceed any model's window.
  * A batch that overruns throws identically on every retry, and the selection
- * is deterministic, so without this a folder could become permanently
- * unextractable.
+ * is deterministic. Do not send an overrun batch. A folder could become
+ * permanently unextractable.
  */
 const MAX_CHARACTERS_PER_EXTRACTION = 400_000;
 
@@ -190,14 +190,15 @@ export class ImportedHistoryExtractionService {
         const packetProposalId = facts.length === 0 && orphaned.length === 0
           ? null
           : await this.proposeMemoryPacket(tx, identity, projectId, facts, orphaned, records, checkpointId);
+        // Finalized in the same transaction as the proposals: a claim that
+        // outlived committed proposals would be released and read again,
+        // paying for the same records twice and proposing them twice.
+        await tx.query(
+          `UPDATE imported_session_records SET extracted_in = $2 WHERE extracted_in = $1`,
+          [`claim:${checkpointId}`, checkpointId],
+        );
         return { briefProposalId, packetProposalId };
       });
-      // Finalized only once the proposals exist: until this runs the batch is
-      // a claim, and a claim is recoverable.
-      await this.db.query(
-        `UPDATE imported_session_records SET extracted_in = $2 WHERE extracted_in = $1`,
-        [`claim:${checkpointId}`, checkpointId],
-      );
     } catch (error) {
       await this.releaseClaim(checkpointId);
       throw error;
@@ -425,9 +426,9 @@ export class ImportedHistoryExtractionService {
     const decisions = input.decisions.map((entry) => entry.text);
     // One extraction's Brief proposal per Project at a time. `FOR UPDATE`
     // below cannot lock a proposal that does not exist yet, so two overlapping
-    // extractions would each find nothing pending and each create one —
-    // restoring exactly the silent-loss this merge exists to prevent. The key
-    // is the one the Project's own definition path already uses, and it is
+    // extractions would each find nothing pending and each create one. Two
+    // pending proposals silently drop each other's decisions. The key is the
+    // one the Project's own definition path already uses, and it is
     // re-entrant within a transaction, so nesting cannot deadlock.
     await db.query(
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
@@ -441,11 +442,10 @@ export class ImportedHistoryExtractionService {
     // overwrites it. The agent path avoids this with its own reuse guard,
     // which is keyed on an agent id this caller does not have.
     //
-    // Deliberately not scoped to this user. A Project with two paired machines
-    // has two people extracting into it — the case this feature exists for —
-    // and a per-user query finds nothing, creates a second proposal, and loses
-    // the first person's decisions exactly as before. What is merged is
-    // additive (decisions, constraints, citations); the goal is untouched.
+    // Not scoped to this user. A Project with two paired machines has two
+    // people extracting into it. A per-user query finds nothing, creates a
+    // second proposal, and loses the first person's decisions. What is merged
+    // is additive (decisions, constraints, citations); the goal is untouched.
     const pending = await db.query<{ id: string; payload_json: Record<string, unknown> }>(
       `SELECT id, payload_json FROM proposals
         WHERE space_id = $1 AND project_id = $2 AND proposal_type = 'project_brief_publish'

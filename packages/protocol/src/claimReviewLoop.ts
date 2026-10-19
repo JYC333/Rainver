@@ -1,5 +1,5 @@
 /**
- * Claim review-loop contracts (Slice E — claim trajectory + contradiction loop).
+ * Claim review-loop contracts.
  *
  * Two advisory/proposal-first surfaces on top of the existing global claim model:
  *

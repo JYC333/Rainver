@@ -8,8 +8,8 @@ import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 // Fixed workspace roots remain immovable at the server boundary. Project-backed
-// folders are different: they retain protected destructive actions but can be
-// reparented so legacy projects can be organized under the Projects root.
+// folders retain protected destructive actions but can be reparented under the
+// Projects root.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -27,6 +27,20 @@ beforeEach(async () => {
 });
 
 describe("PgKnowledgeRepository note collections (real Postgres)", () => {
+  it("rejects a cycle whose ancestor is more than 64 levels away", async () => {
+    if (!db.available) return;
+    const ids = Array.from({ length: 70 }, () => randomUUID());
+    const rows = ids.map((id, index) => ({ id, parent: index ? ids[index - 1] : null }));
+    await db.pool.query(`INSERT INTO note_collections
+      (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,created_at,updated_at)
+      SELECT id,$1,parent,'Folder','normal',0,false,false,now(),now()
+      FROM jsonb_to_recordset($2::jsonb) AS items(id text,parent text)`, [SPACE, JSON.stringify(rows)]);
+    await expect(new PgKnowledgeRepository(db.pool).updateNoteCollection(
+      { spaceId: SPACE, userId: USER }, ids[0]!, { parent_id: ids.at(-1) },
+    )).rejects.toMatchObject({ statusCode: 422 });
+    const root = await db.pool.query(`SELECT parent_id FROM note_collections WHERE id=$1`, [ids[0]]);
+    expect(root.rows[0]?.parent_id).toBeNull();
+  });
   it("creates with a stable client id and appends after existing siblings", async () => {
     if (!db.available) return;
     const identity = { spaceId: SPACE, userId: USER };
@@ -107,6 +121,31 @@ describe("PgKnowledgeRepository note collections (real Postgres)", () => {
 
     await expect(repository.updateNoteCollection(identity, childId, { parent_id: parentId }))
       .resolves.toMatchObject({ id: childId, parent_id: parentId });
+  });
+
+  it("refuses moving a folder under its own descendant", async () => {
+    if (!db.available) return;
+    const identity = { spaceId: SPACE, userId: USER };
+    const repository = new PgKnowledgeRepository(db.pool);
+    const now = new Date().toISOString();
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    const grandchildId = randomUUID();
+    for (const [id, parent, name] of [[parentId, null, "Parent"], [childId, parentId, "Child"], [grandchildId, childId, "Grandchild"]] as const) {
+      await db.pool.query(
+        `INSERT INTO note_collections (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,'normal',0,false,false,$5,$5)`,
+        [id, SPACE, parent, name, now],
+      );
+    }
+
+    // Nothing in the database stops a cycle, and a folder in one has no path
+    // to the root: every note below it disappears from the tree.
+    await expect(repository.updateNoteCollection(identity, parentId, { parent_id: grandchildId }))
+      .rejects.toMatchObject({ statusCode: 422 });
+    expect((await db.pool.query<{ parent_id: string | null }>(
+      `SELECT parent_id FROM note_collections WHERE id = $1`, [parentId],
+    )).rows[0]?.parent_id).toBeNull();
   });
 
   it("atomically reorders ordinary folders while retaining protected folder parents", async () => {
@@ -304,5 +343,37 @@ describe("PgKnowledgeRepository note collections (real Postgres)", () => {
       [loose],
     );
     expect(row.rows[0]?.parent_id).toBeNull();
+  });
+
+  it("refuses moving a folder out of a Project workspace to the root", async () => {
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const projectId = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO projects (id,space_id,name,status,owner_user_id,created_at,updated_at)
+       VALUES ($1,$2,'Project','active',$3,$4,$4)`,
+      [projectId, SPACE, USER, now],
+    );
+    await seedMainlineRoomsForAllProjects(db.pool);
+    const projectRoot = (await repository.ensureProjectNotesCollection(
+      { spaceId: SPACE, userId: USER }, projectId,
+    ) as { id: string }).id;
+    const inner = (await repository.createNoteCollection(
+      { spaceId: SPACE, userId: USER }, { name: "Inner", parent_id: projectRoot },
+    ) as { id: string }).id;
+
+    await expect(withTransaction(db.pool, (client) =>
+      persistNotesTreeReorder(client, { spaceId: SPACE, userId: USER }, {
+        kind: "collections",
+        updates: [{ id: inner, parentId: null, sortOrder: 0 }],
+      }),
+    )).rejects.toMatchObject({ statusCode: 422 });
+
+    const row = await db.pool.query<{ parent_id: string | null }>(
+      `SELECT parent_id FROM note_collections WHERE id = $1`,
+      [inner],
+    );
+    expect(row.rows[0]?.parent_id).toBe(projectRoot);
   });
 });

@@ -49,8 +49,8 @@ describe("space object writer", () => {
 });
 
 // B12H, enforced in one place so it cannot be forgotten at one of the eleven
-// call sites. Each of these was a silent defect before: an unattributable
-// object, or one whose Project gate was simply absent.
+// call sites. An object needs created-by provenance, and a Project-scoped
+// object needs its Project gate.
 describe("space object writer B12H rules", () => {
   it("rejects an object with no created-by provenance", () => {
     const { createdByUserId: _omitted, ...withoutProvenance } = VALID;
@@ -64,9 +64,9 @@ describe("space object writer B12H rules", () => {
   });
 
   it("requires a Project on a Project-owned object type", () => {
-    // A null Project does not narrow access — the scope predicate treats it as
-    // "no Project restriction", leaving only visibility. P3 attached Inquiry
-    // Thread to the root, so the rule declared ahead of time now fires.
+    // A null Project does not narrow access. The scope predicate treats it as
+    // no Project restriction, leaving only visibility. Inquiry Thread and
+    // research workflow require a Project. Do not omit it.
     expect(entityDefinition("inquiry_thread")?.requiresProjectScope).toBe(true);
     expect(entityDefinition("research_workflow")?.requiresProjectScope).toBe(true);
     expect(() => buildSpaceObjectInsert({ ...VALID, objectType: "inquiry_thread" }))

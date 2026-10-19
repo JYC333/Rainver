@@ -27,6 +27,11 @@ vi.mock('../api/client', () => ({
   hostsApi: { list: hostsMock },
   runsApi: { get: runGetMock, turn: turnMock },
   proposalsApi: { get: proposalGetMock },
+  // The composer's knowledge-retrieval switch: off, as for a new conversation.
+  runtimeContextApi: {
+    retrievalSwitch: vi.fn(async (scopeId: string) => ({ work_context_scope_id: scopeId, enabled: false, preferred_domains: [], setup_version: null })),
+    setRetrievalSwitch: vi.fn(),
+  },
 }))
 
 vi.mock('../contexts/SpaceContext', () => ({
@@ -52,9 +57,8 @@ function renderPage(entry = '/agents/a1/chat') {
 /**
  * The composer stays disabled until the backend catalog resolves, and `send`
  * drops anything typed before then — as it does for a person, who cannot type
- * into a disabled box at all. Waiting for it is what a person does; not
- * waiting made these tests race the component's own guard and fail whenever
- * the catalog resolved a tick late.
+ * into a disabled box at all. Wait for it. Sending before the catalog
+ * resolves races the component's own guard.
  */
 async function enabledComposer(): Promise<HTMLElement> {
   const input = await screen.findByPlaceholderText(/ask your assistant/i)
@@ -123,9 +127,8 @@ describe('AssistantChatPage conversation backends', () => {
   })
 
   it('still says a reloaded turn is blocked, with somewhere to go', async () => {
-    // A paused turn keeps its state across a reload. Reading a saved reply as
-    // proof the turn finished would drop the approval link — the one thing a
-    // paused turn exists to show.
+    // A paused turn keeps its state across a reload. Do not read a saved
+    // reply as proof the turn finished. That drops the approval link.
     messagesMock.mockResolvedValue([{
       id: 'm2', role: 'assistant', content: 'I need your approval to continue.',
       metadata_json: null, run_id: 'run-paused',
@@ -143,9 +146,9 @@ describe('AssistantChatPage conversation backends', () => {
   })
 
   it('does not send while a reloaded turn is still waiting for a decision', async () => {
-    // The note above the composer says the message is held. Before this, the
-    // guard behind it only knew about a turn blocked in *this* session, so on
-    // a reload the note appeared and the send went out anyway.
+    // The note above the composer says the message is held. The guard covers
+    // a turn blocked before this session too. A reload must not show the note
+    // and then send.
     messagesMock.mockResolvedValue([{
       id: 'm2', role: 'assistant', content: 'I need your approval to continue.',
       metadata_json: null, run_id: 'run-paused',
@@ -479,12 +482,11 @@ describe('AssistantChatPage conversation backends', () => {
     fireEvent.change(input, { target: { value: 'hello' } })
     fireEvent.keyDown(input, { key: 'Enter', shiftKey: false })
 
-    // D3: the same bubble carries the failure, and the steps stay — a turn
+    // The same bubble carries the failure, and the steps stay — a turn
     // that failed is the one where they matter most.
     expect(await screen.findByText('Upstream refused.')).toBeInTheDocument()
     expect(screen.getByText('write_file')).toBeInTheDocument()
-    // Still marked as a failure. The badge used to live only on the bubble
-    // that had no turn, so keeping the turn quietly took it away.
+    // Still marked as a failure. The badge stays when the turn is kept.
     expect(screen.getByText(/could not complete/i)).toBeInTheDocument()
   })
 
@@ -550,10 +552,9 @@ describe('AssistantChatPage conversation backends', () => {
     })
 
     // And once it resumes, the composer is still held — the request is open
-    // again, so a second message would still be a second turn. This window is
-    // the one a `sending` flag that meant "open and not blocked" left
-    // uncovered: the note is gone, so only the guard is left to refuse, and a
-    // guard the person cannot see is a message that vanishes.
+    // again, so a second message would still be a second turn. Do not treat
+    // "open and not blocked" as idle. The note is gone, so only the guard
+    // refuses, and a guard the person cannot see is a message that vanishes.
     act(() => { resume?.() })
     await waitFor(() => {
       expect(screen.queryByText(/waiting for your decision/i)).not.toBeInTheDocument()

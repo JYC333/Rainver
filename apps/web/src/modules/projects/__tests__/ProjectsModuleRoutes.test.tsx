@@ -17,9 +17,9 @@ vi.mock('../../tasks/TaskDetailPage', () => ({
 /**
  * The route table itself, because href assertions cannot see it.
  *
- * Every link into a Project's Task was checked against a string, and the
- * sidecar test declared its own route — so deleting the real one left every
- * test green while the links rendered nothing. This renders the module.
+ * Render the module. Do not check a Task link against a string, and do not
+ * declare the route again in the sidecar test. Deleting the real route
+ * would leave those tests green while the links render nothing.
  */
 describe('Projects module routes', () => {
   it('mounts a Task inside the Project shell', async () => {

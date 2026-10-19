@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import i18n from '../../../i18n'
+import { formatDateTime } from '../../../i18n/format'
 
 const { listPublications, importPublication } = vi.hoisted(() => ({
   listPublications: vi.fn(),
@@ -82,5 +84,30 @@ describe('PublicationsPage', () => {
       'href',
       '/spaces/space-2/artifacts/artifact-copy',
     )
+  })
+
+  describe('in Chinese', () => {
+    afterEach(async () => { await i18n.changeLanguage('en') })
+
+    it('labels the page, the resource type and status, and writes dates in the locale', async () => {
+      await i18n.changeLanguage('zh-CN')
+      listPublications.mockResolvedValue({ items: [publication] })
+      render(<MemoryRouter><PublicationsPage /></MemoryRouter>)
+      expect(await screen.findByRole('heading', { name: '共享内容' })).toBeInTheDocument()
+      expect(screen.getByText('工件')).toBeInTheDocument()
+      expect(screen.getByText('生效中')).toBeInTheDocument()
+      expect(screen.getByText(formatDateTime(publication.created_at))).toBeInTheDocument()
+      expect(formatDateTime(publication.created_at)).toMatch(/年/)
+    })
+
+    it('words the session reflection count by plural rule', async () => {
+      await i18n.changeLanguage('zh-CN')
+      expect(i18n.t('sessions_ui.sessions.reflected', { count: 0 })).toBe('已创建 0 个提案')
+      expect(i18n.t('sessions_ui.sessions.reflected', { count: 1 })).toBe('已创建 1 个提案')
+      await i18n.changeLanguage('en')
+      expect(i18n.t('sessions_ui.sessions.reflected', { count: 0 })).toBe('0 proposals created')
+      expect(i18n.t('sessions_ui.sessions.reflected', { count: 1 })).toBe('1 proposal created')
+      expect(i18n.t('sessions_ui.sessions.reflected', { count: 4 })).toBe('4 proposals created')
+    })
   })
 })

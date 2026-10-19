@@ -35,6 +35,7 @@ export interface FinanceLedgerRuntime {
   decimal: {
     parseDecimal(input: string): DecimalValueForTest;
     addDecimal(left: DecimalValueForTest, right: DecimalValueForTest): DecimalValueForTest;
+    multiplyDecimal(left: DecimalValueForTest, right: DecimalValueForTest): DecimalValueForTest;
     compareDecimal(left: DecimalValueForTest, right: DecimalValueForTest): number;
   };
   amount: {
@@ -77,6 +78,9 @@ export interface FinanceLedgerRuntime {
     financeLedgerService: {
       createFinanceBook(db: unknown, spaceId: string, userId: string, input: Record<string, unknown>): Promise<Record<string, string>>;
       createCommodity(db: unknown, spaceId: string, bookId: string, input: Record<string, unknown>): Promise<Record<string, string>>;
+      listCommodities(db: unknown, spaceId: string, bookId: string): Promise<Array<{ id: string; symbol: string }>>;
+      createLedgerOption(db: unknown, spaceId: string, bookId: string, input: { name: string; value: Record<string, unknown>; source?: string }): Promise<void>;
+      listLedgerOptions(db: unknown, spaceId: string, bookId: string): Promise<Array<{ name: string }>>;
       openAccount(db: unknown, spaceId: string, bookId: string, input: Record<string, unknown>): Promise<Record<string, string>>;
       listAccounts(db: unknown, spaceId: string, bookId: string, viewerUserId?: string): Promise<Array<Record<string, unknown>>>;
       setAccountVisibility(db: unknown, spaceId: string, bookId: string, accountId: string, userId: string, visibility: string): Promise<Record<string, unknown>>;
@@ -88,6 +92,11 @@ export interface FinanceLedgerRuntime {
       computeBalances(db: unknown, spaceId: string, bookId: string, options: { viewerUserId: string; scope?: string }): Promise<Array<Record<string, unknown>>>;
       closeAccount(db: unknown, spaceId: string, bookId: string, accountId: string, date: string, viewerUserId: string): Promise<Record<string, string>>;
       importBeancount(db: unknown, spaceId: string, bookId: string, userId: string, input: Record<string, unknown>): Promise<ImportResultForTest>;
+      listImportBatches(db: unknown, spaceId: string, bookId: string, userId: string): Promise<Array<{ importSource: { id: string }; summary: Record<string, number> }>>;
+      getImportBatch(db: unknown, spaceId: string, bookId: string, userId: string, importSourceId: string): Promise<ImportResultForTest>;
+      retryImportBatch(db: unknown, spaceId: string, bookId: string, userId: string, importSourceId: string): Promise<ImportResultForTest>;
+      applyImportEntryMapping(db: unknown, spaceId: string, bookId: string, userId: string, importSourceId: string, entryId: string, accountMapping: Record<string, string>): Promise<ImportResultForTest>;
+      decideImportEntryReview(db: unknown, spaceId: string, bookId: string, userId: string, importSourceId: string, decision: "import" | "duplicate", entryIds: readonly string[] | null): Promise<ImportResultForTest>;
       exportBeancount(db: unknown, spaceId: string, bookId: string, userId: string): Promise<ExportResultForTest>;
       postImportBatch(db: unknown, spaceId: string, bookId: string, importSourceId: string, proposalId?: string | null): Promise<{ posted: number }>;
     };
@@ -111,10 +120,32 @@ export interface LedgerErrorForTest {
   source?: { filename: string; lineno: number };
 }
 
+export interface ImportEntryForTest {
+  id: string;
+  entry_key: string;
+  identity_kind: "external_id" | "content_occurrence";
+  external_id: string | null;
+  entry_type: string;
+  entry_date: string | null;
+  source_lineno: number;
+  raw_text: string;
+  status: "imported" | "pending_mapping" | "needs_review" | "duplicate" | "error" | "excluded";
+  status_reason: string | null;
+  directive_id: string | null;
+  duplicate_of_entry_id: string | null;
+  missing_accounts: string[];
+  missing_commodities: string[];
+  account_mapping_json: Record<string, string>;
+  mapping_version: number;
+  errors_json: LedgerErrorForTest[];
+}
+
 export interface ImportResultForTest {
-  importSourceId: string | null;
-  deduplicated: boolean;
+  importSource: { id: string; content_hash: string | null; imported_by_user_id: string | null };
+  batchExisted: boolean;
   createdDirectives: number;
+  summary: Record<ImportEntryForTest["status"], number>;
+  entries: ImportEntryForTest[];
   errors: LedgerErrorForTest[];
   options: Record<string, string>;
 }

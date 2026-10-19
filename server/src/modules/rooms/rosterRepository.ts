@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 
-export interface RoomRosterAgentCandidate {
+interface RoomRosterAgentCandidate {
   agent_id: string;
   name: string;
   agent_kind: string;
@@ -108,15 +108,9 @@ export class PgRoomRosterRepository {
               -- its runtime profile always, and the shared Conversation cwd
               -- when it was the last one out. Deliberately the same condition
               -- findManagedWorkspaceRestoreTarget matches on, and no more.
-              --
-              -- It used to require a managed workspace_mode and a heartbeat
-              -- entry reporting an archived workspace, which was wrong twice.
-              -- The common case archives only the profile — one Agent leaves
-              -- while others stay — and the heartbeat reports no profiles at
-              -- all. Worse, a conversation heartbeat entry carries no agent_id
-              -- by contract, so matching one against a.id was never true and
-              -- this flag was always false: the offer never appeared for any
-              -- Room specialist.
+              -- Archive of the profile alone must still offer restore. A
+              -- conversation heartbeat entry carries no agent_id, so do not
+              -- match one against a.id: the offer would never appear.
               --
               -- Every clause below is findManagedWorkspaceRestoreTarget's,
               -- including the host's owner and revoked checks: offering a
@@ -463,6 +457,8 @@ export class PgRoomRosterRepository {
     space_id: string;
     invitation_id: string;
     status: RoomInvitationRecord["status"];
+    /** Only from this status: a decided invitation keeps its decision. */
+    only_from?: RoomInvitationRecord["status"];
   }): Promise<RoomInvitationRecord | null> {
     const result = await this.db.query<RoomInvitationRecord>(
       `UPDATE room_user_invitations
@@ -470,8 +466,9 @@ export class PgRoomRosterRepository {
               resolved_at = CASE WHEN $3::varchar IN ('pending') THEN NULL ELSE now() END,
               updated_at = now()
         WHERE space_id = $1 AND id = $2
+          AND ($4::varchar IS NULL OR status = $4::varchar)
         RETURNING ${INVITATION_COLUMNS}`,
-      [input.space_id, input.invitation_id, input.status],
+      [input.space_id, input.invitation_id, input.status, input.only_from ?? null],
     );
     return result.rows[0] ?? null;
   }

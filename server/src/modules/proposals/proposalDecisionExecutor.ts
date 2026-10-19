@@ -3,6 +3,7 @@ import type { SystemActionId } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { HttpError } from "../routeUtils/common.js";
+import { proposalReadSql } from "../access/contentAccessSql.js";
 import type { RunRecord } from "../runs/repository.js";
 import type { SystemActionExecutor } from "../systemActions/gateway.js";
 import { PgProposalApplyService } from "./applyService.js";
@@ -31,16 +32,23 @@ export function registerProposalDecisionExecutor(
 ): void {
   /** The pending Proposals of *this* conversation, which is the only set
    *  proposal.decide will act on — so the read and the write agree on reach. */
+  /** The person the Run acts for: the only reach either action has. */
+  const userId = run.instructed_by_user_id;
   const listPendingHere = async (): Promise<Array<{ proposal_id: string; proposal_type: string; title: string }>> => {
-    if (!run.session_id) return [];
+    if (!run.session_id || !userId) return [];
     const pool = getDbPool(config.databaseUrl!);
+    // Reach is the instructing person's: a proposal this conversation produced
+    // that they may not read — a private one of another member's, a Room they
+    // left — is neither listed nor suggested, so the list and the decision
+    // below agree with every other proposal surface.
     const rows = await pool.query<{ id: string; proposal_type: string; title: string }>(
       `SELECT p.id, p.proposal_type, p.title
          FROM proposals p
          JOIN runs r ON r.id = p.created_by_run_id AND r.space_id = p.space_id
         WHERE p.space_id = $1 AND r.session_id = $2 AND p.status = 'pending'
+          AND ${proposalReadSql("$3")}
         ORDER BY p.created_at`,
-      [run.space_id, run.session_id],
+      [run.space_id, run.session_id, userId],
     );
     return rows.rows.map((row) => ({ proposal_id: row.id, proposal_type: row.proposal_type, title: row.title }));
   };
@@ -56,7 +64,6 @@ export function registerProposalDecisionExecutor(
 
   executors.set("proposal.decide" as SystemActionId, async (input) => {
     const body = input as { proposal_id: string; decision: "accept" | "reject" };
-    const userId = run.instructed_by_user_id;
     if (!userId) throw new HttpError(422, "This Run acts for nobody, so it cannot carry a decision");
     if (!run.session_id) throw new HttpError(422, "Only a conversation can decide its own proposals");
     const pool = getDbPool(config.databaseUrl!);
@@ -65,8 +72,8 @@ export function registerProposalDecisionExecutor(
       `SELECT r.session_id, p.status, p.project_id
          FROM proposals p
          LEFT JOIN runs r ON r.id = p.created_by_run_id AND r.space_id = p.space_id
-        WHERE p.space_id = $1 AND p.id = $2`,
-      [run.space_id, body.proposal_id],
+        WHERE p.space_id = $1 AND p.id = $2 AND ${proposalReadSql("$3")}`,
+      [run.space_id, body.proposal_id, userId],
     );
     const row = origin.rows[0];
     if (!row || row.session_id !== run.session_id) {

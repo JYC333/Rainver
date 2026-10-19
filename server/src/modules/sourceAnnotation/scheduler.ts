@@ -2,24 +2,29 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import type { PgJobQueueRepository } from "../jobs/repository.js";
 import { PgSourceAnnotationRepository, SOURCE_ANNOTATION_JOB_TYPE } from "./repository.js";
+import { SourceAnnotationService } from "./service.js";
 
 /**
- * Queues annotation work for spaces that have pending rows nobody is coming
- * back for.
+ * The annotation sweep: recovery first, then work.
  *
  * Scans enqueue their own job, so this is not the normal path — it is the
- * recovery one, and it covers the two cases the scan path structurally cannot:
+ * recovery one, and it covers what the scan path structurally cannot:
  *
- * - the scan's best-effort job enqueue was lost, leaving rows with no worker.
- * - a batch was blocked on something outside the items, most often a space with
- *   no model provider configured yet. Those rows keep their retry budget and
- *   wait, and without a sweep they would wait until the next scan of the same
- *   source — which can be a day away from the moment the user finished setting
- *   up and expected to see the feature work.
+ * - rows waiting on a condition (no annotator Provider, egress refused, consent
+ *   missing) get the condition re-checked without a model call, and reopen
+ *   when it holds; nothing is charged while it does not;
+ * - a retry scheduled by the bounded backoff (`retryPolicy.ts`) becomes
+ *   runnable at its `next_retry_at`, and only then is a job queued for it;
+ * - the scan's best-effort job enqueue was lost, leaving runnable rows with no
+ *   worker.
  *
- * Enqueueing for a space that already has a job pending is harmless: the
- * handler drains whatever is pending and returns `no_work` when there is none.
+ * Enqueueing for a space that already has a job running is harmless: the
+ * handler runs one pass per space at a time and returns `no_work` when there
+ * is nothing runnable.
  */
+/** Where the next condition sweep resumes, so every waiting space is visited in turn. */
+let waitingSweepCursor: string | null = null;
+
 export async function enqueuePendingSourceAnnotationWork(
   config: ServerConfig,
   queue: PgJobQueueRepository,
@@ -27,7 +32,18 @@ export async function enqueuePendingSourceAnnotationWork(
 ): Promise<number> {
   if (!config.databaseUrl) return 0;
   const db = getDbPool(config.databaseUrl);
-  const spaceIds = await new PgSourceAnnotationRepository(db).spacesWithPendingWork(limit);
+  const repo = new PgSourceAnnotationRepository(db);
+  const service = new SourceAnnotationService(db, config);
+  const waitingSpaces = await repo.spacesWithWaitingConditions(limit, waitingSweepCursor);
+  for (const spaceId of waitingSpaces) {
+    try {
+      await service.recoverWaiting(spaceId);
+    } catch {
+      // The rows keep waiting; the next sweep checks again.
+    }
+  }
+  waitingSweepCursor = waitingSpaces.at(-1) ?? null;
+  const spaceIds = await repo.spacesWithPendingWork(limit);
   let enqueued = 0;
   for (const spaceId of spaceIds) {
     try {

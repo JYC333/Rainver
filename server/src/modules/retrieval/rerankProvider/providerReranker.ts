@@ -13,12 +13,12 @@ import { resolveRetrievalRerankSystemPrompt } from "../promptRegistry.js";
 import { RETRIEVAL_RERANK_TASK } from "./config.js";
 import { buildRerankPrompt, parseRerankScores } from "./prompt.js";
 
-export type RerankSystemPromptResolver = (
+type RerankSystemPromptResolver = (
   spaceId: string,
   viewerUserId: string,
 ) => Promise<string | null>;
 
-export interface ProviderRerankerOptions {
+interface ProviderRerankerOptions {
   /** Caller's own provider; the task chain is tried first, this is the safety net. */
   providerId?: string | null;
   /** When set, a best-effort provider-egress audit row is written per rerank call. */
@@ -27,7 +27,7 @@ export interface ProviderRerankerOptions {
   surface?: string | null;
   /** Test/integration seam for resolving the registry-backed system prompt. */
   systemPromptResolver?: RerankSystemPromptResolver | null;
-  /** W9 egress policy; when egress is disabled the reranker sends nothing. */
+  /** When egress is disabled the reranker sends nothing. */
   egressPolicy?: RetrievalEgressPolicy;
   /** Who the searches this helper serves spend for. */
   spend: CredentialSpendBasis;
@@ -40,9 +40,9 @@ export interface ProviderRerankerOptions {
  * resilient: any provider failure, missing provider, or unparseable response
  * returns `null` so search degrades to the deterministic fused order.
  *
- * Egress: the same reserved `retrievalEgressAllowed` seam the embedding backfill
- * consults gates each candidate before it is sent, so a future memory-egress
- * deny excludes a row from BOTH embedding and reranking without re-architecting.
+ * Egress: `retrievalEgressAllowed` gates each candidate before it is sent, the
+ * same predicate the embedding backfill uses. Do not add a second egress
+ * check for rerank. A deny applies to both.
  */
 export class ProviderReranker implements Reranker {
   private readonly providerId: string | null;

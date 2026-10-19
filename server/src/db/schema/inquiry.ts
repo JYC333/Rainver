@@ -6,7 +6,7 @@ import { spaces } from "./spaces.js";
 import { projects } from "./projects.js";
 import { spaceObjects } from "./knowledge.js";
 
-// Inquiry Domain (plan section 9 / ADR 0011). InquiryThread is a
+// Inquiry Domain. InquiryThread is a
 // Project-owned root table, never a `space_objects` row — see ADR 0011
 // decision 1. Business relationships use their own narrowly-owned link
 // tables (B12A "narrowly owned domain join table" exception), never
@@ -75,12 +75,9 @@ export const inquiryThreads = pgTable("inquiry_threads", {
 	check("ck_inquiry_threads_attention_state", sql`(attention_state)::text = ANY (ARRAY[('focused'::character varying)::text, ('monitoring'::character varying)::text, ('backlog'::character varying)::text, ('blocked'::character varying)::text, ('resolved'::character varying)::text, ('rejected'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_inquiry_threads_created_from", sql`(created_from)::text = ANY (ARRAY[('user'::character varying)::text, ('ai_candidate'::character varying)::text, ('decomposition'::character varying)::text])`),
 	// A step and a blocking reason contradict each other, so a Thread may never
-	// hold both. What this no longer requires is that a focused Thread hold one
-	// of them: a Thread between rounds, or one whose only running work is a
-	// background search, is legitimately doing neither. The former XOR made
-	// "focus this Thread" refuse until a next step had been picked from a
-	// menu — the invariant was itself a source of the busywork the step model
-	// exists to remove.
+	// hold both. A focused Thread does not have to hold either: a Thread
+	// between rounds, or one whose only running work is a background search,
+	// is doing neither. Do not require a next step before focus.
 	check("ck_inquiry_threads_focused_next_focus", sql`next_focus_kind IS NULL OR blocked_reason IS NULL`),
 	check("ck_inquiry_threads_lifecycle_attention", sql`
 		(lifecycle_status = 'active' AND attention_state IN ('focused', 'monitoring', 'backlog', 'blocked'))
@@ -126,7 +123,7 @@ export const inquiryHypothesisStates = pgTable("inquiry_hypothesis_states", {
 	check("ck_inquiry_hypothesis_states_confidence", sql`confidence IS NULL OR (confidence >= 0 AND confidence <= 100)`),
 ]);
 
-// Material statement changes (plan section 9.4 "Thread definition"). Wording-
+// Material statement changes. Wording-
 // only edits update `inquiry_threads.statement` in place; semantic changes
 // additionally record which structural action the user chose.
 export const inquiryThreadStatementRevisions = pgTable("inquiry_thread_statement_revisions", {
@@ -250,7 +247,7 @@ export const inquiryThreadStructureEvents = pgTable("inquiry_thread_structure_ev
 	check("ck_inquiry_thread_structure_events_action", sql`(action_kind)::text = ANY (ARRAY[('relation_added'::character varying)::text, ('relation_removed'::character varying)::text, ('primary_parent_changed'::character varying)::text, ('definition_child_created'::character varying)::text, ('definition_superseded'::character varying)::text])`),
 ]);
 
-// The confirmed cognitive-progress record (plan section 9.4). Thread stores
+// The confirmed cognitive-progress record. Thread stores
 // the current projection; Iteration stores why it became current.
 export const inquiryIterations = pgTable("inquiry_iterations", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -296,8 +293,7 @@ export const inquiryIterations = pgTable("inquiry_iterations", {
 		}).onDelete("set null"),
 ]);
 
-// Audited, non-cognitive work-management history (plan section 9.4 "Work
-// management"): priority, owner, focus membership, Next Focus, blocking
+// Audited, non-cognitive work-management history: priority, owner, focus membership, Next Focus, blocking
 // reason. Never creates an Iteration.
 export const inquiryThreadWorkEvents = pgTable("inquiry_thread_work_events", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -323,12 +319,10 @@ export const inquiryThreadWorkEvents = pgTable("inquiry_thread_work_events", {
 		}),
 ]);
 
-// A step is one attempt at advancing a Thread: what was going to be done, that
-// it was started, what it produced, and which round it belonged to. Before
-// this table the same information was a single `varchar(32)` on the Thread,
-// which could state an intention and nothing else — no start, no outcome, no
-// history — so a user who followed the call to action into another Area left
-// no trace, and rounds had no factual basis.
+// A step is one attempt at advancing a Thread: the intention, that it
+// started, what it produced, and which round it belonged to. Do not keep that
+// as a single varchar on the Thread. That can state an intention and nothing
+// else: no start, no outcome, no history.
 //
 // `slot` is what keeps human attention singular while long-running system work
 // continues: an action with an operation behind it (search, experiment) moves
@@ -402,7 +396,7 @@ export const inquiryThreadSteps = pgTable("inquiry_thread_steps", {
 	check("ck_inquiry_thread_steps_target_ref", sql`(target_ref_kind IS NULL) = (target_ref_id IS NULL)`),
 ]);
 
-// Personal Focus (plan section 9.6): each member's own working set, separate
+// Personal Focus: each member's own working set, separate
 // from the Shared Project Focus Set (`inquiry_threads.attention_state='focused'`).
 export const inquiryThreadPersonalFocus = pgTable("inquiry_thread_personal_focus", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
@@ -436,7 +430,7 @@ export const inquiryThreadPersonalFocus = pgTable("inquiry_thread_personal_focus
 		}).onDelete("cascade"),
 ]);
 
-// Project-configurable shared Focus WIP limit (plan section 9.6). One row
+// Project-configurable shared Focus WIP limit. One row
 // per Project, created lazily; a missing row means the default (3) applies.
 export const inquiryProjectSettings = pgTable("inquiry_project_settings", {
 	projectId: varchar("project_id", { length: 36 }).primaryKey().notNull(),

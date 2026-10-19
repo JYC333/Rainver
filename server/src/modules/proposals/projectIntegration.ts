@@ -8,7 +8,7 @@ import { PgProposalRepository } from "./repository.js";
 /**
  * A pending proposal is a decision waiting on a person, so it belongs in the
  * Project's attention list — on Pulse, in the shell, beside the conversation —
- * and not only in the Space-level Review page it used to be found on.
+ * as well as on the Space-level Review page.
  *
  * Each row links to where the decision is made: the conversation that
  * produced it, when a Room Run did, since the proposal's card with its

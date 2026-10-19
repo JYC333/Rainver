@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react'
+import ProviderDeploymentSelect from './ProviderDeploymentSelect'
 import { Loader2, Plus } from 'lucide-react'
 import { toast } from 'sonner'
-import { providersApi, type ModelProviderOut, type ProviderPresetOut, type ProviderType, type ProviderVendorOut } from '../../../api/client'
+import { providersApi, type ModelProviderOut, type ProviderDeployment, type ProviderPresetOut, type ProviderType, type ProviderVendorOut } from '../../../api/client'
 import { Button } from '../../../components/ui/button'
 import { Input } from '../../../components/ui/input'
 import { errMsg } from '../../../lib/utils'
@@ -43,6 +44,7 @@ export default function AddProviderForm({
   const [baseUrl, setBaseUrl] = useState('')
   const [claudeCompatibleBaseUrl, setClaudeCompatibleBaseUrl] = useState('')
   const [openAiCompatibleBaseUrl, setOpenAiCompatibleBaseUrl] = useState('')
+  const [deployment, setDeployment] = useState<ProviderDeployment>('cloud')
   const [networkProfileId, setNetworkProfileId] = useState<string | null>(null)
   const [embeddingDimensions, setEmbeddingDimensions] = useState('1536')
   const [isDefault, setIsDefault] = useState(false)
@@ -58,6 +60,7 @@ export default function AddProviderForm({
     setBaseUrl('')
     setClaudeCompatibleBaseUrl('')
     setOpenAiCompatibleBaseUrl('')
+    setDeployment('cloud')
     setNetworkProfileId(null)
     setEmbeddingDimensions('1536')
     setIsDefault(false)
@@ -164,6 +167,7 @@ export default function AddProviderForm({
           default_model: defaultModel.trim() || undefined,
           available_models: models,
           base_url: baseUrl.trim(),
+          deployment,
           network_profile_id: networkProfileId,
           claude_compatible_base_url: claudeCompatibleBaseUrl.trim() || undefined,
           openai_compatible_base_url: openAiCompatibleBaseUrl.trim() || undefined,
@@ -287,6 +291,9 @@ export default function AddProviderForm({
             <Input value={openAiCompatibleBaseUrl} onChange={event => setOpenAiCompatibleBaseUrl(event.target.value)} placeholder="https://api.example.com/v1" className="font-mono text-sm" disabled={Boolean(selectedPreset)} />
           </div>
         </>
+      )}
+      {!selectedPreset && (
+        <ProviderDeploymentSelect providerType={providerType} vendors={vendors} value={deployment} onChange={setDeployment} />
       )}
       <div className="space-y-1.5">
         <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Network</label>

@@ -6,6 +6,7 @@ import {
 } from '../../../../plugins/official/finance_ledger/web/src/FinancePage'
 import type {
   FinanceApi,
+  FinanceImportResult,
   FinanceWebHost,
 } from '../../../../plugins/official/finance_ledger/web/src/host'
 
@@ -28,6 +29,20 @@ const accounts = [
     default_commodity: 'EUR', owner_user_id: 'user-1', visibility: 'private' as const,
   },
 ]
+
+const emptySummary = { imported: 0, pending_mapping: 0, needs_review: 0, duplicate: 0, error: 0, excluded: 0 }
+
+function importResult(overrides: Partial<FinanceImportResult> = {}): FinanceImportResult {
+  return {
+    import_source: { id: 'imp-1', source_type: 'upload', source_name: null, content_hash: 'h', created_at: '' },
+    batch_existed: false,
+    created_directives: 2,
+    summary: { ...emptySummary, imported: 2 },
+    entries: [],
+    errors: [],
+    ...overrides,
+  }
+}
 
 function fakeApi(overrides: Partial<FinanceApi> = {}): FinanceApi {
   return {
@@ -60,9 +75,12 @@ function fakeApi(overrides: Partial<FinanceApi> = {}): FinanceApi {
       balances: [{ accountId: 'acc-1', accountName: 'Assets:Bank:Checking', positions: ['120.50 USD'] }],
     }),
     validateBook: vi.fn().mockResolvedValue({ errors: [] }),
-    importBeancount: vi.fn().mockResolvedValue({
-      import_source_id: 'imp-1', deduplicated: false, created_directives: 2, errors: [],
-    }),
+    importBeancount: vi.fn().mockResolvedValue(importResult()),
+    listImports: vi.fn().mockResolvedValue({ imports: [] }),
+    getImport: vi.fn().mockResolvedValue(importResult()),
+    retryImport: vi.fn().mockResolvedValue(importResult()),
+    mapImportEntry: vi.fn().mockResolvedValue(importResult()),
+    reviewImportEntries: vi.fn().mockResolvedValue(importResult()),
     exportBeancount: vi.fn().mockResolvedValue({
       export_id: 'exp-1', content: '2026-01-01 open Assets:Bank:Checking\n', content_hash: 'abc', errors: [],
     }),
@@ -76,6 +94,17 @@ function makeHost(api: FinanceApi, enabled = true): FinanceWebHost {
     Link: ({ to, style, children }) => <a href={to} style={style}>{children}</a>,
     usePluginState: () => ({ loading: false, enabled }),
   }
+}
+
+/** Renders the page and waits for the ledger's accounts, not just the book.
+ *  The book toolbar paints one commit before the ledger's mount effect runs
+ *  and loads the accounts: a posting editor opened in between has no account
+ *  to select, and a check run in between has its result reset by that
+ *  effect. */
+async function renderLoadedLedger(api: FinanceApi) {
+  const Page = createFinancePage(makeHost(api))
+  render(<Page />)
+  await screen.findByText('招商银行')
 }
 
 describe('FinancePage', () => {
@@ -104,9 +133,7 @@ describe('FinancePage', () => {
 
   it('blocks obviously invalid transaction submissions in the posting editor', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('+ Transaction'))
     // The posting editor mounts in a state update; querying it synchronously
@@ -125,9 +152,7 @@ describe('FinancePage', () => {
 
   it('submits a balanced transaction with one interpolated posting', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('+ Transaction'))
     fireEvent.change(await screen.findByLabelText('Posting 1 account'), { target: { value: 'acc-2' } })
@@ -154,9 +179,7 @@ describe('FinancePage', () => {
         ],
       }),
     })
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     expect(screen.getByText('Not checked yet')).toBeInTheDocument()
     fireEvent.click(screen.getByText('Run checks'))
@@ -164,23 +187,52 @@ describe('FinancePage', () => {
     expect(screen.getByText('Transaction does not balance for USD: 5.00 USD')).toBeInTheDocument()
   })
 
-  it('imports beancount text and reports the result', async () => {
+  it('imports beancount text as proposed and reports the result', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('Import'))
+    expect(screen.queryByText(/Post directly/)).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Beancount text'), {
       target: { value: '2026-01-01 open Assets:Bank:Checking USD' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Run import' }))
 
-    expect(await screen.findByText('Imported 2 directives.')).toBeInTheDocument()
+    expect(await screen.findByText(/Imported: 2 new, 2 imported as proposed\./)).toBeInTheDocument()
     expect(api.importBeancount).toHaveBeenCalledWith('book-1', {
       text: '2026-01-01 open Assets:Bank:Checking USD',
-      post_directly: false,
     })
+  })
+
+  it('maps a missing account onto an existing one and retries that entry', async () => {
+    const pending = importResult({
+      created_directives: 0,
+      summary: { ...emptySummary, pending_mapping: 1 },
+      entries: [{
+        id: 'entry-1', entry_key: 'content:abc:0', identity_kind: 'content_occurrence', external_id: null,
+        entry_type: 'transaction', entry_date: '2026-01-02', source_lineno: 1,
+        raw_text: '2026-01-02 * "Lunch"\n  Assets:Cash  -8.00 USD\n  Expenses:Food  8.00 USD',
+        status: 'pending_mapping', status_reason: 'missing_account', directive_id: null, duplicate_of_entry_id: null,
+        missing_accounts: ['Assets:Cash'], missing_commodities: [], account_mapping: {}, mapping_version: 0, errors: [],
+      }],
+    })
+    const api = fakeApi({
+      importBeancount: vi.fn().mockResolvedValue(pending),
+      mapImportEntry: vi.fn().mockResolvedValue(importResult({ batch_existed: true, created_directives: 1, summary: { ...emptySummary, imported: 1 } })),
+    })
+    await renderLoadedLedger(api)
+
+    fireEvent.click(screen.getByText('Import'))
+    fireEvent.change(screen.getByLabelText('Beancount text'), { target: { value: 'x' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Run import' }))
+    expect(await screen.findByText('Waiting for an account or commodity')).toBeInTheDocument()
+    const mapButton = screen.getByRole('button', { name: 'Map and import' })
+    expect(mapButton).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Account for Assets:Cash'), { target: { value: 'acc-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Map and import' }))
+
+    await waitFor(() => expect(api.mapImportEntry).toHaveBeenCalledWith('book-1', 'imp-1', 'entry-1', { 'Assets:Cash': 'acc-1' }))
+    expect(await screen.findByText(/Retried an earlier upload of this file: 1 new/)).toBeInTheDocument()
   })
 
   it('prompts to create the first book when none exist', async () => {
@@ -189,6 +241,81 @@ describe('FinancePage', () => {
     render(<Page />)
     expect(await screen.findByText('Create your first book to start recording accounts and transactions.')).toBeInTheDocument()
     expect(screen.getByText('+ New book')).toBeInTheDocument()
+  })
+
+  it('shows the failure, not the first-book prompt, when the book list cannot be loaded', async () => {
+    const api = fakeApi({ listBooks: vi.fn().mockRejectedValue(new Error('Finance service unavailable')) })
+    const Page = createFinancePage(makeHost(api))
+    render(<Page />)
+    expect(await screen.findByText('Finance service unavailable')).toBeInTheDocument()
+    expect(screen.queryByText('Create your first book to start recording accounts and transactions.')).not.toBeInTheDocument()
+  })
+
+  it('refreshes the open account ledger after a transaction is posted', async () => {
+    const api = fakeApi()
+    await renderLoadedLedger(api)
+
+    fireEvent.click(screen.getByText('Food'))
+    await screen.findByText('Ledger — Expenses:Food')
+    await waitFor(() => expect(api.getAccountLedger).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByText('+ Transaction'))
+    fireEvent.change(await screen.findByLabelText('Posting 1 account'), { target: { value: 'acc-2' } })
+    fireEvent.change(screen.getByLabelText('Posting 1 amount'), { target: { value: '42.10' } })
+    fireEvent.change(screen.getByLabelText('Posting 2 account'), { target: { value: 'acc-1' } })
+    fireEvent.click(screen.getByText('Post transaction'))
+
+    await waitFor(() => expect(api.createTransaction).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(api.getAccountLedger).toHaveBeenCalledTimes(2))
+    expect(api.getAccountLedger).toHaveBeenLastCalledWith('book-1', 'acc-2')
+  })
+
+  it('shows the ledger of the account selected last, not of a slower earlier request', async () => {
+    let answerFood: (value: { postings: unknown[] }) => void = () => {}
+    const posting = (id: string, accountName: string, amount: string) => ({
+      id, transaction_directive_id: 'dir-1', account_id: 'x', account_name: accountName,
+      amount_text: amount, commodity_symbol: 'USD', price_number_text: null, price_commodity_symbol: null,
+      price_is_total: false, flag: null, sort_order: 0,
+    })
+    const api = fakeApi({
+      getAccountLedger: vi.fn().mockImplementation((_bookId: string, accountId: string) => (
+        accountId === 'acc-2'
+          ? new Promise((resolve) => { answerFood = resolve })
+          : Promise.resolve({ postings: [posting('p-checking', 'Assets:Bank:Checking', '-12.50')] })
+      )),
+    })
+    await renderLoadedLedger(api)
+
+    fireEvent.click(screen.getByText('Food'))
+    await screen.findByText('Ledger — Expenses:Food')
+    fireEvent.click(screen.getByText('招商银行'))
+    await screen.findByText('Ledger — Assets:Bank:Checking')
+    expect(await screen.findByText('-12.50 USD')).toBeInTheDocument()
+
+    answerFood({ postings: [posting('p-food', 'Expenses:Food', '12.50')] })
+    await waitFor(() => expect(api.getAccountLedger).toHaveBeenCalledTimes(2))
+    // The late answer for Food must not replace Checking's rows.
+    expect(screen.getByText('-12.50 USD')).toBeInTheDocument()
+    expect(screen.queryByText('12.50 USD')).not.toBeInTheDocument()
+  })
+
+  it("defaults a new transaction's date to the user's local day, not the UTC day", async () => {
+    // Node re-reads TZ on change, so the zone can be set for this test alone.
+    const env = (globalThis as { process?: { env: Record<string, string | undefined> } }).process!.env
+    const previousTz = env.TZ
+    // UTC+8, where 22:30 UTC on the 1st is 06:30 on the 2nd.
+    env.TZ = 'Etc/GMT-8'
+    vi.useFakeTimers({ now: new Date('2026-10-01T22:30:00Z'), toFake: ['Date'] })
+    try {
+      const api = fakeApi()
+      await renderLoadedLedger(api)
+      fireEvent.click(screen.getByText('+ Transaction'))
+      expect(await screen.findByLabelText('Date')).toHaveValue('2026-10-02')
+    } finally {
+      vi.useRealTimers()
+      if (previousTz === undefined) delete env.TZ
+      else env.TZ = previousTz
+    }
   })
 
   it('creates a book with a selected currency and auto-registers it as a commodity', async () => {
@@ -208,9 +335,7 @@ describe('FinancePage', () => {
 
   it('opens a shared account from the guided type/group/name form', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('+ Open'))
     fireEvent.change(screen.getByLabelText('Account type'), { target: { value: 'Assets' } })
@@ -227,9 +352,7 @@ describe('FinancePage', () => {
 
   it('preselects the posting commodity from the account default currency', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('+ Transaction'))
     const commoditySelect = await screen.findByLabelText('Posting 1 commodity') as HTMLSelectElement
@@ -244,9 +367,7 @@ describe('FinancePage', () => {
 
   it('opens a private personal account', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('+ Open'))
     fireEvent.change(screen.getByLabelText('Account group'), { target: { value: 'Bank' } })
@@ -263,9 +384,7 @@ describe('FinancePage', () => {
 
   it('rejects an invalid account segment before calling the API', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     fireEvent.click(screen.getByText('+ Open'))
     fireEvent.change(screen.getByLabelText('Account group'), { target: { value: 'bank card' } })
@@ -278,9 +397,7 @@ describe('FinancePage', () => {
 
   it('switches balance scope and refetches with the scope', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     await waitFor(() => expect(api.getBalances).toHaveBeenLastCalledWith('book-1', 'all'))
     fireEvent.click(screen.getByRole('button', { name: 'Mine' }))
@@ -291,9 +408,7 @@ describe('FinancePage', () => {
 
   it('marks personal accounts and toggles visibility from the ledger view', async () => {
     const api = fakeApi()
-    const Page = createFinancePage(makeHost(api))
-    render(<Page />)
-    await screen.findByText('Household (USD)')
+    await renderLoadedLedger(api)
 
     expect(await screen.findByText('personal 🔒')).toBeInTheDocument()
 

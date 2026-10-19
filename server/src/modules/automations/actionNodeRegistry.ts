@@ -2,11 +2,20 @@ import type { ServerConfig } from "../../config.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import type { ResolvedNodeInputs } from "../execution/nodeInputResolver.js";
 
+/** The execution graph an `action` node runs in: a Workflow execution or a Plan version. */
+export type ActionNodeContainerKind = "workflow_execution" | "plan_version";
+export interface ActionNodeContainer {
+  kind: ActionNodeContainerKind;
+  /** The workflow execution's id, or the Plan version's. */
+  id: string;
+}
+
 export interface ActionNodeContext {
   db: Queryable;
   identity: SpaceUserIdentity;
   config: ServerConfig;
-  executionId: string;
+  /** Only ever a kind the handler registered for. */
+  container: ActionNodeContainer;
   nodeId: string;
   nodeKey: string;
   projectId: string | null;
@@ -41,29 +50,40 @@ export class ActionNodeHandlerError extends Error {
 export type ActionNodeHandler = (context: ActionNodeContext) => Promise<ActionNodeResult>;
 
 /**
- * Deterministic-handler dispatch for `node_kind: "action"` Workflow Execution
- * nodes (plan section 17.1-17.2): system operations that do not spawn an LLM
- * run. Mirrors `ProposalApplierRegistry`'s upsert-by-key registration so
- * modules can register at init time regardless of load order, and so a test
- * reset never leaves the registry silently empty (see the equivalent fix to
- * `registerBuiltInAttentionAdapters` for why a "registered once" guard is the
- * wrong pattern here).
+ * Deterministic-handler dispatch for `node_kind: "action"` nodes of both
+ * execution graphs — Workflow executions and Plans — through the one executor
+ * (`execution/actionNodeExecution.ts`): system operations that do not spawn an
+ * LLM run. A handler names the graphs it can run in, since what it does may
+ * read its container (a research pass reads its workflow execution); a Plan
+ * naming an action no Plan-capable handler serves is refused when the Plan is
+ * proposed. Mirrors `ProposalApplierRegistry`'s upsert-by-key registration so
+ * modules can register at init time regardless of load order. Do not guard
+ * with "registered once". A test reset would leave the registry empty.
  */
 class ActionNodeHandlerRegistry {
-  private readonly handlers = new Map<string, { handler: ActionNodeHandler; owner: string }>();
+  private readonly handlers = new Map<string, { handler: ActionNodeHandler; owner: string; containers: ReadonlySet<ActionNodeContainerKind> }>();
 
-  register(actionKey: string, handler: ActionNodeHandler, owner: string): void {
+  register(
+    actionKey: string,
+    handler: ActionNodeHandler,
+    owner: string,
+    containers: readonly ActionNodeContainerKind[] = ["workflow_execution"],
+  ): void {
     if (!actionKey) throw new Error("actionKey must be non-empty");
     if (!owner.trim()) throw new Error("owner must be non-empty");
+    if (containers.length === 0) throw new Error("containers must name at least one execution graph");
     const existing = this.handlers.get(actionKey);
     if (existing && existing.owner !== owner) {
       throw new Error(`${actionKey} is already registered by ${existing.owner}`);
     }
-    this.handlers.set(actionKey, { handler, owner });
+    this.handlers.set(actionKey, { handler, owner, containers: new Set(containers) });
   }
 
-  get(actionKey: string): ActionNodeHandler | null {
-    return this.handlers.get(actionKey)?.handler ?? null;
+  /** The handler for `actionKey`, only when it runs in `container` (any container when omitted). */
+  get(actionKey: string, container?: ActionNodeContainerKind): ActionNodeHandler | null {
+    const entry = this.handlers.get(actionKey);
+    if (!entry || (container && !entry.containers.has(container))) return null;
+    return entry.handler;
   }
 
   registeredKeys(): ReadonlySet<string> {

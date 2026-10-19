@@ -6,8 +6,8 @@ frontend rendering core, built-in Graph page, and Project graph lens support are
 in place.
 
 ## Purpose
-Graph View is the shared read-only relationship visualization surface for Agent
-Space. It gives core modules and domain surfaces one durable graph contract and
+Graph View is the shared read-only relationship visualization surface for
+Rainver. It gives core modules and domain surfaces one durable graph contract and
 one renderer-backed interaction layer without making the renderer or a specific
 domain model part of the public API.
 
@@ -41,7 +41,7 @@ Core graph reads live in `server/src/modules/graph/`.
 
 | Route | Role |
 |---|---|
-| `GET /api/v1/graph/projection` | Space-scoped projection over visible `space_objects` and active `object_relations`. Modes: `global`, `local`, `cluster`, `search`. Optional `project_id` restricts object visibility to active object-backed `project_corpus_items` for that Project. Optional `lens_id` applies a server-known graph lens such as `academic_citation_v1`. |
+| `GET /api/v1/graph/projection` | Space-scoped projection over visible `space_objects` and active `object_relations`. Modes: `global`, `local`, `cluster`, `search`. Optional `project_id` restricts object visibility to objects whose `primary_project_id` is that Project or that are active object-backed `project_corpus_items` for it. Optional `lens_id` applies a server-known graph lens such as `academic_citation_v1`. |
 | `GET /api/v1/graph/view-state?scope_key=` | Per-user, per-space persisted view state lookup. |
 | `PUT /api/v1/graph/view-state` | Per-user, per-space persisted view state upsert. |
 
@@ -60,10 +60,11 @@ count, and working edges. Project membership alone is not enough to read a
 private Thread's statement as a node label.
 
 When `project_id` is supplied, the route first validates the project in the
-current Space, then every visible-object query adds an active
-`project_corpus_items` object filter. Edges are still read from
-`object_relations`, but only between nodes already present in the Project
-corpus. `lens_id=academic_citation_v1` narrows the same projection to the
+current Space, then every visible-object query adds a Project filter: the
+object's `primary_project_id` is that Project, or it is an active
+`project_corpus_items` object (an Inquiry Thread declares its Project without
+being corpus material). Edges are still read from `object_relations`, but only
+between nodes that pass the same Project filter. `lens_id=academic_citation_v1` narrows the same projection to the
 academic citation/authorship relation set over source/person/organization
 objects. This is the generic Project graph lens used by presets such as
 `academic_research`; it does not create Profile-specific graph storage.
@@ -159,9 +160,8 @@ around the shared view:
 - guards async responses against active-space changes;
 - exposes dev-only `?debug=synthetic:n` projection generation.
 
-The Graph page is read-only. Any future relation creation from a graph surface
-must route through the existing proposal-gated object-relation flow, not through
-direct graph interaction writes.
+The Graph page is read-only. A relation write goes through the proposal-gated
+object-relation flow. Do not write a relation from the graph surface.
 
 ## Domain Consumption
 

@@ -16,9 +16,9 @@ import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
  * run's identity, the address to use it at, and the Skill that says how.
  *
  * Deliberately runtime-agnostic — two environment variables and one file. No
- * branch here or on the host is keyed on which agent is running, which is what
- * makes a newly registered ACP agent work with nothing added: the per-vendor
- * configuration writers this replaces had to be extended once per runtime.
+ * branch here or on the host is keyed on which agent is running. A newly
+ * registered ACP agent works with nothing added. Do not add a per-vendor
+ * configuration writer for each runtime.
  */
 export interface RunWorkSurfaceFrame {
   env: Record<string, string>;
@@ -43,9 +43,9 @@ export interface RunWorkSurface {
  * Which Skill a Run gets, decided from the Run itself: a conversation turn
  * (it has a Session) reads differently from a dispatched Task, and the
  * output-delivery section is offered only when `artifact.submit` was
- * actually granted. Rendering the dispatched default for every remote run
- * sent a Room agent to `artifact.submit` it was never granted and told it
- * its reply reached nobody.
+ * actually granted. Do not render the dispatched default for every remote
+ * run. A Room agent would be sent to `artifact.submit` it was not granted
+ * and told its reply reached nobody.
  */
 export function workSkillOptionsForRun(run: RunRecord): WorkSkillOptions {
   return {
@@ -54,7 +54,7 @@ export function workSkillOptionsForRun(run: RunRecord): WorkSkillOptions {
   };
 }
 
-export const WORK_SURFACE_SKILL_PATH_ENV = "RAINVER_SKILL_PATH";
+const WORK_SURFACE_SKILL_PATH_ENV = "RAINVER_SKILL_PATH";
 
 /**
  * The control-plane address *this host* can reach — `RAINVER_API_URL` for the
@@ -71,16 +71,17 @@ export async function resolveHostApiBaseUrl(db: Queryable, config: ServerConfig,
 /**
  * Issues the run's identity and assembles what the host must materialize.
  *
- * The token's lifetime covers the run's own timeout plus a margin, matching
- * how the server-host path sizes it: an identity that expires while its run is
- * still working takes the agent's tool surface away mid-task.
+ * The token lives as long as the caller says the run can (`lifetimeSeconds`,
+ * which includes any wait before launch and a margin): an identity that
+ * expires while its run is still working takes the agent's tool surface away
+ * mid-task.
  */
 export async function buildRunWorkSurface(input: {
   db: Queryable;
   config: ServerConfig;
   run: RunRecord;
   hostId: string;
-  timeoutSeconds: number;
+  lifetimeSeconds: number;
 }): Promise<RunWorkSurface | null> {
   const apiBaseUrl = await resolveHostApiBaseUrl(input.db, input.config, input.hostId);
   if (!apiBaseUrl) return null;
@@ -91,7 +92,7 @@ export async function buildRunWorkSurface(input: {
   // Run that crashes still has to be explainable, and the fact being recorded
   // is what it was *given*, which is known now.
   const token = await new PgRunToolIdentityRepository(input.db)
-    .issue(input.run, (input.timeoutSeconds + 300) * 1000, skillContentHash);
+    .issue(input.run, input.lifetimeSeconds * 1000, skillContentHash);
   return {
     frame: {
       env: {

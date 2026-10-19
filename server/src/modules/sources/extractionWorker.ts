@@ -3,7 +3,8 @@ import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { ServerConfig } from "../../config.js";
 import type { Queryable } from "../routeUtils/common.js";
-import { HttpError } from "../routeUtils/common.js";
+import { HttpError, withQueryableTransaction } from "../routeUtils/common.js";
+import { SourceBackfillExecutionService } from "./sourceBackfillExecutionService.js";
 import { type SourceConnectionRow } from "./sourceRepositoryRows.js";
 import {
   extractStructuredReaderContent,
@@ -31,7 +32,12 @@ import {
   SourceFetchFailure,
   type SourceFetchFailureDiagnostics,
 } from "./sourceConnectionFetch.js";
-import { fetchBackfillPageWithNarrowing, type BackfillPageRequest } from "./sourceBackfillPageFetch.js";
+import {
+  backfillPageItemLimit,
+  fetchBackfillPageWithNarrowing,
+  nextBackfillWindow,
+  type BackfillPageRequest,
+} from "./sourceBackfillPageFetch.js";
 import {
   getSourceChannelScanTask,
   upsertSourceChannelScanTask,
@@ -145,10 +151,13 @@ export class SourceExtractionWorker {
     }
 
     let runChildrenAfterSuccess = false;
-    let connectionScanResult: { seen: number; page_size: number } | null = null;
     try {
       if (job.job_type === "connection_scan") {
-        connectionScanResult = await this.executeConnectionScan(job);
+        const connectionScanResult = await this.executeConnectionScan(job);
+        // Settle the page on its segment before the job reads as succeeded:
+        // the backfill reconciler settles a segment whose current job has
+        // succeeded, and would otherwise close it before its next page.
+        await this.queueBackfillContinuationIfNeeded(job, connectionScanResult);
       } else if (job.job_type === "manual_url" || job.job_type === "extract_text") {
         await this.executeTextExtraction(job);
         await emitSourcePostProcessingDeepAnalysisEvent(this.db, {
@@ -175,7 +184,9 @@ export class SourceExtractionWorker {
         await this.recordJobFailureDiagnostics(job, error.diagnostics);
       }
       await this.finishJob(jobId, spaceId, "failed", code, message);
-      if (job.job_type === "connection_scan" && job.connection_id) {
+      // A history page failure belongs to its segment; like a successful
+      // page, it never moves the channel's monitoring schedule.
+      if (job.job_type === "connection_scan" && job.connection_id && !isBackfillJob(job)) {
         await this.recordFailedConnectionScan(job);
       }
       if (job.source_item_id) {
@@ -187,7 +198,6 @@ export class SourceExtractionWorker {
       }
     }
     if (runChildrenAfterSuccess) {
-      if (connectionScanResult) await this.queueBackfillContinuationIfNeeded(job, connectionScanResult);
       await this.runPendingConnectionScanChildren(job);
     }
 
@@ -301,7 +311,7 @@ export class SourceExtractionWorker {
     );
   }
 
-  private async executeConnectionScan(job: ExtractionJobRow): Promise<{ seen: number; page_size: number }> {
+  private async executeConnectionScan(job: ExtractionJobRow): Promise<{ seen: number; page_size: number; narrowable: boolean }> {
     if (!job.connection_id) throw new HttpError(422, "connection_scan requires connection_id");
     const channelId = stringValue(record(job.metadata_json).source_channel_id);
     const connection = await this.getConnection(job.space_id, job.connection_id, channelId);
@@ -320,6 +330,7 @@ export class SourceExtractionWorker {
     if (cursor.last_modified) headers["If-Modified-Since"] = cursor.last_modified;
 
     const handler = sourceConnectorRegistry.get(connection.connector_key);
+    const narrowable = handler.getCapabilities().supports_page_size_narrowing;
     const executableChannel = {
       endpoint_url: connection.endpoint_url,
       compiled_query: connection.provider_query_json,
@@ -381,7 +392,7 @@ export class SourceExtractionWorker {
           0,
         );
       }
-      return { seen: 0, page_size: pageSize };
+      return { seen: 0, page_size: pageSize, narrowable };
     }
     if (!response.isText || response.text === null) {
       throw new HttpError(415, `Source connection returned unsupported binary content (${response.contentType ?? "unknown"})`);
@@ -430,7 +441,7 @@ export class SourceExtractionWorker {
         result.created,
       );
     }
-    return { seen: result.seen, page_size: pageSize };
+    return { seen: result.seen, page_size: pageSize, narrowable };
   }
 
   private async recordJobFailureDiagnostics(
@@ -508,60 +519,66 @@ export class SourceExtractionWorker {
 
   private async queueBackfillContinuationIfNeeded(
     job: ExtractionJobRow,
-    result: { seen: number; page_size: number },
+    result: { seen: number; page_size: number; narrowable: boolean },
   ): Promise<void> {
     const metadata = record(job.metadata_json);
     const segmentId = stringValue(metadata.source_backfill_segment_id);
     const planId = stringValue(metadata.source_backfill_plan_id);
     if (!segmentId || !planId) return;
-    const segment = await this.db.query<{ window_json: unknown; status: string }>(
-      `SELECT window_json,status FROM source_backfill_segments WHERE id=$1 AND space_id=$2 LIMIT 1`,
-      [segmentId, job.space_id],
-    );
-    const current = segment.rows[0];
-    if (!current || current.status !== "running") return;
-    const window = record(current.window_json);
-    const consumedItems = (integerValue(window.consumed_items) ?? 0) + result.seen;
-    const budget = integerValue(window.max_items);
-    const remaining = integerValue(window.remaining_items ?? window.max_items);
-    if (result.seen < result.page_size) {
-      await this.db.query(
-        `UPDATE source_backfill_segments SET window_json=$3::jsonb WHERE id=$1 AND space_id=$2 AND status='running'`,
-        [segmentId, job.space_id, JSON.stringify({ ...window, consumed_items: consumedItems, next_cursor: null, has_more: false, exhausted: true })],
+    await withQueryableTransaction(this.db, async (db) => {
+      const backfill = new SourceBackfillExecutionService(db);
+      // Take the budget lock before the segment row, in dispatch's order.
+      await backfill.lockBudgetForPlan(job.space_id, planId);
+      const segment = await db.query<{ window_json: unknown; status: string }>(
+        `SELECT window_json,status FROM source_backfill_segments WHERE id=$1 AND space_id=$2 FOR UPDATE`,
+        [segmentId, job.space_id],
       );
-      return;
-    }
-    if (budget === null || remaining === null || remaining <= result.seen) {
-      await this.db.query(
+      const current = segment.rows[0];
+      if (!current || current.status !== "running") return;
+      const next = nextBackfillWindow(record(current.window_json), {
+        seen: result.seen,
+        pageSize: result.page_size,
+        narrowable: result.narrowable,
+      });
+      // The page's items are settled on the segment first, so the allowance
+      // below counts them.
+      await db.query(
         `UPDATE source_backfill_segments SET window_json=$3::jsonb WHERE id=$1 AND space_id=$2 AND status='running'`,
-        [segmentId, job.space_id, JSON.stringify({ ...window, consumed_items: consumedItems, next_cursor: (integerValue(window.cursor) ?? 0) + 1, has_more: true, exhausted: false, partial: true })],
+        [segmentId, job.space_id, JSON.stringify(next.window)],
       );
-      return;
-    }
-    const nextRemaining = remaining - result.seen;
-    const nextWindow = {
-      ...window,
-      cursor: (integerValue(window.cursor) ?? 0) + 1,
-      // Item offset is the authority for where the next page starts. Page index
-      // times a fixed width was wrong for any page that was not full width.
-      offset: consumedItems,
-      remaining_items: nextRemaining,
-      // Stay at the width the provider just proved it can serve. Returning to
-      // the full page would re-earn the same failure on every subsequent page.
-      page_size: Math.min(result.page_size, nextRemaining),
-      consumed_items: consumedItems,
-    };
-    const nextJobId = randomUUID();
-    const now = new Date().toISOString();
-    await this.db.query(
-      `INSERT INTO extraction_jobs (id,space_id,connection_id,job_type,status,metadata_json,created_at)
-       VALUES ($1,$2,$3,'connection_scan','pending',$4::jsonb,$5)`,
-      [nextJobId, job.space_id, job.connection_id, JSON.stringify({ ...metadata, source_backfill_plan_id: planId, source_backfill_segment_id: segmentId, window: nextWindow }), now],
-    );
-    await this.db.query(
-      `UPDATE source_backfill_segments SET extraction_job_id=$3, window_json=$4::jsonb, next_eligible_at=NULL WHERE id=$1 AND space_id=$2 AND status='running'`,
-      [segmentId, job.space_id, nextJobId, JSON.stringify({ ...nextWindow, next_cursor: nextWindow.cursor, has_more: true, exhausted: false })],
-    );
+      if (next.outcome !== "continue") return;
+      // The next page is reserved against the budget it shares with sibling
+      // segments and plans, not only against this segment's own window: a
+      // sibling may have taken what this window was promised.
+      const allowance = await backfill.continuationAllowanceLocked(job.space_id, planId, segmentId);
+      const requested = Number(next.window.remaining_items);
+      if (allowance <= 0) {
+        // Nothing left to take: the segment stops partial at the next page,
+        // which a continuation of the plan resumes from.
+        await db.query(
+          `UPDATE source_backfill_segments SET window_json=$3::jsonb WHERE id=$1 AND space_id=$2 AND status='running'`,
+          [segmentId, job.space_id, JSON.stringify({ ...next.window, next_cursor: next.window.cursor, has_more: true, exhausted: false, partial: true })],
+        );
+        return;
+      }
+      const remaining = Math.min(requested, allowance);
+      const nextWindow: Record<string, unknown> = {
+        ...next.window,
+        remaining_items: remaining,
+        page_size: result.narrowable ? Math.min(Number(next.window.page_size), remaining) : next.window.page_size,
+      };
+      const nextJobId = randomUUID();
+      const now = new Date().toISOString();
+      await db.query(
+        `INSERT INTO extraction_jobs (id,space_id,connection_id,job_type,status,metadata_json,created_at)
+         VALUES ($1,$2,$3,'connection_scan','pending',$4::jsonb,$5)`,
+        [nextJobId, job.space_id, job.connection_id, JSON.stringify({ ...metadata, source_backfill_plan_id: planId, source_backfill_segment_id: segmentId, window: nextWindow }), now],
+      );
+      await db.query(
+        `UPDATE source_backfill_segments SET extraction_job_id=$3, window_json=$4::jsonb, next_eligible_at=NULL WHERE id=$1 AND space_id=$2 AND status='running'`,
+        [segmentId, job.space_id, nextJobId, JSON.stringify({ ...nextWindow, next_cursor: nextWindow.cursor, has_more: true, exhausted: false, partial: false })],
+      );
+    });
   }
 
   private async scanWithConnector(
@@ -571,7 +588,7 @@ export class SourceExtractionWorker {
     raw: string,
     capturedAt: string,
   ): Promise<{ seen: number; created: number; updated: number; cursor: ScanCursor }> {
-    const items = handler.parseResponse(raw).slice(0, backfillMaxItems(job.metadata_json));
+    const items = handler.parseResponse(raw).slice(0, backfillPageItemLimit(record(record(job.metadata_json).window)));
     let created = 0;
     let updated = 0;
     let lastGuid: string | undefined;
@@ -647,6 +664,9 @@ export class SourceExtractionWorker {
         WHERE space_id = $1
           AND deleted_at IS NULL
           AND project_id IS NOT DISTINCT FROM $12
+          -- A personal item is unique per owner: another member's private
+          -- copy of the same URL is theirs, never this connection's.
+          AND ($12::varchar IS NOT NULL OR owner_user_id IS NOT DISTINCT FROM $13::varchar)
           AND (
             ($2::text IS NOT NULL AND canonical_uri = $3::text)
             OR ($4::text IS NOT NULL AND metadata_json->>'arxiv_id' = $4::text)
@@ -668,6 +688,7 @@ export class SourceExtractionWorker {
         input.connection.id,
         input.contentHash,
         input.connection.project_id,
+        input.connection.owner_user_id,
       ],
     );
     const policy = capturePolicyScanState(input.connection.capture_policy);
@@ -1286,7 +1307,7 @@ export class SourceExtractionWorker {
             throw new HttpError(415, `Unsupported source content type (${response.contentType ?? "unknown"})`);
           }
           // Copy the bytes: pdf.js detaches the buffer it parses, and the
-          // caller still writes response.bytes as the raw artifact.
+          // caller writes response.bytes as the raw artifact.
           readerContent = await extractPdfReaderContent(response.bytes.slice(), candidate.url);
         }
         return {
@@ -1315,7 +1336,7 @@ export class SourceExtractionWorker {
   private async getItem(spaceId: string, itemId: string): Promise<SourceItemRow | null> {
     const result = await this.db.query<SourceItemRow>(
       `SELECT id, space_id, connection_id, source_uri, canonical_uri, source_external_id,
-              title, excerpt, author, occurred_at, content_state, visibility
+              title, excerpt, author, occurred_at, content_state, visibility, project_id
          FROM source_items
         WHERE space_id = $1 AND id = $2 AND deleted_at IS NULL`,
       [spaceId, itemId],
@@ -1385,14 +1406,28 @@ export class SourceExtractionWorker {
     manualRun: boolean,
   ): Promise<void> {
     if (!connection.channel_id) return;
+    // From the channel as it is now, not the snapshot the scan started from
+    // (as rescheduleSourceChannelScanAfterRun does): a pause, archive, or
+    // change of frequency or rule made while the scan ran is kept.
+    const current = await this.db.query<{ status: string; fetch_frequency: string; schedule_rule_json: unknown }>(
+      `SELECT ch.status, ch.fetch_frequency, ch.schedule_rule_json FROM source_channels ch WHERE ch.id = $1`,
+      [connection.channel_id],
+    );
+    const channel = current.rows[0] ?? {
+      status: connection.status,
+      fetch_frequency: connection.fetch_frequency,
+      schedule_rule_json: connection.schedule_rule_json,
+    };
     const scheduleTask = await getSourceChannelScanTask(this.db, connection.channel_id);
-    const nextCheckAt = computeNextCheckAt(connection.fetch_frequency, completedAt, {
-      manualRun,
-      existingNextCheckAt: scheduleTask?.next_run_at,
-      scheduleRule: connection.schedule_rule_json,
-    });
+    const nextCheckAt = channel.status === "active"
+      ? computeNextCheckAt(channel.fetch_frequency, completedAt, {
+        manualRun,
+        existingNextCheckAt: scheduleTask?.next_run_at,
+        scheduleRule: channel.schedule_rule_json,
+      })
+      : null;
     await upsertSourceChannelScanTask(this.db, {
-      channel: { id: connection.channel_id, space_id: connection.space_id, owner_user_id: connection.owner_user_id, status: connection.status, fetch_frequency: connection.fetch_frequency },
+      channel: { id: connection.channel_id, space_id: connection.space_id, owner_user_id: connection.owner_user_id, status: channel.status, fetch_frequency: channel.fetch_frequency },
       nextRunAt: nextCheckAt,
       lastRunAt: completedAt,
       cursor: compactCursor(cursor) as Record<string, unknown>,
@@ -1587,7 +1622,7 @@ export class SourceExtractionWorker {
       `INSERT INTO artifacts (
          id, space_id, artifact_type, title, content, storage_path, mime_type,
          exportable, export_formats_json, canonical_format, preview, metadata_json,
-         created_at, updated_at, visibility, access_level, owner_user_id, trust_level
+         created_at, updated_at, visibility, access_level, owner_user_id, trust_level, project_id
        ) VALUES (
          $1, $2, 'source_reader_document', $3, $4, $5, 'application/json',
          true, $6::jsonb, 'reader_document_json', false, $7::jsonb,
@@ -1595,7 +1630,8 @@ export class SourceExtractionWorker {
          (SELECT visibility FROM source_items WHERE space_id = $10::varchar AND id = $11::varchar),
          (SELECT access_level FROM source_items WHERE space_id = $12::varchar AND id = $13::varchar),
          (SELECT owner_user_id FROM source_items WHERE space_id = $14::varchar AND id = $15::varchar),
-         'medium'
+         'medium',
+         (SELECT project_id FROM source_items WHERE space_id = $10::varchar AND id = $11::varchar)
        )`,
       [
         artifactId,
@@ -1656,7 +1692,7 @@ export class SourceExtractionWorker {
       `INSERT INTO artifacts (
          id, space_id, artifact_type, title, content, storage_path, mime_type,
          exportable, export_formats_json, canonical_format, preview,
-         created_at, updated_at, visibility, access_level, owner_user_id, trust_level
+         created_at, updated_at, visibility, access_level, owner_user_id, trust_level, project_id
        ) VALUES (
          $1, $2, 'source_raw_snapshot', $3, NULL, $4, $5,
          false, $6::jsonb, $7, false,
@@ -1664,7 +1700,8 @@ export class SourceExtractionWorker {
          (SELECT visibility FROM source_items WHERE space_id = $10::varchar AND id = $11::varchar),
          (SELECT access_level FROM source_items WHERE space_id = $12::varchar AND id = $13::varchar),
          (SELECT owner_user_id FROM source_items WHERE space_id = $14::varchar AND id = $15::varchar),
-         'medium'
+         'medium',
+         (SELECT project_id FROM source_items WHERE space_id = $10::varchar AND id = $11::varchar)
        )`,
       [
         artifactId,
@@ -1751,11 +1788,6 @@ function backfillMaxItems(metadata: unknown): number {
 function isBackfillJob(job: ExtractionJobRow): boolean {
   const metadata = record(job.metadata_json);
   return Boolean(stringValue(metadata.source_backfill_plan_id));
-}
-
-function integerValue(value: unknown): number | null {
-  const number = Number(value);
-  return Number.isInteger(number) && number >= 0 ? number : null;
 }
 
 function sha256(value: string | Uint8Array): string {

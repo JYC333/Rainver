@@ -6,7 +6,7 @@
  * Credential pools: a provider holds 1→N encrypted Credentials
  * through `model_provider_credentials` rows. The primary credential
  * (`model_providers.credential_id`) is lazily enrolled as the position-0 pool
- * member, so pre-pool rows keep working without a data migration and all
+ * member, so a provider that only has `credential_id` keeps resolving, and all
  * rotation/health state lives in one place. Failure state is self-healing:
  * a failed key gets `cooldown_until` (never a permanent dead flag), and
  * selection simply skips cooling keys. `healthy=false` marks auth-class
@@ -18,18 +18,21 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "../../../db/pool.js";
 import { getDbPool, type Pool } from "../db.js";
+import { withTransaction } from "../../../db/tx.js";
 import type { ServerConfig } from "../../../config.js";
 import {
   decryptModelProviderApiKeySecretRefV1,
   encryptModelProviderApiKeySecretRefV1,
   loadOrCreateModelProviderApiKeyMasterKey,
 } from "../secretRefCrypto.js";
-import { mapProviderRowToDto } from "../dbReader.js";
+import { mapProviderRowToDto, resolveProvidersDbPort } from "../dbReader.js";
 import { providerVendor, type VendorDescriptor } from "../vendors.js";
 import { resolveManagedSubscriptionCredential } from "../subscriptionOAuth.js";
 import { resolveNetworkProfileRepository } from "../../networkProfiles/index.js";
 import { isSpaceOwnerOrAdmin } from "../../access/roles.js";
+import { providerDeployment } from "../deployment.js";
 import {
   authorizeCredentialSpend,
   type CredentialSpendAuthorization,
@@ -57,6 +60,7 @@ import {
   rotationStrategyFromRow,
   validateBaseUrl,
   validateCreateFields,
+  validateDeployment,
   validateProviderType,
   type PoolMemberRow,
   type ProviderRow,
@@ -92,10 +96,8 @@ export {
   type ProviderInfo,
   type ProviderPoolConfigUpdateInput,
   type ProviderPoolCredentialAddInput,
-  type ProviderSpaceGrantInput,
   type ProviderTaskChainEntry,
   type ProviderTaskAttemptRefs,
-  type ProviderTaskAttemptStart,
   type RotationStrategy,
 } from "./types.js";
 export { orderPoolMembers } from "./helpers.js";
@@ -128,10 +130,9 @@ function grantOut(row: {
 
 /**
  * Which vendor capability each retrieval task needs. The capability itself is
- * the vendor registry's, read here rather than restated: this table used to
- * repeat the per-vendor lists, which made it a second answer to a question
- * `VendorDescriptor` already answers — and a silently divergent one the moment
- * a vendor changed.
+ * the vendor registry's, read here rather than restated. Do not repeat the
+ * per-vendor lists: `VendorDescriptor` already answers this, and a second
+ * copy diverges the moment a vendor changes.
  *
  * Query rewrite and synthesis are chat calls, and exclude a vendor reachable
  * only through a managed subscription. That exclusion is about the credential
@@ -255,6 +256,21 @@ class PgProviderCommandStore implements ProviderCommandStore {
     return result.rows[0] ?? null;
   }
 
+  /**
+   * A trusted-local declaration is a statement about the Space's own
+   * network, so the person making it must run the Space, not merely own the
+   * Provider row.
+   */
+  private async requireSpaceOwnerOrAdmin(spaceId: string, userId: string): Promise<void> {
+    const result = await this.pool.query<{ role: string }>(
+      `SELECT role FROM space_memberships WHERE space_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+      [spaceId, userId],
+    );
+    if (!isSpaceOwnerOrAdmin(result.rows[0]?.role ?? null)) {
+      throw new ProviderCommandForbiddenError("Only a Space owner or admin can declare a Provider a trusted local deployment");
+    }
+  }
+
   private async requireOwnedProvider(userId: string, providerId: string): Promise<ProviderRow> {
     const row = await this.providerOwnedBy(userId, providerId);
     if (!row) {
@@ -279,8 +295,12 @@ class PgProviderCommandStore implements ProviderCommandStore {
     }
   }
 
-  private async clearDefault(spaceId: string, exceptId?: string): Promise<void> {
-    await this.pool.query(
+  private async clearDefault(
+    spaceId: string,
+    exceptId?: string,
+    db: Pool | PoolClient = this.pool,
+  ): Promise<void> {
+    await db.query(
       `UPDATE model_provider_space_grants
           SET is_default = false,
               updated_at = $2
@@ -310,7 +330,8 @@ class PgProviderCommandStore implements ProviderCommandStore {
 
   /**
    * Ensure the primary credential (`model_providers.credential_id`)
-   * has a position-0 pool row, so pre-pool providers keep working and all
+   * has a position-0 pool row, so a provider that only has `credential_id`
+   * keeps resolving and all
    * health state is tracked uniformly.
    */
   private async enrollPrimaryCredential(row: ProviderRow): Promise<void> {
@@ -356,11 +377,13 @@ class PgProviderCommandStore implements ProviderCommandStore {
     providerName: string,
     existingCredentialId: string | null | undefined,
     apiKey: string,
+    db: Pool | PoolClient = this.pool,
+    masterKey?: Buffer,
   ): Promise<string> {
-    const secretRef = encryptModelProviderApiKeySecretRefV1(apiKey, await this.masterKey());
+    const secretRef = encryptModelProviderApiKeySecretRefV1(apiKey, masterKey ?? await this.masterKey());
     const now = new Date();
     if (existingCredentialId) {
-      const updated = await this.pool.query<{ id: string }>(
+      const updated = await db.query<{ id: string }>(
         `UPDATE credentials
             SET secret_ref = $3, owner_user_id = COALESCE(owner_user_id, $5), updated_at = $4
           WHERE id = $1 AND space_id = $2 AND credential_type = 'api_key'
@@ -369,7 +392,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
       );
       if (updated.rows[0]) {
         // A re-keyed credential is healthy again until proven otherwise.
-        await this.pool.query(
+        await db.query(
           `UPDATE model_provider_credentials
               SET healthy = true, cooldown_until = NULL, last_failure_class = NULL, updated_at = $3
             WHERE space_id = $1 AND credential_id = $2`,
@@ -380,18 +403,18 @@ class PgProviderCommandStore implements ProviderCommandStore {
     }
 
     const credentialId = randomUUID();
-    await this.pool.query(
+    await db.query(
       `INSERT INTO credentials
         (id, space_id, owner_user_id, name, credential_type, secret_ref, scopes_json, created_at, updated_at)
        VALUES ($1, $2, $3, $4, 'api_key', $5, $6::jsonb, $7, $7)`,
       [credentialId, homeSpaceId, ownerUserId, `${providerName} API key`, secretRef, json([]), now],
     );
-    await this.pool.query(
+    await db.query(
       `UPDATE model_providers SET credential_id = $3, updated_at = $4
         WHERE id = $1 AND space_id = $2`,
       [providerId, homeSpaceId, credentialId, now],
     );
-    await this.pool.query(
+    await db.query(
       `INSERT INTO model_provider_credentials
         (id, space_id, provider_id, credential_id, position, enabled, healthy,
          request_count, failure_count, created_at, updated_at)
@@ -409,57 +432,82 @@ class PgProviderCommandStore implements ProviderCommandStore {
     input: ModelProviderCreateInput,
   ): Promise<unknown> {
     validateCreateFields(input);
+    const deployment = input.deployment ?? "cloud";
+    validateDeployment(input.provider_type, deployment);
+    if (deployment === "trusted_local") await this.requireSpaceOwnerOrAdmin(spaceId, userId);
     const isDefault = Boolean(input.is_default);
-    if (isDefault) await this.clearDefault(spaceId);
     const networkProfileId = await this.validateNetworkProfileId(
       spaceId,
       input.network_profile_id,
     );
+    const apiKey = input.api_key?.trim() ? input.api_key : null;
+    const masterKey = apiKey ? await this.masterKey() : undefined;
 
     const providerId = randomUUID();
     const now = new Date();
     const models = modelList(input.default_model, input.available_models ?? []);
     const name = input.name.trim();
     const baseUrl = normalizeBaseUrl(input.provider_type, input.base_url);
-    await this.pool.query(
-      `INSERT INTO model_providers
-        (id, space_id, owner_user_id, name, provider_type, base_url, default_model, enabled,
-         credential_id, network_profile_id, capabilities_json, config_json, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, $9::jsonb, $10::jsonb, $11, $11)`,
-      [
-        providerId,
-        spaceId,
-        userId,
-        name,
-        input.provider_type,
-        baseUrl,
-        input.default_model || (models[0] ?? null),
-        input.enabled ?? true,
-        json({ models }),
-        json({
-          ...(optionalTrimmedString(input.claude_compatible_base_url)
-            ? { claude_compatible_base_url: optionalTrimmedString(input.claude_compatible_base_url) }
-            : {}),
-          ...(optionalTrimmedString(input.openai_compatible_base_url)
-            ? { openai_compatible_base_url: optionalTrimmedString(input.openai_compatible_base_url) }
-            : {}),
-        }),
-        now,
-      ],
-    );
-    await this.pool.query(
-      `INSERT INTO model_provider_space_grants
-        (id, provider_id, space_id, owner_user_id, granted_by_user_id, enabled,
-         is_default, network_profile_id, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $4, true, $5, $6, $7, $7)`,
-      [randomUUID(), providerId, spaceId, userId, isDefault, networkProfileId, now],
-    );
-    if (input.api_key?.trim()) {
-      await this.attachApiKeyCredential(spaceId, userId, providerId, name, null, input.api_key);
-    }
+    // The new default replaces the old one only together with the provider,
+    // grant, and key writes, so a failed create leaves the Space default intact.
+    await withTransaction(this.pool, async (client) => {
+      if (isDefault) await this.clearDefault(spaceId, undefined, client);
+      await client.query(
+        `INSERT INTO model_providers
+          (id, space_id, owner_user_id, name, provider_type, base_url, default_model, enabled,
+           credential_id, network_profile_id, capabilities_json, config_json, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL, $9::jsonb, $10::jsonb, $11, $11)`,
+        [
+          providerId,
+          spaceId,
+          userId,
+          name,
+          input.provider_type,
+          baseUrl,
+          input.default_model || (models[0] ?? null),
+          input.enabled ?? true,
+          json({ models }),
+          json({
+            ...(deployment === "trusted_local" ? { deployment } : {}),
+            ...(optionalTrimmedString(input.claude_compatible_base_url)
+              ? { claude_compatible_base_url: optionalTrimmedString(input.claude_compatible_base_url) }
+              : {}),
+            ...(optionalTrimmedString(input.openai_compatible_base_url)
+              ? { openai_compatible_base_url: optionalTrimmedString(input.openai_compatible_base_url) }
+              : {}),
+          }),
+          now,
+        ],
+      );
+      await client.query(
+        `INSERT INTO model_provider_space_grants
+          (id, provider_id, space_id, owner_user_id, granted_by_user_id, enabled,
+           is_default, network_profile_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $4, true, $5, $6, $7, $7)`,
+        [randomUUID(), providerId, spaceId, userId, isDefault, networkProfileId, now],
+      );
+      if (apiKey) {
+        await this.attachApiKeyCredential(spaceId, userId, providerId, name, null, apiKey, client, masterKey);
+      }
+    });
     const row = await this.providerById(spaceId, providerId);
     if (!row) throw new Error("created provider was not readable");
-    return mapProviderRowToDto(row);
+    return this.providerResponse(spaceId, userId, providerId, { ...row, manageable: true });
+  }
+
+  /**
+   * A command answers with the provider as the list shows it — key and
+   * subscription state, grant and ownership — so the page can place the card
+   * without reloading. `fallback` covers a provider the list no longer shows.
+   */
+  private async providerResponse(
+    spaceId: string,
+    userId: string,
+    providerId: string,
+    fallback: ProviderRow,
+  ): Promise<ReturnType<typeof mapProviderRowToDto>> {
+    const listed = await resolveProvidersDbPort(this.config)?.getProvider(spaceId, userId, providerId);
+    return listed ? listed as ReturnType<typeof mapProviderRowToDto> : mapProviderRowToDto(fallback);
   }
 
   async updateProvider(
@@ -521,6 +569,24 @@ class PgProviderCommandStore implements ProviderCommandStore {
       input.default_model === undefined ? current.default_model : input.default_model || null;
     const configJson = currentConfig;
     delete configJson.is_default;
+    const deployment = input.deployment ?? providerDeployment(currentConfig);
+    validateDeployment(providerType, deployment);
+    if (deployment === "trusted_local") {
+      // Declared, kept declared under a changed vendor, or pointed at another
+      // endpoint: each time the actor is vouching anew that the service it
+      // reaches is local, on the Space's behalf.
+      const endpointChanged = baseUrl !== normalizeBaseUrl(current.provider_type, current.base_url)
+        || (input.claude_compatible_base_url !== undefined
+          && (optionalTrimmedString(input.claude_compatible_base_url) ?? null) !== (stringConfig(currentConfig.claude_compatible_base_url) ?? null))
+        || (input.openai_compatible_base_url !== undefined
+          && (optionalTrimmedString(input.openai_compatible_base_url) ?? null) !== (stringConfig(currentConfig.openai_compatible_base_url) ?? null));
+      if (input.deployment !== undefined || providerType !== current.provider_type || endpointChanged) {
+        await this.requireSpaceOwnerOrAdmin(current.space_id, userId);
+      }
+      configJson.deployment = deployment;
+    } else {
+      delete configJson.deployment;
+    }
     if (input.claude_compatible_base_url !== undefined) {
       const claudeUrl = optionalTrimmedString(input.claude_compatible_base_url);
       if (claudeUrl) configJson.claude_compatible_base_url = claudeUrl;
@@ -572,7 +638,7 @@ class PgProviderCommandStore implements ProviderCommandStore {
     }
     const row = await this.providerById(spaceId, providerId);
     if (!row) return mapProviderRowToDto(updated.rows[0]);
-    return mapProviderRowToDto({ ...row, manageable: true });
+    return this.providerResponse(spaceId, userId, providerId, { ...row, manageable: true });
   }
 
   async deleteProvider(spaceId: string, userId: string, providerId: string): Promise<void> {
@@ -1275,4 +1341,8 @@ export function resolveProviderCommandStore(config: ServerConfig): ProviderComma
     pgStoreKey = key;
   }
   return pgStore;
+}
+
+function stringConfig(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }

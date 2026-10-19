@@ -19,7 +19,7 @@ function workflow(overrides: Partial<ProjectResearchWorkflow> = {}): ProjectRese
 describe('nextFocusDestination', () => {
   const context = { projectId: 'project-1', threadId: 'thread-1', startedWorkflow: null }
 
-  it('gives every step somewhere to go, now that no state is left in the vocabulary', () => {
+  it('gives every step somewhere to go', () => {
     for (const kind of Object.keys(NEXT_FOCUS_LABELS) as InquiryNextFocusKind[]) {
       expect(['link', 'tab']).toContain(nextFocusDestination(kind, context).kind)
     }

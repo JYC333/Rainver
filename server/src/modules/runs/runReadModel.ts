@@ -81,10 +81,36 @@ export function runToOut(
     visibility: run.visibility ?? "space_shared",
     access_level: run.access_level ?? "full",
     project_id: run.project_id ?? null,
-    contract_snapshot_json: run.contract_snapshot_json ?? {},
+    contract_snapshot_json: contractSnapshotToOut(run),
     workflow_version_id: run.workflow_version_id ?? null,
     active_route_decision_id: run.route_decision_id ?? null,
   };
+}
+
+/**
+ * Contract fields that carry what the Run was given rather than how it was
+ * bounded: the workflow input, upstream nodes' outputs, the Task's done
+ * definition and acceptance criteria, and attachment locators. `/io` withholds
+ * the input assembled from them from a summary viewer, so the contract does
+ * too; budget, source and policy metadata stay.
+ */
+const CONTRACT_BODY_FIELDS = [
+  "workflow_input_json",
+  "upstream_inputs_json",
+  "attachment_manifest_json",
+  "definition_of_done",
+  "acceptance_criteria_json",
+] as const;
+
+function contractSnapshotToOut(run: VisibleRunRecord): unknown {
+  const contract = run.contract_snapshot_json ?? {};
+  if (!bodyWithheld(run.effective_access_level)) return contract;
+  if (typeof contract !== "object" || Array.isArray(contract)) return {};
+  const withheld: Record<string, unknown> = { ...(contract as Record<string, unknown>) };
+  for (const field of CONTRACT_BODY_FIELDS) {
+    if (field in withheld) withheld[field] = null;
+  }
+  return withheld;
 }
 
 function runUsageToOut(usage: RunRecord["usage"]): Record<string, unknown> | null {
@@ -179,6 +205,28 @@ export function runFinalizationToOut(row: RunFinalizationRecord, level: ContentA
     metadata_json: withheld ? null : row.metadata_json ?? null,
     finalized_at: row.finalized_at,
     created_at: row.created_at,
+    settlement: runSettlementToOut(row),
+  };
+}
+
+/**
+ * Whether the Run's outcome reached the domain state it settles (its Task,
+ * its Plan or Workflow node, its follow-ups), apart from whether the Agent
+ * finished. A pending settlement names the reconciler it waits on and a
+ * stable code — never the error text — and is resumed by the worker.
+ */
+function runSettlementToOut(row: RunFinalizationRecord): Record<string, unknown> {
+  if (row.status !== "completed") return { status: "not_applicable", settled_at: null, attempts: row.settlement_attempts, reason_code: null };
+  if (row.settled_at) return { status: "settled", settled_at: row.settled_at, attempts: row.settlement_attempts, reason_code: null };
+  const settlement = row.settlement_json && typeof row.settlement_json === "object" ? row.settlement_json as Record<string, unknown> : {};
+  const failure = settlement.last_failure && typeof settlement.last_failure === "object" ? settlement.last_failure as Record<string, unknown> : null;
+  const reconciler = typeof failure?.key === "string" ? failure.key : null;
+  return {
+    status: "pending",
+    settled_at: null,
+    attempts: row.settlement_attempts,
+    reason_code: reconciler ? `settlement_pending:${reconciler}` : "settlement_pending",
+    next_attempt_at: typeof settlement.next_attempt_at === "string" ? settlement.next_attempt_at : null,
   };
 }
 

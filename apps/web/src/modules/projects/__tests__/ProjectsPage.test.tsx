@@ -59,10 +59,9 @@ async function submitCreate() {
 
 describe('ProjectsPage', () => {
   /**
-   * Creation asks for a name and presets nothing — the Project Template
-   * concept it used to offer had been emptied three times over, and every
-   * job it once held has another home. Mode starts as Research and is
-   * changed from inside the Project.
+   * Creation asks for a name and presets nothing. There is no Project
+   * Template on this form. Mode starts as Research and is changed from
+   * inside the Project.
    */
   it('creates with a name and presets nothing else', async () => {
     render(<MemoryRouter><ProjectsPage /></MemoryRouter>)
@@ -91,10 +90,10 @@ describe('ProjectsPage', () => {
     render(<MemoryRouter><ProjectsPage /></MemoryRouter>)
     await openCreateDialog()
 
-    // Goal, scope, success and Mode were asked here before the work had a
-    // shape, so they were guessed at. They are set from inside the Project,
-    // where the Brief, the checklist and the Assistant can help; Mode starts
-    // as Research and is changed from the Project shell.
+    // The create form asks for a name. Goal, scope, success, and Mode are set
+    // from inside the Project, where the Brief, the checklist and the
+    // Assistant can help. Do not ask them here. Mode starts as Research and
+    // is changed from the Project shell.
     for (const label of ['Goal', 'Scope', 'Success definition', 'Current focus', 'How does this Project advance?']) {
       expect(screen.queryByText(label)).not.toBeInTheDocument()
     }

@@ -30,7 +30,7 @@ describe("subscription quota contracts", () => {
       quota_hold: { account_label: "Claude Code · Server", window: "session", resets_at: null, run_ids: ["run-1"], can_continue: false },
     };
     expect(RoomDiscussionDetailSchema.parse(detail).usage.subscription[0]!.tokens).toBe(1200);
-    // The single token total it replaced is not part of the contract.
+    // Usage has no single token total. Do not accept `tokens` on the usage object.
     expect(RoomDiscussionDetailSchema.safeParse({ ...detail, usage: { ...detail.usage, tokens: 3 } }).success).toBe(false);
   });
 

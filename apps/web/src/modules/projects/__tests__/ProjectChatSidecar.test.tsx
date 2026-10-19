@@ -38,6 +38,11 @@ vi.mock('../../../api/client', async () => {
   const { ApiRequestError } = await import('../../../test/apiClientMock')
   return {
   ApiRequestError,
+  // Each addressed Room recipient's knowledge retrieval switch, off.
+  runtimeContextApi: {
+    retrievalSwitch: vi.fn(async (scopeId: string) => ({ work_context_scope_id: scopeId, enabled: false, preferred_domains: [], setup_version: null })),
+    setRetrievalSwitch: vi.fn(),
+  },
   projectsApi: { mainlineRoom: vi.fn() },
   proposalsApi: { get: vi.fn(), accept: vi.fn(), reject: vi.fn() },
   runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn() },
@@ -156,8 +161,8 @@ beforeEach(() => {
   vi.mocked(roomsApi.get).mockResolvedValue({
     room: { id: 'room-1', project_id: PROJECT, title: 'Project Room' }, user_members: [], agent_members: [],
   } as never)
-  // The real endpoint always returns `conversation`; omitting it here hid a
-  // render loop, because the panel's handler for it re-triggered the read.
+  // The real endpoint always returns `conversation`. Do not omit it here.
+  // The panel's handler for it re-triggers the read, and a missing one loops.
   vi.mocked(roomsApi.messages).mockResolvedValue({
     items: [], task_group_ids: [], limit: 50, offset: 0,
     conversation: { id: 'conv-2', room_id: 'room-1', title: 'Depth repair' },
@@ -176,7 +181,7 @@ beforeEach(() => {
 
 describe('focus refs', () => {
   it('names the Task when one is being looked at, and nothing otherwise', () => {
-    // The whole point of the sidecar: "is this one done?" resolves without the
+    // "Is this one done?" resolves without the
     // person restating which Task they mean.
     expect(focusRefsFor(`/spaces/s/projects/${PROJECT}/tasks/${TASK}`))
       .toEqual([{ type: 'task', id: TASK }])
@@ -185,9 +190,8 @@ describe('focus refs', () => {
   })
 
   it('reads back exactly the path the Board sends a card to', () => {
-    // Guards the defect this replaced: the focus regex matched a shape no link
-    // in the app produced, so the feature was inert while its test passed.
-    // Tying the two helpers together means a change to either is caught here.
+    // The focus regex must match a path the app actually produces. The two
+    // helpers stay tied, so a change to either is caught here.
     expect(focusRefsFor(`/spaces/space-1${projectTaskHref(PROJECT, TASK)}`))
       .toEqual([{ type: 'task', id: TASK }])
   })
@@ -220,9 +224,7 @@ describe('Project chat sidecar', () => {
 
   it('gives a Project reader the composer, because asking the Agent is what the panel is for', async () => {
     // Speaking is Room membership, and opening the Project enrols any reader
-    // in the mainline. Gating the composer on Project *write* authority made
-    // the panel useless to exactly the person `modules/rooms.md` says it
-    // exists for.
+    // in the mainline. Do not gate the composer on Project *write* authority.
     vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
     vi.mocked(projectsApi.mainlineRoom).mockResolvedValue({
       room: { id: 'room-1', title: 'Project Room', is_mainline: true }, joined: true, viewer_can_write: false,
@@ -244,10 +246,9 @@ describe('Project chat sidecar', () => {
   })
 
   it('shows a failed mainline read as an error, not as an empty Project', async () => {
-    // The mainline read can now fail outright — a Project without one is a
-    // broken invariant the server reports as 500 — and the empty state's
-    // button is disabled for a viewer, so rendering the failure that way
-    // would show a dead end instead of what went wrong.
+    // A Project without a mainline Room is a 500. Do not render that failure
+    // as an empty Project: the empty state's button is disabled for a viewer,
+    // so the failure would look like a dead end.
     vi.mocked(projectsApi.mainlineRoom).mockRejectedValue(new Error('Project has no mainline Room'))
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     expect(await screen.findByText('Project has no mainline Room')).toBeInTheDocument()
@@ -340,6 +341,9 @@ describe('Project chat sidecar', () => {
     vi.mocked(roomsApi.sendMessage).mockResolvedValue({ message: { id: 'm-1', session_id: 'conv-2', role: 'user', content: 'text', input_parts: [] }, conversation: { id: 'conv-2', title: 'Depth repair' }, task_group_ids: [], run_ids: [] } as never)
     renderWithCurrentFile(`/spaces/space-1/projects/${PROJECT}/files`, attachment)
     const bar = await screen.findByTestId('current-file-bar')
+    // The bar paints with the Room; the toggle stays disabled until the
+    // conversation's execution context says the file's Folder is in it.
+    await waitFor(() => expect(within(bar).getByRole('button', { name: 'Remove current file' })).toBeEnabled())
     fireEvent.click(within(bar).getByRole('button', { name: 'Remove current file' }))
     expect(within(bar).getByRole('button', { name: 'Add current file' })).toBeInTheDocument()
     fireEvent.click(within(bar).getByRole('button', { name: 'Add current file' }))
@@ -379,8 +383,7 @@ describe('Project chat sidecar', () => {
   it('opens the full Room on the conversation being read', async () => {
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'conv-2', { limit: 50, offset: 0 }))
-    // Landing on the Rooms list and having to find this conversation again
-    // was the wrong side of the door.
+    // Full Room opens the conversation being read. Do not land on the Rooms list.
     expect(screen.getByRole('link', { name: /Full Room/ }))
       .toHaveAttribute('href', `/projects/${PROJECT}/rooms?room=room-1&conversation=conv-2`)
   })
@@ -440,9 +443,8 @@ describe('Project chat sidecar', () => {
   })
 
   it('decides a proposal the turn produced, right here, and lets the Agent continue', async () => {
-    // Before this the panel showed the Agent saying "I proposed a research
-    // question" and the decision lived on the Space-level Review page: leave
-    // the Project, find it, come back. The card is the decision.
+    // The card is the decision. Do not send the person to the Space-level
+    // Review page to decide a proposal this turn produced.
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [{
         id: 'm2', role: 'assistant', content: 'I proposed one question.', created_at: '2026-08-27T09:00:05.000Z',

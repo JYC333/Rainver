@@ -1,21 +1,23 @@
 # Verification Engine
 
-Status: current implementation after A2 (2026-07-11). The engine is the
-completion authority for deterministic checks declared by a Run contract or a
-Project Folder validation plan. `RunEvaluation` remains the post-run classifier;
+The engine is the completion authority for deterministic checks declared by a
+Run contract or a Project Folder validation plan. `RunEvaluation` remains the post-run classifier;
 it must consume verification facts rather than infer completion from exit code.
 
 ## Ownership and lifecycle
 
 The Runs module owns the engine and the `verification_results` table. A run's
-orchestration path evaluates checks after adapter output, artifact/proposal
-materialization, and code-patch collection, but before the worktree/ephemeral
-sandbox is cleaned up:
+orchestration path evaluates checks in two phases, both before the server
+removes a working directory it prepared: `pre_materialization` checks run on
+the adapter output, and only if they pass are artifacts/proposals materialized
+and the code patch collected; `post_materialization` checks
+(`artifact_exists`, `proposal_created`, and `code_patch:*` declarations) then
+run against the materialized items:
 
 ```text
-adapter → materialize outputs → collect code patch → verify → terminal write
-                                                        ↓
-                                              RunEvaluation / TaskEvaluation
+adapter → verify (pre) → materialize outputs → collect code patch → verify (post) → terminal write
+                                                                         ↓
+                                                               RunEvaluation / TaskEvaluation
 ```
 
 Each result is keyed by `(run_id, attempt_number, verifier_type,
@@ -40,9 +42,8 @@ The current engine supports:
   Overflow is an error, never successful partial evidence. On the built-in
   host the daemon wraps them in a bubblewrap namespace with no network; on a
   paired host they run natively with that machine's network access,
-  which is what makes verification available there at all — it was
-  server-host-only for as long as the executor spoke to a Runner beside the
-  server;
+  which is what makes verification available there.
+
 A recipe's argv is executed on that host, so a recipe is code rather than data
 (B13): on the built-in host inside the Run's namespace, on a paired host
 natively under its owner's trust. The engine refuses shell metacharacters, but
@@ -57,7 +58,12 @@ author a recipe, which is Project write access.
   commit that worktree stood at when the Run started (the daemon reports it on
   `complete`), so commits the Agent made itself count as its change
   ([hosts.md](../modules/hosts.md), "Location lease, Task worktrees and
-  `git_after`");
+  `git_after`"). Both are read NUL-separated, with every untracked file
+  listed (not just its new directory) and both ends of a rename, so a file
+  moved away from a forbidden path still counts as changing it. Path
+  patterns are exact paths or globs; a bare file name in `forbidden_paths`
+  also matches that name in any directory (the conservative direction),
+  while in `diff_scope`'s `allowed_paths` it means only that path;
 - a done Task's merge asks the Task's checks again of its merged worktree
   (`verifyTaskWorkspace`): only the checks a workspace can answer — commands,
   tests, lint, typecheck, file and git checks, recipe refs — declared from the
@@ -77,9 +83,9 @@ collected patch changed files and did not touch Project Folder
 Execution Config-forbidden paths. A patch proposal is never marked as validated merely
 because git text collection succeeded.
 
-`manual_review` and `model_judge` are declared verifier types with explicit
-`skipped` results. They cannot make a run pass until their authorities land;
-the future model judge must use a model distinct from the generator.
+`manual_review` and `model_judge` return `skipped`. A skipped result cannot
+make a run pass. Do not implement `model_judge` with the same model that
+generated the output.
 
 Workflow/Plan nodes may declare `verification_recipe_refs`. The run contract
 propagates these references in route hints, the repository resolves enabled
@@ -101,7 +107,11 @@ For a successful runtime:
 - any skipped or missing declared result produces
   `RunEvaluation.unknown` / `insufficient_evidence`;
 - only all-passed declared results, or a run with no declared checks, can
-  produce `passed`.
+  produce `passed`. "Declared" means the contract would build a check
+  (`hasDeclaredVerificationChecks` runs the same parse as
+  `buildVerificationDeclarations`): natural-language acceptance criteria
+  declare nothing, so a successful Run with only those is not recorded as
+  `verification_missing`.
 
 TaskEvaluation bridges carry the verification summary in their checklist and
 surface failed/incomplete results as known issues. Read-only routes are

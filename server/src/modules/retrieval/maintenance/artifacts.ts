@@ -53,8 +53,9 @@ export async function createRetrievalMaintenanceProposalPacket(
   const lineageKey = maintenanceLineageKey(input.spaceId, input.source);
   const existing = await lookupExistingPendingPacket(
     db, input.spaceId, RETRIEVAL_MAINTENANCE_PACKET_PROPOSAL_TYPE, lineageKey,
+    { createdByUserId: ownerUserId, visibility: visibilityForReviewScope(input.reviewScope) },
   );
-  if (existing) return existing;
+  if (existing) return existing.id;
   const payload = packetPayload(input, ownerUserId, lineageKey);
   return (await insertProposalRow(db, {
     spaceId: input.spaceId,
@@ -109,8 +110,8 @@ function applyRetrievalMaintenancePacketProposal(
           },
         });
       }
-      // Note: retrieval maintenance intentionally omits canonical_write_performed
-      // and skipped tracking from its result/payload — match that exactly.
+      // Retrieval maintenance does not record canonical_write_performed or
+      // skipped tracking on its result. Do not add them here.
       return { children, resultExtra: { report_artifact_id: reportArtifactId } };
     },
   });

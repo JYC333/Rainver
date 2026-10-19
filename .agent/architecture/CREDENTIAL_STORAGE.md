@@ -9,11 +9,10 @@ not store a fourth. Do not conflate them.
 | **Managed subscription OAuth** | Instance-admin Claude Pro/Max and OpenAI Codex subscription credentials for in-process calls | AES-256-GCM OAuth envelope in a DB `Credential` row | this doc |
 | **Custom Source fetch credential** | Header-based credential (API key / bearer token) for an Sources Custom Source's outbound fetches | AES-256-GCM ciphertext in the same DB `credentials` table, distinct `credential_type` and `secret_ref` prefix | [modules/sources.md](../modules/sources.md), [architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md](SOURCE_CUSTOM_SOURCE_HANDLERS.md) |
 
-A vendor CLI's login is the one Rainver does **not** hold. Since ADR 0016 a CLI
-runs only on an execution host, and its login lives inside that copy's own
+A vendor CLI's login is the one Rainver does **not** hold. A CLI runs only on
+an execution host (ADR 0016), and its login lives inside that copy's own
 `HOME` on that host — never copied here, never brokered per run, never on a
-path the control plane knows (BOUNDARIES B64). `instance/secrets/cli-credentials/`
-is retired and unread; see [modules/credentials.md](../modules/credentials.md).
+path the control plane knows (BOUNDARIES B64).
 
 This doc covers the **ModelProvider API key** and **managed subscription OAuth**
 channels used by bounded server-owned ProviderTask calls and the authorized
@@ -32,6 +31,10 @@ interpreted handler code, and it is never pooled/rotated the way ModelProvider k
 - **Cipher:** AES-256-GCM (`server/src/modules/providers/secretRefCrypto.ts`). Plaintext → `(ciphertext, nonce)`, both base64.
 - **Master key:** a 32-byte random key in a file on disk at
   `RAINVER_HOME/secrets/provider_keys.key` (auto-generated on first use, `chmod 0600`).
+  Creation is exclusive (`wx`): two first writers — two credentials saved at
+  once on a fresh instance — end with one key, the loser re-reading the
+  winner's, because a second write overwriting the first key would leave
+  what the first had already encrypted undecryptable for good.
   **The master key is NOT in the database.** A database-only compromise does not reveal keys —
   the on-disk key file is also required.
 
@@ -49,7 +52,8 @@ The plaintext API key is **never** stored. The encrypted material lives in:
 
 `secret_ref` scheme is defined in
 `server/src/modules/providers/secretRefCrypto.ts`
-(`encodeModelProviderApiKeySecretRef` / `resolveApiKeyFromSecretRef`).
+(`encryptModelProviderApiKeySecretRefV1` / `decryptModelProviderApiKeySecretRefV1`;
+subscription OAuth uses the matching `...OAuthSecretRefV1` pair).
 
 Rotation strategy (`fill_first` | `round_robin` | `least_used` | `random`) and the
 provider fallback chain (`fallback_provider_ids`) remain provider-level
@@ -74,7 +78,7 @@ rotation. It never reads or mutates Claude Code or Codex CLI profile files.
 ## Save flow
 
 Providers page → `POST /api/v1/providers` with `api_key` →
-`server/src/modules/providers/providerCommandStore.ts`: encrypt API key
+`server/src/modules/providers/commands/store.ts`: encrypt API key
 → encode `secret_ref` → create/replace a `Credential` row → set
 `ModelProvider.credential_id` → create an enabled grant to the active space.
 Only the provider owner can edit provider metadata or API-key material.
@@ -87,9 +91,9 @@ DTOs expose only connection state and quota percentages/reset timestamps.
 
 ## Runtime resolution
 
-`server/src/modules/providers/providerCommandStore.ts` is the canonical
-resolver. It first resolves an enabled `model_provider_space_grants` row for
-the active run space, then loads the `Credential` → `resolveApiKeyFromSecretRef`
+`server/src/modules/providers/commands/store.ts` (`resolveProviderApiKey` /
+`resolveCredentialApiKey`) is the canonical resolver. It first resolves an enabled `model_provider_space_grants` row for
+the active run space, then loads the `Credential` → `decryptModelProviderApiKeySecretRefV1`
 → AES-GCM decrypt with the on-disk master key → returns plaintext. The
 decrypted key is passed to provider invocation **as a parameter** and is never
 written to `process.env` — per [ADR 0008](../decisions/0008-credential-channel-isolation.md)
@@ -97,8 +101,8 @@ it cannot leak into a CLI subprocess environment. The server store draws keys
 from the credential pool with rotation/cooldown state and the same master-key
 file. Exactly one side decides credential release: the server. Callers that
 need a key (the provider proxy, in-process completion) call the store in the
-same process. Internal HTTP routes must not return decrypted keys: a former
-`/internal/providers-credentials/credentials/runtime/resolve` hatch is gone.
+same process. Internal HTTP routes must not return decrypted keys. Do not
+add a route that returns a decrypted provider key.
 
 For a managed subscription provider, the same resolver verifies the invoking
 subject is the provider owner, decrypts the OAuth envelope in-process, refreshes
@@ -122,18 +126,25 @@ stated reason rather than receiving a URL it cannot resolve. The built-in host
 always uses the in-network listener. A remote run's
 lease carries the Host it was issued for, so revoking that Host revokes the
 lease rather than leaving it live until its TTL;
-[ADR 0008](../decisions/0008-credential-channel-isolation.md)'s 2026-08-24
-amendment records why that is a transport change rather than a
-channel-isolation change.
+[ADR 0008](../decisions/0008-credential-channel-isolation.md) §4 states the
+lease's real scope and why transport protection of the token is a deployment
+property rather than a channel-isolation one.
 
 Codex OpenAI-compatible CLI provider bindings follow the same invariant. For a
-selected Codex provider, the server writes only a run-scoped temporary
-`CODEX_HOME/config.toml`; its `experimental_bearer_token` is a short-lived
-provider-proxy lease token, not the ModelProvider API key. `CODEX_HOME` points
-at the run's temporary Codex profile directory. Login-backed Codex runs copy
-only `auth.json`; they do not link the user's shared Codex sessions or config.
-The proxy resolves the real key inside the server process and forwards the
-request to the configured `openai_compatible_base_url`.
+selected Codex provider the server renders (`runs/remoteProviderBinding.ts`),
+and the daemon writes into the Agent × container profile directory it owns
+(`packages/host-daemon/src/providerBinding.ts`), a `.codex/config.toml` whose
+`experimental_bearer_token` is the short-lived provider-proxy lease token —
+never the ModelProvider API key — plus the model catalog that config names;
+`CODEX_HOME` points at that profile. The directory is reused across Runs and
+never deleted, because it holds the runtime's conversation state; only the
+named files are rewritten per Run, so the previous Run's dead lease token
+remains on disk in a 0700 directory on the user's own machine. A bound Run
+gets no login link (`login_link: null`): the lease is its backend. An unbound,
+host-login Run gets a symlink (hard link on Windows) from its profile to the
+copy's own `auth.json` instead of a copy, so the daemon never reads the
+credential bytes. The proxy resolves the real key inside the server process
+and forwards the request to the configured `openai_compatible_base_url`.
 
 ## Invariants
 
@@ -160,4 +171,3 @@ The master key is a **local-file symmetric key**, not KMS/HSM-managed. Consequen
   carries decryptable material.
 - This is appropriate for a single self-hosted instance. KMS/HSM envelope
   encryption is not implemented.
-  ([unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §13)

@@ -62,7 +62,8 @@ runtime, Host, ModelProvider, model, or runtime-specific option.
 Host, concrete installation, workspace binding, and exactly one backend mode:
 
 - `runtime_native`: use the runtime's native state on the selected Host;
-- `model_provider`: use a same-Space ModelProvider and explicit model through
+- `model_provider`: use a Space-selectable ModelProvider (an enabled
+  `model_provider_space_grants` row for the Space) and explicit model through
   Rainver's existing proxy and short-lived lease.
 
 Profiles are stable when a new AgentVersion is published. A Run resolves and
@@ -95,7 +96,7 @@ orthogonal and is not used to infer execution kind.
 
 The optional Space-scoped provisioning template affects only future Agent
 creation. Absence means Server Runtime + OpenCode + `runtime_native`. Explicit
-provider mode validates same-Space Provider and model references. Changing or
+provider mode validates Space-selectable Provider and model references. Changing or
 removing the template never rewrites existing Profiles and never participates
 in dispatch fallback.
 

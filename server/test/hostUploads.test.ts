@@ -21,6 +21,9 @@ const FOLDER_A = "55555555-5555-4555-8555-555555555555";
 const AGENT = "66666666-6666-4666-8666-666666666666";
 const AGENT_VERSION = "77777777-7777-4777-8777-777777777777";
 const RUN_A = "88888888-8888-4888-8888-888888888888";
+const ATTEMPT_A = "88888888-8888-4888-8888-aaaaaaaaaaaa";
+const LAUNCH_A = "88888888-8888-4888-8888-bbbbbbbbbbbb";
+const LAUNCH_STALE = "88888888-8888-4888-8888-cccccccccccc";
 
 
 const db = useTestDatabase(import.meta.filename);
@@ -102,16 +105,25 @@ beforeEach(async () => {
      VALUES ($1, $2, $3, $4, 'agent', 'manual', 'succeeded', 'live', $5, $6, 'trusted_host', $7, $8, $8, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
     [RUN_A, SPACE, AGENT, AGENT_VERSION, FOLDER_A, "location-a", OWNER, now],
   );
+  await db.pool.query(
+    `INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, launch_id, started_at, created_at, updated_at)
+     VALUES ($1, $2, $3, 1, 'running', $4, $5, $5, $5)`,
+    [ATTEMPT_A, SPACE, RUN_A, LAUNCH_A, now],
+  );
 });
+
+function accepted<T>(outcome: { ok: true; result: T } | { ok: false; reason: string }): T {
+  if (!outcome.ok) throw new Error(`upload refused: ${outcome.reason}`);
+  return outcome.result;
+}
 
 describe("host upload authorization and artifact recording (ADR 0016 D7)", () => {
   it("lets a host record a diff artifact only for a Run bound to its own Folder", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const repo = new PgHostRepository(db.pool);
-    expect(await repo.runOwnedByHost(HOST_B, RUN_A)).toBeNull();
-    const run = await repo.runOwnedByHost(HOST_A, RUN_A);
-    expect(run).not.toBeNull();
-    const result = await repo.recordDiffArtifact(run!, OWNER, { diff: "diff --git a/x b/x\n+hi\n", truncated: false });
+    await expect(repo.recordDiffArtifact(HOST_B, OWNER, RUN_A, { launch_id: LAUNCH_A, diff: "x", truncated: false }))
+      .resolves.toEqual({ ok: false, reason: "run_not_on_host" });
+    const result = accepted(await repo.recordDiffArtifact(HOST_A, OWNER, RUN_A, { launch_id: LAUNCH_A, diff: "diff --git a/x b/x\n+hi\n", truncated: false }));
     expect(result.artifact_id).toBeTruthy();
 
     const row = await db.pool.query<{ artifact_type: string; visibility: string; content: string; project_folder_id: string }>(
@@ -133,9 +145,8 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
   it("truncates an oversized diff and records that it was truncated", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const repo = new PgHostRepository(db.pool);
-    const run = await repo.runOwnedByHost(HOST_A, RUN_A);
     const oversized = "x".repeat(2_000_000);
-    const result = await repo.recordDiffArtifact(run!, OWNER, { diff: oversized, truncated: false });
+    const result = accepted(await repo.recordDiffArtifact(HOST_A, OWNER, RUN_A, { launch_id: LAUNCH_A, diff: oversized, truncated: false }));
     const row = await db.pool.query<{ content: string; metadata_json: { truncated: boolean } }>(
       `SELECT content, metadata_json FROM artifacts WHERE id = $1`,
       [result.artifact_id],
@@ -147,13 +158,12 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
   it("records one artifact per output file, skipping oversized files and capping the count", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const repo = new PgHostRepository(db.pool);
-    const run = await repo.runOwnedByHost(HOST_A, RUN_A);
     const files = [
       { name: "report.md", content: "# done" },
       { name: "too-big.bin", content: "x".repeat(3_000_000) },
       ...Array.from({ length: 25 }, (_, i) => ({ name: `extra-${i}.txt`, content: "x" })),
     ];
-    const result = await repo.recordOutputArtifacts(run!, OWNER, files);
+    const result = accepted(await repo.recordOutputArtifacts(HOST_A, OWNER, RUN_A, { launch_id: LAUNCH_A, files }));
     expect(result.skipped).toContain("too-big.bin");
     // 20-file cap: report.md + too-big.bin(skipped for size, still counts
     // toward the slice) + 18 of the 25 "extra" files fit in the first 20.
@@ -170,8 +180,7 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
   it("lets a Project member who is not the dispatching host owner read the recorded diff (space_shared, not private)", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const hosts = new PgHostRepository(db.pool);
-    const run = await hosts.runOwnedByHost(HOST_A, RUN_A);
-    const { artifact_id: artifactId } = await hosts.recordDiffArtifact(run!, OWNER, { diff: "diff --git a/x b/x\n+hi\n", truncated: false });
+    const { artifact_id: artifactId } = accepted(await hosts.recordDiffArtifact(HOST_A, OWNER, RUN_A, { launch_id: LAUNCH_A, diff: "diff --git a/x b/x\n+hi\n", truncated: false }));
     if (!artifactId) throw new Error("expected a diff artifact");
 
     const artifacts = new PgArtifactRepository(db.pool, { artifactStorageRoot: "/tmp", sandboxRoot: "/tmp" });
@@ -202,16 +211,16 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
     );
     await db.pool.query(`UPDATE runs SET session_id = $2, status = 'running', output_json = NULL WHERE id = $1`, [RUN_A, sessionId]);
     const hosts = new PgHostRepository(db.pool);
-    const run = await hosts.runOwnedByHost(HOST_A, RUN_A);
 
     // No diff could be read, but the checkout could: nothing to review, and
     // the gate still learns where this Run left HEAD.
-    const result = await hosts.recordDiffArtifact(run!, OWNER, {
+    const result = accepted(await hosts.recordDiffArtifact(HOST_A, OWNER, RUN_A, {
+      launch_id: LAUNCH_A,
       diff: null,
       truncated: false,
       git_before: { branch: "main", head: "baseline" },
       git_after: { branch: "main", head: "agent-commit" },
-    });
+    }));
     expect(result.artifact_id).toBeNull();
     const context = await db.pool.query<{ last_run_git_branch: string; last_run_git_head: string; git_head: string }>(
       `SELECT last_run_git_branch, last_run_git_head, git_head FROM conversation_execution_contexts WHERE session_id = $1`,
@@ -253,14 +262,14 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
     );
     await db.pool.query(`UPDATE runs SET session_id = $2, status = 'running', output_json = NULL WHERE id = $1`, [RUN_A, sessionId]);
     const hosts = new PgHostRepository(db.pool);
-    const run = await hosts.runOwnedByHost(HOST_A, RUN_A);
     const branch = `feature/${"x".repeat(300)}`;
-    expect(HostRunDiffUploadSchema.safeParse({ diff: "diff --git a/f b/f\n", git_after: { branch, head: "h" } }).success).toBe(true);
-    const result = await hosts.recordDiffArtifact(run!, OWNER, {
+    expect(HostRunDiffUploadSchema.safeParse({ launch_id: LAUNCH_A, diff: "diff --git a/f b/f\n", git_after: { branch, head: "h" } }).success).toBe(true);
+    const result = accepted(await hosts.recordDiffArtifact(HOST_A, OWNER, RUN_A, {
+      launch_id: LAUNCH_A,
       diff: "diff --git a/f b/f\n",
       truncated: false,
       git_after: { branch, head: "agent-commit" },
-    });
+    }));
     expect(result.artifact_id).toBeTruthy();
     const context = await db.pool.query<{ last_run_git_head: string | null }>(
       `SELECT last_run_git_head FROM conversation_execution_contexts WHERE session_id = $1`,
@@ -290,15 +299,13 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
     const lastRun = async () => (await db.pool!.query<{ last_run_git_head: string | null }>(
       `SELECT last_run_git_head FROM conversation_execution_contexts WHERE session_id = $1`, [sessionId],
     )).rows[0]!.last_run_git_head;
-    const upload = async (before: { branch: string; head: string } | undefined) => {
-      const run = await hosts.runOwnedByHost(HOST_A, RUN_A);
-      await hosts.recordDiffArtifact(run!, OWNER, {
-        diff: null,
-        truncated: false,
-        ...(before ? { git_before: before } : {}),
-        git_after: { branch: "main", head: "someone-else" },
-      });
-    };
+    const upload = async (before: { branch: string; head: string } | undefined) => hosts.recordDiffArtifact(HOST_A, OWNER, RUN_A, {
+      launch_id: LAUNCH_A,
+      diff: null,
+      truncated: false,
+      ...(before ? { git_before: before } : {}),
+      git_after: { branch: "main", head: "someone-else" },
+    });
 
     // A read-only Run holds no lease: the HEAD it finds may be anyone's.
     await db.pool.query(
@@ -316,13 +323,73 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
     await upload(undefined);
     expect(await lastRun()).toBeNull();
 
-    // A late upload for a Run that already finished.
+    // A late upload for an attempt that already ended is refused outright.
     await db.pool.query(`UPDATE runs SET status = 'succeeded' WHERE id = $1`, [RUN_A]);
-    await upload({ branch: "main", head: "baseline" });
+    await db.pool.query(`UPDATE run_attempts SET status = 'succeeded' WHERE id = $1`, [ATTEMPT_A]);
+    await expect(upload({ branch: "main", head: "baseline" })).resolves.toEqual({ ok: false, reason: "attempt_ended" });
     expect(await lastRun()).toBeNull();
 
     // The Run's own record keeps what the host reported regardless.
     const recorded = await db.pool.query<{ head: string }>(`SELECT output_json->'workspace_after'->>'head' AS head FROM runs WHERE id = $1`, [RUN_A]);
     expect(recorded.rows[0]!.head).toBe("someone-else");
+  });
+
+  it("binds every upload to the Run's current open attempt and refuses the rest", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const hosts = new PgHostRepository(db.pool);
+    const diff = { diff: "diff --git a/x b/x\n+hi\n", truncated: false };
+    // A nonce no attempt carries: nothing to bind to.
+    await expect(hosts.recordDiffArtifact(HOST_A, OWNER, RUN_A, { launch_id: LAUNCH_STALE, ...diff }))
+      .resolves.toEqual({ ok: false, reason: "attempt_superseded" });
+    // The attempt was retried: attempt 1's nonce is no longer the current one.
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO run_attempts (id, space_id, run_id, attempt_number, status, launch_id, started_at, created_at, updated_at)
+       VALUES (gen_random_uuid()::varchar, $1, $2, 2, 'running', $3, $4, $4, $4)`,
+      [SPACE, RUN_A, LAUNCH_STALE, now],
+    );
+    await expect(hosts.recordDiffArtifact(HOST_A, OWNER, RUN_A, { launch_id: LAUNCH_A, ...diff }))
+      .resolves.toEqual({ ok: false, reason: "attempt_superseded" });
+    await expect(hosts.recordOutputArtifacts(HOST_A, OWNER, RUN_A, { launch_id: LAUNCH_A, files: [{ name: "a.txt", content: "x" }] }))
+      .resolves.toEqual({ ok: false, reason: "attempt_superseded" });
+    // The live attempt's own uploads land.
+    const live = accepted(await hosts.recordDiffArtifact(HOST_A, OWNER, RUN_A, { launch_id: LAUNCH_STALE, ...diff }));
+    expect(live.artifact_id).toBeTruthy();
+    // Once it has ended, its outputs are closed too.
+    await db.pool.query(`UPDATE run_attempts SET status = 'failed' WHERE launch_id = $1`, [LAUNCH_STALE]);
+    await expect(hosts.recordOutputArtifacts(HOST_A, OWNER, RUN_A, { launch_id: LAUNCH_STALE, files: [] }))
+      .resolves.toEqual({ ok: false, reason: "attempt_ended" });
+    const rows = await db.pool.query<{ count: string }>(`SELECT count(*)::text AS count FROM artifacts WHERE run_id = $1`, [RUN_A]);
+    expect(rows.rows[0]!.count).toBe("1");
+  });
+
+  it("answers a repeated or concurrent upload of one delivery with the artifact it already made", async (ctx) => {
+    if (!db.available || !db.pool) return ctx.skip();
+    const hosts = new PgHostRepository(db.pool);
+    const diff = { launch_id: LAUNCH_A, diff: "diff --git a/x b/x\n+hi\n", truncated: false, git_after: { branch: "main", head: "h1" } };
+    const [first, second] = await Promise.all([
+      hosts.recordDiffArtifact(HOST_A, OWNER, RUN_A, diff),
+      hosts.recordDiffArtifact(HOST_A, OWNER, RUN_A, diff),
+    ]);
+    expect(accepted(first!).artifact_id).toBe(accepted(second!).artifact_id);
+    const again = accepted(await hosts.recordDiffArtifact(HOST_A, OWNER, RUN_A, { ...diff, git_after: { branch: "main", head: "h2" } }));
+    expect(again.artifact_id).toBe(accepted(first!).artifact_id);
+    // The retry did not rewrite where the first delivery said HEAD stood.
+    const recorded = await db.pool.query<{ head: string }>(`SELECT output_json->'workspace_after'->>'head' AS head FROM runs WHERE id = $1`, [RUN_A]);
+    expect(recorded.rows[0]!.head).toBe("h1");
+
+    const files = [{ name: "report.md", content: "# done" }, { name: "notes.txt", content: "n" }];
+    const [outputsA, outputsB] = await Promise.all([
+      hosts.recordOutputArtifacts(HOST_A, OWNER, RUN_A, { launch_id: LAUNCH_A, files }),
+      hosts.recordOutputArtifacts(HOST_A, OWNER, RUN_A, { launch_id: LAUNCH_A, files }),
+    ]);
+    expect(accepted(outputsA!).artifact_ids).toEqual(accepted(outputsB!).artifact_ids);
+    const repeat = accepted(await hosts.recordOutputArtifacts(HOST_A, OWNER, RUN_A, { launch_id: LAUNCH_A, files }));
+    expect(repeat.artifact_ids).toEqual(accepted(outputsA!).artifact_ids);
+    const rows = await db.pool.query<{ artifact_type: string; count: string }>(
+      `SELECT artifact_type, count(*)::text AS count FROM artifacts WHERE run_id = $1 GROUP BY artifact_type ORDER BY artifact_type`,
+      [RUN_A],
+    );
+    expect(rows.rows).toEqual([{ artifact_type: "remote_diff", count: "1" }, { artifact_type: "remote_output", count: "2" }]);
   });
 });

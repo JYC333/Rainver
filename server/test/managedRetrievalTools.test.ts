@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
-import { resolveRetrievalToolBinding } from "../src/modules/runs/managedRetrievalTools.js";
+import { resolveRetrievalToolBinding, retrievalToolDomainsForChoice } from "../src/modules/runs/managedRetrievalTools.js";
 import { SystemActionDispatcher } from "../src/modules/systemActions/systemActionDispatcher.js";
 import type { AgentRunRecord } from "../src/modules/runs/repository.js";
 
@@ -187,5 +187,16 @@ describe("retrieval tool exposure by domain", () => {
     // decision record: an audit trail full of rows for calls that were never
     // decided is an audit trail nobody reads.
     expect(await policyRecords()).toEqual([]);
+  });
+});
+
+describe("retrieval tools follow the conversation's chosen domains", () => {
+  const all = ["knowledge", "memory", "project_public_summary", "source"] as const;
+  it("keeps every tool when no domain is chosen, and only the chosen domains' tools otherwise", () => {
+    expect(retrievalToolDomainsForChoice(all, [])).toEqual([...all]);
+    expect(retrievalToolDomainsForChoice(all, ["memory", "sources"])).toEqual(["memory", "source"]);
+    expect(retrievalToolDomainsForChoice(all, ["projects"])).toEqual(["project_public_summary"]);
+    // Inquiry is retrieved by the planner; it has no search tool of its own.
+    expect(retrievalToolDomainsForChoice(all, ["inquiry"])).toEqual([]);
   });
 });

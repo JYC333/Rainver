@@ -34,7 +34,7 @@ export async function isPasswordCompromised(
   return parseRangeBody(await transport.fetchRange(digest.slice(0, 5)), digest.slice(5));
 }
 
-/** The fixed HIBP endpoint still goes through Rainver's canonical egress guard. */
+/** The fixed HIBP endpoint goes through Rainver's canonical egress guard. */
 export function guardedHibpRangeTransport(guard?: OutboundGuard): HibpRangeTransport {
   return {
     async fetchRange(prefix: string): Promise<string> {

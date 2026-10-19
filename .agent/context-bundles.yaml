@@ -245,8 +245,8 @@ proposals:
     - server/src/modules/tasks
     - server/test/runMaterializationService.test.ts
 
-# Retained under its old name because callers know it: CLI execution isolation
-# is the host daemon's strict mode now, documented in modules/hosts.md.
+# Bundle id `sandbox`: CLI execution isolation is the host daemon's strict
+# mode, documented in modules/hosts.md.
 sandbox:
   docs:
     - .agent/modules/hosts.md

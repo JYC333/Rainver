@@ -211,7 +211,7 @@ describe('GraphView', () => {
       focusedNodeId: null,
       expandedClusterIds: [],
       hiddenKinds: [],
-      activeEdgeKinds: [],
+      hiddenEdgeKinds: [],
       currentLayout: 'force' as const,
       layoutSource: 'default' as const,
       pinnedNodes: {},
@@ -300,7 +300,7 @@ describe('GraphView', () => {
       focusedNodeId: null,
       expandedClusterIds: [],
       hiddenKinds: [],
-      activeEdgeKinds: [],
+      hiddenEdgeKinds: [],
       currentLayout: 'force' as const,
       layoutSource: 'default' as const,
       pinnedNodes: {},
@@ -431,7 +431,7 @@ describe('GraphView', () => {
       focusedNodeId: null,
       expandedClusterIds: [],
       hiddenKinds: [],
-      activeEdgeKinds: [],
+      hiddenEdgeKinds: [],
       currentLayout: 'force' as const,
       layoutSource: 'default' as const,
       pinnedNodes: {},
@@ -565,9 +565,27 @@ describe('GraphView', () => {
 
     rerender(<GraphView projection={projection} loading />)
 
-    expect(await screen.findByText('Loading graph...')).toBeInTheDocument()
+    expect(await screen.findByText('Loading graph…')).toBeInTheDocument()
     expect(graphMock.instances).toHaveLength(1)
     expect(graph.destroyed).toBe(false)
+  })
+
+  it('shows the layout the projection actually uses until the person picks one', () => {
+    // A global view comes back clustered, and the toolbar says that layout.
+    // Do not label it Force while the value is still the clustered one:
+    // choosing Force then changes nothing.
+    function Harness() {
+      const [viewState, setViewState] = useState(() => normalizeGraphViewState())
+      return (
+        <GraphView
+          projection={{ ...projection, layout: { mode: 'clustered' } }}
+          viewState={viewState}
+          onViewStateChange={(nextState) => setViewState(nextState)}
+        />
+      )
+    }
+    render(<Harness />)
+    expect(screen.getByRole('combobox', { name: /graph layout/i })).toHaveValue('clustered')
   })
 
   it('keeps toolbar layout selections while graph data is unavailable', async () => {
@@ -596,7 +614,7 @@ describe('GraphView', () => {
 
   it('shows loading, error, and empty states inside the shared surface', () => {
     const { rerender } = render(<GraphView projection={null} loading />)
-    expect(screen.getByText('Loading graph...')).toBeInTheDocument()
+    expect(screen.getByText('Loading graph…')).toBeInTheDocument()
 
     rerender(<GraphView projection={null} error="Graph failed" />)
     expect(screen.getByText('Graph failed')).toBeInTheDocument()

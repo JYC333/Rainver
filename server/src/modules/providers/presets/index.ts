@@ -5,7 +5,7 @@ import { OPENAI_PRESETS } from "./openai.js";
 import { ZEROENTROPY_PRESETS } from "./zeroentropy.js";
 import type { ProviderPreset } from "./types.js";
 
-export const PROVIDER_PRESETS: ProviderPreset[] = [
+const PROVIDER_PRESETS: ProviderPreset[] = [
   ...OPENAI_PRESETS,
   ...COHERE_PRESETS,
   ...ZEROENTROPY_PRESETS,

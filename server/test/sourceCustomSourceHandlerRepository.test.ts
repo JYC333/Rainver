@@ -7,12 +7,12 @@ import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSo
 import { HttpError } from "../src/modules/routeUtils/common.js";
 
 // Real-PostgreSQL integration tests for PgCustomSourceHandlerRepository.
-// Repository-level tests with a fake Queryable cannot catch the SQL bugs
-// that only surface on the real schema (CHECK constraints, the
-// space_id + source_connection_id same-space gate, FK behavior). These run
-// the actual SQL against a throwaway Postgres (testcontainers) loaded with
+// A fake Queryable does not enforce the schema. These lock the CHECK
+// constraints, the space_id + source_connection_id same-space gate, and FK
+// behavior, through `useTestDatabase`.
 //
-// Skips gracefully when Docker is unavailable so `pnpm test` runs everywhere.
+// The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 const SPACE_A = "space-a";
 const SPACE_B = "space-b";
@@ -110,6 +110,8 @@ describe("PgCustomSourceHandlerRepository (real Postgres)", () => {
 
   it("listHandlerVersions returns only versions for the requested connection, newest first", async () => {
     if (!db.available || !repo) return;
+    // The connections' owner: reading what hangs off a connection takes its read decision.
+    await insertMembership(SPACE_A, "user-1", "owner");
     const connId = randomUUID();
     const otherConnId = randomUUID();
     await insertConnection(SPACE_A, connId);
@@ -121,12 +123,14 @@ describe("PgCustomSourceHandlerRepository (real Postgres)", () => {
     await insertHandlerVersion(SPACE_A, connId, v2, 2, "active");
     await insertHandlerVersion(SPACE_A, otherConnId, otherV1, 1, "active");
 
-    const result = await repo!.listHandlerVersions({ spaceId: SPACE_A, userId: "u" }, connId, { limit: 10, offset: 0 });
+    const result = await repo!.listHandlerVersions({ spaceId: SPACE_A, userId: "user-1" }, connId, { limit: 10, offset: 0 });
     expect(result.items.map((i: { id: string }) => i.id)).toEqual([v2, v1]);
   });
 
   it("getHandlerVersion 404s when the version belongs to a different connection", async () => {
     if (!db.available || !repo) return;
+    // The connections' owner: reading what hangs off a connection takes its read decision.
+    await insertMembership(SPACE_A, "user-1", "owner");
     const connId = randomUUID();
     const otherConnId = randomUUID();
     await insertConnection(SPACE_A, connId);
@@ -134,19 +138,21 @@ describe("PgCustomSourceHandlerRepository (real Postgres)", () => {
     const versionId = randomUUID();
     await insertHandlerVersion(SPACE_A, otherConnId, versionId, 1, "active");
 
-    const result = await repo!.getHandlerVersion({ spaceId: SPACE_A, userId: "u" }, connId, versionId);
+    const result = await repo!.getHandlerVersion({ spaceId: SPACE_A, userId: "user-1" }, connId, versionId);
     expect(result).toBeNull();
   });
 
   it("getHandlerSummary reports the active version pinned via source_connections.active_handler_version_id", async () => {
     if (!db.available || !repo) return;
+    // The connections' owner: reading what hangs off a connection takes its read decision.
+    await insertMembership(SPACE_A, "user-1", "owner");
     const connId = randomUUID();
     await insertConnection(SPACE_A, connId);
     const v1 = randomUUID();
     await insertHandlerVersion(SPACE_A, connId, v1, 1, "active");
     await db.pool.query(`UPDATE source_connections SET active_handler_version_id = $1 WHERE id = $2`, [v1, connId]);
 
-    const summary = await repo!.getHandlerSummary({ spaceId: SPACE_A, userId: "u" }, connId);
+    const summary = await repo!.getHandlerSummary({ spaceId: SPACE_A, userId: "user-1" }, connId);
     expect(summary.active_handler_version?.id).toBe(v1);
     expect(summary.latest_handler_run).toBeNull();
   });

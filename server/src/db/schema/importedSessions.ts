@@ -154,7 +154,7 @@ export const importedSessionRecords = pgTable("imported_session_records", {
 }, (table): PgTableExtraConfigValue[] => [
 	unique("uq_imported_session_records_key").on(table.importedSessionId, table.recordKey),
 	index("ix_imported_session_records_session_sequence").using("btree", table.importedSessionId.asc().nullsLast(), table.sequence.asc().nullsLast()),
-	// Phase 2 selects unextracted records across a Project; the partial index
+	// Selecting unextracted records across a Project; the partial index
 	// keeps that from scanning every record ever imported.
 	index("ix_imported_session_records_unextracted").using("btree", table.spaceId.asc().nullsLast(), table.importedSessionId.asc().nullsLast()).where(sql`extracted_in IS NULL`),
 	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "imported_session_records_space_id_fkey" }).onDelete("cascade"),

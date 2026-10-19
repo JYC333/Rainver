@@ -41,11 +41,8 @@ export function usageFromAcp(value: Record<string, unknown>): CanonicalUsage | n
   // reports a total that already includes them inside `output`, so adding the
   // bucket again overcounts by exactly that many. A real Codex turn:
   // input 24620 (112428 raw − 87808 cached), cached 87808, output 1312,
-  // reasoning 946, total 113740 — buckets sum to 113740, and the old
-  // single-equation check expected 114686 and rejected the turn. Since the
-  // whole turn was then failed, every Codex run producing reasoning tokens
-  // (which GPT-5-class models essentially always do) was reported as a
-  // failure despite having answered.
+  // reasoning 946, total 113740 — buckets sum to 113740. Do not expect
+  // 114686. That would fail every Codex run that produces reasoning tokens.
   const reasoning = usage.reasoning_tokens ?? 0;
   return usage.total_tokens === buckets + reasoning || usage.total_tokens === buckets
     ? usage

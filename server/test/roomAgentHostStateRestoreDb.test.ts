@@ -107,8 +107,8 @@ describe("finding what a re-added Agent restores", () => {
   it("offers the profile back even when no workspace archive is available", async (ctx) => {
     if (!db.available) return ctx.skip();
     // The common case: this Agent left while others stayed, so only its
-    // profile was archived. Requiring a workspace archive here is what made
-    // every such profile permanently unrestorable and swept after 30 days.
+    // profile was archived. Do not require a workspace archive here. That
+    // would leave the profile unrestorable and swept after 30 days.
     await closedConversationThread("managed");
     await reportWorkspaceArchive(false);
 

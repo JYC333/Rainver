@@ -1,7 +1,7 @@
 import { SpaceAssistantService } from "../agents/spaceAssistantService.js";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
-import { startSchedulerRegistry, type ScheduledTask } from "./registry.js";
+import { startSchedulerRegistry, throwIfAnyFailed, type ScheduledTask } from "./registry.js";
 import { scanDailyReportsAndEnqueue } from "../dailyReports/scheduler.js";
 import { scanAutomationsAndFire } from "../automations/scheduler.js";
 import { automaticBackupIsDue, BackupService, runScheduledBackup } from "../backups/service.js";
@@ -65,8 +65,8 @@ export function startBackgroundServices(
     },
     {
       // A deployer that dies mid-update leaves a `running` job nothing will
-      // ever finish; without this the single-active invariant would block
-      // every later update until someone edited the row by hand.
+      // ever finish. Do not leave that job active. The single-active invariant
+      // would block every later update until someone edited the row by hand.
       name: "deployment_lost_deployer_sweep",
       intervalSeconds: 300,
       runOnStart: false,
@@ -209,18 +209,21 @@ export function startBackgroundServices(
       },
     });
 
+    // One instance for the scheduler's lifetime: it carries the scan cursor
+    // from one tick to the next.
+    const executionGraphRecovery = new ExecutionGraphRecoveryService(
+      getDbPool(config.databaseUrl!),
+      config,
+      OperationalAlertService.fromConfig(config),
+      log,
+    );
     tasks.push({
       name: "execution_graph_recovery",
       intervalSeconds: 60,
       runOnStart: true,
       awaitRunOnStart: false,
       run: async () => {
-        const result = await new ExecutionGraphRecoveryService(
-          getDbPool(config.databaseUrl!),
-          config,
-          OperationalAlertService.fromConfig(config),
-          log,
-        ).reconcileActive();
+        const result = await executionGraphRecovery.reconcileActive();
         if (result.plans + result.workflows > 0 || result.failures > 0) {
           log?.info(`[scheduler] execution graph recovery plans=${result.plans} workflows=${result.workflows} failures=${result.failures}`);
         }
@@ -292,7 +295,7 @@ export function startBackgroundServices(
       name: "daily_report_scheduler",
       intervalSeconds: config.dailyReportSchedulerIntervalSeconds,
       run: async () => {
-        const enqueued = await scanDailyReportsAndEnqueue(config, worker.queue);
+        const enqueued = await scanDailyReportsAndEnqueue(config);
         if (enqueued > 0) log?.info(`[scheduler] daily_report enqueued ${enqueued} job(s)`);
       },
       runOnStart: true,
@@ -390,7 +393,8 @@ export function startBackgroundServices(
       // reconciler cadence checks whether the configured interval is due.
       intervalSeconds: 300,
       // A dump legitimately runs far longer than the default reporting
-      // deadline; without this a normal backup would be reported as a stall.
+      // deadline. Do not use that deadline here. A normal backup would be
+      // reported as a stall.
       timeoutSeconds: 3600,
       run: async () => {
         const settings = await readInstanceOperationsPolicy(config);
@@ -413,16 +417,19 @@ export function startBackgroundServices(
   }
 
   const operationalAlerts = OperationalAlertService.fromConfig(config);
-  const scheduler = startSchedulerRegistry(tasks, log, async (taskName, error) => {
+  // The alert names the task, the kind of failure and the log reference; the
+  // exception text stays in the server log, which only the instance operator
+  // reads. An alert reaches every Space owner.
+  const scheduler = startSchedulerRegistry(tasks, log, async (failure) => {
     if (!operationalAlerts) return;
     await operationalAlerts.emitInstance({
       kind: "scheduler_task_failed",
-      title: `Scheduler task failed: ${taskName}`,
-      message: `Scheduler task ${taskName} raised an exception: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-      dedupeKey: `scheduler_task_failed:${taskName}`,
-      payload: { task_name: taskName },
+      title: `Scheduler task failed: ${failure.task_name}`,
+      message: failure.kind === "timeout"
+        ? `Scheduler task ${failure.task_name} did not complete within its time limit (log reference ${failure.reference}).`
+        : `Scheduler task ${failure.task_name} failed (log reference ${failure.reference}).`,
+      dedupeKey: `scheduler_task_failed:${failure.task_name}`,
+      payload: { task_name: failure.task_name, error_kind: failure.kind, error_reference: failure.reference },
     });
   });
 
@@ -448,8 +455,16 @@ export async function reconcileProjectResearch(db: ReturnType<typeof getDbPool>,
       ORDER BY COALESCE(completed_at, created_at) ASC, id ASC
       LIMIT 100`,
   );
+  // One run or Space that keeps failing (its rollback also undoes its mark,
+  // so it stays first in line) must not stop the rest of the Instance; the
+  // pass still fails so the scheduler reports it.
+  const failures: unknown[] = [];
   for (const run of unreconciledRuns.rows) {
-    await orchestrator.reconcilePostProcessingRun(run.space_id, run.id);
+    try {
+      await orchestrator.reconcilePostProcessingRun(run.space_id, run.id);
+    } catch (error) {
+      failures.push(error);
+    }
   }
 
   const spaces = await db.query<{ space_id: string }>(
@@ -458,7 +473,14 @@ export async function reconcileProjectResearch(db: ReturnType<typeof getDbPool>,
       WHERE kind='research' AND status IN ('active','waiting_review')
       ORDER BY space_id`,
   );
-  for (const row of spaces.rows) await orchestrator.reconcileAll(row.space_id);
+  for (const row of spaces.rows) {
+    try {
+      await orchestrator.reconcileAll(row.space_id);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  throwIfAnyFailed(failures, "Project Research reconciliation");
 }
 
 export async function pruneContentAccessLogs(

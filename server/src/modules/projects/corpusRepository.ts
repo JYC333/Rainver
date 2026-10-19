@@ -12,17 +12,18 @@ import {
   withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
+  escapeLikePattern,
 } from "../routeUtils/common.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 import { sourceItemReadableClause, sourceSnapshotReadableForEvidenceClause } from "../sources/sourceItemAccess.js";
 import { assertProjectReadable, assertProjectWriter, lockActiveProjectForMutation } from "./access.js";
 import { materializePassingProjectCorpusItems } from "./corpusMaterialization.js";
 
-export type ProjectCorpusRole = "candidate" | "reference" | "primary" | "related" | "background";
-export type ProjectCorpusStatus = "active" | "archived";
-export type ProjectCorpusTriageStatus = "new" | "relevant" | "maybe" | "excluded" | "included";
-export type ProjectCorpusReadStatus = "unread" | "skimmed" | "read" | "discussed";
-export type ProjectCorpusRelevance = "relevant" | "maybe" | "not_relevant";
+type ProjectCorpusRole = "candidate" | "reference" | "primary" | "related" | "background";
+type ProjectCorpusStatus = "active" | "archived";
+type ProjectCorpusTriageStatus = "new" | "relevant" | "maybe" | "excluded" | "included";
+type ProjectCorpusReadStatus = "unread" | "skimmed" | "read" | "discussed";
+type ProjectCorpusRelevance = "relevant" | "maybe" | "not_relevant";
 
 interface ProjectCorpusItemRow {
   id: string;
@@ -146,7 +147,7 @@ function readableCorpusItemFrom(viewerParam: string): string {
           )`;
 }
 
-export interface ProjectCorpusBackfillResult {
+interface ProjectCorpusBackfillResult {
   project_id: string;
   source_items: number;
   source_objects: number;
@@ -172,9 +173,9 @@ export class ProjectCorpusRepository {
    * How much collected material and extracted evidence this Project holds,
    * counted through the same readability predicate the corpus list uses.
    *
-   * These are Project-owned rows, so the Overview reads them here rather than
-   * through the entity summary registry, which exists to keep the Project
-   * module out of *other* domains' tables.
+   * These are Project-owned rows, so the Overview reads them here. Do not
+   * route them through the entity summary registry. That registry keeps the
+   * Project module out of other domains' tables.
    */
   async entityCounts(
     identity: SpaceUserIdentity,
@@ -277,7 +278,7 @@ export class ProjectCorpusRepository {
       clauses.push(`pci.role = $${params.length}`);
     }
     if (filters.q) {
-      params.push(`%${escapeLike(filters.q)}%`);
+      params.push(`%${escapeLikePattern(filters.q)}%`);
       clauses.push(`(
         so.title ILIKE $${params.length} ESCAPE '\\'
         OR COALESCE(so.summary, '') ILIKE $${params.length} ESCAPE '\\'
@@ -373,22 +374,25 @@ export class ProjectCorpusRepository {
                      evidence_id = COALESCE(EXCLUDED.evidence_id, project_corpus_items.evidence_id),
                      source_connection_id = COALESCE(EXCLUDED.source_connection_id, project_corpus_items.source_connection_id),
                      source_decision_id = COALESCE(EXCLUDED.source_decision_id, project_corpus_items.source_decision_id),
-                     role = EXCLUDED.role,
+                     -- An existing row keeps what the request does not mention,
+                     -- as an update would: re-adding an item must not wipe its
+                     -- screening, reading progress or role.
+                     role = CASE WHEN $25::boolean THEN EXCLUDED.role ELSE project_corpus_items.role END,
                      status = EXCLUDED.status,
-                     triage_status = EXCLUDED.triage_status,
+                     triage_status = CASE WHEN EXCLUDED.triage_confirmed_by_user THEN EXCLUDED.triage_status ELSE project_corpus_items.triage_status END,
                      triage_confirmed_by_user = CASE
                        WHEN EXCLUDED.triage_confirmed_by_user THEN true
                        ELSE project_corpus_items.triage_confirmed_by_user
                      END,
-                     read_status = EXCLUDED.read_status,
-                     relevance = EXCLUDED.relevance,
-                     confidence = EXCLUDED.confidence,
-                     reason = EXCLUDED.reason,
-                     metadata_json = EXCLUDED.metadata_json,
+                     read_status = CASE WHEN $26::boolean THEN EXCLUDED.read_status ELSE project_corpus_items.read_status END,
+                     relevance = CASE WHEN $27::boolean THEN EXCLUDED.relevance ELSE project_corpus_items.relevance END,
+                     confidence = CASE WHEN $28::boolean THEN EXCLUDED.confidence ELSE project_corpus_items.confidence END,
+                     reason = CASE WHEN $29::boolean THEN EXCLUDED.reason ELSE project_corpus_items.reason END,
+                     metadata_json = CASE WHEN $30::boolean THEN EXCLUDED.metadata_json ELSE project_corpus_items.metadata_json END,
                      updated_at = EXCLUDED.updated_at,
                      last_reviewed_at = COALESCE(EXCLUDED.last_reviewed_at, project_corpus_items.last_reviewed_at),
                      last_read_at = CASE
-                       WHEN EXCLUDED.read_status <> project_corpus_items.read_status THEN EXCLUDED.updated_at
+                       WHEN $31::boolean AND EXCLUDED.read_status <> project_corpus_items.read_status THEN EXCLUDED.updated_at
                        ELSE project_corpus_items.last_read_at
                      END
        RETURNING id`,
@@ -417,12 +421,19 @@ export class ProjectCorpusRepository {
         now,
         readStatus,
         now,
+        body.role !== undefined,
+        body.read_status !== undefined,
+        body.relevance !== undefined,
+        body.confidence !== undefined,
+        body.reason !== undefined,
+        body.metadata_json !== undefined,
+        body.read_status !== undefined,
       ],
     );
-    const corpusItemId = result.rows[0]!.id;
+    const insertedOrUpdatedId = result.rows[0]!.id;
     if (target.provenanceSourceItemId) {
       await insertCorpusItemSourceProvenance(this.db, {
-        corpusItemId,
+        corpusItemId: insertedOrUpdatedId,
         spaceId: identity.spaceId,
         projectId,
         sourceItemId: target.provenanceSourceItemId,
@@ -430,9 +441,10 @@ export class ProjectCorpusRepository {
       });
     }
     if (target.sourceItemId) {
-      await materializePassingProjectCorpusItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: target.sourceItemId, corpusItemId });
+      await materializePassingProjectCorpusItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: target.sourceItemId, corpusItemId: insertedOrUpdatedId });
       await upsertProjectCorpusObjectsFromSourceItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: target.sourceItemId });
     }
+    const corpusItemId = await mergedCorpusItemId(this.db, identity.spaceId, projectId, insertedOrUpdatedId, target.sourceItemId);
     const item = await this.getById(identity, projectId, corpusItemId);
     if (!item) throw new HttpError(500, "Failed to upsert project corpus item");
     return projectCorpusItemOut(item);
@@ -475,9 +487,9 @@ export class ProjectCorpusRepository {
     const now = new Date().toISOString();
     // read_status is passed twice (once for the plain SET, once for the CASE
     // comparison) rather than reusing one parameter
-    // number: this pg version/driver combination raises "inconsistent types
+    // number. This pg version/driver combination raises "inconsistent types
     // deduced for parameter" when the same parameter is referenced more
-    // than once in a statement (reproduced independently of this change).
+    // than once in a statement.
     await this.db.query(
       `UPDATE project_corpus_items
           SET role = $4,
@@ -515,7 +527,11 @@ export class ProjectCorpusRepository {
       await materializePassingProjectCorpusItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: current.source_item_id, corpusItemId });
       await upsertProjectCorpusObjectsFromSourceItems(this.db, { spaceId: identity.spaceId, projectId, sourceItemId: current.source_item_id });
     }
-    const updated = await this.getById(identity, projectId, corpusItemId);
+    const updated = await this.getById(
+      identity,
+      projectId,
+      await mergedCorpusItemId(this.db, identity.spaceId, projectId, corpusItemId, current.source_item_id),
+    );
     if (!updated) throw new HttpError(404, "Project corpus item not found");
     return projectCorpusItemOut(updated);
   }
@@ -1064,6 +1080,16 @@ async function upsertProjectCorpusObjectsFromSourceItems(
            ON provenance.corpus_item_id = duplicates.duplicate_id
        ON CONFLICT (corpus_item_id, source_item_id) DO NOTHING
        RETURNING corpus_item_id
+     ), moved_signals AS (
+       -- Evidence Signals cascade with their Corpus item; deleting the
+       -- duplicate below would silently take them, and a Candidate's grounds
+       -- with them.
+       UPDATE inquiry_evidence_signals signal
+          SET corpus_item_id = duplicates.canonical_id
+         FROM duplicates
+        WHERE signal.corpus_item_id = duplicates.duplicate_id
+          AND signal.space_id = duplicates.space_id
+       RETURNING signal.id
      ), merged AS (
        UPDATE project_corpus_items canonical
           SET triage_status = CASE
@@ -1312,6 +1338,16 @@ async function upsertProjectCorpusObjectsFromEvidence(
            ON provenance.corpus_item_id = duplicates.duplicate_id
        ON CONFLICT (corpus_item_id, source_item_id) DO NOTHING
        RETURNING corpus_item_id
+     ), moved_signals AS (
+       -- Evidence Signals cascade with their Corpus item; deleting the
+       -- duplicate below would silently take them, and a Candidate's grounds
+       -- with them.
+       UPDATE inquiry_evidence_signals signal
+          SET corpus_item_id = duplicates.canonical_id
+         FROM duplicates
+        WHERE signal.corpus_item_id = duplicates.duplicate_id
+          AND signal.space_id = duplicates.space_id
+       RETURNING signal.id
      ), merged AS (
        UPDATE project_corpus_items canonical
           SET triage_status = CASE
@@ -1421,7 +1457,45 @@ async function syncProjectCorpusSourceDecisions(
   return result.rowCount ?? 0;
 }
 
-async function archiveCorpusSourceItemsWithoutActiveLinks(
+/**
+ * Syncing a SourceItem row can merge it into the Project's row for the
+ * Reference the SourceItem resolves to, deleting the row itself; the caller
+ * then answers with that Reference row.
+ */
+async function mergedCorpusItemId(
+  db: Queryable,
+  spaceId: string,
+  projectId: string,
+  corpusItemId: string,
+  sourceItemId: string | null | undefined,
+): Promise<string> {
+  if (!sourceItemId) return corpusItemId;
+  const result = await db.query<{ id: string }>(
+    `SELECT COALESCE(
+       (SELECT id FROM project_corpus_items WHERE space_id = $1 AND project_id = $2 AND id = $3),
+       (SELECT canonical.id
+          FROM source_item_references sir
+          JOIN project_corpus_items canonical
+            ON canonical.space_id = sir.space_id
+           AND canonical.project_id = $5
+           AND canonical.object_id = sir.reference_object_id
+         WHERE sir.space_id = $4 AND sir.source_item_id = $6
+         LIMIT 1),
+       $7
+     ) AS id`,
+    [spaceId, projectId, corpusItemId, spaceId, projectId, sourceItemId, corpusItemId],
+  );
+  return result.rows[0]?.id ?? corpusItemId;
+}
+
+/**
+ * Archives the Source-backed corpus rows that no active Project Source link
+ * still backs. Routing calls it after each link change; the binding
+ * close paths call it after archiving a binding's links, so a paused or
+ * deleted binding takes its corpus rows with it (corpus `status` is link
+ * lifecycle).
+ */
+export async function archiveCorpusSourceItemsWithoutActiveLinks(
   db: Queryable,
   input: { spaceId: string; sourceItemId?: string | null; projectId?: string | null },
 ): Promise<number> {
@@ -1435,6 +1509,8 @@ async function archiveCorpusSourceItemsWithoutActiveLinks(
         AND pci.evidence_id IS NULL
         AND pci.source_item_id IS NOT NULL
         AND pci.status = 'active'
+        -- A person added this item by hand; no Source link ever backed it.
+        AND pci.added_by_user_id IS NULL
         AND ($2::varchar IS NULL OR pci.source_item_id = $2)
         AND ($3::varchar IS NULL OR pci.project_id = $3)
         AND NOT EXISTS (
@@ -1574,6 +1650,3 @@ function confidenceValue(value: unknown): number | null {
   return confidence;
 }
 
-function escapeLike(value: string): string {
-  return value.replace(/[\\%_]/g, (match) => `\\${match}`);
-}

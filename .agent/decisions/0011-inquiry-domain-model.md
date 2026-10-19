@@ -60,8 +60,10 @@ never `space_objects` rows.
 ### 3. Cross-aggregate relationships use `object_relations`
 
 Business edges between aggregate roots — Thread structure, Thread-to-Note,
-Experiment-to-Thread, Decision-to-Thread — are `object_relations` rows with
-declared link types and per-link-type governance (ADR 0012 decision 3).
+Decision-to-Thread — are `object_relations` rows with declared link types and
+per-link-type governance (ADR 0012 decision 3). An Experiment's primary
+hypothesis Thread stays the `experiment_definitions.primary_hypothesis_thread_id`
+FK column: a single required pointer, not a set of links.
 `inquiry_thread_relations` and `inquiry_thread_note_links` are removed; their
 `decomposes_into` and `proposes` values join the canonical vocabulary. The
 "narrowly owned domain join table" exception applies only when an edge's

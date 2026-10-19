@@ -81,7 +81,7 @@ function formatCount(value: number, locale: Locale) {
   return new Intl.NumberFormat(locale).format(value)
 }
 
-export function shortId(id: string | null | undefined) {
+function shortId(id: string | null | undefined) {
   return id ? `${id.slice(0, 8)}...` : '-'
 }
 
@@ -547,7 +547,9 @@ export function TargetConfigDialog({
         }
       }
       const constraintRows = stringListFromText(constraints)
-      if (constraintRows.length > 0) metadata.constraints = constraintRows
+      // An edit sends an empty list to clear: the server merges metadata
+      // shallowly, so a missing key would keep the old constraints.
+      if (constraintRows.length > 0 || isEdit) metadata.constraints = constraintRows
       else delete metadata.constraints
       if (isEdit) {
         await onSubmit({

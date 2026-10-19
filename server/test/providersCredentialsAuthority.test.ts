@@ -77,10 +77,12 @@ function fakeStore(): ProviderCommandStore {
         provider: {
           id: providerId ?? "provider-1",
           space_id: "space-1",
+          home_space_id: "space-1",
           name: "Main",
           provider_type: "openai",
           base_url: "https://api.example.test/v1",
-          network_profile_id: null,
+          deployment: "cloud" as const,
+      network_profile_id: null,
           default_model: "gpt-4o-mini",
           available_models: ["gpt-4o-mini"],
           enabled: true,

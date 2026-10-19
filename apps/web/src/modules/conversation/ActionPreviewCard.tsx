@@ -9,7 +9,7 @@ import type { ChatActionPreview } from '../../types/api'
 export type ActionDecision = 'accept' | 'reject'
 
 /*
- * Not AI Elements' `Confirmation` (plan P2), deliberately.
+ * Not AI Elements' `Confirmation`, deliberately.
  *
  * That component is a presentational shell — a title, a request line, an
  * accepted and a rejected state, two buttons. This card is those things plus

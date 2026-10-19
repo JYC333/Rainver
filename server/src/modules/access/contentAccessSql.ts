@@ -7,7 +7,7 @@ import {
   type ContentVisibility,
 } from "./contentAccessTypes.js";
 
-export interface ContentAccessSqlOptions {
+interface ContentAccessSqlOptions {
   /**
    * Whether Space oversight can widen this predicate. Defaults to true for
    * ordinary viewer-facing reads. Pass `false` for queries whose output
@@ -184,7 +184,7 @@ function contentOversightEligibleSql(spaceExpr: string, userExpr: string): strin
 }
 
 /** True when the viewer's oversight mode for this Space is `content` or `full` (full-level read). */
-export function contentOversightLevelAtLeastFullSql(spaceExpr: string, userExpr: string): string {
+function contentOversightLevelAtLeastFullSql(spaceExpr: string, userExpr: string): string {
   return `(
     EXISTS (
       SELECT 1 FROM spaces content_oversight_level_space
@@ -228,9 +228,8 @@ function contentScopeSql(
   if (definition.projectColumn) {
     const projectExpr = `${alias}.${definition.projectColumn}`;
     // The share term is appended only when the resource declares one. An
-    // undeclared resource must produce the predicate it produced before this
-    // existed — not `OR false`, which would be equivalent but would put a new
-    // branch in every plan for every content read in the system.
+    // undeclared resource has no share term. Do not append `OR false`: that
+    // puts a new branch in every plan for every content read.
     const sharedSql = definition.projectShare
       ? ` OR ${projectShareReadAccessSql(definition.projectShare, alias, userExpr)}`
       : "";
@@ -250,7 +249,7 @@ function contentScopeSql(
 }
 
 /**
- * True when the resource is shared into some Project the viewer can read (U8).
+ * True when the resource is shared into some Project the viewer can read.
  *
  * This widens the *scope* half of the gate and nothing else: `visibility`,
  * `access_level` and `content_access_grants` are separate conjuncts evaluated
@@ -419,14 +418,14 @@ export function assertSqlIdentifier(value: string, label: string): void {
  * visibility boundary that holds against them too (ADR 0018 decision 3). A read
  * of a Run, or of a row whose only reason to exist is a Run — a Proposal, an
  * Artifact, a Task's Run list, an evaluation, a work event — must carry both
- * terms, or the boundary holds on the detail page and leaks on whichever list
- * forgot.
+ * terms. Do not carry only one. The detail page and every list have to
+ * agree, or a list shows a Run the detail page then denies.
  *
- * The Task, Board, work-view, updates-feed, Home and agent-group surfaces are
- * on these. Readers outside that sweep still carry the content predicate alone
- * — several of them return artifact bodies — and are the next place to look;
- * `projects`, `proposals`, `runs` and `artifacts` write the same pair by hand
- * beside their own predicates rather than calling these.
+ * The Task, Board, work-view, updates-feed, Home and agent-group surfaces
+ * use these. Other readers carry the content predicate alone, and several
+ * of them return artifact bodies. `projects`, `proposals`, `runs`
+ * and `artifacts` write the same pair beside their own predicates rather
+ * than calling these.
  *
  * These live here rather than in `runs` because every domain that shows a Run's
  * output reads them: tasks, projectWork, projects, proposals, plans, Home. A

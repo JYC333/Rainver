@@ -1,13 +1,13 @@
 import type { PromptMessage } from "@rainver/protocol";
 
-// The only rendering engine prompt manifests declare today (content.rendering.engine
-// is always "plain" — see the M0 inventory). `{variable_name}` placeholders are
-// substituted from the caller-supplied variables map; anything else is left as-is
-// so a missing variable is visible in the rendered output rather than silently
-// dropped.
+// Prompt manifests declare one rendering engine, `plain`
+// (`PromptRenderingEngineSchema`). `{variable_name}` placeholders are
+// substituted from the caller-supplied variables map. Anything else is left
+// as-is, so a missing variable stays visible in the rendered output. Do not
+// add a second engine here.
 const VARIABLE_PATTERN = /\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g;
 
-export interface RenderedTemplate {
+interface RenderedTemplate {
   rendered: string;
   missingVariables: string[];
 }
@@ -24,7 +24,7 @@ export function renderPromptTemplate(input: string, variables: Record<string, un
   return { rendered, missingVariables: [...missing] };
 }
 
-export interface RenderedMessages {
+interface RenderedMessages {
   messages: PromptMessage[];
   missingVariables: string[];
 }

@@ -50,9 +50,9 @@ beforeEach(async () => {
      )`,
     [now],
   );
-  // A CLI profile names a host and a copy on it: since ADR 0016 there is no
-  // server-side installation for one to fall back to, so a profile without a
-  // host is offered as no backend at all.
+  // A CLI profile names a host and a copy on it. There is no server-side
+  // installation to fall back to, so a profile without a host is offered as
+  // no backend at all.
   await db.pool.query(
     `INSERT INTO machines (id, owner_user_id, display_name, device_kind, created_at, updated_at)
      VALUES ('machine-1', NULL, 'Instance', 'server', $1, $1)`,
@@ -379,6 +379,40 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
       agent_id: "agent-1",
     })).resolves.toMatchObject({
       binding_id: binding.binding_id,
+      runtime_profile_id: "runtime-cli",
+      runtime_key: "claude_code",
+    });
+  });
+
+  it("shows every member the runtime pinned when the Conversation was initialized", async (ctx) => {
+    if (!db.available || !repository || !db.pool) return ctx.skip();
+    await repository.resolveBinding({
+      space_id: "space-1",
+      user_id: "user-1",
+      session_id: "session-1",
+      agent_id: "agent-1",
+      requested: { runtime_profile_id: "runtime-cli" },
+    });
+    await expect(repository.findBinding("space-1", "user-2", "session-1", "agent-1")).resolves.toBeNull();
+    await db.pool.query(
+      `INSERT INTO host_threads (
+         id, space_id, execution_host_id, workspace_mode, session_id, agent_id,
+         container_kind, runtime_key, runtime_installation, status,
+         created_by_user_id, created_at, updated_at
+       ) VALUES (
+         'thread-shared', 'space-1', 'host-1', 'managed', 'session-1', 'agent-1',
+         'conversation', 'claude_code', 'managed:1.0.0', 'active', 'user-1', now(), now()
+       )`,
+    );
+    await db.pool.query(
+      `INSERT INTO conversation_execution_contexts (
+         id, space_id, session_id, execution_host_id, primary_workspace_mode,
+         state, initialized_at, initialized_by_user_id, created_at, updated_at
+       ) VALUES ('context-shared', 'space-1', 'session-1', 'host-1', 'managed',
+         'initialized', now(), 'user-1', now(), now())`,
+    );
+
+    await expect(repository.findBinding("space-1", "user-2", "session-1", "agent-1")).resolves.toEqual({
       runtime_profile_id: "runtime-cli",
       runtime_key: "claude_code",
     });

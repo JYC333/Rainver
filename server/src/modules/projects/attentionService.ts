@@ -19,13 +19,13 @@ interface UserStateRow {
   pinned_at: unknown;
 }
 
-// Built-in adapter over the existing generic `project_operations` state
-// machine: any operation waiting for a human decision is an attention item.
-// This proves the registry mechanism end to end; Inquiry/Experiment/Decision
-// register their own adapters at module initialization.
-// Read from the protocol's own vocabulary rather than restated here: a class
-// the wire contract knows and this guard does not would be rejected at
-// runtime with no way to tell which of the two was wrong.
+// Built-in adapter over the generic `project_operations` state machine: any
+// operation waiting for a human decision is an attention item. Inquiry,
+// Experiment, and Decision register their own adapters at module
+// initialization. Read from the protocol's own vocabulary. Do not restate
+// the class list here. A class the wire contract knows and this guard does
+// not would be rejected at runtime with no way to tell which of the two was
+// wrong.
 const ATTENTION_CLASSES: ReadonlySet<string> = new Set<string>(PROJECT_ATTENTION_CLASSES);
 
 const projectOperationsAttentionAdapter: ProjectAttentionAdapter = {
@@ -52,9 +52,7 @@ const projectOperationsAttentionAdapter: ProjectAttentionAdapter = {
       due_at: null,
       blocking_refs: [],
       // The Research Area's Runs tab renders the operation's own progress
-      // row, including its Checkpoint decide controls. (The Operations Area
-      // that used to is retired: everything else on it was a Space-level
-      // object filtered to the Project.)
+      // row, including its Checkpoint decide controls.
       action_descriptors: [{ label: "Review", href: `/projects/${projectId}/research?tab=runs&open=${row.id}` }],
       href: `/projects/${projectId}/research?tab=runs&open=${row.id}`,
     }));

@@ -29,8 +29,8 @@ import { fitTextToTokenBudget } from "../usage/modelCatalog.js";
  * transaction: nothing can dispatch into the thread between the session being
  * retired and the fresh turn being built.
  */
-export const AGENT_HANDOFF_PROMPT_KEY = "agent.handoff";
-export const AGENT_HANDOFF_ARTIFACT_TYPE = "agent_handoff";
+const AGENT_HANDOFF_PROMPT_KEY = "agent.handoff";
+const AGENT_HANDOFF_ARTIFACT_TYPE = "agent_handoff";
 export const HANDOFF_TOOL_ALLOWANCE: readonly SystemActionId[] = ["handoff.write" as SystemActionId];
 /** A handoff is bounded to this share of the model's context window. */
 const HANDOFF_WINDOW_SHARE = 0.04;
@@ -41,7 +41,7 @@ export function handoffBudgetTokens(contextWindowTokens: number): number {
 }
 
 /** What a handoff turn records on its Run, read back at execution and admission. */
-export interface HandoffTurn {
+interface HandoffTurn {
   thread_id: string;
   context_tokens: number;
   budget_tokens: number;
@@ -51,7 +51,7 @@ export interface HandoffTurn {
  * What the person's parked turn carries so it can be rebuilt as a fresh
  * session: the fresh prompt built at dispatch, split where the handoff goes.
  */
-export interface HandoffRotation {
+interface HandoffRotation {
   handoff_run_id: string;
   thread_id: string;
   fresh_prompt_head: string;
@@ -172,7 +172,7 @@ interface HandoffInput {
   open_questions?: string;
 }
 
-export function renderHandoffDocument(input: HandoffInput, budgetTokens: number): string {
+function renderHandoffDocument(input: HandoffInput, budgetTokens: number): string {
   const sections: Array<[string, string | undefined]> = [
     ["Goal", input.goal],
     ["Decisions taken", input.decisions],

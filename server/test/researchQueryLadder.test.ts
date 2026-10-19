@@ -14,9 +14,8 @@ describe("ResearchQueryLadderBuilder", () => {
     expect(initial).toMatchObject({ sequence: 1, direction: "initial" });
     expect(initial.semanticQuery.qualifiers).toHaveLength(1);
     expect(afterFirstBroaden).toMatchObject({ sequence: 2, direction: "broaden" });
-    // Dropping the one AND'd qualifier and adding an OR'd expansion in the
-    // same step used to jump a query's hit count by two orders of magnitude
-    // in production. The first broaden only adds expansion vocabulary.
+    // Do not drop the AND'd qualifier in the same step that adds an OR'd
+    // expansion. The first broaden only adds expansion vocabulary.
     expect(afterFirstBroaden.semanticQuery.qualifiers).toHaveLength(1);
     expect(afterFirstBroaden.semanticQuery.expansions.length).toBeGreaterThan(initial.semanticQuery.expansions.length);
     // Only once there's no more expansion vocabulary left does broaden reach
@@ -91,11 +90,9 @@ describe("ResearchQueryLadderBuilder", () => {
     expect(builder.next(narrowPrevious, intent, "narrow", "openalex").semanticQuery.core).toHaveLength(2);
   });
 
-  // plainQuery (openalex, semantic_scholar) has no boolean operators at all —
-  // every field gets flattened into one space-joined keyword string, so an
-  // "expansion" is exactly as narrowing as a qualifier and never broadens.
-  // Verified in production: three consecutive "broaden" steps for openalex
-  // kept adding words and hits kept dropping (1094 -> 360 -> 24 -> 24).
+  // plainQuery (openalex, semantic_scholar) has no boolean operators at all.
+  // Every field is flattened into one space-joined keyword string. Do not
+  // treat an expansion as a broaden. It narrows the same way a qualifier does.
   it("openalex/semantic_scholar broaden by dropping the qualifier instead of adding a useless expansion", () => {
     const builder = new ResearchQueryLadderBuilder();
     const intent = semanticIntent();

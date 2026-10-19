@@ -1,7 +1,8 @@
 /**
- * Tests for the catalog module — the first server-owned read surface beyond the
- * system descriptors. Uses a temp-dir catalog fixture; never reads the repo's
- * real catalog so assertions stay stable as built-in definitions evolve.
+ * Tests for the catalog module, a server-owned read of on-disk manifests,
+ * separate from the system descriptors. Uses a temp-dir catalog fixture;
+ * never reads the repo's real catalog so assertions stay stable as built-in
+ * definitions evolve.
  */
 
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";

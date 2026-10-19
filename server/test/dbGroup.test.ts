@@ -1,6 +1,11 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { withDedicatedSessionAdvisoryLock } from "../src/db/advisoryLock.js";
+import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("dbMigrationOps", () => {
   const repoRoot = join(import.meta.dirname, "..", "..");
@@ -59,6 +64,36 @@ describe("dbMigrationOps", () => {
       // has no client tools — so its absence must fall through to the
       // container rather than count as a failed verification.
       expect(migrate).toContain("command -v pg_restore");
+    });
+
+    it.skipIf(process.platform === "win32")("refuses to migrate when pg_dump fails after writing a readable archive head", () => {
+      // pg_dump writes the custom-format header and table of contents before
+      // any table data, so a dump that dies mid-data is non-empty and passes
+      // `pg_restore -l`. Only pg_dump's own exit status says it failed.
+      const dir = mkdtempSync(join(tmpdir(), "rainver-migrate-backup-"));
+      try {
+        const bin = join(dir, "bin");
+        mkdirSync(bin);
+        writeFileSync(join(bin, "pg_dump"), "#!/bin/sh\nprintf 'PGDMP partial archive'\nexit 1\n", { mode: 0o755 });
+        writeFileSync(join(bin, "pg_restore"), "#!/bin/sh\ncat >/dev/null 2>&1 || true\nexit 0\n", { mode: 0o755 });
+        const script = join(repoRoot, "ops/scripts/db/migrate.sh");
+        const harness = [
+          "set -euo pipefail",
+          `eval "$(sed -n '/^pre_migration_backup_host() {/,/^}/p; /^ensure_pre_migration_backup() {/,/^}/p' '${script}')"`,
+          "resolve_host_database_url() { MIGRATION_DATABASE_URL=postgresql://unused; }",
+          "ensure_pre_migration_backup",
+          "echo MIGRATING",
+        ].join("\n");
+        const result = spawnSync("bash", ["-c", harness], {
+          env: { PATH: `${bin}:${process.env.PATH ?? ""}`, MODE_ROOT: dir, RUN_MODE: "host", MODE: "prod" },
+          encoding: "utf8",
+        });
+        expect(result.status).not.toBe(0);
+        expect(result.stdout).not.toContain("MIGRATING");
+        expect(result.stdout).not.toContain("pre-migration backup written");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     it("keeps the private dev setup outside the repo and imports it after migration", () => {
@@ -131,5 +166,40 @@ describe("dbOwnerRoleCutover", () => {
         "env -u DEBUG docker compose",
       );
     });
+  });
+});
+
+describe("advisoryLockDb", () => {
+  const db = useTestDatabase(`${import.meta.filename}#advisoryLockDb`, { max: 2 });
+
+  it("survives losing the dedicated lock connection while the work runs", async () => {
+    const lockKey = `test-lock:${randomUUID()}`;
+    const result = await withDedicatedSessionAdvisoryLock(db.pool, lockKey, async () => {
+      // `pg_locks` is cluster-wide. Scope the query to this database.
+      // Unscoped, it would pick whichever backend of a concurrently running
+      // file held an advisory lock and kill it.
+      const holder = await db.pool.query<{ pid: number }>(
+        `SELECT pid FROM pg_locks
+          WHERE locktype = 'advisory' AND granted AND pid <> pg_backend_pid()
+            AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
+      );
+      const pid = holder.rows[0]!.pid;
+      await db.pool.query(`SELECT pg_terminate_backend($1)`, [pid]);
+      // Wait until the backend is gone; each round trip also lets the lock
+      // client read the termination off its socket.
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const alive = await db.pool.query(`SELECT 1 FROM pg_stat_activity WHERE pid = $1`, [pid]);
+        if (alive.rowCount === 0) break;
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+      return "done";
+    });
+    expect(result).toBe("done");
+    // The lock went with its session, so the key is free again.
+    const free = await db.pool.query<{ acquired: boolean }>(
+      `SELECT pg_try_advisory_lock(hashtextextended($1::text, 0)) AS acquired`,
+      [lockKey],
+    );
+    expect(free.rows[0]?.acquired).toBe(true);
   });
 });

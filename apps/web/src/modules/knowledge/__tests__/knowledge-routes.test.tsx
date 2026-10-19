@@ -100,6 +100,11 @@ vi.mock('../../../api/client', () => {
     objectSchemaApi: {
       listKinds: vi.fn().mockResolvedValue(emptyPage),
     },
+    ApiRequestError: class ApiRequestError extends Error {
+      constructor(message: string, readonly status: number, readonly code?: string, readonly payload?: Record<string, unknown>) {
+        super(message)
+      }
+    },
   }
 })
 
@@ -152,8 +157,10 @@ import { KNOWLEDGE_SECTIONS } from '../KnowledgeSectionHeader'
 import { readLastKnowledgeSection, rememberKnowledgeSection } from '../utils'
 import { MODULE_REGISTRY } from '../../registry'
 import { RAIL_ITEMS } from '../../../core/navigation'
-import { notesApi, notesCollectionsApi } from '../../../api/client'
+import { ApiRequestError, notesApi, notesCollectionsApi } from '../../../api/client'
 import type { EntityLink, Note } from '../../../types/api'
+import i18n from '../../../i18n'
+import { fmt } from '../utils'
 
 function LocationProbe() {
   const loc = useLocation()
@@ -213,7 +220,7 @@ function makeLink(overrides: Partial<EntityLink> = {}): EntityLink {
     target_id: 'note-beta',
     link_type: 'related_to',
     confidence: null,
-    status: 'accepted',
+    status: 'active',
     created_by_user_id: null,
     created_at: '',
     ...overrides,
@@ -231,11 +238,9 @@ describe('Knowledge section switcher catalog', () => {
     expect(KNOWLEDGE_SECTIONS.map(s => s.label)).toEqual(['Knowledge Home', 'Notes', 'Wiki', 'Sources', 'Cards', 'Domains'])
   })
 
-  // Domains is a focus-area surface parked under Knowledge because the section
-  // taxonomy is functional and has no home for a life-area grouping yet. Its
-  // placement is a stopgap; that it is *reachable* is not — this renders the
-  // route because the defect it guards against (a splat mount with no nested
-  // Routes) is invisible to an assertion on the catalog constant.
+  // Domains is a focus-area surface under Knowledge, and it has its own route.
+  // A splat mount with no nested Routes is invisible to an assertion on the
+  // catalog constant.
   it('renders Domains at its own route', async () => {
     expect(KNOWLEDGE_SECTIONS.find(s => s.id === 'domains')?.to).toBe('/knowledge/domains')
     renderAt('/spaces/personal-1/knowledge/domains')
@@ -300,6 +305,30 @@ describe('Knowledge routing', () => {
   it('renders Knowledge Home at /knowledge/home', async () => {
     renderAt('/spaces/personal-1/knowledge/home')
     expect(await screen.findByText('Continue working')).toBeInTheDocument()
+  })
+
+  it('reads Knowledge Home, Domains, the notes tree and dates in Chinese', async () => {
+    await i18n.changeLanguage('zh-CN')
+    try {
+      const home = renderAt('/spaces/personal-1/knowledge/home')
+      expect(await screen.findByText('继续工作')).toBeInTheDocument()
+      expect(screen.getByText('0 条待审阅')).toBeInTheDocument()
+      expect(screen.getByText('共 0 篇 · 已归档 0 篇')).toBeInTheDocument()
+      home.unmount()
+
+      const domains = renderAt('/spaces/personal-1/knowledge/domains')
+      expect(await screen.findByText('还没有领域')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '创建' })).toBeInTheDocument()
+      domains.unmount()
+
+      renderAt('/spaces/personal-1/knowledge/notes')
+      expect(await screen.findByRole('button', { name: 'Client Research 的文件夹操作' })).toBeInTheDocument()
+
+      expect(fmt('2026-10-14T12:00:00Z')).toMatch(/2026年10月14日/)
+      expect(fmt(null)).toBe('-')
+    } finally {
+      await i18n.changeLanguage('en')
+    }
   })
 
   it('renders the Notes section shell at /knowledge/notes', async () => {
@@ -522,6 +551,93 @@ describe('Knowledge routing', () => {
     }
   })
 
+  it('persists open tabs under the key it reads them back from', async () => {
+    const beta = makeNote({ id: 'note-beta', title: 'Beta note' })
+    vi.mocked(notesApi.get).mockResolvedValue(beta)
+    try {
+      renderAt('/spaces/personal-1/knowledge/notes/note-beta')
+      await screen.findByRole('tablist', { name: 'Open notes' })
+      // The same scope key the page reads on its next mount: a reload or a
+      // trip in and out of a hoist must find the tabs it just wrote.
+      await waitFor(() =>
+        expect(JSON.parse(sessionStorage.getItem('rainver:notes-tabs:personal-1:all') ?? '[]')).toEqual(['note-beta']))
+    } finally {
+      vi.mocked(notesApi.get).mockResolvedValue(null as unknown as Note)
+    }
+  })
+
+  it('shows the results of the latest search, not of a slower earlier one', async () => {
+    const draft = makeNote({ id: 'note-draft', title: 'Draft outline' })
+    const design = makeNote({ id: 'note-design', title: 'Design doc' })
+    let answerFirst: (value: { items: Note[]; total: number; limit: number; offset: number }) => void = () => {}
+    vi.mocked(notesApi.list).mockImplementation(async (params?: { q?: string }) => {
+      if (params?.q === 'd') return new Promise(resolve => { answerFirst = resolve })
+      if (params?.q === 'de') return { items: [design], total: 1, limit: 200, offset: 0 }
+      return { items: [], total: 0, limit: 200, offset: 0 }
+    })
+    try {
+      renderAt('/spaces/personal-1/knowledge/notes')
+      const search = await screen.findByPlaceholderText('Search notes')
+      fireEvent.change(search, { target: { value: 'd' } })
+      fireEvent.change(search, { target: { value: 'de' } })
+      expect(await screen.findByText('Design doc')).toBeInTheDocument()
+
+      answerFirst({ items: [draft], total: 1, limit: 200, offset: 0 })
+      await waitFor(() => expect(notesApi.list).toHaveBeenCalledWith(expect.objectContaining({ q: 'd' })))
+      expect(screen.getByText('Design doc')).toBeInTheDocument()
+      expect(screen.queryByText('Draft outline')).not.toBeInTheDocument()
+    } finally {
+      vi.mocked(notesApi.list).mockReset()
+      vi.mocked(notesApi.list).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
+    }
+  })
+
+  it('keeps the notes a bulk delete did not reach and drops the ones it did', async () => {
+    const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }], updated_at: '2025-04-01T00:00:00Z' })
+    const beta = makeNote({ id: 'note-beta', title: 'Beta note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }], updated_at: '2025-03-01T00:00:00Z' })
+    const gamma = makeNote({ id: 'note-gamma', title: 'Gamma note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }], updated_at: '2025-02-01T00:00:00Z' })
+    const deleted = new Set<string>()
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    vi.mocked(notesApi.get).mockImplementation(async id => (
+      id === 'note-alpha' ? alpha : id === 'note-beta' ? beta : gamma
+    ))
+    // The server's view: whatever was deleted stays deleted on the next read.
+    vi.mocked(notesApi.list).mockImplementation(async () => {
+      const items = [alpha, beta, gamma].filter(note => !deleted.has(note.id))
+      return { items, total: items.length, limit: 200, offset: 0 }
+    })
+    vi.mocked(notesApi.delete).mockImplementation(async id => {
+      if (id === 'note-beta') throw new Error('Beta is locked')
+      deleted.add(id)
+      return { ...(id === 'note-alpha' ? alpha : gamma), status: 'deleted', deleted_at: '2026-06-09T00:00:00Z' }
+    })
+
+    try {
+      renderAt('/spaces/personal-1/knowledge/notes')
+
+      const tree = await screen.findByLabelText('Notes organization')
+      fireEvent.click(await within(tree).findByRole('button', { name: 'Alpha note' }))
+      await waitFor(() =>
+        expect(screen.getByTestId('loc')).toHaveTextContent('/spaces/personal-1/knowledge/notes/note-alpha'))
+      const gammaTreeItem = within(tree).getByRole('button', { name: 'Gamma note' })
+      fireEvent.click(gammaTreeItem, { shiftKey: true })
+      fireEvent.keyDown(gammaTreeItem, { key: 'Delete' })
+
+      await waitFor(() => expect(notesApi.delete).toHaveBeenCalledTimes(3))
+      // Alpha and Gamma are gone on the server; the view says so. Beta is not.
+      await waitFor(() => expect(within(tree).queryByRole('button', { name: 'Alpha note' })).not.toBeInTheDocument())
+      expect(within(tree).queryByRole('button', { name: 'Gamma note' })).not.toBeInTheDocument()
+      expect(within(tree).getByRole('button', { name: 'Beta note' })).toBeInTheDocument()
+      expect(confirmSpy).not.toHaveBeenCalled()
+    } finally {
+      confirmSpy.mockRestore()
+      vi.mocked(notesApi.get).mockResolvedValue(null as unknown as Note)
+      vi.mocked(notesApi.list).mockReset()
+      vi.mocked(notesApi.list).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
+      vi.mocked(notesApi.delete).mockReset()
+    }
+  })
+
   it('deletes notes from the tree with Delete or the right-click menu', async () => {
     const alpha = makeNote({ id: 'note-alpha', title: 'Alpha note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }] })
     const beta = makeNote({ id: 'note-beta', title: 'Beta note', placements: [{ collection_id: 'col-inbox', sort_order: 0 }] })
@@ -564,6 +680,43 @@ describe('Knowledge routing', () => {
       vi.mocked(notesApi.get).mockResolvedValue(null as unknown as Note)
       vi.mocked(notesApi.list).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
       vi.mocked(notesApi.delete).mockReset()
+    }
+  })
+
+  /**
+   * The server refuses to take a note out of the last folder its own Project
+   * can see it in, and names the two things that help. The page turns that
+   * into a dialog offering exactly those two actions, not an error toast.
+   */
+  it('offers move-or-delete when the server refuses to remove a note\'s last owning entry', async () => {
+    const shared = makeNote({
+      id: 'note-shared',
+      title: 'Shared note',
+      placements: [{ collection_id: 'col-inbox', sort_order: 0 }, { collection_id: 'col-custom', sort_order: 0 }],
+    })
+    vi.mocked(notesApi.list).mockResolvedValue({ items: [shared], total: 1, limit: 200, offset: 0 })
+    vi.mocked(notesApi.removePlacement).mockRejectedValueOnce(new ApiRequestError(
+      '"Shared note" must stay in at least one folder; move it to another folder, or delete the note',
+      422,
+      'note_owning_entry_required',
+      { code: 'note_owning_entry_required', note_id: 'note-shared', note_title: 'Shared note', owning_project_id: null, actions: ['move_to_folder', 'delete_note'], affected_note_count: 1 },
+    ))
+
+    try {
+      renderAt('/spaces/personal-1/knowledge/notes')
+      const tree = await screen.findByLabelText('Notes organization')
+      const [row] = await within(tree).findAllByRole('button', { name: 'Shared note' })
+      fireEvent.contextMenu(row!, { clientX: 12, clientY: 24 })
+      const menu = await screen.findByRole('menu', { name: 'Shared note actions' })
+      fireEvent.click(within(menu).getByRole('menuitem', { name: 'Remove from this folder' }))
+
+      await waitFor(() => expect(notesApi.removePlacement).toHaveBeenCalledWith('note-shared', 'col-inbox'))
+      const dialog = await screen.findByRole('dialog', { name: 'Keep the note in a folder' })
+      expect(within(dialog).getByText(/must stay in at least one folder/)).toBeInTheDocument()
+      expect(within(dialog).getByRole('button', { name: 'Delete note' })).toBeInTheDocument()
+      expect(within(dialog).getByRole('button', { name: 'Move' })).toBeDisabled()
+    } finally {
+      vi.mocked(notesApi.list).mockResolvedValue({ items: [], total: 0, limit: 200, offset: 0 })
     }
   })
 
@@ -745,8 +898,8 @@ describe('Knowledge routing', () => {
   })
 
   /**
-   * S2's substance (U4). Hoisting that filtered only what is drawn, while a
-   * search still spanned every Project, would be the wrong half of the feature.
+   * Hoisting must narrow search as well as what is drawn. Filtering only
+   * what is drawn, while search still spans every Project, is the wrong half.
    */
   it('narrows the tree and the note search to the hoisted subtree', async () => {
     const user = userEvent.setup({ delay: null })

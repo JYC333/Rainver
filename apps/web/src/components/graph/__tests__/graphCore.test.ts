@@ -47,11 +47,23 @@ describe('graph core pure helpers', () => {
 
   it('filters hidden node kinds and inactive edge kinds', () => {
     const theme = createGraphTheme('light')
-    const viewState = normalizeGraphViewState({ hiddenKinds: ['claim'], activeEdgeKinds: ['cluster_contains'] })
+    const viewState = normalizeGraphViewState({ hiddenKinds: ['claim'], hiddenEdgeKinds: ['supports'] })
     const data = mapProjectionToRenderData(projection, { theme, viewState, zoom: 1 })
 
     expect(data.nodes.map((node) => node.id)).toEqual(['cluster:note', 'n1'])
     expect(data.edges.map((edge) => edge.id)).toEqual(['e2'])
+  })
+
+  it('shows no edges once every edge kind is switched off, and brings back only the kind switched on', () => {
+    const theme = createGraphTheme('light')
+    let state = normalizeGraphViewState()
+    for (const kind of ['supports', 'cluster_contains']) {
+      state = graphViewReducer(state, { type: 'set-edge-kind-active', kind, active: false })
+    }
+    expect(mapProjectionToRenderData(projection, { theme, viewState: state, zoom: 1 }).edges).toEqual([])
+
+    state = graphViewReducer(state, { type: 'set-edge-kind-active', kind: 'cluster_contains', active: true })
+    expect(mapProjectionToRenderData(projection, { theme, viewState: state, zoom: 1 }).edges.map((edge) => edge.id)).toEqual(['e2'])
   })
 
   it('builds selected neighborhood state without mutating projection semantics', () => {
@@ -61,6 +73,17 @@ describe('graph core pure helpers', () => {
     expect(states.n1).toContain('active')
     expect(states.n2).not.toContain('faded')
     expect(states['cluster:note']).not.toContain('faded')
+  })
+
+  it('sets state only on the elements drawn, so hidden kinds and edge filters keep highlighting working', () => {
+    // G6 refuses a whole state batch that names an element it does not hold.
+    const theme = createGraphTheme('light')
+    const state = normalizeGraphViewState({ hoveredNodeId: 'n1', hiddenKinds: ['claim'], hiddenEdgeKinds: ['supports'] })
+    const drawn = mapProjectionToRenderData(projection, { theme, viewState: state, zoom: 1 })
+    const states = buildElementStateMap(projection, state)
+
+    expect(Object.keys(states).sort()).toEqual([...drawn.nodes, ...drawn.edges].map((element) => element.id).sort())
+    expect(states.n1).toContain('active')
   })
 
   it('builds targeted interaction label patches for hovered and selected nodes', () => {
@@ -76,7 +99,7 @@ describe('graph core pure helpers', () => {
     const withLayout = graphViewReducer(base, { type: 'set-layout', layout: 'radial' })
     const pinned = graphViewReducer(withLayout, { type: 'pin-node', nodeId: 'n1', point: { x: 10, y: 12 } })
     const hidden = graphViewReducer(pinned, { type: 'toggle-kind', kind: 'claim' })
-    const edgeFiltered = graphViewReducer(hidden, { type: 'set-active-edge-kinds', kinds: ['supports'] })
+    const edgeFiltered = graphViewReducer(hidden, { type: 'set-edge-kind-active', kind: 'supports', active: false })
 
     expect(edgeFiltered.currentLayout).toBe('radial')
     expect(edgeFiltered.layoutSource).toBe('user')
@@ -85,7 +108,7 @@ describe('graph core pure helpers', () => {
       currentLayout: 'radial',
       layoutSource: 'user',
       hiddenKinds: ['claim'],
-      activeEdgeKinds: ['supports'],
+      hiddenEdgeKinds: ['supports'],
       pinnedNodes: { n1: { x: 10, y: 12 } },
     })
   })
@@ -95,7 +118,7 @@ describe('graph core pure helpers', () => {
       selectedNodeId: 123,
       expandedClusterIds: 'cluster:note',
       hiddenKinds: ['note', false, 'claim'],
-      activeEdgeKinds: null,
+      hiddenEdgeKinds: null,
       currentLayout: 'sideways',
       rendererMode: 'svg',
       pinnedNodes: {
@@ -108,7 +131,7 @@ describe('graph core pure helpers', () => {
     expect(state.selectedNodeId).toBeNull()
     expect(state.expandedClusterIds).toEqual([])
     expect(state.hiddenKinds).toEqual(['note', 'claim'])
-    expect(state.activeEdgeKinds).toEqual([])
+    expect(state.hiddenEdgeKinds).toEqual([])
     expect(state.currentLayout).toBe('force')
     expect(state.layoutSource).toBe('default')
     expect(state.rendererMode).toBe('canvas')
@@ -118,18 +141,18 @@ describe('graph core pure helpers', () => {
   it('preserves stable view state references during normalization', () => {
     const expandedClusterIds = ['cluster:note']
     const hiddenKinds = ['claim']
-    const activeEdgeKinds = ['supports']
+    const hiddenEdgeKinds = ['supports']
     const pinnedNodes = { n1: { x: 10, y: 12 } }
     const state = normalizeGraphViewState({
       expandedClusterIds,
       hiddenKinds,
-      activeEdgeKinds,
+      hiddenEdgeKinds,
       pinnedNodes,
     })
 
     expect(state.expandedClusterIds).toBe(expandedClusterIds)
     expect(state.hiddenKinds).toBe(hiddenKinds)
-    expect(state.activeEdgeKinds).toBe(activeEdgeKinds)
+    expect(state.hiddenEdgeKinds).toBe(hiddenEdgeKinds)
     expect(state.pinnedNodes).toBe(pinnedNodes)
   })
 
@@ -214,7 +237,7 @@ describe('graph core pure helpers', () => {
       { type: 'd3-force', clusterBy: 'node.componentId' },
     ])
     expect(resolveGraphLayout(largeProjection, normalizeGraphViewState()).layout).toMatchObject({ type: 'grid' })
-    expect(resolveGraphLayout(largeProjection, normalizeGraphViewState()).warning).toContain('worker layout budget')
+    expect(resolveGraphLayout(largeProjection, normalizeGraphViewState()).warning).toBe('worker_budget')
     for (const currentLayout of ['circular', 'radial', 'concentric', 'clustered'] as const) {
       expect(resolveGraphLayout(largeProjection, normalizeGraphViewState({ currentLayout })).layout).toMatchObject({
         type: 'grid',
@@ -256,7 +279,7 @@ describe('graph core pure helpers', () => {
       })),
     }
     expect(graphScalePolicy(denseProjection)).toMatchObject({ edgeBudgetExceeded: true })
-    expect(resolveGraphLayout(denseProjection, normalizeGraphViewState()).warning).toContain('edge budget')
+    expect(resolveGraphLayout(denseProjection, normalizeGraphViewState()).warning).toBe('edge_budget')
   })
 
   it('keeps synthetic debug projections available up to the local benchmark size', () => {
@@ -269,6 +292,6 @@ describe('graph core pure helpers', () => {
       nodeBudgetExceeded: true,
       edgeBudgetExceeded: true,
     })
-    expect(graphScalePolicy(synthetic).warning).toContain('node and edge budgets')
+    expect(graphScalePolicy(synthetic).warning).toBe('node_and_edge_budget')
   })
 })

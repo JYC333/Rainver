@@ -10,11 +10,13 @@ import { loadConfig, type ServerConfig } from "../src/config.js";
 import { CustomSourceCreateFlowService } from "../src/modules/sources/customSources/customSourceCreateFlowService.js";
 import { CustomSourceRepairService } from "../src/modules/sources/customSources/customSourceRepairService.js";
 import { HttpError } from "../src/modules/routeUtils/common.js";
+import { PgCustomSourceHandlerRepository } from "../src/modules/sources/customSources/customSourceHandlerRepository.js";
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
+import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
 
-// Real-Postgres integration tests for Phase 9 (repair/rollback), matching
-// the project-wide preference for real DB tests over fakes.
-// Skips gracefully when Docker is unavailable.
+// Real-Postgres integration tests for repair and rollback.
+// The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 const SPACE_A = "space-a";
 const IDENTITY = { spaceId: SPACE_A, userId: "user-1" };
@@ -235,6 +237,24 @@ describe("CustomSourceRepairService.repairHandler", () => {
     expect(applied.result).toMatchObject({ status: "active", handler_version_id: result.handler_version.id });
   });
 
+  it("ends the repair when its proposal is rejected, so the connection can be repaired again", async () => {
+    if (!db.available) return;
+    const { connectionId } = await createActiveConnection();
+    const result = await repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML });
+    if (result.status !== "pending_approval") throw new Error("expected a repair proposal");
+
+    const rejected = await PgProposalApplyService.fromConfig(config!).reject(result.proposal_id, IDENTITY);
+    expect(rejected?.status).toBe("rejected");
+
+    const connectionRow = await db.pool.query<{ repair_status: string }>(
+      `SELECT repair_status FROM source_connections WHERE id = $1`,
+      [connectionId],
+    );
+    expect(connectionRow.rows[0]?.repair_status).toBe("repair_required");
+    await expect(repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML }))
+      .resolves.toMatchObject({ status: "pending_approval" });
+  });
+
   it("routes a permission-broadening repair through custom_source_policy_delta, not custom_source_repair_activation", async () => {
     if (!db.available) return;
     const { connectionId, activeVersionId } = await createActiveConnection();
@@ -331,5 +351,46 @@ describe("CustomSourceRepairService.rollbackHandler", () => {
     await expect(
       repairService!.rollbackHandler({ spaceId: "space-b", userId: "user-2" }, connectionId, {}),
     ).rejects.toThrow(HttpError);
+  });
+});
+
+describe("Custom Source connection authority", () => {
+  const MEMBER = { spaceId: SPACE_A, userId: "user-member" };
+
+  it("lets readers read a connection's handlers and only its owner or a Space admin change them", async () => {
+    if (!db.available) return;
+    const { connectionId } = await createActiveConnection();
+    await upsertCustomSourceSpacePolicy(db.pool, SPACE_A, { same_envelope_repair_auto_apply: true });
+    const repaired = await repairService!.repairHandler(IDENTITY, connectionId, { fixture_html: FIXTURE_HTML });
+    expect(repaired.status).toBe("active");
+    await db.pool.query(
+      `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
+       VALUES ($1, 'Member', 'active', now(), now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`,
+      [MEMBER.userId],
+    );
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES (gen_random_uuid()::text, $1, $2, 'member', 'active', now(), now())`,
+      [SPACE_A, MEMBER.userId],
+    );
+    const handlers = new PgCustomSourceHandlerRepository(db.pool, config!);
+    const page = { limit: 10, offset: 0 };
+
+    // Shared with the Space: readable, but not the member's to change.
+    await db.pool.query(`UPDATE source_connections SET visibility = 'space_shared' WHERE id = $1`, [connectionId]);
+    await expect(handlers.listHandlerVersions(MEMBER, connectionId, page)).resolves.toBeDefined();
+    await expect(repairService!.rollbackHandler(MEMBER, connectionId, {})).rejects.toMatchObject({ statusCode: 403 });
+    await expect(createFlow!.generateHandler(MEMBER, connectionId, {})).rejects.toMatchObject({ statusCode: 403 });
+
+    // Private to its owner: not even readable.
+    await db.pool.query(`UPDATE source_connections SET visibility = 'private' WHERE id = $1`, [connectionId]);
+    await expect(handlers.listHandlerVersions(MEMBER, connectionId, page)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(handlers.getHandlerSummary(MEMBER, connectionId)).rejects.toMatchObject({ statusCode: 404 });
+
+    const active = await db.pool.query<{ active_handler_version_id: string }>(
+      `SELECT active_handler_version_id FROM source_connections WHERE id = $1`, [connectionId],
+    );
+    if (repaired.status !== "active") throw new Error("unreachable");
+    expect(active.rows[0]?.active_handler_version_id).toBe(repaired.handler_version.id);
   });
 });

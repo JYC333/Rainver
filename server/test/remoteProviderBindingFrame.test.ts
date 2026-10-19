@@ -17,8 +17,7 @@ import type { Queryable } from "../src/modules/routeUtils/common.js";
 /**
  * The provider binding frame is what a bound Run's runtime actually reads on
  * the execution host. Two of its invariants are live — a wrong value produces
- * a runtime that silently ignores the bound provider rather than an error —
- * and neither had a test:
+ * a runtime that silently ignores the bound provider rather than an error:
  *
  *  - Codex's `config.toml` must point `model_catalog_json` at the catalog file
  *    the same frame writes. They are two entries in one `files` array, related

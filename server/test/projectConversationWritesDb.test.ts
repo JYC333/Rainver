@@ -13,6 +13,7 @@ import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 import { ProjectDefinitionProposalService } from "../src/modules/projects/projectDefinitionProposalService.js";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
 import { registerProjectWorkSystemActionExecutors } from "../src/modules/projectWork/projectWorkSystemActionExecutors.js";
+import { TASK_FAN_OUT_PER_TURN } from "../src/modules/tasks/turnFanOut.js";
 import type { SystemActionExecutor } from "../src/modules/systemActions/gateway.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
 
@@ -68,8 +69,8 @@ async function configFor() {
 describe("stating the Project's goal in conversation", () => {
   it("supersedes a pending draft when the goal is revised before anyone decided", async () => {
     if (!db.available) return;
-    // "Set my goal to X" … "actually, make it Y". The second call used to hand
-    // back the draft for X: the agent reported success, and Accept published X.
+    // "Set my goal to X" … "actually, make it Y". The second call returns the
+    // draft for Y. Do not hand back the draft for X.
     const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Memory layer" });
     const service = new ProjectDefinitionProposalService(db.pool);
     const firstRun = await seedConversationRun();
@@ -91,8 +92,8 @@ describe("stating the Project's goal in conversation", () => {
   it("lets the Project's owner accept it even when they are only a Space member", async () => {
     if (!db.available) return;
     // The proposal asks for an "owner" approver; that is the Project's owner,
-    // which is what the applier itself checks. Comparing the Space role alone
-    // showed this person the Accept button and then refused them.
+    // which is what the applier itself checks. Do not compare the Space role
+    // alone: this person would see Accept and then be refused.
     const project = await new PgProjectRepository(db.pool).create(identity(MEMBER), { name: "My own project" });
     const proposed = await new ProjectDefinitionProposalService(db.pool)
       .proposeDefinition(identity(MEMBER), project.id as string, { goal: "Finish the thesis" }, { agentId: AGENT });
@@ -124,8 +125,9 @@ describe("asking for a plan in conversation", () => {
     const listed = await executors.get("task.list" as SystemActionId)!({}, { idempotency_key: "call-2" } as never) as ExecutorResult;
     const tasks = (listed.modelResult as { tasks: Array<Record<string, unknown>> }).tasks;
     expect(tasks).toHaveLength(1);
-    // An id-only read left "what should I do next?" answerable only by
-    // restating titles; the state a recommendation is grounded in comes back.
+    // Do not return ids alone. "What should I do next?" would be answerable
+    // only by restating titles. The state a recommendation is grounded in
+    // comes back.
     expect(tasks[0]).toMatchObject({
       title: "Draft the schema",
       priority: "high",
@@ -133,6 +135,34 @@ describe("asking for a plan in conversation", () => {
       start_after: expect.stringContaining("2026-09-08"),
       blocked_reason: null,
     });
+  });
+
+  it("stops creating Tasks at the per-turn bound, and gives the next turn a fresh one", async () => {
+    if (!db.available) return;
+    // ADR 0017 §2: a decomposition creates at most five Threads or Tasks per
+    // turn, as an execution ceiling rather than prompt text.
+    const project = await new PgProjectRepository(db.pool).create(identity(), { name: "Fan-out" });
+    const config = await configFor();
+    const executorsFor = async () => {
+      const run = {
+        id: await seedConversationRun(), space_id: SPACE, agent_id: AGENT, project_id: project.id, run_group_id: null,
+        instructed_by_user_id: OWNER, trigger_origin: "manual", session_id: randomUUID(),
+      } as unknown as RunRecord;
+      const executors = new Map<SystemActionId, SystemActionExecutor>();
+      registerProjectWorkSystemActionExecutors(executors, config, run);
+      return (index: number) => executors.get("task.create" as SystemActionId)!(
+        { title: `Step ${index}` }, { idempotency_key: `call-${index}` } as never,
+      );
+    };
+
+    const create = await executorsFor();
+    for (let index = 0; index < TASK_FAN_OUT_PER_TURN; index += 1) await create(index);
+    await expect(create(TASK_FAN_OUT_PER_TURN)).rejects.toMatchObject({ statusCode: 429, message: expect.stringContaining("next turn") });
+    const tasks = await db.pool.query(`SELECT id FROM tasks WHERE project_id = $1`, [project.id]);
+    expect(tasks.rows).toHaveLength(TASK_FAN_OUT_PER_TURN);
+
+    const nextTurn = await executorsFor();
+    await expect(nextTurn(0)).resolves.toMatchObject({ summary: { ok: true } });
   });
 
   it("keeps a Task-addressed action inside the Run's own Project, even for a Task the person can read", async () => {

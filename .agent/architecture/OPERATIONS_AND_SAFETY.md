@@ -49,25 +49,24 @@ instance-scoped settings store and take effect without a server restart.
 |---|---|
 | `db/rainver.dump` — PostgreSQL snapshot (`pg_dump` custom format) | Always |
 | `storage/` — artifact files | Always |
+| `artifacts/` — top-level artifacts directory | When present |
 | `secrets/` — master key and CLI login state | **Never**; separate credential archive only |
 | `config/` — runtime config | Always |
 | `workspaces/` — Project Folder files | Always |
 | `cache/host-daemon/` — the built-in execution host's own state | **Not yet**, and it holds login state — see below |
 | `backups/` — previous archives | **Never** (recursion prevention) |
-| `sandboxes/` — ephemeral sandbox | **Never** |
+| `sandboxes/` — server-side sandbox clones | **Never** |
 | `cache/` — ephemeral cache | **Never** |
 | `logs/` — application logs | Only if `BACKUP_INCLUDE_LOGS=true` |
 
 **A gap this topology created.** The built-in execution host keeps its managed
 copies of runtimes, **their login state**, every Agent's runtime profile and its
 managed workspaces under `cache/host-daemon/`, because they are the daemon's own
-directory rather than the server's. `cache/` has always been excluded from
-backups, and CLI login state used to live in `secrets/`, which the separate
-credential archive covers. A restored instance therefore comes back without the
-built-in host's logins, and an operator has to log each copy in again from the
-host card. Either that directory joins the credential archive or the daemon's
-config root moves out of `cache/`; until then this is a stated recovery step,
-not an assumption.
+directory rather than the server's. `cache/` is excluded from backups. A
+restored instance therefore comes back without the built-in host's logins, and
+an operator has to log each copy in again from the host card. Either that
+directory joins the credential archive or the daemon's config root moves out of
+`cache/`; until then this is a stated recovery step, not an assumption.
 
 CLI continuity is the vendor session inside the Agent's own runtime profile on
 the execution host, tracked by the control plane as an opaque
@@ -79,7 +78,7 @@ whose store is gone; no shared vendor HOME is replay authority.
 
 Paths are resolved on the host from a Location id or a managed container. The
 application server cannot send host paths, images, or environment maps, has no
-local subprocess fallback, and no longer has a vendor CLI of its own to fall
+local subprocess fallback, and has no vendor CLI of its own to fall
 back to. Namespace failure is terminal. Runtime Context Delivery is sent directly to the adapter and no
 read-only-context staging directory or generated vendor context file exists.
 
@@ -179,7 +178,8 @@ new Folder-backed execution but never deletes, moves, or rewrites the
 physical directory; all metadata (id, name, tasks, runs, artifacts,
 proposals, audit references) is fully preserved. Unregistering
 (`POST /projects/{id}/folders/{folderId}/unregister`) removes only the
-Rainver registration row — it never touches disk either. There is no
+Rainver registration row — it never touches disk either — and is refused with
+409 `project_folder_in_use` while any record still references the Folder. There is no
 automatic missing-path detection or stale-marking scan; `POST
 /projects/{id}/folders/scan` only lists unregistered directories eligible
 for the "connect existing" creation flow.

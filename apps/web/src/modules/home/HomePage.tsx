@@ -51,17 +51,17 @@ function Eyebrow({ children, count }: { children: React.ReactNode; count?: numbe
 
 /* ── Needs Attention (cross-space aggregate) ─────────────────────────────────── */
 function NeedsAttention({
-  summary, failedRunSpaces, onGo,
+  summary, failedRunCount, onGo,
 }: {
   summary: MeSummaryOut
-  failedRunSpaces: string[]
+  failedRunCount: number
   onGo: (path: string) => void
 }) {
   const { t } = useAppTranslation()
   const rows = [
     { key: 'proposals', icon: Inbox, label: t('home.proposals_waiting'), value: summary.pending_proposals_count, warn: summary.pending_proposals_count > 0, to: '/proposals' },
     { key: 'tasks', icon: ListTodo, label: t('home.tasks_assigned_to_you'), value: summary.assigned_tasks_count, warn: false, to: '/tasks' },
-    { key: 'failed', icon: AlertTriangle, label: t('home.failed_runs_recent'), value: failedRunSpaces.length, warn: failedRunSpaces.length > 0, to: '/runs' },
+    { key: 'failed', icon: AlertTriangle, label: t('home.failed_runs_recent'), value: failedRunCount, warn: failedRunCount > 0, to: '/runs' },
   ]
   return (
     <div>
@@ -466,18 +466,22 @@ export default function HomePage() {
     && (preferredContextOpsReviewMode === 'members' || preferredContextOpsScanMode === 'members')
   )
 
+  // Runs that failed in the last 7 days across the person's Spaces: the same
+  // count By Space shows per Space, not the failures among the few recent
+  // runs listed below.
+  const failedRunCount = (s?.spaces ?? []).reduce((total, space) => total + space.recent_failed_runs_count, 0)
+
   const suggestions: Suggestion[] = useMemo(() => {
     if (!s) return []
     const out: Suggestion[] = []
     if (s.pending_proposals_count > 0) out.push({ id: 'review', label: t('home.review_pending_proposals'), reason: t('home.proposals_waiting_across_spaces', { total: s.pending_proposals_count }), to: '/proposals' })
-    if (s.recent_runs.some(r => r.status === 'failed')) out.push({ id: 'failed', label: t('home.inspect_failed_runs'), reason: t('home.recent_runs_failed_reason'), to: '/runs' })
+    if (failedRunCount > 0) out.push({ id: 'failed', label: t('home.inspect_failed_runs'), reason: t('home.recent_runs_failed_reason'), to: '/runs' })
     if (s.assigned_tasks_count > 0) out.push({ id: 'tasks', label: t('home.pick_up_your_tasks'), reason: t('home.tasks_assigned_count', { total: s.assigned_tasks_count }), to: '/tasks' })
     out.push({ id: 'review-artifacts', label: t('home.review_analysis_artifacts'), reason: t('home.artifacts_reason'), to: '/artifacts' })
     out.push({ id: 'capture', label: t('home.process_your_captures'), reason: t('home.captures_reason'), to: '/activity' })
     return out
-  }, [s, t, locale])
+  }, [s, t, locale, failedRunCount])
 
-  const failedRunSpaces = useMemo(() => (s ? s.recent_runs.filter(r => r.status === 'failed').map(r => r.space_id) : []), [s])
 
   return (
     <div className="page-dashboard">
@@ -503,7 +507,7 @@ export default function HomePage() {
           </div>
         ) : (
           <>
-            <NeedsAttention summary={s} failedRunSpaces={failedRunSpaces} onGo={goList} />
+            <NeedsAttention summary={s} failedRunCount={failedRunCount} onGo={goList} />
             <BySpace spaces={s.spaces} onOpen={openInSpace} />
             <ReviewPackets pending={pending} onOpen={openInSpace} />
             <ContinueWorking summary={s} onOpen={openInSpace} />

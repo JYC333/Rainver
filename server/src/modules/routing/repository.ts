@@ -205,11 +205,9 @@ export class PgRouteDecisionRepository {
         "The Task Run Workspace Location does not match its pinned runtime thread.",
       );
     }
-    // An unpinned Run needs a complete execution target, not the Server Host
-    // specifically: the ACP runtime-authority cutover only removed the
-    // Conversation HostThread from that path. A Profile whose deployment
-    // authority names a paired Host stays admissible, and
-    // `host_dispatch_permitted` — not this filter — decides whether the
+    // An unpinned Run needs a complete execution target. A Profile whose
+    // deployment authority names a paired Host stays admissible.
+    // `host_dispatch_permitted`, not this filter, decides whether the
     // responsible user may dispatch there, so the refusal appears in the
     // persisted decision instead of an empty candidate set.
     const candidates = allCandidates.filter((candidate) => pinnedHostThread
@@ -410,8 +408,19 @@ export class PgRouteDecisionRepository {
     );
     const selected = latest.rows[0]?.selected_runtime_profile_id;
     if (!selected) return false;
+    // Same arithmetic as retryRouteContext: a fallback is a chain member no
+    // attempt of this Run has selected yet. The latest chain alone can name
+    // Profiles earlier attempts already failed on, once the remainder ran out
+    // and routing was left unconstrained.
+    const attempted = await this.db.query<{ selected_runtime_profile_id: string }>(
+      `SELECT DISTINCT selected_runtime_profile_id
+         FROM route_decisions
+        WHERE space_id = $1 AND run_id = $2 AND selected_runtime_profile_id IS NOT NULL`,
+      [run.space_id, run.id],
+    );
+    const tried = new Set(attempted.rows.map((row) => row.selected_runtime_profile_id));
     const chain = stringArray(latest.rows[0]?.fallback_chain_json);
-    return chain.some((profileId) => profileId !== selected);
+    return chain.some((profileId) => !tried.has(profileId));
   }
 
   async listCandidates(
@@ -464,8 +473,8 @@ export class PgRouteDecisionRepository {
               arp.runtime_policy_json,
               -- Capabilities are AgentVersion authority: a deployment Profile
               -- never declares what the Agent may be asked to do, and no
-              -- production writer fills a Profile capability bag. Reading one
-              -- made every Version-declared capability unroutable.
+              -- production writer fills a Profile capability bag. Do not read
+              -- one. Every Version-declared capability would be unroutable.
               CASE
                 WHEN jsonb_typeof(av.capabilities_json) = 'array'
                   THEN av.capabilities_json
@@ -668,9 +677,9 @@ function candidateFromRow(
  * here: a paired Host's installations are its owner's own, installed by an
  * explicit action rather than an asynchronous provisioner.
  *
- * Exported because Automation preflight must answer readiness exactly as
- * routing does — a preflight that reported `executable: true` for a Server
- * copy still installing produced a Run that died `route_no_candidate`.
+ * Automation preflight answers readiness through this check. Do not report
+ * `executable: true` for a Server copy that is still installing. That Run
+ * dies `route_no_candidate`.
  */
 export function isRuntimeInstallationReady(target: {
   execution_host_kind: string | null;
@@ -726,8 +735,9 @@ function applyConversationSnapshot(
   const spec = getRuntimeAdapterSpec(candidate.runtime_key);
   // The column is a varchar the Profile's own CHECK shape is mirrored onto, so
   // an unrecognized mode is a corrupt binding, not a `runtime_native` one.
-  // Coercing it here would have spent whichever credential the Profile still
-  // named while claiming the Conversation's frozen deployment decided it.
+  // Do not coerce an unrecognized mode to `runtime_native`. That would spend
+  // whichever credential the Profile still named while claiming the
+  // Conversation's frozen deployment decided it.
   if (snapshot.backend_mode !== "model_provider" && snapshot.backend_mode !== "runtime_native") {
     throw new RouteSelectionError(
       "conversation_backend_mode_invalid",
@@ -810,12 +820,12 @@ export async function runtimeRequiredCapabilities(value: unknown): Promise<strin
   if (declared.length === 0) return declared;
   const systemActions = await loadSystemActionRegistry();
   const systemActionIds = new Set<string>(systemActions.keys());
-  // `runs.capabilities_json` currently carries both runtime capabilities and
+  // `runs.capabilities_json` carries both runtime capabilities and
   // server-owned System Action declarations. System Actions execute through
   // SystemActionDispatcher and are authorized by `permission_snapshot_json`;
-  // they are not capabilities that a runtime profile must duplicate. Keeping
-  // them in the runtime hard filter makes a Room's own tool allowance reject
-  // every otherwise-valid candidate before the conversation can start.
+  // they are not capabilities that a runtime profile must duplicate. Do not
+  // keep them in the runtime hard filter. A Room's own tool allowance would
+  // reject every otherwise-valid candidate before the conversation can start.
   return declared.filter((capability) => !systemActionIds.has(capability));
 }
 function stringArray(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : []; }
@@ -830,8 +840,8 @@ function trustLevel(value: unknown): "low" | "medium" | "high" { return value ==
  * Trust is based on controls the current dispatch actually enforces, and the
  * thing that enforces them is the execution target, not the runtime registry.
  * A registry declaration that a vendor supports a setting is not evidence that
- * this Run received it — the ACP Host-daemon path never applied the legacy
- * subagent-deny config — so a runtime's own declarations never raise it.
+ * this Run received it. A runtime's own declarations never raise trust.
+ * Do not treat a vendor's declared subagent-deny as applied on the daemon path.
  *
  * What is enforced is the built-in strict Server Host: every Run it accepts
  * runs in a fresh rootless bubblewrap namespace built from an empty root and
@@ -841,7 +851,7 @@ function trustLevel(value: unknown): "low" | "medium" | "high" { return value ==
  * A paired Host reaches `medium` for a different reason and only for its own
  * owner: it is that owner's machine, and a Run they are responsible for
  * carries the trust they already extend to it by running an agent there
- * themselves (ADR 0016 section 3 and its 2026-09-21 owner-trust amendment).
+ * themselves (ADR 0016 section 3, owner-trust amendment).
  * That is a statement about who bears the risk, not about containment — the
  * spawn is still native with no namespace (B62). A Run on that Host by anyone
  * else is not the owner's own and stays at the runtime's baseline, as does an

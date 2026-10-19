@@ -174,21 +174,6 @@ export interface ProjectSourceBindingRow {
   updated_at: unknown;
 }
 
-export interface ProjectSourceItemLinkRow {
-  id: string;
-  space_id: string;
-  project_id: string;
-  project_source_binding_id: string;
-  source_channel_id: string | null;
-  source_connection_id: string | null;
-  source_item_id: string;
-  status: string;
-  matched_at: unknown;
-  match_reason: string | null;
-  created_at: unknown;
-  updated_at: unknown;
-}
-
 const CONNECTION_TABLE_COLUMNS = [
   "id",
   "space_id",
@@ -215,7 +200,6 @@ const CONNECTION_TABLE_COLUMNS = [
   "updated_at",
 ];
 
-export const CONNECTOR_COLUMNS = `id, connector_key, display_name, connector_type, ingestion_mode, status, capabilities_json, config_schema_json, created_at, updated_at`;
 export const CONNECTION_COLUMNS = [
   ...CONNECTION_TABLE_COLUMNS,
 ].join(", ");
@@ -312,4 +296,3 @@ export function evidenceColumnsForAlias(alias: string): string {
 }
 export const EVIDENCE_LINK_COLUMNS = `id, space_id, evidence_id, target_type, target_id, link_type, status, confidence, reason, created_by_user_id, created_by_agent_id, created_by_run_id, created_at, updated_at`;
 export const PROJECT_SOURCE_BINDING_COLUMNS = `id, space_id, project_id, source_channel_id, binding_key, status, priority, delivery_scope, collection_notifications_enabled, standing_comparison_enabled, filters_json, routing_policy_json, extraction_policy_json, created_by_user_id, created_at, updated_at`;
-export const PROJECT_SOURCE_ITEM_LINK_COLUMNS = `id, space_id, project_id, project_source_binding_id, source_channel_id, source_connection_id, source_item_id, status, matched_at, match_reason, created_at, updated_at`;

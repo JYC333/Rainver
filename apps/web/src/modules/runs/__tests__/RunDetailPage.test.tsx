@@ -107,9 +107,8 @@ describe('RunDetailPage route decision panel', () => {
   })
 
   it('names a bounded provider task instead of leaving the Agent identifiers blank', async () => {
-    // A `provider_task` Run has no Agent, AgentVersion or runtime snapshot by
-    // construction, so these fields were rendering as empty strings with
-    // nothing on the page saying what kind of Run it is.
+    // A `provider_task` Run has no Agent, AgentVersion or runtime snapshot.
+    // Name the kind of Run. Do not render those fields as empty strings.
     useRunMock.mockReturnValue({
       run: {
         ...(run as unknown as Record<string, unknown>),
@@ -259,6 +258,17 @@ describe('RunDetailPage route decision panel', () => {
     expect(screen.getByRole('button', { name: 'Save workflow' })).toBeDisabled()
   })
 
+  it('says a run switched to could not be loaded instead of showing a skeleton forever', async () => {
+    useRunMock.mockImplementation((requestedId: string | null) => (requestedId === 'run-2'
+      ? { run, loading: false, error: 'Run not found' }
+      : { run, loading: false, error: null }))
+    renderPageWithSwitcher()
+    await screen.findByText('run-1', { exact: false })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch run' }))
+    expect(await screen.findByText('Run not found or not in this space')).toBeInTheDocument()
+  })
+
   it('ignores a late child-resource response from the previous run', async () => {
     let resolveRunAActivities: (value: { items: Array<Record<string, unknown>>; total: number; limit: number; offset: number }) => void = () => {}
     const runAActivities = new Promise<{ items: Array<Record<string, unknown>>; total: number; limit: number; offset: number }>(resolve => {
@@ -268,7 +278,7 @@ describe('RunDetailPage route decision panel', () => {
     runsApiMock.activities.mockImplementation((id: string) => id === 'run-1'
       ? runAActivities
       : Promise.resolve({
-          items: [{ id: 'activity-b', title: 'Run B activity', activity_type: 'run', occurred_at: '2026-07-12T00:00:00Z', visibility: 'space_shared', content: null }],
+          items: [{ id: 'activity-b', title: 'Run B activity', source_type: 'run_event', occurred_at: '2026-07-12T00:00:00Z', visibility: 'space_shared', content: null }],
           total: 1, limit: 100, offset: 0,
         }))
     useRunMock.mockImplementation((requestedId: string | null) => ({
@@ -283,7 +293,7 @@ describe('RunDetailPage route decision panel', () => {
     await user.click(screen.getByRole('tab', { name: 'Activities' }))
     expect(await screen.findByText('Run B activity')).toBeInTheDocument()
     resolveRunAActivities({
-      items: [{ id: 'activity-a', title: 'Run A activity', activity_type: 'run', occurred_at: '2026-07-12T00:00:00Z', visibility: 'space_shared', content: null }],
+      items: [{ id: 'activity-a', title: 'Run A activity', source_type: 'run_event', occurred_at: '2026-07-12T00:00:00Z', visibility: 'space_shared', content: null }],
       total: 1, limit: 100, offset: 0,
     })
     await new Promise(resolve => setTimeout(resolve, 0))

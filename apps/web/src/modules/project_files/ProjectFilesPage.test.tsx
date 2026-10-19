@@ -196,8 +196,8 @@ describe('Project Files & Code Area', () => {
     expect(projectFoldersApi.list).toHaveBeenCalledWith('project-1', { limit: '200' })
   })
 
-  /** The empty state used to link back to the Project Overview, which owned
-   *  Folder creation — the Area that uses Folders could not create one. */
+  /** The empty state creates a Folder here. Do not send the user to the
+   *  Project Overview to create one. */
   it('creates a Folder in place instead of sending the user back to the Overview', async () => {
     vi.mocked(projectFoldersApi.list).mockResolvedValue({
       items: [], total: 0, limit: 200, offset: 0,
@@ -214,9 +214,8 @@ describe('Project Files & Code Area', () => {
 
   it('opens the connect dialog on arrival from a ?setup=folder link, once', async () => {
     // Pulse and the conversation preflight send someone here to connect a
-    // Folder; landing on the page and then hunting for the button is the
-    // extra click the link exists to remove. The parameter is consumed so a
-    // reload does not reopen the dialog.
+    // Folder. Do not land on the page and leave them to find the button.
+    // The parameter is consumed so a reload does not reopen the dialog.
     vi.mocked(projectFoldersApi.list).mockResolvedValue({
       items: [], total: 0, limit: 200, offset: 0,
     })
@@ -267,7 +266,7 @@ describe('Project Files & Code Area', () => {
       total: 1, limit: 200, offset: 0,
     })
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [] })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
 
     renderPage()
 
@@ -288,7 +287,7 @@ describe('Project Files & Code Area', () => {
       items: [folder('folder-1', 'Source')], total: 1, limit: 200, offset: 0,
     })
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [] })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
     vi.mocked(projectFoldersApi.unregister).mockImplementation(async (_projectId, _folderId, confirm) => {
       if (confirm) return null as never
       throw Object.assign(new Error('Active File drafts must be explicitly confirmed before unregistering this Folder'), {
@@ -328,6 +327,7 @@ describe('Project Files & Code Area', () => {
         { path: 'src/app.ts', status: 'modified' },
         { path: 'backups/', status: 'untracked' },
       ],
+      truncated: false,
     })
 
     renderPage()
@@ -363,7 +363,7 @@ describe('Project Files & Code Area', () => {
       name: 'source', path: '.', type: 'dir', children: [],
     })
     vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({
-      is_repo: true, branch: 'main', files: [],
+      is_repo: true, branch: 'main', files: [], truncated: false,
     })
 
     renderPage()
@@ -384,8 +384,8 @@ describe('Project Files & Code Area', () => {
       .mockResolvedValueOnce({ name: 'source', path: '.', type: 'dir', children: [] })
       .mockResolvedValueOnce({ name: 'source', path: '.', type: 'dir', children: [{ name: 'created.txt', path: 'created.txt', type: 'file', size: 11 }] })
     vi.mocked(projectFoldersApi.gitStatus)
-      .mockResolvedValueOnce({ is_repo: true, branch: 'main', files: [] })
-      .mockResolvedValueOnce({ is_repo: true, branch: 'main', files: [{ path: 'created.txt', status: 'untracked' }] })
+      .mockResolvedValueOnce({ is_repo: true, branch: 'main', files: [], truncated: false })
+      .mockResolvedValueOnce({ is_repo: true, branch: 'main', files: [{ path: 'created.txt', status: 'untracked' }], truncated: false })
 
     renderPage()
 
@@ -408,7 +408,7 @@ describe('Project Files & Code Area', () => {
       items: [folder('folder-1', 'Source'), folder('folder-2', 'Docs')], total: 2, limit: 200, offset: 0,
     })
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [] })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
     const selected: Array<string | null> = []
 
     renderPage('/projects/project-1/files', undefined, id => { selected.push(id) })
@@ -424,7 +424,7 @@ describe('Project Files & Code Area', () => {
       items: [folder('folder-1', 'Source'), folder('folder-2', 'Docs')], total: 2, limit: 200, offset: 0,
     })
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [] })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
 
     renderPage('/projects/project-1/files', ['folder-1'])
 
@@ -455,7 +455,7 @@ describe('Project Files & Code Area', () => {
       code: 'host_offline',
       payload: { code: 'host_offline', detail: 'The host Laptop is offline.', host_name: 'Laptop', last_heartbeat_at: '2026-08-30T02:00:00.000Z' },
     }))
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
 
     renderPage()
 
@@ -475,7 +475,7 @@ describe('Project Files & Code Area', () => {
       code: 'host_not_owned',
       payload: { code: 'host_not_owned', detail: "This Folder is on Alice's machine; only its owner can browse it here.", host_name: 'Alice' },
     }))
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
 
     renderPage()
 
@@ -495,7 +495,7 @@ describe('Project Files & Code Area', () => {
       code: 'location_unknown_on_host',
       payload: { code: 'location_unknown_on_host', detail: 'The daemon no longer knows this directory.', host_name: 'Laptop' },
     }))
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
 
     renderPage()
 
@@ -518,7 +518,7 @@ describe('Project Files & Code Area', () => {
       host_name: 'Alice laptop', host_online: true, host_owner_is_me: true,
     }])
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [{ name: 'README.md', path: 'README.md', type: 'file', size: 5 }] })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
 
     renderPage()
 
@@ -535,7 +535,7 @@ describe('Project Files & Code Area', () => {
     vi.mocked(projectFoldersApi.tree)
       .mockImplementationOnce(() => oldTree.promise as never)
       .mockImplementationOnce(() => nextTree.promise as never)
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
 
     renderPage()
 
@@ -557,7 +557,7 @@ describe('Project Files & Code Area', () => {
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({
       name: 'source', path: '.', type: 'dir', children: [{ name: 'README.md', path: 'README.md', type: 'file', size: 5 }],
     })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
     vi.mocked(projectFoldersApi.file).mockImplementationOnce(() => fileResponse.promise as never)
 
     renderPage()
@@ -579,7 +579,7 @@ describe('Project Files & Code Area', () => {
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({
       name: 'source', path: '.', type: 'dir', children: [{ name: 'README.md', path: 'README.md', type: 'file', size: 7 }],
     })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
     vi.mocked(projectFoldersApi.file).mockResolvedValue({ path: 'README.md', content: 'loaded\n', size: 7, line_count: 2 })
     vi.mocked(projectFoldersApi.fileRevisions).mockReturnValue(revisions.promise as never)
 
@@ -601,7 +601,7 @@ describe('Project Files & Code Area', () => {
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({
       name: 'source', path: '.', type: 'dir', children: [{ name: 'README.md', path: 'README.md', type: 'file', size: 5 }],
     })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
     vi.mocked(projectFoldersApi.file).mockResolvedValue({ path: 'README.md', content: 'existing file', size: 13, line_count: 1 })
 
     renderPage()
@@ -631,7 +631,7 @@ describe('Project Files & Code Area', () => {
         { name: 'second.txt', path: 'second.txt', type: 'file', size: 7 },
       ],
     })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
     vi.mocked(projectFoldersApi.file)
       .mockResolvedValueOnce({ path: 'first.txt', content: 'first\n', size: 6, line_count: 2 })
       .mockImplementationOnce(() => nextFile.promise as never)
@@ -650,6 +650,42 @@ describe('Project Files & Code Area', () => {
     expect(screen.queryByText('first')).not.toBeInTheDocument()
   })
 
+  it('keeps the shown file bound to its draft when the next file fails to load', async () => {
+    vi.mocked(projectFoldersApi.list).mockResolvedValue({
+      items: [folder('folder-1', 'Source')], total: 1, limit: 200, offset: 0,
+    })
+    vi.mocked(projectFoldersApi.tree).mockResolvedValue({
+      name: 'source', path: '.', type: 'dir', children: [
+        { name: 'first.txt', path: 'first.txt', type: 'file', size: 6 },
+        { name: 'second.txt', path: 'second.txt', type: 'file', size: 7 },
+      ],
+    })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
+    vi.mocked(projectFoldersApi.file)
+      .mockResolvedValueOnce({ path: 'first.txt', content: 'first\n', size: 6, line_count: 2, sha256: 'a'.repeat(64), encoding: 'utf8', writable: true, line_ending_mode: 'lf' })
+      .mockRejectedValueOnce(new Error('host offline'))
+    vi.mocked(projectFoldersApi.draft).mockImplementation(async (_projectId, _folderId, path) => (path === 'first.txt' ? {
+      id: 'draft-1', space_id: 'space-1', project_id: 'project-1', project_folder_id: 'folder-1', workspace_location_id: 'location-1', owner_user_id: 'user-1',
+      target_kind: 'existing', relative_path: 'first.txt', base_exists: true, base_sha256: 'a'.repeat(64), content: 'first, drafted\n', content_sha256: 'c'.repeat(64), byte_size: 15, version: 1,
+      source_encoding: 'utf8', preserve_bom: false, line_ending_mode: 'lf', created_at: '', updated_at: '', expires_at: '',
+    } : null) as never)
+
+    try {
+      renderPage()
+      fireEvent.click(await screen.findByRole('button', { name: /first\.txt/ }))
+      expect(await screen.findByText('first, drafted')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /second\.txt/ }))
+      await waitFor(() => expect(projectFoldersApi.file).toHaveBeenCalledTimes(2))
+      await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading file' })).not.toBeInTheDocument())
+
+      expect(screen.getByText('first, drafted')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Discard/ })).toBeInTheDocument()
+    } finally {
+      vi.mocked(projectFoldersApi.draft).mockResolvedValue(null)
+    }
+  })
+
   it('reuses cached content when returning to an already opened file', async () => {
     const revalidation = deferred<{ path: string; content: string; size: number; line_count: number }>()
     vi.mocked(projectFoldersApi.list).mockResolvedValue({
@@ -661,7 +697,7 @@ describe('Project Files & Code Area', () => {
         { name: 'second.txt', path: 'second.txt', type: 'file', size: 7 },
       ],
     })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
     vi.mocked(projectFoldersApi.file)
       .mockResolvedValueOnce({ path: 'first.txt', content: 'first\n', size: 6, line_count: 2 })
       .mockResolvedValueOnce({ path: 'second.txt', content: 'second\n', size: 7, line_count: 2 })
@@ -687,7 +723,7 @@ describe('Project Files & Code Area', () => {
       items: [folder('folder-1', 'Source')], total: 1, limit: 200, offset: 0,
     })
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [] })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
 
     renderPage()
 
@@ -757,7 +793,7 @@ describe('Project Files & Code Area', () => {
       items: [folder('folder-1', 'Source')], total: 1, limit: 200, offset: 0,
     })
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [] })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
     const savedDraft = {
       id: 'draft-1', space_id: 'space-1', project_id: 'project-1', project_folder_id: 'folder-1',
       workspace_location_id: 'location-1', owner_user_id: 'user-1', target_kind: 'new' as const,
@@ -775,7 +811,12 @@ describe('Project Files & Code Area', () => {
 
     renderPage()
 
-    fireEvent.click(await screen.findByRole('button', { name: 'New File' }))
+    // "New File" renders with the selected Folder, one commit before the
+    // Folder's effect resets the centre view and starts its reads; a click in
+    // between is undone by that reset. Wait until the reads have started.
+    const newFile = await screen.findByRole('button', { name: 'New File' })
+    await waitFor(() => expect(projectFoldersApi.tree).toHaveBeenCalled())
+    fireEvent.click(newFile)
     fireEvent.change(screen.getByRole('textbox', { name: 'File path' }), { target: { value: 'notes/today.md' } })
     expect(screen.getByRole('textbox', { name: 'File content' })).toHaveAttribute('contenteditable', 'true')
     expect(screen.queryByRole('button', { name: 'Save directly' })).not.toBeInTheDocument()
@@ -796,7 +837,7 @@ describe('Project Files & Code Area', () => {
         { name: 'b.txt', path: 'b.txt', type: 'file', size: 3 },
       ],
     })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
     const second = deferred<FileContent>()
     vi.mocked(projectFoldersApi.file)
       .mockResolvedValueOnce({ path: 'a.txt', content: 'aa\n', size: 3, line_count: 2, sha256: 'a'.repeat(64), encoding: 'utf8', writable: true })
@@ -826,7 +867,7 @@ describe('Project Files & Code Area', () => {
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({
       name: 'source', path: '.', type: 'dir', children: [{ name: 'notes.md', path: 'notes.md', type: 'file', size: 9 }],
     })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
     vi.mocked(projectFoldersApi.file).mockResolvedValue({
       path: 'notes.md', content: body, size: 9, line_count: 2, sha256: diskSha,
       encoding: 'utf8', has_bom: true, writable: true, line_ending_mode: 'lf',
@@ -863,7 +904,7 @@ describe('Project Files & Code Area', () => {
       items: [folder('folder-1', 'Source')], total: 1, limit: 200, offset: 0,
     })
     vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [{ name: 'README.md', path: 'README.md', type: 'file', size: 8 }] })
-    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
     vi.mocked(projectFoldersApi.file).mockResolvedValue({ path: 'README.md', content: 'before\n', size: 7, line_count: 2, sha256: originalHash, encoding: 'utf8', writable: true, line_ending_mode: 'lf' })
     vi.mocked(projectFoldersApi.fileRevisions).mockResolvedValue([revision])
     vi.mocked(projectFoldersApi.previewRevision).mockResolvedValue({ revision, content: 'before\n' })

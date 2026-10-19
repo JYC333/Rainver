@@ -3,10 +3,8 @@ import { EmptyState } from '../../components/ui/empty-state'
 import KnowledgeSectionHeader from './KnowledgeSectionHeader'
 
 /**
- * Cards sub-area inside the Knowledge module. Cards are review/learning units
- * derived from Notes, Wiki items, and Sources. The review queue and FSRS
- * scheduling UI are intentionally out of scope for this slice — this is a clean
- * placeholder, not a fake review surface. See .agent/modules/spaced-repetition.md.
+ * Cards sub-area inside the Knowledge module. This page does not schedule
+ * reviews.
  */
 export default function KnowledgeCardsPanel() {
   return (

@@ -11,9 +11,8 @@ import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Skeleton } from '../../components/ui/skeleton'
 import { inProjectHref, projectTaskHref } from './taskHref'
-// The one place that already knows how to say what an Operation is doing —
-// "848/873 materials classified". Pulse renders that sentence rather than
-// composing a second, quieter version of it.
+// Pulse renders the Research Area's sentence —
+// "848/873 materials classified" — rather than a second, quieter version.
 import { researchOperationDetail, researchOperationPercent, researchOperationStage, researchStageIndex } from './FocusResearchWorkbench'
 
 /**
@@ -150,12 +149,9 @@ export default function ProjectPulse({
     .sort((a, b) => b.active_run_count - a.active_run_count)
     .slice(0, 6)
 
-  // One list, whatever the work is. A Task moving and a research Operation
-  // screening nine hundred documents are both "in progress"; only the first
-  // used to appear here, so a Project running for hours read as idle.
-  // Operations are work too, and the overview already carries the unfinished
-  // ones — reading only the Board is why a research acquisition screening
-  // nine hundred documents showed up here as "nothing is being worked on".
+  // One list, whatever the work is. A Task and a research Operation are both
+  // in progress. Reading only the Board makes a long research acquisition
+  // look idle. The overview already carries the unfinished operations.
   const running = overview?.in_progress ?? []
   const nothingRunning = moving.length === 0 && running.length === 0
 
@@ -168,8 +164,8 @@ export default function ProjectPulse({
           as grid cells these sat closer to each other than to the goal card
           above them. */}
       {/* The one thing a Project has to decide about itself, said until it
-          has: creation no longer asks for a goal, and the shell no longer
-          carries a readiness checklist, so this is where it is asked. */}
+          has one. Creation does not ask for a goal, and the shell does not
+          carry a readiness checklist, so this is where it is asked. */}
       {needsGoal && (
         <Card className="flex items-start justify-between gap-3 p-4" data-testid="pulse-needs-goal">
           <div>
@@ -210,8 +206,8 @@ export default function ProjectPulse({
         ) : (
           /* Grouped by why it needs a person (ADR 0017 §4). A decision, a
              spend, a suggestion and a doubt read differently and are acted on
-             differently; one undifferentiated list is what made six identical
-             cards feel like an unresolvable pile. */
+             differently. Do not flatten them into one list. Six cards of one
+             kind read as a pile with nothing to do. */
           <div className="space-y-3">
             {ATTENTION_CLASS_ORDER.filter(cls => attention.some(item => item.attention_class === cls)).map(cls => (
               <div key={cls} className="space-y-2" data-testid={`attention-${cls}`}>

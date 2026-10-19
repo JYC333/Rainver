@@ -15,9 +15,10 @@ import {
 } from "../routeUtils/common.js";
 import { getDbPool } from "../../db/pool.js";
 import { RetrievalProjectionService } from "../retrieval/index.js";
-import { assertProjectOwnerLevel, assertProjectWriter, canWriteProject, isProjectOwnerLevel } from "./access.js";
+import { assertProjectOwnerLevelForMutation, assertProjectWriter, canWriteProject, isProjectOwnerLevel } from "./access.js";
 import { assertProjectReadable } from "./access.js";
 import { projectRetrievalRegistry } from "./retrievalAdapter.js";
+import { isUniqueViolation } from "./projectOperationRepository.js";
 import { contentReadSql, roomRunReadAccessSql } from "../access/contentAccessSql.js";
 import { assertCanGrantRole } from "../access/roles.js";
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
@@ -26,7 +27,7 @@ import { PgRunRepository } from "../runs/repository.js";
 import { PgRoomRepository } from "../rooms/repository.js";
 import { canonicalRunOutput } from "../runs/orchestrationResults.js";
 
-export interface ProjectRow {
+interface ProjectRow {
   id: string;
   space_id: string;
   owner_user_id: string | null;
@@ -42,7 +43,7 @@ export interface ProjectRow {
   archived_at: unknown;
 }
 
-export interface ProjectMemberRow {
+interface ProjectMemberRow {
   id: string;
   space_id: string;
   project_id: string;
@@ -53,7 +54,7 @@ export interface ProjectMemberRow {
   updated_at: unknown;
 }
 
-export interface ProjectPublicSummaryRow {
+interface ProjectPublicSummaryContentRow {
   id: string;
   space_id: string;
   project_id: string;
@@ -63,11 +64,20 @@ export interface ProjectPublicSummaryRow {
   highlights_json: unknown;
   source_refs_json: unknown;
   redaction_version: string;
-  review_status: string;
+}
+
+interface ProjectPublicSummaryDraftRow extends ProjectPublicSummaryContentRow {
+  draft_version: number | string;
   updated_by_user_id: string | null;
   generated_by_run_id: string | null;
   created_at: unknown;
   updated_at: unknown;
+}
+
+interface ProjectPublicSummaryPublicationRow extends ProjectPublicSummaryContentRow {
+  source_draft_version: number | string;
+  published_by_user_id: string | null;
+  published_at: unknown;
 }
 
 const PROJECT_COLUMNS = `
@@ -76,11 +86,16 @@ const PROJECT_COLUMNS = `
   created_at, updated_at, archived_at
 `;
 
-const PUBLIC_SUMMARY_COLUMNS = `
+const PUBLIC_SUMMARY_DRAFT_COLUMNS = `
   ps.id, ps.space_id, ps.project_id, p.name AS project_name, ps.summary_text,
   ps.topics_json, ps.highlights_json, ps.source_refs_json, ps.redaction_version,
-  ps.review_status, ps.updated_by_user_id, ps.generated_by_run_id,
+  ps.draft_version, ps.updated_by_user_id, ps.generated_by_run_id,
   ps.created_at, ps.updated_at
+`;
+const PUBLIC_SUMMARY_PUBLICATION_COLUMNS = `
+  pub.id, pub.space_id, pub.project_id, p.name AS project_name, pub.summary_text,
+  pub.topics_json, pub.highlights_json, pub.source_refs_json, pub.redaction_version,
+  pub.source_draft_version, pub.published_by_user_id, pub.published_at
 `;
 const PUBLIC_SUMMARY_REDACTION_VERSION = "project_public_summary.v1";
 const PUBLIC_SUMMARY_MAX_CHARS = 4000;
@@ -88,7 +103,6 @@ const PUBLIC_SUMMARY_MAX_CHARS = 4000;
 const MEMBER_COLUMNS = `id, space_id, project_id, user_id, role, status, created_at, updated_at`;
 /** Project member roles, lowest first. */
 const PROJECT_ROLE_LADDER: readonly string[] = ["viewer", "member", "owner"];
-const PUBLIC_SUMMARY_REVIEW_STATUSES = new Set(["draft", "approved", "archived"]);
 
 export class PgProjectRepository {
   constructor(private readonly db: Queryable) {}
@@ -157,7 +171,7 @@ export class PgProjectRepository {
           JSON.stringify(optionalObject(body.settings_json) ?? {}),
           now,
         ],
-      );
+      ).catch(rethrowActiveNameConflict);
       const briefId = randomUUID();
       await db.query(
         `INSERT INTO project_brief_versions
@@ -187,13 +201,11 @@ export class PgProjectRepository {
       );
       // The mainline Room is a Project attribute on the same footing as the
       // Brief v1 row above: present from creation, empty until spoken in
-      // (ADR 0018 decision 4). Before this, the first Room created became the
-      // mainline, so "a Project with no Room" was a state every caller wanting
-      // to put something in the mainline had to handle — and one of them,
-      // continuing an imported CLI session, could not.
+      // (ADR 0018 decision 4). Do not wait for the first Room someone creates
+      // and call that the mainline. A Project with no Room is not a state.
       //
-      // Nothing that can fail is done here. No Assistant is provisioned (that
-      // moves to the Room's first message) and no conversation is created
+      // Nothing that can fail is done here. No Assistant is provisioned — that
+      // happens on the Room's first message — and no conversation is created
       // (conversations are created through explicit draft setup, decision 5), so a Project
       // cannot fail to be created because of its Room.
       const roomRepository = new PgRoomRepository(db);
@@ -274,7 +286,7 @@ export class PgProjectRepository {
         JSON.stringify(optionalObject(body.settings_json) ?? objectValue(current.settings_json)),
         now,
       ],
-    );
+    ).catch(rethrowActiveNameConflict);
     if (status === "archived") {
       await this.pauseArchivedProjectActivity(identity.spaceId, projectId, now);
     }
@@ -331,9 +343,9 @@ export class PgProjectRepository {
             AND a.surface_role <> 'system_archive'
             AND ${contentReadSql("artifact", "a", "$3")}
             -- An Artifact inherits its Run's Room, and a count is an existence
-            -- signal (ADR 0018 decision 3): without this an oversight admin
-            -- inside the Project sees "2 artifacts" over an Artifacts page
-            -- that lists none.
+            -- signal (ADR 0018 decision 3). Do not count an archive the page
+            -- cannot list. An oversight admin inside the Project would see
+            -- "2 artifacts" over an Artifacts page that lists none.
             AND ${roomRunReadAccessSql("a.run_id", "a.space_id", "$3")}`,
         [identity.spaceId, projectId, identity.userId],
       ),
@@ -394,53 +406,62 @@ export class PgProjectRepository {
     filters: { limit: number; offset: number },
   ): Promise<Record<string, unknown>> {
     const params: unknown[] = [identity.spaceId];
-    const clauses = [
-      "ps.space_id = $1",
-      "p.deleted_at IS NULL",
-      "p.status = 'active'",
-      "ps.review_status = 'approved'",
-    ];
-    const where = clauses.join(" AND ");
+    const where = "pub.space_id = $1 AND p.deleted_at IS NULL AND p.status = 'active'";
     const total = await this.db.query<{ total: string | number }>(
-      `SELECT count(ps.id)::text AS total
-         FROM project_public_summaries ps
-         JOIN projects p ON p.id = ps.project_id AND p.space_id = ps.space_id
+      `SELECT count(pub.id)::text AS total
+         FROM project_public_summary_publications pub
+         JOIN projects p ON p.id = pub.project_id AND p.space_id = pub.space_id
         WHERE ${where}`,
       params,
     );
-    const rows = await this.db.query<ProjectPublicSummaryRow>(
-      `SELECT ${PUBLIC_SUMMARY_COLUMNS}
-         FROM project_public_summaries ps
-         JOIN projects p ON p.id = ps.project_id AND p.space_id = ps.space_id
+    const rows = await this.db.query<ProjectPublicSummaryPublicationRow>(
+      `SELECT ${PUBLIC_SUMMARY_PUBLICATION_COLUMNS}
+         FROM project_public_summary_publications pub
+         JOIN projects p ON p.id = pub.project_id AND p.space_id = pub.space_id
         WHERE ${where}
-        ORDER BY ps.updated_at DESC, ps.id DESC
+        ORDER BY pub.published_at DESC, pub.id DESC
         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, filters.limit, filters.offset],
     );
     return page(rows.rows.map(projectPublicSummaryToOut), countFromRow(total.rows[0]), filters.limit, filters.offset);
   }
 
+  /** The approved snapshot, or null while nothing is published. */
   async getPublicSummary(
     identity: SpaceUserIdentity,
     projectId: string,
   ): Promise<Record<string, unknown> | null> {
     await this.requireProject(identity.spaceId, projectId);
-    const result = await this.db.query<ProjectPublicSummaryRow>(
-      `SELECT ${PUBLIC_SUMMARY_COLUMNS}
-         FROM project_public_summaries ps
-         JOIN projects p ON p.id = ps.project_id AND p.space_id = ps.space_id
-        WHERE ps.space_id = $1
-          AND ps.project_id = $2
-          AND p.deleted_at IS NULL
-          AND p.status = 'active'
-          AND ps.review_status = 'approved'
-        LIMIT 1`,
-      [identity.spaceId, projectId],
-    );
-    const row = result.rows[0];
+    const row = await this.loadPublication(identity.spaceId, projectId);
     return row ? projectPublicSummaryToOut(row) : null;
   }
 
+  /**
+   * Both sides of the editing surface, for Project writers: the draft they
+   * edit and the snapshot readers currently see. `can_publish` tells the
+   * client whether to offer publish/revoke, which only owner-level authority
+   * may perform.
+   */
+  async getPublicSummaryEditorState(
+    identity: SpaceUserIdentity,
+    projectId: string,
+  ): Promise<Record<string, unknown>> {
+    await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
+    const draft = await this.loadDraft(identity.spaceId, projectId);
+    const published = await this.loadPublication(identity.spaceId, projectId);
+    return {
+      project_id: projectId,
+      draft: draft ? projectPublicSummaryDraftToOut(draft) : null,
+      published: published ? projectPublicSummaryToOut(published) : null,
+      can_publish: await isProjectOwnerLevel(this.db, identity.spaceId, projectId, identity.userId),
+    };
+  }
+
+  /**
+   * Saves the draft. Every save bumps `draft_version`, which is what a later
+   * publish names. The published snapshot is not read or written here: a
+   * writer editing the draft cannot change what readers see.
+   */
   async upsertPublicSummary(
     identity: SpaceUserIdentity,
     projectId: string,
@@ -452,17 +473,6 @@ export class PgProjectRepository {
     const highlights = publicStringList(body.highlights_json ?? body.highlights, "highlights");
     const sourceRefs = publicSourceRefs(body.source_refs_json ?? body.source_refs);
     const redactionVersion = optionalString(body.redaction_version) ?? PUBLIC_SUMMARY_REDACTION_VERSION;
-    // A bare write only stages a draft. Publishing (`approved`) or unpublishing
-    // (`archived`) flips the space-public visibility of project content, so it
-    // requires project-owner-level authority — a project writer/member cannot
-    // self-approve their own summary.
-    const reviewStatus = optionalString(body.review_status) ?? "draft";
-    if (!PUBLIC_SUMMARY_REVIEW_STATUSES.has(reviewStatus)) {
-      throw new HttpError(422, "review_status must be draft, approved, or archived");
-    }
-    if (reviewStatus !== "draft") {
-      await assertProjectOwnerLevel(this.db, identity.spaceId, projectId, identity.userId);
-    }
     const generatedByRunId = optionalString(body.generated_by_run_id);
     if (generatedByRunId) {
       const run = await this.db.query<{ id: string }>(
@@ -474,16 +484,16 @@ export class PgProjectRepository {
       if (!run.rows[0]) throw new HttpError(422, "generated_by_run_id must reference this project in this space");
     }
     const now = new Date().toISOString();
-    const result = await this.db.query<ProjectPublicSummaryRow>(
+    const result = await this.db.query<ProjectPublicSummaryDraftRow>(
       `WITH upserted AS (
          INSERT INTO project_public_summaries (
            id, space_id, project_id, summary_text, topics_json, highlights_json,
-           source_refs_json, redaction_version, review_status, updated_by_user_id,
+           source_refs_json, redaction_version, draft_version, updated_by_user_id,
            generated_by_run_id, created_at, updated_at
          ) VALUES (
            $1, $2, $3, $4, $5::jsonb, $6::jsonb,
-           $7::jsonb, $8, $9, $10,
-           $11, $12, $12
+           $7::jsonb, $8, 1, $9,
+           $10, $11, $11
          )
          ON CONFLICT (project_id)
          DO UPDATE SET
@@ -492,16 +502,16 @@ export class PgProjectRepository {
            highlights_json = EXCLUDED.highlights_json,
            source_refs_json = EXCLUDED.source_refs_json,
            redaction_version = EXCLUDED.redaction_version,
-           review_status = EXCLUDED.review_status,
+           draft_version = project_public_summaries.draft_version + 1,
            updated_by_user_id = EXCLUDED.updated_by_user_id,
            generated_by_run_id = EXCLUDED.generated_by_run_id,
            updated_at = EXCLUDED.updated_at
          RETURNING id, space_id, project_id, summary_text, topics_json,
                    highlights_json, source_refs_json, redaction_version,
-                   review_status, updated_by_user_id, generated_by_run_id,
+                   draft_version, updated_by_user_id, generated_by_run_id,
                    created_at, updated_at
        )
-       SELECT ${PUBLIC_SUMMARY_COLUMNS}
+       SELECT ${PUBLIC_SUMMARY_DRAFT_COLUMNS}
          FROM upserted ps
          JOIN projects p ON p.id = ps.project_id AND p.space_id = ps.space_id`,
       [
@@ -513,14 +523,131 @@ export class PgProjectRepository {
         JSON.stringify(highlights),
         JSON.stringify(sourceRefs),
         redactionVersion,
-        reviewStatus,
         identity.userId,
         generatedByRunId,
         now,
       ],
     );
+    return projectPublicSummaryDraftToOut(result.rows[0]!);
+  }
+
+  /**
+   * Approves one draft version as the space-public snapshot. Owner-level
+   * authority only. The draft row is locked and its version compared inside
+   * the transaction, so a draft saved after the approver read it is a 409
+   * rather than content nobody reviewed going public. The retrieval
+   * projection is refreshed after commit from the new snapshot.
+   */
+  async publishPublicSummary(
+    identity: SpaceUserIdentity,
+    projectId: string,
+    draftVersion: number,
+  ): Promise<Record<string, unknown>> {
+    const published = await withQueryableTransaction(this.db, async (tx) => {
+      await assertProjectOwnerLevelForMutation(tx, identity.spaceId, projectId, identity.userId);
+      const draft = await tx.query<ProjectPublicSummaryDraftRow>(
+        `SELECT ${PUBLIC_SUMMARY_DRAFT_COLUMNS}
+           FROM project_public_summaries ps
+           JOIN projects p ON p.id = ps.project_id AND p.space_id = ps.space_id
+          WHERE ps.space_id = $1 AND ps.project_id = $2 AND p.deleted_at IS NULL
+          FOR UPDATE OF ps`,
+        [identity.spaceId, projectId],
+      );
+      const row = draft.rows[0];
+      if (!row) throw new HttpError(404, "Project public summary draft not found");
+      if (Number(row.draft_version) !== draftVersion) {
+        throw new HttpError(409, "The draft changed since it was reviewed; reload and review the current draft", {
+          detail: "The draft changed since it was reviewed; reload and review the current draft",
+          code: "project_public_summary_draft_changed",
+          current_draft_version: Number(row.draft_version),
+        });
+      }
+      const now = new Date().toISOString();
+      const result = await tx.query<ProjectPublicSummaryPublicationRow>(
+        `WITH published AS (
+           INSERT INTO project_public_summary_publications (
+             id, space_id, project_id, summary_text, topics_json, highlights_json,
+             source_refs_json, redaction_version, source_draft_version, published_by_user_id, published_at
+           ) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11)
+           ON CONFLICT (project_id)
+           DO UPDATE SET
+             summary_text = EXCLUDED.summary_text,
+             topics_json = EXCLUDED.topics_json,
+             highlights_json = EXCLUDED.highlights_json,
+             source_refs_json = EXCLUDED.source_refs_json,
+             redaction_version = EXCLUDED.redaction_version,
+             source_draft_version = EXCLUDED.source_draft_version,
+             published_by_user_id = EXCLUDED.published_by_user_id,
+             published_at = EXCLUDED.published_at
+           RETURNING id, space_id, project_id, summary_text, topics_json, highlights_json,
+                     source_refs_json, redaction_version, source_draft_version,
+                     published_by_user_id, published_at
+         )
+         SELECT ${PUBLIC_SUMMARY_PUBLICATION_COLUMNS}
+           FROM published pub
+           JOIN projects p ON p.id = pub.project_id AND p.space_id = pub.space_id`,
+        [
+          randomUUID(),
+          identity.spaceId,
+          projectId,
+          row.summary_text,
+          JSON.stringify(stringArray(row.topics_json)),
+          JSON.stringify(stringArray(row.highlights_json)),
+          JSON.stringify(Array.isArray(row.source_refs_json) ? row.source_refs_json : []),
+          row.redaction_version,
+          Number(row.draft_version),
+          identity.userId,
+          now,
+        ],
+      );
+      return result.rows[0]!;
+    });
     await this.reindexPublicSummary(identity.spaceId, projectId);
-    return projectPublicSummaryToOut(result.rows[0]!);
+    return projectPublicSummaryToOut(published);
+  }
+
+  /**
+   * Takes the snapshot down. Owner-level authority only. The draft is left
+   * where it is, so a later publish can start from it; the projection row is
+   * removed after commit, so search and the assistant stop serving it.
+   */
+  async revokePublicSummary(identity: SpaceUserIdentity, projectId: string): Promise<void> {
+    await withQueryableTransaction(this.db, async (tx) => {
+      await assertProjectOwnerLevelForMutation(tx, identity.spaceId, projectId, identity.userId);
+      const removed = await tx.query(
+        `DELETE FROM project_public_summary_publications WHERE space_id = $1 AND project_id = $2`,
+        [identity.spaceId, projectId],
+      );
+      if ((removed.rowCount ?? 0) === 0) throw new HttpError(404, "Project public summary is not published");
+    });
+    await this.reindexPublicSummary(identity.spaceId, projectId);
+  }
+
+  private async loadDraft(spaceId: string, projectId: string): Promise<ProjectPublicSummaryDraftRow | null> {
+    const result = await this.db.query<ProjectPublicSummaryDraftRow>(
+      `SELECT ${PUBLIC_SUMMARY_DRAFT_COLUMNS}
+         FROM project_public_summaries ps
+         JOIN projects p ON p.id = ps.project_id AND p.space_id = ps.space_id
+        WHERE ps.space_id = $1 AND ps.project_id = $2 AND p.deleted_at IS NULL
+        LIMIT 1`,
+      [spaceId, projectId],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  private async loadPublication(spaceId: string, projectId: string): Promise<ProjectPublicSummaryPublicationRow | null> {
+    const result = await this.db.query<ProjectPublicSummaryPublicationRow>(
+      `SELECT ${PUBLIC_SUMMARY_PUBLICATION_COLUMNS}
+         FROM project_public_summary_publications pub
+         JOIN projects p ON p.id = pub.project_id AND p.space_id = pub.space_id
+        WHERE pub.space_id = $1
+          AND pub.project_id = $2
+          AND p.deleted_at IS NULL
+          AND p.status = 'active'
+        LIMIT 1`,
+      [spaceId, projectId],
+    );
+    return result.rows[0] ?? null;
   }
 
   // --- Project membership (the project-level memory access ACL) -------------
@@ -845,6 +972,18 @@ function canApproveProjectContext(ctx: WritableContext, userId: string, row: Pro
   return ctx.ownerProjectIds.has(row.id);
 }
 
+/**
+ * `uq_projects_space_name_active` keeps a Project name unique among the
+ * Space's active Projects. A create, rename, or re-activation that collides
+ * is the caller's conflict to see, not an internal error.
+ */
+function rethrowActiveNameConflict(error: unknown): never {
+  if (isUniqueViolation(error, "uq_projects_space_name_active")) {
+    throw new HttpError(409, "An active Project with this name already exists in this Space");
+  }
+  throw error;
+}
+
 function projectToOut(
   row: ProjectRow,
   includeSettings = true,
@@ -884,7 +1023,7 @@ function projectMemberToOut(row: ProjectMemberRow): Record<string, unknown> {
   };
 }
 
-function projectPublicSummaryToOut(row: ProjectPublicSummaryRow): Record<string, unknown> {
+function projectPublicSummaryContentOut(row: ProjectPublicSummaryContentRow): Record<string, unknown> {
   return {
     id: row.id,
     space_id: row.space_id,
@@ -895,7 +1034,22 @@ function projectPublicSummaryToOut(row: ProjectPublicSummaryRow): Record<string,
     highlights: stringArray(row.highlights_json),
     source_refs: Array.isArray(row.source_refs_json) ? row.source_refs_json : [],
     redaction_version: row.redaction_version,
-    review_status: row.review_status,
+  };
+}
+
+function projectPublicSummaryToOut(row: ProjectPublicSummaryPublicationRow): Record<string, unknown> {
+  return {
+    ...projectPublicSummaryContentOut(row),
+    source_draft_version: Number(row.source_draft_version),
+    published_by_user_id: row.published_by_user_id,
+    published_at: dateIso(row.published_at) ?? new Date(0).toISOString(),
+  };
+}
+
+function projectPublicSummaryDraftToOut(row: ProjectPublicSummaryDraftRow): Record<string, unknown> {
+  return {
+    ...projectPublicSummaryContentOut(row),
+    draft_version: Number(row.draft_version),
     updated_by_user_id: row.updated_by_user_id,
     generated_by_run_id: row.generated_by_run_id,
     created_at: dateIso(row.created_at) ?? new Date(0).toISOString(),

@@ -17,10 +17,9 @@ import { IdSchema, ISODateTimeSchema } from "./common.js";
  *
  * The five stages are a **system constant**, not per-Project configuration.
  * The stress test across delivery, research, operations, learning, events and
- * personal work found the same five everywhere; only the wording differed, and
- * a per-Project "mode" that swapped the wording was the last thing left of a
- * Project classification nothing else read, so it went (ADR 0019). The keys,
- * their order, and their meaning are identical in every Project.
+ * personal work found the same five everywhere. The keys, their order, and
+ * their meaning are identical in every Project (ADR 0019). Do not add a
+ * per-Project mode that only swaps the wording.
  */
 
 /**
@@ -68,9 +67,8 @@ export function workLoopStageLabel(stage: WorkLoopStageKey): string {
  * Stages are ordered but movement is not: verification that fails because the
  * method was wrong belongs back at `plan`, and one that fails because the goal
  * was misunderstood belongs back at `frame`. A simple ordered index therefore
- * classifies the move rather than restricting it — `allowed_next` matrices
- * were considered and rejected, because every legal matrix for these five
- * ended up allowing everything.
+ * classifies the move rather than restricting it. Do not add an
+ * `allowed_next` matrix. Every legal matrix for these five allows everything.
  */
 export const STAGE_TRANSITION_KINDS = ["advance", "regress", "skip", "reopen"] as const;
 export const StageTransitionKindSchema = z.enum(STAGE_TRANSITION_KINDS);
@@ -263,7 +261,7 @@ export const ProjectBoardResponseSchema = z
     /** Who asked. The filters below are relative to this person. */
     viewer_user_id: IdSchema,
     /** Whether they may move, close or reassign a card. A viewer sees the
-     * Board and drags nothing; without this the drag would 403 after the drop. */
+     * Board and drags nothing. Do not hide that. The drag would 403 after the drop. */
     viewer_can_write: z.boolean(),
     /** Card counts per filter, so the control can show them without a second fetch. */
     filters: z.object({
@@ -451,10 +449,10 @@ const ProjectWorkUpdateBaseSchema = z.object({
   undo: ProjectWorkUpdateUndoSchema.nullable(),
   /**
    * What this update replaced, when it replaced something a person would want
-   * to weigh it against — today, an Agent's previous persona. Reversing is one
-   * action, but deciding whether to reverse needs both sides, and sending the
-   * person to the version chain for the other half is the thing ADR 0017 §4's
-   * "records every write with what changed" exists to avoid.
+   * to weigh it against. A persona revision carries the previous one.
+   * Reversing is one action, but deciding whether to reverse needs both
+   * sides. Do not send the person to the version chain for the other half
+   * (ADR 0017 §4).
    */
   previous_summary: z.string().nullable(),
   /** Set once a later update reversed this one. */
@@ -463,10 +461,9 @@ const ProjectWorkUpdateBaseSchema = z.object({
 
 export const ProjectWorkUpdateSchema = ProjectWorkUpdateBaseSchema.extend({
   /**
-   * One turn's writes of one kind, collapsed. Six sub-questions created by one
-   * decomposition are one thing that happened, and six rows of it is the
-   * per-item ceremony ADR 0017 removed from the approval queue arriving again
-   * in the feed. Null when the update stands alone; members carry their own
+   * One turn's writes of one kind, collapsed. A decomposition is one thing
+   * that happened. Do not emit one row per item. That is the per-item ceremony
+   * the feed must not repeat. Null when the update stands alone; members carry their own
    * undo, the fold carries none.
    */
   members: z.array(ProjectWorkUpdateBaseSchema).nullable(),

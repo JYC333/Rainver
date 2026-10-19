@@ -1,7 +1,5 @@
 # Runs And Outputs
 
-Date: 2026-05-14
-
 Runs are durable execution records. `execution_kind` distinguishes an ACP
 Agent Run from a bounded ProviderTask Run; `run_role` independently marks an
 execution or coordinator. A Run must be auditable: request metadata, selected
@@ -24,8 +22,7 @@ database authority. ACP Agent prompts receive authorized context through
 Runtime Context Delivery, not by serializing the whole envelope into a second
 prompt channel.
 
-The legacy server-local CLI Run Exchange is not used by current Agent Runs:
-selectable Agent runtimes execute through ACP on a Host daemon. Declared output
+Selectable Agent runtimes execute through ACP on a Host daemon. Declared output
 artifacts are collected from the execution Host and checked against the Run's
 output contract. Missing or invalid required outputs fail the Run; undeclared
 files cannot satisfy a declaration.
@@ -136,7 +133,10 @@ user grant cannot preserve a removed member's historical output. Artifacts and
 proposals materialized from those Runs remain `selected_users` and inherit the
 Run grants; adapter output cannot widen them to `space_shared`. Room members may
 read task evidence, but only the speaking task's `manager_user_id` may mutate,
-pause, cancel, or append directly to that task.
+pause, cancel, or append directly to that task — and only while they remain an
+active Room member: `manager_user_id` is provenance, not authority (B8A), so
+removal from the Room ends the manager's reads of and controls over the Room
+tasks they started, in the list as well as the detail.
 
 `GET /api/v1/agent-groups/{group_id}/trace` is the grouped-run companion read
 model. It returns the group, members, task messages, delegations, root run id,
@@ -186,12 +186,11 @@ detail to both.
 - `output_text` alone is display output and does not create an Artifact or
   Proposal.
 - Durable mutations are review-gated; run execution does not auto-apply proposals.
-- Future Knowledge generation from run output must follow Run/Artifact -> `knowledge_*`
-  proposal -> human acceptance -> active KnowledgeItem. Run output must not
-  directly create active Knowledge or Memory.
-- Knowledge source monitoring is a future evaluator. Current Knowledge proposal
-  apply relies on explicit proposal approval and the `proposal.apply` policy
-  gate, not on source-monitoring classification.
+- Run output does not directly create active Knowledge or Memory. A Knowledge
+  write from run output goes through a `knowledge_*` proposal and human
+  acceptance.
+- Knowledge proposal apply uses proposal approval and the `proposal.apply`
+  policy gate. It does not classify through source monitoring.
 
 ## Materialization
 
@@ -280,7 +279,7 @@ authority-envelope, and `run.spawn_child` policy checks before queueing any
 child run.
 
 ACP Agent Runs inside an AgentRunGroup expose authorized room tools through the
-same `AgentToolGateway`: `agent.delegate` and `agent.wait_for_results`. The
+same `SystemActionGateway`: `agent.delegate` and `agent.wait_for_results`. The
 corresponding
 snapshotted Run tool grant. They are available to every active room agent, not
 only the manager. Natural-language requests such as
@@ -289,7 +288,11 @@ only the manager. Natural-language requests such as
 their answers. If the current agent needs sibling or delegated results before it
 can answer, it calls `agent.wait_for_results`; the run moves to
 `waiting_for_dependency`, releases the worker, and is requeued as the same run
-after all declared dependency runs are terminal.
+after all declared dependency runs are terminal. A wait on runs that are
+themselves waiting, directly or through others, for the caller is refused
+(`dependency_cycle`) instead of parking both: a later recipient of the same
+message is parked behind the first at creation, so the first waiting on
+`current_turn` would otherwise never wake.
 
 Product UI room messages create one manager/root run for an initialized
 Conversation, not at Room creation. Conversation setup is an explicit draft
@@ -352,14 +355,17 @@ proposal-envelope fields.
 - Native capability execution is not active. System bookkeeping runs may
   carry `capability_id` / `capabilities_json` provenance, but they do not execute
   `runtime_key="capability"`; that runtime definition is disabled.
-- External capabilities default **disabled**; enable state persists in `$RAINVER_HOME/config/settings.yaml` (`capabilities.enabled_external_capabilities`) and survives registry reload.
-- Disabled external capabilities fail at adapter resolution with `capability_disabled` before execution.
-- `one_shot_docker` is the critical local-CLI executor mode. It provides a
-  separate container with deny-by-default networking, read-only root, dropped
-  capabilities, no-new-privileges, and fixed resource limits. Docker/image/path
-  failures are terminal and never downgrade to worktree execution. Worktree
-  execution still scopes repository changes only and does not provide OS,
-  network, or resource isolation.
+- There is no external-capability execution path: no enable switch or
+  `capability_disabled` resolution error exists, and the `capability` runtime
+  definition is `planned` and disabled by default.
+- `one_shot_docker` is the sandbox level a critical-risk vendor CLI run receives
+  from `resolveSandboxLevelForRuntime`. File-access CLI specs set
+  `supports_one_shot_docker`; an adapter whose spec does not fails preparation
+  with `docker_sandbox_not_supported` and does not run. The level does not start
+  a container. `workingDirScopeForLevel` maps it to `worktree`. On a daemon run
+  the level is carried on the isolation policy; the workspace is the Location,
+  and only `read_only` changes what the run is given. Worktree execution scopes
+  repository changes and does not provide OS, network, or resource isolation.
 
 ## Validation status
 
@@ -370,10 +376,9 @@ enabled `ValidationRecipe`/profile checks, adapter output, materialization
 summaries, and the live sandbox. Supported deterministic checks are
 `command`, `test`, `lint`, `typecheck`, `file_exists`, `file_changed`,
 `diff_scope`, `artifact_exists`, `artifact_schema`, `output_schema`,
-`proposal_created`, and `no_forbidden_change`. Code-patch collection now
+`proposal_created`, and `no_forbidden_change`. Code-patch collection
 records structural validation metadata and the engine verifies changed files
-and forbidden-path boundaries; the proposal payload no longer claims that
-patch validation is skipped.
+and forbidden-path boundaries.
 
 Command execution and Git inspection use the typed `command_run` host frame,
 with one workspace identity and recipe argv. There is no shell or ambient
@@ -396,13 +401,13 @@ space-scoped result read model.
 
 `runs` is the logical execution record; `run_attempts` is the physical
 execution record. The first dispatch claims a pre-created queued attempt when
-available, while legacy runs are backfilled as attempt 1. A retry never creates
+available. A Run with no attempt row is recorded as attempt 1. A retry never creates
 a second logical Run: it records the completed attempt, writes an idempotent
 `run_supervisor_decisions` row, and queues the next attempt. When C2 has a
 persisted fallback chain, the next untried eligible profile is selected and
 stamped for that attempt; an explicit profile remains a hard pin.
 
-The deterministic MVP retries classified transient failures plus explicit
+The supervisor retries classified transient failures plus explicit
 semantic rejection, deterministic verification failure, and required Run
 Exchange output validation failure. A successful adapter process with an
 explicit `status=rejected` or failed/error acceptance check is terminalized as
@@ -433,8 +438,8 @@ API in [EXECUTION_MODEL.md](EXECUTION_MODEL.md).
 CLI cancellation is two-phase: the Run enters `cancelling`, the control plane
 asks the host daemon to terminate the process group, and the Run is marked
 `cancelled` only after the daemon confirms exit; otherwise it stays
-`cancelling` with a `cancel_confirmation_timeout` result. Since ADR 0016 the
-signals are the daemon's — no CLI process runs in the server. On worker
+`cancelling` with a `cancel_confirmation_timeout` result. The cancel signals
+are the daemon's (ADR 0016). No CLI process runs in the server. On worker
 startup, a stale `running` run whose in-flight state was lost becomes
 `orphaned`, is finalized, and passes through the same supervisor policy. A
 stale `cancelling` run settles as `cancelled` so an explicit cancel is not
@@ -442,19 +447,18 @@ undone by an automatic orphan retry. A
 daemon attempt also has a no-output/no-activity watchdog, which reports
 `runtime_stall_timeout`.
 
-`manual_review` and `model_judge` are represented as declared, skipped
-verifier types only. They are not completion evidence until their respective
-review/model boundaries land; model-judge execution must use a model distinct
-from the generator. Root/integration verification is implemented by the B2
+`manual_review` and `model_judge` return `skipped`. A skipped result cannot
+make a run pass. Do not implement `model_judge` with the same model that
+generated the output. Root and integration verification are implemented by the
 Plan graph layer.
 
 The runtime registry exposes `AgentRuntimeDefinition`s for selectable ACP
 runtimes. One `AcpRuntimeAdapter` and `AcpController` implement Agent execution;
 runtime definitions provide command, installation, backend and capability
 facts. Static runtime capability declarations are not dynamic conformance
-evidence. In particular, the Host-daemon path does not currently apply the
-legacy generated subagent-deny config, so local CLI candidates stay at low
-effective trust until that control is enforced at the Host boundary.
+evidence. The Host-daemon path does not apply a vendor subagent-deny
+declaration, so local CLI candidates stay at low
+effective trust. Do not treat a static declaration as that control.
 
 Workflow definitions are versioned through the evolvable-asset control plane.
 `runs.workflow_version_id` records the approved version selected for a fixed
@@ -490,8 +494,8 @@ over-ceiling quota refuses admission. The decision callback, domain-budget
 check, Run/link creation, and audit persistence share one transaction.
 Autonomous execution permission snapshots remove `authorization.request` and
 all side-effecting system actions, so unattended work cannot park itself for a
-new interactive grant. A scheduled recovery task cancels any legacy/unexpected
-autonomous Run that nevertheless remains `waiting_for_review` beyond one hour.
+new interactive grant. A scheduled recovery task cancels an autonomous
+Run that remains `waiting_for_review` beyond one hour.
 
 ## Run model config (`resolved_model`)
 

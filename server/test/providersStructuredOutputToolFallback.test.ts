@@ -17,9 +17,11 @@ function target(providerId: string): InvocationTarget {
     provider: {
       id: providerId,
       space_id: "space-1",
+      home_space_id: "space-1",
       name: providerId,
       provider_type: "openai_compatible",
       base_url: `https://api.${providerId}.test/v1`,
+      deployment: "cloud" as const,
       network_profile_id: null,
       default_model: "test-model",
       available_models: [],
@@ -215,9 +217,9 @@ describe("openai-compatible structured output forced-tool fallback", () => {
     expect(caught).toBeInstanceOf(ProviderInvocationError);
     const failure = caught as ProviderInvocationError;
     expect(failure.code).toBe("structured_output_invalid");
-    // Without the tool-call arguments the failure logger only ever showed the
-    // reasoning prose, leaving the payload that actually failed the schema
-    // unrecorded anywhere.
+    // The failure record includes the tool-call arguments. Do not log only
+    // the reasoning prose. The payload that failed the schema would go
+    // unrecorded.
     expect(failure.responseText).toContain('{"wrong":"shape"}');
     expect(failure.responseText).toContain("I'll call the tool now.");
   });
@@ -287,7 +289,7 @@ describe("openai-compatible structured output forced-tool fallback", () => {
     expect(attempts[1]!.body.max_completion_tokens ?? attempts[1]!.body.max_tokens).toBe(5);
     // A larger caller budget still wins.
     expect(attempts[2]!.body.max_completion_tokens ?? attempts[2]!.body.max_tokens).toBe(200_000);
-    // Unknown models keep the previous behavior (provider default).
+    // Unknown models keep the provider default.
     expect(attempts[3]!.body.max_tokens).toBeUndefined();
   });
 });

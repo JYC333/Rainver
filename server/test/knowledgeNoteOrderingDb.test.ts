@@ -12,11 +12,9 @@ import { knowledgeModule } from "../src/modules/knowledge/index.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 
-// note_collection_items.sort_order existed in the schema before this but was
-// always written as a hardcoded 0 and never read for display order — notes
-// were always shown newest-updated-first. This covers making that column
-// meaningful: append-on-create/move, and explicit repositioning for drag
-// reordering within a folder.
+// `note_collection_items.sort_order` is the display order. Append on create
+// and move, and reposition explicitly for a drag within a folder. Do not
+// write a hardcoded 0 and do not order notes newest-updated-first.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -32,9 +30,9 @@ afterAll(() => {
 });
 
 beforeAll(async () => {
-  // Not `|| !app`: `app` is what this hook builds, so guarding on it meant the
-  // hook returned before building it and every test in this file took its own
-  // `!app` early return — reporting a pass without running.
+  // Not `|| !app`. `app` is what this hook builds. Do not guard on it: the
+  // hook returns before building it and every test takes its own `!app`
+  // early return, reporting a pass without running.
   if (!db.available) return;
   __setAuthIdentityForTests({ spaceId: SPACE, userId: USER });
   app = buildModuleServer(loadConfig({

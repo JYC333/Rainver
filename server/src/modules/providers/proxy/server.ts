@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { once } from "node:events";
 import { connect, type AddressInfo } from "node:net";
 import { Duplex, Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import type { ServerConfig } from "../../../config.js";
 import {
   ProviderCommandValidationError,
@@ -52,7 +53,7 @@ export interface ProviderProxyServerHandle {
   close(): Promise<void>;
 }
 
-export interface ProviderProxyServerDeps {
+interface ProviderProxyServerDeps {
   leaseRegistry?: ProviderProxyLeaseRegistry;
   commandStore?: Pick<ProviderCommandStore, "resolveProviderApiKey">;
   resolveUsageAttribution?: (observation: UsageObservation) => Promise<UsageAttribution>;
@@ -86,7 +87,7 @@ export async function startProviderProxyServer(
   server.on("connect", (request, client, head) => handleSubscriptionConnect(request, client, head));
 
   const host = config.providerProxyListenHost;
-  // Port 0 keeps the historical OS-assigned port. A published, therefore
+  // Port 0 is the OS-assigned port. A published, therefore
   // fixed, port is what makes the proxy reachable from a paired execution
   // host, so the deployment opts in rather than the port moving on restart.
   await listen(server, host, config.providerProxyPort);
@@ -192,6 +193,13 @@ async function handleProviderProxyRequest(
   }
 
   const body = await readBody(request);
+  if (lease.pinned_model) {
+    const requested = stringValue(parseJsonObject(body)?.model);
+    if (requested && requested !== lease.pinned_model) {
+      sendJson(response, 403, { error: "provider_proxy_model_not_leased" });
+      return;
+    }
+  }
   const attributionObservation = providerProxyUsageObservation(lease, null);
   const attribution = deps.resolveUsageAttribution
     ? await deps.resolveUsageAttribution(attributionObservation)
@@ -284,13 +292,15 @@ async function forwardUpstreamResponse(
     }
 
     await recordProviderProxyUsage(config, lease, usageSequence, upstream, null, attribution, recordUsageObservation);
-    for (const chunk of inspected.chunks) await writeResponseChunk(response, chunk);
-    await pipeReaderToResponse(inspected.reader, response);
+    await pipeReaderToResponse(inspected.reader, response, inspected.chunks);
     return;
   }
 
   await recordProviderProxyUsage(config, lease, usageSequence, upstream, null, attribution, recordUsageObservation);
-  Readable.fromWeb(upstream.body).pipe(response);
+  // Awaited, so a stream the provider breaks mid-generation rejects this
+  // request instead of raising an unhandled 'error' that ends the process;
+  // a client that disconnects cancels the upstream body the same way.
+  await pipeline(Readable.fromWeb(upstream.body), response);
 }
 
 function shouldInspectJsonUsage(upstream: Response): boolean {
@@ -326,23 +336,50 @@ async function readResponseBodyForUsage(
   }
 }
 
-async function pipeReaderToResponse(
+/**
+ * Replays the chunks already read for usage inspection, then streams the rest
+ * of the upstream body. Whichever side stops first, the upstream body is
+ * released: a client that hangs up mid-stream must not leave the upstream
+ * connection and its buffered chunks held until the process restarts.
+ */
+export async function pipeReaderToResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   response: ServerResponse,
+  replay: readonly Buffer[],
 ): Promise<void> {
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) {
-      response.end();
-      return;
+  try {
+    for (const chunk of replay) {
+      if (!(await writeResponseChunk(response, chunk))) return;
     }
-    await writeResponseChunk(response, Buffer.from(value));
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        response.end();
+        return;
+      }
+      if (!(await writeResponseChunk(response, Buffer.from(value)))) return;
+    }
+  } finally {
+    if (!response.writableEnded) await reader.cancel().catch(() => undefined);
   }
 }
 
-async function writeResponseChunk(response: ServerResponse, chunk: Buffer): Promise<void> {
-  if (response.write(chunk)) return;
-  await once(response, "drain");
+/** False once the client has gone: a socket that closed emits 'close', never 'drain'. */
+async function writeResponseChunk(response: ServerResponse, chunk: Buffer): Promise<boolean> {
+  if (response.destroyed) return false;
+  if (response.write(chunk)) return true;
+  const gone = new AbortController();
+  const onClose = () => gone.abort();
+  response.once("close", onClose);
+  try {
+    await once(response, "drain", { signal: gone.signal });
+    return true;
+  } catch (error) {
+    if (gone.signal.aborted) return false;
+    throw error;
+  } finally {
+    response.off("close", onClose);
+  }
 }
 
 interface ProxyUsageMetadata {

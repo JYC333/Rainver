@@ -2,6 +2,7 @@ import { describe, expect, it, beforeAll, beforeEach } from "vitest";
 import { resetTables } from "./support/resetTables.js";
 import { loadFinanceLedgerRuntime } from "./financeLedgerRuntime.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 
 const {
   plugin: { financeLedgerPlugin },
@@ -58,6 +59,61 @@ describe("finance ledger account names", () => {
 });
 
 describe("finance ledger service", () => {
+  it("revalidates account dates after a concurrent close commits", async () => {
+    if (!db.available) return;
+    const { book, checking, groceries } = await createBasicLedger();
+    const directive = await financeLedgerService.createTransactionDraft(db.pool, SPACE_A, book.id, USER_1, {
+      date: "2026-07-02", postings: [
+        { accountId: checking.id, amount: { number: "-1", commoditySymbol: "USD" } },
+        { accountId: groceries.id, amount: { number: "1", commoditySymbol: "USD" } },
+      ],
+    });
+    const closing = await db.pool.connect();
+    let settled = false;
+    try {
+      await closing.query("BEGIN");
+      await financeLedgerService.closeAccount(closing, SPACE_A, book.id, checking.id, "2026-07-01", USER_1);
+      const posting = financeLedgerService.postDirective(db.pool, SPACE_A, book.id, directive.id)
+        .then(() => { settled = true; return null; }, (error: Error) => { settled = true; return error; });
+      await waitForLockWaiter(db.pool, { settled: () => settled });
+      expect(settled).toBe(false);
+      await closing.query("COMMIT");
+      expect(await posting).toMatchObject({ message: "Directive uses an account that is not open on its date" });
+      const persisted = await db.pool.query(`SELECT status FROM finance_directives WHERE id=$1`, [directive.id]);
+      expect(persisted.rows[0]?.status).toBe("draft");
+    } finally {
+      await closing.query("ROLLBACK");
+      closing.release();
+    }
+  });
+
+  it("refuses a close after a concurrent future posting commits", async () => {
+    const { book, checking, groceries } = await createBasicLedger();
+    const directive = await financeLedgerService.createTransactionDraft(db.pool, SPACE_A, book.id, USER_1, {
+      date: "2026-07-02", postings: [
+        { accountId: checking.id, amount: { number: "-1", commoditySymbol: "USD" } },
+        { accountId: groceries.id, amount: { number: "1", commoditySymbol: "USD" } },
+      ],
+    });
+    const posting = await db.pool.connect();
+    let settled = false;
+    try {
+      await posting.query("BEGIN");
+      await financeLedgerService.postDirective(posting, SPACE_A, book.id, directive.id);
+      const closing = financeLedgerService.closeAccount(db.pool, SPACE_A, book.id, checking.id, "2026-07-01", USER_1)
+        .then(() => { settled = true; return null; }, (error: Error) => { settled = true; return error; });
+      await waitForLockWaiter(db.pool, { settled: () => settled });
+      expect(settled).toBe(false);
+      await posting.query("COMMIT");
+      expect(await closing).toMatchObject({ message: "Assets:Bank:Checking has posted entries after 2026-07-01" });
+      const account = await db.pool.query(`SELECT closed_at FROM finance_accounts WHERE id=$1`, [checking.id]);
+      expect(account.rows[0]?.closed_at).toBeNull();
+    } finally {
+      await posting.query("ROLLBACK");
+      posting.release();
+    }
+  });
+
   it("creates books, commodities, and accounts within a space", async () => {
     const { book, usd, checking } = await createBasicLedger();
 
@@ -144,6 +200,25 @@ describe("finance ledger service", () => {
         ],
       }),
     ).rejects.toThrow("Account is closed");
+  });
+
+  it("accepts a posting dated the day the account closes, as its own Beancount check does", async () => {
+    // Validation orders a day's close after its transactions (sort.ts), so an
+    // imported file may move the last balance out on the closing date; the
+    // same entry typed in has to pass too.
+    const { book, checking, groceries } = await createBasicLedger();
+    await financeLedgerService.closeAccount(db.pool, SPACE_A, book.id, checking.id, "2026-07-01", USER_1);
+
+    await expect(
+      financeLedgerService.createTransactionDraft(db.pool, SPACE_A, book.id, USER_1, {
+        date: "2026-07-01",
+        narration: "Closing transfer",
+        postings: [
+          { accountId: checking.id, amount: { number: "-12.50", commoditySymbol: "USD" } },
+          { accountId: groceries.id, amount: { number: "12.50", commoditySymbol: "USD" } },
+        ],
+      }),
+    ).resolves.toBeDefined();
   });
 
   it("allocates distinct sequences under concurrent same-date entry", async () => {

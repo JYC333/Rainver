@@ -1,22 +1,20 @@
 # Capability System
 
 > **Capability ≠ Official Optional Module.**
-> A Capability is an agent AI skill/behavior descriptor (this document).
+> A product capability is a definition in `server/src/modules/capabilities/`.
+> Catalog YAML is diagnostic and is not executed.
 > An Official Optional Module is a product feature package with DB-backed enable/disable state per space/user.
 > They are separate concepts. See `.agent/architecture/OFFICIAL_OPTIONAL_MODULES.md` and ADR 0009.
 
 ## What is a capability?
 
-A capability is a versioned, self-describing unit of agent behaviour.
-It is not just a prompt — it is a folder containing:
+A product capability is a definition owned by
+`server/src/modules/capabilities/`. The YAML under `catalog/capabilities/`
+is a read-only diagnostic catalog. It is not the product capability path.
+Do not execute a catalog manifest.
 
-```
-capabilities/<capability-id>/
-├── capability.yaml     Manifest (required)
-├── README.md           Human docs (optional)
-├── prompts/            Prompt assets (optional)
-└── tests/              Capability tests (optional)
-```
+A catalog directory may hold `capability.yaml`, a README, and prompt files.
+Those files are metadata.
 
 ## capability.yaml fields
 
@@ -44,60 +42,20 @@ outputs:
     - research_intake.result.v1
 ```
 
-Capability manifests are catalog metadata today. `entrypoint.type: none` means
-the capability is discoverable but not directly executable by a capability
-runtime. A future server-native capability executor must be added through
-`server/src/modules/runtimeAdapters` and guarded like any other runtime
-adapter; shell commands, remote code loading, broad filesystem access, and
-subprocess execution remain unsupported.
+`entrypoint.type: none` means the catalog entry is not directly executable.
+The `capability` runtime key is `implementation_status: "planned"` and is not
+enabled. Do not route a catalog manifest through `runtimeAdapters`. Shell
+commands, remote code loading, broad filesystem access, and subprocess
+execution are not supported.
 
-## Capability Registry
+## Catalog
 
-The `CapabilityRegistry` loads capabilities from two sources:
-
-1. **Builtin** — manifests under `catalog/capabilities/` (bundled with the server image).
-2. **External workspace** — manifests under local roots registered on a `capability_library` workspace.
-
-Reload happens through the server catalog routes, including
-`POST /api/v1/capabilities/reload`.
-
-### External workspace discovery
-
-Register a workspace with:
-
-- `workspace_type = "capability_library"` — real `Workspace.workspace_type` column
-- `metadata_json.capability_roots` — list of relative local paths, e.g. `["capabilities"]`
-
-Example workspace create payload fields:
-
-```json
-{
-  "workspace_type": "capability_library",
-  "metadata_json": {
-    "capability_roots": ["capabilities"]
-  }
-}
-```
-
-External capability roots are **local only**. The registry does not scan GitHub URLs, remote URLs, absolute paths, or paths that escape the workspace root. Ordinary (`project`) workspaces are not scanned.
-
-### Enable / disable state
-
-| Source | Default | Persisted? |
-|--------|---------|------------|
-| Builtin | manifest `enabled` (default `true`) | No — manifest is source of truth on reload |
-| External workspace | disabled | Yes — `$RAINVER_HOME/config/settings.yaml` |
-
-Persisted shape:
-
-```yaml
-capabilities:
-  enabled_external_capabilities:
-    - research_intake
-    - rss_watch
-```
-
-Manifests define capability code and metadata; they are **not** the local trust/enable store for external capabilities. Persisted IDs for capabilities that are no longer discovered are ignored safely. Newly discovered external capabilities are never auto-enabled.
+The `catalog` server module reads the bundled manifests under
+`catalog/capabilities/` (and agent template specs under
+`catalog/agent-templates/`) read-only. Its routes are
+`GET /api/v1/server/catalog`, `GET /api/v1/server/catalog/capabilities`, and
+`GET /api/v1/server/catalog/agent-templates`. There is no reload route and no
+external or workspace capability source.
 
 This is not a marketplace or remote install system.
 
@@ -124,19 +82,19 @@ third-party server code, write active memory, or auto-enable capabilities.
 Imported skills are normalized and risk-scanned before any conversion into
 Rainver capability candidates.
 
-## Built-in capabilities
+## Catalog entries
 
-| ID | Purpose |
-|---|---|
-| `memory.reflect` | Analyze sessions, generate memory proposals |
+`catalog/capabilities/` holds `memory.reflect` and
+`capture-memory-extraction`. They are manifest metadata. Session reflection
+(`POST /api/v1/sessions/:sessionId/reflect`) writes a `memory_create`
+proposal from the recent transcript. It does not run `memory.reflect`.
 
 ## Execution
 
-Capability execution is not active today. The registry entry is
-`runtime_key="capability"` (`runtimeAdapters/specs.ts`), still
-`implementation_status: "planned"` and not enabled by default; it is not a
-selectable ACP Agent runtime. Current server routes expose
-capability manifest metadata for catalog and UI use.
+The `capability` runtime (`runtime_key="capability"` in
+`runtimeAdapters/specs.ts`) has `implementation_status: "planned"` and is not
+enabled by default. It is not a selectable ACP Agent runtime. Server routes
+expose capability manifest metadata for catalog and UI use.
 
 Claude Code and Codex receive generated skill files; OpenCode receives a
 generated prompt block through ACP Runtime Context Delivery. These are render

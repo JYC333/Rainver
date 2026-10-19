@@ -97,6 +97,21 @@ beforeAll(async () => {
 });
 
 describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
+  it("answers a submitted framework outside the limits as the person's error, not the model's", async () => {
+    if (!db.available || !app) return;
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/v1/projects/${PROJECT}/research/question/assessment/confirm`,
+      payload: {
+        thread_id: THREAD,
+        refinement: { ...refinementOutput, sub_questions: ["x".repeat(250)] },
+        manually_adjusted: true,
+      },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({ code: "question_refinement_input_invalid" });
+  });
+
   it("returns an actionable structured assessment for an unanswerable query", async () => {
     if (!db.available || !app) return;
     const response = await app.inject({
@@ -141,9 +156,9 @@ describe("POST /projects/:id/research/question/refine (real Postgres)", () => {
       clarifying_questions: [{ question: "Which runtime should be studied?", options: ["Sandboxed CLI", "Managed API"], allow_multiple: false }],
     });
     // ADR 0022 §2/§3: question refinement is an incidental bounded call. It
-    // selects a provider and nothing else — it used to manufacture the managed
-    // Research Agent and a Runtime Profile purely to hand an `agentId` to the
-    // prompt resolver, for an `agent`-scoped prompt attempt nothing writes.
+    // selects a provider and nothing else. Do not manufacture a managed
+    // Research Agent and a Runtime Profile just to hand an `agentId` to the
+    // prompt resolver.
     const managedAgent = await db.pool.query(`SELECT id FROM agents WHERE space_id=$1 AND agent_kind='system_research'`, [SPACE]);
     expect(managedAgent.rows).toHaveLength(0);
     const profiles = await db.pool.query(`SELECT id FROM agent_runtime_profiles WHERE space_id=$1`, [SPACE]);

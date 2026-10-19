@@ -9,6 +9,7 @@ import {
   assertNoteCollectionProjectWriter,
   bindNoteToPlacementProject,
 } from "./noteWriter.js";
+import { assertNoteEntryInvariant, lockNotesForPlacementChange } from "./notePlacementInvariant.js";
 import { assertProjectWriter } from "../projects/access.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
 
@@ -16,15 +17,13 @@ import { contentReadSql } from "../access/contentAccessSql.js";
  * A note reorder addresses a **placement**, not a note.
  *
  * `note_collection_items` is unique on `(collection_id, note_id, space_id)`, so
- * one note may sit in several folders. The previous payload carried only the
- * note id and the destination, and the UPDATE matched on `note_id` alone —
- * moving one placement silently rewrote every other placement of the same note
- * to the same folder. That is not a sort-order glitch: it destroys a placement.
- *
- * `fromCollectionId` is what identifies the row being moved. Rows that only
+ * one note may sit in several folders. `fromCollectionId` identifies the row
+ * being moved. Do not match the UPDATE on `note_id` alone: that rewrites every
+ * other placement of the same note into the destination folder and destroys
+ * them. Rows that only
  * shift position within their folder repeat their own folder there.
  */
-export interface NotesTreeReorderNotePlan {
+interface NotesTreeReorderNotePlan {
   kind: "notes";
   updates: Array<{
     noteId: string;
@@ -34,7 +33,7 @@ export interface NotesTreeReorderNotePlan {
   }>;
 }
 
-export type NotesTreeReorderPlan =
+type NotesTreeReorderPlan =
   | NotesTreeReorderNotePlan
   | {
       kind: "collections";
@@ -156,6 +155,13 @@ async function reorderNoteItems(
     throw new HttpError(404, "One or more note collections were not found");
   }
 
+  // Note rows before placement rows, the order every placement writer keeps
+  // (`notePlacementInvariant`), so a drag and a concurrent removal of the
+  // same note serialize instead of each seeing an entry the other is taking.
+  const lockedNotes = await lockNotesForPlacementChange(
+    db, identity.spaceId, updates.map((update) => update.noteId),
+  );
+
   // Every addressed row must exist as a placement *in the folder it is being
   // moved out of*, and the note behind it must be one this user can read.
   //
@@ -206,9 +212,9 @@ async function reorderNoteItems(
   }
 
   // A drag into a Project's subtree is a placement, and placement is what binds
-  // a note to a Project (U7) — so the same rule the explicit placement actions
-  // run has to run here. Before this it did not, and a drag could carry a note's
-  // baseline role out of the Project the role is scoped to.
+  // a note to a Project — so the same rule the explicit placement actions
+  // run has to run here. A drag must not carry a note's baseline role out of
+  // the Project the role is scoped to.
   for (const update of updates) {
     if (update.collectionId === update.fromCollectionId) continue;
     await bindNoteToPlacementProject(db, {
@@ -218,6 +224,35 @@ async function reorderNoteItems(
       actor: { userId: identity.userId },
     });
   }
+
+  // A placement dragged into a folder that already holds this note would land
+  // on the unique (collection, note) row. Say so, as the placement action
+  // does, rather than surface the index's error as a 500. A batch that swaps
+  // two placements is no collision: the row it would land on is leaving.
+  const occupied = await db.query<{ note_id: string }>(
+    `SELECT item.note_id
+       FROM unnest($2::varchar[], $3::varchar[], $4::varchar[])
+            AS moving(note_id, from_collection_id, to_collection_id)
+       JOIN note_collection_items item
+         ON item.space_id = $1
+        AND item.note_id = moving.note_id
+        AND item.collection_id = moving.to_collection_id
+      WHERE moving.from_collection_id <> moving.to_collection_id
+        AND NOT EXISTS (
+          SELECT 1
+            FROM unnest($2::varchar[], $3::varchar[]) AS leaving(note_id, from_collection_id)
+           WHERE leaving.note_id = item.note_id
+             AND leaving.from_collection_id = item.collection_id
+        )
+      LIMIT 1`,
+    [
+      identity.spaceId,
+      updates.map((update) => update.noteId),
+      updates.map((update) => update.fromCollectionId),
+      updates.map((update) => update.collectionId),
+    ],
+  );
+  if (occupied.rows.length > 0) throw new HttpError(409, "This note is already in that folder");
 
   const result = await db.query(
     `UPDATE note_collection_items AS item
@@ -239,6 +274,9 @@ async function reorderNoteItems(
   if ((result.rowCount ?? 0) !== updates.length) {
     throw new HttpError(409, "Note ordering changed concurrently; retry the reorder");
   }
+  // A drag out of a Project's subtree is a removal of that entry; the last
+  // one is refused here exactly as the explicit placement action refuses it.
+  await assertNoteEntryInvariant(db, identity.spaceId, lockedNotes);
   return updates.length;
 }
 
@@ -262,6 +300,11 @@ async function reorderNoteCollections(
   );
   const collectionById = new Map(rows.rows.map((row) => [row.id, row]));
   const updateById = new Map(updates.map((update) => [update.id, update]));
+  // A folder this reorder moves to the root has a proposed parent of `null`,
+  // which is an answer, not a missing one: only a folder the reorder does not
+  // touch keeps its stored parent.
+  const proposedParentId = (collectionId: string, storedParentId: string | null): string | null =>
+    updateById.has(collectionId) ? updateById.get(collectionId)!.parentId : storedParentId;
 
   const owningProject = (collectionId: string, proposed: boolean): string | null => {
     const visited = new Set<string>();
@@ -272,9 +315,7 @@ async function reorderNoteCollections(
       const current = collectionById.get(currentId);
       if (!current) throw new HttpError(404, "Note collection not found");
       if (current.project_id) return current.project_id;
-      currentId = proposed
-        ? (updateById.get(currentId)?.parentId ?? current.parent_id)
-        : current.parent_id;
+      currentId = proposed ? proposedParentId(currentId, current.parent_id) : current.parent_id;
     }
     return null;
   };
@@ -300,15 +341,14 @@ async function reorderNoteCollections(
       visited.add(parentId);
       const parent = collectionById.get(parentId);
       if (!parent) throw new HttpError(404, "Parent note collection not found");
-      parentId = updateById.get(parentId)?.parentId ?? parent.parent_id;
+      parentId = proposedParentId(parentId, parent.parent_id);
     }
   }
 
-  // A folder reparent changes every placement below it at once. Until S6 adds
-  // an explicit share operation, that must not be a back door around the
-  // per-placement Project binding/cross-Project guard. Keep Project boundaries
-  // stable here; users can create/move folders within a Project and can move
-  // notes into it through the guarded note path.
+  // A folder reparent changes every placement below it at once. It must not
+  // be a back door around the per-placement Project binding. Keep Project
+  // boundaries stable here; users can create and move folders within a
+  // Project and can move notes into it through the guarded note path.
   const checkedProjects = new Set<string>();
   for (const update of updates) {
     const current = collectionById.get(update.id)!;

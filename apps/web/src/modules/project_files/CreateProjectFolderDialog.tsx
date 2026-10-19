@@ -20,9 +20,7 @@ const FOLDER_KINDS = [
 
 type FolderCreateSource = 'managed' | 'clone' | 'connect' | 'host'
 
-/** Creating a Folder belongs to Files & Code, which is where a Folder is used.
- *  It used to live on the Project Overview, so the Files Area's own empty
- *  state had to send the user back to the Overview to create one. */
+/** Creating a Folder belongs to Files & Code, which is where a Folder is used. */
 export function CreateProjectFolderDialog({
   projectId,
   open,

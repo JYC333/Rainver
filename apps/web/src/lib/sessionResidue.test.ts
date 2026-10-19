@@ -56,9 +56,9 @@ describe('clearAuthenticatedBrowserState', () => {
   })
 
   it('clears a key nobody has thought of yet', () => {
-    // The point of a keep-list. A delete-list retained every new content key
-    // until somebody remembered to add its prefix, and nobody found out until
-    // the next person on that machine saw it.
+    // A keep-list. Do not switch to a delete-list. A new content key would
+    // stay until its prefix was added, and the next person on that machine
+    // would still see it.
     localStorage.setItem('rainver:some-feature-nobody-has-written-yet:p1', 'a note body')
     sessionStorage.setItem('brand.new.pane.state', 'thread-7')
     clearSessionResidue()
@@ -79,9 +79,9 @@ describe('cross-tab logout', () => {
 
   it('does not hear its own announcement', async () => {
     // A `BroadcastChannel` never delivers to itself, but it does deliver to
-    // every other channel object — including another one in the same tab. So
-    // announcing through a second object made the tab that signed out run the
-    // remote handler on itself.
+    // every other channel object — including another one in the same tab. Do
+    // not announce through a second object. The tab that signed out would run
+    // the remote handler on itself.
     let told = 0
     const stop = watchCrossTabLogout(() => { told += 1 })
     announceLogout()
@@ -91,9 +91,8 @@ describe('cross-tab logout', () => {
   })
 
   it('tells the other tabs, and runs the handler when another tab tells this one', async () => {
-    // Signing out in one tab used to leave every other tab holding a rendered
-    // page full of the previous person's content until something made it call
-    // the API.
+    // Signing out in one tab tells the others. Another tab must not keep
+    // rendering the previous person's page until it happens to call the API.
     let told = 0
     const stop = watchCrossTabLogout(() => { told += 1 })
     const other = new BroadcastChannel('rainver:auth')

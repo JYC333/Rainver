@@ -12,17 +12,17 @@ import { materializePlanGraph, type MaterializedPlanGraph } from "../plans/graph
 import type { AutomationRow } from "./repository.js";
 import { ExecutionGraphScheduler } from "../execution/executionGraphScheduler.js";
 import { InputBindingResolutionError, resolveNodeInputs, type ResolvedNodeInputs } from "../execution/nodeInputResolver.js";
-import { actionNodeHandlerRegistry, ActionNodeHandlerError } from "./actionNodeRegistry.js";
+import { executeActionNode } from "../execution/actionNodeExecution.js";
 import { workflowExecutionOutcomeHandlerRegistry } from "./workflowExecutionOutcomeRegistry.js";
 import type { WorkflowNodeInputBinding } from "@rainver/protocol";
 
-export interface ResolvedWorkflowExecutionTarget {
+interface ResolvedWorkflowExecutionTarget {
   versionId: string;
   contentJson: unknown;
   resolutionTrace: string[];
 }
 
-export interface WorkflowExecutionStartInput {
+interface WorkflowExecutionStartInput {
   db: Queryable;
   identity: SpaceUserIdentity;
   automation: AutomationRow;
@@ -66,13 +66,13 @@ export class WorkflowExecutionService {
       `INSERT INTO workflow_executions (
          id, space_id, automation_id, workflow_version_id, status, trigger_type,
          input_json, definition_json, resolution_trace_json, contract_snapshot_json,
-         budget_snapshot_json, research_operation_id, created_at, updated_at
+         budget_snapshot_json, research_operation_id, responsible_user_id, created_at, updated_at
        ) VALUES ($1, $2, $3, $4, 'queued', $5, $6::jsonb, $7::jsonb, $8::jsonb,
-                 $9::jsonb, $10::jsonb, $11, $12, $12)`,
+                 $9::jsonb, $10::jsonb, $11, $12, $13, $13)`,
       [executionId, input.identity.spaceId, input.automation.id, input.target.versionId, input.triggerType,
         JSON.stringify(input.inputJson), JSON.stringify(input.target.contentJson), JSON.stringify(input.target.resolutionTrace),
         JSON.stringify(automationContractSnapshot(input.automation)), JSON.stringify({ sources: input.budgetSources }),
-        input.researchOperationId ?? null, now],
+        input.researchOperationId ?? null, input.identity.userId, now],
     );
     const root = await new PgRunRepository(input.db).createCoordinatorRun({
       execution_kind: "agent",
@@ -143,12 +143,19 @@ export class WorkflowExecutionService {
     }
   }
 
-  async reconcile(client: Queryable, spaceId: string, executionId: string, userId: string): Promise<Record<string, unknown>> {
+  /**
+   * Advances an execution. Whoever triggers the pass — a checkpoint approver,
+   * a Run's finalization, the recovery scan — does not become the principal
+   * of what it schedules next: every node Run names the person recorded on
+   * the execution when it started (`responsible_user_id`), and the credential
+   * authority walks up to that same person.
+   */
+  async reconcile(client: Queryable, spaceId: string, executionId: string): Promise<Record<string, unknown>> {
     return withQueryableTransaction(client, (transaction) =>
-      this.reconcileLocked(transaction, spaceId, executionId, userId));
+      this.reconcileLocked(transaction, spaceId, executionId));
   }
 
-  private async reconcileLocked(client: Queryable, spaceId: string, executionId: string, userId: string): Promise<Record<string, unknown>> {
+  private async reconcileLocked(client: Queryable, spaceId: string, executionId: string): Promise<Record<string, unknown>> {
     const scope = await client.query<{ project_id: string | null }>(
       `SELECT a.project_id
          FROM workflow_executions e
@@ -166,13 +173,13 @@ export class WorkflowExecutionService {
       id: string; automation_id: string; workflow_version_id: string; root_run_id: string | null;
       status: string; input_json: Record<string, unknown>; definition_json: unknown; resolution_trace_json: string[];
       budget_snapshot_json: unknown; project_id: string | null; project_folder_id: string | null; agent_id: string;
-      research_operation_id: string | null;
+      research_operation_id: string | null; responsible_user_id: string;
       name: string; description: string | null; config_json: Record<string, unknown> | null;
       automation_status: string;
     }>(
       `SELECT e.id, e.automation_id, e.workflow_version_id, e.root_run_id, e.status,
               e.input_json, e.definition_json, e.resolution_trace_json, e.budget_snapshot_json,
-              e.research_operation_id,
+              e.research_operation_id, e.responsible_user_id,
               a.project_id, a.project_folder_id, a.agent_id, a.name, a.description, a.config_json,
               a.status AS automation_status
          FROM workflow_executions e JOIN automations a ON a.id = e.automation_id AND a.space_id = e.space_id
@@ -224,6 +231,8 @@ export class WorkflowExecutionService {
       return { workflow_execution_id: executionId, status: "completed", scheduled_node_ids: [] };
     }
     if (!execution.root_run_id) throw new HttpError(409, "Workflow Execution coordinator run is missing");
+    // The recorded principal, never whoever triggered this pass.
+    const userId = execution.responsible_user_id;
     const automation: AutomationRow = {
       id: execution.automation_id,
       space_id: spaceId,
@@ -259,7 +268,7 @@ export class WorkflowExecutionService {
     return { workflow_execution_id: executionId, status: "running", scheduled_node_ids: scheduledNodeIds };
   }
 
-  async reconcileForRun(client: Queryable, spaceId: string, runId: string, userId: string): Promise<void> {
+  async reconcileForRun(client: Queryable, spaceId: string, runId: string): Promise<void> {
     const rows = await client.query<{ execution_id: string }>(
       `SELECT DISTINCT node.execution_id
          FROM workflow_execution_node_runs link
@@ -267,7 +276,7 @@ export class WorkflowExecutionService {
         WHERE link.space_id = $1 AND link.run_id = $2`,
       [spaceId, runId],
     );
-    for (const row of rows.rows) await this.reconcile(client, spaceId, row.execution_id, userId);
+    for (const row of rows.rows) await this.reconcile(client, spaceId, row.execution_id);
   }
 
   private async scheduleReadyNodes(
@@ -405,9 +414,9 @@ export class WorkflowExecutionService {
     return scheduled;
   }
 
-  // Deterministic Workflow Actions own their attempts and outputs. They do
-  // not create Agent Runs; only a real delegated Run is linked in
-  // workflow_execution_node_runs.
+  // Deterministic Workflow Actions own their attempts and outputs, through
+  // the executor Plans share. They do not create Agent Runs; only a real
+  // delegated Run is linked in workflow_execution_node_runs.
   private async runActionNode(
     input: WorkflowExecutionStartInput,
     context: { executionId: string },
@@ -417,163 +426,30 @@ export class WorkflowExecutionService {
     },
     resolvedInputs: ResolvedNodeInputs,
   ): Promise<void> {
-    const now = new Date().toISOString();
-    const actionKey = stringValue(node.metadata_json.action_key);
-    const handler = actionKey ? actionNodeHandlerRegistry.get(actionKey) : null;
-    await input.db.query(
-      `UPDATE workflow_execution_nodes
-          SET status='in_progress', updated_at=$3
-        WHERE id=$1 AND space_id=$2`,
-      [node.id, input.identity.spaceId, now],
-    );
-    const attemptNumber = await nodeAttemptCount(input.db, input.identity.spaceId, node.id) + 1;
-    const attemptId = randomUUID();
-    await input.db.query(
-      `INSERT INTO workflow_execution_action_attempts (
-         id, space_id, node_id, attempt_number, action_key, status,
-         resolved_inputs_json, started_at
-       ) VALUES ($1, $2, $3, $4, $5, 'running', $6::jsonb, $7)`,
-      [attemptId, input.identity.spaceId, node.id, attemptNumber, actionKey, JSON.stringify(resolvedInputs), now],
-    );
-    if (!handler) {
-      const failedAt = new Date().toISOString();
-      const reason = actionKey ? `action_handler_not_registered:${actionKey}` : "action_key_missing";
-      await input.db.query(
-        `UPDATE workflow_execution_action_attempts
-            SET status='failed', error_json=$3::jsonb, ended_at=$4
-          WHERE id=$1 AND space_id=$2 AND status='running'`,
-        [attemptId, input.identity.spaceId, JSON.stringify({ error_code: reason, error_text: reason }), failedAt],
-      );
-      await input.db.query(
-        `UPDATE workflow_execution_nodes SET status='failed', blocked_reason=$3, updated_at=$4
-          WHERE id=$1 AND space_id=$2`,
-        [node.id, input.identity.spaceId, reason, failedAt],
-      );
-      return;
-    }
-    // Action handlers execute inside the WorkflowExecution transaction. A
-    // PostgreSQL statement error aborts that transaction until rollback; the
-    // failure recorder below must therefore have a savepoint to roll back to,
-    // otherwise it masks the actionable error with 25P02 and records nothing.
-    const transactional = typeof (input.db as Queryable & { release?: unknown }).release === "function";
-    const actionSavepoint = "workflow_action_handler";
-    if (transactional) await input.db.query(`SAVEPOINT ${actionSavepoint}`);
-    try {
-      const result = await handler({
-        db: input.db,
-        identity: input.identity,
-        config: this.config,
-        executionId: context.executionId,
-        nodeId: node.id,
-        nodeKey: node.node_key,
-        projectId: input.automation.project_id,
-        projectFolderId: input.automation.project_folder_id,
-        inputs: resolvedInputs.values,
-        bindings: resolvedInputs.bindings,
-        metadata: node.metadata_json,
-      });
-      const completedAt = new Date().toISOString();
-      if (result.delegatedRunId) {
-        const delegated = await input.db.query<{ id: string }>(
-          `SELECT id FROM runs
-            WHERE id=$1 AND space_id=$2
-              AND ($3::varchar IS NULL OR project_id=$3)`,
-          [result.delegatedRunId, input.identity.spaceId, input.automation.project_id],
-        );
-        if (!delegated.rows[0]) {
-          throw new ActionNodeHandlerError(
-            "Action handler returned an invalid delegated Run",
-          );
-        }
-      }
-      if (result.delegatedRunId) {
-        await input.db.query(
-          `INSERT INTO workflow_execution_node_runs (
-             id, space_id, node_id, run_id, role, resolved_inputs_json, created_at
-           ) VALUES ($1,$2,$3,$4,'delegated',$5::jsonb,$6)`,
-          [
-            randomUUID(),
-            input.identity.spaceId,
-            node.id,
-            result.delegatedRunId,
-            JSON.stringify(resolvedInputs),
-            completedAt,
-          ],
-        );
-      }
-      await input.db.query(
-        `UPDATE workflow_execution_action_attempts
-            SET status='succeeded', output_text=$3, output_json=$4::jsonb, ended_at=$5
-          WHERE id=$1 AND space_id=$2 AND status='running'`,
-        [attemptId, input.identity.spaceId, "Workflow action completed.", JSON.stringify(result.output), completedAt],
-      );
-      if (result.delegatedRunId) {
-        await input.db.query(
-          `UPDATE workflow_execution_nodes
-              SET status='in_progress', blocked_reason=NULL, updated_at=$3
-            WHERE id=$1 AND space_id=$2`,
-          [node.id, input.identity.spaceId, completedAt],
-        );
-        if (transactional) await input.db.query(`RELEASE SAVEPOINT ${actionSavepoint}`);
-        return;
-      }
-      await input.db.query(
-        `UPDATE workflow_execution_nodes
-            SET status='done', blocked_reason=NULL, updated_at=$3
-          WHERE id=$1 AND space_id=$2`,
-        [node.id, input.identity.spaceId, completedAt],
-      );
-      if (transactional) await input.db.query(`RELEASE SAVEPOINT ${actionSavepoint}`);
-    } catch (error) {
-      if (transactional) {
-        await input.db.query(`ROLLBACK TO SAVEPOINT ${actionSavepoint}`);
-        await input.db.query(`RELEASE SAVEPOINT ${actionSavepoint}`);
-      }
-      const failedAt = new Date().toISOString();
-      const message = error instanceof Error ? error.message : String(error);
-      const outputJson = error instanceof ActionNodeHandlerError ? error.outputJson : {};
-      await input.db.query(
-        `UPDATE workflow_execution_action_attempts
-            SET status='failed', error_json=$3::jsonb, ended_at=$4
-          WHERE id=$1 AND space_id=$2 AND status='running'`,
-        [attemptId, input.identity.spaceId, JSON.stringify({
-          error_code: error instanceof ActionNodeHandlerError ? "action_handler_failed" : "action_node_failed",
-          error_text: message,
-          ...(Object.keys(outputJson).length > 0 ? { partial_output: outputJson } : {}),
-        }), failedAt],
-      );
-      const attempts = await nodeAttemptCount(input.db, input.identity.spaceId, node.id);
-      const nextStatus = attempts < nodeMaxAttempts(node.contract_json) ? "ready" : "failed";
-      await input.db.query(`UPDATE workflow_execution_nodes SET status = $3, blocked_reason = $4, updated_at = $5 WHERE id = $1 AND space_id = $2`, [node.id, input.identity.spaceId, nextStatus, `action_handler_error:${message}`, failedAt]);
-    }
+    await executeActionNode({
+      db: input.db,
+      config: this.config,
+      identity: input.identity,
+      container: { kind: "workflow_execution", id: context.executionId },
+      node: { id: node.id, node_key: node.node_key, metadata_json: node.metadata_json, max_attempts: nodeMaxAttempts(node.contract_json) },
+      projectId: input.automation.project_id,
+      projectFolderId: input.automation.project_folder_id,
+      resolvedInputs,
+    });
   }
 }
 
 // Unified minimal Node Retry: the same node gets a new Run Attempt (a new
 // `runs`/`workflow_execution_node_runs` row) up to `contract_json.max_attempts`
-// (default 1, i.e. today's no-retry behavior); only once attempts are
-// exhausted does the node — and, transitively, the execution — actually
-// fail. No backoff and no arbitrary cycles: a retry is just "go back to
-// 'ready' so the next scheduling pass spawns attempt N+1," bounded by a
-// fixed count. rescan/resume/input-change are NOT retries — they are a new
-// generation/WorkflowExecution (see project_operations.generation).
+// (default 1, so a node runs once unless the contract asks for more); only
+// once attempts are exhausted does the node — and, transitively, the
+// execution — actually fail. No backoff and no arbitrary cycles: a retry is
+// just "go back to 'ready' so the next scheduling pass spawns attempt N+1,"
+// bounded by a fixed count. rescan/resume/input-change are NOT retries — they
+// are a new generation/WorkflowExecution (see project_operations.generation).
 function nodeMaxAttempts(contractJson: Record<string, unknown>): number {
   const value = contractJson.max_attempts;
   return typeof value === "number" && Number.isInteger(value) && value >= 1 ? value : 1;
-}
-
-async function nodeAttemptCount(db: Queryable, spaceId: string, nodeId: string): Promise<number> {
-  const result = await db.query<{ count: number }>(
-    `SELECT (
-       (SELECT count(*) FROM workflow_execution_node_runs
-         WHERE space_id=$1 AND node_id=$2 AND role='primary')
-       +
-       (SELECT count(*) FROM workflow_execution_action_attempts
-         WHERE space_id=$1 AND node_id=$2)
-     )::int AS count`,
-    [spaceId, nodeId],
-  );
-  return result.rows[0]?.count ?? 0;
 }
 
 async function projectLatestWorkflowNodeRuns(client: Queryable, spaceId: string, executionId: string): Promise<void> {
@@ -594,6 +470,9 @@ async function projectLatestWorkflowNodeRuns(client: Queryable, spaceId: string,
        JOIN LATERAL (
          SELECT wr.node_id, wr.run_id, wr.role FROM workflow_execution_node_runs wr
           WHERE wr.node_id = n.id AND wr.space_id = n.space_id
+            -- A superseded delegation is kept for audit only; selecting it
+            -- here would re-judge a node that has since succeeded by it.
+            AND wr.role IN ('primary', 'delegated')
           ORDER BY (wr.role='delegated') DESC, wr.created_at DESC, wr.id DESC LIMIT 1
        ) link ON true
        JOIN runs r ON r.id = link.run_id AND r.space_id = n.space_id

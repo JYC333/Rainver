@@ -670,6 +670,84 @@ describe("Project Corpus academic enrichment (real Postgres)", () => {
     ).toBe(1);
   });
 
+  it("answers a triage update with the Reference row it merged into", async () => {
+    if (!db.available) return;
+    const { sourceItemId, corpusItemId } = await seedSourceItemOnlyCorpusItem();
+    const now = new Date().toISOString();
+    const objectId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO space_objects (id, space_id, object_type, title, created_at, updated_at)
+       VALUES ($1,$2,'source','Paper B',$3,$3)`,
+      [objectId, SPACE, now],
+    );
+    await db.pool.query(
+      `INSERT INTO sources (object_id, space_id, source_type, uri, metadata_json)
+       VALUES ($1,$2,'paper','https://example.test/paper-b','{}'::jsonb)`,
+      [objectId, SPACE],
+    );
+    await db.pool.query(
+      `INSERT INTO source_item_references (source_item_id, space_id, reference_object_id, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$4)`,
+      [sourceItemId, SPACE, objectId, now],
+    );
+    const canonicalId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO project_corpus_items (
+         id, space_id, project_id, object_id, role, status, triage_status, read_status,
+         metadata_json, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'candidate','active','new','unread','{}'::jsonb,$5,$5)`,
+      [canonicalId, SPACE, PROJECT, objectId, now],
+    );
+
+    const updated = await repo().update(identity, PROJECT, corpusItemId, { triage_status: "included" });
+
+    expect(updated).toMatchObject({ id: canonicalId, triage_status: "included", triage_confirmed_by_user: true });
+  });
+
+  it("keeps a manually added SourceItem through a backfill that finds no Project link for it", async () => {
+    if (!db.available) return;
+    const now = new Date().toISOString();
+    const sourceItemId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO source_items (
+         id, space_id, owner_user_id, visibility, connection_id, item_type, title, first_seen_at, last_seen_at,
+         content_state, retention_policy, created_at, updated_at
+       ) VALUES ($1,$2,$3,'space_shared',$4,'feed_entry','Filed page',$5,$5,'excerpt_saved','summary_only',$5,$5)`,
+      [sourceItemId, SPACE, OWNER, CONNECTION, now],
+    );
+    const added = await repo().upsert(identity, PROJECT, { source_item_id: sourceItemId });
+
+    await repo().backfillFromSources(identity, PROJECT);
+
+    const row = await db.pool.query<{ status: string }>(`SELECT status FROM project_corpus_items WHERE id = $1`, [added.id]);
+    expect(row.rows[0]?.status).toBe("active");
+  });
+
+  it("keeps what a re-add does not mention on an existing Corpus row", async () => {
+    if (!db.available) return;
+    const { sourceItemId, corpusItemId } = await seedSourceItemOnlyCorpusItem();
+    await db.pool.query(
+      `UPDATE project_corpus_items
+          SET role = 'primary', read_status = 'read', relevance = 'relevant', confidence = 0.9,
+              reason = 'Screened in', metadata_json = '{"kept":true}'::jsonb
+        WHERE id = $1`,
+      [corpusItemId],
+    );
+
+    const readded = await repo().upsert(identity, PROJECT, { source_item_id: sourceItemId });
+
+    expect(readded).toMatchObject({
+      id: corpusItemId,
+      role: "primary",
+      read_status: "read",
+      relevance: "relevant",
+      confidence: 0.9,
+      reason: "Screened in",
+      metadata_json: { kept: true },
+      triage_confirmed_by_user: false,
+    });
+  });
+
   it("does not replace a newer canonical AI decision with an older duplicate decision", async () => {
     if (!db.available) return;
     const { sourceItemId, corpusItemId: duplicateId } = await seedSourceItemOnlyCorpusItem();

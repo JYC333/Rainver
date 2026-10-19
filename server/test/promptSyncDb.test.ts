@@ -15,7 +15,7 @@ import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 // be idempotent, must never overwrite an existing immutable version, and
 // must add a new version + move current_system_version_id when manifest
 // content changes. resolvePrompt must resolve a synced built-in and render
-// it; the M1 read-only facade must surface what sync wrote.
+// it, and the prompt list must surface what sync wrote.
 
 const REAL_CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
 const SPACE = "33333333-1111-4111-8111-111111111111";
@@ -250,7 +250,7 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
     expect(asset.rows[0]?.current_system_version_id).toBe(versions.rows[0]?.id);
   });
 
-  it("maintains system production deployment refs and rolls back to the previous built-in version", async () => {
+  it("keeps the system production ref on the current built-in version, which no Space role can roll back", async () => {
     if (!db.available) return;
     const assetKey = "test.rollback_prompt";
     const v1Dir = await singleManifestCatalog(assetKey, {
@@ -281,13 +281,56 @@ describe("syncBuiltinPrompts (real Postgres)", () => {
     const archivedVersionId = refsBefore.rows.find((row) => row.status === "archived")?.version_id;
     expect(archivedVersionId).toBeTruthy();
 
+    // The baseline is release content: a Space owner cannot move it, and the
+    // next sync would not be undoing anyone's choice.
     const repo = new PromptRepository(db.pool);
-    const rolledBack = await repo.rollbackDeployment(identity, assetKey, { scope_type: "system", label: "production" });
-    expect(rolledBack).toMatchObject({ version_id: archivedVersionId, scope_type: "system", label: "production", status: "active" });
+    await expect(repo.rollbackDeployment(identity, assetKey, { scope_type: "system", label: "production" }))
+      .rejects.toMatchObject({ statusCode: 403 });
 
+    // The Space keeps the earlier built-in version as its own staging
+    // deployment; a later sync moves only the baseline, never that choice.
+    await repo.setDeployment(identity, assetKey, "staging", { scope_type: "space", version_id: archivedVersionId });
+    await syncBuiltinPrompts(db.pool, v2Dir);
     const resolved = await resolvePrompt(db.pool, { spaceId: SPACE, userId: OWNER, assetKey });
     expect(resolved.resolution_trace[0]).toContain("production:system");
-    expect(resolved.rendered_text).toBe("rollback v1");
+    expect(resolved.rendered_text).toBe("rollback v2");
+    const staged = await resolvePrompt(db.pool, { spaceId: SPACE, userId: OWNER, assetKey, label: "staging" });
+    expect(staged.rendered_text).toBe("rollback v1");
+  });
+  it("points the system baseline only at a built-in version, never at a Space's version with the same content", async () => {
+    if (!db.available) return;
+    const assetKey = "test.space_draft_same_hash";
+    const v1Content = { schema_version: "prompt_asset.v1", prompt_type: "text", template: "baseline v1" };
+    const v2Content = { schema_version: "prompt_asset.v1", prompt_type: "text", template: "baseline v2" };
+    const v1Dir = await singleManifestCatalog(assetKey, v1Content);
+    await syncBuiltinPrompts(db.pool, v1Dir);
+    await rm(v1Dir, { recursive: true, force: true });
+    tempCatalogRoot = undefined;
+
+    // A Space admin drafts the content the next release ships.
+    const draft = await new PromptRepository(db.pool).createVersion(identity, assetKey, { content_json: v2Content });
+    // The same shape `listVersions` serves: `content`, never the raw `content_json`.
+    expect(draft).toMatchObject({ content: v2Content, content_hash: expect.any(String) });
+    expect(draft).not.toHaveProperty("content_json");
+
+    const v2Dir = await singleManifestCatalog(assetKey, v2Content);
+    const synced = await syncBuiltinPrompts(db.pool, v2Dir);
+    expect(synced.versionsCreated).toEqual([assetKey]);
+
+    const baseline = await db.pool.query<{ id: string; space_id: string | null; source: string }>(
+      `SELECT v.id, v.space_id, v.source
+         FROM evolvable_assets a JOIN evolvable_asset_versions v ON v.id = a.current_system_version_id
+        WHERE a.asset_key = $1 AND a.space_id IS NULL`,
+      [assetKey],
+    );
+    expect(baseline.rows[0]).toMatchObject({ space_id: null, source: "built_in" });
+    expect(baseline.rows[0]?.id).not.toBe(draft.id);
+    const refs = await db.pool.query<{ version_id: string }>(
+      `SELECT d.version_id FROM prompt_deployment_refs d JOIN evolvable_assets a ON a.id = d.asset_id
+        WHERE a.asset_key = $1 AND d.scope_type = 'system' AND d.label = 'production' AND d.status = 'active'`,
+      [assetKey],
+    );
+    expect(refs.rows.map((row) => row.version_id)).toEqual([baseline.rows[0]?.id]);
   });
 });
 
@@ -409,7 +452,7 @@ describe("resolvePrompt (real Postgres)", () => {
   });
 });
 
-describe("M1 facade surfaces what M2 sync wrote (real Postgres)", () => {
+describe("prompt list surfaces a built-in synced by syncBuiltinPrompts (real Postgres)", () => {
   it("lists and reads back a built-in prompt asset synced by syncBuiltinPrompts", async () => {
     if (!db.available) return;
     await syncBuiltinPrompts(db.pool, REAL_CATALOG_ROOT);

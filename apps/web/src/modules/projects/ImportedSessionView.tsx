@@ -29,7 +29,7 @@ function isFullyShared(session: Pick<ImportedSession, 'visibility' | 'access_lev
 /**
  * One imported CLI session, read-only.
  *
- * There is no composer, and that absence is the point: this is a transcript
+ * There is no composer. This is a transcript
  * of work done elsewhere, not a conversation Rainver can continue. Continuing
  * from it means starting a Rainver conversation seeded from what was
  * extracted, never resuming the vendor's own session.
@@ -65,9 +65,9 @@ export default function ImportedSessionView() {
       // the mainline and bumps its roster revision — so a fully shared
       // session, which continues there anyway, must not trigger it.
       //
-      // The same `fullyShared` test as the destination and the button. When
-      // this probed `private` alone, a narrowly-shared session left `canWrite`
-      // at its optimistic default and offered a button that 403s on the press.
+      // The same `fullyShared` test as the destination and the button. Do not
+      // probe `private` alone. A narrowly-shared session would leave `canWrite`
+      // at its optimistic default and offer a button that 403s on the press.
       if (!isFullyShared(result.session)) {
         setCanWrite(await projectsApi.mainlineRoom(projectId).then(
           page => page.viewer_can_write,
@@ -115,8 +115,7 @@ export default function ImportedSessionView() {
       // `selected_users`, and `space_shared` demoted to `summary` access, both
       // name an audience narrower than the Project's readers, so continuing
       // one in the mainline would be a disclosure the server refuses without
-      // a confirmation. It could be confirmed now that the dialog exists —
-      // but a continuation is not the moment to ask. The person opened a
+      // a confirmation. Do not ask it on a continuation. The person opened a
       // session to carry on working, not to decide who else should read it,
       // and the answer that costs nothing is available: anything short of
       // fully shared continues in their personal Room, whose audience is a
@@ -131,9 +130,9 @@ export default function ImportedSessionView() {
       // Held for the composer, which sends it with the first message so the
       // reference and the conversation are written together. No conversation
       // is created here — sending is what creates one (ADR 0018 decision 5) —
-      // so abandoning the draft leaves nothing behind.
-          // Records when some were picked, the whole session otherwise. The
-          // whole grain carries a summary; picked records carry themselves.
+      // so abandoning the draft leaves nothing behind. Picked records travel
+      // as themselves. Otherwise the whole session travels, and that grain
+      // carries a summary.
       holdReferences(roomId, [recordIds.length > 0
             ? { kind: 'imported_records', id: session.id, item_ids: recordIds }
             : { kind: 'imported_session', id: session.id }])

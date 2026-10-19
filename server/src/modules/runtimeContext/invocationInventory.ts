@@ -44,7 +44,7 @@ export const MANAGED_CONVERSATION_ENTRYPOINT_INVENTORY = [
 export const RUNTIME_INVOCATION_INVENTORY = [
   // Bounded ProviderTask Runs go through the one shared wrapper: one bounded
   // task is one Run, whatever the key pool does behind it (ADR 0022 §2/§3).
-  // Daily Reports and Project Research each used to own a copy of it.
+  // Do not give Daily Reports or Project Research a private copy.
   providerCall("runs/boundedProviderTaskRun.ts", "completeProviderMessages", 1, "bounded_provider_task", "runs", "provider_task"),
   // A bounded one-shot over imported CLI history, owned by its module: it
   // reads records the person already imported and produces proposals, and it
@@ -70,7 +70,7 @@ export const RUNTIME_INVOCATION_INVENTORY = [
   providerCall("providers/commands/routes.ts", "completeProviderRerank", 1, "bounded_provider_task", "providers", "provider_task"),
   providerCall("providers/commands/routes.ts", "completeProviderChat", 1, "bounded_provider_task", "providers", "provider_task"),
   entry("providers/index.ts", "provider_facade", "providers", "provider_task"),
-  // The CLI renderer is the remote-host adapter now: every `local_cli` run is
+  // The CLI renderer is the remote-host adapter. Every `local_cli` run is
   // dispatched to a host daemon, and the server spawns no vendor CLI of its own.
   entry("runs/remoteHostCliAdapter.ts", "agent_task_renderer", "runs", "delivery_renderer"),
   // A renderer, not a Gateway invoker: a run handed to a host daemon gets no

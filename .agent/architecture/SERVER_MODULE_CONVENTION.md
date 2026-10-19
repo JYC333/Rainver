@@ -1,14 +1,13 @@
 # Server Module Convention
 
-> **Status:** established 2026-06-11. Source of truth is the code under
+> **Status:** current repository fact. Source of truth is the code under
 > `server/src/`. Companions:
 > [`SERVER_FOUNDATION.md`](SERVER_FOUNDATION.md) (the service),
 > [`SERVER_OWNERSHIP.md`](SERVER_OWNERSHIP.md) (owned surfaces and fail-closed gaps).
 
 `server` is the **client-facing backend**. This document
-defines the internal structure every server-owned module follows, so
-future server features are added consistently. DB-persisted API-key storage
-remains disabled until the canonical schema adds that table.
+defines the internal structure every server-owned module follows. DB-persisted API-key storage
+is disabled. There is no `api_keys` table.
 
 ## Directory ownership
 
@@ -18,11 +17,17 @@ server/src/
   server.ts                # composition root ONLY — no business route logic
   config.ts                # SERVER_* env parsing, fail-fast validation
   gateway/                 # PERMANENT HTTP entry layer
+    appShell.ts            #   Fastify instance + gateway conventions
     routeRegistry.ts       #   module convention + registration order
     requestContext.ts      #   request-id continuity, safe header access
     errorEnvelope.ts       #   error shape + app-wide error handler
     logging.ts             #   logger options + secret redaction paths
-  modules/                 # server-owned backend modules
+    cacheControl.ts        #   no-store response headers
+    csrfOrigin.ts          #   cookie-authenticated CSRF origin checks
+    internalAuth.ts        #   internal-token check
+    sse.ts                 #   server-sent event response headers
+    trustedProxy.ts        #   trusted frontend-proxy resolution
+  modules/                 # server-owned backend modules (examples below)
     system/                #   health + features descriptors
       routes.ts            #     route registration for this module
       service.ts           #     pure logic (no Fastify types)
@@ -37,10 +42,11 @@ server/src/
 - **`modules/` contains server-owned modules.** A new server module lives under
   `server/src/modules/<module_name>/` with `routes.ts` + `service.ts` +
   `index.ts`.
-- **`server.ts` is composition root only.** It builds Fastify (logger, body
-  passthrough) and delegates all route registration to
-  `gateway/routeRegistry.ts`. Tests enforce that it contains no direct route
-  registrations.
+- **`server.ts` is composition root only.** It builds the Fastify instance
+  through `gateway/appShell.ts` (`createServerApp`: logger, body passthrough,
+  multipart, trusted proxy, gateway conventions) and delegates all route
+  registration to `gateway/routeRegistry.ts`. By convention it contains no
+  direct route registrations; no test enforces this.
 
 ## Server-Owned Module Route Pattern
 
@@ -65,13 +71,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 }
 ```
 
-The module is then added to `SERVER_MODULES` in `gateway/routeRegistry.ts` and
-advertised in `GET /api/v1/server/features`. `ModuleContext` carries the
+The module is then added to `SERVER_MODULES` in `gateway/routeRegistry.ts`.
+`GET /api/v1/server/features` is a hand-written list in
+`modules/system/service.ts` (`computeFeatures`); a module that needs a feature
+id there adds it by hand. `ModuleContext` carries the
 validated config plus its immutable `ConfigSnapshot` (schema version + content
-hash + load timestamp); future shared deps go there — it is dependency passing,
+hash + load timestamp). Shared dependencies are passed on `ModuleContext`. It is dependency passing,
 not a plugin system.
 
-**Registration order is binding:** the registry mounts modules first and then a
+**Registration order is binding:** the registry mounts `SERVER_MODULES` first,
+then plugin-contributed routes (`pluginHost.activate`), and then a
 final `/api/v1/*` catch-all that returns `404 { "detail": "Route not found" }`.
 A route becomes owned only by explicit registration, never by accident.
 
@@ -91,9 +100,9 @@ A route becomes owned only by explicit registration, never by accident.
   material in `modules/auth`.
 - `x-rainver-server: server` is trace metadata, never trust.
 
-Authorization, Cookie, request bodies, and response bodies are never logged
-(`gateway/logging.ts` redaction is defense in depth on top of Fastify's default
-serializers).
+Authorization, Cookie, request bodies, and response bodies are never logged.
+`gateway/logging.ts` serializes a request as method, path and peer. Its
+redact paths are a second check if that serializer changes.
 
 ## Error envelope convention
 
@@ -103,8 +112,15 @@ serializers).
 { "error": "<machine_code>", "message": "<human text>", "request_id": "<id>" }
 ```
 
-- 5xx responses use a fixed generic message (`internal_error`) — no stack
-  traces, no internal detail, in any environment.
+- 5xx responses use a fixed generic message — no stack traces, no internal
+  detail, in any environment. The global handler answers `internal_error`;
+  `sendRouteError` (`routeUtils/common.ts`) answers a thrown 5xx that carries
+  no server-authored response body with
+  `{ detail: <fixed text>, request_id, code?, failure_class?, retryable? }`,
+  where `code` is the error's stable code and `failure_class`/`retryable` come
+  from an allowlist of provider failure classes. The exception's message —
+  which may hold a provider's response text, a URL with a credential or a path
+  on this machine — goes to the server log under the request id only.
 - 4xx responses keep their intentional client-safe message.
 - Unknown `/api/v1/*` routes return the local 404 catch-all shape
   `{ "detail": "Route not found" }`.

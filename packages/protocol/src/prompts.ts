@@ -144,7 +144,7 @@ export const PromptVersionSchema = z
     // evolvable_asset_versions row is asset_type-generic, so a version read
     // back through this facade is not guaranteed to satisfy the strict
     // prompt_asset.v1 shape unless it was written through prompt-aware code
-    // (built-in sync, or version creation once that lands). Strict
+    // (built-in sync or prompt version creation). Strict
     // validation happens at write time, not read time.
     content: JsonObjectSchema.nullable(),
     content_hash: z.string().nullable(),
@@ -166,7 +166,6 @@ export const PromptVersionCreateRequestSchema = z
     parent_version_id: IdSchema.nullish(),
     source: PromptVersionSourceSchema.optional(),
     content_ref: z.string().nullish(),
-    content_hash: z.string().nullish(),
     content_json: PromptAssetContentSchema,
   })
   .strict();
@@ -184,6 +183,8 @@ export const PromptDeploymentRefSchema = z
     status: z.enum(["active", "archived"]),
     promoted_by_user_id: IdSchema.nullable(),
     promoted_from_proposal_id: IdSchema.nullable(),
+    /** Set when a rollback wrote this ref; another rollback must then name its version. */
+    rolled_back_from_ref_id: IdSchema.nullable(),
     created_at: ISODateTimeSchema,
     updated_at: ISODateTimeSchema,
   })
@@ -262,6 +263,20 @@ export const PromptPromotionRequestSchema = z
   .strict();
 export type PromptPromotionRequest = z.infer<typeof PromptPromotionRequestSchema>;
 export type PromptPromotionRequestInput = z.input<typeof PromptPromotionRequestSchema>;
+
+/**
+ * Response of `POST /prompts/assets/:assetKey/promote`: a pointer to the
+ * promotion Proposal, not the Proposal itself. Review happens in
+ * `/api/v1/proposals`.
+ */
+export const PromptPromotionResultSchema = z
+  .object({
+    proposal_id: IdSchema,
+    status: z.string(),
+    proposal_type: z.string(),
+  })
+  .passthrough();
+export type PromptPromotionResult = z.infer<typeof PromptPromotionResultSchema>;
 
 export const PromptRollbackRequestSchema = z
   .object({

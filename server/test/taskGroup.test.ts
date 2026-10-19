@@ -36,10 +36,10 @@ describe("taskArtifactsRepository", () => {
 
   /**
    * `task_runs` and everything hanging off it is Run-derived: a Task is a
-   * shared object, a Run inside a Room is not. These lists carried the content
-   * predicate but no Room term, which SECURITY recorded as latent because no
-   * path wrote a Room-scoped Run into `task_runs`. Dispatch now refuses to
-   * create one, and these carry the term regardless.
+   * shared object, a Run inside a Room is not. These lists carry the content
+   * predicate and the Room term. Do not drop the Room term. Dispatch refuses
+   * a `session_id` that names a Room conversation, so no Room-scoped Run
+   * reaches `task_runs`; the Room term on the list is the second of the two.
    */
   describe("task run-derived lists carry the Room boundary", () => {
     it("applies the Room term to runs, evaluations, proposals and artifacts", async () => {
@@ -95,7 +95,7 @@ describe("taskContractDb", () => {
 
   beforeEach(async () => {
     if (!db.available) return;
-    await resetTables(db.pool, ["tasks", "space_memberships", "users", "spaces"], { cascade: true });
+    await resetTables(db.pool, ["tasks", "projects", "space_memberships", "users", "spaces"], { cascade: true });
     const now = new Date().toISOString();
     await db.pool.query(
       `INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source)
@@ -173,15 +173,30 @@ describe("task contract persistence (real Postgres)", () => {
 
     it("accepts the review hold the levels below it already had", async () => {
       if (!db.available) return;
-      // `waiting_for_review` was the one state a Run and a Plan Node could both
-      // be in and the product work item above them could not, so a Task parked
-      // on a decision had nowhere to say so.
+      // A Task can be `waiting_for_review`, the same hold a Run and a Plan Node
+      // use. Do not leave a Task parked on a decision with no status for it.
       const repository = new PgTaskRepository(db.pool);
       const task = await repository.createTask(identity, {
         title: "Held for a decision",
         status: "waiting_for_review",
       });
       expect(task.status).toBe("waiting_for_review");
+    });
+
+    it("refuses new work in an archived Project, whatever the entry point", async () => {
+      if (!db.available) return;
+      const projectId = randomUUID();
+      await db.pool.query(
+        `INSERT INTO projects (id, space_id, name, status, owner_user_id, created_at, updated_at)
+         VALUES ($1, $2, 'Wrapped up', 'archived', $3, now(), now())`,
+        [projectId, SPACE, OWNER],
+      );
+      const repository = new PgTaskRepository(db.pool);
+      await expect(repository.createTask(identity, { title: "Late addition", project_id: projectId }))
+        .rejects.toMatchObject({ statusCode: 409 });
+      await db.pool.query(`UPDATE projects SET status = 'active' WHERE id = $1`, [projectId]);
+      await expect(repository.createTask(identity, { title: "After reactivation", project_id: projectId }))
+        .resolves.toMatchObject({ project_id: projectId });
     });
   });
 });

@@ -2,12 +2,11 @@ import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { Skeleton } from '../../components/ui/skeleton'
 
-// Each project sub-route pulls in a genuinely separate page (and, for the
-// research Area, its own large dependency tree — notebook, reading
-// list, checklist, chat panel). Without per-route lazy loading, opening the
-// plain project detail page forced the browser to also fetch and parse
-// every other sub-route's modules up front, competing with this page's own
-// data requests for the same connection pool.
+// Each project sub-route is its own page. The research Area pulls in a
+// large tree — notebook, reading list, checklist, chat panel. Load each
+// route on navigation. Do not import them eagerly: the project detail
+// page would then fetch and parse every other sub-route before its own
+// data requests.
 const ProjectsPage = lazy(() => import('./ProjectsPage'))
 const ProjectDetailPage = lazy(() => import('./ProjectDetailPage'))
 const SourcesAreaPage = lazy(() => import('./SourcesAreaPage'))
@@ -43,24 +42,23 @@ export default function ProjectsModule() {
       <Route path=":projectId" element={<Suspense fallback={<PageFallback />}><ProjectAreaLayout /></Suspense>}>
         <Route index element={<Suspense fallback={<PageFallback />}><ProjectDetailPage /></Suspense>} />
         <Route path="sources" element={<Suspense fallback={<PageFallback />}><SourcesAreaPage /></Suspense>} />
-        {/* Folded into the Sources Area as tabs; the old links keep working. */}
+        {/* `digest` and `raw` redirect to Sources tabs. */}
         <Route path="digest" element={<Navigate to="../sources?tab=digest" replace />} />
         <Route path="raw" element={<Navigate to="../sources?tab=raw" replace />} />
         <Route path="files" element={<Suspense fallback={<PageFallback />}><ProjectFilesPage /></Suspense>} />
         <Route path="folders/:folderId" element={<Suspense fallback={<PageFallback />}><ProjectFolderSettingsPage /></Suspense>} />
         <Route path="inquiry" element={<Suspense fallback={<PageFallback />}><InquiryAreaPage /></Suspense>} />
         <Route path="inquiry/:threadId/assess" element={<Suspense fallback={<PageFallback />}><QuestionAssessmentPage /></Suspense>} />
-        {/* Folded into Inquiry as views; the old links keep working. */}
+        {/* `experiments` redirects to the Inquiry experiments view. */}
         <Route path="experiments" element={<Navigate to="../inquiry?view=experiments" replace />} />
         <Route path="decisions" element={<Suspense fallback={<PageFallback />}><DecisionAreaPage /></Suspense>} />
-        {/* Retired from the Project: Learning is a Space-level concern, and
-            Operations was Space-level objects filtered to the Project plus the
-            research rows that now live on Research's Runs tab. */}
+        {/* Project learning redirects to Pulse. Operations rows for this
+            Project are on Research's Runs tab. */}
         <Route path="learning" element={<Navigate to=".." replace />} />
         <Route path="knowledge-review" element={<Navigate to="../inquiry?view=review&tab=candidates" replace />} />
         <Route path="board" element={<Suspense fallback={<PageFallback />}><ProjectBoardPage /></Suspense>} />
         {/* A Task belonging to a Project opens inside the Project, so the
-            Board, the Areas and the chat panel stay where they were. The
+            Board, the Areas and the chat panel stay on the page. The
             top-level /tasks/:taskId route still resolves the same page for
             deep links and for the cross-Project Tasks list. */}
         <Route path="tasks/:taskId" element={<Suspense fallback={<PageFallback />}><TaskDetailPage /></Suspense>} />
@@ -70,8 +68,7 @@ export default function ProjectsModule() {
             conversations; it is a transcript of work done elsewhere, never a
             conversation this app continues in place. */}
         <Route path="imported-sessions/:sessionId" element={<Suspense fallback={<PageFallback />}><ImportedSessionView /></Suspense>} />
-        {/* Delivery was a second, flatter task list over the same rows. The
-            Board replaced it; the old link keeps working. */}
+        {/* `/delivery` redirects to Board. */}
         <Route path="delivery" element={<Navigate to="../board" replace />} />
         <Route path="operations" element={<Navigate to="../research?tab=runs" replace />} />
         <Route path="rooms" element={<Suspense fallback={<PageFallback />}><ProjectRoomsPage /></Suspense>} />

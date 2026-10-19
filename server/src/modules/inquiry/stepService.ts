@@ -6,8 +6,8 @@ import { type NextFocusKind } from "./threadService.js";
 /**
  * Steps: the durable record of what a Thread is actually doing.
  *
- * `inquiry_threads.next_focus_kind` remains as a projection of the current
- * primary step, so the Thread read shape is unchanged and the contradiction
+ * `inquiry_threads.next_focus_kind` is a projection of the current
+ * primary step. The Thread read exposes that field, and the contradiction
  * CHECK against `blocked_reason` stays enforceable without a cross-table
  * reference. The step row is the authority; both are written in one
  * transaction, so the two can never disagree.
@@ -20,20 +20,20 @@ import { type NextFocusKind } from "./threadService.js";
 /**
  * Actions with a system operation behind them. Once started they keep running
  * without the user, so they move out of the single primary slot and let the
- * next action take it — which is why "wait for monitoring" is no longer a step
- * a user can choose. It was never an action; it was this state.
+ * next action take it. "Wait for monitoring" is this state, not a step a
+ * user can choose.
  */
 const BACKGROUND_STEP_KINDS: readonly NextFocusKind[] = ["search_acquisition", "design_run_experiment"];
 
-export type StepSlot = "primary" | "background";
-export type StepStatus = "in_progress" | "done" | "abandoned";
-export type StepOrigin = "user" | "advice" | "system";
+type StepSlot = "primary" | "background";
+type StepStatus = "in_progress" | "done" | "abandoned";
+type StepOrigin = "user" | "advice" | "system";
 
 function slotForKind(kind: NextFocusKind): StepSlot {
   return BACKGROUND_STEP_KINDS.includes(kind) ? "background" : "primary";
 }
 
-export interface StepRow {
+interface StepRow {
   id: string;
   space_id: string;
   project_id: string;
@@ -83,7 +83,7 @@ export function stepToOut(row: StepRow): Record<string, unknown> {
  * with it. The single-primary-step unique index is what keeps `max(kind)`
  * unambiguous.
  */
-export const STEP_PRIMARY_KIND_SQL =
+const STEP_PRIMARY_KIND_SQL =
   `(SELECT max(s.kind) FROM inquiry_thread_steps s
       WHERE s.thread_id = inquiry_threads.object_id AND s.space_id = inquiry_threads.space_id
         AND s.slot = 'primary' AND s.status = 'in_progress')`;
@@ -98,7 +98,7 @@ export const STEP_PROJECTION_SET_SQL = `next_focus_kind = ${STEP_PRIMARY_KIND_SQ
  * outliving it and attaching stale wording to whatever comes next. The note
  * itself is written on the step, never here.
  */
-export const STEP_PRIMARY_NOTE_SQL =
+const STEP_PRIMARY_NOTE_SQL =
   `(SELECT max(s.note) FROM inquiry_thread_steps s
       WHERE s.thread_id = inquiry_threads.object_id AND s.space_id = inquiry_threads.space_id
         AND s.slot = 'primary' AND s.status = 'in_progress')`;
@@ -109,8 +109,9 @@ export const STEP_NOTE_SET_SQL = `next_focus_note = ${STEP_PRIMARY_NOTE_SQL}`;
 /**
  * Stamps every finished-but-unassigned step with the round that just closed.
  *
- * Without this, `iteration_id IS NULL` does not mean "this round": a background
- * step that ended earlier keeps a null pointer forever and every later round
+ * Do not leave a finished step unstamped. `iteration_id IS NULL` would not
+ * mean "this round": a background step that ended earlier keeps a null
+ * pointer forever and every later round
  * inherits it, so a round-1 search would make round 5 believe its evidence
  * gathering was already done.
  */
@@ -133,8 +134,8 @@ export async function assignSettledStepsToRound(
  * part of a round's history.
  *
  * Background steps are left alone unless `includeBackground` is set: a search
- * does not stop because the user picked something else to do, which is the
- * whole point of the background slot.
+ * does not stop because the user picked something else to do. That is what
+ * the background slot is.
  *
  * Touches step rows only. The caller owns the projection write — see
  * {@link STEP_PROJECTION_SET_SQL}.
@@ -264,8 +265,8 @@ export async function applyNextFocus(
  * Completes the running background step a domain event just finished.
  *
  * Manual steps are deliberately not closed this way — there is no fact that
- * says a person finished reading, and asking them to click "done" would be the
- * bookkeeping this model exists to remove. Those end when the round does.
+ * says a person finished reading. Do not ask them to click "done". Those end
+ * when the round does.
  *
  * The target reference records what the step produced, which is what lets the
  * destination Area say which Thread sent the user there.
@@ -281,11 +282,10 @@ export async function completeBackgroundStep(
     targetRefId?: string | null;
   },
 ): Promise<boolean> {
-  // One step per completion, oldest first. `startStep` returns the running row
-  // rather than inserting a second of the same kind, so today this matches at
-  // most one step anyway; the narrowing is here so that if a Thread ever runs
-  // two same-kind operations, each completion closes the one it produced
-  // instead of attributing the wrong Workflow to both.
+  // One step per completion, oldest first. `startStep` returns the running
+  // row rather than inserting a second of the same kind, so this matches at
+  // most one step. Do not close every in-progress step of that kind: two
+  // same-kind operations would then attribute the wrong Workflow to both.
   const updated = await db.query<{ id: string }>(
     `UPDATE inquiry_thread_steps
         SET status = 'done', completed_at = $1,
@@ -324,9 +324,9 @@ export async function listOpenSteps(
  *
  * This is what carries context across Areas: a user who followed a call to
  * action into Operations or Notes arrives with the step still open, so the
- * destination can say which Thread sent them and offer the way back. A URL
- * parameter was rejected for this — it dies on refresh, on a second navigation,
- * and on another device, which is exactly when a person has lost the thread.
+ * destination can say which Thread sent them and offer the way back. Do not
+ * carry this in a URL parameter. It dies on refresh, on a second navigation,
+ * and on another device, which is when a person has lost the thread.
  *
  * The row carries a Thread's statement, so Project membership is necessary but
  * not sufficient: the ontology root's visibility decides who sees it, exactly

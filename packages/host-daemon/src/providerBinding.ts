@@ -15,8 +15,7 @@ export const PROFILE_ROOT_PLACEHOLDER = "{{RAINVER_RUN_PROFILE}}";
  * An allowlist, not a denylist, because B67 states the rule that way round:
  * backend selection comes only from what the control plane injects, so the
  * question is what a runtime legitimately needs from the machine — not which
- * of the machine's variables we remembered to name. The deleted server-host
- * path reached the same conclusion; a denylist here would have let
+ * of the machine's variables happen to be listed. A denylist would let
  * `CLAUDE_CODE_OAUTH_TOKEN`, `XDG_DATA_HOME` and `NODE_OPTIONS` through, each
  * of which redirects a run somewhere the control plane did not choose.
  *
@@ -66,13 +65,12 @@ const ALLOWED_AMBIENT_KEYS = new Set([
  *   auto-memory back out of the profile it was just given. The profile
  *   supplies `CLAUDE_CONFIG_DIR`, `CODEX_HOME` and the XDG roots itself, so
  *   these are covered by the vendor prefixes below plus `XDG_*`.
- * - **Credentials the machine has lying around.** The whole point of this run
- *   is that it spends the owner's *subscription*, linked into the profile. An
+ * - **Credentials the machine has lying around.** This run spends the owner's
+ *   *subscription*, linked into the profile. An
  *   ambient `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` would be
  *   preferred by the runtime over that login and bill an API account instead —
  *   B67's second named failure, "a subscription login converted into API
- *   billing by a leftover key", and the thing the ACP replatform was told to
- *   verify before shipping. None of these is anything git, ssh or a toolchain
+ *   billing by a leftover key". None of these is anything git, ssh or a toolchain
  *   needs, so dropping them costs nothing this rule is protecting.
  */
 const ALL_VENDOR_CREDENTIAL_PREFIXES = [
@@ -107,8 +105,8 @@ const HOST_LOGIN_DROPPED_PREFIXES_BY_RUNTIME: Record<string, readonly string[]> 
 /**
  * The XDG **roots** by name, not the whole `XDG_` prefix. `XDG_RUNTIME_DIR` is
  * how a git credential helper reaches the keyring and how rootless podman
- * finds its socket, and dropping it would break a Task run that pushes or
- * builds — the same class of regression as moving `HOME`.
+ * finds its socket. Do not drop it. A Task run that pushes or builds would
+ * break, the same way moving `HOME` breaks them.
  */
 const HOST_LOGIN_DROPPED_KEYS = new Set([
   "XDG_DATA_HOME",
@@ -154,10 +152,8 @@ export function clearVendorCredentialEnv(ambient: NodeJS.ProcessEnv, runtimeKey:
  * any business picking up an `ANTHROPIC_API_KEY` that happens to be exported —
  * a probe that did would bill an account nobody asked it to, and an ACP
  * `session/list` that did would read sessions under a different identity than
- * the one the daemon is logged in as.
- *
- * Each of these used to spread `process.env` whole, or delete two named keys
- * beside it. One builder rather than a hand-written subset per call site.
+ * the one the daemon is logged in as. One builder, shared by every helper.
+ * Do not spread `process.env` at a call site.
  *
  * @param runtimeKey the runtime this helper serves, or `""` for one that
  * serves none (an installer), which drops every vendor prefix.
@@ -173,8 +169,8 @@ export function helperProcessEnv(
   // where that history is. The prefixes above are credential prefixes, but a
   // vendor puts its state root under the same one — `CLAUDE_CONFIG_DIR`,
   // `CODEX_HOME` — so clearing by prefix sends an ambient `session/list` to the
-  // default location and it reports the machine as having no history at all,
-  // which is the opposite of what that feature is for.
+  // default location and it reports the machine as having no history at all.
+  // Do not drop those state roots.
   for (const key of VENDOR_STATE_ROOT_KEYS) {
     const value = ambient[key];
     if (value !== undefined) cleared[key] = value;
@@ -214,11 +210,9 @@ export function filterAmbientEnv(ambient: NodeJS.ProcessEnv): Record<string, str
  * pointing at it. For an unbound run there is nothing to write but the login
  * link — the frame carries no files and no literal environment.
  *
- * The daemon deliberately knows nothing about Codex TOML or OpenCode JSON: it
- * creates a directory, writes the bytes it was handed, and reports the paths
- * back as environment. Every runtime-shaped decision stays on the server,
- * where the server-host path already makes it — one implementation, not two
- * that drift.
+ * The daemon writes the bytes it was handed and reports the paths as
+ * environment. It does not interpret Codex TOML or OpenCode JSON. Do not
+ * add that parsing here.
  *
  * The directory is reused across runs and is never deleted: it holds the
  * runtime's conversation state, which the next turn resumes. Only the files
@@ -234,7 +228,7 @@ export function filterAmbientEnv(ambient: NodeJS.ProcessEnv): Record<string, str
  *   backend share this directory, so the second to start rewrites the first's
  *   config. Both name the same upstream, so a run can only end up using a
  *   *sibling* run's lease; usage then attributes to that run rather than to
- *   itself. Two Agents, or one Agent in two Rooms, no longer share it at all.
+ *   itself. Two Agents, or one Agent in two Rooms, do not share it.
  */
 export async function materializeProviderBinding(
   binding: ProviderBindingFrame,
@@ -287,8 +281,7 @@ export async function materializeProviderBinding(
  * dispatch cannot answer a login prompt, so a profile silently left without a
  * credential fails the run with no reason anybody can act on.
  *
- * **Not verified on a real paired host** (this plan's open verification item):
- * whether each runtime refreshes an expired credential in place or by
+ * **Not verified on a real paired host:** whether each runtime refreshes an expired credential in place or by
  * temp-file rename. A rename replaces this link with a private copy, and that
  * profile then keeps its own credential while the others keep the shared one.
  * Each stays usable; what is unknown is whether a rotating refresh token would
@@ -403,10 +396,11 @@ function resolveInsideProfile(root: string, relativePath: string): string {
 /**
  * Removes the directories of runs that are not running here any more.
  *
- * A run directory holds this run's outputs and its work surface — the Skill it
- * was given — and an earlier daemon also scoped a provider profile into it.
- * The same run id never comes back, so nothing else would ever remove one: a
- * daemon killed mid-run would otherwise leave it forever.
+ * A run directory holds this run's outputs and its work surface — the Skill
+ * it was given, and the tool token that surface carries. Do not put the
+ * provider profile in this directory. The profile directory is reused
+ * across runs. The same run id never comes back, so nothing else removes
+ * this one. A daemon killed mid-run would leave it forever.
  */
 export async function sweepOrphanedRunDirectories(runsRoot: string, activeRunIds: Set<string>): Promise<number> {
   const { readdir } = await import("node:fs/promises");

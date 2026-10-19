@@ -10,10 +10,10 @@ import { InquiryIterationService } from "../src/modules/inquiry/iterationService
 import { completeBackgroundStep } from "../src/modules/inquiry/stepService.js";
 import { DecisionCaseService } from "../src/modules/decisions/caseService.js";
 
-// Real-Postgres coverage for the Inquiry Core vertical slice: Thread
+// Real-Postgres coverage for Inquiry: Thread
 // creation, working relations, Note links, the cognitive Iteration command,
 // the Definition Revision command, and the work-management command's
-// boundary from both of those. See plan section 9 and ADR 0011.
+// boundary from both of those. See ADR 0011.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -116,6 +116,35 @@ describe("Inquiry Core (real Postgres)", () => {
     // No AI/Workflow is required for the core loop: nothing above touched runs.
     const runCount = await db.pool.query<{ total: string }>(`SELECT count(*)::text AS total FROM runs`);
     expect(runCount.rows[0]?.total).toBe("0");
+  });
+
+  it("removes only Thread structure edges through the structure command", async () => {
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "What holds?" });
+    const other = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "What else holds?" });
+    const structural = await threadSvc.addRelation(identity, PROJECT, {
+      from_thread_id: question.id, to_thread_id: other.id, relation_kind: "related_to",
+    });
+    // A reviewed edge from the Thread to another kind of object, as an
+    // accepted object_relation_create proposal writes it.
+    const noteId = await createNote();
+    const reviewedEdge = randomUUID();
+    await db.pool.query(
+      `INSERT INTO object_relations (id, space_id, from_object_id, to_object_id, link_type, status, created_by_user_id, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'supports', 'active', $5, now(), now())`,
+      [reviewedEdge, SPACE, question.id, noteId, OWNER],
+    );
+
+    await threadSvc.removeRelation(identity, PROJECT, reviewedEdge);
+    await threadSvc.removeRelation(identity, PROJECT, structural.id as string);
+
+    const remaining = await db.pool.query<{ id: string }>(
+      `SELECT id FROM object_relations WHERE id = ANY($1::varchar[])`,
+      [[reviewedEdge, structural.id]],
+    );
+    expect(remaining.rows.map((row) => row.id)).toEqual([reviewedEdge]);
   });
 
   it("protected cognitive fields cannot be overwritten through the work-management command", async () => {
@@ -221,6 +250,29 @@ describe("Inquiry Core (real Postgres)", () => {
     )).toBe(true);
   });
 
+  it("superseding a Thread closes its open steps and clears the projection, as any other exit from active does", async () => {
+    if (!db.available) return;
+    const threadSvc = new InquiryThreadService(db.pool);
+    const iterationSvc = new InquiryIterationService(db.pool);
+    const identity = ownerIdentity();
+    const question = await threadSvc.createThread(identity, PROJECT, { kind: "question", statement: "Still open" });
+    const threadId = question.id as string;
+    await iterationSvc.updateWork(identity, PROJECT, threadId, { next_focus_kind: "read_evidence" });
+
+    await iterationSvc.reviseDefinition(identity, PROJECT, threadId, {
+      revision_kind: "semantic_change",
+      new_statement: "A different question",
+      structure_action: "supersede",
+    });
+
+    const steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ kind: "read_evidence", status: "abandoned" });
+    const old = await threadSvc.getThread(identity, PROJECT, threadId);
+    expect(old.lifecycle_status).toBe("superseded");
+    expect(old.next_focus_kind).toBeNull();
+  });
+
   it("rejects semantic_change without structure_action, and rejects structure_action on wording_only", async () => {
     if (!db.available) return;
     const threadSvc = new InquiryThreadService(db.pool);
@@ -255,9 +307,8 @@ describe("Inquiry Core (real Postgres)", () => {
       }),
     ).rejects.toMatchObject({ statusCode: 422 });
 
-    // Focusing a Thread no longer demands that a next step be named first.
-    // That demand was the reason the UI made users pick from a menu before
-    // they could put a Thread in Focus at all.
+    // Focusing a Thread does not require a next step first. Do not make Focus
+    // wait on a menu pick.
     const bare = await iterationSvc.updateWork(identity, PROJECT, question.id as string, {
       attention_state: "focused",
     });
@@ -315,8 +366,8 @@ describe("Inquiry Core (real Postgres)", () => {
     const searching = await iterationSvc.updateWork(identity, PROJECT, threadId, {
       next_focus_kind: "search_acquisition",
     });
-    // The search is running, so the user's one attention slot is not spent on
-    // watching it — which is what `wait_for_monitoring` used to stand for.
+    // The search is running, so the user's one attention slot is not spent
+    // watching it. Do not offer `wait_for_monitoring` for that.
     expect(searching.next_focus_kind).toBeNull();
     const steps = await iterationSvc.listSteps(identity, PROJECT, threadId);
     expect(steps[0]).toMatchObject({ kind: "search_acquisition", slot: "background", status: "in_progress" });
@@ -691,9 +742,8 @@ describe("Inquiry Core (real Postgres)", () => {
       statement: "B",
       primary_parent_id: a.id,
     });
-    // The success path, exercised before the cycle case: only the rejection was
-    // covered, so a query in the successful branch could reference a column that
-    // no longer exists and the suite would still pass.
+    // The success path runs before the cycle case. A query in the successful
+    // branch that names a missing column has to fail here.
     const c = await threads.createThread(ownerIdentity(), PROJECT, { kind: "question", statement: "C" });
     const reparented = await threads.setPrimaryParent(ownerIdentity(), PROJECT, c.id as string, a.id as string);
     expect(reparented).toMatchObject({ id: c.id, primary_parent_id: a.id });
@@ -744,9 +794,8 @@ describe("Inquiry Core (real Postgres)", () => {
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
-  // The delete paths for both recovered edge kinds. Neither had any coverage,
-  // and both were rewritten from domain tables to `object_relations` — exactly
-  // the shape where a wrong column name survives a green suite.
+  // Delete a Thread relation and a Note link through `object_relations`.
+  // A wrong column name fails here.
   it("removes a Thread relation and a Note link through object_relations", async () => {
     if (!db.available) return;
     const threads = new InquiryThreadService(db.pool);
@@ -777,9 +826,8 @@ describe("Inquiry Core (real Postgres)", () => {
     }
   });
 
-  // P3 boundary tests: a Thread is an ontology object now, so it inherits the
-  // read gate instead of relying on Project membership alone. These assert the
-  // three B12H-adjacent guarantees the migration is supposed to buy.
+  // A Thread is an ontology object. It inherits the read gate. Do not rely on
+  // Project membership alone.
   it("gives a recovered Thread the ontology root's governance columns", async () => {
     if (!db.available) return;
     const thread = await new InquiryThreadService(db.pool).createThread(ownerIdentity(), PROJECT, {
@@ -857,8 +905,8 @@ describe("Inquiry Core (real Postgres)", () => {
     const visibleBefore = await threadSvc.listThreads(viewerIdentity(), PROJECT);
     expect(visibleBefore.map((row) => row.id)).toContain(thread.id);
 
-    // Per-object visibility is what the ontology adds; Project membership alone
-    // no longer decides who sees a Thread.
+    // Who sees a Thread is per-object visibility. Project membership alone
+    // does not decide it.
     await db.pool.query(
       `UPDATE space_objects SET visibility = 'private' WHERE id = $1 AND space_id = $2`,
       [thread.id as string, SPACE],
@@ -947,10 +995,9 @@ describe("Inquiry Core (real Postgres)", () => {
       kind: "question",
       statement: "Second Project",
     });
-    // Thread edges are `object_relations` rows now, whose FK only guarantees
-    // Space isolation — the composite (thread, project, space) key that used to
-    // reject this is gone with the domain table. Project isolation for Thread
-    // structure is a service invariant, so that is what this asserts. A Thread
+    // Thread edges are `object_relations` rows. Their FK guarantees Space
+    // isolation only. Project isolation for Thread structure is a service
+    // invariant, so that is what this asserts. A Thread
     // outside the Project is unreachable from it, so it reads as not found.
     await expect(
       threads.addRelation(ownerIdentity(), PROJECT, {

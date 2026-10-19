@@ -14,6 +14,7 @@ import Fastify, {
   type FastifyServerOptions,
 } from "fastify";
 import multipart from "@fastify/multipart";
+import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../config.js";
 import { NO_STORE_CACHE_CONTROL } from "./cacheControl.js";
 import { registerErrorEnvelopeHandler } from "./errorEnvelope.js";
@@ -48,6 +49,9 @@ export function createServerApp(config: ServerConfig, options: ServerAppOptions 
     disableRequestLogging: false,
     bodyLimit: SERVER_BODY_LIMIT_BYTES,
     requestIdHeader: REQUEST_ID_HEADER,
+    // A UUID rather than Fastify's per-process counter: the id is handed to
+    // clients and compared across restarts and replicas.
+    genReqId: () => randomUUID(),
     // Forwarded headers are believed from the frontend proxy's address only,
     // and only for its own hop: `request.ip` is the client that proxy saw, and
     // nothing a direct peer (a Run, the deployer) or the client itself claims.

@@ -8,38 +8,37 @@ import { dirname, join } from "node:path";
  *
  * `RAINVER_STRICT_SANDBOX=1` is exported into the namespace for anything
  * downstream that reads it; Codex does not. This file is the runtime half:
- * the copy's `config.toml` is the switch that was measured to restore writes.
+ * the copy's `config.toml` is what restores writes.
  */
-export const CODEX_STRICT_SANDBOX_MODE = "workspace-write";
+const CODEX_STRICT_SANDBOX_MODE = "workspace-write";
 export const CODEX_STRICT_SANDBOX_TOML = `sandbox_mode = "${CODEX_STRICT_SANDBOX_MODE}"`;
 
 /**
  * Sets the top-level `sandbox_mode`, and only the top-level one.
  *
- * TOML scopes a key to the table above it, so a pattern that matched
- * `sandbox_mode` anywhere in the file rewrote the first one it found — which in
- * a config with named profiles is `[profiles.something]`'s. That left the
- * top-level default exactly as it was, so the Run still could not write, and
- * silently changed a profile the person configured for a different purpose.
- * The search stops at the first table header; the insert goes above it.
+ * TOML scopes a key to the table above it. Do not match `sandbox_mode`
+ * anywhere in the file. In a config with named profiles the first match is
+ * `[profiles.something]`'s, which leaves the top-level default unchanged and
+ * rewrites a profile the person configured for something else. The search
+ * stops at the first table header; the insert goes above it.
  */
 export function applyCodexStrictSandboxToml(contents: string): string {
   const lines = contents.split("\n");
   // A *table header* is a bracketed name alone on its line, on a line that is
-  // not inside an open array. `/^\s*\[/` also matched a continuation line of a
-  // multi-line array (`notify = [` … `  ["a"],`), so the scan stopped early,
-  // the insert went above a key that was still top-level, and the file ended
-  // with two top-level `sandbox_mode` keys — a TOML duplicate-key error, which
-  // stops Codex from starting at all. Requiring the line to be alone is not
-  // enough on its own: a final array element carries no trailing comma, so
-  // `  ["a"]` before a closing `]` reads exactly like a header.
+  // not inside an open array. Do not match `/^\s*\[/` against a continuation
+  // line of a multi-line array (`notify = [` … `  ["a"],`). The scan would
+  // stop early, the insert would land above a key that is still top-level,
+  // and the file would end with two top-level `sandbox_mode` keys — a TOML
+  // duplicate-key error, which stops Codex from starting at all. Requiring
+  // the line to be alone is not enough on its own: a final array element
+  // carries no trailing comma, so `  ["a"]` before a closing `]` reads
+  // exactly like a header.
   const topLevelEnd = findFirstTableHeader(lines);
-  // The same string-awareness the header scan has. Without it a
-  // `sandbox_mode = …` line *inside* a multi-line string was taken as the
-  // top-level key and rewritten, leaving the real one untouched: Codex starts
-  // — no duplicate key — the vendor sandbox stays `read-only` inside the
-  // namespace, and the strict-host Run silently cannot write, which is the
-  // failure this module exists to prevent.
+  // The same string-awareness the header scan has. Do not treat a
+  // `sandbox_mode = …` line inside a multi-line string as the top-level key.
+  // Rewriting it would leave the real one untouched: Codex starts, the vendor
+  // sandbox stays `read-only` inside the namespace, and the strict-host Run
+  // cannot write.
   const existing = findTopLevelSandboxMode(lines, topLevelEnd);
   if (existing !== -1) {
     lines[existing] = lines[existing]!.replace(
@@ -75,10 +74,10 @@ function findFirstTableHeader(lines: string[]): number {
     const insideString = open !== null;
     const scanned = scanLine(line, open);
     open = scanned.open;
-    // Nothing inside a multi-line string is syntax. A line reading
-    // `[not a header]` in one was taken as the first table header, which hid
-    // the real top-level `sandbox_mode` and inserted a second — the TOML
-    // duplicate-key error that stops Codex from starting.
+    // Nothing inside a multi-line string is syntax. Do not treat a line
+    // reading `[not a header]` inside one as the first table header. That
+    // hides the real top-level `sandbox_mode` and inserts a second, and the
+    // TOML duplicate-key error stops Codex from starting.
     if (!insideString && depth === 0 && /^\s*\[\[?[^\]\[]+\]\]?\s*(?:#.*)?$/.test(line)) return index;
     // Net brackets carried across lines, so an array's own elements are never
     // read as headers however they are spelled.
@@ -92,12 +91,12 @@ function findFirstTableHeader(lines: string[]): number {
  * The syntax on one line — quoted values and the `#` comment removed — and
  * whatever multi-line string is still open at the end of it.
  *
- * Counting brackets over the raw line let one unbalanced `[` inside a string or
- * a comment — `notify = ["bash","-c","echo [done"]`, or `# see the [profiles
- * docs` — pin the depth above zero for the rest of the file. The scan then
- * never found a header, fell back to matching `sandbox_mode` anywhere, and
- * rewrote the first named profile's key: the original bug, reinstated by the
- * fix for the array one. A character walk rather than a regex, because a
+ * Counting brackets over the raw line lets one unbalanced `[` inside a string
+ * or a comment — `notify = ["bash","-c","echo [done"]`, or `# see the
+ * [profiles docs` — pin the depth above zero for the rest of the file. The
+ * scan then never finds a header, falls back to matching `sandbox_mode`
+ * anywhere, and rewrites the first named profile's key. Do not count
+ * brackets on the raw line. A character walk rather than a regex, because a
  * multi-line string's state has to survive the end of the line.
  */
 function scanLine(line: string, open: MultilineDelimiter | null): { code: string; open: MultilineDelimiter | null } {

@@ -28,7 +28,7 @@ export interface DraftControllerSnapshot {
   error: unknown
 }
 
-export interface DraftControllerOptions {
+interface DraftControllerOptions {
   buildMutation: (content: string, draft: ProjectFileDraft | null) => Promise<Omit<DraftMutationInput, 'content' | 'content_sha256' | 'byte_size'> | null>
   save: (input: DraftMutationInput) => Promise<ProjectFileDraft>
   initialContent: string
@@ -94,6 +94,12 @@ export class ProjectFileDraftController {
   setContent(content: string): void {
     this.content = content
     this.generation += 1
+    // A conflict holds until the person resolves it (rebase or discard);
+    // editing on must not schedule a save over the draft it conflicts with.
+    if (this.status === 'conflict') {
+      this.emit()
+      return
+    }
     this.error = null
     if (content === this.canonicalContent && !this.draft) {
       this.clearTimers()
@@ -109,25 +115,31 @@ export class ProjectFileDraftController {
   /** Adopt a server draft that arrived after the editor mounted. */
   hydrate(draft: ProjectFileDraft | null): boolean {
     if (this.generation !== this.acknowledgedGeneration && this.content !== this.canonicalContent) {
+      // Keep the arrived draft's version for the rebase/discard that resolves
+      // this, and stop the queued autosave: it would write the unsaved edits
+      // over the recovery draft on that very version.
       this.draft = draft
       this.error = new Error('A recovery draft arrived while this tab had unsaved changes')
+      this.clearTimers()
       this.setStatus('conflict')
       return false
     }
+    this.adopt(draft)
+    return true
+  }
+
+  /**
+   * Take `draft` (or the Folder file, for null) as the acknowledged state,
+   * whatever is unsaved: how an explicit rebase or discard resolves a conflict.
+   */
+  adopt(draft: ProjectFileDraft | null): void {
     this.draft = draft
-    if (draft) {
-      this.content = draft.content
-      this.acknowledgedGeneration = this.generation
-      this.setStatus('saved')
-    } else {
-      this.content = this.canonicalContent
-      this.acknowledgedGeneration = this.generation
-      this.setStatus('clean')
-    }
+    this.content = draft ? draft.content : this.canonicalContent
+    this.acknowledgedGeneration = this.generation
     this.error = null
     this.clearTimers()
-    this.emit()
-    return true
+    this.setStatus(draft ? 'saved' : 'clean')
+    this.resolveWaiters()
   }
 
   setCanonicalContent(content: string): void {
@@ -181,6 +193,10 @@ export class ProjectFileDraftController {
   }
 
   private async drain(): Promise<void> {
+    if (this.status === 'conflict' && !this.inFlight) {
+      for (const waiter of this.waiters.splice(0)) waiter.reject(this.error)
+      return
+    }
     if (this.inFlight || this.draining || this.generation <= this.acknowledgedGeneration) {
       this.resolveWaiters()
       return
@@ -227,6 +243,18 @@ export class ProjectFileDraftController {
     } catch (error) {
       this.inFlight = null
       this.error = error
+      // The refusal names the draft as it now is. Do not keep the previous
+      // version. Rebase and discard would be refused on it too.
+      const current = conflictingDraft(error)
+      if (current === null) {
+        // No draft any more (discarded elsewhere): the unsaved edits start a
+        // new one, and the drain that follows sends them without a version.
+        this.draft = null
+        this.error = null
+        this.setStatus('dirty')
+        return
+      }
+      if (current !== undefined) this.draft = current
       this.setStatus(isConflictError(error) ? 'conflict' : 'error')
       for (const waiter of this.waiters.splice(0)) {
         if (waiter.generation <= requestGeneration) waiter.reject(error)
@@ -258,13 +286,21 @@ export class ProjectFileDraftController {
   }
 }
 
-export function isConflictError(error: unknown): boolean {
+function isConflictError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
   const value = error as { code?: unknown; payload?: { code?: unknown } }
   return value.code === 'draft_version_conflict'
     || value.code === 'host_file_conflict'
     || value.payload?.code === 'draft_version_conflict'
     || value.payload?.code === 'host_file_conflict'
+}
+
+/** The draft a `draft_version_conflict` refusal reports as current, if it says. */
+export function conflictingDraft(error: unknown): ProjectFileDraft | null | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const payload = (error as { payload?: { code?: unknown; current?: unknown } }).payload
+  if (payload?.code !== 'draft_version_conflict' || !('current' in payload)) return undefined
+  return (payload.current ?? null) as ProjectFileDraft | null
 }
 
 export async function sha256Utf8(value: string): Promise<string> {

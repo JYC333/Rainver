@@ -55,7 +55,7 @@ type UnindexedTurnPart = TurnPart extends infer Part
   ? Part extends { index: number } ? Omit<Part, "index"> : never
   : never;
 
-export interface TurnProjection {
+interface TurnProjection {
   parts: TurnPart[];
   /**
    * How far the turn got *according to this log*.
@@ -140,10 +140,9 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[]): Turn
       case "tool_activity_finished": {
         const index = findToolPart(parts, toolIndexByCallId, row.tool_call_id, row.tool_name);
         if (index === undefined) {
-          // Compatibility for rows written before ACP lifecycle correlation
-          // was enforced at ingestion. Preserve the recorded terminal update
-          // without turning incomplete historical trace metadata into a
-          // user-facing tool failure. New rows always carry a start and id.
+          // A finish with no matching start stays the recorded terminal update.
+          // Do not turn incomplete trace metadata into a user-facing tool
+          // failure. New rows carry a start and an id.
           openText = null;
           const missingIndex = append({
             type: "tool_call",
@@ -274,10 +273,9 @@ export function projectRunEventTurn(
         const toolName = stringValue(metadata.tool_name);
         const index = findToolPart(parts, toolIndexByCallId, callId, toolName);
         if (index === undefined) {
-          // Compatibility for historical semantic logs whose start was
-          // absent. Reconstruct from the terminal event we do have; degraded
-          // trace fidelity is not a failed tool invocation. Ingestion now
-          // writes a correlated start before every such completion.
+          // A completion with no matching start is reconstructed from the
+          // terminal event. Degraded trace fidelity is not a failed tool
+          // invocation. Do not require a start the row does not have.
           const missingIndex = append({
             type: "tool_call",
             call_id: callId,
@@ -356,8 +354,8 @@ export function projectRunEventTurn(
     }
   }
 
-  // The reply comes last, after the steps that produced it — which is the
-  // order D3 renders: the work folds up above, the answer is the bubble.
+  // The reply comes last, after the steps that produced it. The work folds
+  // up above, and the answer is the bubble.
   if (input.replyText) {
     parts.push({ type: "text", index: parts.length, text: input.replyText });
   }
@@ -397,9 +395,9 @@ function toolLabel(name: string | null, kind: string | null): string {
 /**
  * Finds the tool entry an update patches.
  *
- * Current ingestion guarantees an id. For historical rows, fall back to the
- * newest still-open anonymous call, preferring the same reported name. This
- * keeps an old start/update pair with a null id as one visible step.
+ * Current ingestion guarantees an id. A row without one falls back to the
+ * newest still-open anonymous call, preferring the same reported name. Keep
+ * a start/update pair with a null id as one visible step.
  */
 function findToolPart(
   parts: readonly TurnPart[],

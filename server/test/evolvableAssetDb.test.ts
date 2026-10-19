@@ -4,8 +4,10 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { EvolvableAssetRepository } from "../src/modules/evolution/assetRepository.js";
 import { resolveEvolvableAssetVersion } from "../src/modules/evolution/assetResolutionService.js";
+import { assertCanResolveForScopes } from "../src/modules/evolution/assetAccess.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { lockEvolutionAssets } from "../src/modules/evolution/assetLocks.js";
 
 // Real-Postgres coverage for generic prompt/workflow template evolution:
 // asset/version/pin CRUD, immutability
@@ -136,7 +138,41 @@ async function insertApprovedVersion(
   return id;
 }
 
+/**
+ * A built-in (catalog) asset and its versions, as the startup catalog sync
+ * writes them: no Space, system scope. No product route can create either.
+ */
+async function createBuiltinAsset(
+  assetKey = "academic.paper_screening_assistant",
+  metadata: Record<string, unknown> = {},
+): Promise<{ id: string; asset_key: string }> {
+  const id = await createSystemAsset(assetKey);
+  await db.pool.query(`UPDATE evolvable_assets SET metadata_json = $2::jsonb WHERE id = $1`, [id, JSON.stringify(metadata)]);
+  return { id, asset_key: assetKey };
+}
+
+async function createCatalogVersion(assetId: string, content: Record<string, unknown>): Promise<string> {
+  const next = await db.pool.query<{ next: number }>(
+    `SELECT COALESCE(MAX(version), 0) + 1 AS next FROM evolvable_asset_versions WHERE asset_id = $1`,
+    [assetId],
+  );
+  const versionId = await insertApprovedVersion(assetId, next.rows[0]!.next, null, "system", null, content);
+  await db.pool.query(`UPDATE evolvable_assets SET current_system_version_id = $2 WHERE id = $1`, [assetId, versionId]);
+  return versionId;
+}
+
 describe("Evolvable asset/version/pin (real Postgres)", () => {
+  it("lets an HTTP caller resolve only for a Project and Agent whose versions it could list", async () => {
+    if (!db.available) return;
+    await expect(assertCanResolveForScopes(db.pool, identity, { projectId: PROJECT, agentId: AGENT })).resolves.toBeUndefined();
+    const outsider: SpaceUserIdentity = { spaceId: SPACE, userId: OUTSIDER };
+    await expect(assertCanResolveForScopes(db.pool, outsider, { projectId: PROJECT, agentId: null }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    await expect(assertCanResolveForScopes(db.pool, outsider, { projectId: null, agentId: AGENT }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    await expect(assertCanResolveForScopes(db.pool, outsider, { projectId: null, agentId: null })).resolves.toBeUndefined();
+  });
+
   it("rejects capability rows because CapabilityVersion is the canonical model", async () => {
     if (!db.available) return;
     await expect(repo().createAsset(identity, {
@@ -418,9 +454,9 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
 
   it("resolves project pin over space-approved version, and space-approved over system baseline", async () => {
     if (!db.available) return;
-    const asset = await createAsset();
+    const asset = await createBuiltinAsset();
     // A system baseline also exists, to prove space-approved is preferred over it.
-    await createApprovedVersion(asset.id as string, "system", { system_prompt: "system baseline" });
+    await createCatalogVersion(asset.id as string, { system_prompt: "system baseline" });
     const spaceVersion = await createApprovedVersion(asset.id as string, "space", { system_prompt: "space approved" });
     const projectVersion = await createApprovedVersion(asset.id as string, "project", { system_prompt: "project pinned" });
 
@@ -443,8 +479,8 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
 
   it("falls back to the system baseline when there is no pin or space-approved version, and records a fallback reason", async () => {
     if (!db.available) return;
-    const asset = await createAsset();
-    const systemVersion = await createApprovedVersion(asset.id as string, "system", { system_prompt: "system baseline" });
+    const asset = await createBuiltinAsset();
+    const systemVersion = await createCatalogVersion(asset.id as string, { system_prompt: "system baseline" });
 
     const result = await resolveEvolvableAssetVersion(db.pool, { spaceId: SPACE, assetKey: asset.asset_key as string });
     expect(result.versionId).toBe(systemVersion);
@@ -504,8 +540,8 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
 
   it("rejects explicit runtime resolution to a non-approved version", async () => {
     if (!db.available) return;
-    const asset = await createAsset();
-    await createApprovedVersion(asset.id as string, "system", { system_prompt: "system baseline" });
+    const asset = await createBuiltinAsset();
+    await createCatalogVersion(asset.id as string, { system_prompt: "system baseline" });
     const draft = await repo().createVersion(identity, asset.id as string, { scope_type: "space", content_json: { system_prompt: "draft" } });
 
     await expect(
@@ -519,8 +555,8 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
 
   it("ignores a user pin unless allowUserPin is explicitly set", async () => {
     if (!db.available) return;
-    const asset = await createAsset("academic.user_pin_resolution", { metadata_json: { allow_user_override: true } });
-    const systemVersion = await createApprovedVersion(asset.id as string, "system", { system_prompt: "system baseline" });
+    const asset = await createBuiltinAsset("academic.user_pin_resolution", { allow_user_override: true });
+    const systemVersion = await createCatalogVersion(asset.id as string, { system_prompt: "system baseline" });
     const userVersion = await createApprovedVersion(asset.id as string, "user", { system_prompt: "user personal" });
     await repo().setPin(identity, asset.id as string, "user", OWNER, { version_id: userVersion });
 
@@ -538,6 +574,28 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
       allowUserPin: true,
     });
     expect(allowedResult.versionId).toBe(userVersion);
+  });
+
+  it("never pins a version a promotion deprecates in the meantime", async () => {
+    if (!db.available) return;
+    const asset = await createAsset();
+    const versionId = await createApprovedVersion(asset.id as string, "space", { system_prompt: "v1" });
+    const promotion = await db.pool.connect();
+    try {
+      // A promotion holds the asset and is deprecating v1.
+      await promotion.query("BEGIN");
+      await lockEvolutionAssets(promotion, [asset.id as string]);
+      const pin = repo().setPin(identity, asset.id as string, "project", PROJECT, { version_id: versionId });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      await promotion.query(`UPDATE evolvable_asset_versions SET status = 'deprecated' WHERE id = $1`, [versionId]);
+      await promotion.query("COMMIT");
+      // The pin waited for the promotion and then saw v1 deprecated.
+      await expect(pin).rejects.toMatchObject({ statusCode: 422 });
+    } finally {
+      promotion.release();
+    }
+    const pins = await db.pool.query(`SELECT 1 FROM evolvable_asset_pins WHERE asset_id = $1 AND status = 'active'`, [asset.id]);
+    expect(pins.rowCount).toBe(0);
   });
 
   it("resolves an agent pin", async () => {

@@ -25,10 +25,6 @@ const memoryArchive = z
   })
   .passthrough();
 
-const policyChange = z
-  .object({ proposal_type: z.literal("policy_change") })
-  .passthrough();
-
 const skillImportApprove = z
   .object({ proposal_type: z.literal("skill_import_approve") })
   .passthrough();
@@ -356,7 +352,9 @@ const evolvableAssetVersionPromote = z
   .object({
     proposal_type: z.literal("evolvable_asset_version_promote"),
     asset_id: z.string().min(1),
+    asset_key: z.string().min(1).optional(),
     candidate_version_id: z.string().min(1),
+    candidate_version: z.number().int().optional(),
     target_scope_type: z.enum(["project", "space", "system", "user", "agent"]),
     target_scope_id: z.string().min(1).nullable().optional(),
     pin_after_approval: z.boolean().optional(),
@@ -399,11 +397,10 @@ const egressReview = z.object({
   required_egress_approver_user_ids: z.array(z.string().min(1)).min(1),
 }).passthrough();
 
-export const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
+const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   memoryCreate,
   memoryUpdate,
   memoryArchive,
-  policyChange,
   skillImportApprove,
   capabilityInstall,
   capabilityUpdate,
@@ -448,8 +445,6 @@ export const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   egressReview,
   researchHistoryExtend,
 ]);
-
-export type ProposalPayload = z.infer<typeof ProposalPayloadSchema>;
 
 export class ProposalPayloadValidationError extends Error {
   readonly statusCode = 422;

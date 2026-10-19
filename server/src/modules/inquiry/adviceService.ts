@@ -30,11 +30,9 @@ export const ADVICE_TRIGGER_KINDS = [
 ] as const;
 export type AdviceTriggerKind = (typeof ADVICE_TRIGGER_KINDS)[number];
 
-export const INQUIRY_ADVICE_OUTPUT_CONTRACT = {
+const INQUIRY_ADVICE_OUTPUT_CONTRACT = {
   type: "json_schema" as const,
-  // v2: the enum this pins lost `pause` and `wait_for_monitoring` when Next
-  // Focus became a Step record, so the identifier had to move with it rather
-  // than name a schema that is no longer what v1 described.
+  // Next Focus is a Step record. Do not pin `pause` or `wait_for_monitoring`.
   schema_id: "inquiry.next_step_advice.v2",
   strict: true as const,
   stage: "question_refinement" as const,
@@ -50,7 +48,7 @@ export const INQUIRY_ADVICE_OUTPUT_CONTRACT = {
   },
 };
 
-export interface InquiryThreadAdvice {
+interface InquiryThreadAdvice {
   id: string;
   project_id: string;
   thread_id: string;
@@ -110,7 +108,7 @@ type InvokeAdvice = (input: {
   spend: CredentialSpendBasis;
 }) => Promise<Record<string, unknown>>;
 
-export interface AdviceGenerationOptions {
+interface AdviceGenerationOptions {
   /**
    * Runs in the same transaction as the final upsert. Automatic jobs use this
    * to lock and re-check their queue row after the provider call, so a domain
@@ -165,11 +163,11 @@ export class InquiryAdviceService {
   }
 
   /**
-   * A stored recommendation naming a kind the vocabulary no longer has is
-   * retired rather than rewritten: it is filtered out here, so it cannot be
-   * shown or adopted, and the next generation replaces the row. Guessing a
-   * replacement kind would put words in the model's mouth about a Thread it
-   * reasoned over under different options.
+   * A stored recommendation naming a kind the vocabulary does not have is
+   * filtered out here, so it cannot be shown or adopted, and the next
+   * generation replaces the row. Do not guess a replacement kind: that would
+   * put words in the model's mouth about a Thread it reasoned over under
+   * different options.
    */
   async getAdvice(identity: SpaceUserIdentity, projectId: string, threadId: string): Promise<InquiryThreadAdvice | null> {
     await assertProjectReadable(this.db, identity.spaceId, projectId, identity.userId);
@@ -236,13 +234,32 @@ export class InquiryAdviceService {
         // not be focused in one transaction and receive its Step in another.
         attention_state: "focused",
         // Records that the suggestion, not the user's own reading, is where
-        // this step came from — the distinction the bare enum could not hold.
+        // this step came from. Do not leave that distinction to the focus enum.
         step_origin: "advice",
       });
+      // The row was read outside this transaction. Automatic generation may
+      // have replaced the recommendation since; adopting by `status = 'open'`
+      // alone would apply the old focus and mark the new advice taken.
+      const locked = await tx.query<{ id: string; status: string; recommended_focus_kind: string; updated_at: string | Date }>(
+        `SELECT id, status, recommended_focus_kind, updated_at FROM inquiry_thread_advice
+          WHERE space_id = $1 AND project_id = $2 AND thread_id = $3
+          FOR UPDATE`,
+        [identity.spaceId, projectId, threadId],
+      );
+      const row = locked.rows[0];
+      if (
+        !row
+        || row.id !== current.id
+        || row.status !== "open"
+        || row.recommended_focus_kind !== current.recommended_focus_kind
+        || new Date(row.updated_at).getTime() !== new Date(current.updated_at).getTime()
+      ) {
+        throw new HttpError(409, "The recorded next step changed while it was being adopted; read the current recommendation first.");
+      }
       await tx.query(
-        `UPDATE inquiry_thread_advice SET status = 'adopted', updated_at = $4
-          WHERE space_id = $1 AND project_id = $2 AND thread_id = $3 AND status = 'open'`,
-        [identity.spaceId, projectId, threadId, new Date().toISOString()],
+        `UPDATE inquiry_thread_advice SET status = 'adopted', updated_at = $3
+          WHERE space_id = $1 AND id = $2 AND status = 'open'`,
+        [identity.spaceId, row.id, new Date().toISOString()],
       );
       await recordThreadWorkEvent(tx, {
         spaceId: identity.spaceId,
@@ -251,7 +268,10 @@ export class InquiryAdviceService {
         userId: identity.userId,
         eventKind: "thread.next_step_adopted",
         occurredAt: new Date().toISOString(),
-        idempotencySuffix: current.id,
+        // The advice row is one per Thread and keeps its id when regenerated,
+        // so the id alone would collapse every later adoption into the first.
+        // Its `updated_at` changes with each generation and not within one.
+        idempotencySuffix: `${current.id}:${current.updated_at}`,
         data: {
           statement: typeof updated.statement === "string" ? updated.statement : "",
           next_focus_kind: current.recommended_focus_kind,

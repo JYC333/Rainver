@@ -130,7 +130,7 @@ describe("providers read authority", () => {
     expect(res.json()).toEqual({ detail: "Authentication required" });
   });
 
-  it("serves the vendor registry, and no longer serves the retired catalog routes", async () => {
+  it("serves the vendor registry and 404s unknown provider paths", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     __setProvidersDbPortForTests(fakeDb({}));
     app = buildModuleServer(providerRoutesConfig(), [providersModule, systemModule]);
@@ -153,22 +153,21 @@ describe("providers read authority", () => {
       default_base_url: "https://api.deepseek.com",
       api_key_required: true,
       subscription_only: false,
+      self_hostable: false,
     });
     expect(body.some((vendor) => vendor.id === "openai_codex" && vendor.subscription_only === true)).toBe(true);
+    expect(body.filter((vendor) => vendor.self_hostable).map((vendor) => vendor.id).sort()).toEqual(["ollama", "openai_compatible"]);
     expect(body.every((vendor) => !("api_key" in vendor) && !("secret_ref" in vendor))).toBe(true);
 
-    // `/presets` is the surviving static sibling and must stay claimed.
+    // `/presets` is a static route and must stay claimed.
     const presets = await app.inject({ method: "GET", url: "/api/v1/providers/presets" });
     expect(presets.statusCode).toBe(200);
     expect((presets.json() as Array<{ id: string }>).map((preset) => preset.id)).toEqual(
       expect.arrayContaining(["cohere_embedding", "cohere_rerank", "minimax"]),
     );
 
-    // The retired names are no longer claimed as static siblings, so they now
-    // match the provider-detail parametric route and 404 as unknown provider
-    // ids. That is the same answer any unknown id gets — deliberately not a
-    // special case for two deleted names, which would be a compatibility alias
-    // wearing a different hat.
+    // Unknown ids 404. Do not special-case a deleted name: that would be a
+    // compatibility alias.
     for (const url of ["/api/v1/providers/catalog", "/api/v1/providers/litellm-providers"]) {
       const retired = await app.inject({ method: "GET", url });
       expect(retired.statusCode, url).toBe(404);

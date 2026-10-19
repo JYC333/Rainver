@@ -9,10 +9,10 @@ import type { RunRecord } from "../runs/repository.js";
 import { PgAgentGroupRepository } from "../agentGroups/repository.js";
 import { ResearchAcquisitionService } from "./pipeline/researchAcquisitionService.js";
 import { ResearchOperationCancelService } from "./researchOperationCancel.js";
+import { assertProjectReadable } from "../projects/access.js";
 
 /**
- * `research.start_acquisition` (action authority consolidation plan, P1.3;
- * originally room-advancement-reliability-plan Phase 4): unlike a generic
+ * `research.start_acquisition`: unlike a generic
  * proposal executor, this is direct-execution, so the executor calls
  * `ResearchAcquisitionService` rather than a proposal service. Room origin
  * is resolved from the Run's own agent-group membership — the same lookup
@@ -57,6 +57,9 @@ export function registerProjectResearchSystemActionExecutors(
 
   /** This Project's research Operations as an Agent may address them. */
   const listResearchOperations = async (includeTerminal: boolean): Promise<Array<{ operation_id: string; title: string; status: string }>> => {
+    // As the instructing person would read it (`ProjectOperationService.list`):
+    // a Run outlives a membership revoked mid-turn, this read does not.
+    await assertProjectReadable(db, identity.spaceId, run.project_id!, identity.userId);
     const rows = await db.query<{ id: string; title: string | null; status: string }>(
       `SELECT id, title, status FROM project_operations
         WHERE space_id=$1 AND project_id=$2 AND kind='research'

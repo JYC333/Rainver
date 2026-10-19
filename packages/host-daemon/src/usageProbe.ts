@@ -5,26 +5,22 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HostUsageQuota, RuntimeLoginSpec } from "@rainver/protocol";
 import { OWN_INSTALLATION, readToolManifestSync, type ToolManifest } from "./tools.js";
+import { sanitizeFailure } from "./ambientRedaction.js";
 
 /**
  * What one copy's subscription has left, read on the host that holds it.
  *
- * This used to run beside the server, against a credential the broker had
- * copied into a profile directory it owned. Credentials live with the copy now
- * (ADR 0016 §7), so the control plane has nothing left to read — asking the
- * host is the only way to answer "how much of this subscription is gone".
- * Vendor-specific by necessity: a quota is only readable the way its vendor
- * exposes it. What crosses back is percentages and reset times; the token is
- * read here, spent against the vendor's own endpoint, and never returned,
- * logged, or written anywhere else.
+ * Credentials live with the copy (ADR 0016 §7), so the control plane cannot
+ * read the quota itself. Vendor-specific by necessity. What crosses back is
+ * percentages and reset times; the token is read here, spent against the
+ * vendor's own endpoint, and never returned, logged, or written anywhere else.
  */
 const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_OAUTH_BETA_HEADER = "oauth-2025-04-20";
 /**
  * Codex's own machine-readable endpoint, read-only and never-approve so the
- * probe cannot act. `-a untrusted` was ported from the deleted server-side
- * reader and this Codex rejects it outright ("possible values: on-request,
- * never"), which cost the whole probe.
+ * probe cannot act. Codex rejects `-a untrusted` ("possible values: on-request,
+ * never"); `never` is the value that keeps the probe from acting.
  */
 const CODEX_APP_SERVER_ARGS = ["-s", "read-only", "-a", "never", "app-server"];
 
@@ -32,8 +28,14 @@ function emptyQuota(): HostUsageQuota {
   return { available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: null };
 }
 
+/**
+ * Every failure text leaves this host through here. Vendor stderr and spawn
+ * errors name this machine's paths (the managed copy, its `auth.json`), and
+ * ADR 0016 keeps a host's real paths on the host — the same `sanitizeFailure`
+ * the folder and ambient frames apply, bounded to 512 characters.
+ */
 function failed(error: string): HostUsageQuota {
-  return { ...emptyQuota(), error };
+  return { ...emptyQuota(), error: sanitizeFailure(error) };
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -116,40 +118,46 @@ async function probeClaude(home: string, login: RuntimeLoginSpec | null, timeout
   // The control plane budgets its own wait on the host giving up first, so a
   // bare fetch — which would hang to the HTTP client's own multi-minute
   // default — would leave the daemon answering a request nobody is holding.
+  // The deadline covers the body as well as the headers: a response that
+  // starts and then stalls is the same wait, and the same held runtime key.
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), Math.max(1, timeoutSeconds) * 1000);
   timer.unref?.();
-  let response: Response;
   try {
-    response = await fetch(CLAUDE_OAUTH_USAGE_URL, {
-      // Not followed: this carries the owner's OAuth access token, and a
-      // redirect is the upstream asking for it to be sent somewhere else.
-      redirect: "error",
-      method: "GET",
-      signal: abort.signal,
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-        "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
-        "User-Agent": "claude-code/2.1.0",
-      },
-    });
-  } catch (error) {
-    return failed(abort.signal.aborted
-      ? "Claude usage API did not answer in time."
-      : `Claude usage API was unreachable: ${error instanceof Error ? error.message : String(error)}`);
+    let response: Response;
+    try {
+      response = await fetch(CLAUDE_OAUTH_USAGE_URL, {
+        // Not followed: this carries the owner's OAuth access token, and a
+        // redirect is the upstream asking for it to be sent somewhere else.
+        redirect: "error",
+        method: "GET",
+        signal: abort.signal,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+          "anthropic-beta": CLAUDE_OAUTH_BETA_HEADER,
+          "User-Agent": "claude-code/2.1.0",
+        },
+      });
+    } catch (error) {
+      return failed(abort.signal.aborted
+        ? "Claude usage API did not answer in time."
+        : `Claude usage API was unreachable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (!response.ok) return failed(`Claude usage API returned HTTP ${response.status}.`);
+    let quota: HostUsageQuota;
+    try {
+      quota = parseClaudeOAuthUsage(await response.json());
+    } catch {
+      return failed(abort.signal.aborted
+        ? "Claude usage API did not answer in time."
+        : "Claude usage API returned a response this host could not read.");
+    }
+    return quota.available ? quota : failed("Claude usage API returned no quota windows.");
   } finally {
     clearTimeout(timer);
   }
-  if (!response.ok) return failed(`Claude usage API returned HTTP ${response.status}.`);
-  let quota: HostUsageQuota;
-  try {
-    quota = parseClaudeOAuthUsage(await response.json());
-  } catch {
-    return failed("Claude usage API returned a response this host could not read.");
-  }
-  return quota.available ? quota : failed("Claude usage API returned no quota windows.");
 }
 
 // --- Codex CLI -------------------------------------------------------------
@@ -301,17 +309,17 @@ export function managedCliEntry(manifest: ToolManifest | null): { command: strin
 }
 
 /**
- * The environment Codex's app-server reads its own login from. The whole
- * `CODEX_` prefix is dropped so the machine's shell cannot redirect the probe
- * at a different profile than the one the copy runs with, and the whole
- * `OPENAI_` prefix because an API key answers with the key's quota, not the
+ * The environment Codex's app-server reads its own login from. Drop the whole
+ * `CODEX_` prefix so the machine's shell cannot redirect the probe at a
+ * different profile than the one the copy runs with, and the whole `OPENAI_`
+ * prefix because an API key answers with the key's quota, not the
  * subscription's — a silently wrong number is worse than none. Both by prefix,
- * through the daemon's one helper rule; naming `OPENAI_API_KEY` alone left
- * every other spelling of it in place.
+ * through the daemon's one helper rule. Do not name `OPENAI_API_KEY` alone.
+ * Every other spelling of it would stay.
  */
 function codexEnv(home: string, extra: Record<string, string>): Record<string, string> {
-  // The daemon's one helper rule rather than this probe's own two-line version
-  // of it: `codex_cli` drops `OPENAI_`/`CODEX_`, which is what this listed.
+  // The daemon's one helper rule. `codex_cli` drops `OPENAI_`/`CODEX_`.
+  // Do not keep a second list here.
   const env: Record<string, string> = helperProcessEnv(process.env, "codex_cli");
   Object.assign(env, extra);
   env.HOME = home;
@@ -376,16 +384,16 @@ function probeCodex(home: string, manifest: ToolManifest | null, timeoutSeconds:
           continue;
         }
         // A JSON-RPC error for an unparseable or unrecognised request carries
-        // `id: null`, so filtering on the ids we sent threw away the one
-        // message that said what was wrong and left the probe to time out
-        // naming nothing. Errors are read whatever id they carry.
+        // `id: null`. Do not filter on the ids we sent. That throws away the
+        // message that said what was wrong, and the probe times out naming
+        // nothing. Errors are read whatever id they carry.
         if (!message) continue;
         const error = asRecord(message.error);
         if (!error && message.id !== 1 && message.id !== 2) continue;
         if (error) {
-          // Checked before the handshake branch: an `initialize` that fails is
-          // the real reason, and continuing past it only produced a timeout
-          // that named the wrong thing.
+          // Checked before the handshake branch. An `initialize` that fails is
+          // the real reason. Do not continue past it. The probe times out
+          // naming the wrong thing.
           finishWithFailure(typeof error.message === "string"
             ? error.message
             : message.id === 1 ? "Codex refused to start its app-server." : "Codex refused the rate-limit request.");
@@ -408,7 +416,7 @@ function probeCodex(home: string, manifest: ToolManifest | null, timeoutSeconds:
 
 // --- Entry point -----------------------------------------------------------
 
-export type UsageProbeFrame = {
+type UsageProbeFrame = {
   runtime_key: string;
   installation: string;
   login: RuntimeLoginSpec | null;

@@ -35,10 +35,9 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
   it("validates source.channel.propose_activation as Source Channel creation parameters, not a channel reference (D5)", () => {
     // SourceChannelService.proposeActivation begins with
     // `this.create(identity, { ...body, status: "paused" })` — the body is
-    // creation parameters. Before this fix the Zod required `source_channel_id`,
-    // a field the model was never told about and that plays no role in
-    // creation, so every real call failed input validation before the
-    // executor ever ran.
+    // creation parameters. Do not require `source_channel_id`. The model is
+    // never told about it and it plays no role in creation, so every real
+    // call would fail input validation before the executor ran.
     const byId = new Map(SYSTEM_ACTION_REGISTRY.map((action) => [action.id, action]));
     const schema = byId.get("source.channel.propose_activation")!.input_schema;
     expect(schema.safeParse({ source_channel_id: "channel-1" }).success).toBe(false);
@@ -208,7 +207,7 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
 
   it("keeps proposal metadata and visibility internally coherent", () => {
     for (const definition of SYSTEM_ACTION_REGISTRY) {
-      expect(definition.side_effects === "proposal").toBe(definition.proposal_type !== null);
+      expect(["proposal", "conditional_proposal"].includes(definition.side_effects)).toBe(definition.proposal_type !== null);
       if (definition.visibility.has("internal_only")) {
         expect(definition.visibility.has("public_api")).toBe(false);
       }
@@ -220,11 +219,10 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
 
   it("every gated action names why it is gated, and nothing else claims a gate", () => {
     // ADR 0017 §1/§5: the hard-gate list is exhaustive, and a proposal is what
-    // you register when you can name which row of it applies. A default is how
-    // "draft a proposal" became the shape of every Agent write without anyone
-    // deciding it should be.
+    // you register when you can name which row of it applies. Do not default
+    // the gate class.
     for (const definition of SYSTEM_ACTION_REGISTRY) {
-      if (definition.side_effects === "proposal") {
+      if (definition.side_effects === "proposal" || definition.side_effects === "conditional_proposal") {
         expect(definition.gate_class, `${definition.id} is a proposal with no gate class`).not.toBeNull();
         expect(SYSTEM_ACTION_GATE_CLASSES).toContain(definition.gate_class!);
       } else {
@@ -233,9 +231,22 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
     }
   });
 
+  it("refuses at the contract what the store would refuse later", () => {
+    const byId = new Map(SYSTEM_ACTION_REGISTRY.map((definition) => [definition.id, definition]));
+    const conclusion = byId.get("inquiry.record_conclusion")!.input_schema;
+    // confidence is an integer percentage; the method label has 32 characters.
+    expect(conclusion.safeParse({ thread_id: "t", change_summary: "c", confidence: 72 }).success).toBe(true);
+    expect(conclusion.safeParse({ thread_id: "t", change_summary: "c", confidence: 0.75 }).success).toBe(false);
+    expect(conclusion.safeParse({ thread_id: "t", change_summary: "c", confidence_method: "x".repeat(33) }).success).toBe(false);
+    // since is a date the acquisition can act on, not free text failed in the background.
+    const acquisition = byId.get("research.start_acquisition")!.input_schema;
+    expect(acquisition.safeParse({ thread_id: "t", since: "2025-01-01" }).success).toBe(true);
+    expect(acquisition.safeParse({ thread_id: "t", since: "last year" }).success).toBe(false);
+  });
+
   it("keeps Inquiry's Project-internal writes direct", () => {
-    // The two that flipped. A regression here is the six-cards-for-one-decision
-    // failure returning, so it is asserted by id rather than left to review.
+    // Assert these two by id. A proposal-gated write here is the
+    // six-cards-for-one-decision failure.
     const byId = new Map(SYSTEM_ACTION_REGISTRY.map((definition) => [definition.id, definition]));
     for (const id of ["inquiry.create_thread", "inquiry.record_conclusion"] as const) {
       expect(byId.get(id)?.side_effects).toBe("durable");
@@ -246,5 +257,10 @@ describe("SYSTEM_ACTION_REGISTRY", () => {
     expect(byId.get("inquiry.promote_knowledge")?.gate_class).toBe("exposure");
     expect(byId.get("project.propose_definition")?.gate_class).toBe("direction");
     expect(byId.get("source.backfill.propose_start")?.gate_class).toBe("money");
+    // A Plan inside its bounds is approved as written; past them it waits for
+    // a person's `plan_review`, which is a direction gate (ADR 0017 §1).
+    expect(byId.get("task.plan.propose")).toMatchObject({
+      side_effects: "conditional_proposal", proposal_type: "plan_review", gate_class: "direction",
+    });
   });
 });

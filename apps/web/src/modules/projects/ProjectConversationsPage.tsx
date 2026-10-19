@@ -200,8 +200,7 @@ export default function ProjectConversationsPage() {
         </Card>
       ) : items.length === 0 && imported.length === 0 && emptyRooms.filter(room => !room.room_is_mainline).length === 0 ? (
         importedFailed ? (
-          // Saying "no conversations yet" when the imported half failed to
-          // load is the silent-empty claim this notice exists to prevent.
+          // Do not say "no conversations yet" when the imported half failed to load.
           <Card className="flex items-center justify-between gap-3 p-4">
             <p className="text-sm text-muted-foreground">
               No Rainver conversations yet, and imported CLI history could not be loaded.

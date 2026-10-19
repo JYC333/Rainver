@@ -28,7 +28,7 @@ export const SOURCE_RETENTION_POLICIES = [
 
 export type SourceRetentionPolicy = (typeof SOURCE_RETENTION_POLICIES)[number];
 
-export const SOURCE_RETENTION_POLICY_SET = new Set<string>(SOURCE_RETENTION_POLICIES);
+const SOURCE_RETENTION_POLICY_SET = new Set<string>(SOURCE_RETENTION_POLICIES);
 
 export function parseSourceRetentionPolicy(value: string): SourceRetentionPolicy | null {
   return SOURCE_RETENTION_POLICY_SET.has(value) ? (value as SourceRetentionPolicy) : null;

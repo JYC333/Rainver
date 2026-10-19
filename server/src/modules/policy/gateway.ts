@@ -10,7 +10,6 @@
  */
 
 import {
-  isAllowed,
   makeDecision,
   pyRepr,
   RISK_RANK,
@@ -34,7 +33,7 @@ import type {
 export type Registry = ReadonlyMap<string, PolicyActionDefinition>;
 
 // ---------------------------------------------------------------------------
-// Context assembly (gateway.py _build_engine_ctx / _guard_ctx)
+// Context assembly
 // ---------------------------------------------------------------------------
 
 function buildEngineCtx(req: PolicyCheckRequest): Record<string, unknown> {
@@ -71,7 +70,7 @@ function triggerOrigin(req: PolicyCheckRequest): string {
 }
 
 // ---------------------------------------------------------------------------
-// Durable-audit requirement + failure mode (gateway.py)
+// Durable-audit requirement + failure mode
 // ---------------------------------------------------------------------------
 
 export function isDurableAuditRequired(
@@ -89,7 +88,7 @@ export function isDurableAuditRequired(
   return false;
 }
 
-export type FailureMode = "best_effort" | "fail_closed";
+type FailureMode = "best_effort" | "fail_closed";
 
 export function resolveFailureMode(
   defn: PolicyActionDefinition | undefined,
@@ -112,7 +111,7 @@ export function resolveFailureMode(
 }
 
 // ---------------------------------------------------------------------------
-// Audit envelope (gateway.py _build_audit_envelope)
+// Audit envelope
 // ---------------------------------------------------------------------------
 
 export function buildAuditEnvelope(
@@ -151,10 +150,10 @@ export function buildAuditEnvelope(
 }
 
 // ---------------------------------------------------------------------------
-// Decision computation (gateway.py PolicyGateway._compute_decision)
+// Decision computation
 // ---------------------------------------------------------------------------
 
-export interface ComputedDecision {
+interface ComputedDecision {
   defn: PolicyActionDefinition | undefined;
   decision: PolicyDecision;
 }
@@ -255,7 +254,7 @@ export function computeDecision(
 }
 
 // ---------------------------------------------------------------------------
-// Proposal-apply gate (proposal_apply.py — pure parts)
+// Proposal-apply gate
 //
 // DB lookups (space role, the live supported-proposal-type set) are injected so
 // this stays DB-free and unit-testable. The service layer supplies them.
@@ -269,7 +268,6 @@ const PROPOSAL_TYPE_RISK: Record<string, RiskLevel> = {
   plan_review: "medium",
   plan_checkpoint: "medium",
   code_patch: "high",
-  policy_change: "high",
   egress_review: "high",
   agent_config_update: "high",
   prompt_update: "medium",
@@ -516,6 +514,4 @@ function roleRank(role: string): number {
   if (role === "reviewer") return 1;
   return 0;
 }
-
-export { isAllowed };
 export type { Decision };

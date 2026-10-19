@@ -102,6 +102,33 @@ describe("run turn", () => {
     expect(turn.parts[1]).toMatchObject({ type: "text", text: "Found three." });
   });
 
+  it("reads a retried Run from its latest attempt, so the earlier attempt's unfinished work is not shown running", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    await seedManagedRun("run-retry");
+    await db.pool!.query(
+      `INSERT INTO host_threads (id, workspace_mode, runtime_key, runtime_installation,
+                                 agent_id, container_kind, container_user_id,
+                                 retired_vendor_session_ids, status, created_by_user_id, created_at, updated_at)
+       VALUES ('thread-retry', 'managed', 'claude_code', 'own', $1, 'direct', $2,
+               '[]'::jsonb, 'active', $2, now(), now())`,
+      ["agent-run-retry", USER]);
+    await db.pool!.query(`UPDATE runs SET status='running', host_task_thread_id='thread-retry' WHERE id='run-retry'`);
+    const hostEvent = (index: number, attempt: number, type: string, fields: Record<string, string | null>) => db.pool!.query(
+      `INSERT INTO host_thread_events (id, host_task_thread_id, run_id, attempt_number, event_index, event_type, tool_call_id, tool_name, text, status, created_at)
+       VALUES (gen_random_uuid()::text, 'thread-retry', 'run-retry', $1, $2, $3, $4, $5, $6, $7, now())`,
+      [attempt, index, type, fields.tool_call_id ?? null, fields.tool_name ?? null, fields.text ?? null, fields.status ?? null]);
+    // Attempt 1 started a tool call and died before it finished.
+    await hostEvent(0, 1, "tool_activity_started", { tool_call_id: "old-call", tool_name: "shell", status: "pending" });
+    await hostEvent(1, 1, "diagnostic", { text: "worker lost" });
+    // Attempt 2 is the one running now.
+    await hostEvent(2, 2, "assistant_text", { text: "Starting over." });
+
+    const turn = (await app.inject({ method: "GET", url: "/api/v1/runs/run-retry/turn" })).json() as RunTurn;
+    expect(turn.state).toBe("working");
+    expect(turn.parts.map((part) => part.type)).toEqual(["text"]);
+    expect(JSON.stringify(turn.parts)).not.toContain("old-call");
+  });
+
   it("refuses a Run the viewer cannot see", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     await seedManagedRun("run-2");
@@ -116,9 +143,9 @@ describe("run turn", () => {
   /**
    * This stream hijacks the reply and writes its header block straight to the
    * socket, so nothing Fastify adds afterwards reaches it — including the
-   * `onSend` hook that marks every API response `no-store`. It had said
-   * `no-cache`, which forbids *reuse* without revalidation but explicitly
-   * permits a shared cache to **store** the body. The body is live
+   * `onSend` hook that marks every API response `no-store`. Do not send
+   * `no-cache`. That forbids reuse without revalidation and still permits a
+   * shared cache to store the body. The body is live
    * conversation turns.
    *
    * `no-transform` matters only on a stream: an intermediary that re-buffers
@@ -134,8 +161,8 @@ describe("run turn", () => {
     expect(response.headers["cache-control"]).toBe("no-store, no-cache, must-revalidate, private, no-transform");
     expect(response.headers["content-type"]).toContain("text/event-stream");
     expect(response.headers["cache-control"]).toContain("no-transform");
-    // Written by hand once per stream, which is how the server marker came to
-    // be missing from two of the three.
+    // The header set is shared. Do not write it by hand per stream: the
+    // server marker then goes missing from some of them.
     expect(response.headers["x-request-id"]).toBeTruthy();
     expect(response.headers["x-rainver-server"]).toBeTruthy();
     expect(response.headers["x-accel-buffering"]).toBe("no");

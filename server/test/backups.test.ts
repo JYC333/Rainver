@@ -130,6 +130,28 @@ describe("BackupService lock handling", () => {
     }
   });
 
+  it("clears a lock left by an earlier process that had this process's pid", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rainver-backup-lock-"));
+    try {
+      const home = join(root, "home");
+      const backupRoot = join(root, "backups");
+      await mkdir(home, { recursive: true });
+      await mkdir(backupRoot, { recursive: true });
+      const lockPath = join(backupRoot, ".backup.lock");
+      // A container restart: the server is PID 1 again and finds its own pid.
+      await writeFile(lockPath, `pid=${process.pid} acquired_at=${new Date().toISOString()}\n`);
+
+      const service = new BackupService(
+        loadConfig({ RAINVER_HOME: home, BACKUP_ROOT: backupRoot, BACKUP_RETENTION_COUNT: "2" }),
+      );
+
+      await expect(service.pruneOldBackups()).resolves.toEqual([]);
+      await expect(pathExists(lockPath)).resolves.toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("tightens existing backup root permissions before pruning", async () => {
     const root = await mkdtemp(join(tmpdir(), "rainver-backup-mode-"));
     try {
@@ -163,7 +185,8 @@ describe("BackupService lock handling", () => {
       await mkdir(home, { recursive: true });
       await mkdir(backupRoot, { recursive: true });
       const lockPath = join(backupRoot, ".backup.lock");
-      await writeFile(lockPath, `pid=${process.pid} acquired_at=${new Date().toISOString()}\n`);
+      // The parent process stands in for another live owner.
+      await writeFile(lockPath, `pid=${process.ppid} acquired_at=${new Date().toISOString()}\n`);
 
       const service = new BackupService(
         loadConfig({

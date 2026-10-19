@@ -173,6 +173,30 @@ describe("promotion to team material (real Postgres)", () => {
     const blocks = await noteText(captured.note_id!, OWNER);
     expect(blocks.map(block => block.text)).toContain("Copy me.");
   });
+
+  it("does not let a Space admin's oversight promote a colleague's private marginalia", async () => {
+    if (!db.available) return;
+    await db.pool.query(`UPDATE spaces SET oversight_mode = 'content' WHERE id = $1`, [TEAM]);
+    await db.pool.query(
+      `UPDATE space_memberships SET role = 'admin' WHERE space_id = $1 AND user_id = $2`, [TEAM, OWNER],
+    );
+    const theirs = await marginalia(MATE, "Mate's private aside.");
+    const copy = () => relocation().relocate({
+      userId: OWNER, requestSpaceId: TEAM, activityId: theirs.activity_id,
+      destination: "project_raw", mode: "copy", blockIds: [theirs.block_id!], projectId: PROJECT,
+    });
+
+    await expect(copy()).rejects.toMatchObject({ statusCode: 404 });
+    // The capture shared, its note still private: the body is read by
+    // oversight alone, so the copy is still refused.
+    await db.pool.query(`UPDATE activity_records SET visibility = 'space_shared' WHERE id = $1`, [theirs.activity_id]);
+    await expect(copy()).rejects.toMatchObject({ statusCode: 404 });
+
+    const copies = await db.pool.query(
+      `SELECT id FROM activity_records WHERE content = $1 AND id <> $2`, ["Mate's private aside.", theirs.activity_id],
+    );
+    expect(copies.rows).toEqual([]);
+  });
 });
 
 describe("moving out of a Space (real Postgres)", () => {
@@ -290,8 +314,8 @@ describe("moving out of a Space (real Postgres)", () => {
     );
     expect(notifications.rows).toHaveLength(1);
     expect(notifications.rows[0]).toMatchObject({ recipient_user_id: MATE, event_type: "content_egress" });
-    // Pointer metadata only — decision 11 makes this non-negotiable, or the
-    // notification becomes a leak channel of its own.
+    // Pointer metadata only. ADR 0013 decision 11: do not put the content
+    // in the notification. It becomes a leak channel of its own.
     expect(JSON.stringify(notifications.rows[0].pointer_metadata_json)).not.toContain("Watch this leave");
   });
 });
@@ -380,7 +404,7 @@ describe("the Space boundary (real Postgres)", () => {
     const captured = await marginalia(OWNER, "Stays here.");
 
     // Copy-out is off, and that is irrelevant: the destination is the same
-    // Space, so this is decision 4's ladder, not egress.
+    // Space. This follows ADR 0013 decision 4, not egress.
     const result = await relocation().relocate({
       userId: OWNER, requestSpaceId: TEAM, activityId: captured.activity_id,
       destination: "project_raw", mode: "copy", blockIds: [captured.block_id!], projectId: PROJECT,
@@ -476,9 +500,8 @@ describe("relocation selection (real Postgres)", () => {
 
 describe("the copy-out Space setting (real Postgres)", () => {
   /**
-   * The setting is useless without a way to change it. Before this route the
-   * only way to enable copy-out was raw SQL, so the capability shipped
-   * permanently off and no test noticed — they all reached around the app.
+   * The setting is changed through this route. Do not enable copy-out with
+   * raw SQL: the capability then stays off and tests never notice.
    */
   it("is off by default, readable by a member, and changed only by an owner or admin", async () => {
     if (!db.available) return;

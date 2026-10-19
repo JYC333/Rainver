@@ -62,8 +62,7 @@ export function visibleMessagePathSql(input: {
        AND ${alias}.path_depth <= path_head.path_depth
        -- starts_with, not LIKE: a branch segment is built from a message id,
        -- and LIKE would read a percent or underscore in one as a wildcard.
-       -- Ids are UUIDs today, so this is defence rather than a live bug — but
-       -- the predicate should not depend on that.
+       -- Do not switch to LIKE because ids are UUIDs.
        AND starts_with(path_head.branch_path, ${alias}.branch_path)
        -- The ceiling: where the head's lineage forked away from this
        -- message's branch. Take the first segment of the head's path beyond
@@ -88,8 +87,8 @@ export function nonSupersededMessageSql(alias: string): string {
 /**
  * The human transcript of a Room conversation: the visible path, minus
  * `room_display = internal` execution instructions and retry-superseded
- * replies. Agent replay and continuation lookups still read internal rows;
- * list/preview/summary surfaces that people see must not.
+ * replies. Agent replay and continuation lookups read internal rows.
+ * List, preview, and summary surfaces that people see must not.
  */
 export function visibleRoomTranscriptSql(input: {
   alias: string;

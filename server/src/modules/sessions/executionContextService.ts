@@ -39,9 +39,9 @@ import {
   type RuntimeProfileRow,
 } from "./executionContextRepository.js";
 
-export interface ConversationExecutionContextIdentity extends SpaceUserIdentity {}
+interface ConversationExecutionContextIdentity extends SpaceUserIdentity {}
 
-export class ConversationExecutionContextError extends HttpError {
+class ConversationExecutionContextError extends HttpError {
   constructor(statusCode: number, message: string) {
     super(statusCode, message);
     this.name = "ConversationExecutionContextError";
@@ -187,6 +187,13 @@ export class ConversationExecutionContextService {
             ? profile
             : await this.resolveRuntime(repository, client, session, host, primary, selected, identity.userId));
           continue;
+        }
+        // Chosen for a participant nobody selected, so the same gate the
+        // explicit choice passes through (`resolveRuntime`) applies here:
+        // preflight hides this Agent's profiles from a person who cannot
+        // access it, and setup is blocked rather than pinned on their behalf.
+        if (!await repository.canAgentParticipate(session, agentId, identity.userId)) {
+          throw new ConversationExecutionContextError(403, "A participant Agent in this Conversation is not accessible to you");
         }
         const candidates = (await repository.listRuntimeProfiles(identity.spaceId, agentId)).filter((candidate) =>
           candidate.execution_host_id === host.id
@@ -836,10 +843,9 @@ export class ConversationExecutionContextService {
     }
     let runtimeProfileId = runtime.runtime_profile_id;
     if (runtimeProfileId === null) {
-      // Every CLI runs on a host daemon now, the built-in one included, so a
-      // reusable runtime profile is what any of them needs — the message used
-      // to say the server host was the exception, and it is the one host this
-      // refusal made unusable.
+      // Every CLI runs on a host daemon, the built-in one included. A reusable
+      // runtime profile is what any of them needs. The server host is not an
+      // exception. Do not refuse it.
       if (host.kind !== "remote" && host.kind !== "server") {
         throw new ConversationExecutionContextError(422, "The selected CLI requires an execution host");
       }
@@ -903,8 +909,8 @@ function gitContextChanged(
   context: Pick<ExecutionContextRow, "git_observed_at" | "git_branch" | "git_head" | "git_execution_ready" | "primary_workspace_location_id" | "last_run_git_branch" | "last_run_git_head">,
   current: ConversationGitSnapshot | null,
 ): boolean {
-  // Older initialized contexts predate the baseline fields. They remain
-  // usable and acquire the baseline on the next new Conversation.
+  // A context with no git observation has no baseline yet. It stays
+  // usable and acquires the baseline on the next new Conversation.
   if (!context.git_observed_at) return false;
   if (!current) return true;
   if (context.primary_workspace_location_id !== current.workspace_location_id
@@ -1059,8 +1065,8 @@ function hostInstallationAvailability(
   installationId: string | null,
 ): { usable: boolean; reason: string | null } {
   // The built-in host reports its installations like any other daemon, and a
-  // container with nothing installed reports none. Waiving the check for it
-  // offered a copy that does not exist and failed at launch instead.
+  // container with nothing installed reports none. Do not waive the check
+  // for it. That offers a copy that does not exist and fails at launch.
   const installation = normalizeHostCapabilities(host.capabilities_json).installations[runtimeKey]
     ?.find((candidate) => candidate.id === installationId);
   if (!installation) return { usable: false, reason: "The CLI installation is unavailable on the Host" };

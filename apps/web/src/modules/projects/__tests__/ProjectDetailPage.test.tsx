@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
@@ -26,9 +26,17 @@ vi.mock('../../../core/spaceNav', () => ({
 }))
 
 vi.mock('../../../api/client', () => ({
+  ApiRequestError: class ApiRequestError extends Error {
+    constructor(message: string, readonly status: number, readonly code?: string) { super(message) }
+  },
   focusAreasApi: { list: vi.fn().mockResolvedValue([]), setForProject: vi.fn().mockResolvedValue(undefined) },
   projectsApi: {
     get: vi.fn(),
+    publicSummaryEditor: vi.fn(),
+    savePublicSummaryDraft: vi.fn(),
+    generatePublicSummaryDraft: vi.fn(),
+    publishPublicSummary: vi.fn(),
+    revokePublicSummary: vi.fn(),
     getOverview: vi.fn(),
     operations: vi.fn(),
     update: vi.fn(),
@@ -90,6 +98,22 @@ function setup(overrides: {
   vi.mocked(projectsApi.updates).mockResolvedValue({ items: [], next_cursor: null, viewer_can_write: true } as never)
   vi.mocked(projectsApi.listBriefVersions).mockResolvedValue([])
   vi.mocked(projectsApi.listInstructionVersions).mockResolvedValue([])
+  vi.mocked(projectsApi.publicSummaryEditor).mockResolvedValue({
+    project_id: 'project-1', draft: null, published: null, can_publish: false,
+  })
+}
+
+/** Every read parses a new response body, as `fetch` does: same content, new objects. */
+function freshReadEachTime() {
+  const projectRead = vi.mocked(projectsApi.get).getMockImplementation()
+  const overviewRead = vi.mocked(projectsApi.getOverview).getMockImplementation()
+  vi.mocked(projectsApi.get).mockImplementation(async (...args) => structuredClone(await projectRead!(...args)))
+  vi.mocked(projectsApi.getOverview).mockImplementation(async (...args) => structuredClone(await overviewRead!(...args)))
+}
+
+/** Lets a background read that already started resolve and render. */
+async function settle() {
+  for (let i = 0; i < 3; i += 1) await act(() => new Promise(resolve => setTimeout(resolve, 0)))
 }
 
 function renderPage() {
@@ -137,6 +161,60 @@ describe('ProjectDetailPage (Pulse)', () => {
     expect(selector).toBeDisabled()
     expect(focusAreasApi.setForProject).not.toHaveBeenCalled()
   })
+  /**
+   * The public summary has two sides and they are shown apart: the draft a
+   * writer edits, and the snapshot other projects read. Publishing is offered
+   * only with owner-level authority, and only for the saved draft version.
+   */
+  it('shows the public summary draft beside what is published, and offers publish only to owner-level viewers', async () => {
+    setup({ project: { current_user_can_write: true } })
+    vi.mocked(projectsApi.publicSummaryEditor).mockResolvedValue({
+      project_id: 'project-1',
+      draft: {
+        id: 'draft-1', space_id: 'space-1', project_id: 'project-1', project_name: 'Project One',
+        summary_text: 'Draft text, not yet reviewed.', topics: ['Drafting'], highlights: [], source_refs: [],
+        redaction_version: 'v1', draft_version: 2, updated_by_user_id: 'user-1', generated_by_run_id: null,
+        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-02T00:00:00.000Z',
+      },
+      published: {
+        id: 'pub-1', space_id: 'space-1', project_id: 'project-1', project_name: 'Project One',
+        summary_text: 'Published text everyone sees.', topics: ['Public'], highlights: [], source_refs: [],
+        redaction_version: 'v1', source_draft_version: 1, published_by_user_id: 'owner-1', published_at: '2026-01-01T12:00:00.000Z',
+      },
+      can_publish: false,
+    })
+    renderPage()
+    expect(await screen.findByDisplayValue('Draft text, not yet reviewed.')).toBeInTheDocument()
+    expect(screen.getByText('Published text everyone sees.')).toBeInTheDocument()
+    expect(screen.getByText(/the draft has changed since/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /publish/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /unpublish/i })).not.toBeInTheDocument()
+  })
+
+  it('publishes the saved draft version and shows the reader snapshot it produced', async () => {
+    setup({ project: { current_user_can_write: true } })
+    const draft = {
+      id: 'draft-1', space_id: 'space-1', project_id: 'project-1', project_name: 'Project One',
+      summary_text: 'Reviewed draft.', topics: [], highlights: [], source_refs: [],
+      redaction_version: 'v1', draft_version: 3, updated_by_user_id: 'user-1', generated_by_run_id: null,
+      created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-02T00:00:00.000Z',
+    }
+    vi.mocked(projectsApi.publicSummaryEditor).mockResolvedValue({ project_id: 'project-1', draft, published: null, can_publish: true })
+    vi.mocked(projectsApi.publishPublicSummary).mockResolvedValue({
+      id: 'pub-1', space_id: 'space-1', project_id: 'project-1', project_name: 'Project One',
+      summary_text: 'Reviewed draft.', topics: [], highlights: [], source_refs: [],
+      redaction_version: 'v1', source_draft_version: 3, published_by_user_id: 'user-1', published_at: '2026-01-03T00:00:00.000Z',
+    })
+    renderPage()
+    expect(await screen.findByText('Nothing is published. Other projects cannot see a summary of this one yet.')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Publish' }))
+
+    await waitFor(() => expect(projectsApi.publishPublicSummary).toHaveBeenCalledWith('project-1', 3))
+    expect(await screen.findByText(/Draft version 3, published/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Unpublish' })).toBeInTheDocument()
+  })
+
   it('shows the goal and the situation, and fetches nothing an Area owns', async () => {
     setup()
     renderPage()
@@ -153,21 +231,19 @@ describe('ProjectDetailPage (Pulse)', () => {
     expect(projectsApi.operations).not.toHaveBeenCalled()
   })
 
-  it('carries none of the old Overview blocks', async () => {
+  it('carries none of the Overview workbench blocks', async () => {
     setup()
     renderPage()
     expect(await screen.findByText('Project One')).toBeInTheDocument()
-    // "Next" was Mode-generated links to Areas the sidebar lists; "Recent
-    // activity" was the raw-material queue under another name; "In this
-    // project" was the Areas list again with counts. Each doubled something
-    // already on the screen.
+    // Those headings are not on this page. Do not put the sidebar's Areas,
+    // the raw-material queue, or another Room door on the front page.
     expect(screen.queryByRole('heading', { name: 'Next' })).toBeNull()
     expect(screen.queryByRole('heading', { name: 'Recent activity' })).toBeNull()
     expect(screen.queryByRole('heading', { name: 'In this project' })).toBeNull()
     expect(screen.queryByRole('link', { name: 'Define a question to research' })).toBeNull()
     expect(screen.queryByRole('link', { name: /Research workflows/ })).toBeNull()
-    // The Room has its own ways in (the sidecar, the Rooms Area); a third
-    // button on the front page was one more copy of the same door.
+    // The Room has its own ways in (the sidecar, the Rooms Area). Do not add
+    // another door on the front page.
     expect(screen.queryByRole('link', { name: 'Rooms' })).toBeNull()
   })
 
@@ -182,9 +258,9 @@ describe('ProjectDetailPage (Pulse)', () => {
   })
 
   /**
-   * Each of these has a dedicated Area with its own route. Rendering them here
-   * too made the front page a second, weaker copy of four other pages and made
-   * every Project visit pay for their data.
+   * Each of these has a dedicated Area with its own route. Do not render them
+   * here. The front page would be a second, weaker copy of four other pages,
+   * and every Project visit would pay for their data.
    */
   it('hosts no surface that a dedicated Area owns', async () => {
     setup()
@@ -237,6 +313,50 @@ describe('ProjectDetailPage (Pulse)', () => {
       description: null,
       current_focus: null,
     }))
+  })
+
+  it('keeps unsaved settings while Pulse refreshes the Project in the background', async () => {
+    setup()
+    freshReadEachTime()
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
+    fireEvent.change(screen.getByLabelText('Current focus'), { target: { value: 'Half-typed focus' } })
+    const reads = vi.mocked(projectsApi.get).mock.calls.length
+    document.dispatchEvent(new Event('visibilitychange'))
+    await waitFor(() => expect(vi.mocked(projectsApi.get).mock.calls.length).toBeGreaterThan(reads))
+
+    await settle()
+    expect(screen.getByLabelText('Current focus')).toHaveValue('Half-typed focus')
+  })
+
+  it('keeps an unsaved goal and a correction in progress while Pulse refreshes the overview', async () => {
+    const draft = {
+      id: 'brief-2', space_id: 'space-1', project_id: 'project-1', version: 'v2',
+      goal: 'Unsent draft goal', scope_included: null, scope_excluded: null,
+      success_definition: null, constraints: null, assumptions: null,
+      ...BRIEF_AGGREGATE,
+      status: 'draft' as const, reviewed_by_user_id: null, reviewed_at: null,
+      published_by_user_id: null, published_at: null, created_by_user_id: 'user-1',
+      created_at: '2026-06-30T00:00:00.000Z',
+    }
+    setup()
+    freshReadEachTime()
+    vi.mocked(projectsApi.listBriefVersions).mockResolvedValue([draft])
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit goal' }))
+    expect(await screen.findByDisplayValue('Unsent draft goal')).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Create corrected version' }))
+    fireEvent.change(screen.getByLabelText('Goal'), { target: { value: 'Half-typed correction' } })
+    const reads = vi.mocked(projectsApi.getOverview).mock.calls.length
+    document.dispatchEvent(new Event('visibilitychange'))
+    await waitFor(() => expect(vi.mocked(projectsApi.getOverview).mock.calls.length).toBeGreaterThan(reads))
+
+    await settle()
+    expect(screen.getByLabelText('Goal')).toHaveValue('Half-typed correction')
+    expect(screen.getByLabelText('Goal')).toBeEnabled()
+    expect(projectsApi.listBriefVersions).toHaveBeenCalledTimes(1)
   })
 
   it('edits the Brief goal from the Overview by creating a new version without clearing hidden Brief fields', async () => {

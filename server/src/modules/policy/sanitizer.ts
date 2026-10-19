@@ -1,6 +1,5 @@
 /**
- * Metadata sanitizer for the durable policy audit record — server port of
- * `app/policy/sanitizer.py`.
+ * Metadata sanitizer for the durable policy audit record.
  *
  * Redacts known dangerous keys (case-insensitive substring match, recursive),
  * truncates strings, and bounds depth / total key count before any policy

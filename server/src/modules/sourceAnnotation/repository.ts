@@ -1,10 +1,31 @@
+import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 import type { AnnotationPromptItem } from "./instruction.js";
 import type { ParsedItemAnnotation } from "./resultParser.js";
+import {
+  ANNOTATION_CONDITION_REASONS,
+  ANNOTATION_MAX_ATTEMPTS_PER_EPISODE,
+  ANNOTATION_RETRY_DELAYS_MS,
+  type AnnotationWaitReason,
+} from "./retryPolicy.js";
 
 export const SOURCE_ANNOTATION_JOB_TYPE = "source_annotation_event";
 
 export type SourceAnnotationStatus = "pending" | "succeeded" | "failed" | "skipped";
+
+/** One failure episode as one responsible person sees it: their items only. */
+export interface AnnotationEpisodeSummary {
+  episode_id: string;
+  wait_reason: AnnotationWaitReason;
+  responsible_user_id: string | null;
+  affected_count: number;
+  /** The earliest scheduled retry among the rows, when one is scheduled. */
+  next_retry_at: string | null;
+  connection_ids: string[];
+}
+
+/** A pending row that may run now: no wait, or a scheduled retry whose time has come. */
+const RUNNABLE_CLAUSE = `(a.status = 'pending' AND (a.wait_reason IS NULL OR (a.wait_reason = 'retry_scheduled' AND a.next_retry_at <= now())))`;
 
 export type PendingAnnotationRow = AnnotationPromptItem;
 
@@ -24,6 +45,9 @@ export interface SourceAnnotationRow {
   stance_confidence: number | null;
   annotation_run_id: string | null;
   attempt_count: number;
+  wait_reason: AnnotationWaitReason | null;
+  next_retry_at: string | null;
+  episode_id: string | null;
   annotated_at: string | null;
 }
 
@@ -115,8 +139,9 @@ export class PgSourceAnnotationRepository {
   async enqueueSubscriptionHistory(spaceId: string, userId: string, limit: number): Promise<number> {
     const now = new Date().toISOString();
     const result = await this.db.query(
-      `WITH candidates AS (
-         SELECT DISTINCT ON (i.id) i.id AS source_item_id, channel.id AS source_channel_id
+      `WITH per_item AS (
+         SELECT DISTINCT ON (i.id) i.id AS source_item_id, channel.id AS source_channel_id,
+                COALESCE(i.occurred_at,i.first_seen_at) AS recency
            FROM source_channel_user_subscriptions subscription
            JOIN source_channels channel
              ON channel.id=subscription.source_channel_id AND channel.space_id=subscription.space_id
@@ -130,7 +155,14 @@ export class PgSourceAnnotationRepository {
               SELECT 1 FROM source_item_annotations annotation
                WHERE annotation.space_id=i.space_id AND annotation.source_item_id=i.id
             )
-          ORDER BY i.id, COALESCE(i.occurred_at,i.first_seen_at) DESC
+          ORDER BY i.id, channel.id
+       ),
+       -- One channel per item first, then the most recent items: DISTINCT ON
+       -- forces the item id to lead its ORDER BY, so a LIMIT there picks by id.
+       candidates AS (
+         SELECT source_item_id, source_channel_id
+           FROM per_item
+          ORDER BY recency DESC NULLS LAST, source_item_id
           LIMIT $3
        )
        INSERT INTO source_item_annotations
@@ -167,9 +199,9 @@ export class PgSourceAnnotationRepository {
          FROM source_item_annotations a
          JOIN source_items i ON i.id = a.source_item_id AND i.space_id = a.space_id
         WHERE a.space_id = $1
-          AND a.status = 'pending'
+          AND ${RUNNABLE_CLAUSE}
           AND i.deleted_at IS NULL
-        ORDER BY a.created_at ASC, a.id ASC
+        ORDER BY a.next_retry_at ASC NULLS FIRST, a.created_at ASC, a.id ASC
         LIMIT $2`,
       [spaceId, limit],
     );
@@ -235,6 +267,11 @@ export class PgSourceAnnotationRepository {
               stance_confidence = $11,
               annotation_run_id = $12,
               error_json = NULL,
+              -- A success ends whatever wait the row was in: it leaves its
+              -- retry schedule and failure episode.
+              wait_reason = NULL,
+              next_retry_at = NULL,
+              episode_id = NULL,
               annotated_at = $13,
               updated_at = $13
         WHERE space_id = $1 AND source_item_id = $2`,
@@ -257,31 +294,78 @@ export class PgSourceAnnotationRepository {
   }
 
   /**
-   * Records a failed attempt.
+   * Records a failed attempt and schedules the next one, or pauses the row.
    *
-   * Rows stay `pending` while attempts remain so the next sweep retries them,
-   * and flip to `failed` once the budget is spent. A permanently `failed` row
-   * is what makes "this item never reached the digest" answerable; leaving it
-   * `pending` forever would make the queue grow silently instead.
+   * The attempt spends one of the episode's budget. Below the cap the row stays
+   * `pending` with `retry_scheduled` and a `next_retry_at` from the bounded
+   * delay table; at the cap it becomes `failed` / `budget_exhausted` and
+   * waits for a person. Every row of the batch joins the space's open
+   * transient episode, or starts one, so one notification covers them all.
    */
   async markAttemptFailed(
     spaceId: string,
     itemIds: readonly string[],
     error: Record<string, unknown>,
-    maxAttempts: number,
     runId: string | null,
   ): Promise<void> {
     if (itemIds.length === 0) return;
-    const now = new Date().toISOString();
+    const delaysSeconds = ANNOTATION_RETRY_DELAYS_MS.map((ms) => Math.round(ms / 1000));
     await this.db.query(
-      `UPDATE source_item_annotations
-          SET attempt_count = attempt_count + 1,
-              status = CASE WHEN attempt_count + 1 >= $4 THEN 'failed' ELSE 'pending' END,
+      `WITH episode AS (
+         SELECT COALESCE(
+                  (SELECT e.episode_id FROM source_item_annotations e
+                    WHERE e.space_id = $1 AND e.episode_id IS NOT NULL
+                      AND e.wait_reason IN ('retry_scheduled', 'budget_exhausted')
+                    ORDER BY e.updated_at DESC LIMIT 1),
+                  $7::varchar) AS id
+       )
+       UPDATE source_item_annotations a
+          SET attempt_count = a.attempt_count + 1,
+              status = CASE WHEN a.attempt_count + 1 >= $4 THEN 'failed' ELSE 'pending' END,
+              wait_reason = CASE WHEN a.attempt_count + 1 >= $4 THEN 'budget_exhausted' ELSE 'retry_scheduled' END,
+              next_retry_at = CASE WHEN a.attempt_count + 1 >= $4 THEN NULL
+                                   ELSE $6::timestamptz + make_interval(secs => ($8::int[])[a.attempt_count + 1]) END,
+              episode_id = COALESCE(a.episode_id, episode.id),
               error_json = $3::jsonb,
-              annotation_run_id = COALESCE($5, annotation_run_id),
+              annotation_run_id = COALESCE($5, a.annotation_run_id),
               updated_at = $6
-        WHERE space_id = $1 AND source_item_id = ANY($2::text[]) AND status = 'pending'`,
-      [spaceId, itemIds, JSON.stringify(error), maxAttempts, runId, now],
+         FROM episode
+        WHERE a.space_id = $1 AND a.source_item_id = ANY($2::text[]) AND a.status = 'pending'`,
+      [spaceId, itemIds, JSON.stringify(error), ANNOTATION_MAX_ATTEMPTS_PER_EPISODE, runId,
+        new Date().toISOString(), randomUUID(), delaysSeconds],
+    );
+  }
+
+  /**
+   * Parks rows on a condition outside them — no annotator Provider, egress
+   * refused for their Source, consent missing. No attempt is spent: the next
+   * sweep re-checks the condition and reopens them when it holds. They join
+   * the space's open episode for that reason, or start one.
+   */
+  async markWaiting(
+    spaceId: string,
+    itemIds: readonly string[],
+    reason: Exclude<AnnotationWaitReason, "retry_scheduled" | "budget_exhausted">,
+    detail: Record<string, unknown> = {},
+  ): Promise<void> {
+    if (itemIds.length === 0) return;
+    await this.db.query(
+      `WITH episode AS (
+         SELECT COALESCE(
+                  (SELECT e.episode_id FROM source_item_annotations e
+                    WHERE e.space_id = $1 AND e.episode_id IS NOT NULL AND e.wait_reason = $3
+                    ORDER BY e.updated_at DESC LIMIT 1),
+                  $5::varchar) AS id
+       )
+       UPDATE source_item_annotations a
+          SET wait_reason = $3,
+              next_retry_at = NULL,
+              episode_id = COALESCE(a.episode_id, episode.id),
+              error_json = $4::jsonb,
+              updated_at = $6
+         FROM episode
+        WHERE a.space_id = $1 AND a.source_item_id = ANY($2::text[]) AND a.status = 'pending'`,
+      [spaceId, itemIds, reason, JSON.stringify({ reason, ...detail }), randomUUID(), new Date().toISOString()],
     );
   }
 
@@ -292,6 +376,9 @@ export class PgSourceAnnotationRepository {
     await this.db.query(
       `UPDATE source_item_annotations
           SET status = 'skipped',
+              wait_reason = NULL,
+              next_retry_at = NULL,
+              episode_id = NULL,
               error_json = $3::jsonb,
               annotation_run_id = COALESCE($4, annotation_run_id),
               updated_at = $5
@@ -301,41 +388,149 @@ export class PgSourceAnnotationRepository {
   }
 
   /**
-   * Returns parked rows to the queue.
+   * Reopens parked rows, bounded.
    *
-   * Both terminal states are reachable from a condition the user can change
-   * later — `source_egress_denied` from a consent setting they may relax, and
-   * `failed` from a provider outage that ends. Without a way back, flipping the
-   * setting would annotate everything arriving afterwards while everything that
-   * arrived during the denial stays permanently invisible to the digest, and
-   * nothing about the resulting gap would look broken.
-   *
-   * Attempts reset, because the next run is retrying a different world.
+   * A condition recovery (the Provider is back, consent was granted) reopens
+   * rows waiting on that reason and keeps their episode and attempt count: the
+   * recovery round that follows is still bounded by the episode budget. A
+   * manual retry may also reopen `budget_exhausted` rows; it starts a new
+   * episode for them, which is the one way the count resets. Only rows that
+   * never succeeded are touched, at most `limit`, optionally one connection
+   * or an explicit set of items.
    */
   async requeueParked(
     spaceId: string,
-    filter: { statuses?: readonly SourceAnnotationStatus[]; reason?: string } = {},
+    filter: {
+      reasons: readonly AnnotationWaitReason[];
+      connectionId?: string | null;
+      itemIds?: readonly string[] | null;
+      episodeId?: string | null;
+      /** Only rows this person is responsible for: their connection's items, or their own saved URLs. */
+      responsibleUserId?: string | null;
+      limit: number;
+    },
   ): Promise<number> {
-    const statuses = filter.statuses ?? (["failed", "skipped"] as const);
+    if (filter.reasons.length === 0 || filter.limit < 1) return 0;
     const result = await this.db.query(
-      `UPDATE source_item_annotations
+      `WITH chosen AS (
+         SELECT a.id, a.wait_reason
+           FROM source_item_annotations a
+           JOIN source_items i ON i.id = a.source_item_id AND i.space_id = a.space_id
+           LEFT JOIN source_connections c ON c.id = i.connection_id AND c.space_id = i.space_id
+          WHERE a.space_id = $1
+            AND ($8::text IS NULL OR COALESCE(c.owner_user_id, i.owner_user_id) = $8)
+            AND a.wait_reason = ANY($2::text[])
+            AND a.status IN ('pending', 'failed')
+            AND i.deleted_at IS NULL
+            AND ($3::text IS NULL OR i.connection_id = $3)
+            AND ($4::text[] IS NULL OR a.source_item_id = ANY($4::text[]))
+            AND ($5::text IS NULL OR a.episode_id = $5)
+          ORDER BY a.created_at ASC, a.id ASC
+          LIMIT $6
+          FOR UPDATE OF a SKIP LOCKED
+       )
+       UPDATE source_item_annotations a
           SET status = 'pending',
-              attempt_count = 0,
+              wait_reason = NULL,
+              next_retry_at = NULL,
+              attempt_count = CASE WHEN chosen.wait_reason = 'budget_exhausted' THEN 0 ELSE a.attempt_count END,
+              episode_id = CASE WHEN chosen.wait_reason = 'budget_exhausted' THEN NULL ELSE a.episode_id END,
               error_json = NULL,
-              updated_at = $3
-        WHERE space_id = $1
-          AND status = ANY($2::text[])
-          AND ($4::text IS NULL OR error_json->>'reason' = $4 OR error_json->>'error_code' = $4)`,
-      [spaceId, statuses, new Date().toISOString(), filter.reason ?? null],
+              updated_at = $7
+         FROM chosen
+        WHERE a.id = chosen.id`,
+      [spaceId, filter.reasons, filter.connectionId ?? null, filter.itemIds ?? null, filter.episodeId ?? null,
+        filter.limit, new Date().toISOString(), filter.responsibleUserId ?? null],
     );
     return result.rowCount ?? 0;
+  }
+
+  /**
+   * Open failure episodes, one row per episode and responsible person: the
+   * owner of the connection an item came through, or of the item itself for a
+   * saved URL. Counts are that person's items only, so a notification never
+   * tells one member how much of another's material is waiting.
+   */
+  async episodeSummaries(spaceId: string, filter: { responsibleUserId?: string | null; episodeId?: string | null } = {}): Promise<AnnotationEpisodeSummary[]> {
+    const result = await this.db.query<{
+      episode_id: string;
+      wait_reason: AnnotationWaitReason;
+      responsible_user_id: string | null;
+      affected_count: string;
+      next_retry_at: string | null;
+      connection_ids: string[] | null;
+    }>(
+      `SELECT a.episode_id, a.wait_reason,
+              COALESCE(c.owner_user_id, i.owner_user_id) AS responsible_user_id,
+              COUNT(*)::text AS affected_count,
+              MIN(a.next_retry_at) AS next_retry_at,
+              array_remove(array_agg(DISTINCT i.connection_id), NULL) AS connection_ids
+         FROM source_item_annotations a
+         JOIN source_items i ON i.id = a.source_item_id AND i.space_id = a.space_id
+         LEFT JOIN source_connections c ON c.id = i.connection_id AND c.space_id = i.space_id
+        WHERE a.space_id = $1
+          AND a.episode_id IS NOT NULL
+          AND a.wait_reason IS NOT NULL
+          AND i.deleted_at IS NULL
+          AND ($2::text IS NULL OR COALESCE(c.owner_user_id, i.owner_user_id) = $2)
+          AND ($3::text IS NULL OR a.episode_id = $3)
+        GROUP BY a.episode_id, a.wait_reason, COALESCE(c.owner_user_id, i.owner_user_id)
+        ORDER BY a.episode_id, a.wait_reason`,
+      [spaceId, filter.responsibleUserId ?? null, filter.episodeId ?? null],
+    );
+    return result.rows.map((row) => ({
+      episode_id: row.episode_id,
+      wait_reason: row.wait_reason,
+      responsible_user_id: row.responsible_user_id,
+      affected_count: Number(row.affected_count),
+      next_retry_at: row.next_retry_at ? new Date(row.next_retry_at).toISOString() : null,
+      connection_ids: row.connection_ids ?? [],
+    }));
+  }
+
+  /** Connections whose items wait on `reason`, for the sweep to re-check the condition per connection. */
+  async waitingConnectionIds(spaceId: string, reasons: readonly AnnotationWaitReason[]): Promise<string[]> {
+    const result = await this.db.query<{ connection_id: string }>(
+      `SELECT DISTINCT i.connection_id
+         FROM source_item_annotations a
+         JOIN source_items i ON i.id = a.source_item_id AND i.space_id = a.space_id
+        WHERE a.space_id = $1 AND a.status = 'pending' AND a.wait_reason = ANY($2::text[])
+          AND i.connection_id IS NOT NULL AND i.deleted_at IS NULL`,
+      [spaceId, reasons],
+    );
+    return result.rows.map((row) => row.connection_id);
+  }
+
+  /**
+   * Spaces with rows waiting on a condition the sweep can re-check, the next
+   * `limit` after `afterSpaceId` in id order, wrapping round. A row whose
+   * condition still holds does not change, so any order read from the rows
+   * would hand the same spaces to every sweep and starve the rest once more
+   * than `limit` are stuck; the caller carries the cursor between sweeps.
+   */
+  async spacesWithWaitingConditions(limit: number, afterSpaceId: string | null = null): Promise<string[]> {
+    const select = (after: string | null, count: number) => this.db.query<{ space_id: string }>(
+      `SELECT DISTINCT space_id
+         FROM source_item_annotations
+        WHERE status = 'pending' AND wait_reason = ANY($2::text[])
+          AND ($3::text IS NULL OR space_id > $3)
+        ORDER BY space_id
+        LIMIT $1`,
+      [count, ANNOTATION_CONDITION_REASONS, after],
+    );
+    const first = (await select(afterSpaceId, limit)).rows.map((row) => row.space_id);
+    if (first.length >= limit || afterSpaceId === null) return first;
+    const wrapped = (await select(null, limit - first.length)).rows
+      .map((row) => row.space_id)
+      .filter((spaceId) => !first.includes(spaceId));
+    return [...first, ...wrapped];
   }
 
   async getByItemId(spaceId: string, sourceItemId: string): Promise<SourceAnnotationRow | null> {
     const result = await this.db.query<SourceAnnotationRow & { topic_candidates_json: unknown }>(
       `SELECT id, space_id, source_item_id, status, domain_key, depth, genre, summary,
               topic_candidates_json, stance_target, stance_target_key, stance_polarity,
-              stance_confidence, annotation_run_id, attempt_count, annotated_at
+              stance_confidence, annotation_run_id, attempt_count, wait_reason, next_retry_at, episode_id, annotated_at
          FROM source_item_annotations
         WHERE space_id = $1 AND source_item_id = $2`,
       [spaceId, sourceItemId],
@@ -345,13 +540,13 @@ export class PgSourceAnnotationRepository {
     return { ...row, topic_candidates: stringArray(row.topic_candidates_json) };
   }
 
-  /** Spaces with pending annotation work, for the sweep. */
+  /** Spaces with annotation work that may run now, for the sweep. */
   async spacesWithPendingWork(limit: number): Promise<string[]> {
     const result = await this.db.query<{ space_id: string }>(
-      `SELECT DISTINCT space_id
-         FROM source_item_annotations
-        WHERE status = 'pending'
-        ORDER BY space_id
+      `SELECT DISTINCT a.space_id
+         FROM source_item_annotations a
+        WHERE ${RUNNABLE_CLAUSE}
+        ORDER BY a.space_id
         LIMIT $1`,
       [limit],
     );

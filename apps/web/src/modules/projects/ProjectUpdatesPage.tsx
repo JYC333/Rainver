@@ -53,8 +53,8 @@ export default function ProjectUpdatesPage() {
   const load = useCallback(async (nextCursor?: string) => {
     if (!nextCursor) {
       setFailed(false)
-      // Held until the retry answers, so the surface does not flash the empty
-      // state — the confident all-clear this error path exists to avoid.
+      // Held until the retry answers. Do not flash the empty state. That would
+      // read as a confident all-clear.
       setLoading(true)
     } else {
       setLoadingMore(true)
@@ -152,10 +152,9 @@ export default function ProjectUpdatesPage() {
                     <p className="text-sm">{update.summary}</p>
                   )}
                   {update.previous_summary && (
-                    // Both sides of the change, because deciding whether to
-                    // put the previous one back needs both — and sending the
-                    // person to the version chain for the other half is what
-                    // the one-step undo exists to avoid.
+                    // Both sides of the change. Deciding whether to put the previous
+                    // one back needs both. Do not send the person to the version
+                    // chain for the other half.
                     <p className="mt-0.5 text-xs text-muted-foreground">
                       was: {update.previous_summary}
                     </p>
@@ -204,8 +203,7 @@ type UpdateRow = NonNullable<ProjectWorkUpdate['members']>[number]
 
 /**
  * Who did it, what it was about, and when. The subject is whatever kind of
- * thing the update names — Tasks were the only kind until an Agent started
- * advancing Threads directly.
+ * thing the update names.
  */
 function subjectHref(projectId: string, subject: NonNullable<UpdateRow['subject']>): string | null {
   switch (subject.type) {
@@ -215,9 +213,9 @@ function subjectHref(projectId: string, subject: NonNullable<UpdateRow['subject'
     case 'memory_entry': return `/memory/${subject.id}`
     case 'inquiry_thread': return `/projects/${projectId}/inquiry?thread=${subject.id}`
     default: {
-      // Exhaustive on purpose: a catch-all is what sent memory subjects to the
-      // Inquiry Area with an id it had never heard of, and a fourth subject
-      // type would do it again silently.
+      // Exhaustive on purpose. Do not add a catch-all. A memory subject would
+      // be sent to the Inquiry Area with an id that area has never heard of,
+      // and a fourth subject type would do it again silently.
       const unreachable: never = subject.type
       return inProjectHref(projectId, `/updates#${String(unreachable)}`)
     }

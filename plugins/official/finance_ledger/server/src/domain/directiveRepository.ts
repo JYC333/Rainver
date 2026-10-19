@@ -8,6 +8,7 @@ export interface FinanceImportSourceRow {
   source_type: string;
   source_name: string | null;
   content_hash: string | null;
+  content_text: string | null;
   imported_by_user_id: string | null;
   metadata_json: Record<string, unknown>;
   created_at: string;
@@ -112,6 +113,9 @@ export interface MetaStackEventRow {
   sort_order: number;
 }
 
+const IMPORT_SOURCE_COLUMNS = `id, book_id, space_id, source_type, source_name, content_hash, content_text,
+              imported_by_user_id, metadata_json, created_at::text`;
+
 const DIRECTIVE_JOIN = `
     JOIN finance_directives d ON d.id = x.directive_id`;
 
@@ -136,22 +140,24 @@ export const financeDirectiveRepository = {
       sourceType: string;
       sourceName?: string | null;
       contentHash?: string | null;
+      /** The uploaded text itself, so an entry can be retried from the record. */
+      contentText?: string | null;
       importedByUserId?: string | null;
       metadata?: Record<string, unknown>;
     },
   ): Promise<FinanceImportSourceRow> {
     const result = await db.query<FinanceImportSourceRow>(
       `INSERT INTO finance_import_sources
-         (space_id, book_id, source_type, source_name, content_hash, imported_by_user_id, metadata_json)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-       RETURNING id, book_id, space_id, source_type, source_name, content_hash,
-                 imported_by_user_id, metadata_json, created_at::text`,
+         (space_id, book_id, source_type, source_name, content_hash, content_text, imported_by_user_id, metadata_json)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+       RETURNING ${IMPORT_SOURCE_COLUMNS}`,
       [
         input.spaceId,
         input.bookId,
         input.sourceType,
         input.sourceName ?? null,
         input.contentHash ?? null,
+        input.contentText ?? null,
         input.importedByUserId ?? null,
         JSON.stringify(input.metadata ?? {}),
       ],
@@ -166,8 +172,7 @@ export const financeDirectiveRepository = {
     contentHash: string,
   ): Promise<FinanceImportSourceRow | null> {
     const result = await db.query<FinanceImportSourceRow>(
-      `SELECT id, book_id, space_id, source_type, source_name, content_hash,
-              imported_by_user_id, metadata_json, created_at::text
+      `SELECT ${IMPORT_SOURCE_COLUMNS}
          FROM finance_import_sources
         WHERE space_id = $1 AND book_id = $2 AND content_hash = $3
         ORDER BY created_at ASC
@@ -175,6 +180,38 @@ export const financeDirectiveRepository = {
       [spaceId, bookId, contentHash],
     );
     return result.rows[0] ?? null;
+  },
+
+  async findImportSource(
+    db: Queryable,
+    spaceId: string,
+    bookId: string,
+    importSourceId: string,
+  ): Promise<FinanceImportSourceRow | null> {
+    const result = await db.query<FinanceImportSourceRow>(
+      `SELECT ${IMPORT_SOURCE_COLUMNS}
+         FROM finance_import_sources
+        WHERE space_id = $1 AND book_id = $2 AND id = $3`,
+      [spaceId, bookId, importSourceId],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  /** The batches one person uploaded, newest first. Uploads are their own to follow up. */
+  async listImportSourcesForUser(
+    db: Queryable,
+    spaceId: string,
+    bookId: string,
+    userId: string,
+  ): Promise<FinanceImportSourceRow[]> {
+    const result = await db.query<FinanceImportSourceRow>(
+      `SELECT ${IMPORT_SOURCE_COLUMNS}
+         FROM finance_import_sources
+        WHERE space_id = $1 AND book_id = $2 AND imported_by_user_id = $3
+        ORDER BY created_at DESC, id ASC`,
+      [spaceId, bookId, userId],
+    );
+    return result.rows;
   },
 
   async insertExport(

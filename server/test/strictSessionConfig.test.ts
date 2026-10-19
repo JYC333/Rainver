@@ -5,9 +5,8 @@ import { getLocalCliRuntimeAdapterSpec } from "../src/modules/runtimeAdapters/sp
 /**
  * ADR 0016 section 2: on the built-in host the daemon's namespace is the one
  * boundary, so the runtime's own sandbox has to be stood down inside it.
- * Measured 2026-09-08 on that host: left on, Codex stacks its policy and the
- * Run's own workspace comes back read-only, so the Run runs and silently
- * cannot write.
+ * Do not leave Codex's sandbox on. It stacks its policy and the Run's own
+ * workspace comes back read-only, so the Run runs and silently cannot write.
  */
 describe("standing the vendor sandbox down on a strict host", () => {
   it("names the option Codex actually advertises, with its full-access value", () => {

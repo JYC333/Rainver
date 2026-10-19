@@ -1,6 +1,6 @@
 import type { Queryable, RunRecord } from "./runRepositoryTypes.js";
 
-export interface RunFinalizationReconciler {
+interface RunFinalizationReconciler {
   reconcile(db: Queryable, run: RunRecord): Promise<void>;
 }
 
@@ -18,22 +18,16 @@ class RunFinalizationReconcilerRegistry {
   }
 
   /**
-   * Each reconciler is isolated. They settle unrelated things — Task status,
-   * autonomy candidates, a follow-up Task — and a transient failure in the
-   * one that happens to be registered first must not silently skip the rest,
-   * which a bare loop inside a best-effort caller would do.
+   * The registered reconcilers, each keyed so settlement can record which
+   * completed (`finalizationService.ts`). They settle unrelated things — Task
+   * status, autonomy candidates, a follow-up Task — so settlement runs every
+   * one even when another fails, and the completion gate waits for all.
    */
-  async reconcileAll(db: Queryable, run: RunRecord): Promise<void> {
-    for (const [key, { reconciler }] of this.reconcilers.entries()) {
-      try {
-        await reconciler.reconcile(db, run);
-      } catch (error) {
-        process.stderr.write(
-          `[runs] finalization reconciler ${key} failed for run ${run.id}: `
-          + `${String((error as Error)?.message ?? error)}\n`,
-        );
-      }
-    }
+  entries(): ReadonlyArray<{ key: string; reconcile: RunFinalizationReconciler["reconcile"] }> {
+    return [...this.reconcilers.entries()].map(([key, { reconciler }]) => ({
+      key,
+      reconcile: (db, run) => reconciler.reconcile(db, run),
+    }));
   }
 
   registeredKeys(): ReadonlySet<string> {

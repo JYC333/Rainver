@@ -157,9 +157,9 @@ const sourcePostProcessingContextRef = {
   additionalProperties: false,
 } as const;
 
-// The run contract requires the artifact object directly. Legacy JSON-encoded
-// strings exist only in previously stored artifacts; accepting them from new
-// runs let arbitrary prose pass the run-level schema and fail only at the
+// The run contract requires the artifact object directly. Stored artifacts may
+// still be JSON-encoded strings. Do not accept a string from a new run:
+// prose then passes the run-level schema and fails only at the
 // post-materialization parse, poisoning the stored artifact.
 const researchReportObject = {
   type: "object",
@@ -307,6 +307,5 @@ export const RESEARCH_SYNTHESIS_OUTPUT_CONTRACT: StructuredOutputContract = {
   },
 };
 
-// Keep the citation schema exported for future schema refinements without
-// coupling provider transport to the protocol implementation.
+// Citation schema export. Provider transport does not import the protocol implementation.
 export const RESEARCH_CITATION_REF_SCHEMA = citationRef;

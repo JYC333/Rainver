@@ -1,7 +1,5 @@
 # Reuse and Dependency Policy
 
-Date: 2026-08-23
-
 This is the single source of truth for **what to reuse, what to install, and
 what to build** in this repository. It applies to every coding agent and every
 human change. Module structure rules live in
@@ -189,7 +187,7 @@ what is installed.
 | Route registration | `ServerModule` + route registry | `server/src/gateway/routeRegistry.ts` |
 | Route helpers (pool access, identity, pagination, parsing, errors) | `routeUtils` support package | `server/src/modules/routeUtils/` |
 | Request/response validation and shared DTOs | `zod` | `packages/protocol/src/`, module schemas |
-| Control plane ↔ host daemon WebSocket frames | `zod` discriminated unions in `@rainver/protocol`, parsed once at each end and typed on send — **never rebuilt field by field**. There is no exception left: the dependency-free Runner that held the one hand-written mapping is deleted, and every host speaks this wire | `packages/protocol/src/hostWire.ts`, `server/src/modules/hosts/{routes,connectionRegistry}.ts`, `packages/host-daemon/src/commands/run.ts` |
+| Control plane ↔ host daemon WebSocket frames | `zod` discriminated unions in `@rainver/protocol`, parsed once at each end and typed on send — **never rebuilt field by field**. Every host speaks this wire | `packages/protocol/src/hostWire.ts`, `server/src/modules/hosts/{routes,connectionRegistry}.ts`, `packages/host-daemon/src/commands/run.ts` |
 | Database access | `pg` with hand-written SQL, confined to repositories | `server/src/db/`, module `repository.ts` |
 | Schema authoring | `drizzle-orm` — **declaration only, never a query layer** | `server/src/db/schema/` |
 | Migration artifacts | `drizzle-kit` generate appended to the committed chain | `server/migrations/`, `pnpm run schema:generate -- --name <name>` |
@@ -200,12 +198,12 @@ what is installed.
 | Outbound HTTP to model providers and CLI runtimes | `undici` + `ProxyAgent` through the network-profile transport | `server/src/modules/networkProfiles/transport.ts` |
 | Other outbound HTTP (source fetch, skill import, tool download) | `@rainver/outbound-guard`, through `fetchSource` / `fetchGuarded` — see the row below, which is the canonical one. Do not invent a second HTTP client or retry wrapper, and do not call native `fetch` for a URL a member can influence. The skill importer is the recorded exception: it is bounded by a host allowlist and reads a body with no ceiling | `server/src/modules/sources/sourceFetch.ts`, `packages/host-daemon/src/toolDownload.ts` |
 | WebSocket server | `@fastify/websocket` — **hosts channel only** | `server/src/modules/hosts/routes.ts` |
-| Multipart request parsing | `@fastify/multipart`, registered once by the gateway shell with the shared body-size limit | `server/src/gateway/appShell.ts`, `server/src/modules/sessions/routes.ts` |
+| Multipart request parsing | `@fastify/multipart`, registered once by the gateway shell. Conversation images use the registration limits (10 MB, one file, four fields). Activity capture calls `request.parts()` with its own 25 MB file budget and does not import the package | `server/src/gateway/appShell.ts`, `server/src/modules/sessions/routes.ts`, `server/src/modules/activity/routes.ts` |
 | Server-sent events | `streaming` module | `server/src/modules/streaming/` |
 | Scoped settings | `ScopedSettingsStore` + typed descriptors | `server/src/modules/settings/` |
 | Recurring in-process work and its cursor state | `SchedulerRegistry` + `PgSchedulerTaskStore` (`scheduler_tasks`) | `server/src/modules/scheduler/` |
 | Durable async jobs and their retry/attempt semantics | `JobHandlerRegistry` + job worker | `server/src/modules/jobs/` |
-| Cron expressions and next-run computation | `cron-parser`, confined to `schedule.ts`, behind the unchanged `computeNextRunAt` / `parseSchedule` / `InvalidScheduleError` façade — replaced a ~245-line hand-rolled parser/DST engine. Evaluated 2026-08-23: MIT, actively maintained, Node 24/ESM-CJS-compatible, adopted by `pg-boss` itself (`^5.7.0`); pulls in one transitive dep (`luxon`). Verified against the old implementation before the swap: day-of-month/day-of-week OR semantics match; the DST spring-forward gap does not — cron-parser/Luxon shift the instant forward by the gap length instead of skipping to the next valid day. That behavior change was evaluated and accepted (not preserved), confined to schedules whose configured minute falls inside a timezone's ~1hr yearly transition window; locked in by a regression test. | `server/src/modules/automations/schedule.ts` |
+| Cron expressions and next-run computation | `cron-parser`, confined to `schedule.ts`, behind `computeNextRunAt` / `parseSchedule` / `InvalidScheduleError`. Day-of-month and day-of-week combine with OR. A DST spring-forward gap shifts the instant forward by the gap length instead of skipping to the next valid day; that is the accepted behavior for a schedule whose minute falls inside the transition, and a regression test locks it. | `server/src/modules/automations/schedule.ts` |
 | Proposal-gated writes | proposal applier registry | `server/src/modules/proposals/` |
 | Agent task/conversation context | `RuntimeContextGatewayPort` facade | `server/src/modules/runtimeContext/` |
 | Bounded model invocation and provider credentials | `providers`; Agent execution is ACP through the execution Host daemon | `server/src/modules/providers/` |
@@ -227,7 +225,7 @@ what is installed.
 
 | Concern | Canonical mechanism | State | Where to look |
 |---|---|---|---|
-| Vendor coding-CLI conversation protocol | **Agent Client Protocol (ACP)** via the official `@agentclientprotocol/sdk` (server dependency, confined to `cliConversationProtocol.ts`); the server is the ACP client, the daemon relays bytes and parses nothing | **Current** for all three implemented CLI runtimes (claude, codex, opencode — all `protocol: "acp"`). Rainver owns JSON-RPC framing (envelope, request ids) and the request/response lifecycle (`initialize`/`session/new`/`session/resume`/`authenticate` when a session answers authenticate-first/`session/set_config_option`/`session/prompt`/`session/update`) as a hand-rolled phase dispatcher — by design, not gap: no SDK hook reproduces its tested start()-independent, phase-named anomaly handling (D6, twice-corrected during the retired execution-topology plan's P0 — git history). The SDK's contribution is the ACP schema/method vocabulary itself: wire shapes are checked against SDK-exported types (e.g. `PermissionOption`) rather than trusted by convention; it is not doing runtime schema validation and its higher-level client API (`client()`, `connectWith()`, `ClientContext`, `ActiveSession`) is unused. Rainver also keeps canonical event normalization, permission decision (`runPermissionPolicy.ts`), Run/thread ownership, and usage/audit. `gemini_cli` is `implementation_status: "planned"` and speaks no protocol yet. | `server/src/modules/runs/cliConversationProtocol.ts`, `server/src/modules/runs/runPermissionPolicy.ts`, `server/src/modules/runtimeAdapters/specs.ts` |
+| Vendor coding-CLI conversation protocol | **Agent Client Protocol (ACP)** via the official `@agentclientprotocol/sdk` (server dependency, confined to `cliConversationProtocol.ts`); the server is the ACP client, the daemon relays bytes and parses nothing | **Current** for all three implemented CLI runtimes (claude, codex, opencode — all `protocol: "acp"`). Rainver owns JSON-RPC framing (envelope, request ids) and the request/response lifecycle (`initialize`/`session/new`/`session/resume`/`authenticate` when a session answers authenticate-first/`session/set_config_option`/`session/prompt`/`session/update`) as a hand-rolled phase dispatcher — by design, not gap: no SDK hook reproduces its tested start()-independent, phase-named anomaly handling. The SDK's contribution is the ACP schema/method vocabulary itself: wire shapes are checked against SDK-exported types (e.g. `PermissionOption`) rather than trusted by convention; it is not doing runtime schema validation and its higher-level client API (`client()`, `connectWith()`, `ClientContext`, `ActiveSession`) is unused. Rainver also keeps canonical event normalization, permission decision (`runPermissionPolicy.ts`), Run/thread ownership, and usage/audit. `gemini_cli` is `implementation_status: "planned"` and speaks no protocol yet. | `server/src/modules/runs/cliConversationProtocol.ts`, `server/src/modules/runs/runPermissionPolicy.ts`, `server/src/modules/runtimeAdapters/specs.ts` |
 | ACP adapters for vendors without native ACP | pinned npm packages spawned as executables by the host daemon | Current; exactly two (`@agentclientprotocol/claude-agent-acp`, `@agentclientprotocol/codex-acp`). If a vendor ships native ACP, delete the dependency. **Do not write a protocol adapter.** | `packages/host-daemon/package.json` |
 | Host daemon ↔ control plane transport | native global `WebSocket` (Node 24) + duplex stdin frames | Current; the daemon adds no npm dependency for transport. Its workspace deps are `@rainver/{agent-cli,folder-read,outbound-guard,protocol}` and the two ACP adapter packages are pinned executables it spawns. **One recorded external exception:** `undici`, reached transitively through `@rainver/outbound-guard` (`packages/outbound-guard/package.json`, `^6.21.0`). `undiciPinnedFetch` needs a dispatcher that connects to the address the guard already checked, which `fetch` cannot express; the daemon's tool download (`src/toolDownload.ts`) runs the same guarded path as the server's `fetchGuarded` instead of keeping a second copy in `server/src/modules/sources/outboundUrlSafety.ts`. Keep the list at that — a new daemon dependency needs its own §9 record. | `packages/host-daemon/src/commands/run.ts`, `packages/host-daemon/src/execution.ts`, `packages/host-daemon/src/toolDownload.ts`, `packages/outbound-guard/src/fetch.ts` |
 
@@ -249,7 +247,7 @@ what is installed.
 | Complete text-file/code editing | CodeMirror 6 through the local Files & Code adapter; keep language chunks lazy and do not use a React wrapper | `apps/web/src/modules/project_files/CodeMirrorEditor.tsx` |
 | Markdown → editor document | `markdown-it` | `apps/web/src/components/editor/markdownToProseMirror.ts` |
 | Drag and drop | `@dnd-kit` | components |
-| Conversation / Agent-turn UI | **AI Elements** (Vercel's shadcn registry) — copied source under `components/ai-elements/`, not a runtime dependency, so it is edited in place like any other component here; re-add through the CLI rather than merging | `apps/web/src/components/ai-elements/`, `components.json` |
+| Conversation / Agent-turn UI | **AI Elements** (Vercel's shadcn registry) — copied source under `components/ai-elements/`, not a runtime dependency, so it is edited in place like any other component here; re-add through the CLI rather than merging | `apps/web/src/components/ai-elements/`, `apps/web/components.json` |
 | Markdown rendering (chat) | `streamdown` — via AI Elements' `MessageResponse`; tolerates the half-formed markdown a stream produces mid-token | `apps/web/src/components/ai-elements/message.tsx` |
 
 ### Testing mechanisms
@@ -323,8 +321,7 @@ or the architecture doc:
 - the **deprecation path** — what deletes the old one and what triggers it.
 
 A migration state with no recorded end is a permanent duplicate. Where a clean
-cutover is possible (no running instance to migrate), prefer it — that is the
-call ADR 0016's replatform work made deliberately and twice.
+cutover is possible (no running instance to migrate), prefer it.
 
 ---
 

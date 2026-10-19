@@ -72,7 +72,7 @@ interface MemoryServices {
   repository: Pick<PgMemoryReadRepository, "list" | "get" | "search" | "versions"> &
     Pick<
       PgMemoryProposalRepository,
-      "createMemoryProposal" | "updateMemoryProposal" | "archiveMemoryProposal"
+      "createMemoryProposal" | "updateMemoryProposal" | "archiveMemoryProposal" | "reviseOperatorEditProposal"
     > &
     // Archiving and restoring your own memory is a direct write (ADR 0003
     // §3), so it belongs to the same service surface the routes resolve —
@@ -116,6 +116,7 @@ function memoryServices(context: ModuleContext): MemoryServices {
       createMemoryProposal: proposalRepository.createMemoryProposal.bind(proposalRepository),
       updateMemoryProposal: proposalRepository.updateMemoryProposal.bind(proposalRepository),
       archiveMemoryProposal: proposalRepository.archiveMemoryProposal.bind(proposalRepository),
+      reviseOperatorEditProposal: proposalRepository.reviseOperatorEditProposal.bind(proposalRepository),
     },
   };
 }
@@ -200,8 +201,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   // Advisory duplicate detection for memory proposal creation. It surfaces
   // existing memories (exists / probable_duplicate / unknown) so a create
-  // proposal can warn about likely duplicates. It is read-only and must never
-  // block creation — the proposal write path is unchanged. Matches returned to
+  // proposal can warn about likely duplicates. It is read-only. Do not block
+  // creation. Matches returned to
   // the caller are logged through the same memory read-trace as search.
   app.post("/api/v1/memory/create-safety", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
@@ -730,9 +731,29 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // Archiving and restoring your own memory (ADR 0003 §3). A proposal here
-  // was the person asking themselves for permission; someone else's entry
-  // still goes through one, which is the case the flow was for.
+  // The revision a maintenance finding asked for, written into its pending
+  // update by the person who decides what the entry says. Accepting is
+  // separate; an update that asks for a revision is refused until it has one.
+  app.post("/api/v1/memory/proposals/:proposalId/revision", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    try {
+      const revision = protocol.MemoryProposalRevisionRequestSchema.parse(jsonBody(request));
+      const proposal = await memoryServices(context).repository.reviseOperatorEditProposal(
+        identity.spaceId,
+        identity.userId,
+        params(request).proposalId ?? "",
+        revision,
+      );
+      return reply.send(proposal);
+    } catch (error) {
+      return sendDomainError(reply, error);
+    }
+  });
+
+  // Archiving and restoring your own memory is direct (ADR 0003 §3). Do not
+  // ask a person for permission to archive their own entry. Someone else's
+  // entry still goes through a proposal.
   app.delete("/api/v1/memory/:memoryId", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
@@ -869,7 +890,7 @@ async function resolveIdentity(
   }
   const requestId = resolveRequestId(request);
   reply.header(REQUEST_ID_HEADER, requestId);
-  const identity = await introspectIdentity(context.config, request);
+  const identity = await introspectIdentity(context.config, request, reply);
   if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
   if (identity.reason === "denied") {
     reply.code(identity.statusCode);

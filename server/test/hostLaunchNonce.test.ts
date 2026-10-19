@@ -2,11 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HostConnectionRegistry, type HostFrameSink } from "../src/modules/hosts/connectionRegistry.js";
 
 // A supervisor retry reuses the run id within seconds of the first attempt's
-// kill, before that attempt's child has finished uploading and reported. The
-// registry keys pending runs by run id, so without a per-dispatch nonce the
-// first attempt's late `complete` resolved the second attempt's promise with
-// the first attempt's exit code — and the second attempt's tool token was
-// revoked while its process was still running.
+// kill, before that attempt's child has finished uploading and reported.
+// Each dispatch carries its own nonce. Do not key the pending run by run id
+// alone. A late `complete` from attempt 1 would resolve attempt 2's promise
+// and revoke attempt 2's tool token while its process is still running.
 describe("launch nonce routing", () => {
   afterEach(() => { vi.useRealTimers(); });
 
@@ -31,12 +30,46 @@ describe("launch nonce routing", () => {
     registry.receiveComplete("host-1", "run-1", { exit_code: 137, timed_out: true, error: null }, firstLaunch);
     let settled = false;
     void second.then(() => { settled = true; });
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     expect(settled).toBe(false);
-    expect(first).toBeUndefined();
+    // The retry settled the earlier dispatch; its late exit code never reached it.
+    expect(first).toMatchObject({ error: "superseded_by_retry" });
 
     registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, secondLaunch);
     await expect(second).resolves.toMatchObject({ exit_code: 0 });
+  });
+
+  it("frees the slot a superseded attempt held, so the next waiter starts", async () => {
+    const registry = new HostConnectionRegistry();
+    const connection = sink();
+    registry.registerConnection("host-1", connection);
+    const launched = () => connection.sent.filter((frame) => frame.type === "launch").map((frame) => frame.run_id);
+    // Two slots: A and C run, then A's retry and B wait.
+    void registry.dispatchLaunch("host-1", "run-a", { argv: ["claude"] }, undefined, undefined, undefined, 2);
+    void registry.dispatchLaunch("host-1", "run-c", { argv: ["claude"] }, undefined, undefined, undefined, 2);
+    const cLaunch = String(connection.sent.at(-1)!.launch_id);
+    void registry.dispatchLaunch("host-1", "run-a", { argv: ["claude"] }, undefined, undefined, undefined, 2);
+    void registry.dispatchLaunch("host-1", "run-b", { argv: ["claude"] }, undefined, undefined, undefined, 2);
+    expect(launched()).toEqual(["run-a", "run-c"]);
+
+    // C finishes: A's retry takes the slot and replaces the first attempt,
+    // which frees the slot that attempt held — B must not wait for A's retry.
+    registry.receiveComplete("host-1", "run-c", { exit_code: 0, timed_out: false, error: null }, cLaunch);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(launched()).toEqual(["run-a", "run-c", "run-a", "run-b"]);
+  });
+
+  it("reports whether the sink it unregisters was the live connection", () => {
+    const registry = new HostConnectionRegistry();
+    const first = sink();
+    const second = sink();
+    registry.registerConnection("host-1", first);
+    registry.registerConnection("host-1", second);
+    // The superseded socket's close must not read as the host going offline.
+    expect(registry.unregisterConnection("host-1", first)).toBe(false);
+    expect(registry.isOnline("host-1")).toBe(true);
+    expect(registry.unregisterConnection("host-1", second)).toBe(true);
+    expect(registry.isOnline("host-1")).toBe(false);
   });
 
   it("marks a launch the host queued for its directory until the host launches it, for its own dispatch only", async () => {
@@ -187,4 +220,29 @@ describe("launch nonce routing", () => {
     await next;
   });
 
+});
+
+// Revoke cuts a connected daemon off (`closeConnection`) and remembers the
+// host (`forgetRevokedHost`). A hello that had already authenticated when the
+// revoke landed registers afterwards, and nothing would close that socket.
+describe("a host revoked during its hello", () => {
+  function sink(): HostFrameSink & { closed: Array<{ code?: number; reason?: string }> } {
+    const closed: Array<{ code?: number; reason?: string }> = [];
+    return { closed, send: () => undefined, close: (code, reason) => { closed.push({ code, reason }); } };
+  }
+
+  it("is refused by registerConnection and stays offline", () => {
+    const registry = new HostConnectionRegistry();
+    registry.closeConnection("host-1", 1008, "host_revoked");
+    registry.forgetRevokedHost("host-1");
+
+    const late = sink();
+    expect(registry.registerConnection("host-1", late)).toBe(false);
+    expect(registry.isOnline("host-1")).toBe(false);
+    expect(late.closed).toEqual([{ code: 1008, reason: "host_revoked" }]);
+
+    const other = sink();
+    expect(registry.registerConnection("host-2", other)).toBe(true);
+    expect(registry.isOnline("host-2")).toBe(true);
+  });
 });

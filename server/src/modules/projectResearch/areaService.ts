@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { HttpError, objectValue, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
-import { contentReadSql } from "../access/contentAccessSql.js";
+import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
+import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { assertProjectReadable, assertProjectWriter, canWriteProject, lockActiveProjectForMutation } from "../projects/access.js";
 import { ProjectCorpusRepository } from "../projects/corpusRepository.js";
 import { sourceItemReadableClause } from "../sources/sourceItemAccess.js";
@@ -20,10 +21,10 @@ import { ensureProjectNotesFolder } from "../knowledge/noteProjectFolders.js";
 import { NOTEBOOK_SECTION_KEYS, SECTION_LABELS, resolveNotebookNote, resolveNotebookNotes, type NotebookNoteRow, type SectionKey } from "./notebookNotes.js";
 import { isNoteProjectRole, type NoteProjectRole } from "../knowledge/noteProjectRoles.js";
 
-export { NOTEBOOK_SECTION_KEYS, SECTION_LABELS };
+export { SECTION_LABELS };
 
 /**
- * D6: ad-hoc analysis has its own small budget lane, independent of the
+ * Ad-hoc analysis has its own small budget lane, independent of the
  * project research operation budget. Enforced per project per UTC day.
  */
 export const RESEARCH_ADHOC_DAILY_RUN_LIMIT = 20;
@@ -151,8 +152,8 @@ export class ProjectResearchAreaService {
       await lockActiveProjectForMutation(db, identity.spaceId, projectId);
       const service = new ProjectResearchAreaService(db, this.config);
       await service.ensureArea(scope, identity.spaceId, projectId);
-      // Projects with reports from before the living area existed get
-      // their notes seeded from the latest completed report once.
+      // Creating the area seeds its notes from the latest completed report,
+      // once. An area that already exists is left as it is.
       const report = existing.rows[0] ? { rows: [] } : await db.query<{ synthesis_run_id: string; content_json: unknown }>(
         `SELECT synthesis_run_id,content_json FROM project_research_reports
           WHERE space_id=$1 AND project_id=$2 AND status <> 'rejected'
@@ -183,10 +184,9 @@ export class ProjectResearchAreaService {
     return { ...corpus, items: items.map((row) => ({ ...row, evidence_card: bySource.get(String(row.source_item_id)) ?? null })) };
   }
 
-  // Per-note editing, revision history, and rollback are no longer
-  // area-specific: the frontend calls the generic
-  // /api/v1/knowledge/notes/:noteId (+/revisions, +/rollback) endpoints
-  // directly, since a project's notes are ordinary Notes.
+  // Per-note editing, revision history, and rollback are the generic
+  // knowledge note endpoints: /api/v1/knowledge/notes/:noteId
+  // (+/revisions, +/rollback). A project's notes are ordinary Notes.
 
   async upsertEvidenceCard(identity: SpaceUserIdentity, projectId: string, sourceItemId: string, body: Record<string, unknown>) {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
@@ -236,8 +236,8 @@ export class ProjectResearchAreaService {
     if (!this.config) throw new HttpError(500, "Research execution is unavailable");
     const prompt = text(body.prompt, 4000);
     if (!prompt) throw new HttpError(422, "prompt is required");
-    // `section_key` is a legacy field name (kept for the existing Reading
-    // List "compare selected material" caller): a registered role resolves to
+    // `section_key` is accepted (the Reading List "compare selected material"
+    // caller sends it): a registered role resolves to
     // whichever note holds that role, whatever its title now is; any other
     // value is a literal note title, created if it doesn't exist yet.
     const requested = optionalString(body.section_key) ?? "understanding";
@@ -253,9 +253,18 @@ export class ProjectResearchAreaService {
     if (role) {
       const resolution = await resolveNotebookNote(this.db, identity.spaceId, projectId, role, identity.userId);
       if (resolution.present) note = resolution.note;
+      // A role held by a note this caller cannot read is still held: creating
+      // a note in that role would take it from the holder and silently swap
+      // the Project's baseline for an empty note.
+      else if ((await resolveNotebookNote(this.db, identity.spaceId, projectId, role, null)).present) {
+        throw new HttpError(404, "Note not found");
+      }
     } else {
       note = await this.resolveProjectNoteByExactTitle(identity, projectId, title);
     }
+    // The Run will rewrite this note, and its body goes into the prompt:
+    // reading a note is not permission for either, as in notebookChat.
+    if (note) await assertWritableSpaceObject(this.db, identity, note.id, "Note not found");
     if (!note) {
       const now = new Date().toISOString();
       const created = await withNoteWrites(this.db, (scope) =>
@@ -285,11 +294,10 @@ export class ProjectResearchAreaService {
       prompt, title, baseVersion, blocks,
       material: material.rows.map((item) => JSON.stringify(item)),
     });
-    // Admitted and made durable here, performed by the worker. It used to run
-    // inline on this request: a crash between the provider answering and the
-    // block ops being applied left a succeeded Run whose edit never reached
-    // the note and which nothing would ever retry, and a transient provider
-    // failure came back as a 502 with no attempt behind it.
+    // Admitted and made durable here, performed by the worker. Do not apply
+    // the block ops on this request: a crash after the provider answers leaves
+    // a succeeded Run whose edit never reaches the note, and a transient
+    // provider failure comes back as a 502 with no attempt behind it.
     const queued = await withQueryableTransaction(this.db, async (db) => {
       const run = await new PgRunRepository(db).createQueuedProviderTaskRun({
         space_id: identity.spaceId,
@@ -378,7 +386,7 @@ export class ProjectResearchAreaService {
     const resolved = await new ProjectResearchExecutionProfileService(this.db, this.config)
       .resolveProvider(identity, { modelProviderId: optionalString(execution.model_provider_id), modelName: optionalString(execution.model_name) });
 
-    const notes = await this.listProjectNotes(identity, projectId);
+    const notes = (await this.listProjectNotes(identity, projectId)).filter((note) => !note.body_withheld);
     const notebookText = notes.map((note) => {
       const blocks = pmBlocksText(note.content_json ?? { type: "doc", content: [] });
       return `## [${note.id}] ${note.title} (base version ${note.version}, ${blocks.length} blocks)\n${blocks.map((value, index) => `[${index}] ${value || "(empty)"}`).join("\n") || "(empty document)"}`;
@@ -436,12 +444,20 @@ export class ProjectResearchAreaService {
       const targetNote = requestedNoteId ? notes.find((n) => n.id === requestedNoteId) : undefined;
       if (targetNote) {
         // The notebook list this chose from is read-gated, and reading a note
-        // is not permission to have the model rewrite it.
-        await assertWritableSpaceObject(this.db, identity, targetNote.id, "Note not found");
-        const applied = await withNoteWrites(this.db, (scope) => scope.applyOps({
-          spaceId: identity.spaceId, noteId: targetNote.id, baseVersion: targetNote.version, rawOps, source: "ai_adhoc", runId, refs,
-        }));
-        if (applied) notebookEdit = { note_id: targetNote.id, version: applied.note.version, conflict: applied.conflict };
+        // is not permission to have the model rewrite it. A note the person
+        // cannot write leaves the edit undone and the answer standing: the
+        // Run is already spent, and a 404 here would lose the reply with it.
+        const writable = await assertWritableSpaceObject(this.db, identity, targetNote.id, "Note not found")
+          .then(() => true, (error: unknown) => {
+            if (error instanceof HttpError && (error.statusCode === 404 || error.statusCode === 403)) return false;
+            throw error;
+          });
+        if (writable) {
+          const applied = await withNoteWrites(this.db, (scope) => scope.applyOps({
+            spaceId: identity.spaceId, noteId: targetNote.id, baseVersion: targetNote.version, rawOps, source: "ai_adhoc", runId, refs,
+          }));
+          if (applied) notebookEdit = { note_id: targetNote.id, version: applied.note.version, conflict: applied.conflict };
+        }
       } else {
         const newTitle = text(notebookUpdate.new_note_title, 200) || "Untitled";
         const now = new Date().toISOString();
@@ -618,24 +634,18 @@ export class ProjectResearchAreaService {
   }
 
   /**
-   * One-shot reconciliation for projects whose starter notes predate the role
-   * marker (N2). Title matching here is legitimate and is the only place it
-   * remains: it reconstructs the binding the old title-based resolver created,
-   * rather than being a binding of its own.
-   *
-   * The schema is regenerated from one baseline rather than migrated
-   * incrementally, so this lives on the read path — the same place that
-   * already creates a missing starter note — and stops doing anything the
-   * moment every role is filled. A note whose title the user already changed
-   * is not adopted: there is nothing to reconstruct, and guessing would put a
-   * role on a note the user never designated.
+   * Binds starter notes that have no role marker, once, by title, on the read
+   * path that also creates a missing starter note. Title matching is
+   * legitimate only here. It is not a general resolver. It stops once every
+   * role is filled. A note whose title the user already changed is not
+   * adopted. Do not guess a role onto a note the user never designated.
    */
   private async adoptStarterNotesByTitle(scope: NoteWriteScope, spaceId: string, projectId: string): Promise<void> {
     const byRole = await resolveNotebookNotes(this.db, spaceId, projectId);
     for (const role of NOTEBOOK_SECTION_KEYS) {
       if (byRole[role]) continue;
-      // Finding the candidate is this method's own business — the title match
-      // is the whole point here. Writing the role is not: that goes through
+      // Finding the candidate is this method's own business — the title match.
+      // Writing the role is not: that goes through
       // the note writer like every other role write, so the registry check and
       // the displacement rule apply here too.
       const candidate = await this.db.query<{ object_id: string }>(
@@ -714,16 +724,23 @@ export class ProjectResearchAreaService {
    * notebook chat and ask-AI paths build — so an ungated read put another
    * member's private note body into a model call.
    */
-  private async listProjectNotes(identity: SpaceUserIdentity, projectId: string): Promise<Array<{ id: string; title: string; version: number; content_json: Record<string, unknown>; project_role: string | null }>> {
-    const rows = await this.db.query<{ id: string; title: string; version: number; content_json: Record<string, unknown>; project_role: string | null }>(
-      `SELECT n.object_id AS id, so.title, n.version, n.content_json, n.project_role
+  private async listProjectNotes(identity: SpaceUserIdentity, projectId: string): Promise<Array<{ id: string; title: string; version: number; content_json: Record<string, unknown>; project_role: string | null; body_withheld: boolean }>> {
+    const definition = contentResourceDefinition("space_object");
+    if (!definition) throw new Error("space_object content resource is not registered");
+    const rows = await this.db.query<{ id: string; title: string; version: number; content_json: Record<string, unknown>; project_role: string | null; effective_access_level: string }>(
+      `SELECT n.object_id AS id, so.title, n.version, n.content_json, n.project_role,
+              ${contentAccessLevelSql({ definition, alias: "so", userExpr: "$3" })} AS effective_access_level
          FROM notes n JOIN space_objects so ON so.id=n.object_id AND so.space_id=n.space_id
         WHERE so.space_id=$1 AND so.primary_project_id=$2 AND n.status='active' AND so.deleted_at IS NULL
           AND ${contentReadSql("space_object", "so", "$3")}
         ORDER BY so.created_at ASC`,
       [identity.spaceId, projectId, identity.userId],
     );
-    return rows.rows;
+    // A summary-level reader sees that a note exists and its title, as every
+    // other Knowledge read gives them, and never its body.
+    return rows.rows.map(({ effective_access_level, ...note }) => effective_access_level === "full"
+      ? { ...note, body_withheld: false }
+      : { ...note, content_json: { type: "doc", content: [] }, body_withheld: true });
   }
 
   /**
@@ -731,10 +748,8 @@ export class ProjectResearchAreaService {
    *
    * The work is the shared note writer's: this method only supplies what is
    * specific to a Project note — the folder, the role, and the attribution for
-   * scaffolding nobody asked for by hand. It used to assemble the root row,
-   * the extension row, the revision and the folder membership itself, and had
-   * drifted from the general path in two visible ways (no `summary`, and every
-   * note filed at `sort_order` 0).
+   * scaffolding nobody asked for by hand. Do not assemble the root row, the
+   * extension, the revision, and the folder membership here.
    */
   private async createProjectNote(scope: NoteWriteScope, input: {
     spaceId: string; projectId: string; folderId: string; title: string; doc: Record<string, unknown>;
@@ -742,9 +757,8 @@ export class ProjectResearchAreaService {
     /** The notebook role this note is created to hold, when it has one. */
     projectRole?: NoteProjectRole | null;
   }): Promise<{ id: string; version: number }> {
-    // Auto-created scaffolding (starter notes) has no acting user. Attributing
-    // it to the Project owner is accurate — the notes exist because that
-    // Project does — and leaves the object traceable, which B12H requires.
+    // Auto-created scaffolding (starter notes) has no acting user. Attribute
+    // it to the Project owner so the note stays traceable (B12H).
     const createdByUserId = input.createdByUserId
       ?? (input.createdByRunId ? null : await this.projectOwnerUserId(input.spaceId, input.projectId));
     return scope.create({
@@ -846,8 +860,8 @@ export function registerResearchProviderTaskRuns(): void {
       triggerOrigin: run.trigger_origin ?? "manual",
       spend: { kind: "person", user_id: userId },
       // Applied before the Run goes terminal, so a terminal ad-hoc Run always
-      // has its edit on the note. The reconciler's replay stays as the safety
-      // net for Runs that reached terminal the old way.
+      // has its edit on the note. The reconciler's replay covers a Run that
+      // reached terminal before this finalize ran.
       finalize: async (completion, runId) => {
         await service.applyAdhocNotebookUpdate({
           spaceId: run.space_id,

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { SpaceLink as Link } from '../../core/spaceNav'
+import { SpaceLink as Link, useSpaceNavigate } from '../../core/spaceNav'
 import { ArrowLeft, Archive, Database } from 'lucide-react'
 import { toast } from 'sonner'
 import { memoryApi } from '../../api/client'
@@ -15,9 +15,10 @@ import { Skeleton } from '../../components/ui/skeleton'
 import { EmptyState } from '../../components/ui/empty-state'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import { ContentAccessControl } from '../../components/ContentAccessControl'
+import { formatDateTime } from '../../i18n/format'
 
 function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString() : '-'
+  return formatDateTime(dt)
 }
 
 function val(value: string | number | null | undefined) {
@@ -37,6 +38,7 @@ export default function MemoryDetailPage() {
   const { memoryId = '' } = useParams()
   const { activeSpaceId, activeSpaceName } = useSpace()
   const { currentUser } = useAuth()
+  const navigate = useSpaceNavigate()
   const [memory, setMemory] = useState<Memory | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -85,7 +87,14 @@ export default function MemoryDetailPage() {
       const result = await memoryApi.delete(memory.id)
       const archived = 'content' in result && 'namespace' in result
       toast.success(archived ? 'Archived' : 'Archive proposal submitted')
-      setMemory(await memoryApi.get(memory.id))
+      // The history too: "Restore this version" appears only once no version
+      // in the chain is active, which is what archiving just changed.
+      const [row, chain] = await Promise.all([
+        memoryApi.get(memory.id),
+        memoryApi.versions(memoryId).catch(() => ({ items: [] as MemoryVersion[] })),
+      ])
+      setMemory(row)
+      setVersions(chain.items)
       if (!archived) toast.message('Review the archive proposal from Proposals.')
     } catch (e) {
       toast.error(errMsg(e))
@@ -154,7 +163,16 @@ export default function MemoryDetailPage() {
               </div>
             </div>
             <div className="flex flex-wrap gap-2">
-              <ContentAccessControl resourceType="memory" resourceId={memory.id} ownerUserId={memory.owner_user_id} />
+              <ContentAccessControl
+                resourceType="memory"
+                resourceId={memory.id}
+                ownerUserId={memory.owner_user_id}
+                // Who may read an entry is part of its version: the change
+                // wrote a new head, which is the entry to show now.
+                onUpdated={policy => {
+                  if (policy.resource_id !== memory.id) navigate(`/memory/${policy.resource_id}`, { replace: true })
+                }}
+              />
               {memory.status === 'archived'
                 ? (
                   // Owner-only: the route answers 404 for anyone else, and

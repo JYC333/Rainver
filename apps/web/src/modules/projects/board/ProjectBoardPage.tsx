@@ -99,9 +99,9 @@ export default function ProjectBoardPage() {
     toStatus: string,
     acknowledged?: string[],
   ) => {
-    // Drawn where it was dropped before the request goes out, and put back if
-    // the server refuses. Re-reading through the loading path instead replaced
-    // the whole Board with a skeleton on every drag.
+    // Draw the card where it was dropped before the request goes out, and put
+    // it back if the server refuses. Do not re-read through the loading path.
+    // That replaces the whole Board with a skeleton on every drag.
     setBoard(current => (current ? applyCardMove(current, card.id, toStatus) : current))
     try {
       await moveCardStatus(card.id, toStatus, acknowledged)
@@ -110,7 +110,13 @@ export default function ProjectBoardPage() {
       // only what the server decided differently.
       await load(true)
     } catch (error) {
-      setBoard(current => (current ? applyCardMove(current, card.id, card.column_key) : current))
+      // Back to its lane with the status it had: a blocked card shares the
+      // In Progress lane, and must come back blocked, not in progress.
+      setBoard(current => {
+        if (!current) return current
+        const restored = applyCardMove(current, card.id, card.column_key)
+        return { ...restored, cards: restored.cards.map(item => (item.id === card.id ? { ...item, status: card.status } : item)) }
+      })
       const missing = blockedCompletion(error)
       if (missing) {
         setBlockedClose({ card, missing })
@@ -124,7 +130,9 @@ export default function ProjectBoardPage() {
     const toStatus = event.over?.id
     if (typeof toStatus !== 'string') return
     const card = board?.cards.find(item => item.id === event.active.id)
-    if (!card || card.status === toStatus) return
+    // Compared with the lane, not the status: a blocked card sits in the In
+    // Progress lane, and dropping it back there must not unblock it.
+    if (!card || card.column_key === toStatus) return
     void moveCard(card, toStatus)
   }, [board, moveCard])
 

@@ -12,16 +12,14 @@ import type {
  * reaching Land closes a round rather than finishing the Thread and there is
  * no such thing as regression here.
  *
- * Stages are derived, never stored. A stage field would be one more thing a
- * user has to maintain, which is the class of problem this surface exists to
- * remove.
+ * Stages are derived, never stored. Do not add a stage field. It would be
+ * one more thing a user has to maintain.
  *
- * The kind→stage vocabulary itself (`StageId`, `STAGE_ORDER`, `STAGE_LABELS`,
- * `STAGE_HELP`, `STAGE_FOR_KIND`, `kindsInStage`) lives in
- * `@rainver/protocol` (plan Phase B) so a future non-frontend consumer —
- * today, none — shares this file's exact classification instead of a second
- * copy. Everything below this point is this page's own derived-state
- * presentation logic and stays here; only the static vocabulary moved.
+ * The kind→stage vocabulary (`InquiryStageId`, `INQUIRY_STAGE_ORDER`,
+ * `INQUIRY_STAGE_LABELS`, `INQUIRY_STAGE_HELP`, `INQUIRY_STAGE_FOR_KIND`,
+ * `inquiryKindsInStage`) lives in `@rainver/protocol`. This file re-exports
+ * the page names and owns the derived-state presentation. Do not keep a
+ * second copy of the vocabulary.
  */
 export type StageId = InquiryStageId
 export const STAGE_ORDER = INQUIRY_STAGE_ORDER
@@ -70,9 +68,9 @@ function completedThisRound(steps: InquiryThreadStep[], stage: StageId): boolean
  * steps by the time it would count.
  *
  * Abandoning is the third action, and it has to be excluded. An abandoned step
- * keeps `iteration_id` null and so stays in the round, which meant glancing at
- * a stage and immediately switching away marked it finished for the rest of the
- * round, with nothing the user could do to take it back.
+ * keeps `iteration_id` null and so stays in the round. Do not count it as
+ * engaged: glancing at a stage and switching away would mark it finished for
+ * the rest of the round, with nothing the user could do to take it back.
  */
 function engagedThisRound(steps: InquiryThreadStep[], stage: StageId): boolean {
   return steps.some(step =>
@@ -83,10 +81,9 @@ function engagedThisRound(steps: InquiryThreadStep[], stage: StageId): boolean {
  * A system operation for this stage is running right now.
  *
  * Only background steps qualify. A primary step is the user's attention, not
- * work in flight: nothing ends one until the round does, so a spinner on it
- * could never stop — a Thread that had once opened Clarify sat ticked and
- * spinning at the same time for the rest of the round. Where the user is
- * standing is what the Current badge says.
+ * work in flight. Do not put a spinner on a primary step: nothing ends one
+ * until the round does, so it would stay ticked and spinning together.
+ * Where the user is standing is what the Current badge says.
  */
 function isRunning(steps: InquiryThreadStep[], stage: StageId): boolean {
   return steps.some(step =>
@@ -95,12 +92,12 @@ function isRunning(steps: InquiryThreadStep[], stage: StageId): boolean {
 }
 
 /**
- * This round produced what the stage exists for. Only this earns a tick.
+ * This round produced the stage's product. Only this earns a tick.
  *
  * Where a stage has an observable product, that product is the test and the
- * user's attention is not: Clarify counted a started step, so the tick landed
- * the moment its action was launched, before the wording had been near the
- * assessment workspace. Writing up and landing have no observable of their own
+ * user's attention is not. Do not tick Clarify because a step started: the
+ * tick would land before the wording had been near the assessment workspace.
+ * Writing up and landing have no observable of their own
  * — the user going and doing them is the only evidence there is — so those two
  * still read the step.
  *
@@ -120,11 +117,9 @@ function hasStageProduct(stage: StageId, input: StageInput): boolean {
       return questionRefined
     case 'acquire': {
       // A running search does not complete Acquire — it *is* Acquire, still
-      // happening. Treating it as done pushed the Thread into Digest with
-      // nothing to digest, and recommended reading evidence that had not
-      // arrived.
-      // Acquire exists to yield evidence, and a search still running has not
-      // yielded any.
+      // happening. Do not treat it as done. The Thread would move into Digest
+      // with nothing to digest, and the reader would be told to read evidence
+      // that has not arrived.
       const arrivedThisRound = signals.some(
         signal => !roundStartedAt || signal.created_at > roundStartedAt,
       )
@@ -143,7 +138,7 @@ function hasStageProduct(stage: StageId, input: StageInput): boolean {
   }
 }
 
-export interface StageView {
+interface StageView {
   id: StageId
   /** This round produced the stage's own outcome. */
   complete: boolean
@@ -206,7 +201,7 @@ export function deriveStages(input: StageInput): { stages: StageView[]; current:
   }
 }
 
-export interface StepRecommendation {
+interface StepRecommendation {
   kind: InquiryNextFocusKind
   /** Drawn from state the user can check on this page, never a bare assertion. */
   reason: string

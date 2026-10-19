@@ -9,8 +9,8 @@ import { Select } from '../../components/ui/select'
 import { Input } from '../../components/ui/input'
 import HostDirectoryBrowser from './HostDirectoryBrowser'
 import { errMsg } from '../../lib/utils'
-import RuntimeLoginTerminal from './RuntimeLoginTerminal'
 import { SpaceLink } from '../../core/spaceNav'
+import { useAppTranslation } from '../../i18n'
 
 export interface HostExecutionSelection {
   host_id: string
@@ -23,7 +23,7 @@ export interface HostExecutionSelection {
 /**
  * What Rainver's own provisioner is doing to the Server Runtime's pinned copy.
  *
- * Plan "Default path" §3: an Agent surface says installing, failed/retry or
+ * An Agent surface says installing, failed/retry or
  * incompatible — never "login required" — while the copy is not yet usable.
  * Returns null once the installed copy is the pinned one and healthy.
  */
@@ -64,12 +64,12 @@ export default function HostExecutionTargetPicker({
   /** Offer only managed workspaces when a caller explicitly needs a private, Location-independent directory. */
   managedOnly?: boolean
 }) {
+  const { t } = useAppTranslation()
   const [targets, setTargets] = useState<HostExecutionTarget[]>([])
   const [adapterCatalog, setAdapterCatalog] = useState<HostRuntimeDefinitionOption[]>([])
   const [loading, setLoading] = useState(Boolean(projectId))
   const [error, setError] = useState<string | null>(null)
   const [installing, setInstalling] = useState<string | null>(null)
-  const [login, setLogin] = useState<{ hostId: string; runtimeKey: string; installation: string } | null>(null)
   const [registerOpen, setRegisterOpen] = useState(false)
   const [registerPath, setRegisterPath] = useState<string | null>(null)
   const [registerName, setRegisterName] = useState('')
@@ -197,7 +197,6 @@ export default function HostExecutionTargetPicker({
     setDraftLocationId(nextLocation?.id ?? '')
     setDraftRuntimeKey(nextRuntimeKey ?? '')
     setDraftMode(nextMode)
-    setLogin(null)
     if (nextRuntimeKey) onRuntimeChange?.(nextRuntimeKey)
     const nextInstallation = nextInstalledRuntime?.installations[0]
     if (!nextRuntimeKey || !nextInstallation) onChange(null)
@@ -224,7 +223,6 @@ export default function HostExecutionTargetPicker({
 
   function selectAdapter(nextRuntimeKey: string) {
     setDraftRuntimeKey(nextRuntimeKey)
-    setLogin(null)
     onRuntimeChange?.(nextRuntimeKey)
     const nextAdapter = adapters.find(item => item.runtime_key === nextRuntimeKey)
     const nextInstallation = nextAdapter?.installations[0]
@@ -426,20 +424,22 @@ export default function HostExecutionTargetPicker({
             </div>
           )}
           {backendMode === 'runtime_native' && value && selectedInstallation?.logged_in === false && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-2 text-xs">
+            <div className="space-y-1 text-xs">
+              <div className="flex items-center justify-between gap-2">
                 <Badge variant="warning">Account not signed in</Badge>
-                <Button type="button" size="sm" variant="outline" onClick={() => setLogin({ hostId: value.host_id, runtimeKey: value.runtime_key, installation: value.installation })}>
-                  <LogIn className="mr-1 size-3.5" />Login
-                </Button>
+                {/* Each runtime signs in its own way (a CLI login, or one of
+                    its ACP methods); Command Center offers the ones this host
+                    and installation actually support. */}
+                <SpaceLink to="/command-center" className="inline-flex items-center gap-1 underline underline-offset-2">
+                  <LogIn className="size-3.5" />{t('management_ui.host_target.sign_in')}
+                </SpaceLink>
               </div>
-              <p className="text-xs text-muted-foreground">Models reported by ACP may still work without an account; choose one in the conversation.</p>
-              {login && <RuntimeLoginTerminal key={`${login.hostId}:${login.runtimeKey}:${login.installation}`} {...login} onDone={() => { void reload(); setLogin(null) }} />}
+              <p className="text-muted-foreground">{t('management_ui.host_target.acp_models_hint')}</p>
             </div>
           )}
         </>
       )}
-      {!projectId && <p className="text-xs text-muted-foreground">Managed workspaces are host-owned and isolated per Agent; Project Locations remain optional.</p>}
+      {!projectId && <p className="text-xs text-muted-foreground">{t('management_ui.host_target.managed_hint')}</p>}
     </div>
   )
 }

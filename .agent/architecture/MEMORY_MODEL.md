@@ -62,7 +62,7 @@ the required cross-person privacy audit before content enters a Delivery. Owner
 reads do not produce privacy-audit rows.
 
 Canonical explicit cross-person reads (GET /memory/{id}, search hits) also
-append `ContentReadTrace` rows.
+append `content_access_logs` rows.
 
 Space oversight is read-only and is resolved inside that same predicate. It may
 therefore contribute an eligible member's otherwise-private memory to that
@@ -122,6 +122,32 @@ updates as `memory.remembered` / `memory.revised` with a one-step
 alone would leave it with none. Outside a Project the same reversal is
 `POST /memory/:id/revert`.
 
+Who may read an entry is part of its version. The owner changes it through
+the content-access API, and the Memory applier
+(`applyOwnerAccessChange`) writes a new version with the same content, trust
+and copied provenance under the new visibility, access level and grants,
+superseding the old one — no proposal, because the owner deciding who reads
+their own entry needs no second approver (ADR 0003 §3). Nobody else may: a
+Space owner or admin who can see the entry is refused. Placement still holds
+— a personal entry is private or shared with named people, never Space-wide;
+Space-wide is Project Memory, reached by promotion — and an Agent's own entry
+stays private.
+
+Grants belong to the active head. A new version takes over the grants of the
+one it replaces, or the set an accepted change names, and the replaced
+version keeps none; restoring a superseded version takes them back from the
+version that replaced it. Every accepted create or update, and the owner's
+access change, re-checks the audience when it is applied: widening a person's
+entry is its owner's decision alone — including moving it into a Project or
+handing it to another owner, which widens it to that Project's readers or to
+the new owner; only an entry that already is Project Memory widens under
+Project authority — and every reader a change adds must
+already be able to read what the entry was derived from (`activity`,
+`artifact`, Source and evidence, other Memory — a Run is governed by its
+context taint instead), or the apply fails with `memory_source_audience` and
+the owner shares the source first (`memory/memoryAudience.ts`). An accepted
+update that would leave the entry exactly as it is writes no version.
+
 Everything else — post-session reflection, activity-to-memory pipelines,
 consolidation, maintenance packets and every import — continues through
 **proposal → approval**. Proposal payloads
@@ -155,6 +181,10 @@ and oversight is not it.
   and redaction are additional gates in Memory repositories.
 - Serialization / redaction: `server/src/modules/memory/repository.ts` — memory row to API output helpers; `versions()` returns the chain with each version's provenance.
 - Direct Agent writes: `server/src/modules/memory/memoryApplyRepository.ts` (`applyDirect`, `setOwnStatus`, `MemoryReachError`) and `server/src/modules/memory/memoryDirectWriteExecutors.ts`.
+- Owner access changes and accept-time audience: `memoryApplyRepository.ts`
+  (`applyOwnerAccessChange`), `server/src/modules/memory/memoryAccessChange.ts`
+  (the content-access entry point) and `server/src/modules/memory/memoryAudience.ts`
+  (grants that follow the head, audience, source readability).
 - Paused-session attention: `server/src/modules/memory/projectIntegration.ts`;
   Project-free persona-change pointer: `server/src/modules/activity/notificationPointers.ts`.
 - Persistence of cross-person reads: `server/src/modules/contentAccess/audit.ts`;
@@ -164,8 +194,6 @@ and oversight is not it.
   memory, and logging every row of a filtered list would bury the reads that
   matter.
 
-Unimplemented Memory-policy ideas:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §24.
 
 ## Non-goals
 

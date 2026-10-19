@@ -95,7 +95,7 @@ describe("state-changing read check", () => {
   it("fails closed on a request carrying no fetch metadata and nothing first-party", () => {
     // A top-level cross-site navigation from a browser that sends no
     // `Sec-Fetch-Site` carries no `Origin` either, and `SameSite=Lax` sends the
-    // session cookie with it. Allowing this case was the hole.
+    // session cookie with it. Do not allow this case.
     expect(stateChangingReadAllowed(read({}), FRONTEND)).toBe(false);
     expect(stateChangingReadAllowed(read({ referer: "https://evil.example/" }), FRONTEND)).toBe(false);
   });
@@ -103,8 +103,9 @@ describe("state-changing read check", () => {
   it("allows a non-browser caller that sets a header of its own", () => {
     expect(stateChangingReadAllowed(read({ "x-rainver-space-id": "space-1" }), FRONTEND)).toBe(true);
     expect(stateChangingReadAllowed(read({ authorization: "Bearer host-token" }), FRONTEND)).toBe(true);
-    // The real header name. It was spelled `x-internal-token`, which nothing
-    // sends, so this disjunct could never have fired.
+    // The header is `x-rainver-internal-token`. Do not spell it
+    // `x-internal-token`. Nothing sends that name, so the disjunct would
+    // never fire.
     expect(stateChangingReadAllowed(read({ "x-rainver-internal-token": "internal" }), FRONTEND)).toBe(true);
     expect(stateChangingReadAllowed(read({ "x-internal-token": "internal" }), FRONTEND)).toBe(false);
   });

@@ -5,10 +5,9 @@
  * `reply.raw.writeHead`, so nothing Fastify adds afterwards can reach it —
  * whether or not the route also `reply.hijack()`s (only `turnStream` does; for
  * the other two the `onSend` hook runs and simply has no headers left to set).
- * Each had hand-written its own set and each had drifted: all three said
- * `cache-control: no-cache`, which forbids *reuse* without revalidation but
- * explicitly permits a shared cache to **store** the body. One of them carries
- * live conversation turns.
+ * Do not give each stream its own header set. `cache-control: no-cache`
+ * forbids reuse without revalidation but permits a shared cache to store
+ * the body. One of them carries live conversation turns.
  */
 import { NO_STORE_CACHE_CONTROL } from "./cacheControl.js";
 import { REQUEST_ID_HEADER, SERVER_MARKER_HEADER, SERVER_MARKER_VALUE } from "./requestContext.js";

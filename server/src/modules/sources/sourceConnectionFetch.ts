@@ -3,7 +3,7 @@ import type { SourceConnectorHandler } from "./catalog/sourceConnectorRegistry.j
 import { fetchSource, type SourceFetchResult } from "./sourceFetch.js";
 import { OutboundRefusedError, type OutboundGuard } from "./outboundUrlSafety.js";
 
-export interface SourceProviderIdentity {
+interface SourceProviderIdentity {
   providerKey: string;
   providerDisplayName: string;
   connectorKey: string;
@@ -12,11 +12,9 @@ export interface SourceProviderIdentity {
 /**
  * How the request failed, as three genuinely different operator actions.
  *
- * `network` used to absorb timeouts too, and that cost real diagnosis time: a
- * provider that answered slowly and a provider that could not be reached at all
- * were recorded identically, with `upstream_status: null` in both cases. They
- * are not the same problem — one is fixed by asking for less or waiting longer,
- * the other by looking at connectivity.
+ * `timeout` and `network` are different operator actions. A slow answer is
+ * fixed by asking for less or waiting longer; an unreachable provider is a
+ * connectivity problem. Do not record both as `network` with a null status.
  */
 export type SourceFetchFailureKind = "upstream_http" | "timeout" | "network";
 
@@ -56,8 +54,8 @@ const BACKFILL_FETCH_ATTEMPTS = 2;
  * 100-row page of a broad boolean query, where the provider legitimately needs
  * tens of seconds before it answers at all.
  */
-export const BACKFILL_FETCH_BASE_TIMEOUT_MS = 15_000;
-export const BACKFILL_FETCH_TIMEOUT_PER_ITEM_MS = 200;
+const BACKFILL_FETCH_BASE_TIMEOUT_MS = 15_000;
+const BACKFILL_FETCH_TIMEOUT_PER_ITEM_MS = 200;
 export const BACKFILL_FETCH_MAX_TIMEOUT_MS = 45_000;
 
 export function backfillFetchTimeoutMs(pageSize: number): number {
@@ -124,8 +122,8 @@ export async function fetchSourceConnection(input: {
       // A refusal by the outbound boundary is reported exactly like any other
       // failure to reach the provider: `network`, no error code. A host inside
       // this instance's network and a host that resolves nowhere must look the
-      // same here too, or the persisted diagnostics become the name oracle the
-      // uniform message exists to remove.
+      // same here too. Do not name which host failed. The persisted diagnostics
+      // would become a name oracle.
       if (error instanceof OutboundRefusedError) {
         if (attempt < maxAttempts) continue;
         throw transportFailure(input.provider, error, attempt, input.backfill, {

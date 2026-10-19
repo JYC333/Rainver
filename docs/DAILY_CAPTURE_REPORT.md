@@ -17,7 +17,7 @@ configured local time. A manual run can always be triggered via
 user_capture ActivityRecords (local day)
     │
     ▼
-DailyCaptureReportService.generate_for_date()
+DailyCaptureReportService.generateForDate()
     │
     ├─ Creates Run (run_type=reflection, trigger_origin=automation|manual)
     │
@@ -25,7 +25,8 @@ DailyCaptureReportService.generate_for_date()
     │
     ├─ Creates Artifact (artifact_type=daily_capture_report) ← ALWAYS FIRST
     │
-    ├─ Optional: pending knowledge_create proposals (experience, item_type=experience)
+    ├─ Optional: pending knowledge_create proposals (experience; knowledge_kind=summary,
+    │           tag daily-capture-report)
     │           ← requires create_experience_proposals=true + confidence threshold
     │
     └─ Optional: pending memory_create proposals
@@ -43,13 +44,19 @@ DailyCaptureReportService.generate_for_date()
   `source_trust=user_confirmed` from the original `user_capture` Activity rows.
   The report run and artifact are stored as `source_refs_metadata`, not as trust-bearing
   provenance entries.
-- **Idempotency.** For a given space/user/date, a second run without `force=True` returns the
-  existing artifact and does not create duplicate artifacts or proposals.
-- **Scheduler jobs are idempotent.** Each scheduler task's `next_run_at` is committed immediately
-  after a successful enqueue, not after all settings. A duplicate scan skips already-advanced
-  slots; a failed enqueue leaves `next_run_at` unchanged so the slot is retried next scan.
-- **No removed `/activity/{id}/process` endpoint.** That route was removed. Use `/review` for
-  status-only transitions and `/consolidate` for proposal generation.
+- **One report per day, never rewritten.** For a given space/user/date a second run returns
+  the existing artifact and creates no duplicate artifacts or proposals; there is no option to
+  regenerate over it. The persist
+  transaction takes an advisory lock on that key and looks again before writing, so two
+  generations that both passed the existence check while the first was still at the provider
+  still leave one report; the later one returns `skipped` with `existing_artifact_id`.
+- **Scheduler jobs are idempotent.** Each scheduler task's job enqueue and `next_run_at`
+  advance commit in one transaction per setting, not after all settings. A duplicate scan
+  skips already-advanced slots; a failed enqueue or advance leaves both unchanged so the slot
+  is retried next scan.
+  Only the scheduler's slot advance and a schedule settings change move `next_run_at`; a
+  finished report, manual or scheduled, records `last_run_at` and the report date only.
+- Status-only transitions use `/review`. Proposal generation uses `/consolidate`.
 
 ## Settings (`DailyCaptureReportSetting`)
 
@@ -71,8 +78,11 @@ DailyCaptureReportService.generate_for_date()
 ## API
 
 - `GET /api/v1/daily-capture-report/settings` — get or create settings for current user/space
-- `PUT /api/v1/daily-capture-report/settings` — update settings
-- `POST /api/v1/daily-capture-report/run` — trigger manual run
+- `PUT|PATCH /api/v1/daily-capture-report/settings` — update settings
+- `POST /api/v1/daily-capture-report/run` — trigger manual run; optional body fields
+  `local_date`, `create_experience_proposals`, `create_memory_proposals`. Without
+  `local_date` the run reports the most recent complete day of the configured timezone; a
+  `local_date` that has not ended there is refused with 422 `report_day_not_complete`.
 - `GET /api/v1/daily-capture-report/reports` — list recent report artifacts
 
 ## Artifact structure
@@ -86,7 +96,7 @@ DailyCaptureReportService.generate_for_date()
 - `source_activity_ids`: list of ActivityRecord IDs used
 - `capture_count`
 - `structured_report`: full validated LLM JSON
-- `provider_type`, `model`, `service_version`, `setting_id`
+- `service_version`, `setting_id`
 
 ## Job handler
 
@@ -100,8 +110,7 @@ Payload:
   "setting_id": "...",
   "local_date": "YYYY-MM-DD",
   "timezone": "...",
-  "trigger_origin": "automation",
-  "force": false
+  "trigger_origin": "automation"
 }
 ```
 
@@ -111,21 +120,23 @@ The background scheduler is controlled by two config settings (env vars):
 
 | Setting | Default | Notes |
 |---|---|---|
-| `DAILY_REPORT_SCHEDULER_ENABLED` | `true` | Set to `false` to disable the scheduler entirely (e.g., when an external cron drives reports). |
-| `DAILY_REPORT_SCHEDULER_INTERVAL_SECONDS` | `60` | Seconds between scans. Minimum 30; values below 30 are rejected at startup. |
+| `SERVER_DAILY_REPORT_SCHEDULER_ENABLED` | `true` | Set to `false` to disable the scheduler entirely (e.g., when an external cron drives reports). |
+| `SERVER_DAILY_REPORT_SCHEDULER_INTERVAL_SECONDS` | `60` | Seconds between scans, 30 to 86400; values outside that range are rejected at startup. |
 
 The scheduler scans immediately on startup, then sleeps between subsequent scans.
 
 ### DST / timezone semantics
 
 - The scheduled time is local-calendar based: the report runs at `local_time` in the
-  user's `timezone` each day.
+  user's `timezone` each day, and covers the local day before the scheduled slot
+  (`reportDateForSlot`), so a late or retried run still reports the same day.
 - `next_run_at` is stored in UTC, derived from the prior scheduled local slot plus one
   calendar day (same hour/minute in local time).
-- On DST spring-forward nights, a nonexistent local time is adjusted forward by Python's
-  `zoneinfo` — the report may run ~1 hour earlier (UTC) on that night.
-- On DST fall-back nights, `zoneinfo` uses `fold=0` (the first occurrence of the
-  ambiguous hour) — the report may run ~1 hour later (UTC) on that night.
+- The local slot is converted to UTC with `Intl.DateTimeFormat` and a bounded offset
+  correction (`zonedLocalToUtc` in `scheduler/localDay.ts`, shared with the digests). On DST transition
+  nights a nonexistent or ambiguous local time resolves to one of the two adjacent
+  offsets, depending on the zone, so the report may run about an hour off its usual
+  UTC time on that night.
 - Jobs are never skipped on DST transition days.
 
 ## Module location

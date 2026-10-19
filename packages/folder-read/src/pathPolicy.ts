@@ -130,11 +130,10 @@ export function looksSecretLikePath(path: string | null | undefined): boolean {
  * like in free text everywhere else. This runs inside `@rainver/folder-read`,
  * which ships in the host daemon as well as the server, and the daemon cannot
  * import server code — so the rule is shared and the code is not. **Change both
- * together.** They diverged once already: this copy kept `\b(token|secret)\b`
- * after the server's was fixed, and `\b` does not fire between `_` and a
- * letter, so a diff line reading `access_token = "ghp_…"` or
- * `client_secret = "GOCSPX-…"` went to the reader and into the persisted
- * `remote_diff` in the clear.
+ * together.** Do not let them diverge. Do not keep `\b(token|secret)\b`
+ * here. `\b` does not fire between `_` and a letter, so a diff line reading
+ * `access_token = "ghp_…"` or `client_secret = "GOCSPX-…"` would go to the
+ * reader and into the persisted `remote_diff` in the clear.
  *
  * Two passes, because a diff needs both. The name pass catches
  * `access_token = "…"` whatever the value looks like; the shape pass catches a
@@ -150,8 +149,8 @@ export function redactSecretLikeDiff(diff: string): { diff: string; redacted: bo
   let redacted = false;
   // A credential word anywhere in the name, not only at a `\b` boundary:
   // `access_token`, `x-api-key`, `client_secret`, `token_hash`. Anchored with a
-  // lookbehind and bounded on both sides rather than led by a greedy `[\w.-]*`,
-  // which made the same shape quadratic on one long line.
+  // lookbehind and bounded on both sides. A greedy `[\w.-]*` is quadratic
+  // on one long line.
   const keyPattern =
     /(?<![\w.-])[\w.-]{0,64}?(api[_-]?key|token(?!s)|secret|password|passwd|credential|private[_-]?key)[\w.-]{0,64}?["']?\s*([:=])(?!\s*(?:absent|none|null|unset|missing|empty|true|false|set|present|redacted|nil)(?:$|[\s,;}"']))\s*/gi;
   let next = "";
@@ -159,10 +158,10 @@ export function redactSecretLikeDiff(diff: string): { diff: string; redacted: bo
   for (let match = keyPattern.exec(diff); match; match = keyPattern.exec(diff)) {
     const valueStart = keyPattern.lastIndex;
     // A list or an object is redacted whole, not scanned for a scalar inside
-    // it. Taking the first element out left the rest dangling —
-    // `credentials: []` came out as `credentials:[REDACTED]]` and
-    // `secrets: [1,2]` as `secrets:[REDACTED],2]`, which is a mangled diff
-    // rather than a redacted one. Whole, because the alternative is deciding
+    // it. Do not take the first element out. The rest would dangle —
+    // `credentials: []` would come out as `credentials:[REDACTED]]` and
+    // `secrets: [1,2]` as `secrets:[REDACTED],2]`, a mangled diff rather
+    // than a redacted one. Whole, because the alternative is deciding
     // which elements of `api_key: ["…"]` are the credential, and over-redacting
     // a list somebody named `credentials` costs a reader nothing they cannot
     // get from the file itself. An empty one has nothing to redact.
@@ -177,9 +176,9 @@ export function redactSecretLikeDiff(diff: string): { diff: string; redacted: bo
       continue;
     }
     next += diff.slice(cursor, match.index);
-    // The whole matched name, not just the credential word inside it: printing
-    // `match[1]` alone turned `access_token=` into `token=[REDACTED]` and lost
-    // which field it was.
+    // The whole matched name, not just the credential word inside it. Do not
+    // print `match[1]` alone. `access_token=` would become `token=[REDACTED]`
+    // and lose which field it was.
     const separatorAt = match[0].lastIndexOf(match[2]!);
     next += `${match[0].slice(0, separatorAt)}${match[2]}[REDACTED]`;
     cursor = valueEnd;

@@ -10,15 +10,11 @@ import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
- * The shared note writer, asserted through the three things that were wrong
- * before it existed.
+ * The shared note writer.
  *
- * Note creation had two implementations — the general one and the Project
- * research one — and they had drifted. Reindexing was the caller's job and
- * only the general one did it, so a note an agent maintained was invisible to
- * search until a human saved it by hand. And binding a note to a Project was
- * unchecked, which stopped being harmless once the Project role became the
- * research baseline: assigning a role displaces the previous holder by design.
+ * One create path. Every write reindexes, including an agent's. Binding a
+ * note to a Project is checked: assigning a role displaces the previous
+ * holder.
  */
 
 const SPACE = "44444444-4444-4444-8444-444444444444";
@@ -78,8 +74,8 @@ async function indexedNote(noteId: string): Promise<{ title: string; content_has
 describe("shared note writer (real Postgres)", () => {
   it("indexes a Project's starter notes and files them in a stable order", async () => {
     if (!db.available) return;
-    // The Project path built its own note rows: no summary, and every note at
-    // sort_order 0, so the four starter notes were ordered by tie-break.
+    // Starter notes are indexed and filed at distinct sort orders. Do not
+    // leave every note at sort_order 0.
     await new ProjectResearchAreaService(db.pool).initializeArea(owner, PROJECT);
 
     const notes = await db.pool.query<{ id: string; summary: string | null; sort_order: number; project_role: string }>(
@@ -111,8 +107,8 @@ describe("shared note writer (real Postgres)", () => {
     // An agent write: no acting user, and reached through the scope rather
     // than through `updateNote`. Every non-user path into the notebook has
     // this shape — report seeding, ask-ai, notebook chat, the monitoring
-    // reconciler — and all of them used to leave the projection untouched, so
-    // a note an agent had maintained for weeks was stale in search.
+    // reconciler. Each of them updates the projection. A note an agent has
+    // maintained stays current in search.
     await withNoteWrites(db.pool, (scope) => scope.write({
       spaceId: SPACE,
       noteId: note.id,
@@ -164,18 +160,18 @@ describe("shared note writer (real Postgres)", () => {
 });
 
 /**
- * Notes written before block ids existed. Absence is legal: nothing migrates
- * them, nothing rewrites their revisions, and they must keep loading.
+ * Notes without block ids. Absence is legal. Do not migrate them, and do not
+ * rewrite their revisions. They must keep loading.
  */
-describe("block ids on notes written before they existed (real Postgres)", () => {
+describe("block ids on notes that have none (real Postgres)", () => {
   it("loads an id-less note and stamps it on the next write, leaving its history alone", async () => {
     if (!db.available) return;
     const repository = new PgKnowledgeRepository(db.pool);
     const identity = { spaceId: SPACE, userId: OWNER };
     const note = await repository.createNote(identity, { title: "Legacy" }) as { id: string };
 
-    // Rewrite the stored document to the pre-block-id shape, exactly as a note
-    // saved before this feature would sit in the database.
+    // Rewrite the stored document to the id-less shape. A note without block
+    // ids still loads.
     const legacy = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "Older text." }] }] };
     await db.pool.query(`UPDATE notes SET content_json = $2::jsonb WHERE object_id = $1`, [note.id, JSON.stringify(legacy)]);
     await db.pool.query(`UPDATE note_revisions SET content_json = $2::jsonb WHERE note_id = $1`, [note.id, JSON.stringify(legacy)]);
@@ -189,8 +185,8 @@ describe("block ids on notes written before they existed (real Postgres)", () =>
     }) as { content_json: unknown };
     expect(blockIds(updated.content_json).every(id => typeof id === "string")).toBe(true);
 
-    // The historical revision is untouched — history is evidence, not something
-    // to backfill.
+    // The stored revision stays as it was written. Do not backfill it.
+    // History is evidence.
     const revisions = await db.pool.query<{ content_json: unknown }>(
       `SELECT content_json FROM note_revisions WHERE note_id = $1 ORDER BY version ASC LIMIT 1`,
       [note.id],
@@ -204,8 +200,7 @@ describe("block ids on notes written before they existed (real Postgres)", () =>
     const repository = new PgKnowledgeRepository(db.pool);
     const note = await repository.createNote(identity, { title: "Pre-block-id note" }) as { id: string };
 
-    // Exactly the shape every note written before block ids has — and the shape
-    // of every marginalia note P1 already created in production.
+    // The shape of a note that has no block ids.
     const legacy = {
       type: "doc",
       content: [
@@ -234,6 +229,25 @@ describe("block ids on notes written before they existed (real Postgres)", () =>
     expect(ids).toHaveLength(3);
     expect(ids[2]).toBe(result.addedBlockIds[0]);
     expect(ids[0]).not.toBe(result.addedBlockIds[0]);
+  });
+
+  it("refuses to undo one edit once the note was written on top of it", async () => {
+    if (!db.available) return;
+    const repository = new PgKnowledgeRepository(db.pool);
+    const identity = { spaceId: SPACE, userId: OWNER };
+    const note = await repository.createNote(identity, { title: "Undo" }) as { id: string; version: number };
+    const doc = (text: string) => ({ type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text }] }] });
+    const edited = await repository.updateNote(identity, note.id, { content_json: doc("AI edit."), expect_version: note.version }) as { version: number };
+    await repository.updateNote(identity, note.id, { content_json: doc("Written after."), expect_version: edited.version });
+
+    await expect(repository.rollbackNote(identity, note.id, edited.version - 1, edited.version))
+      .rejects.toMatchObject({ statusCode: 409 });
+    const stored = await repository.getNote(identity, note.id) as { plain_text: string; version: number };
+    expect(stored.plain_text).toContain("Written after.");
+    expect(stored.version).toBe(edited.version + 1);
+
+    const undone = await repository.rollbackNote(identity, note.id, edited.version, edited.version + 1) as { plain_text: string };
+    expect(undone.plain_text).toContain("AI edit.");
   });
 
   it("stamps a rollback that restores an id-less revision", async () => {

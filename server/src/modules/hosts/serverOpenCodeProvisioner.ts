@@ -21,7 +21,7 @@ const RUNTIME_KEY = "opencode";
  */
 const INSTALL_HEARTBEAT_STALE_MS = 12 * 60_000;
 
-export interface ServerOpenCodeProvisionerLogger {
+interface ServerOpenCodeProvisionerLogger {
   info(message: string): void;
   warn(message: string): void;
   error(message: string): void;

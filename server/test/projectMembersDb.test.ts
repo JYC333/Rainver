@@ -6,9 +6,11 @@ import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 import { projectReaders } from "../src/modules/projects/access.js";
 
 // Real-PostgreSQL tests for the project membership management API — the ACL that
-// gates project-scoped memory. Validates the new project_members table, the
+// gates project-scoped memory. Covers project_members, the
 // add/remove authz (project owner or space owner/admin), the "target must be a
-// space member" rule, and the upsert. Skips when Docker is unavailable.
+// space member" rule, and the upsert. The suite skips when that database is
+// unreachable. CI sets REQUIRE_TEST_POSTGRES, which fails the run instead
+// of skipping.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; // project owner + space member

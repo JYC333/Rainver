@@ -7,7 +7,7 @@ import { knowledgeModule } from "../src/modules/knowledge/index.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthRepositoryForTests } from "../src/modules/auth/identity.js";
 
-// HTTP route coverage for the Slice E/F review-loop endpoints: Context Ops scan
+// HTTP route coverage for the review-loop endpoints: Context Ops scan
 // gating, response shape, and artifact/proposal persistence wiring. The DB pool
 // is mocked (the deeper SQL is covered by the *Db real-Postgres tests).
 
@@ -78,6 +78,8 @@ function mockPool(handler: Handler): void {
 
 function claimRow(over: Record<string, unknown>) {
   return {
+    // The viewer these fakes model holds full access; the real SELECT carries the level.
+    effective_access_level: "full",
     id: "claim-x",
     space_id: "space-1",
     subject_object_id: "subject-1",
@@ -164,7 +166,7 @@ describe("contradiction-scan route", () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it("rejects llm_judge_enabled until the provider adapter is wired", async () => {
+  it("rejects llm_judge_enabled on the public contradiction-scan route", async () => {
     __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     mockPool((sql) => {
       if (/FROM settings/.test(sql)) return { rows: [retrievalSettingsRow()], rowCount: 1 };
@@ -249,7 +251,7 @@ describe("relation discovery-scan route", () => {
     expect(body.canonical_write_performed).toBe(false);
   });
 
-  it("rejects llm_extraction_enabled until the provider adapter is wired", async () => {
+  it("rejects llm_extraction_enabled on the public discovery-scan route", async () => {
     __setAuthRepositoryForTests(fakeAuthRepository("admin"));
     mockPool((sql) => {
       if (/FROM settings/.test(sql)) return { rows: [retrievalSettingsRow()], rowCount: 1 };

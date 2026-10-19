@@ -160,11 +160,10 @@ describe("the Run tool surface", () => {
   });
 
   /**
-   * The surface moved from `/internal` to `/api/v1` because a paired host's
-   * children reach the instance through its public URL, and production nginx
-   * forwards `/api/` and the host WebSocket and nothing else. What has to hold
-   * after the move is that the `/api/` conventions — the CSRF origin hook and
-   * identity resolution — do not refuse a caller that has no cookie and no
+   * The surface is under `/api/v1`. A paired host's children reach the
+   * instance through its public URL, and production nginx forwards `/api/`
+   * and the host WebSocket and nothing else. The CSRF origin hook and
+   * identity resolution must not refuse a caller that has no cookie and no
    * `Origin`, only the Run's own bearer.
    */
   it("serves a cookie-less caller that carries only the Run bearer", async (ctx) => {
@@ -187,9 +186,8 @@ describe("the Run tool surface", () => {
     });
     // Whatever the action itself answers, the request is not refused by the
     // `/api/` conventions: no 403 "cross-origin request blocked", no 401 from a
-    // missing session. `not.toBe` alone would also pass on a 404 — which is
-    // what a route that had not moved would answer — so the reached route is
-    // named too.
+    // missing session. `not.toBe` alone would also pass on a 404, so the
+    // reached route is named too.
     expect(called.statusCode).not.toBe(404);
     expect([403, 401]).not.toContain(called.statusCode);
     expect(called.json()).not.toMatchObject({ detail: expect.stringMatching(/cross-origin|cross-site|Not Found/i) });

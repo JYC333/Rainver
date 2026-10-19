@@ -78,6 +78,33 @@ describe('Source detail', () => {
     ])
   })
 
+  it('offers a retry when the first load fails, instead of calling the source missing', async () => {
+    vi.mocked(sourcesApi.channels).mockRejectedValueOnce(new Error('Network unavailable'))
+    renderPage()
+
+    expect(await screen.findByText('Could not load this source')).toBeInTheDocument()
+    expect(screen.queryByText('Source not found')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(await screen.findByRole('heading', { name: 'arXiv Research' })).toBeInTheDocument()
+  })
+
+  it('keeps the source on screen and says so when a later refresh fails', async () => {
+    renderPage()
+    expect(await screen.findByRole('heading', { name: 'arXiv Research' })).toBeInTheDocument()
+    vi.mocked(sourcesApi.channels).mockRejectedValueOnce(new Error('Network unavailable'))
+    vi.mocked(sourcesApi.scanChannel).mockResolvedValue({ id: 'job-1' } as never)
+    vi.mocked(sourcesApi.runJob).mockResolvedValue({} as never)
+    await userEvent.click(screen.getAllByRole('button', { name: /Scan/ })[0]!)
+    expect(await screen.findByText(/This source could not be refreshed/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'arXiv Research' })).toBeInTheDocument()
+  })
+
+  it('still says a source is missing when it loads and is not there', async () => {
+    vi.mocked(sourcesApi.channels).mockResolvedValue([])
+    renderPage()
+    expect(await screen.findByText('Source not found')).toBeInTheDocument()
+  })
+
   it('groups multiple monitors under one source origin', async () => {
     renderPage()
 
@@ -98,5 +125,38 @@ describe('Source detail', () => {
     expect(screen.getAllByText('arXiv Research')).toHaveLength(2)
     expect(screen.getByLabelText('Search scope')).toBeInTheDocument()
     expect(screen.queryByLabelText('Source platform')).not.toBeInTheDocument()
+  })
+
+  it('saves a search monitor edit without resubmitting its versioned query', async () => {
+    const user = userEvent.setup({ delay: null })
+    vi.mocked(sourcesApi.updateChannel).mockResolvedValue(monitor('monitor-1', 'Renamed', {}) as never)
+    renderPage()
+
+    await user.click((await screen.findAllByRole('button', { name: /edit/i }))[0]!)
+    const name = screen.getByDisplayValue('Agent memory')
+    await user.clear(name)
+    await user.type(name, 'Renamed')
+    await user.click(screen.getByRole('button', { name: 'Save monitor' }))
+
+    expect(sourcesApi.updateChannel).toHaveBeenCalledTimes(1)
+    const [, body] = vi.mocked(sourcesApi.updateChannel).mock.calls[0]!
+    expect(body).toMatchObject({ name: 'Renamed', fetch_frequency: 'daily' })
+    expect(body).not.toHaveProperty('query')
+    expect(body).not.toHaveProperty('endpoint_url')
+  })
+
+  it('adds a monitor to the Source being viewed, by its id', async () => {
+    const user = userEvent.setup({ delay: null })
+    vi.mocked(sourcesApi.createChannel).mockResolvedValue(monitor('monitor-3', 'Tool use', {}) as never)
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: /add monitor/i }))
+    await user.type(screen.getByPlaceholderText('e.g. all:"agent memory"'), 'all:tools')
+    await user.click(screen.getByRole('button', { name: 'Create monitor' }))
+
+    expect(sourcesApi.createChannel).toHaveBeenCalledWith(expect.objectContaining({
+      provider_key: 'arxiv',
+      source_connection_id: 'connection-1',
+    }))
   })
 })

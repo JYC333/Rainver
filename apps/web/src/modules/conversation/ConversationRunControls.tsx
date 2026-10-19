@@ -4,6 +4,7 @@ import { artifactsApi, runsApi } from '../../api/client'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import type { Artifact, Run } from '../../types/api'
 import { Button } from '../../components/ui/button'
+import { useAppTranslation } from '../../i18n'
 
 const TERMINAL_RUN_STATUSES = new Set(['succeeded', 'failed', 'degraded', 'cancelled', 'orphaned'])
 const DIFF_ATTEMPTS = 5
@@ -26,6 +27,7 @@ export function ConversationRunControls({
   /** Room Agent turns already state their own progress beside the work. */
   showStatus?: boolean
 }) {
+  const { t } = useAppTranslation()
   const [run, setRun] = useState<Run | null>(suppliedRun ?? null)
   const [stopping, setStopping] = useState(false)
   const [retrying, setRetrying] = useState(false)
@@ -71,7 +73,7 @@ export function ConversationRunControls({
       setRun(current => current ? { ...current, status: 'cancelling' } : current)
     } catch (error) {
       setStopping(false)
-      setStopError(error instanceof Error ? error.message : 'The Run could not be stopped.')
+      setStopError(error instanceof Error ? error.message : t('conversation_ui.run.stop_failed'))
     }
   }
   const retry = async () => {
@@ -81,7 +83,7 @@ export function ConversationRunControls({
     try {
       await onRetry(runId)
     } catch (error) {
-      setRetryError(error instanceof Error ? error.message : 'The turn could not be retried.')
+      setRetryError(error instanceof Error ? error.message : t('conversation_ui.run.retry_failed'))
     } finally {
       setRetrying(false)
     }
@@ -92,19 +94,19 @@ export function ConversationRunControls({
     {showStandaloneLabel && <div className="text-[11px] font-medium text-muted-foreground">{agentLabel}</div>}
     {active && (
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" role="status" aria-live="polite">
-        {showStatus && <span>{stopping || run?.status === 'cancelling' ? 'Stopping…' : run?.status === 'queued' ? 'Queued…' : run?.status === 'waiting_for_dependency' ? 'Waiting for previous Agent…' : 'Working…'}</span>}
+        {showStatus && <span>{stopping || run?.status === 'cancelling' ? t('conversation_ui.run.stopping') : run?.status === 'queued' ? t('conversation_ui.run.queued') : run?.status === 'waiting_for_dependency' ? t('conversation_ui.run.waiting_previous') : t('conversation_ui.run.working')}</span>}
         <Button type="button" size="sm" variant="outline" className="h-7" disabled={stopping || run?.status === 'cancelling'} onClick={() => void stop()}>
-          <Square className="mr-1 size-3" />Stop
+          <Square className="mr-1 size-3" />{t('conversation_ui.run.stop')}
         </Button>
         {stopError && <span className="text-destructive" role="alert">{stopError}</span>}
       </div>
     )}
     {stopError && !active && <p className="text-xs text-destructive" role="alert">{stopError}</p>}
-    {run?.status === 'cancelled' && <p className="text-xs text-muted-foreground">Turn cancelled; partial output is retained.</p>}
+    {run?.status === 'cancelled' && <p className="text-xs text-muted-foreground">{t('conversation_ui.run.cancelled')}</p>}
     {run?.status === 'failed' && onRetry && (
       <div className="flex flex-wrap items-center gap-2">
         <Button type="button" size="sm" variant="outline" className="h-7" disabled={retrying} onClick={() => void retry()}>
-          {retrying ? <Loader2 className="mr-1 size-3 animate-spin" /> : <RefreshCw className="mr-1 size-3" />}Retry turn
+          {retrying ? <Loader2 className="mr-1 size-3 animate-spin" /> : <RefreshCw className="mr-1 size-3" />}{t('conversation_ui.run.retry')}
         </Button>
         {retryError && <span className="text-xs text-destructive" role="alert">{retryError}</span>}
       </div>
@@ -120,6 +122,7 @@ function ConversationChangesCard({ run, projectId, agentLabel, refreshToken, onR
   refreshToken: number
   onRefresh: () => void
 }) {
+  const { t } = useAppTranslation()
   const [artifact, setArtifact] = useState<Artifact | null>(null)
   const [state, setState] = useState<'checking' | 'no-change' | 'ready' | 'truncated' | 'unavailable'>('checking')
   const hostRun = Boolean(run.host_task_thread_id || run.workspace_location_id)
@@ -162,19 +165,19 @@ function ConversationChangesCard({ run, projectId, agentLabel, refreshToken, onR
   if (state === 'checking' || state === 'no-change') return null
 
   const status = state === 'unavailable'
-    ? run.status === 'failed' ? 'Changes unavailable because the Run failed before its diff was uploaded.' : 'Changes are unavailable.'
-    : state === 'truncated' ? 'Changes recorded (diff truncated).' : 'Changes recorded.'
+    ? run.status === 'failed' ? t('conversation_ui.changes.unavailable_failed') : t('conversation_ui.changes.unavailable')
+    : state === 'truncated' ? t('conversation_ui.changes.truncated') : t('conversation_ui.changes.recorded')
   return <div className="w-full min-w-0 max-w-full rounded-md border border-border bg-muted/20 px-2.5 py-2 text-xs" data-testid={`changes-${run.id}`}>
     {agentLabel && <div className="mb-1 text-[11px] font-medium text-muted-foreground">{agentLabel}</div>}
-    <div className="flex min-w-0 flex-wrap items-start gap-1.5 font-medium"><FileDiff className="mt-0.5 size-3.5 shrink-0" /><span>Changes</span><span className="min-w-0 break-words font-normal text-muted-foreground">· {status}</span></div>
+    <div className="flex min-w-0 flex-wrap items-start gap-1.5 font-medium"><FileDiff className="mt-0.5 size-3.5 shrink-0" /><span>{t('conversation_ui.changes.title')}</span><span className="min-w-0 break-words font-normal text-muted-foreground">· {status}</span></div>
     {artifact?.content && <details className="mt-1.5">
-      <summary className="cursor-pointer text-muted-foreground">Preview diff</summary>
+      <summary className="cursor-pointer text-muted-foreground">{t('conversation_ui.changes.preview')}</summary>
       <pre className="mt-1 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 text-[10px]">{artifact.content}</pre>
     </details>}
     <div className="mt-1.5 flex flex-wrap gap-3">
-      {artifact && <Link to={`/artifacts/${artifact.id}`} className="text-accent-foreground underline-offset-2 hover:underline">Open exact diff</Link>}
-      {projectId && <Link to={`/projects/${projectId}/files`} className="text-accent-foreground underline-offset-2 hover:underline">Files &amp; Code</Link>}
-      {state === 'unavailable' && <button type="button" className="text-accent-foreground underline-offset-2 hover:underline" onClick={onRefresh}>Check again</button>}
+      {artifact && <Link to={`/artifacts/${artifact.id}`} className="text-accent-foreground underline-offset-2 hover:underline">{t('conversation_ui.changes.open_exact')}</Link>}
+      {projectId && <Link to={`/projects/${projectId}/files`} className="text-accent-foreground underline-offset-2 hover:underline">{t('conversation_ui.changes.files')}</Link>}
+      {state === 'unavailable' && <button type="button" className="text-accent-foreground underline-offset-2 hover:underline" onClick={onRefresh}>{t('conversation_ui.changes.check_again')}</button>}
     </div>
   </div>
 }

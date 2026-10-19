@@ -1,6 +1,6 @@
 # Official Optional Modules
 
-_Last updated: 2026-07-03. See also ADR 0006._
+_See also ADR 0006._
 
 This document defines the official optional module framework for rainver: a product-level control plane that lets maintainers ship optional features that can be enabled or disabled per space or per user, while keeping core `ServerModule` registration stable.
 
@@ -42,22 +42,30 @@ official plugin code activation; Official Optional Module = product feature
 package with runtime enablement state.
 
 ### Capability
-An **agent AI skill/behavior descriptor**. Defined in `catalog/capabilities/<name>/capability.yaml`. Loaded by `CapabilityRegistry` from the catalog. Represents a versioned, executable agent skill (e.g. `memory.reflect`).
+A product capability is a built-in definition in
+`server/src/modules/capabilities/registry.ts`, read through
+`/api/v1/capability-definitions`. YAML under `catalog/capabilities/` is a
+diagnostic catalog. Do not execute a catalog manifest. `memory.reflect` in
+that catalog is manifest metadata. Session reflection does not run it.
 
-Capabilities are NOT product plugins. They do not have a per-space enable/disable toggle. They do not control product feature visibility. A capability may be *used by* an official optional module (e.g., an AI reflection capability used by diary), but the two concepts are separate:
+Capabilities are not Official Optional Modules. Do not turn a capability on
+with a plugin enablement row, and do not use a capability id as a plugin id.
 
 | | Capability | Official Optional Module |
 |---|---|---|
-| Unit | Agent skill / behavior | Product feature package |
-| Discovery | `GET /api/v1/catalog` | `GET /api/v1/plugins` |
-| Toggle | None (metadata only) | DB-backed per space or user |
-| Frontend | `/capabilities` browse page | Controls module visibility |
+| Unit | Built-in definition in `capabilities/registry.ts` | Product feature package |
+| Discovery | `GET /api/v1/capability-definitions` | `GET /api/v1/plugins` |
+| Enablement | `capability_enable` / `capability_disable` proposals; state in `capability_enablements` | DB-backed per space or user |
+| Frontend | `/capabilities` | The plugin's own page; a rail item only when `enabled` |
+| Catalog | `GET /api/v1/server/catalog` lists manifests and is not the product path | Not listed there |
 
 ### RuntimeAdapter
 A backend plugin for the agent runtime execution layer (CLI runtime, model API, etc.). Defined under `server/src/modules/runtimeAdapters/`. Not a product feature visible to end users. Not related to official optional modules.
 
-### Future Third-Party Plugin Package
-A hypothetical future extension type: externally developed, downloaded, sandboxed, with its own migration runner and permissions model. This is **explicitly out of scope** for the current implementation. See Non-Goals below. Requires a much stricter sandbox/SDK and is not part of this framework.
+### Third-party plugin packages
+
+Third-party plugin packages are not loaded. There is no download, sandbox, or
+migration runner for them. See Non-Goals below.
 
 ---
 
@@ -71,7 +79,7 @@ A hypothetical future extension type: externally developed, downloaded, sandboxe
 
 ### Plugin frontend source lives with the plugin package
 Official plugin frontend pages live under `plugins/official/<plugin_id>/web/src/`.
-The shell still uses `apps/web/src/modules/registry.ts` as the route/nav source of
+The shell uses `apps/web/src/modules/registry.ts` as the route and nav source of
 truth. The registry statically imports an app-owned adapter under
 `apps/web/src/plugins/<plugin_id>/`, and that adapter injects host APIs (navigation,
 API client, and plugin-state hook) into the plugin page. Plugin web source must not
@@ -79,15 +87,22 @@ import `apps/web/src` directly. This keeps feature source colocated with the plu
 package without introducing remote frontend bundle loading.
 
 ### Official optional modules install before they enable
-In the current implementation there is no remote package download. Built-in official plugin source is kept in this monorepo under `plugins/official/*`, compiled into package artifacts under `server/dist/official-plugins/*`, loaded by `builtInPlugins.ts`, and activated by `PluginHost` at startup. The package lifecycle is still explicit: a plugin is catalog-visible first, then `POST /api/v1/plugins/:id/install` runs its plugin-owned schema migrations and writes `plugin_installs`/`plugin_migrations`, and only then can `POST /api/v1/plugins/:id/enable` enable it for a user or space.
+There is no remote package download. Built-in official plugin source lives in
+this monorepo under `plugins/official/*`, is compiled into
+`server/dist/official-plugins/*`, loaded by `builtInPlugins.ts`, and activated
+by `PluginHost` at startup. A plugin is catalog-visible first, then
+`POST /api/v1/plugins/:id/install` runs its plugin-owned schema migrations and
+writes `plugin_installs`/`plugin_migrations`, and only then can
+`POST /api/v1/plugins/:id/enable` enable it for a user or space.
 
-This is a **Level 2** boundary: plugin source lives in the monorepo under `plugins/official/*`, but the package format (`plugin.json` manifest, compiled artifacts, installer-managed migrations) matches the shape required for downloaded official plugins. Install state and plugin schema are managed independently of the core baseline migration. The remaining Level 2 gap is remote package download and verification — the startup-load activation contract (`RainverPlugin.activate(ctx)`) is already in place.
+Install state and plugin schema are managed independently of the core baseline
+migration. `RainverPlugin.activate(ctx)` is the startup activation contract.
+Do not download a plugin package.
 
 ### Remote package download is not implemented
 There is no remote download, manifest verification, or compatibility check for
 official plugin packages. The startup-load contract and installer are
 implemented for in-repo artifacts. Third-party plugins are out of scope.
-See [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §18.
 
 ---
 
@@ -111,16 +126,21 @@ Each descriptor declares `default_enabled: boolean`. If no enablement row exists
 - **Data**: disabling a module does not delete its data. Disable is not uninstall.
 
 ### Plugin guard
-`requireOfficialPluginEnabled(context, { pluginId, spaceId, userId? })` (exported from `server/src/modules/plugins/guards.ts`) and `ctx.http.pluginGuard()` (for PluginHost routes) are reusable helpers for backend routes to fail-closed when a plugin is disabled.
+`requireOfficialPluginEnabled(config, request, reply, { pluginId, spaceId?, userId? })` (exported from `server/src/modules/plugins/guards.ts`; returns `false` after sending the error response) and `ctx.http.pluginGuard()` (for PluginHost routes) are reusable helpers for backend routes to fail-closed when a plugin is disabled.
 
-Response for disabled plugin:
+Response for disabled plugin (403):
 ```json
 { "detail": "Plugin is not enabled", "error_code": "plugin_disabled", "plugin_id": "diary" }
 ```
 
-Response for unknown plugin:
+Response for unknown plugin (404):
 ```json
 { "detail": "Plugin not found", "error_code": "plugin_not_found", "plugin_id": "..." }
+```
+
+Response for a plugin that is not installed (403):
+```json
+{ "detail": "Plugin is not installed", "error_code": "plugin_not_installed", "plugin_id": "..." }
 ```
 
 ---
@@ -133,7 +153,13 @@ Core plugin control-plane schema (`official_plugin_enablements`, `official_plugi
 Plugin-owned domain tables do not live in the core baseline. The `diary` plugin owns `diary_entries` and `diary_reflections` through SQL files under `plugins/official/diary/migrations/`. The `finance_ledger` plugin owns its finance book, account, directive, posting, price, import/export, and metadata tables through SQL files under `plugins/official/finance_ledger/migrations/`. Plugin migrations are copied into `server/dist/official-plugins/<plugin_id>/migrations/` during build. The installer executes those migrations only when the plugin is installed and records their checksums in `plugin_migrations`.
 
 ### Editor-owned content vs raw input
-Diary entries are editor-owned user documents, similar to Notes. Direct diary editing writes the diary plugin tables and does not create an `ActivityRecord`. If diary content is later extracted into Memory, Knowledge, Runtime Context acquisition, FlashCards, or agent-readable summaries, that extraction must go through the proposal/sources boundary and remain opt-in where the descriptor says context contribution is `opt_in`.
+Diary entries are editor-owned user documents, similar to Notes. Direct diary editing writes the diary plugin tables. It does not create an `ActivityRecord` or Memory. The descriptor allows opt-in context contribution (`can_contribute_context: opt_in`) and memory proposals (`can_propose_memory`). Do not write Memory, Knowledge, Runtime Context, FlashCards, or an agent-readable summary from a diary save. A proposal is the write path.
+
+The Diary editor serializes saves for the same API, user/Space context and day,
+including debounced, manual and unmount saves. The queue survives editor
+remounts, continues after a failed request and refuses queued text when the
+editing context no longer matches the host. This orders one browser's writes;
+it does not resolve conflicting edits from separate browser sessions.
 
 Finance ledger rows are space-owned business data. Direct ledger editing writes
 the finance plugin tables and does not create an `ActivityRecord`. Beancount text
@@ -141,15 +167,52 @@ is an import/export compatibility format, not the source of truth; PostgreSQL
 rows are authoritative at runtime. A personal account with `visibility =
 private` is readable and exportable only by its owner; other Space members do
 not receive that account, its postings, or transactions that touch it.
-Finance import writes are proposal-gated through
-`finance_ledger.post_import_batch`, and direct directive proposal application
-uses `finance_ledger.post_directive`.
+Finance import never posts. `POST /api/v1/finance/books/:bookId/import/beancount`
+takes the file text and an optional `source_type` label and nothing else (any
+other field, `post_directly` included, is a 400), lands
+every dated entry as `proposed`, and the posting step is the separate
+`finance_ledger.post_import_batch` / `finance_ledger.post_directive` proposal
+application with apply-time revalidation. A file is not authority over the
+book's structure either: `open`, `close`, `commodity` and `option` directives
+are recorded as `excluded` with a diagnosis, and nothing in an import creates,
+closes or declares an account, commodity or option. An entry that names an
+account or commodity the book lacks writes nothing and waits
+(`pending_mapping`); the importer opens the account or adds the commodity
+through the ordinary management routes, then maps the file's account name onto
+an existing account id (`POST .../imports/:importSourceId/entries/:entryId/mapping`,
+re-checked for visibility and the entry date at persist time) or retries the
+batch (`POST .../imports/:importSourceId/retry`). The mapping is stored on the
+entry with a version; the original text is kept.
+
+Each parsed entry is one `finance_import_entries` row with a stable identity:
+`external:<id>` for a transaction whose `external_id` metadata names an
+upstream record (a later line of the same file reusing that id gets its own
+key `external:<id>#<n>` and the status `error` /
+`external_id_repeated_in_file`, never merged into the first), otherwise the hash of the entry's own lines plus its
+occurrence index in the file, so two identical transactions in one file stay
+two records while the same file uploaded again (`finance_import_sources` is
+unique per book and content hash) finds its existing rows and retries only the
+unfinished ones. Every transaction is written with all its postings under one
+savepoint; a failure rolls back that entry alone and the rest of the batch
+continues. Content that matches an entry of another batch of the book is held
+as `needs_review` until the importer decides (`POST .../imports/:importSourceId/review`
+with `import` or `duplicate`); a trusted external id already imported settles
+as `duplicate` on its own. A batch, its entries and their text are visible
+only to the member who uploaded it.
+
+Account close, direct posting, import validation/persistence and batch import
+approval share a transaction-held `FOR NO KEY UPDATE` book lock. Posting checks
+account dates again after acquiring it, and closing refuses later posted
+entries. The lock is compatible with the book foreign keys' `KEY SHARE` locks
+held while creating drafts. A directive dated on the closing day remains valid.
+The transaction creation route acquires the book lock before allocating its
+sequence or inserting draft rows, keeping its lock order consistent with imports.
 
 ### Disable is not uninstall
 Disabling a module preserves all its data. `disabled_at` and `disabled_by_user_id` are recorded in the enablement row. Uninstall/data deletion is out of scope.
 
 ### Settings persistence
-`settings_json` is stored in the enablement row. Settings are opaque JSON and can be patched even when a module is disabled (pre-configuration). There is no settings engine.
+`settings_json` is stored in the enablement row. Settings are opaque JSON and can be patched even when a module is disabled (pre-configuration): a patch for a scope with no row creates the row in the plugin's default enabled state, without enable/disable stamps, and records a `settings_updated` event. Patches merge in SQL (`settings_json || patch`) so concurrent patches of different keys both land. There is no settings engine.
 
 ---
 
@@ -162,7 +225,6 @@ Disabling a module preserves all its data. `disabled_at` and `disabled_by_user_i
 - Plugin settings must not leak across spaces or users — the guard and repository enforce the descriptor's `space` or `user` scope
 - Third-party modules are not supported.
 
-Unimplemented plugin expansions: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §24.
 
 ---
 
@@ -174,22 +236,22 @@ An official optional module may contribute to these extension points:
 |---|---|---|
 | Backend route surface | Implemented | Via `PluginHost` + `ctx.http.pluginGuard()` |
 | Frontend module entry | Implemented | Page source in `plugins/official/<plugin_id>/web/src/`; app adapter in `apps/web/src/plugins/<plugin_id>/`; `official_plugin` source entry in `MODULE_REGISTRY` + overlay |
-| Settings | MVP (opaque JSON in enablement row) | `settings_json` field |
+| Settings | Opaque JSON in the enablement row | `settings_json` field |
 | Job handlers | Implemented | `ctx.jobs.register()`; host wraps handlers with enablement gating |
 | Scheduled tasks | Implemented | `ctx.scheduler.register()`; task code must fan out only to enabled scopes |
 | Proposal types/appliers | Implemented | `ctx.proposals.register()`; host wraps appliers with enablement gating |
-| Context providers | Future | Not wired yet |
-| Activity sources | Future | Not wired yet |
-| Memory proposal generators | Future | Not wired yet |
-| Artifacts | Future | Not typed yet |
+| Context providers | Not wired | No registration point |
+| Activity sources | Not wired | No registration point |
+| Memory proposal generators | Not wired | No registration point |
+| Artifacts | Not typed | No contribution type |
 
-Future contribution types must preserve the same fail-closed enablement rule.
+Any other contribution type preserves the same fail-closed enablement rule.
 
 ## 7. Bundled Official Modules
 
 | Plugin | Scope | Frontend | Routes | Runtime contributions | Data ownership |
 |---|---|---|---|---|---|
-| `diary` | `user` | `/diary` | `/api/v1/diary*` | Routes, scheduler, reflection job | Plugin-owned diary entries/reflections; editor-owned personal documents; memory/context extraction remains opt-in and proposal/sources-gated. |
+| `diary` | `user` | `/diary` | `/api/v1/diary*` | Routes, scheduler, reflection job | Plugin-owned diary entries/reflections; editor-owned personal documents; memory/context extraction remains opt-in and proposal/sources-gated. One reflection per entry and day is a unique key (`diary_reflections (entry_id, reflection_date)`), so concurrent reflection jobs upsert one row. |
 | `finance_ledger` | `space` | `/finance` | `/api/v1/finance*` | Routes and proposal appliers | Plugin-owned finance books/accounts/directives/postings/prices/import-export records; PostgreSQL is the runtime source of truth; Beancount text is import/export compatibility. Personal `private` accounts stay off other members' reads and export. |
 
 ---

@@ -4,6 +4,8 @@ import { PgProposalApplyService } from "../proposals/applyService.js";
 import { runFinalizationReconcilerRegistry } from "../runs/finalizationReconcilerRegistry.js";
 import { effectiveRunTrigger } from "../systemActions/effectiveRunTrigger.js";
 import type { Queryable, RunRecord } from "../runs/runRepositoryTypes.js";
+import { withDedicatedSessionAdvisoryLock } from "../../db/advisoryLock.js";
+import { countTasksCreatedInTurn, TASK_FAN_OUT_PER_TURN, turnFanOutLockKey } from "./turnFanOut.js";
 
 /**
  * The follow-up Task a Run asks for at the end of its work
@@ -18,11 +20,12 @@ import type { Queryable, RunRecord } from "../runs/runRepositoryTypes.js";
  * It runs here, at finalization, rather than at materialization, because
  * everything that makes the output provisional is decided after the output is
  * read: a run's proposals are `staged` until it terminates, and a run that
- * fails verification has them rejected. Creating the Task earlier put work on
- * the Board that the system had already decided never happened. So the
- * proposal is always drafted — carrying the run's context taint, its egress
- * requirement and its preview flag — and this applies it once the run has
- * actually succeeded, through the same accept path a person's click uses.
+ * fails verification has them rejected. Do not create the Task before the
+ * run succeeds. That would put work on the Board for a run the system has
+ * already decided never happened. The proposal is always drafted — carrying
+ * the run's context taint, its egress requirement and its preview flag — and
+ * this applies it once the run has actually succeeded, through the same
+ * accept path a person's click uses.
  *
  * There is no cap on how many it applies for one Run. The sibling surface
  * bounds itself (`inquiry.create_thread`, five per turn) because a Thread is
@@ -35,7 +38,7 @@ import type { Queryable, RunRecord } from "../runs/runRepositoryTypes.js";
  * Project's behalf), and nothing when the accept itself refuses — an egress
  * owner has not approved, or the instructing person's role cannot apply a
  * medium-risk proposal. In every one of those cases the card stays exactly
- * where it was, which is the answer this replaces, not a worse one.
+ * where it was. Do not drop it or move it when the accept refuses.
  */
 export function registerFollowUpTaskFinalizationReconciler(config: ServerConfig): void {
   runFinalizationReconcilerRegistry.register("follow_up_task", {
@@ -57,19 +60,32 @@ export async function applyAttendedFollowUpTasks(
   // created in this Run's own Project" — because otherwise an Agent writes
   // into a Project the person it acts for is not working in. Here the
   // foreign-Project follow-up is not refused, it is left as a card: the
-  // person decides, which is what the card is for.
-  const pending = await db.query<{ id: string }>(
-    `SELECT id FROM proposals
-      WHERE space_id = $1 AND created_by_run_id = $2
-        AND proposal_type = 'follow_up_task' AND status = 'pending' AND preview = false
-        AND (project_id IS NULL OR project_id IS NOT DISTINCT FROM $3)`,
-    [run.space_id, run.id, run.project_id],
-  );
-  if (pending.rows.length === 0) return;
+  // person decides. Do not turn the card into a refusal.
+  // The turn's one fan-out ceiling covers these too: a follow-up is a Task
+  // the turn asked for. Held for the whole pass, the lock `task.create` takes
+  // as well, so a repeated or concurrent settlement cannot count the same
+  // room twice. What does not fit stays a pending card for the person — not
+  // dropped, and not queued to apply itself later.
+  await withDedicatedSessionAdvisoryLock(db, turnFanOutLockKey(run.id), async (locked) => {
+    const pending = await locked.query<{ id: string }>(
+      `SELECT id FROM proposals
+        WHERE space_id = $1 AND created_by_run_id = $2
+          AND proposal_type = 'follow_up_task' AND status = 'pending' AND preview = false
+          AND (project_id IS NULL OR project_id IS NOT DISTINCT FROM $3)
+        ORDER BY created_at ASC, id ASC`,
+      [run.space_id, run.id, run.project_id],
+    );
+    const allowance = Math.max(0, TASK_FAN_OUT_PER_TURN - await countTasksCreatedInTurn(locked, run.space_id, run.id));
+    await acceptFollowUps(config, run, pending.rows.slice(0, allowance));
+  });
+}
+
+async function acceptFollowUps(config: ServerConfig, run: RunRecord, pending: Array<{ id: string }>): Promise<void> {
+  if (pending.length === 0 || !run.instructed_by_user_id) return;
 
   const service = PgProposalApplyService.fromConfig(config);
   const identity = { spaceId: run.space_id, userId: run.instructed_by_user_id };
-  for (const row of pending.rows) {
+  for (const row of pending) {
     try {
       await service.accept(row.id, identity);
     } catch (error) {

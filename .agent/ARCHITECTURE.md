@@ -93,5 +93,4 @@ no general WebSocket event bus. Agent-turn SSE exists at
 - **UI**: Browser (React SPA / PWA)
 - **Desktop**: Tauri scaffold only — [0005](decisions/0005-desktop-runtime.md)
 
-Unimplemented layers (mobile product, sync, Cards UI, generic WS):
-[plans/unimplemented-from-guides.md](plans/unimplemented-from-guides.md).
+There is no mobile product, no sync protocol, no Cards review UI, and no generic WebSocket layer.

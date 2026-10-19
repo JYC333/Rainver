@@ -1,6 +1,6 @@
 # Memory / Runtime Context
 
-Status: implemented current state after the Runtime Context clean cutover.
+Status: implemented current state.
 
 This document describes the boundary between governed Memory and the Runtime
 Context invocation engine. Canonical Memory is durable product state; Runtime
@@ -13,8 +13,9 @@ authority. Neither may silently become the other.
 proposal apply service, by one of two routes
 ([ADR 0003](../decisions/0003-memory-proposal-flow.md)): a proposal a person
 approved, or an Agent's own bounded write in a person's turn (`applyDirect` —
-private, normal-sensitivity, about the acting person, always a new version
-carrying its run, session and rationale). Public routes, Runs, retrievers,
+private, normal-sensitivity, always a new version carrying its run, session and
+rationale; the three note types and the persona land in the Agent's own
+`agent` scope, every other type is about the acting person). Public routes, Runs, retrievers,
 checkpoint extractors and adapters still cannot write around it, and a
 checkpoint promoting content into Memory is a write under ADR 0003 like any
 other. Note for anyone hardening this path: the direct route deliberately does
@@ -139,7 +140,9 @@ product table; Context Events store ordered refs and typed continuity facts.
 - CLI continuity stores an acknowledged cursor and rotates its private vendor
   session when scope, generation, cursor, replay authority, or a bounded delta
   overflow is detected. Overflow rotation bootstraps from the latest authorized
-  checkpoint and transfers the execution lease to the replacement binding. A
+  checkpoint and transfers the execution lease to the replacement binding. Any
+  other rotation waits while another Run holds the binding's live execution
+  lease, so that Run keeps an active binding to acknowledge against. A
   successful bootstrap/delta phase advances that cursor before the current-user
   turn is sent, while the whole invocation Snapshot remains draft until its
   terminal acknowledgement.
@@ -153,16 +156,4 @@ authorities. Delivery/snapshot persistence, acknowledgement, finalization, and
 continuity writes use short transactions. Provider and CLI calls occur outside
 database transactions.
 
-Database-backed behavior tests use the shared real PostgreSQL fixture. The
-legacy absence test additionally scans production, schema, protocol, migration,
-and active-test roots so retired Context Snapshot/Compiler/Digest and vendor-file
-paths cannot return unnoticed.
-
-## 7. Retired architecture
-
-The clean cutover deleted the Context Builder/Compiler/Prepare service, Context
-Profiles and routing manifests, Context Snapshots and Context Digests, manual
-context artifact attachment/revocation UI and APIs, route-owned chat bundles,
-session-summary caches, and vendor context-file rendering. There is no dual-read,
-dual-write, fallback, or compatibility alias. ADR 0014 remains the design record;
-Git history retains the clean-cutover implementation and review evidence.
+Database-backed behavior tests use the shared real PostgreSQL fixture.

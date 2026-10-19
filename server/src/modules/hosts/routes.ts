@@ -4,10 +4,11 @@ import websocketPlugin from "@fastify/websocket";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
-import { HostDaemonFrameSchema, HostHelloInfoSchema, HostRunDiffUploadSchema, type HostHelloInfo, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
+import { HostDaemonFrameSchema, HostHelloInfoSchema, HostRunDiffUploadSchema,
+  HostRunOutputsUploadSchema, type HostHelloInfo, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import { scheduleAmbientSyncs } from "../importedSessions/syncScheduler.js";
-import { authRepositoryFromConfig, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
-import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow } from "./repository.js";
+import { authRepositoryFromConfig, sessionRefreshSink, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
+import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow, type HostUploadRefusal } from "./repository.js";
 import { PgProjectFolderRepository } from "../projectFolders/repository.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import { HttpError, dbPool } from "../routeUtils/common.js";
@@ -37,6 +38,23 @@ import { wakeTaskMergesForHost } from "./taskMerges.js";
 
 function isFailure(value: unknown): value is AuthFailure | HostFailure {
   return Boolean(value && typeof value === "object" && "statusCode" in value);
+}
+
+/**
+ * An upload the control plane will not take. `run_not_on_host` is the
+ * authorization answer (404, as the Run is not this host's to know about);
+ * the attempt answers are 409s the daemon logs: the attempt whose nonce the
+ * upload carries is no longer the Run's current one, or it has already ended.
+ */
+function sendUploadRefusal(reply: FastifyReply, reason: HostUploadRefusal) {
+  switch (reason) {
+    case "run_not_on_host":
+      return reply.code(404).send({ detail: "Run not found for this host", code: reason });
+    case "attempt_superseded":
+      return reply.code(409).send({ detail: "This upload belongs to an attempt the Run has moved past", code: reason });
+    case "attempt_ended":
+      return reply.code(409).send({ detail: "This Run attempt has already ended; its outputs are closed", code: reason });
+  }
 }
 
 function params(request: FastifyRequest): Record<string, string | undefined> {
@@ -78,7 +96,7 @@ function isRemoteDispatchEligible(runtimeKey: string): boolean {
  * in or out, choosing its default CLI) is instance-admin work rather than
  * anyone's ownership. `allowBuiltin` says a route is one of those; a route
  * that is meaningless for the built-in host, such as attaching an existing
- * directory on the machine (plan decision 12) or pointing it at a provider
+ * directory on the machine, or pointing it at a provider
  * proxy it reaches in-network, leaves it off and keeps answering 404.
  *
  * Returns null after having already answered the request.
@@ -180,11 +198,11 @@ const wsUpgradeHosts = new WeakMap<FastifyRequest, string>();
  * What a daemon's hello/heartbeat frame contributes to its host row.
  *
  * The frame is already the contract's (`HostHelloFrameSchema`), so nothing is
- * read field by field here — which is how `server_url` once went missing:
- * every field of `DaemonHelloInfo` is optional, and a hand-written mapping
- * that forgot one compiled cleanly. The one transformation is the
- * capabilities blob, normalized into the shape every reader uses; its wire
- * format and history are `capabilities.ts`'s concern alone.
+ * read field by field here. Every field of `DaemonHelloInfo` is optional, and
+ * a field-by-field mapping that forgot one would compile cleanly. Do not
+ * rebuild it that way. The one transformation is the
+ * capabilities blob, normalized into the shape every reader uses. Its wire
+ * format is `capabilities.ts`'s concern alone.
  */
 function daemonHelloInfo(frame: HostHelloInfo): DaemonHelloInfo {
   const { capabilities_json, ...info } = frame;
@@ -224,7 +242,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!auth || !hosts) {
       return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
     }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const payload = body<{ name: string }>(request);
     const result = await hosts.issuePairingCode(user.id, typeof payload.name === "string" ? payload.name : "");
@@ -268,7 +286,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!auth || !hosts) {
       return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
     }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const items = await hosts.listVisibleTo(user.id);
     return reply.send({
@@ -320,9 +338,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
 
 
-  // Static catalog of ACP runtime definitions and their dispatch eligibility
-  // (P3, C6):
-  // the single source of truth the frontend reads instead of hardcoding the
+  // Static catalog of ACP runtime definitions and their dispatch eligibility.
+  // The single source of truth the frontend reads instead of hardcoding the
   // same ACP-only eligibility rule the dispatch endpoint above already
   // enforces. No per-user or per-space data — session-authenticated only for
   // consistency with the rest of this module.
@@ -333,7 +350,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!auth) {
       return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
     }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const latestManagedVersions = new Map(acpRuntimeProbes().map((probe) => [probe.runtime_key, probe.version]));
     const items = listRuntimeAdapterSpecs()
@@ -369,14 +386,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.send({ items });
   });
 
-  // What a dispatch to this host can choose from, decided where dispatch is
-  // validated: the runtime copies the host has and, for the chosen copy,
-  // every backend with whether it is usable and why not. The composer
-  // renders this rather than reconstructing it from bindings, providers and
-  // capabilities — three sources that drifted apart in the browser.
-  // Plan host-workspace-frontend-registration: the web UI's remote-directory
-  // browser and workspace registration. Both are owner-only host actions the
-  // daemon answers; the server forwards a request and never opens a path.
+  // Owner-only host actions the daemon answers. The server forwards the
+  // request and never opens a path.
   app.post("/api/v1/hosts/:hostId/browse-directories", async (request, reply) => {
     const resolved = await resolveOwnedHost(context, request, reply);
     if (!resolved) return reply;
@@ -432,7 +443,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     );
     // The probe for *this* machine already resolved which copy it installs —
     // the release pin for the Server Host, the registry's answer for a paired
-    // one. Deciding that again here is what made two sources of truth.
+    // one. Do not decide that again here. Two sources of truth would disagree.
     const probe = acpRuntimeProbe(runtimeKey, targetHost.rows[0]?.kind === "server" ? "server" : "remote");
     const distribution = probe?.distribution;
     const version = probe?.version;
@@ -462,9 +473,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         actorUserId: resolved.userId,
       });
     }
-    // `detail` as well as `error`: the web client reads `detail`, and without
-    // it a real reason from the host — "Runs are still using claude_code; try
-    // again once they finish" — reached the person as "502 Bad Gateway".
+    // The web client reads `detail`. Copy `error` there on failure. Do not
+    // send only `error`.
     return reply.code(result.ok ? 200 : 502)
       .send({ host_id: resolved.hostId, runtime_key: runtimeKey, ...result, ...(result.ok ? {} : { detail: result.error }) });
   });
@@ -536,9 +546,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         actorUserId: resolved.userId,
       });
     }
-    // `detail` as well as `error`: the web client reads `detail`, and without
-    // it a real reason from the host — "Runs are still using claude_code; try
-    // again once they finish" — reached the person as "502 Bad Gateway".
+    // The web client reads `detail`. Copy `error` there on failure. Do not
+    // send only `error`.
     return reply.code(result.ok ? 200 : 502)
       .send({ host_id: resolved.hostId, runtime_key: runtimeKey, ...result, ...(result.ok ? {} : { detail: result.error }) });
   });
@@ -576,9 +585,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         actorUserId: resolved.userId,
       });
     }
-    // `detail` as well as `error`: the web client reads `detail`, and without
-    // it a real reason from the host — "Runs are still using claude_code; try
-    // again once they finish" — reached the person as "502 Bad Gateway".
+    // The web client reads `detail`. Copy `error` there on failure. Do not
+    // send only `error`.
     return reply.code(result.ok ? 200 : 502)
       .send({ host_id: resolved.hostId, runtime_key: runtimeKey, ...result, ...(result.ok ? {} : { detail: result.error }) });
   });
@@ -767,15 +775,15 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!auth || !hosts) {
       return sendErrorEnvelope(reply, 502, errorEnvelope("identity_db_unavailable", "Identity database is unavailable", requestId));
     }
-    const user = await auth.getCurrentUser(sessionTokenFromRequest(request));
+    const user = await auth.getCurrentUser(sessionTokenFromRequest(request), sessionRefreshSink(reply));
     if (isFailure(user)) return reply.code(user.statusCode).send({ detail: user.detail });
     const hostId = params(request).hostId;
     if (!hostId) return reply.code(400).send({ detail: "hostId is required" });
     const revoked = await hosts.revoke(user.id, hostId);
     if (!revoked) return reply.code(404).send({ detail: "Host not found" });
-    // A daemon that was already connected when its token was revoked would
-    // otherwise keep executing dispatched runs and heartbeating on its live
-    // socket indefinitely — only a future reconnect would be blocked.
+    // A daemon already connected when its token is revoked keeps executing
+    // dispatched runs and heartbeating on that socket. Token revocation blocks
+    // the next connect only.
     // Cutting the socket stops new work; revoking leases also stops an
     // in-flight bound runtime from spending server-held provider credentials.
     cutOffRevokedHost(hostId);
@@ -869,7 +877,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.code(204).send();
   });
 
-  // Upload endpoints (D7): the daemon posts its diff/output-directory
+  // Upload endpoints: the daemon posts its diff/output-directory
   // contents here after a Run completes, bearer-token authenticated. A
   // host Run's diff is stored as a read-only artifact, never a code-patch
   // proposal: on an execution host a change lands without per-change review
@@ -885,20 +893,14 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!host) return reply.code(401).send({ detail: "Invalid host token" });
     const runId = params(request).runId;
     if (!runId) return reply.code(400).send({ detail: "runId is required" });
-    const run = await hosts.runOwnedByHost(host.id, runId);
-    if (!run) return reply.code(404).send({ detail: "Run not found for this host" });
     const parsed = HostRunDiffUploadSchema.safeParse(body(request));
     if (!parsed.success) return reply.code(422).send({ detail: "diff upload is malformed" });
     // A body with neither says nothing; one with only `git_after` is a Run
     // whose diff could not be read but whose checkout could.
     if (parsed.data.diff === null && !parsed.data.git_after) return reply.code(422).send({ detail: "diff is required" });
-    const result = await hosts.recordDiffArtifact(run, host.owner_user_id ?? run.owner_user_id, {
-      diff: parsed.data.diff,
-      truncated: parsed.data.truncated === true,
-      ...(parsed.data.git_before ? { git_before: parsed.data.git_before } : {}),
-      ...(parsed.data.git_after ? { git_after: parsed.data.git_after } : {}),
-    });
-    return reply.code(201).send(result);
+    const outcome = await hosts.recordDiffArtifact(host.id, host.owner_user_id, runId, parsed.data);
+    if (!outcome.ok) return sendUploadRefusal(reply, outcome.reason);
+    return reply.code(201).send(outcome.result);
   });
 
   app.post("/api/v1/hosts/me/runs/:runId/outputs", async (request, reply) => {
@@ -912,26 +914,21 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!host) return reply.code(401).send({ detail: "Invalid host token" });
     const runId = params(request).runId;
     if (!runId) return reply.code(400).send({ detail: "runId is required" });
-    const run = await hosts.runOwnedByHost(host.id, runId);
-    if (!run) return reply.code(404).send({ detail: "Run not found for this host" });
-    const payload = body<{ files: Array<{ name: string; content: string }> }>(request);
-    const files = Array.isArray(payload.files)
-      ? payload.files.filter((f): f is { name: string; content: string } => typeof f?.name === "string" && typeof f?.content === "string")
-      : [];
-    const result = await hosts.recordOutputArtifacts(run, host.owner_user_id ?? run.owner_user_id, files);
-    return reply.code(201).send(result);
+    const parsed = HostRunOutputsUploadSchema.safeParse(body(request));
+    if (!parsed.success) return reply.code(422).send({ detail: "outputs upload is malformed" });
+    const outcome = await hosts.recordOutputArtifacts(host.id, host.owner_user_id, runId, parsed.data);
+    if (!outcome.ok) return sendUploadRefusal(reply, outcome.reason);
+    return reply.code(201).send(outcome.result);
   });
 
 
 
 
 
-
-  // hello/heartbeat (phase 1) plus job dispatch/output/complete (phase 3,
-  // ADR 0016 D9's RemoteHostExecutionAdapter). This handler stays dumb by
-  // design: it authenticates, records liveness, and routes frames to/from
-  // `sharedHostConnectionRegistry` — vendor stdout parsing, argv rendering,
-  // and diff/artifact handling all live outside this file.
+  // Hello, heartbeat, job dispatch, output, and complete. This handler
+  // authenticates, records liveness, and routes frames to and from
+  // `sharedHostConnectionRegistry`. Vendor stdout parsing, argv rendering,
+  // and diff/artifact handling live outside this file.
   app.register(async (scoped) => {
     scoped.get("/internal/hosts/ws", {
       websocket: true,
@@ -948,6 +945,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const upgradeHostId = wsUpgradeHosts.get(request) ?? null;
       let helloCompleted = false;
       let helloInProgress = false;
+      // Set by the `close` handler whether or not hello finished: a hello
+      // awaits the database twice, and a socket that closed meanwhile must
+      // not be registered as the host's live connection — nothing would ever
+      // unregister a sink that was dead when it was registered.
+      let socketClosed = false;
+      // The `close` event is the last thing a closing socket does: its close
+      // frame has already been exchanged and `readyState` left OPEN by then.
+      // A hello that finishes authenticating in that gap must see the socket
+      // going and write nothing.
+      const socketGone = () => socketClosed || socket.readyState !== socket.OPEN;
       // Which machine this connection is, learned at hello and reused by every
       // later acknowledgement: the probe list a daemon is told to install from
       // differs for the built-in Server Host (the release pin) and a paired one
@@ -1029,8 +1036,20 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               }
               helloCompleted = true;
               probeHostKind = host.kind === "server" ? "server" : "remote";
+              // Closed while authenticating: the host was never online on
+              // this socket, so its row is not written online either.
+              if (socketGone()) return;
               await hosts.recordHeartbeat(host.id, daemonHelloInfo(frame));
-              sharedHostConnectionRegistry.registerConnection(host.id, frameSink);
+              // Closed while the heartbeat was being recorded: the `close`
+              // handler ran before the row went online, so it is taken back
+              // here, and the dead sink is not registered.
+              if (socketGone()) {
+                await hosts.markOffline(host.id);
+                return;
+              }
+              // Revoked while this hello was in flight: the registry has
+              // closed the socket; no acknowledgement, no connection.
+              if (!sharedHostConnectionRegistry.registerConnection(host.id, frameSink)) return;
               frameSink.send({ type: "hello_ack", host_id: host.id, runtime_probes: acpRuntimeProbes(probeHostKind) });
               void reconcilePendingManagedWorkspaceArchives(getDbPool(context.config.databaseUrl!), host.id)
                 .catch(() => undefined);
@@ -1071,7 +1090,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             case "output":
               sharedHostConnectionRegistry.receiveOutput(hostId, frame.run_id, frame.chunk, frame.launch_id);
               return;
-            // C5: the full stderr stream, not just the failure-tail the
+            // The full stderr stream, not just the failure tail the
             // `complete` frame already carries — diagnostic events for the UI.
             case "stderr":
               sharedHostConnectionRegistry.receiveStderr(hostId, frame.run_id, frame.chunk, frame.launch_id);
@@ -1138,10 +1157,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                 stderr: frame.stderr,
                 timed_out: frame.timed_out,
                 error: frame.error,
-                // The workspace listing, when the request asked for one. Only
-                // the host can see it, and the file-scope conformance probe is
-                // entirely about what the runtime left there — dropping it here
-                // made that check fail for every runtime on every host.
+                // The workspace listing, when the request asked for one.
+                // Do not drop `entries`. The host is the only one that can see them.
                 ...(frame.entries ? { entries: frame.entries } : {}),
               });
               return;
@@ -1174,14 +1191,18 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       });
 
       socket.on("close", () => {
+        socketClosed = true;
         if (!helloCompleted) return;
-        sharedHostConnectionRegistry.unregisterConnection(hostId, frameSink);
+        const wasLive = sharedHostConnectionRegistry.unregisterConnection(hostId, frameSink);
+        // Superseded by this host's newer connection, which is still live:
+        // the host is online on that one, and marking it offline here would
+        // undo the heartbeat the new hello just recorded.
+        if (!wasLive && sharedHostConnectionRegistry.isOnline(hostId)) return;
         const hostsOnClose = hostRepositoryFromConfig(context.config);
         // Caught, not just fired: this is the last write of a connection that
         // is already gone, and an unhandled rejection terminates the process
         // under Node's default. A database that cannot take the write leaves
-        // the Host looking online until the next heartbeat sweep, which is
-        // what that sweep is for.
+        // the Host looking online until the next heartbeat sweep.
         void hostsOnClose?.markOffline(hostId).catch(() => undefined);
       });
     });

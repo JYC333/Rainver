@@ -1,4 +1,4 @@
-import { pgTable, index, unique, check, foreignKey, varchar, text, boolean, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, uniqueIndex, unique, check, foreignKey, varchar, text, boolean, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { users } from "./auth.js";
 import { runs } from "./runs.js";
@@ -43,6 +43,11 @@ export const artifacts = pgTable("artifacts", {
 	index("ix_artifacts_run_id").using("btree", table.runId.asc().nullsLast()),
 	index("ix_artifacts_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_artifacts_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
+	// One diff, and one output per file name, per host launch attempt: a
+	// repeated upload of the same delivery resolves to the row it already
+	// made rather than a second artifact.
+	uniqueIndex("uq_artifacts_remote_diff_launch").using("btree", table.runId.asc().nullsLast(), sql`(metadata_json->>'launch_id')`).where(sql`artifact_type = 'remote_diff' AND metadata_json->>'launch_id' IS NOT NULL`),
+	uniqueIndex("uq_artifacts_remote_output_launch").using("btree", table.runId.asc().nullsLast(), sql`(metadata_json->>'launch_id')`, table.title.asc().nullsLast()).where(sql`artifact_type = 'remote_output' AND metadata_json->>'launch_id' IS NOT NULL`),
 	unique("artifacts_id_space_id_key").on(table.id, table.spaceId),
 	foreignKey({
 			columns: [table.ownerUserId],

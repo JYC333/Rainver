@@ -7,8 +7,8 @@
  *
  * Pure helpers are decision/derivation logic; the DB-write helpers INSERT into
  * `provenance_links` / `memory_relations` and run inside the caller's apply
- * transaction (they never commit). Used by the memory appliers; not wired to any
- * route yet.
+ * transaction (they never commit). The memory and knowledge appliers call
+ * them. No route does.
  */
 
 import { randomUUID } from "node:crypto";
@@ -16,7 +16,6 @@ import { isProvenanceSourceType } from "../ontology/entities.js";
 import type { ProvenanceEntry } from "./sourceMonitoring.js";
 
 export const TARGET_MEMORY = "memory";
-export const TARGET_POLICY = "policy";
 
 export interface QueryResult<Row> {
   rows: Row[];
@@ -145,12 +144,10 @@ export async function writeProvenanceLinks(
     entries: readonly ProvenanceEntry[];
   },
 ): Promise<number> {
-  // Validation lives here rather than at the call sites. It used to be the
-  // caller's job and three of them each kept their own copy of the vocabulary,
-  // two of which silently dropped what they did not recognize — so a
-  // divergence lost provenance with no error anywhere. A bad value is now a
-  // rejected write, which is what B12F means by the registry owning the closed
-  // set while the column keeps only a format constraint.
+  // Validation lives here, not at the call sites. A bad value is a rejected
+  // write. Do not keep a private copy of the vocabulary at a caller: an
+  // unrecognized value then drops provenance with no error. B12F means the
+  // registry owns the closed set while the column keeps only a format constraint.
   for (const e of input.entries) {
     if (typeof e.source_id !== "string" || !isProvenanceSourceType(e.source_type)) {
       throw new Error(`Unknown provenance source type: ${String(e.source_type)}`);

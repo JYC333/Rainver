@@ -7,10 +7,10 @@ import type { VendorCliRuntimeKey } from "../src/modules/runtimeAdapters/specs.j
  * translated into the turn's reply — the prompt is cancelled, the Run
  * completes, and the question is reported as `asked_user`.
  *
- * The frames are the shapes the pinned adapters build, read from their
- * source on 2026-09-24: claude-agent-acp 0.70 (`askUserQuestionsToCreateRequest`)
- * and codex-acp 1.12 (`buildUserInputRequest`). A real-host run of each is
- * tracked in `tasks/deferred-register.md`.
+ * The frames are the shapes the pinned adapters build: claude-agent-acp 0.70
+ * (`askUserQuestionsToCreateRequest`) and codex-acp 1.12
+ * (`buildUserInputRequest`). A real-host run of each is tracked in
+ * `tasks/deferred-register.md`.
  */
 function promptingController(runtime_key: VendorCliRuntimeKey) {
   const sent: Record<string, unknown>[] = [];

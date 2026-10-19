@@ -17,7 +17,7 @@ import { getDbPool } from "../../db/pool.js";
 import { PgRunRepository } from "../runs/repository.js";
 import { RunMaterializationService } from "../runs/materializationService.js";
 
-export interface JobOut {
+interface JobOut {
   id: string;
   space_id: string;
   user_id: string | null;
@@ -41,7 +41,7 @@ export interface JobOut {
   updated_at: string;
 }
 
-export interface JobEventOut {
+interface JobEventOut {
   id: string;
   job_id: string;
   event_type: string;
@@ -64,6 +64,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         space_id: identity.spaceId,
         user_id: identity.userId,
         status: optionalString(q.status),
+        job_type: optionalString(q.job_type),
       });
       const items = await jobs.listJobs({
         space_id: identity.spaceId,
@@ -126,7 +127,15 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       if (!["pending", "claimed"].includes(job.status)) {
         throw new HttpError(409, `Cannot cancel a job in status '${job.status}'`);
       }
-      await queue().cancelJob(jobId, null);
+      // Checked again in the cancelling statement itself: a worker may have
+      // started the job since the read above, and a running job is not the
+      // person's to cancel — nor is a job that has since completed one to
+      // record as cancelled.
+      const cancelled = await queue().cancelJob(jobId, null, new Date(), ["pending", "claimed"]);
+      if (!cancelled) {
+        const current = await queue().getJob(jobId);
+        throw new HttpError(409, `Cannot cancel a job in status '${current?.status ?? "unknown"}'`);
+      }
       await queue().appendJobEvent({
         job_id: jobId,
         event_type: "status_change",
@@ -187,9 +196,10 @@ export function jobEventToOut(event: JobEventRecord): JobEventOut {
 }
 
 /**
- * The Run a cancelled `agent_run` / `provider_task_run` job was going to
- * perform ended with it (`PgJobQueueRepository.cancelJob`); finalizing it
- * now settles its Task at once rather than at the worker's next sweep.
+ * Cancelling an `agent_run` or `provider_task_run` job ends the Run it was
+ * going to perform (`PgJobQueueRepository.cancelJob`). Finalizing that Run
+ * settles its Task in this call. Do not leave the settlement for the
+ * worker's next sweep.
  */
 async function finalizeRunBehindCancelledJob(config: ServerConfig, job: JobRecord): Promise<void> {
   const runId = job.payload_json?.run_id;

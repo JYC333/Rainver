@@ -7,16 +7,14 @@ export type PerspectiveType = 'space-scoped' | 'personal' | 'neutral'
 /**
  * Where an app entry originates.
  *
- * built_in       — shipped with the core bundle, always present.
+ * built_in       — included in the core bundle, always present.
  * official_plugin — an official optional module (developed by rainver maintainers,
  *                  installed/enabled via the official plugin control plane).
  *                  These entries are NOT capabilities. See OFFICIAL_OPTIONAL_MODULES.md.
- * installed      — reserved for future third-party installable plugin packages.
- *                  NOT yet implemented. Do not use in MVP.
- * external       — references a remote tool or external service (reserved).
+ * installed      — not used. Do not load third-party plugins from this registry.
+ * external       — not used. Do not add a remote tool as an app entry here.
  *
- * For current core features all entries are built_in.
- * Optional features added by rainver maintainers use official_plugin.
+ * Core entries are `built_in`. Maintainer optional modules use `official_plugin`.
  */
 export type AppSource = 'built_in' | 'official_plugin' | 'installed' | 'external'
 
@@ -25,10 +23,10 @@ export interface Module {
   id: string
   label: string
   path: string
-  icon: string          // lucide icon name (kebab-case)
-  description: string   // gallery card description
-  group: AppGroup       // gallery section
-  section: NavSection   // nav grouping for the shell layout
+  icon: string          // lucide icon name (kebab-case); official-plugin rail items use it
+  description: string   // stored on the entry; navigation does not read it
+  group: AppGroup       // stored on the entry; navigation does not read it
+  section: NavSection   // stored on the entry; navigation does not read it
 
   // ── Capability link ────────────────────────────────────────────────────────
   /**
@@ -58,42 +56,34 @@ export interface Module {
 
   // ── Runtime state ─────────────────────────────────────────────────────────
   /**
-   * Whether the module is enabled for the active space/user.
-   * - true  → app is interactive and navigable.
-   * - false → app appears in the gallery but is grayed out (not clickable).
+   * Official plugins appear on the Global Rail only when this is true.
+   * Built-in rail items come from `core/navigation.tsx`, not from this flag.
+   * Routes stay registered either way.
    *
-   * For built_in entries this is always true at static registration time.
-   * For official_plugin entries: this is the static default; the runtime value
+   * For official_plugin entries the static value is the default; runtime state
    * is overlaid from GET /api/v1/plugins/effective by useEffectivePlugins.
-   * The frontend is NOT the source of truth for enabled state.
+   * The frontend is not the source of truth for enabled state.
    */
   enabled: boolean
 
   /**
-   * Whether the app card is shown in the home gallery.
-   * - true  → card renders in gallery grid.
-   * - false → card is hidden (e.g. retired capability, space policy).
-   *
-   * Intentionally separate from `enabled`: a capability can be enabled
-   * but its gallery card hidden (accessed only via direct URL).
+   * Overlaid from the plugin control plane onto official plugins.
+   * The Global Rail does not read it. Do not hide a route by this field alone.
    */
   visible: boolean
 
   /**
-   * Dev-status flag: feature is not yet implemented.
-   * Shows a "soon" badge on the card. Implies non-interactive regardless
-   * of `enabled`. Does NOT mean permanently disabled — `enabled` handles that.
+   * Stored on the entry. Navigation does not read it.
+   * Do not add a "soon" badge from this field.
    */
   planned: boolean
 
-  // ── Display preferences (user-adjustable in future) ────────────────────────
-  /** Pin to the top row of the home gallery. */
+  /** Navigation does not read it. */
   pinned?: boolean
-  /** Explicit display order within the group. Lower = earlier. */
+  /** Navigation does not read it. */
   order?: number
 
-  // ── UI hints ──────────────────────────────────────────────────────────────
-  /** Render this card with an indigo accent tile (one per group recommended). */
+  /** Navigation does not read it. */
   accent?: boolean
 
   // ── Router ────────────────────────────────────────────────────────────────
@@ -111,10 +101,11 @@ export interface Module {
 /**
  * Central app + module registry.
  *
- * Every entry is simultaneously:
- *   - A gallery card on the home page (uses group, icon, description, enabled, visible)
- *   - A React Router route (uses path, component, hasSubRoutes)
- *   - A future capability link (uses capabilityId, source, enabled)
+ * Every entry is a React Router route (`App.tsx`: path, component, hasSubRoutes).
+ * Enabled official plugins also appear on the Global Rail (`Shell.tsx`).
+ * Navigation tiers live in `core/navigation.tsx`. There is no home gallery.
+ *
+ * capabilityId names an agent skill, not a product module.
  *
  * ── Extension boundary ──────────────────────────────────────────────────────
  * To add a new BUILT-IN app:
@@ -126,26 +117,25 @@ export interface Module {
  *   1. Create the plugin frontend entry under plugins/official/<pluginId>/web/src/
  *   2. Add an entry below with source: 'official_plugin', pluginId: '<plugin_id>'
  *   3. Set enabled: false, visible: true as static defaults
- *   4. The useEffectivePlugins hook will overlay runtime enabled/visible from backend
+ *   4. useEffectivePlugins overlays runtime enabled/visible from the backend
  *   5. Register the descriptor in server/src/modules/plugins/official/<pluginId>.ts
  *   6. If it contributes backend behavior, add a bundled plugin package under
  *      plugins/official/<pluginId>/; server loads its build artifact via
  *      server/src/modules/plugins/builtInPlugins.ts
  *   7. Add an app-owned adapter under src/plugins/<pluginId>/ that injects frontend host APIs
  *
- * To support future INSTALLED third-party plugins (do not implement yet):
- *   - Reserved for a future plugin package system with sandboxing/SDK.
- *   - Do NOT implement third-party plugin loading in this registry.
+ * Third-party plugin packages are not loaded here. Do not implement
+ * third-party plugin loading in this registry.
  *
  * NOTE: Capabilities are agent AI skills, NOT product modules. Do not confuse
  * GET /api/v1/capability-definitions (agent skill framework) with
  * GET /api/v1/plugins/effective (official module control plane).
  *
  * ── State semantics ─────────────────────────────────────────────────────────
- *   planned   = not yet built ("soon" badge, non-interactive, dev concern)
- *   !enabled  = capability off for this space (grayed card, runtime concern)
- *   !visible  = hidden from gallery (space policy or user pref, shown nowhere)
- *   pinned    = promoted in gallery (user preference, future)
+ *   enabled   = official plugins appear on the Global Rail only when true
+ *   visible   = overlaid for official plugins; the rail does not read it
+ *   planned   = stored; navigation does not read it. Do not add a "soon" badge
+ *   pinned    = stored; navigation does not read it
  * ───────────────────────────────────────────────────────────────────────────
  */
 export const MODULE_REGISTRY: Module[] = [
@@ -153,8 +143,8 @@ export const MODULE_REGISTRY: Module[] = [
   // ── Official optional modules ──────────────────────────────────────────────
   // These entries have source: 'official_plugin'. Their enabled/visible values
   // are static defaults; runtime state is overlaid by useEffectivePlugins from
-  // GET /api/v1/plugins/effective. Direct navigation to a disabled plugin route
-  // shows a disabled-module stub, not a generic 404.
+  // GET /api/v1/plugins/effective. The route stays registered. The plugin page
+  // itself says it is off. Do not turn a disabled plugin route into a 404.
   {
     id: 'diary', label: 'Diary', path: '/diary',
     section: 'capture', group: 'daily', icon: 'book',
@@ -537,12 +527,12 @@ export const MODULE_REGISTRY: Module[] = [
   },
 ]
 
-export interface EffectivePluginOverlay {
+interface EffectivePluginOverlay {
   enabled: boolean
   visible: boolean
 }
 
-export type EffectivePluginOverlayMap = Record<string, EffectivePluginOverlay | undefined>
+type EffectivePluginOverlayMap = Record<string, EffectivePluginOverlay | undefined>
 
 export function modulesWithEffectivePlugins(
   modules: readonly Module[],
@@ -559,7 +549,8 @@ export function modulesWithEffectivePlugins(
 /**
  * Find the registered module that owns a path (used for route metadata lookups).
  * Navigation tiers live in `src/core/navigation.tsx`; the home/space scope split lives in
- * `routeScopeForPath`. The old "perspective" path classifier has been removed.
+ * `routeScopeForPath`. Path scope is home or space. Do not add a third
+ * "perspective" classifier.
  */
 export function moduleForPath(
   pathname: string,

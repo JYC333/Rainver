@@ -26,8 +26,8 @@ import {
 const SIGNAL_CLASSIFICATIONS = ["supports", "contradicts", "adds_context", "adds_method", "fills_gap", "raises_gap", "unrelated"] as const;
 type SignalClassification = (typeof SIGNAL_CLASSIFICATIONS)[number];
 
-// Deterministic routine-vs-material default per classification (plan section
-// 10.1-10.2): "routine support and context may attach automatically";
+// Deterministic routine-vs-material default per classification. Routine
+// support and context may attach automatically.
 // contradictions and gap changes are always material. A caller may still
 // force `is_material: true` for any classification.
 const MATERIAL_BY_DEFAULT = new Set<SignalClassification>(["contradicts", "raises_gap", "fills_gap"]);
@@ -145,7 +145,7 @@ function candidateToOut(row: CandidateRow): Record<string, unknown> {
 
 /**
  * Evidence Signals, Candidate consolidation, Review Packets, and Research
- * Delta Briefs (plan section 10). Candidate acceptance reuses
+ * Delta Briefs. Candidate acceptance reuses
  * `InquiryIterationService.recordIteration` rather than
  * duplicating cognitive-write logic — confirming a Candidate is exactly a
  * confirmed Inquiry Iteration with a Candidate/Signal provenance trail.
@@ -158,11 +158,9 @@ export class InquirySignalService {
     return new InquirySignalService(getDbPool(config.databaseUrl));
   }
 
-  // Signal creation is the manual/deterministic entry point in this phase:
-  // the caller (a human reviewer or a future automated classifier run)
-  // supplies the classification, confidence, and model_version; this service
-  // owns only routine/material routing and Candidate consolidation, not the
-  // classification judgement itself.
+  // Signal creation is the entry point. The caller supplies the
+  // classification, confidence, and model_version. This service owns routing
+  // and Candidate consolidation, not the classification judgement.
   async createSignal(
     identity: SpaceUserIdentity,
     projectId: string,
@@ -344,7 +342,7 @@ export class InquirySignalService {
     return delivery.signal;
   }
 
-  // Consolidation (plan section 10.2): find the one open Candidate for this
+  // Consolidation: find the one open Candidate for this
   // (thread, candidate_kind), or create it. Multiple Signals about the same
   // contradiction merge into that single Candidate rather than each spawning
   // a separate review item.
@@ -383,7 +381,7 @@ export class InquirySignalService {
     return existing.rows[0].id;
   }
 
-  // Retrieved/Referenced/Adopted (plan section 15.5). A raw search/graph hit
+  // Retrieved/Referenced/Adopted. A raw search/graph hit
   // that never became a Signal is "Retrieved" — ephemeral, not modeled here.
   // Creating a Signal is already the durable domain link that defines
   // "Referenced"; a Signal whose Candidate was explicitly accepted (produced
@@ -463,8 +461,7 @@ export class InquirySignalService {
 
   // Dismissing (or deferring/merging/flagging-a-gap on) a Candidate never
   // deletes or mutates the contributing Signal rows — they remain a durable
-  // audit record regardless of the review decision (plan section 10.4,
-  // Candidate review completion invariant).
+  // audit record regardless of the review decision.
   async decideCandidate(
     identity: SpaceUserIdentity,
     projectId: string,
@@ -622,7 +619,7 @@ export class InquirySignalService {
     });
   }
 
-  // Bounded review round (plan section 10.4): a fixed small set of pending
+  // Bounded review round: a fixed small set of pending
   // Candidates not already assigned to another open packet.
   async openReviewPacket(identity: SpaceUserIdentity, projectId: string, limit?: number): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
@@ -696,6 +693,7 @@ export class InquirySignalService {
     );
     return {
       id: packet.rows[0].id,
+      project_id: projectId,
       status: packet.rows[0].status,
       created_at: dateIso(packet.rows[0].created_at),
       closed_at: dateIso(packet.rows[0].closed_at),
@@ -714,7 +712,7 @@ export class InquirySignalService {
       );
       if (!packet.rows[0]) throw new HttpError(404, "Review packet not found");
       // Still-pending Candidates go back into the unassigned pool so a later
-      // packet can pick them up; decided Candidates keep the historical link.
+      // packet can pick them up. Decided Candidates keep their packet link.
       await db.query(
         `UPDATE inquiry_signal_candidates SET review_packet_id = NULL WHERE review_packet_id = $1 AND status = 'pending'`,
         [packetId],
@@ -779,7 +777,7 @@ export class InquirySignalService {
     return out;
   }
 
-  // Read-only cited change summary (plan section 10.3). Never writes Thread
+  // Read-only cited change summary. Never writes Thread
   // position, confidence tier, status, or Next Focus.
   async generateDeltaBrief(identity: SpaceUserIdentity, projectId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
@@ -913,30 +911,8 @@ export class InquirySignalService {
     purpose: ThreadAccessPurpose,
     db: Queryable = this.db,
   ): Promise<Record<string, unknown>[]> {
-    const readableThreads = await readableThreadIds(db, identity, rows.map((row) => row.thread_id), purpose);
-    const candidates = rows.filter((row) => readableThreads.has(row.thread_id));
-    if (candidates.length === 0) return [];
-    const signals = await db.query<SignalRow>(
-      `SELECT * FROM inquiry_evidence_signals WHERE candidate_id = ANY($1::varchar[])`,
-      [candidates.map((candidate) => candidate.id)],
-    );
-    const readable = await new ProjectCorpusRepository(db).readableItemIds(
-      identity,
-      projectId,
-      corpusItemIds(signals.rows),
-    );
-    const counts = new Map<string, { total: number; readable: number }>();
-    for (const signal of signals.rows) {
-      if (!signal.candidate_id) continue;
-      const count = counts.get(signal.candidate_id) ?? { total: 0, readable: 0 };
-      count.total += 1;
-      if (signalReadable(signal, readable)) count.readable += 1;
-      counts.set(signal.candidate_id, count);
-    }
-    const visibleCandidates = new Set(
-      [...counts.entries()].filter(([, count]) => count.total > 0 && count.total === count.readable).map(([id]) => id),
-    );
-    return candidates.filter((candidate) => visibleCandidates.has(candidate.id)).map(candidateToOut);
+    const visible = await readableCandidateIds(db, identity, projectId, rows, purpose);
+    return rows.filter((candidate) => visible.has(candidate.id)).map(candidateToOut);
   }
 
   private async assertCandidateReadable(
@@ -970,6 +946,44 @@ export class InquirySignalService {
     );
     if (!thread.rows[0]) throw new HttpError(409, "Candidate target Thread is not active");
   }
+}
+
+/**
+ * The Candidates among `rows` a person may see: its Thread is reachable for
+ * this purpose and every Signal behind it comes from Corpus the person can
+ * read. Every surface that lists Candidates — the Inquiry area and the Project
+ * attention list alike — answers through this one rule.
+ */
+export async function readableCandidateIds(
+  db: Queryable,
+  identity: SpaceUserIdentity,
+  projectId: string,
+  rows: ReadonlyArray<{ id: string; thread_id: string }>,
+  purpose: ThreadAccessPurpose,
+): Promise<Set<string>> {
+  const readableThreads = await readableThreadIds(db, identity, rows.map((row) => row.thread_id), purpose);
+  const candidates = rows.filter((row) => readableThreads.has(row.thread_id));
+  if (candidates.length === 0) return new Set();
+  const signals = await db.query<SignalRow>(
+    `SELECT * FROM inquiry_evidence_signals WHERE candidate_id = ANY($1::varchar[])`,
+    [candidates.map((candidate) => candidate.id)],
+  );
+  const readable = await new ProjectCorpusRepository(db).readableItemIds(
+    identity,
+    projectId,
+    corpusItemIds(signals.rows),
+  );
+  const counts = new Map<string, { total: number; readable: number }>();
+  for (const signal of signals.rows) {
+    if (!signal.candidate_id) continue;
+    const count = counts.get(signal.candidate_id) ?? { total: 0, readable: 0 };
+    count.total += 1;
+    if (signalReadable(signal, readable)) count.readable += 1;
+    counts.set(signal.candidate_id, count);
+  }
+  return new Set(
+    [...counts.entries()].filter(([, count]) => count.total > 0 && count.total === count.readable).map(([id]) => id),
+  );
 }
 
 function optionalNumber(value: unknown, label: string): number | null {

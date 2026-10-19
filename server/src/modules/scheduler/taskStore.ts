@@ -30,6 +30,8 @@ export interface SchedulerTaskUpsertInput {
   userId?: string | null;
   status?: SchedulerTaskStatus;
   nextRunAt?: string | null;
+  /** Leave an existing row's `next_run_at` as it is; `nextRunAt` applies only to a new row. */
+  keepNextRunAt?: boolean;
   lastRunAt?: string | null;
   stateJson?: Record<string, unknown>;
   metadataJson?: Record<string, unknown>;
@@ -93,7 +95,7 @@ export class PgSchedulerTaskStore {
          space_id = EXCLUDED.space_id,
          user_id = EXCLUDED.user_id,
          status = EXCLUDED.status,
-         next_run_at = EXCLUDED.next_run_at,
+         next_run_at = CASE WHEN $14::boolean THEN scheduler_tasks.next_run_at ELSE EXCLUDED.next_run_at END,
          last_run_at = COALESCE(EXCLUDED.last_run_at, scheduler_tasks.last_run_at),
          state_json = EXCLUDED.state_json,
          metadata_json = EXCLUDED.metadata_json,
@@ -113,6 +115,7 @@ export class PgSchedulerTaskStore {
         JSON.stringify(jsonObject(input.stateJson ?? {})),
         JSON.stringify(jsonObject(input.metadataJson ?? {})),
         now,
+        input.keepNextRunAt === true,
       ],
     );
     return normalizeSchedulerTaskRow(result.rows[0]!);

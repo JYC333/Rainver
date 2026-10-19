@@ -152,12 +152,15 @@ function row(overrides: Partial<MemoryRow> = {}): MemoryRow {
     project_id: null,
     agent_id: null,
     origin_room_id: null,
+    approved_by: null,
+    access_count: 0,
+    last_accessed_at: null,
     ...overrides,
   };
 }
 
 describe("Memory maintenance routes", () => {
-  it("returns 404 for the retired memory-specific access-log endpoint", async () => {
+  it("returns 404 for GET /api/v1/memory/access-logs", async () => {
     __setMemoryIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     vi.mocked(getDbPool).mockReturnValue({
       query: vi.fn(async () => ({ rows: [], rowCount: 0 })),

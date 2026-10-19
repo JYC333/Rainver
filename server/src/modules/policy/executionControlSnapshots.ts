@@ -10,8 +10,10 @@ import { assembleRunInputEnvelope } from "../runs/runInputEnvelope.js";
 import { runtimeProviderEgressDestination } from "../retrieval/egress/egressPolicy.js";
 import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
 import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
+import { effectiveRunProviderModel } from "../runs/remoteProviderBinding.js";
+import { availableModels } from "../providers/dbReader.js";
 
-export interface ExecutionControlSnapshotInputs {
+interface ExecutionControlSnapshotInputs {
   runtimeInstallation?: string | null;
   policyDecisionRecordIds?: readonly string[];
   /** A Host-daemon run resolves its backend when the execution Host dispatches it. */
@@ -74,7 +76,7 @@ export class ExecutionControlSnapshotRepository {
     const bindings = effectiveBindings ?? await this.resolveEffectiveBindingsForRun(run);
     const projectContextRefs = await this.resolveProjectContextRefs(run.space_id, bindings, resolvedPolicy);
     const egress = providerId
-      ? await this.providerEgress(run.space_id, providerId, run.runtime_key ?? null)
+      ? await this.providerEgress(run, providerId)
       : null;
     if (providerId && !egress!.allowed) {
       throw new Error("Execution preflight denied external model egress for this Space");
@@ -120,6 +122,14 @@ export class ExecutionControlSnapshotRepository {
           ? {
               type: "system",
               service_name: "run_orchestration",
+              instructed_by_user_id: run.instructed_by_user_id ?? run.owner_user_id ?? null,
+            }
+        // A Room continuation is the system reporting back, not the person
+        // whose conversation it reports into; its authority is its cause's.
+        : run.trigger_origin === "continuation"
+          ? {
+              type: "system",
+              service_name: "room_continuation",
               instructed_by_user_id: run.instructed_by_user_id ?? run.owner_user_id ?? null,
             }
         : run.trigger_origin === "job" || run.trigger_origin === "autonomous"
@@ -313,8 +323,17 @@ export class ExecutionControlSnapshotRepository {
     brief: { type: "project_brief_version"; id: string; version: string } | null;
     instruction: { type: "project_instruction_version"; id: string; version: string } | null;
   }> {
+    const briefAllowed = resolvedPolicy.policy.constraints.allow_project_brief !== false
+      && resolvedPolicy.policy.preferences.include_project_brief !== false;
+    const instructionAllowed = resolvedPolicy.policy.constraints.allow_project_instructions !== false
+      && resolvedPolicy.policy.preferences.include_project_instructions !== false;
+    // A Setup keeps the versions it was created with, but the policy in force
+    // now still decides whether either one may reach the Run.
     if (bindings.workContextSetupRef || !bindings.projectId) {
-      return { brief: bindings.projectBriefRef, instruction: bindings.projectInstructionRef };
+      return {
+        brief: briefAllowed ? bindings.projectBriefRef : null,
+        instruction: instructionAllowed ? bindings.projectInstructionRef : null,
+      };
     }
     const result = await this.db.query<{
       brief_id: string | null;
@@ -333,10 +352,6 @@ export class ExecutionControlSnapshotRepository {
       [bindings.projectId, spaceId],
     );
     const row = result.rows[0];
-    const briefAllowed = resolvedPolicy.policy.constraints.allow_project_brief !== false
-      && resolvedPolicy.policy.preferences.include_project_brief !== false;
-    const instructionAllowed = resolvedPolicy.policy.constraints.allow_project_instructions !== false
-      && resolvedPolicy.policy.preferences.include_project_instructions !== false;
     return {
       brief: briefAllowed && row?.brief_id && row.brief_version
         ? { type: "project_brief_version", id: row.brief_id, version: row.brief_version }
@@ -376,16 +391,20 @@ export class ExecutionControlSnapshotRepository {
   }
 
   private async providerEgress(
-    spaceId: string,
+    run: RunRecord,
     providerId: string,
-    runtimeKey: string | null,
   ): Promise<{ external: boolean; allowed: boolean }> {
+    const spaceId = run.space_id;
     const result = await this.db.query<{
+      space_id: string;
       provider_type: string;
       base_url: string | null;
       config_json: unknown;
+      default_model: string | null;
+      capabilities_json: unknown;
     }>(
-      `SELECT provider.provider_type, provider.base_url, provider.config_json
+      `SELECT provider.space_id, provider.provider_type, provider.base_url, provider.config_json,
+              provider.default_model, provider.capabilities_json
          FROM model_provider_space_grants provider_grant
          JOIN model_providers provider
            ON provider.id = provider_grant.provider_id
@@ -397,7 +416,11 @@ export class ExecutionControlSnapshotRepository {
     );
     const provider = result.rows[0];
     if (!provider) throw new Error("Execution preflight requires an enabled provider grant");
-    const destination = runtimeProviderEgressDestination(runtimeKey, provider);
+    const destination = runtimeProviderEgressDestination(
+      run.runtime_key ?? null,
+      { ...provider, model: effectiveRunProviderModel(run, { ...provider, available_models: availableModels(provider.capabilities_json) }) },
+      spaceId,
+    );
     if (destination === "local_provider") return { external: false, allowed: true };
     const settings = await readSpaceRetrievalSettings(this.db, spaceId);
     return { external: settings.externalEgressEnabled, allowed: settings.externalEgressEnabled };

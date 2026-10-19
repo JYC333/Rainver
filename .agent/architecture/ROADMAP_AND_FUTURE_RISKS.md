@@ -1,7 +1,6 @@
 # Roadmap and Future Risks
 
-Current-state routing only. Unimplemented ideas that used to live in this
-file are in
+Current-state routing only. Unimplemented ideas are in
 [../plans/unimplemented-from-guides.md](../plans/unimplemented-from-guides.md).
 Work is pulled from [../plans/backlog.md](../plans/backlog.md) or
 [../tasks/deferred-register.md](../tasks/deferred-register.md).

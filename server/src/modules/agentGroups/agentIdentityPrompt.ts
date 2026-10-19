@@ -11,7 +11,7 @@ import { listAgentMemoryForDispatch } from "../memory/agentMemoryDelivery.js";
  *   this Agent runs. Rendered first, because it is what the person asked for
  *   and everything below is what the Agent made of it.
  * - **Persona** — one entry the Agent wrote about itself, delivered
- *   everywhere, which is why it is free of Project facts by rule.
+ *   everywhere. It is free of Project facts by rule.
  * - **Notes** — what it learned in a Room, delivered only where that Room's
  *   audience already reached. The subset test runs inside the Memory module's
  *   own candidate query; nothing here reads `memory_entries`.
@@ -38,7 +38,7 @@ const NOTE_BUDGET_CHARS = 3000;
  */
 const PERSONA_BUDGET_CHARS = 2000;
 
-export interface AgentIdentityPromptInput {
+interface AgentIdentityPromptInput {
   spaceId: string;
   agentId: string;
   /** The Room this turn speaks in, or null for a direct chat. */

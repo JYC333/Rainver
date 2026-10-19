@@ -1,5 +1,5 @@
 /**
- * Context Brief synthesis (W6) configuration.
+ * Context Brief synthesis configuration.
  *
  * Synthesis is a skippable LLM stage routed through the provider task-policy +
  * credential channel (ADR 0008) under its own task name, so a space can point it
@@ -20,7 +20,7 @@ export const RETRIEVAL_SYNTHESIS_TASK = "retrieval_synthesis";
 export const SYNTHESIS_SNIPPET_MAX_CHARS = 1200;
 
 /**
- * Total document-text budget across all sources in one synthesis prompt (§2.6).
+ * Total document-text budget across all sources in one synthesis prompt.
  * Composes with the per-source cap so the payload is bounded in tokens, not just
  * by row count: once the running total is reached, later sources keep their title
  * (so their citation index stays valid) but contribute no body text.

@@ -10,6 +10,8 @@ import { registerProposalDecisionExecutor } from "../src/modules/proposals/propo
 import { registerProposalsProjectIntegration } from "../src/modules/proposals/projectIntegration.js";
 import { ProjectAttentionService } from "../src/modules/projects/attentionService.js";
 import type { SystemActionId } from "@rainver/protocol";
+import { POLICY_ACTION_REGISTRY } from "@rainver/protocol";
+import { engineCheck } from "../src/modules/policy/decisionCore.js";
 import type { SystemActionExecutor } from "../src/modules/systemActions/gateway.js";
 import { seedConversationMessages } from "./support/domainSeeds.js";
 
@@ -21,8 +23,11 @@ import { PgAgentRepository } from "../src/modules/agents/repository.js";
 import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
 import { PgHostRepository } from "../src/modules/hosts/repository.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
+import { ProjectPublicSummaryGenerator } from "../src/modules/projects/publicSummaryGenerator.js";
 import { seedProjectMainlineRoom, seedRoomManager } from "./support/domainSeeds.js";
 import { PgRoomRepository, type RoomAgentMemberRecord } from "../src/modules/rooms/repository.js";
+import { PgRoomRosterRepository } from "../src/modules/rooms/rosterRepository.js";
+import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { AgentGroupRunService } from "../src/modules/agentGroups/service.js";
 import { AgentGroupRunLifecycleProjector } from "../src/modules/agentGroups/lifecycleProjector.js";
@@ -70,6 +75,7 @@ import { resetTables } from "./support/resetTables.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance.js";
 import type { CredentialSpendBasis } from "../src/modules/policy/credentialSpend.js";
+import { effectiveRunTrigger } from "../src/modules/systemActions/effectiveRunTrigger.js";
 
 let service: RoomService | undefined;
 let groupService: AgentGroupRunService | undefined;
@@ -209,9 +215,8 @@ beforeEach(async () => {
   );
   await db.pool.query(
     // The built-in host reports the copy these Rooms dispatch to, and a
-    // heartbeat, like any other host. It used to need neither: a server-host
-    // Room turn ran a CLI the server spawned itself. It runs the copy this
-    // host's daemon has now, so a host with no installation — or no
+    // heartbeat, like any other host. A server-host Room turn runs the copy
+    // this host's daemon has, so a host with no installation — or no
     // heartbeat — is one nothing can be dispatched to, which is the check
     // `prepareHostConversationDispatch` makes for every host alike.
     `INSERT INTO hosts (
@@ -501,8 +506,8 @@ async function openSpokenRoom(
   input: { project_id: string; title: string; project_folder_id?: string | null },
 ): Promise<{
   // The service's own room shape, which is the protocol's `Room` — not the
-  // repository row. Restating it as `RoomRecord` is what made this file fail
-  // `pnpm run typecheck` when `createRoom` gained its `RoomDetail` annotation.
+  // repository row. Do not restate it as `RoomRecord`. `createRoom` returns
+  // `RoomDetail`.
   room: Awaited<ReturnType<RoomService["createRoom"]>>["room"];
   conversation: Awaited<ReturnType<typeof seedConversation>>;
   agent_members: RoomAgentMemberRecord[];
@@ -516,7 +521,7 @@ async function openSpokenRoom(
 
 /**
  * Open a Room and speak in it, which is what provisions the Project's
- * Assistant now that Room creation does not (ADR 0018 decision 4). Used by the
+ * Assistant. Room creation does not (ADR 0018 decision 4). Used by the
  * Assistant-lifecycle tests, whose subject is the provisioning itself.
  */
 async function speakInNewRoom(
@@ -588,9 +593,8 @@ describe("Room workflow (real Postgres)", () => {
 
   it("reports each research pipeline run, and each run only once", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
-    // Keying the outcome by Thread meant a retry silently returned the first
-    // attempt's message: the second failure was never reported, so an Agent's
-    // "queued" was the last word in the conversation while nothing ran.
+    // Key the outcome by the job, not only by the Thread. A retry reports its
+    // own failure. Do not return the first attempt's message for the second.
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await openSpokenRoom(owner, { project_id: "project-1", title: "Pipeline outcomes" });
     const conversation = await seedConversation(owner, created.room.id, "Main");
@@ -599,6 +603,7 @@ describe("Room workflow (real Postgres)", () => {
       kind: "research_pipeline_outcome",
       key: `${thread}:${jobId}`,
       payload: { status: "stage_failed", stage: "start_intake", thread_id: thread, reason: `attempt ${jobId} failed` },
+      cause: { run_id: null, within_budget: false },
     });
     const client = await db.pool.connect();
     try {
@@ -625,6 +630,21 @@ describe("Room workflow (real Postgres)", () => {
       expect(second.message.content).toContain("attempt job-2 failed");
       // The same run reporting twice is still one message.
       expect(repeat.message.id).toBe(first.message.id);
+
+      // No turn of this conversation started the pipeline, so nothing stands
+      // behind the report: it is the system's, and the unattended write gate
+      // applies to it as to any scheduled work (D3). It is not `manual`.
+      const runs = new PgRunRepository(db.pool);
+      for (const runId of first.run_ids) {
+        const report = await runs.getRun("space-1", runId);
+        expect(report).toMatchObject({ trigger_origin: "continuation" });
+        const trigger = await effectiveRunTrigger(db.pool, report!);
+        expect(trigger).toMatchObject({ origin: "continuation", instructedByUserId: null });
+        expect(engineCheck(
+          new Map(POLICY_ACTION_REGISTRY.map((definition) => [definition.action, definition])),
+          { action: "task.create", space_id: "space-1", trigger_origin: trigger.origin },
+        ).decision).toBe("require_approval");
+      }
     } finally {
       client.release();
     }
@@ -1007,9 +1027,9 @@ describe("Room workflow (real Postgres)", () => {
     if (!db.available || !service) return ctx.skip();
     await removeManagedAssistant();
     await db.pool.query("UPDATE model_provider_space_grants SET enabled = false WHERE space_id = 'space-1'");
-    // There is no paired-Host backend or provider grant. The new Agent still
-    // receives its default Server/OpenCode Profile; Phase 2 owns installing
-    // that Server runtime and reporting readiness.
+    // There is no paired-Host backend or provider grant. The Agent receives
+    // its default Server/OpenCode Profile. Installing that Server runtime
+    // and reporting readiness is a separate step.
     await db.pool.query("UPDATE hosts SET capabilities_json = '{}'::jsonb WHERE id = 'host-1'");
     const owner = { spaceId: "space-1", userId: "user-1" };
     // Room and draft creation remain independent of the Server runtime's
@@ -1366,6 +1386,34 @@ describe("Room workflow (real Postgres)", () => {
       .resolves.toBeNull();
   });
 
+  it("drops a removed member's own Room task from their reads, list, and cancel: manager provenance is not membership", async (ctx) => {
+    if (!db.available || !service || !groupService) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const member = { spaceId: "space-1", userId: "user-2" };
+    await db.pool.query(`UPDATE project_members SET role = 'member' WHERE project_id = 'project-1' AND user_id = 'user-2'`);
+    await service.createRoom(owner, { project_id: "project-1", title: "Mainline" });
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Limited Room" });
+    await addRoomMember(created.room.id, "user-2");
+    const conversation = await seedConversation(owner, created.room.id, "Member speaks");
+    const dispatched = await service.sendMessage(member, created.room.id, conversation.id, { content: "Member task." });
+    const groupId = dispatched.task_group_ids[0]!;
+    await expect(groupService.getGroup(member, groupId)).resolves.toMatchObject({ group: { id: groupId, manager_user_id: "user-2" } });
+    expect((await groupService.listGroups(member, { limit: 50, offset: 0 })).items.map((group) => group.id)).toContain(groupId);
+
+    await service.removeUser(owner, created.room.id, "user-2");
+
+    await expect(groupService.getGroup(member, groupId)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(groupService.getTimeline(member, groupId, { limit: 20, offset: 0 })).rejects.toMatchObject({ statusCode: 404 });
+    const listed = await groupService.listGroups(member, { limit: 50, offset: 0 });
+    expect(listed.items.map((group) => group.id)).not.toContain(groupId);
+    expect(listed.total).toBe(0);
+    await expect(groupService.changeStatus(member, groupId, "cancelled")).rejects.toMatchObject({ statusCode: 404 });
+    await expect(db.pool.query<{ status: string }>(`SELECT status FROM agent_run_groups WHERE id = $1`, [groupId]))
+      .resolves.toMatchObject({ rows: [{ status: "active" }] });
+    // The Room's remaining roster still reads the task it saw dispatched.
+    await expect(groupService.getGroup(owner, groupId)).resolves.toMatchObject({ group: { id: groupId } });
+  });
+
   it("opens one auditable task per message while retaining one Conversation × Agent runtime pin", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
@@ -1473,12 +1521,10 @@ describe("Room workflow (real Postgres)", () => {
       "user-1",
       "user-2",
     ]);
-    // SpaceAssistantService's provisioning (triggered by Room creation for
-    // agent-1, a system_assistant) can reconcile a fresh agent_version and
-    // repoint agents.current_version_id once a real runtime tool is
-    // installed — it no longer necessarily stays the fixture's original
-    // 'version-1', so compare against whatever the current pointer actually
-    // is rather than that hardcoded literal.
+    // Reconciling the managed Assistant onto a fresh agent_version repoints
+    // agents.current_version_id once a real runtime tool is installed.
+    // Compare against the current pointer. Do not compare with the fixture
+    // literal 'version-1'.
     const currentAgentVersion = await db.pool.query<{ current_version_id: string }>(
       `SELECT current_version_id FROM agents WHERE space_id='space-1' AND id='agent-1'`,
     );
@@ -1521,7 +1567,7 @@ describe("Room workflow (real Postgres)", () => {
     ]);
   });
 
-  it("prefixes a Room-dispatched run's prompt with Project state context (plan Phase A, decision 3)", async (ctx) => {
+  it("prefixes a Room-dispatched run's prompt with Project state context", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
     await db.pool.query(
@@ -1595,8 +1641,8 @@ describe("Room workflow (real Postgres)", () => {
     expect(prompt).toContain("still needs a formal goal/core problem");
     expect(prompt).toContain("one to three short sentences");
     expect(prompt).not.toContain("Project initialization: incomplete");
-    // What the block carries now that the per-Mode projection is gone: the
-    // definition status and what needs attention — nothing invented.
+    // The block carries the definition status and what needs attention.
+    // Do not invent a per-Mode projection.
     expect(prompt).toContain("Items needing attention for internal reasoning:");
     expect(prompt).toContain("- Approve the screening batch");
     expect(prompt).not.toContain("Possible next actions");
@@ -1694,7 +1740,7 @@ describe("Room workflow (real Postgres)", () => {
       return run.rows[0]?.prompt ?? "";
     };
 
-    // The whole point of the sidecar: "this" resolves without the person
+    // "this" resolves without the person
     // restating which Task they mean.
     const withFocus = await promptOf(focused.run_ids[0]!);
     // With its id: the Task a turn is most likely to act on arrives
@@ -1702,7 +1748,7 @@ describe("Room workflow (real Postgres)", () => {
     expect(withFocus).toContain(`"Draft the memory chapter" (in_progress, task_id: ${readable})`);
     expect(withFocus).toContain("hint, not a restriction");
 
-    // Recorded, not only prompted: without this the sole trace of an injected
+    // Recorded, not only prompted. Do not leave it only in the prompt. The sole trace of an injected
     // Task is free text inside `runs.prompt`, which cannot be queried back to
     // "which Task entered which turn".
     const injected = await db.pool.query<{ metadata_json: Record<string, unknown> }>(
@@ -1808,16 +1854,15 @@ describe("Room workflow (real Postgres)", () => {
     });
     const runPrompt = await db.pool.query<{ prompt: string }>("SELECT prompt FROM runs WHERE id=$1", [sent.run_ids[0]]);
     // The research-execution rule is standing prompt guidance present on
-    // every Room turn, not a server-side match on this turn's wording — a
-    // prior fixed-phrasing regex classifier that injected a per-turn
-    // override block was removed for exactly that brittleness.
+    // every Room turn. Do not match this turn's wording and inject a
+    // per-turn override block.
     expect(runPrompt.rows[0]?.prompt).toContain("treat that as an execution instruction");
     expect(runPrompt.rows[0]?.prompt).not.toContain("[Current turn execution mode]");
 
-    // Choosing whether to open another question is the model's own judgment;
-    // the server no longer blocks it by pattern-matching the triggering
-    // message text. The Thread service is reachable with no proposal in the
-    // way — the bound, not a gate, is what limits it (covered in
+    // Choosing whether to open another question is the model's own judgment.
+    // Do not block it by pattern-matching the triggering message text. The
+    // Thread service is reachable with no proposal in the way — the bound,
+    // not a gate, is what limits it (covered in
     // inquiryDirectWritesDb.test.ts).
     await expect(new InquiryThreadService(db.pool).createThread(
       owner,
@@ -1912,8 +1957,8 @@ describe("Room workflow (real Postgres)", () => {
 
   /** A retry re-runs the persisted message, and the retried Run hydrates that
    *  message's frozen resources — so it must keep the tools that read them.
-   *  A retry dispatches no new input parts, and deciding the allowance from
-   *  those left the Run holding a prompt that named tools it did not have. */
+   *  A retry dispatches no new input parts. Do not decide the allowance from
+   *  those. The Run would hold a prompt that named tools it did not have. */
   it("keeps the lazy resource tools when a turn with an attached file is retried", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
@@ -2722,6 +2767,110 @@ describe("Room workflow (real Postgres)", () => {
       return { owner, created, conversation, manager };
     }
 
+    it("replays a retried delegation even when the group has no fan-out left", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Retried delegation");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
+      const managerRun = sent.run_ids[0]!;
+      await dispatchQueuedRoomRuns([managerRun]);
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
+      await db.pool.query(
+        `UPDATE agent_run_groups SET budget_json = COALESCE(budget_json, '{}'::jsonb) || '{"max_fanout":1}'::jsonb WHERE id = $1`,
+        [group.id],
+      );
+      const input = {
+        space_id: "space-1", group_id: group.id, parent_run_id: managerRun, root_run_id: group.root_run_id!,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1",
+        instruction: "Check the numbers.", tool_call_id: "call-1",
+      };
+      const first = await groupService.spawnChildRunAuthorized(owner, input, await groupService.preflightSpawnChildRunPolicy(owner, input));
+      expect(first.child_run_id).toBeTruthy();
+
+      const retryPolicy = await groupService.preflightSpawnChildRunPolicy(owner, input);
+      expect(retryPolicy.status).toBe("allow");
+      const retried = await groupService.spawnChildRunAuthorized(owner, input, retryPolicy);
+      expect(retried.delegation.id).toBe(first.delegation.id);
+    });
+
+    it("re-counts a preflighted delegation against delegations admitted since", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Concurrent delegations");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
+      const managerRun = sent.run_ids[0]!;
+      await dispatchQueuedRoomRuns([managerRun]);
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
+      await db.pool.query(
+        `UPDATE agent_run_groups SET budget_json = COALESCE(budget_json, '{}'::jsonb) || '{"max_fanout":1}'::jsonb WHERE id = $1`,
+        [group.id],
+      );
+      const input = (toolCallId: string) => ({
+        space_id: "space-1", group_id: group.id, parent_run_id: managerRun, root_run_id: group.root_run_id!,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1",
+        instruction: "Check the numbers.", tool_call_id: toolCallId,
+      });
+      // Both calls are judged before either is carried out.
+      const firstPolicy = await groupService.preflightSpawnChildRunPolicy(owner, input("call-a"));
+      const secondPolicy = await groupService.preflightSpawnChildRunPolicy(owner, input("call-b"));
+      expect([firstPolicy.status, secondPolicy.status]).toEqual(["allow", "allow"]);
+
+      const first = await groupService.spawnChildRunAuthorized(owner, input("call-a"), firstPolicy);
+      const second = await groupService.spawnChildRunAuthorized(owner, input("call-b"), secondPolicy);
+
+      expect(first.child_run_id).toBeTruthy();
+      expect(second).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+    });
+
+    it("admits a recipient whose wait ended while its group was paused once the group resumes", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Paused wait");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
+        content: "Both of you, please.",
+        recipient_segments: [{ recipient_agent_ids: ["agent-1", "agent-2"], content: "Both of you, please." }],
+      });
+      const [managerRun, specialistRun] = sent.run_ids as [string, string];
+      const groupId = sent.task_group_ids[0]!;
+      await groupService.changeStatus(owner, groupId, "paused");
+      await completeTurn(managerRun, "Done here.");
+      expect(await hasRunJob(specialistRun)).toBe(false);
+
+      await groupService.changeStatus(owner, groupId, "active");
+
+      expect(await hasRunJob(specialistRun)).toBe(true);
+    });
+
+    it("retries a multi-segment turn with each Agent's own task", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Retry segments");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
+        content: "Two tasks.",
+        recipient_segments: [
+          { recipient_agent_ids: ["agent-1"], content: "Plan the release." },
+          { recipient_agent_ids: ["agent-2"], content: "Check the numbers." },
+        ],
+      });
+      await dispatchQueuedRoomRuns([sent.run_ids[0]!]);
+      await db.pool.query(`UPDATE runs SET status = 'failed', ended_at = now() WHERE id = ANY($1::varchar[])`, [sent.run_ids]);
+      await db.pool.query(
+        `UPDATE host_threads SET dispatch_lock_id = NULL, updated_at = now() WHERE space_id = 'space-1' AND session_id = $1`,
+        [conversation.id],
+      );
+
+      const retried = await service.retryMessage(owner, created.room.id, conversation.id, {
+        run_id: sent.run_ids[0]!,
+        idempotency_key: "retry-two-segments",
+      });
+
+      const tasks = await db.pool.query<{ agent_id: string; task: string }>(
+        `SELECT agent_id, model_override_json->'chat_turn'->>'assigned_task' AS task
+           FROM runs WHERE id = ANY($1::varchar[]) ORDER BY agent_id`,
+        [retried.value.run_ids],
+      );
+      expect(tasks.rows).toEqual([
+        { agent_id: "agent-1", task: "Plan the release." },
+        { agent_id: "agent-2", task: "Check the numbers." },
+      ]);
+    });
+
     it("turns an Agent's @ into a bounded emergent discussion that the Manager closes", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation, manager } = await roomWithSpecialist("Emergent");
@@ -2963,6 +3112,9 @@ describe("Room workflow (real Postgres)", () => {
         expect(late).toEqual({
           discussion: { id: opened.discussion.id, wave: 0 },
           delegation_budget: { max_depth: 1, max_fanout: 0 },
+          // It still reports on the turn that started it, but past what the
+          // stopped discussion was given: unattended, not the person's.
+          cause: { run_id: expect.any(String), within_budget: false },
         });
       } finally {
         client.release();
@@ -2996,7 +3148,7 @@ describe("Room workflow (real Postgres)", () => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Queue");
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Start." });
-      // Without queue the taken turn is refused, as before.
+      // Without queue the taken turn is refused.
       await expect(service.sendMessage(owner, created.room.id, conversation.id, { content: "Also this." }))
         .rejects.toMatchObject({
           statusCode: 409,
@@ -3074,6 +3226,35 @@ describe("Room workflow (real Postgres)", () => {
       )).rows[0];
       expect(posted).toEqual({ discussion_id: null, group_discussion_id: null });
       expect(await discussionFor(conversation.id)).toMatchObject({ status: "active", round_base: 0, rounds_used: 1 });
+    });
+
+    it("closes a discussion stopped after an ordinary interjection took its wave boundary", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation, manager } = await roomWithSpecialist("Stop after interjection");
+      const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
+      const opened = await discussions.open(owner, created.room.id, conversation.id, {
+        topic: "Plan the migration", participant_agent_ids: ["agent-2"], shape: "open", round_cap: 2,
+      });
+      await service.sendOrQueueMessage(owner, created.room.id, conversation.id, { content: "Unrelated question." });
+      await completeTurn(opened.run_ids[0]!, `@${manager} size the downtime.`);
+      const [ordinaryTurn] = await queuedRunsFor(conversation.id, "agent-1");
+      expect(ordinaryTurn).toMatchObject({ discussion_id: null });
+      await completeTurn(ordinaryTurn!.id, "Answered.");
+      expect((await discussionFor(conversation.id))!.held_mentions_json.map((held) => held.agent_id)).toEqual(["agent-1"]);
+
+      await discussions.stop(owner, created.room.id, conversation.id, opened.discussion.id);
+
+      const [closing] = await queuedRunsFor(conversation.id, "agent-1");
+      expect(closing).toMatchObject({ discussion_id: opened.discussion.id });
+      const stopped = await discussionFor(conversation.id);
+      expect(stopped).toMatchObject({ status: "stopped" });
+      expect(stopped!.held_mentions_json).toEqual([]);
+      const notices = await db.pool.query<{ kind: string; agent_ids: string[] }>(
+        `SELECT metadata_json->'discussion_notice'->>'kind' AS kind, metadata_json->'discussion_notice'->'agent_ids' AS agent_ids
+           FROM messages WHERE discussion_id = $1 AND metadata_json->'discussion_notice'->>'kind' = 'not_admitted'`,
+        [opened.discussion.id],
+      );
+      expect(notices.rows).toEqual([{ kind: "not_admitted", agent_ids: ["agent-1"] }]);
     });
 
     it("keeps an explicit discussion reply queued while its wave waits for quota", async (ctx) => {
@@ -3560,7 +3741,7 @@ describe("Room workflow (real Postgres)", () => {
       await seedQuota(40, new Date(Date.now() + 3600_000).toISOString());
       await failTurn(opened.run_ids[0]!, "subscription_quota_exhausted", "Claude AI usage limit reached|1790000000");
       await discussions.extend(owner, created.room.id, conversation.id, opened.discussion.id, 1);
-      // The whole closing chain is gone, not just its held head.
+      // The query covers the whole closing chain, not only its held head.
       const closing = await db.pool.query(
         `SELECT run.status FROM runs run
            JOIN agent_run_groups grp ON grp.id = run.run_group_id
@@ -3613,6 +3794,47 @@ describe("Room workflow (real Postgres)", () => {
         output_json: { waiting_for_results: { status: "waiting", depends_on_run_ids: [sibling] } },
       });
       expect(await taken()).toBe(false);
+    });
+
+    it("refuses to park a Run on Runs that are themselves waiting for it", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Mutual wait");
+      const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
+      const runId = first.run_ids[0]!;
+      await dispatchQueuedRoomRuns([runId]);
+      const runs = new PgRunRepository(db.pool);
+      const running = (await runs.getRun("space-1", runId))!;
+      const parkedOn = async (dependsOn: string) => {
+        const id = randomUUID();
+        await db.pool.query(
+          `INSERT INTO runs SELECT (jsonb_populate_record(NULL::runs, to_jsonb(run) || $2::jsonb)).* FROM runs run WHERE run.id = $1`,
+          [runId, JSON.stringify({
+            id,
+            status: "waiting_for_dependency",
+            host_task_thread_id: null,
+            output_json: { waiting_for_results: { status: "waiting", depends_on_run_ids: [dependsOn] } },
+          })],
+        );
+        return id;
+      };
+      // A later recipient of the same message is parked behind this Run at
+      // creation, and another waits on that one. Waiting on either closes a
+      // loop no completion can ever open.
+      const nextRecipient = await parkedOn(runId);
+      const behindIt = await parkedOn(nextRecipient);
+      const park = (dependsOn: string) => runs.parkRunForDependencyResults({
+        run_id: runId,
+        space_id: "space-1",
+        run_group_id: running.run_group_id!,
+        scope: "current_turn",
+        reason: null,
+        resume_instruction: null,
+        depends_on_run_ids: [dependsOn],
+        paused_at: new Date().toISOString(),
+      });
+      await expect(park(nextRecipient)).resolves.toMatchObject({ status: "dependency_cycle" });
+      await expect(park(behindIt)).resolves.toMatchObject({ status: "dependency_cycle" });
+      expect((await runs.getRun("space-1", runId))?.status).toBe("running");
     });
 
     it("posts a message waiting behind a person's turn while a discussion's wave waits for the window, outside the discussion", async (ctx) => {
@@ -3668,6 +3890,22 @@ describe("Room workflow (real Postgres)", () => {
         __setAuthIdentityForTests(null);
         await app.close();
       }
+    });
+
+    it("answers 404 when a discussion is opened on a conversation of another Room, even one holding an active discussion", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created: limited, conversation: limitedConversation } = await roomWithSpecialist("Limited discussion");
+      const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
+      await discussions.open(owner, limited.room.id, limitedConversation.id, { topic: "Pick a database", participant_agent_ids: ["agent-2"], shape: "open" });
+      await expect(discussionFor(limitedConversation.id)).resolves.toMatchObject({ status: "active" });
+
+      const writer = { spaceId: "space-1", userId: "user-2" };
+      await db.pool.query(`UPDATE project_members SET role = 'member' WHERE project_id = 'project-1' AND user_id = 'user-2'`);
+      const shared = await service.createRoom(owner, { project_id: "project-1", title: "Shared Room" });
+      await addRoomMember(shared.room.id, "user-2");
+      await expect(discussions.open(writer, shared.room.id, limitedConversation.id, { topic: "Which one?", participant_agent_ids: "all", shape: "open" }))
+        .rejects.toMatchObject({ statusCode: 404, message: "Room conversation not found" });
+      await expect(discussionFor(limitedConversation.id)).resolves.toMatchObject({ status: "active" });
     });
 
     it("lets any member read a conversation's quota, a Project writer continue anyway, and only a Space admin move the lines", async (ctx) => {
@@ -3970,6 +4208,36 @@ describe("Room workflow (real Postgres)", () => {
       `UPDATE runs SET session_id = $2 WHERE id = $1`,
       [firstTask.run_ids[0], secondConversation.id],
     )).rejects.toMatchObject({ code: "23503" });
+  });
+
+  it("gives a preset specialist the Manager's runtime profiles on their Hosts", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await openSpokenRoom(owner, { project_id: "project-1", title: "Preset runtime" });
+    const preset = await service.addAgentPreset(owner, created.room.id, {
+      preset_id: "research-analyst",
+      idempotency_key: "preset-runtime-test",
+    });
+    const specialist = preset.agent_members.find((row) => row.role === "member")!;
+    const managerId = preset.agent_members.find((row) => row.role === "manager")!.agent_id;
+    const profiles = async (agentId: string) => (await db.pool.query<{
+      runtime_key: string; execution_host_id: string | null; workspace_mode: string | null; is_default: boolean;
+    }>(
+      `SELECT runtime_key, execution_host_id, workspace_mode, is_default FROM agent_runtime_profiles
+        WHERE space_id = 'space-1' AND agent_id = $1 AND enabled = true ORDER BY is_default DESC, runtime_key`,
+      [agentId],
+    )).rows;
+    const managerDefault = (await profiles(managerId))[0]!;
+    expect(managerDefault).toMatchObject({ is_default: true, execution_host_id: expect.any(String) });
+
+    const copied = await profiles(specialist.agent_id);
+    expect(copied[0]).toMatchObject({
+      is_default: true,
+      runtime_key: managerDefault.runtime_key,
+      execution_host_id: managerDefault.execution_host_id,
+      workspace_mode: managerDefault.workspace_mode,
+    });
+    expect(copied.filter((profile) => profile.execution_host_id === null)).toEqual([]);
   });
 
   it("keeps private specialists Room-scoped while allowing Room dispatch visibility", async (ctx) => {
@@ -4352,8 +4620,8 @@ describe("Room workflow (real Postgres)", () => {
     expect(secondRun.rows[0]!.prompt).not.toContain("You are now in");
     // A direct chat pins the same host_thread override but carries the chat
     // path's execution_mode; routing must admit the host-bound profile on the
-    // override itself, not on the surface's mode (the regression made every
-    // direct chat fail with an empty candidate set).
+    // override itself, not on the surface's mode. Otherwise every direct chat
+    // fails with an empty candidate set.
     await db.pool.query(
       `UPDATE runs SET model_override_json = jsonb_set(model_override_json, '{execution_mode}', '"conversation_lightweight.v1"') WHERE id = $1`,
       [second.run_ids[0]],
@@ -4416,6 +4684,55 @@ describe("Room workflow (real Postgres)", () => {
         LIMIT 1`,
       [created.room.id, agent.id],
     )).resolves.toMatchObject({ rows: [{ status: "closed" }] });
+  });
+
+  it("gives a Project reader outside a limited Room no existence signal from its invitation list or an owner claim", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const outsider = { spaceId: "space-1", userId: "user-3" };
+    await db.pool.query(
+      `INSERT INTO project_members (
+         id, space_id, project_id, user_id, role, status, created_at, updated_at
+       ) VALUES ('project-member-3', 'space-1', 'project-1', 'user-3', 'viewer', 'active', now(), now())`,
+    );
+    await service.createRoom(owner, { project_id: "project-1", title: "Mainline" });
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Limited Room" });
+    const absent = { statusCode: 404, message: "Room not found in this space" };
+
+    // The same answer as for a Room that does not exist.
+    await expect(service.listInvitations(outsider, created.room.id, { limit: 20, offset: 0 })).rejects.toMatchObject(absent);
+    await expect(service.listInvitations(outsider, randomUUID(), { limit: 20, offset: 0 })).rejects.toMatchObject(absent);
+    await expect(service.claimOwner(outsider, created.room.id)).rejects.toMatchObject(absent);
+    await expect(service.claimOwner(outsider, randomUUID())).rejects.toMatchObject(absent);
+
+    // An invitee reads their own invitation before joining; a member who can
+    // see the Room is told why they may not claim it.
+    const invitation = await service.inviteUser(owner, created.room.id, { user_id: "user-3" });
+    const invited = await service.listInvitations(outsider, created.room.id, { limit: 20, offset: 0 });
+    expect(invited.items.map((item) => item.id)).toEqual([invitation.id]);
+    await addRoomMember(created.room.id, "user-3");
+    await expect(service.claimOwner(outsider, created.room.id)).rejects.toMatchObject({ statusCode: 403 });
+  });
+
+  it("keeps a decided invitation's decision when a stale snapshot is invalidated after it", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Decided invitation" });
+    await db.pool.query(
+      `INSERT INTO project_members (
+         id, space_id, project_id, user_id, role, status, created_at, updated_at
+       ) VALUES ('project-member-3b', 'space-1', 'project-1', 'user-3', 'viewer', 'active', now(), now())`,
+    );
+    const invitation = await service.inviteUser(owner, created.room.id, { user_id: "user-3" });
+    const roster = new PgRoomRosterRepository(db.pool);
+    await roster.updateInvitationStatus({ space_id: "space-1", invitation_id: invitation.id, status: "rejected" });
+    // The invalidation a stale snapshot persists is written only from pending.
+    expect(await roster.updateInvitationStatus({
+      space_id: "space-1", invitation_id: invitation.id, status: "invalidated", only_from: "pending",
+    })).toBeNull();
+    await expect(db.pool.query<{ status: string }>(
+      `SELECT status FROM room_user_invitations WHERE id = $1`, [invitation.id],
+    )).resolves.toMatchObject({ rows: [{ status: "rejected" }] });
   });
 
   it("requires each private-Agent owner to approve a Room invitation and supports suspended-owner recovery", async (ctx) => {
@@ -4578,14 +4895,19 @@ describe("Room workflow (real Postgres)", () => {
     await dispatchQueuedRoomRuns(first.run_ids);
     // The host reports where the Run left the checkout, with its diff.
     const hosts = new PgHostRepository(db.pool);
-    const uploadRun = await hosts.runOwnedByHost("host-1", runId);
-    expect(uploadRun).not.toBeNull();
-    await hosts.recordDiffArtifact(uploadRun!, "user-1", {
+    const launchId = "launch-git-own-run";
+    await db.pool.query(
+      `UPDATE run_attempts SET launch_id = $2 WHERE run_id = $1 AND attempt_number = (SELECT max(attempt_number) FROM run_attempts WHERE run_id = $1)`,
+      [runId, launchId],
+    );
+    const uploaded = await hosts.recordDiffArtifact("host-1", "user-1", runId, {
+      launch_id: launchId,
       diff: "diff --git a/x b/x\n+commit\n",
       truncated: false,
       git_before: { branch: "main", head: "baseline" },
       git_after: { branch: "main", head: "agent-commit" },
     });
+    expect(uploaded.ok).toBe(true);
     await db.pool.query(
       "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
       [runId],
@@ -4657,7 +4979,7 @@ describe("Room workflow (real Postgres)", () => {
       hostId: "host-1",
       primary: { kind: "location", workspace_location_id: "location-1" },
     });
-    // This Conversation's Run once left HEAD at H1 …
+    // This Conversation's Run left HEAD at H1.
     await db.pool.query(
       `UPDATE conversation_execution_contexts SET last_run_git_branch = 'main', last_run_git_head = 'h1' WHERE session_id = $1`,
       [conversation.id],
@@ -4673,7 +4995,7 @@ describe("Room workflow (real Postgres)", () => {
     })).rejects.toMatchObject({ statusCode: 409 });
   });
 
-  it("notifies the Room when a delegated child run completes with nobody waiting on it (room-advancement-reliability-plan Phase 3)", async (ctx) => {
+  it("notifies the Room when a delegated child run completes with nobody waiting on it", async (ctx) => {
     if (!db.available || !service || !groupService || !testRoot) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
     const now = new Date().toISOString();
@@ -4863,6 +5185,20 @@ describe("Room workflow (real Postgres)", () => {
     });
     expect(posted.rows[0]?.content).toContain("Layered memory improves recall by 12%.");
 
+    // The report is the system's turn, not a new instruction from the person:
+    // it carries its cause, and only inherits the person's turn because it is
+    // inside that turn's delegation budget (D3).
+    const reportRuns = await db.pool.query<{ id: string; trigger_origin: string; cause_run_id: string | null }>(
+      `SELECT id, trigger_origin, cause_run_id FROM runs WHERE id = ANY($1::varchar[])`,
+      [recordOf(posted.rows[0]?.metadata_json).run_ids],
+    );
+    expect(reportRuns.rows.length).toBeGreaterThan(0);
+    for (const reportRun of reportRuns.rows) {
+      expect(reportRun).toMatchObject({ trigger_origin: "continuation", cause_run_id: group.root_run_id });
+      const report = await runs.getRun("space-1", reportRun.id);
+      await expect(effectiveRunTrigger(db.pool, report!)).resolves.toMatchObject({ origin: "manual", rootRunId: group.root_run_id });
+    }
+
     // Idempotent retry: reconciling the same terminal transition again (as
     // a reconciliation job retry would) must not post a second continuation.
     await projector.markDelegatedRunTerminal(childRun);
@@ -4940,7 +5276,7 @@ describe("Room workflow (real Postgres)", () => {
     expect(denied.rows.map((row) => row.metadata_json.reason_code)).toEqual(["run_spawn_child_capacity_limit"]);
   });
 
-  it("does not duplicate the resume path when a Manager is already waiting on the completed delegation (room-advancement-reliability-plan Phase 3)", async (ctx) => {
+  it("does not duplicate the resume path when a Manager is already waiting on the completed delegation", async (ctx) => {
     if (!db.available || !service || !groupService || !testRoot) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
     const now = new Date().toISOString();
@@ -5407,8 +5743,8 @@ describe("Room workflow (real Postgres)", () => {
 
     // referenceService stamps an attached reference past the wall clock, so
     // the message written after it carries an earlier timestamp. A replay
-    // window that bounded on the clock instead of the path would drop that
-    // message from the Agent's prompt while the transcript still showed it.
+    // window bounds on the path, not the clock. Do not drop that message
+    // from the Agent's prompt while the transcript still has it.
     const ahead = new Date(Date.now() + 600_000).toISOString();
     await seedConversationMessages(testPool, {
       space: "space-1", session: conversation.id,
@@ -5444,6 +5780,67 @@ describe("Room workflow (real Postgres)", () => {
     expect(replay.messages.map((message) => message.id)).toContain("replay-after");
   });
 
+  it("stops sweeping a short conversation it has nothing to summarize for", async (ctx) => {
+    if (!db.available || !service || !db.pool) return ctx.skip();
+    const testPool = db.pool;
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Short Sweep Room" });
+    const conversation = await seedConversation(owner, created.room.id, "Short thread");
+    await seedConversationMessages(db.pool, {
+      space: "space-1", session: conversation.id,
+      messages: [{ id: "short-only", role: "user", userId: "user-1", content: "Just a short note." }],
+    });
+    const summaries = new RoomConversationSummaryService(
+      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot! }),
+      testPool,
+    );
+    // Below the threshold there is nothing to summarize, so no job — but the
+    // watermark is recorded, or the sweep selects this conversation on every
+    // tick forever and the backlog behind it never gets its turn.
+    expect(await summaries.reconcileMissingStates()).toBe(1);
+    await expect(testPool.query<{ status: string; requested_through_message_id: string }>(
+      "SELECT status, requested_through_message_id FROM room_conversation_summary_states WHERE session_id = $1",
+      [conversation.id],
+    )).resolves.toMatchObject({ rows: [{ status: "idle", requested_through_message_id: "short-only" }] });
+    await expect(testPool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM jobs WHERE job_type = 'room_conversation_summary' AND payload_json->>'session_id' = $1`,
+      [conversation.id],
+    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
+    expect(await summaries.reconcileMissingStates()).toBe(0);
+  });
+
+  it("sends the message when a Project state read fails inside the database, and says what failed", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Context failure" });
+    const conversation = await seedConversation(owner, created.room.id, "Main");
+    // An attention adapter whose SQL errors. The context is read on the
+    // sending transaction's client, so an error that is only caught in
+    // JavaScript would abort the whole send.
+    projectAttentionRegistry.replace({
+      areaKind: "rogue_sql",
+      async listAttentionItems(db) {
+        await db.query("SELECT 1 / 0");
+        return [];
+      },
+    });
+    try {
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
+        content: "Still delivered.",
+        backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }],
+      });
+      expect(sent.run_ids).toHaveLength(1);
+      // The failure is written onto the dispatched turn's instruction, not a log.
+      const instruction = await db.pool.query<{ metadata_json: Record<string, unknown> }>(
+        `SELECT metadata_json FROM agent_run_messages WHERE group_id = $1 ORDER BY created_at ASC LIMIT 1`,
+        [sent.task_group_ids[0]],
+      );
+      expect(instruction.rows[0]?.metadata_json.project_context_failures).toEqual([expect.stringMatching(/^overview: .*division by zero/)]);
+    } finally {
+      projectAttentionRegistry.replace({ areaKind: "rogue_sql", async listAttentionItems() { return []; } });
+    }
+  });
+
   it("stops sweeping a conversation once its watermark reaches the head", async (ctx) => {
     if (!db.available || !service || !db.pool) return ctx.skip();
     const testPool = db.pool;
@@ -5453,9 +5850,9 @@ describe("Room workflow (real Postgres)", () => {
 
     // A reference stamped ahead of the wall clock (what referenceService's
     // `base = max(now, existing + 1)` produces), then a message after it on
-    // the path but before it on the clock. Comparing the two by timestamp
-    // instead of by position is what made the sweep re-select this
-    // conversation forever, re-enqueueing a billed summary job every tick.
+    // the path but before it on the clock. Compare the two by position. Do not
+    // compare by timestamp. That re-selects this conversation forever,
+    // re-enqueueing a billed summary job every tick.
     const ahead = new Date(Date.now() + 600_000).toISOString();
     await seedConversationMessages(db.pool, {
       space: "space-1", session: conversation.id,
@@ -5486,8 +5883,8 @@ describe("Room workflow (real Postgres)", () => {
       [conversation.id],
     )).resolves.toMatchObject({ rows: [{ requested_through_message_id: "sweep-ref" }] });
 
-    // The sweep now has to move the watermark from the reference to the head,
-    // which is deeper on the path but earlier on the clock.
+    // The sweep moves the watermark from the reference to the head, which
+    // is deeper on the path but earlier on the clock.
     expect(await summaries.reconcileMissingStates()).toBe(1);
     await expect(testPool.query<{ requested_through_message_id: string }>(
       "SELECT requested_through_message_id FROM room_conversation_summary_states WHERE session_id = $1",
@@ -5695,7 +6092,8 @@ describe("Room workflow (real Postgres)", () => {
     await seedProjectMainlineRoom(db.pool, {
       space: "space-1", project: "project-2", owner: "user-1", title: "Second Project",
     });
-    // Provisioning follows the explicit Conversation draft now.
+    // Provisioning follows the explicit Conversation draft. Do not
+    // provision the Assistant on Room create.
     const first = await service.createRoom(owner, { project_id: "project-1", title: "First" });
     const second = await service.createRoom(owner, { project_id: "project-2", title: "Second" });
     await service.createConversationDraft(owner, first.room.id);
@@ -5840,9 +6238,8 @@ describe("Room workflow (real Postgres)", () => {
     expect(await pointer()).toBe(before);
     expect(await pointer()).not.toBe(manager.rows[0]!.agent_id);
 
-    // And on the create path too: a Project with no instance yet mints one,
-    // which must not claim the Space pointer either. Only the reconcile path
-    // was covered above, because project-1 already had an Assistant.
+    // The create path too: a Project with no instance yet mints one. That
+    // instance must not claim the Space pointer.
     await db.pool.query(
       `INSERT INTO projects (
          id, space_id, owner_user_id, name, status, created_at, updated_at
@@ -5892,9 +6289,8 @@ describe("Room workflow (real Postgres)", () => {
     };
     expect(await markOf()).toBe("agent_template.personal_assistant.system");
 
-    // An instance provisioned before the mark existed: same content, no mark.
-    // It is provably untouched, so it is adopted rather than treated as
-    // somebody's work and abandoned.
+    // Same content, no mark. It is provably untouched, so it is adopted
+    // rather than treated as somebody's work and abandoned.
     await db.pool.query(
       `UPDATE agent_versions SET follows_seed_key = NULL
         WHERE id = (SELECT current_version_id FROM agents WHERE id = $1)`,
@@ -5905,7 +6301,7 @@ describe("Room workflow (real Postgres)", () => {
 
     // An unmarked version whose content differs cannot be told apart from a
     // person's edit, so it is left alone. The unmarked column is itself the
-    // record of that, which is why nothing else needs to write one.
+    // record of that. Nothing else writes one.
     await db.pool.query(
       `UPDATE agent_versions SET follows_seed_key = NULL, system_prompt = 'Hand-written'
         WHERE id = (SELECT current_version_id FROM agents WHERE id = $1)`,
@@ -5938,8 +6334,8 @@ describe("Room workflow (real Postgres)", () => {
     const created = await openSpokenRoom(owner, { project_id: "project-1", title: "Detail" });
     // user-2 is a Space member and not on the Project: enrolled by the invite,
     // still without write authority. Every roster control is gated on this
-    // flag, and an `undefined` here would be read as `false` — which is why
-    // every `RoomDetail` producer is annotated to carry it.
+    // flag, and an `undefined` here would be read as `false`. Every
+    // `RoomDetail` producer is annotated to carry it.
     await service.inviteUser(owner, created.room.id, { user_id: "user-2" });
     const asOwner = await service.getRoom(owner, created.room.id);
     expect(asOwner).toMatchObject({ viewer_can_write: true, other_member_names: ["Room Member"], agent_count: 1 });
@@ -6263,10 +6659,9 @@ describe("Room workflow (real Postgres)", () => {
     expect(first.room.is_mainline).toBe(false);
 
     // Somebody else's personal Room in the same Project is a different Room.
-    // A viewer cannot open one — creating a Room asserts writer authority —
-    // which is why continuing a *private* session needs it while continuing a
-    // shared one, which only speaks in the mainline that already exists, does
-    // not.
+    // A viewer cannot open one. Creating a Room asserts writer authority.
+    // Continuing a private session needs that authority. Continuing a shared
+    // one only speaks in the mainline that already exists, and does not.
     await db.pool.query(
       "UPDATE project_members SET role = 'member' WHERE space_id = 'space-1' AND project_id = 'project-1' AND user_id = 'user-2'",
     );
@@ -6309,11 +6704,11 @@ describe("Room workflow (real Postgres)", () => {
     const shared = await service.sendMessage(owner, mainline.room.id, sharedConversation.id, { content: "Everyone can see this." });
     // Mainline membership follows Project membership but is written on first
     // open rather than synced, so open the Project as user-2 — which is what
-    // the Project page does. Exempting the mainline from needing that row was
-    // tried and reverted: `roomRunReadAccessSql` also gates Proposal accept
-    // and reject, so the exemption widened a write authority nobody asked to
-    // change. Not seeing a mainline Run until you have opened the Project once
-    // is stricter, self-healing, and keeps this rule identical everywhere.
+    // the Project page does. Do not exempt the mainline from needing that row.
+    // `roomRunReadAccessSql` also gates Proposal accept and reject, so the
+    // exemption would widen a write authority. Not seeing a mainline Run until
+    // you have opened the Project once is stricter, self-healing, and keeps
+    // this rule identical everywhere.
     await service.getProjectMainline({ spaceId: "space-1", userId: "user-2" }, "project-1");
 
     const runs = new PgRunRepository(db.pool);
@@ -6333,8 +6728,8 @@ describe("Room workflow (real Postgres)", () => {
 
     // With oversight they are admitted by the predicate's oversight branch,
     // and the Room boundary is the only thing left holding (ADR 0018 decision
-    // 3). The detail path has always carried this rule; the list did not, so
-    // it showed Runs the detail page then 404'd on.
+    // 3). The list uses the same Room rule as the detail path. Do not show a
+    // Run the detail page then 404s on.
     await db.pool.query("UPDATE spaces SET oversight_mode = 'full' WHERE id = 'space-1'");
     await db.pool.query(
       "UPDATE space_memberships SET role = 'admin' WHERE space_id = 'space-1' AND user_id = 'user-2'",
@@ -6345,7 +6740,7 @@ describe("Room workflow (real Postgres)", () => {
     // predicate is not simply excluding everything.
     expect(asAdmin.has(sharedRun)).toBe(true);
 
-    // Same answer from both paths, which is the point.
+    // Same answer from both paths.
     await expect(runs.getVisibleRun("space-1", "user-2", limitedRun)).resolves.toBeNull();
     await expect(runs.getVisibleRun("space-1", "user-1", limitedRun)).resolves.toMatchObject({ id: limitedRun });
 
@@ -6405,6 +6800,49 @@ describe("Room workflow (real Postgres)", () => {
     expect(adminHome).toContain(sharedRun);
   });
 
+  it("keeps a limited Room's outputs out of a Project writer's public summary draft", async (ctx) => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    await db.pool.query(`UPDATE project_members SET role = 'member' WHERE project_id = 'project-1' AND user_id = 'user-2'`);
+    const limited = await openSpokenRoom(owner, { project_id: "project-1", title: "Just the two of us" });
+    const dispatched = await service.sendMessage(owner, limited.room.id, limited.conversation.id, {
+      content: "Work on this quietly.",
+    });
+    const limitedRun = dispatched.run_ids[0]!;
+    await db.pool.query(
+      `INSERT INTO proposals (id, space_id, project_id, proposal_type, status, risk_level, urgency,
+                              title, rationale, payload_json, created_by_run_id, created_at, updated_at)
+       VALUES ($1, 'space-1', 'project-1', 'memory_create', 'pending', 'low', 'normal',
+               'Limited Room proposal', 'Limited Room rationale', '{}'::jsonb, $2, now(), now())`,
+      [randomUUID(), limitedRun],
+    );
+    await db.pool.query(
+      `INSERT INTO artifacts (id, space_id, project_id, run_id, artifact_type, title,
+                              surface_role, export_formats_json, created_at, updated_at)
+       VALUES ($1, 'space-1', 'project-1', $2, 'document', 'Limited Room artifact', 'user_output', '[]'::jsonb, now(), now()),
+              ($3, 'space-1', 'project-1', NULL, 'document', 'Project-wide artifact', 'user_output', '[]'::jsonb, now(), now())`,
+      [randomUUID(), limitedRun, randomUUID()],
+    );
+    let prompt = "";
+    const generator = new ProjectPublicSummaryGenerator(
+      db.pool,
+      { getTaskChain: async () => null } as unknown as ProviderCommandStore,
+      async (_spaceId, input) => {
+        prompt = `${input.system}\n${input.user}`;
+        return {
+          text: JSON.stringify({ summary_text: "A project.", topics: [], highlights: [], source_refs: [] }),
+          model: "test-model",
+          usage: {},
+        };
+      },
+    );
+
+    await generator.generateDraft({ spaceId: "space-1", userId: "user-2" }, "project-1", { providerId: "provider-1" });
+
+    expect(prompt).toContain("Project-wide artifact");
+    expect(prompt).not.toContain("Limited Room");
+  });
+
   it("keeps the mainline the Room the Project was created with, and never promotes a later one", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
@@ -6450,9 +6888,8 @@ describe("Room workflow (real Postgres)", () => {
        VALUES ($1, 'space-1', 'project-1', 'user-later', 'viewer', 'active', now(), now())`, [randomUUID()]);
     const later = { spaceId: "space-1", userId: "user-later" };
 
-    // Before this the panel listed only Rooms the viewer was on the roster
-    // of, so a member nobody had invited saw an empty panel — and as a
-    // viewer could not start a Room either.
+    // The list includes the Project's mainline for a member who is not on a
+    // topic Room's roster. Do not show them an empty panel.
     const opened = await service.getProjectMainline(later, "project-1");
     expect(opened.room.id).toBe(created.room.id);
     expect(opened.joined).toBe(true);
@@ -6469,7 +6906,7 @@ describe("Room workflow (real Postgres)", () => {
 
   it("always has a mainline to answer with, and still says who may write in it", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
-    // "A Project with no Room" is no longer a state (ADR 0018 decision 4), so
+    // A Project is created with its mainline Room (ADR 0018 decision 4), so
     // the panel has nothing to branch on. `viewer_can_write` is still needed,
     // but not for speaking: user-2 is a Project viewer who may read *and*
     // speak — mainline membership follows Project membership and the send
@@ -6669,8 +7106,7 @@ describe("Room workflow (real Postgres)", () => {
     const dispatch = { actor: { type: "agent", id: "agent-1" }, visibility: "agent_tool", idempotency_key: randomUUID() } as never;
 
     // How the Agent learns which id to decide. Nothing in the rendered
-    // conversation carries one, so without this read the id can only be
-    // composed — and a composed id decides nothing.
+    // conversation carries one. Do not invent the id. A composed id decides nothing.
     const pending = await executors.get("proposal.list_pending" as SystemActionId)!({}, dispatch) as { modelResult: Record<string, unknown>; summary: Record<string, unknown> };
     expect((pending.modelResult as { proposals: Array<{ proposal_id: string; title: string }> }).proposals)
       .toEqual([
@@ -6691,8 +7127,8 @@ describe("Room workflow (real Postgres)", () => {
       .rejects.toMatchObject({ statusCode: 404 });
 
     // The gateway validates every agent action's output as `{ modelResult,
-    // summary }`; a flat object here made a decision that *was* applied read
-    // back to the model as a failure.
+    // summary }`. Do not return a flat object. A decision that was applied
+    // would be read back to the model as a failure.
     await expect(decide({ proposal_id: alsoMine, decision: "reject" }, dispatch))
       .resolves.toMatchObject({
         modelResult: { ok: true, status: "rejected", decided_by: "user-1" },

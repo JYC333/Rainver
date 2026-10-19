@@ -32,6 +32,7 @@ import { PgJobQueueRepository } from "../jobs/repository.js";
 import {
   HttpError,
   dbPool,
+  parseBody,
   parsePage,
   query as routeQuery,
   sendRouteError,
@@ -344,7 +345,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     if (!identity) return reply;
     if (!(await requireSpaceOwnerOrAdmin(context.config, identity, reply, "Only space owners or admins may change defaults for future Agent Profiles"))) return reply;
     try {
-      const body = protocol.SpaceAgentRuntimeDefaultWriteSchema.parse(jsonBody(request));
+      const body = parseBody(protocol.SpaceAgentRuntimeDefaultWriteSchema, jsonBody(request));
       const value = await agentRepository().setSpaceAgentRuntimeDefault(identity.spaceId, {
         runtimeKey: body.runtime_key,
         backendMode: body.backend_mode,
@@ -358,11 +359,22 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  // A managed Assistant's soft settings. `?project_id=` names a Project's
+  // Assistant; without it, the Space's own. The read answers whether the
+  // caller may change them (`can_configure`); the write enforces it: the
+  // personal Space's Assistant is its person's, a shared Space's is its
+  // creator's, a Project's is its owner's (`canConfigureAssistant`).
   app.get("/api/v1/agents/default-assistant/settings", async (request, reply) => {
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     try {
-      return reply.send(await agentRepository().getAssistantSettings(identity.spaceId));
+      const repository = agentRepository();
+      const target = assistantSettingsTarget(identity, request);
+      await repository.assertAssistantSettingsReadable(identity, target);
+      return reply.send({
+        ...await repository.getAssistantSettings(target),
+        can_configure: await repository.canConfigureAssistantSettings(identity, target),
+      });
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -372,11 +384,18 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context, request, reply);
     if (!identity) return reply;
     try {
-      return reply.send(
-        await agentRepository().updateAssistantSettings(identity.spaceId, jsonBody(request), {
-          actorUserId: identity.userId,
-        }),
-      );
+      const repository = agentRepository();
+      const target = assistantSettingsTarget(identity, request);
+      await repository.assertAssistantSettingsReadable(identity, target);
+      if (!(await repository.canConfigureAssistantSettings(identity, target))) {
+        throw new HttpError(403, target.projectId
+          ? "Only the Project's owner configures its Assistant"
+          : "Only the Space's creator configures its Assistant");
+      }
+      return reply.send({
+        ...await repository.updateAssistantSettings(target, jsonBody(request), { actorUserId: identity.userId }),
+        can_configure: true,
+      });
     } catch (error) {
       return sendRouteError(reply, error);
     }
@@ -401,9 +420,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       const body = jsonBody(request);
       const repo = agentRepository();
       const agentId = params(request).agentId ?? "";
+      // Parse the whole body before the first write: the identity and the
+      // config land in two statements, so a config field refused after the
+      // identity was written would answer 422 for a request half applied.
+      const parsedConfigPatch = hasConfigPatch(body) ? configPatch(body, identity.userId) : null;
       let agent = await applyAgentIdentityPatch(repo, identity.spaceId, identity.userId, agentId, body);
-      if (hasConfigPatch(body)) {
-        agent = await repo.updateConfig(identity.spaceId, agentId, configPatch(body, identity.userId));
+      if (parsedConfigPatch) {
+        agent = await repo.updateConfig(identity.spaceId, agentId, parsedConfigPatch);
       }
       if (!agent) {
         agent = await repo.getVisible(identity.spaceId, identity.userId, agentId);
@@ -828,7 +851,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                        AND r.status <> ALL($3::text[])
                   ) AS run_in_flight
              FROM host_threads thread
-            WHERE thread.execution_host_id = $2
+            WHERE COALESCE(thread.execution_host_id, (
+                    SELECT wl.execution_host_id FROM workspace_locations wl WHERE wl.id = thread.workspace_location_id
+                  )) = $2
               AND thread.status IN ('active', 'session_reset')
               AND (
                 thread.agent_id = $1
@@ -989,36 +1014,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             hostDispatch,
           });
         }
-        // Not gated on a managed workspace: a direct chat pinned to a
-        // registered Location has no Rainver-managed cwd, but the Agent's
-        // runtime profile was archived when the session was deleted and is
-        // what this brings back.
-        if (req.restore_workspace && hostDispatch) {
-          const restored = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
-            backend.execution_host_id!,
-            "managed_workspace_restore",
-            {
-              agent_id: agent.id,
-              container_kind: "direct",
-              container_id: identity.userId,
-              // A direct chat has one Agent, so whatever was archived comes
-              // back together — but only a managed container had a cwd to
-              // archive, which is the same condition its archive used.
-              include_workspace: hostDispatch.workspace.kind === "managed",
-            },
-          );
-          if (!restored.ok) {
-            throw new ChatContextError(
-              restored.error === "host_offline"
-                ? "The execution Host is offline"
-                : "The managed workspace could not be restored",
-              restored.error === "host_offline" ? 503 : 409,
-            );
-          }
-          if (!restored.changed) {
-            throw new ChatContextError("No archived managed workspace is available to restore", 409);
-          }
-        }
         await transaction.runtimeSessions.claimTurn({
           space_id: creation.spaceId,
           session_id: session.id,
@@ -1129,6 +1124,40 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             "The chat turn could not be queued",
             503,
           );
+        }
+        // The host-side restore is the turn's last step, after everything
+        // that can refuse it, so a refused turn has restored nothing. A
+        // failed restore rolls the whole turn back and can be sent again;
+        // the Run's job commits with the turn, so it cannot start on a
+        // workspace that is still archived. Restoring is idempotent: with
+        // nothing archived (an earlier send already restored it, and its
+        // commit was then lost) the workspace is where the person wants it.
+        // Not gated on a managed workspace: a direct chat pinned to a
+        // registered Location has no Rainver-managed cwd, but the Agent's
+        // runtime profile was archived when the session was deleted and is
+        // what this brings back.
+        if (req.restore_workspace && hostDispatch) {
+          const restored = await sharedHostConnectionRegistry.requestManagedWorkspaceAction(
+            backend.execution_host_id!,
+            "managed_workspace_restore",
+            {
+              agent_id: agent.id,
+              container_kind: "direct",
+              container_id: identity.userId,
+              // A direct chat has one Agent, so whatever was archived comes
+              // back together — but only a managed container had a cwd to
+              // archive, which is the same condition its archive used.
+              include_workspace: hostDispatch.workspace.kind === "managed",
+            },
+          );
+          if (!restored.ok) {
+            throw new ChatContextError(
+              restored.error === "host_offline"
+                ? "The execution Host is offline; the message was not sent"
+                : "The managed workspace could not be restored; the message was not sent",
+              restored.error === "host_offline" ? 503 : 409,
+            );
+          }
         }
         return {
           sessionId: session.id,
@@ -1506,9 +1535,8 @@ async function prepareChatRun(
       project_id: input.projectId ?? null,
       git_snapshot: input.hostDispatch?.git_snapshot ?? unavailableGitSnapshot(),
     },
-    // The same allowance a Room message or a delegation gets in this Project;
-    // this used to be a private three-action list from before scenario
-    // allowances existed, so a direct chat could not do what a Room could.
+    // The same allowance a Room message or a delegation gets in this Project.
+    // A direct chat must be able to do what a Room can.
     ...conversationToolGrantInput({
       project_id: input.projectId ?? null,
       has_input_resources: input.hasInputResources,
@@ -1781,7 +1809,7 @@ async function resolveIdentity(
   }
   const requestId = resolveRequestId(request);
   reply.header(REQUEST_ID_HEADER, requestId);
-  const identity = await introspectIdentity(context.config, request);
+  const identity = await introspectIdentity(context.config, request, reply);
   if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
   if (identity.reason === "denied") {
     reply.code(identity.statusCode);
@@ -1801,4 +1829,14 @@ async function resolveIdentity(
     ),
   );
   return null;
+}
+
+/** The Assistant a settings request is about, from its explicit `project_id` query. */
+function assistantSettingsTarget(
+  identity: { spaceId: string },
+  request: FastifyRequest,
+): { spaceId: string; projectId: string | null } {
+  const raw = (request.query as Record<string, unknown> | undefined)?.project_id;
+  const projectId = typeof raw === "string" && raw.trim() ? raw.trim() : null;
+  return { spaceId: identity.spaceId, projectId };
 }

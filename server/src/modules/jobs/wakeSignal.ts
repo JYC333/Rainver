@@ -1,13 +1,8 @@
 /**
  * In-process wake signal for the jobs worker.
  *
- * The worker's idle branch used to sleep a fixed poll interval, so a job
- * enqueued right after a poll waited out most of that interval before it was
- * claimed. An enqueue now wakes the waiting loop directly.
- *
- * The poll interval stays as the fallback and is what keeps this correct
- * rather than merely fast — two cases never produce a signal this process can
- * hear:
+ * An enqueue wakes the waiting loop directly. The poll interval stays as the
+ * fallback for two cases that never produce a signal this process can hear:
  *
  *  - an enqueue from another process writing to the same database (a remote
  *    host daemon, a second server instance);
@@ -23,7 +18,7 @@
 
 type Waiter = (outcome: JobWakeOutcome) => void;
 
-export type JobWakeOutcome = "signalled" | "timeout";
+type JobWakeOutcome = "signalled" | "timeout";
 
 const waiters = new Set<Waiter>();
 

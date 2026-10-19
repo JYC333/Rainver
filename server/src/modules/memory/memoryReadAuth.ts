@@ -21,7 +21,7 @@ export interface MemoryAuthFields {
   content_access_grants?: readonly ContentAccessGrant[] | null;
 }
 
-export interface MemoryReadContext {
+interface MemoryReadContext {
   userId: string;
   spaceId: string;
   activeSpaceMember?: boolean;
@@ -62,8 +62,7 @@ export function memoryAccessDecision(
   // the Room it was learned in and is delivered only where that Room's
   // audience already reached (ADR 0003 §4, ADR 0018); a Space owner reading it
   // on the Memory page would cross the Room the delivery path refuses to
-  // cross. Oversight keeps `user` and `project` scope, where the
-  // accountability it exists for lives.
+  // cross. Oversight keeps `user` and `project` scope.
   if (memory.scope_type === "agent" && memory.owner_user_id !== context.userId) return "deny";
   const resource = {
     id: memory.id ?? "memory",

@@ -146,10 +146,10 @@ export const memoryEntries = pgTable("memory_entries", {
 	// persona is delivered everywhere and has none, and the other two scopes
 	// have their own reach rules.
 	check("ck_memory_entries_origin_room", sql`origin_room_id IS NULL OR (scope_type = 'agent' AND memory_type <> 'persona')`),
-	// Private, and enforced here rather than only in the read gate: the
-	// content-access API updates `visibility` with a raw UPDATE, and a
-	// space-shared agent-scope row would be returned to every Space member by
-	// every pure-SQL read while the TypeScript gate hid it on the Memory page.
+	// Private, and enforced here rather than only in the read gate. The
+	// content-access API updates `visibility` with a raw UPDATE. Do not allow
+	// a space-shared agent-scope row: every pure-SQL read would return it to
+	// every Space member while the Memory page would hide it.
 	check("ck_memory_entries_agent_private", sql`scope_type <> 'agent' OR visibility = 'private'`),
 	// A persona is what the Agent has learned about itself, so it is the
 	// Agent's scope or nothing.
@@ -263,9 +263,9 @@ export const provenanceLinks = pgTable("provenance_links", {
 		}),
 	check("ck_provenance_links_source_trust", sql`(source_trust IS NULL) OR ((source_trust)::text = ANY (ARRAY[('user_confirmed'::character varying)::text, ('internal_system'::character varying)::text, ('trusted_external'::character varying)::text, ('untrusted_external'::character varying)::text, ('agent_inferred'::character varying)::text]))`),
 	// B12F: membership is a `provenanceSourceable` declaration on the entity
-	// registry, resolved through `isProvenanceSourceType`. The closed set that
-	// used to live here was one of four copies — this CHECK plus three Sets, two
-	// of which silently *dropped* unrecognized entries, so a divergence lost
-	// provenance without an error. `target_type` still carries no constraint.
+	// registry, resolved through `isProvenanceSourceType`. The column keeps a
+	// format constraint only. Do not restore a closed-set CHECK here, and do
+	// not keep a private Set that drops unrecognized entries: that loses
+	// provenance with no error. `target_type` carries no constraint.
 	check("ck_provenance_links_source_type_format", sql`(source_type)::text ~ '^[a-z][a-z0-9_]{0,63}$'::text`),
 ]);

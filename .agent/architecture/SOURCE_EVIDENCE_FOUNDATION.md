@@ -127,9 +127,10 @@ Repeated manual normalization may create an additional skipped
 duplicate active/candidate evidence and does not mutate durable Memory,
 Knowledge, policy, tasks, files, or capabilities.
 
-Internal display references belong in metadata such as
-`metadata_json.internal_ref`, not in fake `run://`, `artifact://`,
-`activity://`, or `file://` URIs.
+Internal references are carried by the `SourceItem`'s `source_object_type` and
+`source_object_id` columns (its `metadata_json` records only
+`capture_method: "internal"` and the `job_id`), not by fake `run://`,
+`artifact://`, `activity://`, or `file://` URIs.
 
 ## Reader extraction
 
@@ -217,5 +218,4 @@ merged into one generic "evidence" table.
 
 ### Promotion from source candidate to curated wiki evidence
 
-Not implemented. The two stacks stay independent. Extracted design:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §10.
+Not implemented. The two stacks stay independent.

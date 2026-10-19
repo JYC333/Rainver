@@ -38,6 +38,7 @@ vi.mock('../contexts/AuthContext', () => ({
 }))
 
 import ModelProvidersPage from '../modules/providers/ModelProvidersPage'
+import { providersApi } from '../api/client'
 
 const EMPTY = /no model providers configured/i
 
@@ -104,15 +105,15 @@ const providerPresets = [
 ]
 
 const providerVendors = [
-  { id: 'openai', display_name: 'OpenAI', protocol: 'openai_completions', supports_chat: true, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: 'https://api.openai.com/v1', api_key_required: true, subscription_only: false },
-  { id: 'openai_codex', display_name: 'OpenAI Codex (ChatGPT subscription)', protocol: 'openai_codex_responses', supports_chat: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://chatgpt.com/backend-api', api_key_required: false, subscription_only: true },
-  { id: 'deepseek', display_name: 'DeepSeek', protocol: 'openai_completions', supports_chat: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.deepseek.com', api_key_required: true, subscription_only: false },
-  { id: 'anthropic', display_name: 'Anthropic', protocol: 'anthropic_messages', supports_chat: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.anthropic.com', api_key_required: true, subscription_only: false },
-  { id: 'minimax', display_name: 'MiniMax', protocol: 'anthropic_messages', supports_chat: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.minimaxi.com/anthropic', api_key_required: true, subscription_only: false },
-  { id: 'ollama', display_name: 'Ollama', protocol: 'openai_completions', supports_chat: true, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: 'http://localhost:11434', api_key_required: false, subscription_only: false },
-  { id: 'openai_compatible', display_name: 'OpenAI-compatible endpoint', protocol: 'openai_completions', supports_chat: true, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: null, api_key_required: false, subscription_only: false },
-  { id: 'cohere', display_name: 'Cohere', protocol: 'cohere_v2', supports_chat: false, supports_structured_output: false, supports_embedding: true, supports_rerank: true, default_base_url: 'https://api.cohere.com', api_key_required: true, subscription_only: false },
-  { id: 'zeroentropy', display_name: 'ZeroEntropy', protocol: 'zeroentropy', supports_chat: false, supports_structured_output: false, supports_embedding: true, supports_rerank: true, default_base_url: 'https://api.zeroentropy.dev/v1', api_key_required: true, subscription_only: false },
+  { id: 'openai', display_name: 'OpenAI', protocol: 'openai_completions', supports_chat: true, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: 'https://api.openai.com/v1', api_key_required: true, subscription_only: false, self_hostable: false },
+  { id: 'openai_codex', display_name: 'OpenAI Codex (ChatGPT subscription)', protocol: 'openai_codex_responses', supports_chat: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://chatgpt.com/backend-api', api_key_required: false, subscription_only: true, self_hostable: false },
+  { id: 'deepseek', display_name: 'DeepSeek', protocol: 'openai_completions', supports_chat: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.deepseek.com', api_key_required: true, subscription_only: false, self_hostable: false },
+  { id: 'anthropic', display_name: 'Anthropic', protocol: 'anthropic_messages', supports_chat: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.anthropic.com', api_key_required: true, subscription_only: false, self_hostable: false },
+  { id: 'minimax', display_name: 'MiniMax', protocol: 'anthropic_messages', supports_chat: true, supports_structured_output: true, supports_embedding: false, supports_rerank: false, default_base_url: 'https://api.minimaxi.com/anthropic', api_key_required: true, subscription_only: false, self_hostable: false },
+  { id: 'ollama', display_name: 'Ollama', protocol: 'openai_completions', supports_chat: true, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: 'http://localhost:11434', api_key_required: false, subscription_only: false, self_hostable: true },
+  { id: 'openai_compatible', display_name: 'OpenAI-compatible endpoint', protocol: 'openai_completions', supports_chat: true, supports_structured_output: true, supports_embedding: true, supports_rerank: false, default_base_url: null, api_key_required: false, subscription_only: false, self_hostable: false },
+  { id: 'cohere', display_name: 'Cohere', protocol: 'cohere_v2', supports_chat: false, supports_structured_output: false, supports_embedding: true, supports_rerank: true, default_base_url: 'https://api.cohere.com', api_key_required: true, subscription_only: false, self_hostable: false },
+  { id: 'zeroentropy', display_name: 'ZeroEntropy', protocol: 'zeroentropy', supports_chat: false, supports_structured_output: false, supports_embedding: true, supports_rerank: true, default_base_url: 'https://api.zeroentropy.dev/v1', api_key_required: true, subscription_only: false, self_hostable: false },
 ] satisfies ProviderVendorOut[]
 
 describe('ModelProvidersPage — open add form takes over the view', () => {
@@ -207,7 +208,7 @@ describe('ModelProvidersPage — open add form takes over the view', () => {
   })
 
   it('shows a repair state, and writes nothing, when the saved default Provider is gone', async () => {
-    // Plan Phase 4 §4: a deleted or disabled Provider must produce a visible
+    // A deleted or disabled Provider must produce a visible
     // repair state for future provisioning, never a silent native fallback.
     listMock.mockResolvedValue([])
     // The server derives the repair state from the grant ∧ enabled join that
@@ -230,9 +231,9 @@ describe('ModelProvidersPage — open add form takes over the view', () => {
   })
 
   it('keeps the Providers list readable when the runtime default fails to load', async () => {
-    // One failing call in the page's fan-out used to reject the whole
-    // Promise.all and blank the page. The card reports its own failure and
-    // offers a retry; nothing is saved over a template nobody could read.
+    // One failing call must not reject the page's fan-out and blank the
+    // Providers list. The card reports its own failure and offers a retry.
+    // Nothing is saved over a template nobody could read.
     listMock.mockResolvedValue([provider])
     getRuntimeDefaultMock.mockRejectedValueOnce(new Error('runtime default unavailable'))
     render(<ModelProvidersPage />)
@@ -412,5 +413,49 @@ describe('ModelProvidersPage — open add form takes over the view', () => {
     await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2))
     expect(screen.queryByText('Stale Personal Provider')).toBeNull()
     expect(screen.getByText('Team Provider')).toBeInTheDocument()
+  })
+
+  it('clears the default model when the field is emptied on save', async () => {
+    listMock.mockResolvedValue([provider])
+    vi.mocked(providersApi.patch).mockResolvedValue({ ...provider, default_model: null } as never)
+    render(<ModelProvidersPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    // The default-model field comes before the available-models field.
+    fireEvent.change(screen.getAllByDisplayValue('gpt-4o')[0]!, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(providersApi.patch).toHaveBeenCalledWith('p1', expect.objectContaining({ default_model: null })))
+  })
+
+  it('says so when a provider test or delete fails', async () => {
+    listMock.mockResolvedValue([provider])
+    vi.mocked(providersApi.test).mockRejectedValue(new Error('network down'))
+    vi.mocked(providersApi.delete).mockRejectedValue(new Error('still referenced'))
+    const { container } = render(<ModelProvidersPage />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Test' }))
+    expect(await screen.findByText('network down')).toBeInTheDocument()
+
+    fireEvent.click(container.querySelector('button.text-red-500') as HTMLButtonElement)
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('still referenced'))
+    expect(screen.getByRole('heading', { name: 'My OpenAI' })).toBeInTheDocument()
+  })
+
+  it('does not show the previous Space\'s runtime default when the next Space fails to load', async () => {
+    listMock.mockResolvedValueOnce([provider]).mockRejectedValueOnce(new Error('providers unavailable'))
+    getRuntimeDefaultMock.mockResolvedValue({
+      space_id: 'personal-1', runtime_key: 'opencode', backend_mode: 'model_provider',
+      model_provider_id: provider.id, model_name: provider.default_model, state: 'ready', state_reason: null,
+    })
+    const view = render(<ModelProvidersPage />)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'OpenCode backend mode' })).toHaveTextContent('My OpenAI'))
+
+    activeSpace.id = 'team-2'
+    activeSpace.name = 'Team'
+    view.rerender(<ModelProvidersPage />)
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('providers unavailable'))
+
+    expect(screen.queryByRole('button', { name: 'OpenCode backend mode' })?.textContent ?? '').not.toContain('My OpenAI')
   })
 })

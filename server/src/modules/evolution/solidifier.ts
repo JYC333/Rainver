@@ -19,7 +19,7 @@ export interface EvolutionRunEvaluationForSolidifier {
   evaluated_at?: string | null;
 }
 
-export interface EvolutionExperienceRepositoryPort {
+interface EvolutionExperienceRepositoryPort {
   // Returns null when a concurrent insert raced to the same (space_id, experience_key).
   // Callers must handle null by fetching the existing row via getExperienceByKey.
   createExperience(input: EvolutionExperienceCreateInput): Promise<EvolutionExperienceRow | null>;
@@ -123,7 +123,19 @@ function runExperienceKey(
 ): string {
   const strategy = context.strategyKey ?? context.strategyAssetId ?? "unknown_strategy";
   const evaluationKey = evaluation.evaluator_version ?? "run_evaluation";
-  return `${strategy}/run/${evaluation.run_id}/${evaluationKey}`.slice(0, 160);
+  // Finalization evaluates each attempt, so a retried Run has one experience
+  // per attempt: keyed on the Run alone, a successful retry would be answered
+  // with the first attempt's failure and never counted.
+  const attempt = evaluationAttemptNumber(evaluation);
+  const attemptKey = attempt === null ? "" : `/attempt-${attempt}`;
+  return `${strategy}/run/${evaluation.run_id}/${evaluationKey}${attemptKey}`.slice(0, 160);
+}
+
+function evaluationAttemptNumber(evaluation: EvolutionRunEvaluationForSolidifier): number | null {
+  const evidence = evaluation.evidence_json;
+  if (!evidence || typeof evidence !== "object") return null;
+  const value = (evidence as { attempt_number?: unknown }).attempt_number;
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
 function runExperienceSummary(

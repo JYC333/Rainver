@@ -147,6 +147,41 @@ describe("PgMemoryProposalRepository against real Postgres", () => {
     ]);
   });
 
+  it("lets an update proposal raise a private memory to highly_restricted", async () => {
+    if (!db.available || !repo || !db.pool) return;
+    await insertMemoryEntry(db.pool, SPACE, {
+      id: "memory-private",
+      owner_user_id: USER,
+      subject_user_id: USER,
+      content: "mine",
+      title: "Mine",
+    });
+
+    // The command may not carry visibility — permissions go through the
+    // content-access API — so the rule reads the target's own visibility.
+    const update = await repo.updateMemoryProposal(SPACE, USER, "memory-private", {
+      operation: "update",
+      target_memory_id: "memory-private",
+      content: null,
+      title: null,
+      type: null,
+      scope: null,
+      namespace: null,
+      sensitivity_level: "highly_restricted",
+      confidence: null,
+      importance: null,
+      tags: null,
+      subject_user_id: null,
+      memory_layer: null,
+      actor_user_id: null,
+      provenance_entries: [],
+    });
+
+    expect(update).toMatchObject({ proposal_type: "memory_update", status: "pending" });
+    const proposal = await db.pool.query("SELECT payload_json FROM proposals WHERE id = $1", [update.id]);
+    expect(proposal.rows[0]?.payload_json).toMatchObject({ sensitivity_level: "highly_restricted" });
+  });
+
   it("hides non-readable target memories on update", async () => {
     if (!db.available || !repo) return;
     await insertMemoryEntry(db.pool, SPACE, {

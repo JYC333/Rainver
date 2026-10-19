@@ -44,8 +44,7 @@ const operationsAttentionAdapter: ProjectAttentionAdapter = {
       due_at: null,
       blocking_refs: [],
       // An alert is an activity record; the Space Inbox filtered to this
-      // Project is where it is read and cleared. The Project's own Operations
-      // Area, which used to render a copy, is retired.
+      // Project is where it is read and cleared.
       action_descriptors: [{ label: "Review", href: `/activity?project_id=${projectId}` }],
       href: `/activity?project_id=${projectId}`,
     }));

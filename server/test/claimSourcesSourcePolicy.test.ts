@@ -12,7 +12,7 @@ vi.mock("../src/db/pool.js", () => ({
   getDbPool: vi.fn(),
 }));
 
-// G2: a visible claim can carry evidence sourced from a connection that restricts
+// A visible claim can carry evidence sourced from a connection that restricts
 // the viewer. `claimSources` must drop those evidence rows (and their quotes) via
 // the same source read policy as retrieval, while keeping unrestricted evidence.
 const VIEWER = "user-1";

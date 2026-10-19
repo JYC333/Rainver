@@ -1,5 +1,5 @@
 import type { Queryable } from "@rainver/protocol";
-import { AccountNotFoundError } from "./errors.js";
+import { AccountNotFoundError, FinanceRuleError } from "./errors.js";
 import type { LedgerLoadResult } from "../beancount/entries.js";
 import { financeLedgerEngine, postingEntryFromRow } from "../beancount/engine.js";
 import { transactionBalanceErrors } from "../beancount/validation.js";
@@ -9,11 +9,18 @@ import { parseBooking } from "./booking.js";
 import { parseDecimal } from "./decimal.js";
 import { financeDirectiveRepository } from "./directiveRepository.js";
 import {
+  applyImportEntryMapping,
+  decideImportEntryReview,
   exportBeancountFromDb,
+  getImportBatch,
   importBeancountToDb,
+  listImportBatches,
+  retryImportBatch,
   type ExportBeancountResult,
+  type ImportBatchResult,
   type ImportBeancountInput,
-  type ImportBeancountResult,
+  type ImportReviewDecision,
+  type ImportSourceSummary,
 } from "./importExportService.js";
 import type {
   AccountVisibility,
@@ -33,9 +40,11 @@ import {
   financeLedgerRepository,
   type CreateCommodityRecord,
   type InsertPostingRecord,
+  isSequenceConflict,
 } from "./repository.js";
 import { Inventory } from "./inventory.js";
 import { Position } from "./position.js";
+import { attempt, withLockedBook } from "./transaction.js";
 
 export interface CreateFinanceBookInput {
   name: string;
@@ -208,11 +217,8 @@ export class FinanceLedgerService {
   /** Only the owner of a personal account may change its visibility. */
   /**
    * One answer for every account this person may not change: not found.
-   *
-   * It used to give three — "Account not found", "Shared accounts are always
-   * visible to the space", "Only the account owner can change its visibility" —
-   * all as 403, which told a stranger that a given id exists and whether it is
-   * someone's personal account.
+   * Do not distinguish missing, shared, and not-owner. That tells a stranger
+   * the id exists and whether it is personal.
    */
   async setAccountVisibility(
     db: Queryable,
@@ -237,6 +243,28 @@ export class FinanceLedgerService {
     date: string,
     viewerUserId: string,
   ): Promise<FinanceAccountRow> {
+    return withLockedBook(db, spaceId, bookId, (tx) =>
+      this.closeAccountLocked(tx, spaceId, bookId, accountId, date, viewerUserId));
+  }
+
+  private async closeAccountLocked(
+    db: Queryable, spaceId: string, bookId: string, accountId: string, date: string, viewerUserId: string,
+  ): Promise<FinanceAccountRow> {
+    // Refused where the ledger's own validator would call the result invalid:
+    // closed before it opened, closed twice, or closed under later entries.
+    const account = await this.repository.findAccountForViewer(
+      db, spaceId, bookId, accountId, viewerUserId, { writable: true },
+    );
+    if (!account) throw new AccountNotFoundError();
+    if (account.closed_at) {
+      throw new FinanceRuleError(`Account is already closed: ${account.name}`);
+    }
+    if (date < account.opened_at) {
+      throw new FinanceRuleError(`Close date ${date} is before ${account.name} opened`);
+    }
+    if (await this.repository.hasPostedEntriesAfter(db, spaceId, bookId, accountId, date)) {
+      throw new FinanceRuleError(`${account.name} has posted entries after ${date}`);
+    }
     return this.repository.closeAccount(db, spaceId, bookId, accountId, date, viewerUserId);
   }
 
@@ -264,10 +292,12 @@ export class FinanceLedgerService {
     // MAX+1 allocation races with concurrent inserts on the same book/date;
     // the unique constraint rejects the loser, so retry with a fresh sequence.
     let lastConflict: unknown;
-    for (let attempt = 0; attempt < 10; attempt += 1) {
+    for (let round = 0; round < 10; round += 1) {
       const sequence = await this.repository.nextSequence(db, spaceId, bookId, input.date);
       try {
-        return await insert(sequence);
+        // Under a savepoint inside a transaction: the conflict aborts the
+        // statement, and the retry must not find the transaction aborted.
+        return await attempt(db, () => insert(sequence));
       } catch (err) {
         if (!isSequenceConflict(err)) throw err;
         lastConflict = err;
@@ -285,6 +315,7 @@ export class FinanceLedgerService {
     userId: string,
     input: CreateTransactionDraftInput,
   ): Promise<FinanceDirectiveRow> {
+    const postings = interpolateBlankAmount(input.postings);
     const directive = await this.createDirectiveDraft(db, spaceId, bookId, userId, {
       directiveType: "transaction",
       date: input.date,
@@ -307,7 +338,7 @@ export class FinanceLedgerService {
     });
 
     let sortOrder = 0;
-    for (const posting of input.postings) {
+    for (const posting of postings) {
       const account = await this.requireActiveAccount(
         db,
         spaceId,
@@ -347,10 +378,18 @@ export class FinanceLedgerService {
     bookId: string,
     directiveId: string,
   ): Promise<FinanceDirectiveRow> {
+    return withLockedBook(db, spaceId, bookId, (tx) =>
+      this.postDirectiveLocked(tx, spaceId, bookId, directiveId));
+  }
+
+  private async postDirectiveLocked(
+    db: Queryable, spaceId: string, bookId: string, directiveId: string,
+  ): Promise<FinanceDirectiveRow> {
     const directive = await this.repository.findDirective(db, spaceId, bookId, directiveId);
     if (!directive) throw new Error("Directive not found");
     if (directive.status === "posted") return directive;
     if (directive.status === "voided") throw new Error("Cannot post a voided directive");
+    await this.validateDirectiveAccountDates(db, spaceId, bookId, directive);
     if (directive.directive_type === "transaction") {
       const errors = await this.validateTransactionBalance(db, spaceId, bookId, directiveId);
       if (errors.length > 0) {
@@ -358,6 +397,26 @@ export class FinanceLedgerService {
       }
     }
     return this.repository.updateDirectiveStatus(db, spaceId, bookId, directiveId, "posted");
+  }
+
+  private async validateDirectiveAccountDates(
+    db: Queryable, spaceId: string, bookId: string, directive: FinanceDirectiveRow,
+  ): Promise<void> {
+    const invalidAccount = await db.query(
+      `SELECT a.id FROM finance_accounts a
+        JOIN (
+          SELECT account_id FROM finance_postings WHERE transaction_directive_id=$3
+          UNION SELECT account_id FROM finance_balance_assertions WHERE directive_id=$3
+          UNION SELECT account_id FROM finance_pad_directives WHERE directive_id=$3
+          UNION SELECT source_account_id FROM finance_pad_directives WHERE directive_id=$3
+          UNION SELECT account_id FROM finance_notes WHERE directive_id=$3
+          UNION SELECT account_id FROM finance_documents WHERE directive_id=$3
+        ) used ON used.account_id=a.id
+       WHERE a.space_id=$1 AND a.book_id=$2
+         AND (a.opened_at > $4::date OR a.closed_at < $4::date)
+       LIMIT 1`, [spaceId, bookId, directive.id, directive.date],
+    );
+    if (invalidAccount.rows.length) throw new FinanceRuleError("Directive uses an account that is not open on its date");
   }
 
   async voidDirective(
@@ -424,7 +483,7 @@ export class FinanceLedgerService {
     spaceId: string,
     bookId: string,
     accountId: string,
-    /** Required: an optional viewer meant a caller that omitted it read any account. */
+    /** Required. Do not omit the viewer: a caller that omits it would read any account. */
     viewerUserId: string,
   ): Promise<FinancePostingRow[]> {
     const account = await this.repository.findAccountForViewer(db, spaceId, bookId, accountId, viewerUserId);
@@ -521,8 +580,44 @@ export class FinanceLedgerService {
     bookId: string,
     userId: string,
     input: ImportBeancountInput,
-  ): Promise<ImportBeancountResult> {
+  ): Promise<ImportBatchResult> {
     return importBeancountToDb(db, spaceId, bookId, userId, input);
+  }
+
+  listImportBatches(db: Queryable, spaceId: string, bookId: string, userId: string): Promise<ImportSourceSummary[]> {
+    return listImportBatches(db, spaceId, bookId, userId);
+  }
+
+  getImportBatch(db: Queryable, spaceId: string, bookId: string, userId: string, importSourceId: string): Promise<ImportBatchResult> {
+    return getImportBatch(db, spaceId, bookId, userId, importSourceId);
+  }
+
+  retryImportBatch(db: Queryable, spaceId: string, bookId: string, userId: string, importSourceId: string): Promise<ImportBatchResult> {
+    return retryImportBatch(db, spaceId, bookId, userId, importSourceId);
+  }
+
+  applyImportEntryMapping(
+    db: Queryable,
+    spaceId: string,
+    bookId: string,
+    userId: string,
+    importSourceId: string,
+    entryId: string,
+    accountMapping: Record<string, string>,
+  ): Promise<ImportBatchResult> {
+    return applyImportEntryMapping(db, spaceId, bookId, userId, importSourceId, entryId, accountMapping);
+  }
+
+  decideImportEntryReview(
+    db: Queryable,
+    spaceId: string,
+    bookId: string,
+    userId: string,
+    importSourceId: string,
+    decision: ImportReviewDecision,
+    entryIds: readonly string[] | null,
+  ): Promise<ImportBatchResult> {
+    return decideImportEntryReview(db, spaceId, bookId, userId, importSourceId, decision, entryIds);
   }
 
   exportBeancount(
@@ -541,6 +636,13 @@ export class FinanceLedgerService {
     importSourceId: string,
     proposalId?: string | null,
   ): Promise<{ posted: number }> {
+    return withLockedBook(db, spaceId, bookId, (tx) =>
+      this.postImportBatchLocked(tx, spaceId, bookId, importSourceId, proposalId));
+  }
+
+  private async postImportBatchLocked(
+    db: Queryable, spaceId: string, bookId: string, importSourceId: string, proposalId?: string | null,
+  ): Promise<{ posted: number }> {
     const directives = await this.repository.listDirectives(db, spaceId, bookId, {
       importSourceId,
     });
@@ -549,6 +651,7 @@ export class FinanceLedgerService {
     );
     const errors: FinanceValidationError[] = [];
     for (const directive of pending) {
+      await this.validateDirectiveAccountDates(db, spaceId, bookId, directive);
       if (directive.directive_type !== "transaction") continue;
       errors.push(...(await this.validateTransactionBalance(db, spaceId, bookId, directive.id)));
     }
@@ -580,7 +683,9 @@ export class FinanceLedgerService {
     if (account.opened_at > date) {
       throw new Error(`Account is not open yet: ${account.name}`);
     }
-    if (account.closed_at && account.closed_at <= date) {
+    // A day's close sorts after its transactions (sort.ts), so a posting on
+    // the closing date is valid here as it is in the Beancount validation.
+    if (account.closed_at && account.closed_at < date) {
       throw new Error(`Account is closed: ${account.name}`);
     }
     return account;
@@ -667,15 +772,26 @@ export class FinanceLedgerService {
 
 export const financeLedgerService = new FinanceLedgerService();
 
-function isSequenceConflict(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const pgError = err as { code?: string; constraint?: string };
-  return (
-    pgError.code === "23505" &&
-    (pgError.constraint ?? "").includes("book_date_sequence")
-  );
+/**
+ * The one posting left without an amount takes the negated sum of the others,
+ * as Beancount interpolates it. The form offers this ("blank = auto"); stored
+ * blank, the transaction could never be posted. Left as it is when the other
+ * amounts span currencies, which posting then reports as incomplete.
+ */
+function interpolateBlankAmount(postings: TransactionPostingInput[]): TransactionPostingInput[] {
+  const blank = postings.filter((posting) => !posting.amount);
+  if (blank.length !== 1) return postings;
+  const amounts = postings.flatMap((posting) =>
+    posting.amount ? [Amount.of(posting.amount.number, posting.amount.commoditySymbol)] : []);
+  const currency = amounts[0]?.currency;
+  if (!currency || amounts.some((amount) => amount.currency !== currency)) return postings;
+  const residual = amounts.reduce((sum, amount) => sum.add(amount), Amount.of("0", currency)).negate();
+  return postings.map((posting) =>
+    posting === blank[0]
+      ? { ...posting, amount: { number: residual.number.decimal, commoditySymbol: currency } }
+      : posting);
 }
 
 export { rootTypeForAccountName };
 
-export { AccountNotFoundError } from "./errors.js";
+export { AccountNotFoundError, FinanceRuleError } from "./errors.js";

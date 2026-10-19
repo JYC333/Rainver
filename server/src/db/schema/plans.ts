@@ -163,3 +163,32 @@ export const planNodeRuns = pgTable("plan_node_runs", {
   foreignKey({ columns: [table.runId, table.spaceId], foreignColumns: [runs.id, runs.spaceId], name: "plan_node_runs_run_space_fkey" }),
   foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "plan_node_runs_space_id_fkey" }),
 ]);
+
+/**
+ * A deterministic `action` node's attempts in a Plan, the same contract as
+ * `workflow_execution_action_attempts`: the shared action-node executor
+ * (`execution/actionNodeExecution.ts`) writes both. An action spawns no
+ * Agent Run of its own; a Run it delegates to is linked in `plan_node_runs`
+ * with role `delegated`.
+ */
+export const planNodeActionAttempts = pgTable("plan_node_action_attempts", {
+  id: varchar({ length: 36 }).primaryKey().notNull(),
+  spaceId: varchar("space_id", { length: 36 }).notNull(),
+  planNodeId: varchar("plan_node_id", { length: 36 }).notNull(),
+  attemptNumber: integer("attempt_number").notNull(),
+  actionKey: varchar("action_key", { length: 256 }),
+  status: varchar({ length: 32 }).notNull(),
+  resolvedInputsJson: jsonb("resolved_inputs_json").default({}).notNull(),
+  outputText: text("output_text"),
+  outputJson: jsonb("output_json"),
+  errorJson: jsonb("error_json"),
+  startedAt: timestamp("started_at", { withTimezone: true, mode: "string" }).notNull(),
+  endedAt: timestamp("ended_at", { withTimezone: true, mode: "string" }),
+}, (table): PgTableExtraConfigValue[] => [
+  index("ix_plan_node_action_attempts_node_started").using("btree", table.spaceId.asc().nullsLast(), table.planNodeId.asc().nullsLast(), table.startedAt.desc().nullsLast()),
+  unique("uq_plan_node_action_attempts_node_number").on(table.planNodeId, table.attemptNumber),
+  foreignKey({ columns: [table.planNodeId, table.spaceId], foreignColumns: [planNodes.id, planNodes.spaceId], name: "plan_node_action_attempts_node_space_fkey" }),
+  foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "plan_node_action_attempts_space_id_fkey" }),
+  check("ck_plan_node_action_attempts_number", sql`attempt_number > 0`),
+  check("ck_plan_node_action_attempts_status", sql`(status = 'running' AND ended_at IS NULL AND output_text IS NULL AND output_json IS NULL AND error_json IS NULL) OR (status = 'succeeded' AND ended_at IS NOT NULL AND output_text IS NOT NULL AND output_json IS NOT NULL AND error_json IS NULL) OR (status = 'failed' AND ended_at IS NOT NULL AND error_json IS NOT NULL)`),
+]);

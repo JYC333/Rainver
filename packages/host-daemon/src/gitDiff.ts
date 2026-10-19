@@ -51,10 +51,11 @@ export async function captureWorkspaceTree(cwd: string, timeoutMs = 30_000, base
  * a launch that could not capture one — it falls back to the tree against
  * HEAD, which is every uncommitted change in the directory, not this Run's.
  *
- * Earlier this was always `git diff HEAD`, staged through the repository's
- * own index: a later recipient's diff repeated every earlier Agent's and the
- * person's uncommitted edits, and the capture's `git reset` dropped whatever
- * the person had staged. Oversized-file exclusion is not done here — git
+ * Diff the tree captured before the process against the tree now. Do not
+ * always `git diff HEAD` through the repository's own index: a later
+ * recipient's diff then repeats every earlier change and the person's
+ * uncommitted edits, and the capture's `git reset` drops whatever the person
+ * had staged. Oversized-file exclusion is not done here — git
  * elides binary content, and the upload endpoint truncates the whole payload
  * by size (`MAX_DIFF_BYTES`); that is the one place the cap lives.
  */

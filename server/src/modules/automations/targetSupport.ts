@@ -1,5 +1,6 @@
 import type { PoolClient } from "../../db/pool.js";
 import { lockActiveProjectForMutation } from "../projects/access.js";
+import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { assertBudgetSourcesAvailable } from "../runs/budgetEnforcement.js";
 import {
   contractRouteHints,
@@ -108,13 +109,34 @@ export async function lockAndCheckAutomationBudget(
   if (auto.project_id) {
     await lockActiveProjectForMutation(client, auto.space_id, auto.project_id);
   }
-  await client.query(
-    `SELECT id FROM automations WHERE space_id = $1 AND id = $2 FOR UPDATE`,
-    [auto.space_id, auto.id],
-  );
+  await lockActiveAutomation(client, auto);
   const source = automationBudgetSource(auto);
   if (source.max_runs === null || source.max_runs === undefined) return;
   await assertBudgetSourcesAvailable(client, auto.space_id, [source]);
+}
+
+/**
+ * A fire reads its Automation long before it writes: policy, preflight and,
+ * for a schedule scan, every row ahead of it in the batch. A pause or archive
+ * that commits in that window must stop the fire, so the status is read
+ * again under the row lock the fire's transaction holds until it commits.
+ */
+export class AutomationNotActiveError extends HttpError {
+  constructor(status: string) {
+    super(409, `Automation is not active (status=${status})`);
+  }
+}
+
+export async function lockActiveAutomation(
+  client: Queryable,
+  auto: Pick<AutomationRow, "id" | "space_id">,
+): Promise<void> {
+  const locked = await client.query<{ status: string }>(
+    `SELECT id, status FROM automations WHERE space_id = $1 AND id = $2 FOR UPDATE`,
+    [auto.space_id, auto.id],
+  );
+  const status = locked.rows[0]?.status ?? "deleted";
+  if (status !== "active") throw new AutomationNotActiveError(status);
 }
 
 export function recordValue(value: unknown): Record<string, unknown> {

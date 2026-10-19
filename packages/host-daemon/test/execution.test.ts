@@ -202,7 +202,7 @@ describe("handleLaunch", () => {
     expect(String(done.error)).toContain("boom");
   });
 
-  it("streams stderr as live stderr frames, not only the complete frame's tail (C5)", async () => {
+  it("streams stderr as live stderr frames, not only the complete frame's tail", async () => {
     const { frames, send, complete } = collectSend();
     await handleLaunch(
       {
@@ -301,6 +301,43 @@ describe("handleLaunch", () => {
     expect(done).toMatchObject({ type: "complete", run_id: "run-7", exit_code: 0 });
     const output = frames.filter((f) => f.type === "output").map((f) => f.chunk).join("");
     expect(output).toBe("first second");
+  });
+
+  it("survives a stdin frame written to an agent that closed its input", async () => {
+    const { send, complete } = collectSend();
+    const lines: string[] = [];
+    await handleLaunch(
+      {
+        run_id: "run-closed-stdin",
+        launch_id: "launch-closed-stdin", workspace_location_id: "folder-1",
+        // Closes its end of the pipe and stays alive, so the write fails with
+        // EPIPE on the stream rather than finding the process gone.
+        argv: ["sh", "-c", "exec 0<&-; sleep 0.3"],
+        keep_stdin_open: true,
+      },
+      send,
+      (line) => lines.push(line),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    handleStdin({ run_id: "run-closed-stdin", value: "x".repeat(256 * 1024) });
+    expect(await complete()).toMatchObject({ run_id: "run-closed-stdin", exit_code: 0 });
+    expect(lines.some((line) => line.includes("stdin write failed"))).toBe(true);
+  });
+
+  it("keeps a character split across output chunks whole", async () => {
+    const { frames, send, complete } = collectSend();
+    await handleLaunch(
+      {
+        run_id: "run-split-utf8",
+        launch_id: "launch-split-utf8", workspace_location_id: "folder-1",
+        argv: [process.execPath, "-e", "process.stdout.write(Buffer.from([0xe4])); setTimeout(() => process.stdout.write(Buffer.from([0xb8, 0xad])), 100);"],
+      },
+      send,
+      () => {},
+    );
+    await complete();
+    const output = frames.filter((f) => f.type === "output").map((f) => f.chunk).join("");
+    expect(output).toBe("中");
   });
 
   it("substitutes the ACP remote-cwd placeholder with the run's real workspace path on both launch and stdin frames", async () => {
@@ -429,13 +466,13 @@ describe("handleLaunch", () => {
     expect(done.exit_code).not.toBe(0);
   }, 10000);
 
-  it("resolves codex_cli's ACP adapter to this daemon's own installed, on-disk entrypoint (ACP runtime replatform P3)", () => {
+  it("resolves codex_cli's ACP adapter to this daemon's own installed, on-disk entrypoint", () => {
     const entrypoint = resolveAcpEntrypoint("codex-acp");
     expect(entrypoint).not.toBeNull();
     expect(existsSync(entrypoint!)).toBe(true);
   });
 
-  it("resolves Claude's bundled ACP adapter to this daemon's own entrypoint (ACP runtime replatform P4)", () => {
+  it("resolves Claude's bundled ACP adapter to this daemon's own entrypoint", () => {
     const entrypoint = resolveAcpEntrypoint("claude-agent-acp");
     expect(entrypoint).not.toBeNull();
     expect(existsSync(entrypoint!)).toBe(true);
@@ -500,9 +537,9 @@ describe("handleLaunch", () => {
 });
 
 describe("handleLaunch with a provider binding", () => {
-  // The end of the path that shipped inert once: the frame arrives, and the
-  // child either runs against the backend the control plane chose or against
-  // this machine's own login. Only the spawned environment can tell them apart.
+  // The frame arrives, and the child either runs against the backend the
+  // control plane chose or against this machine's own login. Only the spawned
+  // environment can tell them apart.
   it("runs the child against the injected backend and none of this machine's", async () => {
     const { frames, send, complete } = collectSend();
     process.env.ANTHROPIC_API_KEY = "sk-this-machine";
@@ -530,8 +567,8 @@ describe("handleLaunch with a provider binding", () => {
       expect(output).toContain("http://control-plane:8021/anthropic/l1|lease-token|none|none");
       // The placeholder is resolved against the real profile directory, which
       // is keyed by Agent × container × adapter × backend rather than by this
-      // run — and never by adapter and provider alone, which is what two
-      // Agents on one machine used to share.
+      // run — and never by adapter and provider alone. Two Agents on one
+      // machine do not share a profile.
       expect(output).toMatch(
         new RegExp(`catalog = ".*/agents/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/profiles/location/cccccccc-cccc-4ccc-8ccc-cccccccccccc/codex_cli/provider-1/x\\.json"`),
       );
@@ -542,10 +579,10 @@ describe("handleLaunch with a provider binding", () => {
   });
 
   it("moves an own-login run's state root into its profile without taking the machine away from it", async () => {
-    // Two rules meet here. The leak this profile key closes: a run on the
-    // machine's own login used to inherit the machine's `HOME`, so its CLI
-    // read `~/.claude` — one login, one session store and one pile of vendor
-    // auto-memory shared by every Agent on the machine. And B67's closing
+    // Two rules meet here. A run on the
+    // machine's own login must not inherit the machine's `HOME`. Its CLI
+    // would then read `~/.claude` — one login, one session store and one pile
+    // of vendor auto-memory shared by every Agent on the machine. And B67's closing
     // rule, which this must not break: such a run is "not affected", so the
     // machine's own environment — proxies, toolchains, the `~/.gitconfig` a
     // Task run commits with — is still there. Only the state root moves.
@@ -745,7 +782,7 @@ describe("the work surface a dispatched run is given", () => {
     );
 
     const done = await complete();
-    // Failing the run is the point: a run with no work surface cannot report
+    // Do not let the run look finished. A run with no work surface cannot report
     // anything back, and one that looks finished but advanced nothing is worse
     // than one that never started.
     expect(done.exit_code).toBe(1);
@@ -764,7 +801,7 @@ describe("a retry that reuses the run id", () => {
   it("leaves the run directory to the newer attempt and tags each frame with its own launch", async () => {
     // A supervisor retry lands within seconds of the first attempt's kill,
     // while that attempt is still uploading; both attempts share
-    // `<config>/runs/<run_id>/`. The first attempt's cleanup used to delete
+    // `<config>/runs/<run_id>/`. The first attempt's cleanup must not delete
     // the second attempt's Skill and launcher out from under a live child.
     // Read-only, because a writer's retry queues behind the first attempt's
     // Location lease and so never overlaps it; a Run that takes no lease still
@@ -815,9 +852,9 @@ describe("a retry that reuses the run id", () => {
 /**
  * The refusal is the thing nobody can otherwise explain: the CLI sees a 403
  * from a proxy it did not choose, and the reason lives on the host. It reaches
- * the Run's history only if the completion frame carries it, and that link had
- * no test — which is how a real `npm install`, refused and logged by the
- * daemon, still produced no `egress_refused` event.
+ * the Run's history only if the completion frame carries it. A refused
+ * command the daemon logged still produces no `egress_refused` event unless
+ * that frame carries the refusal.
  */
 describe("what a Run reports about its egress", () => {
   afterEach(() => { setEgressProxy(null); });

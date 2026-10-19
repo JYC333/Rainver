@@ -27,7 +27,9 @@ import {
   collectionPath,
   hoistedCollectionIds,
   nextCollectionSortOrder,
+  owningProjectOf,
   planCollectionMove,
+  planNoteMove,
   removeCollection,
   upsertCollection,
   type CollectionMove,
@@ -46,6 +48,7 @@ import {
   writeTabs,
   type NotesSurfaceScope,
 } from './notesPageModel'
+import { useAppTranslation } from '../../i18n'
 
 type CollectionDialogState =
   | { mode: 'create-root'; collection?: undefined }
@@ -70,7 +73,7 @@ const TAB_FILL_PATH =
 const TAB_STROKE_PATH =
   'M0 32 C6 32 10 27 10 22 L10 8 Q10 0 18 0 L158 0 Q166 0 166 8 L166 22 C166 27 170 32 176 32'
 
-export interface NotesPageProps {
+interface NotesPageProps {
   /** Where this surface lives — see {@link NotesSurfaceScope}. */
   scope: NotesSurfaceScope
 }
@@ -81,6 +84,7 @@ export interface NotesPageProps {
  * page itself knows nothing about which route it is under.
  */
 export default function NotesPage({ scope }: NotesPageProps) {
+  const { t } = useAppTranslation()
   const navigate = useNavigate()
   const { activeSpaceId } = useSpace()
   const location = useLocation()
@@ -91,24 +95,22 @@ export default function NotesPage({ scope }: NotesPageProps) {
   const [selectedCollectionId, setSelectedCollectionId] = useState<string | null>(null)
 
   const [notes, setNotes] = useState<NoteSummary[]>([])
-  // Every note in the space, used to nest notes under their folder in the tree.
+  // Every note in the space, nested under its folder in the tree.
   const [allNotes, setAllNotes] = useState<NoteSummary[]>([])
   const [collapsedCollections, setCollapsedCollections] = useState<Set<string>>(() => new Set())
   const [resolvedTitles, setResolvedTitles] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
 
-  // Hoisting (borrowed from Trilium): the tree, the note query and the open
-  // tabs are all scoped to one folder's subtree. It is a mode over the single
-  // tree, not a second page.
+  // The tree, the note query and the open tabs are all scoped to one folder's
+  // subtree. It is a mode over the single tree, not a second page.
   //
   // A pinned root is the floor: the user may focus deeper inside it, and
   // leaving that focus returns here rather than to the whole Space.
   const pinnedRootId = scope.pinnedRootCollectionId ?? null
   const [focusRootId, setFocusRootId] = useState<string | null>(() => readHoistRoot(scope.tabsScopeKey))
   const hoistRootId = focusRootId ?? pinnedRootId
-  // Trilium's per-workspace tab identity: tabs opened inside one hoist root do
-  // not follow the user into another.
+  // Tabs opened inside one hoist root do not follow the user into another.
   const tabsScopeKey = `${scope.tabsScopeKey}:${hoistRootId ?? 'all'}`
 
   const [openIds, setOpenIds] = useState<string[]>(() => readTabs(tabsScopeKey))
@@ -139,6 +141,20 @@ export default function NotesPage({ scope }: NotesPageProps) {
   const [deleteDialog, setDeleteDialog] = useState<LinkedDeleteDialogState | null>(null)
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [shareDialog, setShareDialog] = useState<{ noteId: string; collectionId: string } | null>(null)
+  /**
+   * The server refused to take a note out of the last folder its own Project
+   * can see it in (or its last folder altogether). The two things that help
+   * are offered here as actions: move that entry somewhere the rule allows,
+   * or delete the note itself.
+   */
+  const [entryDialog, setEntryDialog] = useState<{
+    noteId: string
+    noteTitle: string
+    collectionId: string
+    owningProjectId: string | null
+    detail: string
+  } | null>(null)
+  const [entryDestinationId, setEntryDestinationId] = useState('')
   const [shareBusy, setShareBusy] = useState(false)
   const [collectionName, setCollectionName] = useState('')
   const [collectionParentId, setCollectionParentId] = useState(ROOT_PARENT)
@@ -198,10 +214,15 @@ export default function NotesPage({ scope }: NotesPageProps) {
    * Without a query the centre list is one folder's contents, in the user's
    * manual order. With one it is a search over the whole surface — which is the
    * half of hoisting that matters: narrowing what is drawn while search still
-   * spans every Project would be the wrong half (U4). `collection_ids` carries
+   * spans every Project would be the wrong half. `collection_ids` carries
    * the hoisted subtree; absent, the search spans the Space.
    */
+  // Every keystroke and folder change starts a new list request; only the
+  // latest one may write the list, however the answers are ordered.
+  const notesRequestRef = useRef(0)
   const loadNotes = useCallback(async () => {
+    const requestId = ++notesRequestRef.current
+    const current = () => requestId === notesRequestRef.current
     const inScope = scopeCollectionIds === null || scopeCollectionIds.length > 0
     if (!activeSpaceId || !scopeReady || !inScope || (!searchQuery && !selectedCollectionId)) {
       setNotes([])
@@ -218,12 +239,14 @@ export default function NotesPage({ scope }: NotesPageProps) {
         status: showingArchive ? 'archived' : undefined,
         limit: 200,
       })
+      if (!current()) return
       setNotes(showingArchive ? page.items : hideArchivedOrDeletedNotes(page.items))
     } catch (e) {
+      if (!current()) return
       toast.error(errMsg(e))
       setNotes([])
     } finally {
-      setLoading(false)
+      if (current()) setLoading(false)
     }
   }, [activeSpaceId, scopeCollectionIds, scopeReady, searchQuery, selectedCollection?.system_role, selectedCollectionId])
 
@@ -293,7 +316,9 @@ export default function NotesPage({ scope }: NotesPageProps) {
     setOpenIds(prev => (prev.includes(noteId) ? prev : [...prev, noteId]))
   }, [noteId])
 
-  useEffect(() => { writeTabs(scope.tabsScopeKey, openIds) }, [scope.tabsScopeKey, openIds])
+  // Written under the same per-hoist key they are read from above; a reload
+  // or a trip in and out of a hoist reads this key back.
+  useEffect(() => { writeTabs(tabsScopeKey, openIds) }, [tabsScopeKey, openIds])
 
   const onNoteResolved = useCallback((n: Note) => {
     setResolvedTitles(prev => (prev[n.id] === n.title ? prev : { ...prev, [n.id]: n.title }))
@@ -444,36 +469,42 @@ export default function NotesPage({ scope }: NotesPageProps) {
     const uniqueNotes = [...new Map(targetNotes.map(note => [note.id, note])).values()]
     if (uniqueNotes.length === 0) return false
 
-    try {
-      await Promise.all(uniqueNotes.map(note => notesApi.delete(note.id)))
-      const deletedIds = new Set(uniqueNotes.map(note => note.id))
-      removeNoteIdsFromView(deletedIds)
-
-      toast.success(uniqueNotes.length === 1 ? 'Note deleted' : `${uniqueNotes.length} notes deleted`, {
+    // Each delete stands alone: the ones that went through leave the view
+    // (with their Undo), the first failure is reported, and the view is
+    // re-read either way so it matches what the server now holds.
+    const outcomes = await Promise.allSettled(uniqueNotes.map(note => notesApi.delete(note.id)))
+    const deletedNotes = uniqueNotes.filter((_note, index) => outcomes[index]!.status === 'fulfilled')
+    const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
+    if (deletedNotes.length > 0) {
+      removeNoteIdsFromView(new Set(deletedNotes.map(note => note.id)))
+      toast.success(deletedNotes.length === 1 ? 'Note deleted' : `${deletedNotes.length} notes deleted`, {
         action: {
           label: 'Undo',
-          onClick: () => { void restoreDeletedNotes(uniqueNotes) },
+          onClick: () => { void restoreDeletedNotes(deletedNotes) },
         },
       })
-      return true
-    } catch (e) {
-      toast.error(errMsg(e))
+    }
+    if (failure) {
+      toast.error(errMsg(failure.reason))
+      await Promise.all([loadAllNotes(), loadNotes()])
       return false
     }
-  }, [removeNoteIdsFromView, restoreDeletedNotes])
+    return true
+  }, [loadAllNotes, loadNotes, removeNoteIdsFromView, restoreDeletedNotes])
 
   const archiveNotes = useCallback(async (targetNotes: Array<Pick<NoteSummary, 'id' | 'title'>>) => {
     const uniqueNotes = resolveDeleteTargets(targetNotes)
     if (uniqueNotes.length === 0) return
 
-    try {
-      await Promise.all(uniqueNotes.map(note => notesApi.update(note.id, { status: 'archived' })))
-      removeNoteIdsFromView(new Set(uniqueNotes.map(note => note.id)))
-      toast.success(uniqueNotes.length === 1 ? 'Note archived' : `${uniqueNotes.length} notes archived`)
-      await Promise.all([loadAllNotes(), loadNotes()])
-    } catch (e) {
-      toast.error(errMsg(e))
+    const outcomes = await Promise.allSettled(uniqueNotes.map(note => notesApi.update(note.id, { status: 'archived' })))
+    const archivedNotes = uniqueNotes.filter((_note, index) => outcomes[index]!.status === 'fulfilled')
+    const failure = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected')
+    if (archivedNotes.length > 0) {
+      removeNoteIdsFromView(new Set(archivedNotes.map(note => note.id)))
+      toast.success(archivedNotes.length === 1 ? 'Note archived' : `${archivedNotes.length} notes archived`)
     }
+    if (failure) toast.error(errMsg(failure.reason))
+    await Promise.all([loadAllNotes(), loadNotes()])
   }, [loadAllNotes, loadNotes, removeNoteIdsFromView, resolveDeleteTargets])
 
   const deleteNotes = useCallback(async (targetNotes: Array<Pick<NoteSummary, 'id' | 'title'>>) => {
@@ -688,7 +719,7 @@ export default function NotesPage({ scope }: NotesPageProps) {
   }
 
   /**
-   * The additive drop (U5): the note gains a folder and keeps the ones it is
+   * The additive drop: the note gains a folder and keeps the ones it is
    * in. Not run through the optimistic queue — unlike a reorder there is no
    * local answer for the new placement's sort order, and the server's reply is
    * the note with its placements already correct.
@@ -700,7 +731,7 @@ export default function NotesPage({ scope }: NotesPageProps) {
       toast.success(`Also placed in ${collectionById.get(collectionId)?.name ?? 'that folder'}`)
     } catch (e) {
       // Dropping a note into another Project's folder is a permission change,
-      // so it is a question rather than an error (U8): the server refuses and
+      // so it is a question rather than an error: the server refuses and
       // names the case, and the user confirms it in words before it happens.
       if (e instanceof ApiRequestError && e.code === 'note_cross_project_share_required') {
         setShareDialog({ noteId: targetNoteId, collectionId })
@@ -721,17 +752,41 @@ export default function NotesPage({ scope }: NotesPageProps) {
     }
   }, [placeNote, shareDialog])
 
-  /** Taking a note out of one folder. The server refuses the last placement —
-   * that is a deletion, and has its own action and its own confirmation. */
+  /** Taking a note out of one folder. The server refuses the last entry its
+   * owning Project has — and names the two actions that do help, which the
+   * entry dialog then offers. */
   const removePlacement = useCallback(async (targetNoteId: string, collectionId: string) => {
     try {
       const updated = await notesApi.removePlacement(targetNoteId, collectionId)
       onNoteResolved(updated)
       toast.success(`Removed from ${collectionById.get(collectionId)?.name ?? 'that folder'}`)
     } catch (e) {
+      if (e instanceof ApiRequestError && e.code === 'note_owning_entry_required') {
+        const payload = e.payload ?? {}
+        setEntryDestinationId('')
+        setEntryDialog({
+          noteId: targetNoteId,
+          noteTitle: typeof payload.note_title === 'string' ? payload.note_title : '',
+          collectionId,
+          owningProjectId: typeof payload.owning_project_id === 'string' ? payload.owning_project_id : null,
+          detail: e.message,
+        })
+        return
+      }
       toast.error(errMsg(e))
     }
   }, [collectionById, onNoteResolved])
+
+  /** Folders the refused entry may move to: inside the owning Project's
+   * subtree when the note has one, anywhere otherwise — never the folder it
+   * is leaving, and never Archive. */
+  const entryDestinationOptions = useMemo(() => {
+    if (!entryDialog) return []
+    return visibleCollections
+      .filter(c => c.id !== entryDialog.collectionId && c.system_role !== 'archive')
+      .filter(c => entryDialog.owningProjectId === null || owningProjectOf(c.id, collectionById) === entryDialog.owningProjectId)
+      .map(c => ({ value: c.id, label: collectionPath(c, collectionById) }))
+  }, [collectionById, entryDialog, visibleCollections])
 
   function dropNotes(updates: NoteMove[]) {
     const optimisticAllNotes = applyNoteMoves(allNotes, updates)
@@ -1025,6 +1080,60 @@ export default function NotesPage({ scope }: NotesPageProps) {
             </Button>
             <Button size="sm" onClick={() => void confirmCrossProjectShare()} disabled={shareBusy}>
               {shareBusy ? 'Sharing...' : 'Place and share'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={entryDialog !== null} onOpenChange={open => { if (!open) setEntryDialog(null) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {entryDialog?.owningProjectId ? t('knowledge_ui.entry_dialog.title_project') : t('knowledge_ui.entry_dialog.title_folder')}
+            </DialogTitle>
+            <DialogDescription>{entryDialog?.detail}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">
+                {entryDialog?.owningProjectId ? t('knowledge_ui.entry_dialog.move_label_project') : t('knowledge_ui.entry_dialog.move_label')}
+              </Label>
+              {entryDestinationOptions.length > 0 ? (
+                <Select
+                  value={entryDestinationId}
+                  onChange={setEntryDestinationId}
+                  options={[{ value: '', label: t('knowledge_ui.entry_dialog.choose_folder') }, ...entryDestinationOptions]}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground">{t('knowledge_ui.entry_dialog.no_folder')}</p>
+              )}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setEntryDialog(null)}>{t('knowledge_ui.entry_dialog.cancel')}</Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                if (!entryDialog) return
+                const target = { id: entryDialog.noteId, title: entryDialog.noteTitle }
+                setEntryDialog(null)
+                void deleteNotes([target])
+              }}
+            >
+              {t('knowledge_ui.entry_dialog.delete')}
+            </Button>
+            <Button
+              size="sm"
+              disabled={!entryDestinationId}
+              onClick={() => {
+                if (!entryDialog || !entryDestinationId) return
+                const updates = planNoteMove(entryDialog.noteId, entryDialog.collectionId, entryDestinationId, null, allNotes)
+                setEntryDialog(null)
+                if (updates.length > 0) dropNotes(updates)
+              }}
+            >
+              {t('knowledge_ui.entry_dialog.move')}
             </Button>
           </DialogFooter>
         </DialogContent>

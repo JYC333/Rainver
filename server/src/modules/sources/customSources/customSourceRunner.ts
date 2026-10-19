@@ -11,26 +11,25 @@ import type {
 import { redactSecretPatterns } from "../../runs/evidenceRedaction.js";
 
 /**
- * Runner MVP for Source Custom Source handlers. See
+ * Runs Source Custom Source handlers. See
  * `.agent/architecture/SOURCE_CUSTOM_SOURCE_HANDLERS.md#runner-expectations`.
  *
- * Honesty boundary (matches B13 / the audit's stated security gaps): this
- * executes the handler as a separate OS process with a temp sandbox
- * directory, a minimal explicit environment, and wall-clock/output-size
- * limits enforced as effective = min(policy envelope, instance hard limit).
- * Before loading the untrusted handler module, a generated bootstrap script
- * (`sandboxBootstrapScript`) monkey-patches `node:net`/`node:tls`/`node:http`/
- * `node:https`/`node:dgram`, `fetch`, `child_process`, `worker_threads`, and
- * common `fs`/`fs.promises` entrypoints to throw unless the operation stays
- * inside the handler contract. This is defense-in-depth, **not** container,
- * network-namespace, or OS-level filesystem isolation: a native addon, a raw
- * syscall, process internals, or an unpatched API could still reach outside
- * the sandbox at the OS permission level. Do not describe this runner as
- * OS-sandboxed in product docs — that mirrors the existing `one_shot_docker`
- * honesty requirement.
+ * The boundary (B13): this executes the handler as a separate OS process with
+ * a temp sandbox directory, a minimal explicit environment, and
+ * wall-clock/output-size limits enforced as effective = min(policy envelope,
+ * instance hard limit). Before loading the untrusted handler module, a
+ * generated bootstrap script (`sandboxBootstrapScript`) monkey-patches
+ * `node:net`/`node:tls`/`node:http`/`node:https`/`node:dgram`, `fetch`,
+ * `child_process`, `worker_threads`, and common `fs`/`fs.promises` entrypoints
+ * to throw unless the operation stays inside the handler contract. This is
+ * defense-in-depth, **not** container, network-namespace, or OS-level
+ * filesystem isolation: a native addon, a raw syscall, process internals, or
+ * an unpatched API could still reach outside the sandbox at the OS permission
+ * level. Do not describe this runner as OS-sandboxed in product docs — the
+ * same honesty requirement as `one_shot_docker`.
  */
 
-export type CustomSourceRunnerBlockReason =
+type CustomSourceRunnerBlockReason =
   | "runner_disabled"
   | "language_not_allowed"
   | "browser_automation_requested"
@@ -49,7 +48,7 @@ export interface CustomSourceRunnerCompletedResult {
   /** Redacted, byte-capped combined stdout/stderr. */
   logs: string;
   logs_truncated: boolean;
-  /** Raw (unparsed, unvalidated) contents of the sandbox output.json, or null if the handler never wrote one or output_too_large is true. Phase 3's contract validator must run on this before any Source write. */
+  /** Raw (unparsed, unvalidated) contents of the sandbox output.json, or null if the handler never wrote one or output_too_large is true. The contract validator must run on this before any Source write. */
   raw_output_json: string | null;
   /** True when the handler wrote an output.json larger than the effective max_output_bytes limit; it was never read into memory and raw_output_json is null. */
   output_too_large: boolean;
@@ -59,7 +58,7 @@ export interface CustomSourceRunnerCompletedResult {
 
 export type CustomSourceRunnerResult = CustomSourceRunnerBlockedResult | CustomSourceRunnerCompletedResult;
 
-export interface CustomSourceRunnerInput {
+interface CustomSourceRunnerInput {
   policyEnvelope: CustomSourcePolicyEnvelope;
   handlerInput: CustomSourceHandlerInput;
   /** Absolute path to the handler's entrypoint JS file, already materialized on disk by the caller. Code provisioning is out of this runner's scope. */
@@ -86,9 +85,8 @@ export function evaluateCustomSourceRunnerBlockReason(
 ): CustomSourceRunnerBlockReason | null {
   if (!settings.runner_enabled) return "runner_disabled";
   if (!settings.allowed_languages.includes(policyEnvelope.language)) return "language_not_allowed";
-  // Phase 4 acceptance: browser automation, shell, and dependency installation
-  // remain disabled unconditionally, regardless of instance availability flags
-  // (those flags are for a later phase's proposal-gated enablement).
+  // Browser automation, shell, and dependency installation stay disabled
+  // unconditionally. Instance availability flags do not turn them on.
   if (policyEnvelope.browser_automation_enabled) return "browser_automation_requested";
   if (policyEnvelope.shell_enabled) return "shell_requested";
   if (policyEnvelope.dependency_installation_enabled) return "dependency_installation_requested";
@@ -96,9 +94,9 @@ export function evaluateCustomSourceRunnerBlockReason(
 }
 
 /**
- * Instance hard limits always win over a handler version's policy envelope
- * (an explicit plan decision rule) — a handler version cannot request a
- * timeout/log/output/download/file budget beyond what the instance allows.
+ * Instance hard limits always win over a handler version's policy envelope.
+ * A handler version cannot request a timeout, log, output, download, or file
+ * budget beyond what the instance allows.
  */
 export function effectiveCustomSourceLimits(
   settings: CustomSourceRunnerSettings,
@@ -421,10 +419,10 @@ function isInsideRoot(path: string, root: string): boolean {
 
 /**
  * Drops a trailing incomplete UTF-8 multi-byte sequence, if the buffer was
- * cut mid-character. Without this, decoding a mid-sequence cut with
+ * cut mid-character. Do not decode that cut as-is.
  * `.toString("utf8")` substitutes a 3-byte U+FFFD replacement character,
  * which can make the decoded string's byte length exceed the buffer's own
- * byte budget — defeating the point of a byte-count log cap.
+ * byte budget and break the byte-count log cap.
  */
 function trimIncompleteUtf8Tail(buf: Buffer): Buffer {
   const len = buf.length;

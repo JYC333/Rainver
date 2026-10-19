@@ -74,7 +74,7 @@ export function buildRetrievalBriefArtifactSpec(
     })),
     // Aggregate the distinct source connection ids the answer derived from, so a
     // non-creator attaching this artifact later can be re-gated against the
-    // current source read policy (G3). Empty for non-source-derived briefs.
+    // current source read policy. Empty for non-source-derived briefs.
     source_connection_ids: sourceConnectionIdsFromItems(input.response.items),
     source_count: input.response.items.length,
     total: input.response.total,

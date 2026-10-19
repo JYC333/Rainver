@@ -2,11 +2,10 @@
  * Reading this machine's own CLI history over the Agent Client Protocol.
  *
  * Every supported runtime exposes its past sessions through `session/list`
- * and replays one through `session/load`, so there is one generic client here
- * and no vendor session-file parser anywhere — those formats are
- * undocumented, self-corrupting (broken parent chains, sessions rewritten on
- * resume, one conversation split across files by compaction), and three of
- * them would have to be maintained forever.
+ * and replays one through `session/load`. This is one generic client. Do not
+ * add a vendor session-file parser. Those formats are undocumented and change
+ * under the daemon: broken parent chains, sessions rewritten on resume, one
+ * conversation split across files by compaction.
  *
  * This module holds no dependency beyond Node and the ACP adapters the daemon
  * already ships, and no knowledge of any vendor: the server names the adapter
@@ -59,13 +58,13 @@ export const DEFAULT_LIMITS: AmbientTrimLimits = {
 
 export type AmbientTrimLimits = ProtocolAmbientTrimLimits;
 
-export type AmbientSessionSummary = ProtocolAmbientSessionSummary;
+type AmbientSessionSummary = ProtocolAmbientSessionSummary;
 
 export type AmbientRecord = ProtocolAmbientRecord;
 
 export type AmbientUsage = ProtocolAmbientUsage;
 
-export type AmbientSessionImport = ProtocolAmbientSessionImport;
+type AmbientSessionImport = ProtocolAmbientSessionImport;
 
 export interface AmbientRuntimeTarget {
   runtime_key: string;
@@ -96,20 +95,20 @@ class AcpProcess {
       stdio: ["pipe", "pipe", "ignore"],
       // Keeps the state roots: this reads the machine's own CLI history, and
       // the vendor keeps that under a variable sharing its credential prefix.
-      // Clearing them by prefix made the feature report the machine as having
-      // no history at all.
+      // Clearing them by prefix would report the machine as having no history
+      // at all. Do not.
       //
-      // Worth knowing, and deliberate: `CODEX_HOME` also *selects* which
-      // account's history this is. An owner who starts the daemon from a shell
-      // exporting a non-default one imports from that account, while dispatch
-      // uses the profile's own root — so what was imported can be history
-      // Rainver will not itself continue. That is the honest answer for a
-      // feature whose subject is "this machine's own history"; the alternative
-      // is to import nothing.
+      // `CODEX_HOME` also selects which account's history this is. A daemon
+      // started from a shell that exports a non-default one imports from that
+      // account. Dispatch uses the profile's own root, so the import can be
+      // history Rainver will not continue.
       env: { ...helperProcessEnv(process.env, runtimeKey, { keepStateRoots: true }), ...env },
     });
     this.child.stdout?.on("data", (chunk: Buffer) => this.consume(chunk.toString("utf8")));
     this.child.on("error", (error) => this.fail(error instanceof Error ? error : new Error(String(error))));
+    // EPIPE from writing to a runtime that already exited arrives here, not
+    // at the write; an unheard stream error ends the daemon.
+    this.child.stdin?.on("error", (error) => this.fail(error));
     this.child.on("close", () => this.fail(new Error("the runtime exited before the request completed")));
   }
 
@@ -202,7 +201,7 @@ function stringOrNull(value: unknown): string | null {
  * Waits for the replay to go quiet.
  *
  * Returns false when the ceiling was reached while updates were still
- * arriving. That distinction is the whole point: a replay cut off mid-stream
+ * arriving. Do not record that cutoff as `complete`. A replay cut off mid-stream
  * and recorded `complete` is a truncated transcript nothing will ever retry.
  */
 async function drainUpdates(runtime: AcpProcess): Promise<boolean> {
@@ -388,7 +387,7 @@ export function listSessionsForTest(
  * source gone, and conflating them means a session outside the window looks
  * deleted.
  */
-export interface AmbientEnumeration {
+interface AmbientEnumeration {
   selected: AmbientSessionSummary[];
   held: string[];
   conclusive: boolean;

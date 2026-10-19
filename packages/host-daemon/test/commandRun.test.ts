@@ -6,11 +6,10 @@ import { saveConfig } from "../src/config.js";
 import { runHostCommand } from "../src/commandRun.js";
 
 /**
- * `command_run` is how the Verification Engine
- * reach a host. It had no test at all in the change that introduced it, and
- * two defects survived review because of that: the launch dropped a managed
- * copy's own environment, and the strict path reused the namespace's fd-3
- * readiness handshake without giving the child an fd 3. Both are pinned below.
+ * `command_run` is a fixed command on the host that holds the workspace.
+ * The launch keeps a managed copy's own environment. The strict path gives
+ * the child an fd 3 for the namespace readiness handshake. Do not drop the
+ * environment. Do not reuse the handshake without that fd.
  */
 let configDir: string;
 let workspaceDir: string;
@@ -76,8 +75,8 @@ describe("running a server-defined command on this host", () => {
       scratch_workspace: true,
       runtime_key: "opencode",
       // An installation id the daemon can parse but has not installed. A bare
-      // version string used to arrive here from the conformance route and fail
-      // the same way, which made every C3 check fail to launch.
+      // version string must not arrive here. An uninstalled id fails the
+      // launch; a bare version string fails the same way.
       installation: "managed:9.9.9",
       command: ["--version"],
       timeout_seconds: 30,
@@ -122,7 +121,7 @@ describe("running a server-defined command on this host", () => {
   it("resolves a built-in-host Location the control plane named relative to the workspace root", async () => {
     // The built-in host never runs `workspace add`, so it has no registered
     // path for a Location the control plane created under the root both
-    // containers mount. Without this a Run dispatched to a server Location
+    // containers mount. Do not skip the root. A Run dispatched to a server Location
     // fails at launch with "no local path registered".
     process.env.RAINVER_HOST_WORKSPACES_ROOT = workspaceDir;
     await mkdir(join(workspaceDir, "space-1", "folder-1"), { recursive: true });

@@ -23,10 +23,10 @@ export const InquiryAttentionStateSchema = z.enum([
 ]);
 export type InquiryAttentionState = z.infer<typeof InquiryAttentionStateSchema>;
 
-// Actions only, ordered by stage. `pause` and `wait_for_monitoring` were
-// states wearing an action's clothing and were removed with the step model:
-// pausing is an `attention_state` change, and waiting on monitoring is what a
-// running background step already means.
+// Actions only, ordered by stage. `pause` and `wait_for_monitoring` are not
+// actions: pausing is an `attention_state` change, and waiting on monitoring
+// is what a running background step already means. Do not add them back as
+// next-focus kinds.
 export const InquiryNextFocusKindSchema = z.enum([
   "clarify_or_decompose",
   "search_acquisition",
@@ -45,11 +45,8 @@ export type InquiryNextFocusKind = z.infer<typeof InquiryNextFocusKindSchema>;
  * reaching Land closes a round rather than finishing the Thread and there is
  * no such thing as regression here.
  *
- * Stages are derived, never stored — this grouping exists so both the Room
- * Project state panel (Phase B) and, when Room dispatch has an Inquiry
- * next-focus kind to label, the Room agent's context assembly (Phase A
- * decision 3) share one classification instead of drifting copies (plan:
- * `.agent/plans/project-conversational-advancement-plan.md`).
+ * Stages are derived, never stored. The Room Project state panel and the Room
+ * agent's context assembly share this classification. Do not keep a second copy.
  */
 export const InquiryStageIdSchema = z.enum(["clarify", "acquire", "digest", "conclude", "land"]);
 export type InquiryStageId = z.infer<typeof InquiryStageIdSchema>;
@@ -188,7 +185,9 @@ export const InquiryEvidenceSignalSchema = z.object({
   space_id: z.string(),
   project_id: z.string(),
   thread_id: z.string(),
-  corpus_item_id: z.string(),
+  /** Exactly one source: a Corpus item or a reviewed Experiment Interpretation. */
+  corpus_item_id: z.string().nullable(),
+  experiment_interpretation_id: z.string().nullable(),
   classification: z.string(),
   is_material: z.boolean(),
   confidence: z.number().nullable(),
@@ -325,6 +324,21 @@ export const InquiryCandidateDecisionRequestSchema = z.object({
   reason: z.string().optional(),
   defer_until: z.string().optional(),
   gap_statement: z.string().optional(),
+}).superRefine((body, ctx) => {
+  // What the server requires per decision, so a request the schema accepts
+  // is one the server accepts.
+  const required: Array<[keyof typeof body, boolean]> = body.decision === "merge"
+    ? [["target_candidate_id", true]]
+    : body.decision === "defer"
+      ? [["reason", true], ["defer_until", true]]
+      : body.decision === "gap"
+        ? [["gap_statement", true]]
+        : [];
+  for (const [field] of required) {
+    if (typeof body[field] !== "string" || (body[field] as string).trim() === "") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} is required for ${body.decision}` });
+    }
+  }
 });
 
 export const InquiryLifecycleTransitionRequestSchema = z.object({

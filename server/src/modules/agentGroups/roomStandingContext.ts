@@ -21,16 +21,16 @@ import {
  * that alters which notes may be delivered, a rules edit — while the task and
  * the message window change every turn.
  *
- * So it is sent when it changes, never on every turn: re-sending it grew a
- * resumed session by one copy per turn and rewrote nothing the vendor could
- * cache. The thread keeps the digest of what its live session last received
+ * So it is sent when it changes, never on every turn. Do not re-send it every
+ * turn: a resumed session grows by one copy per turn, and the vendor cannot
+ * cache a repeat. The thread keeps the digest of what its live session last received
  * (`host_threads.identity_digest`), and that digest is written only by the
  * terminal outcome of a Run that carried the block and completed
  * (`PgHostThreadRepository.recordRunOutcome`). A dispatch that never reached
  * the runtime therefore never marks the block sent, which would silently
  * withhold the Agent's identity — the worse failure.
  */
-export interface RoomStandingContext {
+interface RoomStandingContext {
   text: string;
   digest: string;
 }

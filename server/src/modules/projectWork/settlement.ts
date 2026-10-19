@@ -9,43 +9,23 @@ import { enqueueTaskMerges } from "../hosts/taskMerges.js";
 /**
  * What a finished Run means for the Task it was run for.
  *
- * The rule this replaces was `bool_and(terminal) AND NOT bool_or(failure)` over
- * **every Run the Task ever had**, which had two defects that pulled in
- * opposite directions:
+ * Read the **latest** Run, not every Run the Task has had. One failed Run must
+ * not keep the Task from reaching `done` after a later success. `cancelled` is
+ * a person changing their mind, `degraded` publishes real output with a
+ * warning, and `orphaned` is a crash the Supervisor is already recovering
+ * from. None of those three is a failure. `waiting_for_review` is a hold for
+ * a person. Do not leave that Task in `in_progress`.
  *
- * - `bool_or` never expired. One failed Run poisoned the Task permanently: any
- *   number of later successful re-runs still saw a historical failure and the
- *   Task could never reach `done` again.
- * - Three of the four statuses it counted as failure are not failures.
- *   `cancelled` is a person changing their mind, `degraded` publishes real
- *   output with a warning, and `orphaned` is a crash the Supervisor is already
- *   recovering from.
+ * Settle only after a `run_finalizations` row exists, except `cancelled` (a
+ * person's decision, nothing to evaluate). Finalization writes the evaluation
+ * and lets the Supervisor decide retry-or-hold, and it is the one trigger
+ * (`finalizationReconciler.ts`): every terminal Run of a Task is finalized —
+ * by the job that ran it, the route that cancelled it, or the jobs worker's
+ * sweep of the rest — and nothing calls settlement from a repository. Do not
+ * settle at the terminal status write. That is before finalization.
  *
- * And the status it should have counted, it could not see at all:
- * `waiting_for_review` is what the Supervisor writes when it stops retrying,
- * and it was absent from the terminal set, so a Run parked for a human decision
- * left its Task sitting in `in_progress` indefinitely with nothing anywhere
- * saying a person was needed.
- *
- * The replacement reads the **latest** Run rather than the whole history, and
- * dispatches on what that Run actually was.
- *
- * Two more things the first version of this file got wrong, found in review:
- *
- * - It ran at the terminal status write, which is **before** finalization —
- *   and finalization is what writes the evaluation and lets the Supervisor
- *   decide retry-or-hold. Settling then meant every successful Run held its
- *   Task as `evaluation_missing`, and a failed Run held it while the
- *   Supervisor was about to retry. So a settled Run must carry a
- *   `run_finalizations` row before it counts, except `cancelled` (a person's
- *   decision, nothing to evaluate), and finalization is the one trigger
- *   (`finalizationReconciler.ts`): every terminal Run of a Task is finalized
- *   — by the job that ran it, the route that cancelled it, or the jobs
- *   worker's sweep of the rest — and nothing calls settlement from a
- *   repository.
- * - It counted every `task_runs` row. A `planning` Run (Ask Agent to plan) and
- *   a `review` Run do not advance the work, and a successful plan closing its
- *   Task as done is precisely the wrong answer.
+ * A `planning` Run and a `review` Run do not advance the work. Do not count
+ * every `task_runs` row. A successful plan must not close its Task as done.
  */
 
 /** `task_runs.role` values that do not advance the Task's own work. */
@@ -223,9 +203,8 @@ export function outcomeForRun(
  * Runs inside the caller's transaction. A terminal transition cannot race a
  * new Run in behind the decision, because this writes the Task row and the
  * dispatch admission takes `SELECT … FOR UPDATE` on that same row — under
- * READ COMMITTED the two serialize. (It used to say the caller held a
- * host-thread queue lock; that queue is gone, and the invariant now rests on
- * the Task row alone.)
+ * READ COMMITTED the two serialize. The invariant rests on the Task row.
+ * Do not add a second lock for it.
  */
 export async function settleTasksForRun(
   db: Queryable,
@@ -321,7 +300,8 @@ async function settleTasksForRunIn(
                 WHERE e.space_id = $1 AND e.subject_type = 'task' AND e.subject_id = t.id
                   AND e.event_kind = 'task.flow_changed'
                   AND e.data_json->>'to' = 'waiting_for_review'
-             ), '-infinity'::timestamptz)))`,
+             ), '-infinity'::timestamptz)))
+      FOR UPDATE OF t`,
     [spaceId, runId, SETTLED_RUN_STATUSES, NON_EXECUTION_TASK_RUN_ROLES],
   );
 
@@ -338,6 +318,22 @@ async function settleTasksForRunIn(
       row.evaluation_id !== null,
       missing,
     );
+
+    // The row is locked by the candidate query, so its status is the one the
+    // guards above saw. The event is written only once the row has moved:
+    // an event for a change that did not happen would still commit.
+    const updated = await db.query<{ id: string }>(
+      `UPDATE tasks
+          SET status = $3::varchar,
+              completed_at = CASE WHEN $3::varchar = 'done' THEN COALESCE(completed_at, now()) ELSE completed_at END,
+              updated_at = now()
+        WHERE id = $2 AND space_id = $1
+          AND status NOT IN ('done', 'cancelled', 'blocked')
+        RETURNING id`,
+      [spaceId, row.task_id, outcome.flow],
+    );
+    if (updated.rows.length === 0) continue;
+    settled.push(row.task_id);
 
     const settlementEvent = row.project_id
       ? await appendProjectWorkEvent(db, {
@@ -365,18 +361,6 @@ async function settleTasksForRunIn(
         })
       : null;
 
-    const updated = await db.query<{ id: string }>(
-      `UPDATE tasks
-          SET status = $3::varchar,
-              completed_at = CASE WHEN $3::varchar = 'done' THEN COALESCE(completed_at, now()) ELSE completed_at END,
-              updated_at = now()
-        WHERE id = $2 AND space_id = $1
-          AND status NOT IN ('done', 'cancelled')
-        RETURNING id`,
-      [spaceId, row.task_id, outcome.flow],
-    );
-    if (updated.rows.length === 0) continue;
-    settled.push(row.task_id);
 
     if (outcome.flow === "done") {
       // Done by any path lands its branch (ADR 0016 §11).

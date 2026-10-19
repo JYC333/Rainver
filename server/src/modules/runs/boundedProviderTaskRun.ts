@@ -13,7 +13,7 @@ import { canonicalRunOutput } from "./orchestrationResults.js";
 /**
  * One bounded ProviderTask, one Run.
  *
- * ADR 0022 §2/§3 and plan decision 14: bounded work that needs Run lifecycle,
+ * ADR 0022 §2/§3: bounded work that needs Run lifecycle,
  * retry, artifacts or verification records a `provider_task` Run — no Agent,
  * no AgentVersion, no manufactured Runtime Profile — while incidental calls
  * (title generation, query rewriting, reranking) use the ProviderTask ledger
@@ -24,10 +24,7 @@ import { canonicalRunOutput } from "./orchestrationResults.js";
  * states: *one bounded task is one Run however many provider attempts its key
  * pool makes*. Every attempt links itself to the same Run, and the Run's
  * terminal state is decided once, when the task itself succeeds or fails.
- * There were two hand-rolled copies of this wrapper with opposite semantics —
- * Project Research kept one Run across retries, Daily Reports created a new
- * Run per attempt and failed each one — which is how the same concept came to
- * mean two different things in the Run list. This is the only implementation.
+ * Do not create a new Run per attempt. This is the only implementation.
  */
 
 export class BoundedProviderTaskError extends Error {
@@ -37,7 +34,7 @@ export class BoundedProviderTaskError extends Error {
   }
 }
 
-export interface BoundedProviderTaskCompletion {
+interface BoundedProviderTaskCompletion {
   /** The provider's raw reply text. Empty for most structured contracts. */
   text: string;
   /** The validated structured output; always present for `structured`. */
@@ -57,7 +54,7 @@ export interface BoundedProviderTaskCompletion {
  * Run's terminal status have to commit together. Throwing a
  * `BoundedProviderTaskError` fails the Run once with that code.
  */
-export type BoundedProviderTaskFinalize = (
+type BoundedProviderTaskFinalize = (
   completion: BoundedProviderTaskCompletion,
   runId: string,
 ) => Promise<{ outputText: string; outputJson: Record<string, unknown> } | null>;
@@ -106,7 +103,7 @@ export type BoundedProviderTaskInput = BoundedProviderTaskBase & (
   | { completion: "text" }
 );
 
-export type BoundedProviderTaskResult =
+type BoundedProviderTaskResult =
   | { ok: true; runId: string; output: Record<string, unknown>; text: string }
   | { ok: false; runId: string | null; errorCode: string; error: string };
 
@@ -158,12 +155,12 @@ export async function runBoundedProviderTask(
             if (!started) {
               // `WHERE status = 'queued'` refused the start. Already `running`
               // is the ordinary case — a job retry, or the next key in the
-              // pool taking over the same task — but anything else means the
-              // Run left `queued` under another authority (a cancel). Spending
-              // the provider anyway produced a Run that finalized its durable
-              // writes and then failed 23514 on the queued arm of the terminal
-              // update, surfacing a raw constraint name to the person. The
-              // throw rolls this attempt's transaction back before the call.
+              // pool taking over the same task. Anything else means the Run
+              // left `queued` under another authority (a cancel). Do not spend
+              // the provider then. The durable writes land and the queued arm
+              // of the terminal update fails 23514, and the person sees the
+              // constraint name. The throw rolls this attempt's transaction
+              // back before the call.
               const current = await attemptRuns.getRun(input.spaceId, input.runId);
               if (current?.status !== "running") {
                 throw new BoundedProviderTaskError(
@@ -195,11 +192,11 @@ export async function runBoundedProviderTask(
           });
           // Deliberately not published here: this runs inside the attempt's
           // transaction, and the ledger link UPDATEs that follow it can still
-          // roll the whole attempt back. Publishing the id here left the
-          // closure holding a Run that does not exist — `markRunTerminal`
-          // matched nothing, the failure settled nowhere, and the caller was
-          // handed a `run_id` pointing at no row. `onAttemptCompleted` runs
-          // after that transaction has committed, and carries the same id.
+          // roll the whole attempt back. Do not publish the id here. The
+          // closure would hold a Run that does not exist, the failure would
+          // settle nowhere, and the caller would be handed a `run_id` pointing
+          // at no row. `onAttemptCompleted` runs after that transaction has
+          // committed, and carries the same id.
           return run.id;
         },
         // A failed attempt is not a failed task while the pool still has

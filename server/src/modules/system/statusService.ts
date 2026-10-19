@@ -3,14 +3,14 @@
  *
  * `/health` answers "is the process up and can it reach Postgres" — that is a
  * container probe and nothing more. It stays 200 while a scheduled task has
- * silently stopped turning or the jobs worker never started, which is exactly
- * the class of failure that matters for unattended work.
+ * silently stopped turning or the jobs worker never started. That is the
+ * class of failure that matters for unattended work.
  *
  * This surface reports the components the server actually owns and can observe
  * from inside this process. Components documented in
  * `.agent/modules/server-status.md` that need separate probes (LLM provider
- * reachability, per-adapter runtime tools, sandbox runner) are not reported
- * here yet rather than being reported as healthy on no evidence.
+ * reachability, per-adapter runtime tools) are not reported here. Do not
+ * report them as healthy on no evidence.
  */
 
 import type { ServerConfig } from "../../config.js";
@@ -22,15 +22,15 @@ import {
 } from "../scheduler/runtimeStatus.js";
 import type { ScheduledTaskStatus } from "../scheduler/registry.js";
 
-export type ComponentStatus = "ok" | "degraded" | "error";
+type ComponentStatus = "ok" | "degraded" | "error";
 
-export interface StatusComponent {
+interface StatusComponent {
   name: string;
   status: ComponentStatus;
   detail: string | null;
 }
 
-export interface StatusBody {
+interface StatusBody {
   overall: ComponentStatus;
   components: StatusComponent[];
   scheduler_tasks: ScheduledTaskStatus[];
@@ -156,8 +156,8 @@ function workerComponent(
     status: pending > 0 ? "error" : "degraded",
     detail:
       pending > 0
-        ? `No jobs worker running while ${pending} job(s) are pending`
-        : "No jobs worker running",
+        ? `No jobs worker running while ${pending} job(s) are pending; background services did not start in this process — check the server log for the startup failure and restart the server service`
+        : "No jobs worker running; background services did not start in this process — check the server log for the startup failure and restart the server service",
   };
 }
 

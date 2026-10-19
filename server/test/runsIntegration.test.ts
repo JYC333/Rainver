@@ -13,11 +13,11 @@ import {
 // Real-PostgreSQL integration tests for the server runs repositories. The unit
 // suites use a FakeDb that does not execute SQL, so they cannot catch parameter
 // type inference, CHECK/UNIQUE constraints, varchar length, or CTE column
-// ambiguity. These run the actual SQL against the repository's shared
-// PostgreSQL Testcontainers template migrated from server/migrations/.
+// ambiguity. These run the actual SQL against a database cloned from the
+// shared migrated template.
 //
-// The whole suite skips gracefully when Docker is unavailable so `pnpm test`
-// still runs everywhere; where Docker is present (dev, CI) it always runs.
+// The suite skips when that database is unreachable. CI sets
+// REQUIRE_TEST_POSTGRES, which fails the run instead of skipping.
 
 
 const db = useTestDatabase(import.meta.filename, { max: 10 });
@@ -642,10 +642,29 @@ describe("runs repositories against real PostgreSQL", () => {
       status: "running",
     });
 
-    // The scalar subquery + ::varchar casts must execute; the old
-    // INSERT...SELECT shape failed real "inconsistent types deduced" inference.
-    expect(e0.event_index).toBe(0);
-    expect(e1.event_index).toBe(1);
+    // The scalar subqueries and their ::varchar casts must execute: without
+    // the casts PostgreSQL fails with "inconsistent types deduced".
+    expect(e0!.event_index).toBe(0);
+    expect(e1!.event_index).toBe(1);
+  });
+
+  it("keeps every event when several writers append to one Run at once", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const repo = new PgRunRepository(db.pool);
+    const runId = await seedRun();
+
+    // The runtime event sink and a tool call's own HTTP request both append to
+    // the same Run from different connections; each computes the next index.
+    const events = await Promise.all(Array.from({ length: 24 }, (_, index) => repo.appendRunEvent({
+      run_id: runId,
+      space_id: "space-1",
+      event_type: index % 2 === 0 ? "tool_call_started" : "action_invoked",
+      status: "running",
+      summary: `event ${index}`,
+    })));
+
+    expect(events.map((event) => event!.event_index).sort((a, b) => a - b))
+      .toEqual(Array.from({ length: 24 }, (_, index) => index));
   });
 
   it("accepts delegation lifecycle run events", async (ctx) => {
@@ -665,7 +684,7 @@ describe("runs repositories against real PostgreSQL", () => {
       },
     });
 
-    expect(event.event_type).toBe("delegation_requested");
+    expect(event!.event_type).toBe("delegation_requested");
   });
 
   it("rejects an event_type outside ck_run_events_event_type", async (ctx) => {
@@ -673,8 +692,8 @@ describe("runs repositories against real PostgreSQL", () => {
     const repo = new PgRunRepository(db.pool);
     const runId = await seedRun();
 
-    // "run_orchestration_failed" is NOT in the CHECK list — this is exactly why
-    // orchestration had to switch to the constraint-valid "adapter_completed".
+    // "run_orchestration_failed" is not in the CHECK list. The type that is
+    // written is "adapter_completed". Do not append a type the constraint rejects.
     await expect(
       repo.appendRunEvent({
         run_id: runId,
@@ -703,8 +722,8 @@ describe("runs repositories against real PostgreSQL", () => {
     });
     expect(step.step_index).toBe(0);
 
-    // The original defect wrote a worker-id string (>36 chars, not an Actor) to
-    // actor_id; varchar(36) rejects it.
+    // actor_id is an Actor id. A worker-id string is longer than 36 characters
+    // and is not an Actor; varchar(36) rejects it.
     await expect(
       repo.createRunStep({
         run_id: runId,
@@ -956,7 +975,6 @@ describe("runs repositories against real PostgreSQL", () => {
     const target = await seedJob({ job_type: "agent_run", status: "pending" });
 
     const claimed = await jobs.claimNextAgentRun("worker-1");
-    // The old "column reference \"id\" is ambiguous" defect threw here.
     expect(claimed?.id).toBe(target);
     expect(claimed?.status).toBe("claimed");
     expect(claimed?.claimed_by).toBe("worker-1");

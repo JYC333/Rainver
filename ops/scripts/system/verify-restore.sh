@@ -51,7 +51,7 @@ fatal() {
 DB_URI=""
 DATABASE_URL_VALUE="$(local_compose_setting DATABASE_URL || true)"
 if [[ -n "$DATABASE_URL_VALUE" ]]; then
-  # Existing mode env files may still carry the old SQLAlchemy-style scheme.
+  # A mode env file may still use the `postgresql+psycopg:` scheme.
   DB_URI="${DATABASE_URL_VALUE/#postgresql+psycopg:\/\//postgresql:\/\/}"
   if [[ "$DB_URI" != postgresql://* ]]; then
     fatal "DATABASE_URL must be a PostgreSQL connection string"

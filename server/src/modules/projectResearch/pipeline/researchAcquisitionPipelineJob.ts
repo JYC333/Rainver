@@ -10,7 +10,7 @@ import {
   type JobEnvelopeForHandler,
   type JobHandlerResult,
 } from "../../jobs/handlerRegistry.js";
-import { RoomService } from "../../rooms/service.js";
+import { RoomService, UNATTRIBUTED_CONTINUATION } from "../../rooms/service.js";
 import { isConversationTurnInProgressError } from "../../sessions/conversationRuntimeSessionRepository.js";
 import { ProjectResearchQuestionAssessmentRepository } from "../questionAssessmentRepository.js";
 import { ProjectResearchQuestionRefineService } from "../questionRefineService.js";
@@ -28,12 +28,9 @@ const TURN_BUSY_RETRY_DELAY_MS = 2_000;
 
 /**
  * Default provider set and search budget for a Room-invoked acquisition
- * start (no per-call tuning surface — room-advancement-reliability-plan
- * Phase 4 decision 5). Mirrors `ResearchSetupDialog`'s own untouched
- * defaults: `web_search` is deliberately excluded, since there is no single
- * unambiguous credential to select on the model's behalf. Auto-selecting
- * these per invocation is a recorded follow-up (backlog R1.2), not this
- * phase.
+ * start. There is no per-call tuning surface. Mirrors `ResearchSetupDialog`'s
+ * untouched defaults: `web_search` is deliberately excluded, since there is no
+ * single unambiguous credential to select on the model's behalf.
  */
 const DEFAULT_PROVIDERS: Array<"arxiv" | "openalex" | "semantic_scholar" | "web_search"> = ["arxiv", "openalex"];
 const DEFAULT_CANDIDATE_BUDGET = 1000;
@@ -62,13 +59,15 @@ interface PipelinePayload {
   /** Identifies *this* pipeline run, so its outcome is reported even when an
    *  earlier run for the same Thread already reported an identical one. */
   jobId: string;
+  /** The outcome an earlier run of this job computed before its report was deferred. */
+  recordedOutcome: Record<string, unknown> | null;
 }
 
 /** True for a domain/semantic rejection (bad input, business-rule conflict);
  * false for anything that should fall through to the job queue's own
  * attempt/backoff retry. Semantic failures are never auto-retried — retrying
  * a bad question or a genuine 409 conflict a hundred times does not change
- * the outcome (plan Phase 4 decision 5). */
+ * the outcome. */
 function isDomainError(error: unknown): error is HttpError {
   return error instanceof HttpError && error.statusCode < 500;
 }
@@ -79,7 +78,7 @@ function isDomainError(error: unknown): error is HttpError {
  * question refinement, strategy activation, initial intake, Room
  * continuation) runs against real Postgres in tests the same as in
  * production; only the LLM-planning + live-search stage needs a fake. */
-export interface ResearchAcquisitionPipelineTestDeps {
+interface ResearchAcquisitionPipelineTestDeps {
   adaptiveQueryDependencies?: ConstructorParameters<typeof AdaptiveQueryOrchestrator>[2];
 }
 
@@ -94,8 +93,21 @@ export class ResearchAcquisitionPipelineRunner {
     const payload = this.parsePayload(job.payload, job.job_id);
     const identity: SpaceUserIdentity = { spaceId: job.space_id, userId: requireUserId(job) };
 
-    const outcome = await this.runPipeline(identity, payload);
-    if (outcome.status !== "started") await this.recordFailedAttempt(identity, payload, outcome);
+    // A busy Room turn defers this job and the worker runs it again from the
+    // top. The outcome is kept on the job, so the rerun only reports it:
+    // running the pipeline again recorded another failed attempt, repeated
+    // the query evaluation, and with `since` turned a started acquisition
+    // into a 409 "already active" failure.
+    const recorded = payload.recordedOutcome;
+    const outcome = recorded ?? await this.runPipeline(identity, payload);
+    if (!recorded) {
+      if (outcome.status !== "started") await this.recordFailedAttempt(identity, payload, outcome);
+      await this.pool.query(
+        `UPDATE jobs SET payload_json = payload_json || jsonb_build_object('pipeline_outcome', $3::jsonb), updated_at = now()
+          WHERE id = $1 AND space_id = $2`,
+        [job.job_id, identity.spaceId, JSON.stringify(outcome)],
+      );
+    }
     await this.postOutcome(identity, payload, outcome);
     return outcome as unknown as JobHandlerResult;
   }
@@ -117,6 +129,9 @@ export class ResearchAcquisitionPipelineRunner {
         : null,
       since: optionalString(raw.since) ?? null,
       jobId,
+      recordedOutcome: raw.pipeline_outcome && typeof raw.pipeline_outcome === "object" && !Array.isArray(raw.pipeline_outcome)
+        ? raw.pipeline_outcome as Record<string, unknown>
+        : null,
     };
   }
 
@@ -189,9 +204,9 @@ export class ResearchAcquisitionPipelineRunner {
           ? { history_mode: "bounded_range" as const, from: payload.since, to: new Date().toISOString() }
           : { history_mode: "all_available" as const }),
         // The whole of a source's history is a number nobody has seen and
-        // nobody agreed to: unbounded, this ingested 873 documents and put
-        // every one of them through an LLM classification — hours of work
-        // and a million tokens — with no confirmation and nothing on screen.
+        // nobody agreed to. Do not ingest it unbounded. Every item would go
+        // through an LLM classification with no confirmation and nothing on
+        // screen.
         // The walk is newest-first and the budget is operation-wide, so this
         // buys the most recent `SCREENING_AUTO_CONTINUE_CORPUS_LIMIT` items
         // and stops. Earlier history remains reachable through the Extend
@@ -202,10 +217,9 @@ export class ResearchAcquisitionPipelineRunner {
       });
       operationId = (started as { operation: { id: string } }).operation.id;
     } catch (error) {
-      // Every domain failure reports its own message. Folding 409s into one
-      // "research is already running" line told the user — and the Agent
-      // relaying it — something that was not true of any 409 but one, and
-      // sent both down a diagnosis that had nothing to do with the failure.
+      // Every domain failure reports its own message. Do not fold every 409
+      // into "research is already running". That is true of one 409. The
+      // other failures would be diagnosed as that one.
       if (isDomainError(error)) {
         return { status: "stage_failed", stage: "start_intake", thread_id: payload.threadId, reason: error.message };
       }
@@ -294,12 +308,11 @@ export class ResearchAcquisitionPipelineRunner {
   }
 
   /**
-   * A pipeline that stops before `startInitialIntake` never created an
-   * Operation, so the attempt existed only inside `jobs.result_json` — the
-   * Project's own surfaces (Pulse, the Research Area's runs, and
-   * `research.list_operations`) all read Operations and showed nothing at
-   * all, which reads as "it is still running". A terminal, managed Operation
-   * records the attempt where the work is looked for.
+   * A pipeline that stops before `startInitialIntake` has no Operation.
+   * Do not leave the attempt only in `jobs.result_json`. Pulse, the Research
+   * Area's runs, and `research.list_operations` read Operations and would
+   * show nothing, which reads as "it is still running". A terminal, managed
+   * Operation records the attempt where the work is looked for.
    */
   private async recordFailedAttempt(
     identity: SpaceUserIdentity,
@@ -344,10 +357,9 @@ export class ResearchAcquisitionPipelineRunner {
    * query planning already recorded while choosing it — no extra provider
    * call.
    *
-   * The largest single provider's count, not the sum: providers overlap
-   * heavily (the same paper is in arXiv and OpenAlex), so summing them
-   * reported 2,065 for a query whose corpus was 873 — a number that read as
-   * the scope having grown when it had just been capped at 200. The union is
+   * The largest single provider's count, not the sum. Providers overlap
+   * heavily (the same paper is in arXiv and OpenAlex). Do not sum them.
+   * The sum reads as the scope having grown past the cap. The union is
    * at least the largest count and at most the sum; the larger of the two
    * errors is the one that misleads about size.
    */
@@ -387,7 +399,9 @@ export class ResearchAcquisitionPipelineRunner {
             key: `${payload.threadId}:${payload.jobId}`,
             payload: outcome,
             // Started by an Agent's turn: its result is charged to that turn's container.
-            ...(payload.originGroupId ? await agentOriginContinuation(client, identity.spaceId, payload.originGroupId) : {}),
+            // With no originating turn there is nothing to inherit: it reports
+            // as unattended work.
+            ...(payload.originGroupId ? await agentOriginContinuation(client, identity.spaceId, payload.originGroupId) : { cause: UNATTRIBUTED_CONTINUATION }),
           },
         ),
       );

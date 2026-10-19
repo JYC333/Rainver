@@ -4,11 +4,11 @@ import type { ProjectBoard, ProjectBoardCard, ProjectBoardColumn } from '../../.
  * Folds a freshly read Board into the one already drawn, keeping the object
  * identity of everything that did not change.
  *
- * The Board re-reads every few seconds. Replacing the state wholesale gave
- * React a new object for every card on every read, so the whole grid
- * reconciled and re-rendered when one card had moved — and usually when
- * nothing had. Identity is what lets `memo` tell those apart, so this is the
- * piece that makes a memoised lane worth anything.
+ * The Board re-reads every few seconds. Do not replace the state wholesale.
+ * A new object for every card makes the whole grid reconcile and re-render
+ * when one card moved, and usually when nothing did. Identity is what lets
+ * `memo` tell those apart, so this is the piece that makes a memoised lane
+ * worth anything.
  *
  * Returns the previous Board unchanged when the read is identical, so a quiet
  * poll sets no state at all and renders nothing.
@@ -78,13 +78,11 @@ function same(left: unknown, right: unknown): boolean {
 
 /**
  * Moves one card between lanes locally, so a drag lands where it was dropped
- * instead of waiting out a round trip.
- *
- * The move used to re-read the Board through the loading path, which replaced
- * the whole page with a skeleton and painted it again — the card appeared to
- * jump back before arriving. Only the dragged card and the two lane counts it
- * changes are touched here; the read that follows reconciles through
- * `mergeBoard`, so anything the server decided differently still arrives.
+ * instead of waiting out a round trip. Do not re-read the Board through the
+ * loading path: that replaces the page with a skeleton and the card jumps.
+ * Only the dragged card and the two lane counts it changes are touched here.
+ * The read that follows reconciles through `mergeBoard`, so anything the
+ * server decided differently still arrives.
  */
 export function applyCardMove(board: ProjectBoard, cardId: string, toStatus: string): ProjectBoard {
   const moving = board.cards.find(card => card.id === cardId)

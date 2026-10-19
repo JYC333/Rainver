@@ -7,15 +7,13 @@ import { dropApiCacheAtBoot } from './lib/sessionResidue'
 import './index.css'
 
 // `autoUpdate` alone only installs a new service worker; the page already on
-// screen keeps running the old bundle until someone reloads, so a deploy
-// looked like "nothing changed" until a hard refresh. Registering through the
+// screen keeps the previous bundle until it reloads. Registering through the
 // virtual module reloads the page once the new worker takes control.
 registerSW({ immediate: true })
 
 // Before anything asks who is signed in. The service worker must not cache
-// authenticated API bodies and does not — but a cache written by an older
-// build, or left behind when a tab closed mid-logout, outlives the code that
-// stopped writing it.
+// authenticated API bodies and does not. A cache from an older build, or from
+// a tab closed mid-logout, can still be there.
 dropApiCacheAtBoot()
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(

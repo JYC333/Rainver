@@ -1,3 +1,5 @@
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_TASK_TIMEOUT_SECONDS,
@@ -79,7 +81,11 @@ describe("SchedulerRegistry liveness", () => {
     const [status] = registry.statuses();
     expect(status.health).toBe("failing");
     expect(status.consecutive_failures).toBe(1);
-    expect(status.last_error).toBe("boom");
+    // The status body names the kind of failure and a log reference; the
+    // exception text itself stays in the log.
+    expect(status.last_error_kind).toBe("exception");
+    expect(status.last_error_reference).toMatch(/^[0-9a-f-]{36}$/);
+    expect(JSON.stringify(status)).not.toContain("boom");
     expect(status.last_success_at).toBeNull();
     expect(status.last_failure_at).not.toBeNull();
     await registry.stop();
@@ -103,11 +109,12 @@ describe("SchedulerRegistry liveness", () => {
       await vi.advanceTimersByTimeAsync(5_000);
       await started;
 
-      expect(onTaskError).toHaveBeenCalledWith("hung", expect.any(Error));
+      expect(onTaskError).toHaveBeenCalledWith({ task_name: "hung", kind: "timeout", reference: expect.stringMatching(/^[0-9a-f-]{36}$/) });
       const [status] = registry.statuses();
       expect(status.timeouts_total).toBe(1);
       expect(status.consecutive_failures).toBe(1);
-      expect(status.last_error).toMatch(/did not complete within 5s/);
+      expect(status.last_error_kind).toBe("timeout");
+      expect(status.last_error_reference).toBe((onTaskError.mock.calls[0] as unknown as [{ reference: string }])[0].reference);
       // The pass is still outstanding — it could not be cancelled — so the
       // task must still read as running, not as idle-and-fine.
       expect(status.state).toBe("running");
@@ -228,5 +235,34 @@ describe("SchedulerRegistry liveness", () => {
     await registry.stop();
 
     hang.resolve();
+  });
+
+  it("lets a finished pass's outcome be collected while the scheduler keeps running", async () => {
+    // A pass raced against a stop signal that only resolves at shutdown; each
+    // pass left its race chained to that signal for the life of the process.
+    setFlagsFromString("--expose-gc");
+    const gc = runInNewContext("gc") as () => void;
+    let failure: WeakRef<Error> | null = null;
+    const registry = new SchedulerRegistry({ warn() {}, error() {} });
+    registry.register({
+      name: "failing",
+      intervalSeconds: 3600,
+      awaitRunOnStart: true,
+      run: async () => {
+        const error = new Error("pass failed");
+        failure = new WeakRef(error);
+        throw error;
+      },
+    });
+    await registry.start();
+    try {
+      for (let attempt = 0; attempt < 5 && failure!.deref(); attempt += 1) {
+        await new Promise((resolve) => setImmediate(resolve));
+        gc();
+      }
+      expect(failure!.deref()).toBeUndefined();
+    } finally {
+      await registry.stop();
+    }
   });
 });

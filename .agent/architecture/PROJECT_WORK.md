@@ -35,9 +35,9 @@ longer write it.
 `packages/protocol/src/projectWork.ts`.
 
 A **system constant**, not per-Project configuration, and one wording:
-*Frame / Plan / Act / Verify / Conclude* in every Project. Four per-mode
-wordings for the same stages were the last thing a Project "mode" did, and
-went with it ([ADR 0019](../decisions/0019-project-has-no-type-field.md)).
+*Frame / Plan / Act / Verify / Conclude* in every Project. Do not keep a
+second wording per Project mode
+([ADR 0019](../decisions/0019-project-has-no-type-field.md)).
 
 Movement is classified, not restricted. `stageTransitionKind()` reads the
 ordering to label a move `advance / regress / skip / reopen`:
@@ -47,7 +47,7 @@ ordering to label a move `advance / regress / skip / reopen`:
 - **regress** — verification that fails because the method was wrong belongs
   back at `plan`; because the goal was misunderstood, back at `frame`.
 
-This is why the stage is **stored rather than derived**. A Task that skipped
+The stage is **stored rather than derived**. A Task that skipped
 planning and one still planning have identical surrounding facts; so do one
 sent back after a failed check and one that has already verified. Only an
 actor's decision separates them, so the decision is what gets recorded.
@@ -66,28 +66,26 @@ seq · correlation_id · causation_id · idempotency_key · data_json`.
 
 `seq` is the stream's insert sequence and the only ordering tie-break. One
 advancement chain writes several events in one transaction, so they share a
-millisecond; ordering `(occurred_at, id)` broke those ties on a random v4 UUID,
-which made "the latest event" a coin flip for the board, the Task work view and
-the Updates feed alike. Every reader orders `(occurred_at, seq)`.
+millisecond. Do not order `(occurred_at, id)`. A random v4 UUID would make
+"the latest event" a coin flip for the board, the Task work view and the
+Updates feed alike. Every reader orders `(occurred_at, seq)`.
 
-- **Actor-neutral from the start.** `actor_id` is an `actors` FK, which already
+- **Actor-neutral.** `actor_id` is an `actors` FK, which
   spans user, agent, system, automation, connector, integration, service and
-  job. A handoff whose recipient could only be an Agent would need redesigning
-  the first time the answer is "wait for the supplier" or "wait for Tuesday".
-- **Idempotency is the design point.** At-least-once delivery means settlement
+  job. Do not restrict a handoff recipient to an Agent. The answer can be
+  "wait for the supplier" or "wait for Tuesday".
+- **Idempotent.** At-least-once delivery means settlement
   re-enters with the same facts; a partial unique index on
   `(space_id, idempotency_key)` is the dedupe, so a retry inserts
   optimistically and treats the conflict as success.
 - **`event_kind` carries a format check only.** The closed set lives in
   `modules/projectWork/eventKinds.ts`, open for modules and plugins to register
-  into, exactly as link types are. A demoted constraint is only safe while
-  something asks the registry — `assertWorkEventKind` is that something, and it
-  is called from the one writer.
+  into, exactly as link types are. The format check is safe only while
+  `assertWorkEventKind` asks the registry, and it is called from the one writer.
 
 `eventWriter.ts` is the only place that writes the table. A test asserts no
-second writer appears, and asserts it before any of the writer's own rules,
-because hardening a choke point is worthless if a domain can hand-roll the
-insert next to it.
+second writer appears, and asserts it before any of the writer's own rules.
+Do not hand-roll the insert beside it.
 
 ### Kinds
 
@@ -99,7 +97,7 @@ thread.concluded · thread.next_step_adopted · memory.remembered ·
 memory.revised · memory.archived · agent.persona_revised ·
 agent.persona_restored`
 
-`task.merged` and `task.merge_blocked` are what became of a done Task's
+`task.merged` and `task.merge_blocked` record a done Task's
 change on an execution host: on a Location's main branch, or stopped on
 something a person has to see (`reason`: `waiting_local_changes`,
 `conflict`, `verification_failed`, `failed`, with the files or failed checks).
@@ -107,10 +105,10 @@ The service actor `task_merge` writes them (ADR 0016 §11;
 [modules/hosts.md](../modules/hosts.md), "Merging a done Task").
 
 The `thread.*` kinds are Inquiry advancement, subject `inquiry_thread`,
-declared by the `inquiry` module in the same registry. They exist because
-[ADR 0017](../decisions/0017-authorization-by-cost-not-authorship.md) §4 makes
-a direct write conditional on the person seeing it afterwards and being able
-to reverse it: this stream is where they see it. Each carries the statement,
+declared by the `inquiry` module in the same registry. A direct write is
+visible here afterwards and reversible
+([ADR 0017](../decisions/0017-authorization-by-cost-not-authorship.md) §4).
+Each carries the statement,
 `origin` (`agent`/`user`), the `run_id` when a Run did it, and a `batch_key`
 (`<run id>:<kind>`) so one turn's writes of one kind fold into one row.
 `thread.concluded` also carries the Iteration id and both positions, because
@@ -145,8 +143,8 @@ attempt and the Supervisor creates the next one, so settling on it would
 settle mid-retry. `task_runs.role ∈ planning, review, merge` are not
 execution (`merge`: a done Task's conflict-resolution Run, which settles
 nothing about the Task): a
-planning Run (*Ask Agent to plan*) does not advance the work, and a successful
-plan closing its Task was the most wrong answer the old projection could give.
+planning Run (*Ask Agent to plan*) does not advance the work. A successful
+plan must not close its Task.
 
 **Decided** additionally requires the latest Run to carry a `run_finalizations`
 row, unless it is `cancelled`. Finalization is where the evaluation is bridged
@@ -182,8 +180,9 @@ person's deliberate hold, never written by a Run and not erased by one. And a
 `waiting_for_review` one **for the Run that was in flight when it was parked**
 — an Agent that handed a decision back must not watch settlement close the
 Task under it. The guard is causal rather than by status: a Run started
-*after* the hold is the person's answer, and its result counts. (By status,
-a retry from `waiting_for_review` was discarded and the Task waited forever.)
+*after* the hold is the person's answer, and its result counts. Do not guard
+by status. A retry from `waiting_for_review` would be discarded and the Task
+would wait forever.
 
 Failure and cancellation produce nothing to verify, so they do not move the
 stage: claiming the work reached a phase it never reached would be a lie the
@@ -191,14 +190,14 @@ Board then displays. Where it goes next is a person's or an agent's decision.
 
 The `task.run_settled` idempotency key carries the outcome reason: the same
 Run can settle the same Task twice with different facts (held for a missing
-output, then closed once it is attached), and a key without the outcome
-swallowed the second settlement, leaving a status change the stream did not
-explain.
+output, then closed once it is attached). Do not key it without the outcome.
+The second settlement would be swallowed, and the stream would not explain
+the status change.
 
 `task_evaluations` is load-bearing here. `RunFinalization` already projects
 every run evaluation into one, with `recommendation ∈ accept / review / retry /
-needs_evidence` and deterministic verification status — the previous projection
-simply never read it.
+needs_evidence` and deterministic verification status. Settlement reads that
+row. Do not leave the projection unread.
 
 Required outputs: each entry in `tasks.required_outputs_json` is matched
 case-insensitively against the `artifact_type` of the Task's `role = 'output'`
@@ -212,30 +211,13 @@ existing workspace file leaves the declaration absent and uses
 edit or a `task.report` alone cannot satisfy a declared file output; a Run with
 an output-delivery surface must declare and leave the file for collection.
 
-### What this replaced
-
-`bool_and(terminal) AND NOT bool_or(failure)` over **every Run the Task ever
-had**, with two defects pulling in opposite directions:
-
-- `bool_or` never expired, so one failed attempt made a Task permanently
-  unclosable: every later success still saw the old failure and wrote `blocked`
-  again. Re-running after a failure is the normal case, which is why this read
-  as a permanent state rather than a transient one.
-- Three of the four statuses it counted as failure are not failures.
-
-And the status it should have counted it could not see: `waiting_for_review` is
-what the Supervisor writes when it stops retrying, and it was absent from the
-terminal set — so a Run parked for a human decision settled nothing and left
-its Task in `in_progress` with no sign a person was needed.
-
 ## 5. Who is interrupted
 
 One responsible party per Task, resolved as a chain read whole, in **one**
 place (`responsibility.ts`) because four surfaces ask it — the attention
 adapter ("interrupt whom"), the Board ("whose card"), `/me/tasks` and
-`/tasks?assigned_to_me` ("what is mine"). Two of those last three carried their
-own narrower definition before P2, and one of them counted a Task an Agent had
-claimed as still yours:
+`/tasks?assigned_to_me` ("what is mine"). Do not give any of them a narrower
+chain: an Agent that claimed a Task is still the responsible party.
 
 ```
 claimed_by_user → claimed_by_agent → assigned_user → assigned_agent
@@ -251,8 +233,8 @@ would otherwise wait for review while interrupting nobody.
 `waiting_for_review` and `blocked` — `PERSON_ONLY_TASK_STATUSES`, shared from
 the protocol so the chain, the Board badge and the Board filter cannot drift —
 it steps past the Agent to the person behind it. Those two states are *defined*
-as needing a person, so stopping at an Agent left the Task with nobody to
-interrupt and it waited forever: no attention item, no Board `needs me`, and a
+as needing a person. Do not stop at an Agent. The Task would have nobody to
+interrupt and it would wait forever: no attention item, no Board `needs me`, and a
 Pulse that listed it as "In progress". There is no separate release step,
 because `waiting_for_review` has six producers and `blocked` has no Agent
 writer at all, so a release would have to be remembered in seven places instead
@@ -268,8 +250,8 @@ The Delivery attention adapter surfaces `waiting_for_review`, `blocked` and
 overdue Tasks, and a done Task's merge that stopped on something a person has
 to see (`source_type: task_merge`; [modules/hosts.md](../modules/hosts.md),
 "Merging a done Task"), **to the responsible person only**. Everyone else still sees the
-Task and can take it over; they are simply not told to. A shared inbox was the
-alternative and it fails in both directions at once — everyone assumes someone
+Task and can take it over; they are simply not told to. Do not use a shared
+inbox. It fails in both directions at once — everyone assumes someone
 else has it, or two people start the same work.
 
 ## 6. Entry point and transaction boundary
@@ -282,29 +264,23 @@ agreeing afterwards. The runs and jobs repositories never call it: a
 repository writes its own rows, and what a Run's end means for its Task is
 decided above them.
 
-Settling used to do more: it took a host-thread queue lock and withdrew the
-Task's queued messages, so a queued message could not dispatch into a fresh Run
-behind a decision the person had just made. That queue is gone — a remote Task
-run is one Run created at admission — so there is no queued message to withdraw
-and no second lock to take. The dispatch-refusal set
-(`blocked · done · cancelled`) is now the only such set; a person may run a
-`waiting_for_review` Task again, because re-running is one of the decisions the
-hold exists to ask for. The one exception is a done Task's merge, whose
-conflict-resolution Run (`task_runs.role = 'merge'`) is admitted on a `done`
-Task ([modules/hosts.md](../modules/hosts.md), "Merging a done Task").
+The dispatch-refusal set (`blocked · done · cancelled`) is the only such set; a
+person may run a `waiting_for_review` Task again. Re-running is one of the
+decisions a review hold asks for. The one exception is a done Task's
+merge, whose conflict-resolution Run (`task_runs.role = 'merge'`) is admitted
+on a `done` Task ([modules/hosts.md](../modules/hosts.md), "Merging a done Task").
 
 Every append-only surface that records who acted resolves its `actors` row
 through `db/actorResolver.ts`. Two partial unique indexes (one person per
 Space, one service name per Space) make its insert-on-conflict real; without
-them two concurrent first writes for the same person produced two actors.
+them two concurrent first writes for the same person would produce two actors.
 
 ## 7. Read models and the surfaces over them
 
 `GET /projects/:projectId/board` and `GET /tasks/:taskId/work` are the two read
-models (`boardReadModel.ts`). They exist because the client cannot answer their
+models (`boardReadModel.ts`). The client cannot answer their
 questions from domain rows alone — which stage a Task is in, who is on the
-hook, why it cannot close — and reconstructing any of it in the browser would
-put a second copy of the rules where nothing tests them against the write path.
+hook, why it cannot close. Do not reconstruct those rules in the browser.
 Both are one statement plus their bounded detail queries; the completion check
 reads attached outputs in the same query rather than per card. Run status,
 evaluation, and attached output types on those surfaces are filtered with the
@@ -332,9 +308,8 @@ Person-facing writes:
 
 The Board and Pulse re-read on a five-second interval while visible and when
 the tab comes back (`hooks/usePeriodicRefresh.ts`, the cadence the Inquiry Area
-already used for a live Thread), quietly — no skeleton over what is drawn. They
-used to load once on arrival, so a Task or a question an Agent recorded from the
-Room appeared only after leaving the page and returning. A read cadence only;
+already used for a live Thread), quietly — no skeleton over what is drawn. A
+read cadence only;
 nothing is decided by it.
 
 ### Updates
@@ -408,11 +383,11 @@ which turn" is a query rather than a search through prompt text.
 
 ## 8. What an Agent may do
 
-Six System Actions (`projectWork/taskActions.ts`,
-`projectWork/artifactDeclarations.ts`, `projectWorkSystemActionExecutors.ts`).
-The first five are on the Room conversation tool surface and on a dispatched
-Run's; `artifact.submit` is on a dispatched Run's only, for the reason its
-own paragraph below gives:
+Seven System Actions (`projectWork/taskActions.ts`,
+`projectWork/artifactDeclarations.ts`, `projectWorkSystemActionExecutors.ts`),
+plus the read-only `task.list` that feeds them Task ids. The first six are on
+the Room conversation tool surface and on a dispatched Run's; `artifact.submit`
+is on a dispatched Run's only, for the reason its own paragraph below gives:
 
 | Action | Writes | Records |
 |---|---|---|
@@ -420,23 +395,23 @@ own paragraph below gives:
 | `task.report` | nothing | `task.reported` |
 | `task.handoff` | the claim on a Task | `task.responsibility_changed` |
 | `task.advance_stage` | the Loop fold | `task.stage_changed` |
+| `task.complete` | `status = done` (refused while a declared output is missing) | `task.flow_changed` + `task.reported` |
 | `task.request_review` | `status = waiting_for_review` | `task.flow_changed` + `task.reported` |
 | `artifact.submit` | a `run_artifact_declarations` row | `task.reported` |
 
 `artifact.submit` (`projectWork/artifactDeclarations.ts`) is what lets a Task
 with declared required outputs close at all when an Agent did the work.
 Settlement matches `required_outputs_json` against the `artifact_type` of the
-Task's `role = 'output'` artifacts, and everything a dispatched CLI Run leaves
-behind arrives anonymous — so before it, such a Task parked for review after
-every successful Run however well the work went. The declaration names what a
-file *is*; the file itself is still collected afterwards, and a declaration
+Task's `role = 'output'` artifacts. A dispatched CLI Run's files arrive
+without a type. The declaration names what a file is. Do not close from the
+anonymous files alone. The file itself is collected afterwards, and a declaration
 whose file never arrived is reported into the Task's stream rather than
-dropped. It is granted only where a declaration is applied, which today is the
-remote-host path (`SYSTEM_ACTIONS.md`).
+dropped. It is granted only for `trusted_host` (`SYSTEM_ACTIONS.md`).
+Do not grant it on a `sandboxed` Run.
 
 They are the smallest set that lets an Agent advance work at all: name a piece
 of it, say what happened, give it to someone else, move it through its Loop,
-stop to ask, and hand over what the Task asked for. Without them an Agent could describe a decomposition in a
+close it, stop to ask, and hand over what the Task asked for. Without them an Agent could describe a decomposition in a
 reply but not create it — the gap between sounding like it advanced the work
 and having advanced it.
 
@@ -446,19 +421,20 @@ hand a decision back, the only signals a person gets are failures.
 
 ### The origin gate
 
-`task.create` and `task.advance_stage` are `require_approval` when the Run's
+`task.create`, `task.advance_stage`, and `task.complete` are `require_approval` when the Run's
 `trigger_origin` is `autonomous` or `automation`
 (`ruleUnattendedProjectWrite` in `decisionCore.ts`). The same action definition
 serves both origins, because it is the same write — what differs is who wanted
 it. A person saying "split this into three tasks" *is* the authorization for
 the Tasks that follow; the identical call from an unattended wake-up is a
 commitment made on the Project's behalf that nobody asked for, and a Loop stage
-skipped or reversed without a person seeing it is a claim about the work.
+skipped or reversed, or a Task closed, without a person seeing it is a claim
+about the work.
 
 The others are ungated at any origin. A report only records, a handoff can
 only give work away, a review request can only stop work, and a declaration
-only says what a file is — none can take ground. Gating them would mean an Agent advancing work unattended could not say
-what it had done, which is the opposite of what the origin gate is for.
+only says what a file is — none can take ground. Do not gate them. An Agent
+advancing work unattended still has to record what it had done.
 
 The origin the rule reads is the **root** Run's: a delegated child carries
 `delegation` whoever started the chain, so reading its own would let an
@@ -466,15 +442,11 @@ unattended root launder a gated write through a specialist. And the attended
 set is an allowlist (`manual`) rather than a denylist, so a new origin is gated
 until someone decides it should not be.
 
-`require_approval` here is a **refusal**, not a prompt: nothing in P3 produces
-an unattended Project write, because the Steward that would is P6. When that
-lands, the right shape for `task.create` under an autonomous origin is a
-proposal — the person sees the draft cards — rather than an approval dialog.
-Until then the gate is a closed door with nothing behind it, which is the
-correct state for a capability that has no caller.
+`require_approval` here is a **refusal**, not a prompt. Nothing produces an
+unattended Project write. There is no Steward. The gate refuses.
 
-Two definitions — one "manual" and one "autonomous" — were the alternative, and
-would have meant two schemas, two executors, and two places to forget one.
+Do not split the definition into a manual one and an autonomous one. That
+would mean two schemas, two executors, and two places to forget one.
 
 ### Attribution
 
@@ -492,52 +464,41 @@ is a Project member or its owner, or an Agent that is Space-wide or bound to
 this Project. An Agent that could hand a Task to anyone in the Space would be a
 way to disclose it. `to: null` releases the claim back to the assignment chain.
 
-### Deferred, recorded
+### Task visibility
 
-`task.create` writes `visibility: "space_shared"`, discarding the narrowing a
-Room Run carries (Room runs are `selected_users` scoped to the Room's
-members). Threading it through would need `createTask` to write
-`content_access_grants`, which it has no path for — narrowing without the
-grants would leave the Task readable by its owner alone, which is worse than
-the current widening. A Task-domain change, recorded rather than done.
+`task.create` writes `visibility: "space_shared"`. It discards the narrowing a
+Room Run carries (`selected_users` scoped to the Room's members). Do not
+narrow the Task without `content_access_grants`. Narrowing without the grants
+would leave the Task readable by its owner alone.
 
-## 9. Not here yet
+## 9. What this surface does not write
 
-- An Agent-written `project.reported`. `POST /projects/:projectId/updates` is
-  the only producer and it is a person's; the Steward that would post a
-  cross-Task summary is later. Task close-out likewise writes no
-  `task.reported` — the readable account belongs to whoever wrote one — so
-  Updates renders the `task.accepted` event itself rather than inventing prose
-  for it.
-- Actor-neutral handoff with join and resume semantics, plus role/capability
-  declaration on the contract. `task.handoff` as a single responsibility
-  transfer is the intended starting point.
-- **Steward autonomy.** Event-triggered wake-up on `task.run_settled` /
-  `task.reported`, with per-Project autonomy settings (level, budget, wake
-  policy). Not a Steward *binding* — P5 already fixes the Agent identity, one
-  instance per Project. Under an autonomous origin `task.create` becomes a
-  proposal rather than a write, which is what the `unattended_project_write`
-  rule in `decisionCore.ts` already anticipates.
-- **Roadmap and dependencies.** Milestone nodes and a live `task_dependencies`
-  table; both are new designs, not extensions of this one.
+- There is no Agent writer of `project.reported`. `POST /projects/:projectId/updates`
+  is the only producer, and it is a person's. Task close-out writes no
+  `task.reported`. Updates renders the `task.accepted` event itself rather
+  than inventing prose.
+- `task.handoff` transfers one responsibility.
 
-**Known smaller gaps**, recorded so they are decisions rather than oversights:
-
-- No periodic job re-materializes a managed Assistant when its seed changes;
-  it happens on the next Room creation in that Project. See
-  [`../modules/agents.md`](../modules/agents.md).
+Seed changes reach existing Assistants at boot and on the daily
+`managed_assistant_seed_reconcile` job. See
+[`../modules/agents.md`](../modules/agents.md).
 
 **Who may write.** Reading a Task is not licence to change it. `PATCH
-/tasks/:taskId`, `POST /tasks/:taskId/stage` and the four Task-addressed Agent
-actions all require Project **writer** authority
+/tasks/:taskId`, `POST /tasks/:taskId/stage`, `POST /tasks/:taskId/evaluations`
+(the newest evaluation decides the close gate) and the five Task-addressed
+Agent actions (`task.report`, `task.handoff`, `task.advance_stage`,
+`task.complete`, `task.request_review`) all require Project **writer** authority
 (`assertProjectWriterForMutation`) on the Task's Project — and, for a move, on
-the Project it is moving to. A Project `viewer` can read every shared Task and
+the Project it is moving to. `PATCH` and a new evaluation also take the
+archive fence (`lockActiveProjectForMutation`), so an archived Project's Task
+cannot be closed (queuing a merge), moved, or re-judged; a Board `PATCH` takes
+the same fence. A Project `viewer` can read every shared Task and
 change none of them, through an Agent exactly as directly. The Board says so
 (`viewer_can_write`) and offers a viewer no drag. `PATCH` also reads the row
 under the transaction's lock, so two people closing the same Task at once
 record one acceptance, not two. A viewer may still *talk* about a Task in the
 Project's mainline Room; the Agent they talk to is bound by the same rule
-(`modules/rooms.md`). A consequence worth knowing: a Task still bound to a
+(`modules/rooms.md`). A Task still bound to a
 soft-deleted Project cannot be edited by anyone, because writer authority is
 checked against a live Project.
 
@@ -549,10 +510,10 @@ predicates in `modules/access/contentAccessSql.ts` — `runReadSql`,
 exists because of a Run. That is the Task's run/evaluation/artifact/proposal
 lists, the Board card columns, the Task work view, the Project updates feed and
 the undo path. A work event names its Run inside `data_json`, so that is what
-the predicate reads — `appendProjectWorkEvent` takes a `runId` and stamps it
-there, rather than leaving each writer to remember the convention, which is how
-three Agent-completion writers came to set only the correlation column and leave
-their events ungated; the visited-stage rail is the one deliberate exemption,
+the predicate reads. `appendProjectWorkEvent` takes a `runId` and stamps it
+there. Do not leave each writer to remember the convention. An event with only
+the correlation column stays ungated. The visited-stage rail is the one
+deliberate exemption,
 because it reads stage keys and no content, and gating it would make the rail
 claim a Task never reached a stage it reached in a Room the reader is not in.
 

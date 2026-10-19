@@ -16,7 +16,7 @@ or runtime configuration/policy fallback.
 
 `agent_runtime_profiles` is the mutable, Agent-scoped deployment authority. A
 Profile identifies the ACP `runtime_key`, execution Host, installed copy,
-workspace mode/location, backend mode, optional same-Space ModelProvider/model,
+workspace mode/location, backend mode, optional ModelProvider/model granted to the Space,
 and narrowly scoped runtime options. Each Agent is provisioned with one
 enabled default Profile. With no Space provisioning template, the product
 default is the Server Runtime's managed OpenCode copy using
@@ -35,8 +35,8 @@ Server-only: the dispatched Run is handed a lease URL, never a key, and
 `hostProviderProxyBaseUrl` resolves that address for a paired Host from its
 per-host override, the instance-wide external proxy URL, or the control-plane
 address plus the proxy port. The host daemon's bound-run environment filter
-(`filterAmbientEnv`) exists for exactly this case, so a paired machine's own
-vendor keys cannot displace the binding. What `model_provider` may not be is
+(`filterAmbientEnv`) keeps a paired machine's own
+vendor keys from displacing the binding. What `model_provider` may not be is
 *unbound*: a Profile with no execution Host, workspace mode and installation
 has nothing to hand the lease to, and admission refuses it.
 

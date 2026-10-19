@@ -9,13 +9,13 @@ import { resolveRetrievalQueryRewritePrompt, type ResolvedQueryRewritePrompt } f
 import { RETRIEVAL_QUERY_REWRITE_TASK } from "./config.js";
 import { parseQueryRewriteVariants } from "./prompt.js";
 
-export type QueryRewritePromptResolver = (
+type QueryRewritePromptResolver = (
   spaceId: string,
   viewerUserId: string,
   query: string,
 ) => Promise<ResolvedQueryRewritePrompt | null>;
 
-export interface ProviderQueryRewriterOptions {
+interface ProviderQueryRewriterOptions {
   /** Caller's own provider; the task chain is tried first, this is the safety net. */
   providerId?: string | null;
   /** When set, a best-effort provider-egress audit row is written per rewrite call. */

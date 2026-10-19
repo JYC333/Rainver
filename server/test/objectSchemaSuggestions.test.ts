@@ -11,8 +11,9 @@ class FakeObjectSchemaSuggestionDb implements Queryable {
     if (/\b(?:content|plain_text|raw_text|claim_text|summary)\b/.test(sqlWithoutStringLiterals)) {
       throw new Error("object schema suggestion scan must not select raw content columns");
     }
-    // Inverted by ADR 0012: domain status left the root, so a reader that
-    // knows its object type must read the extension table's own column.
+    // Domain status lives on the extension table (ADR 0012). Do not read it
+    // from the root. A reader that knows its object type reads the extension
+    // table's own column.
     if (/so\.status/.test(sql)) throw new Error("status must be read from the owning extension table, not space_objects");
     if (/FROM sources s/.test(sql) && /so\.status = 'active'/.test(sql)) {
       throw new Error("source space_object status must use the source lifecycle, not active");
@@ -183,5 +184,32 @@ describe("scanObjectSchemaSuggestions", () => {
     expect(objectProfiles).toEqual(expect.arrayContaining(["fact", "paper"]));
     expect(objectProfiles).not.toEqual(expect.arrayContaining(["summary", "belief", "email"]));
     expect(report.access_safety.raw_content_read).toBe(false);
+  });
+});
+
+describe("scanObjectSchemaSuggestions on kinds without a usage loader", () => {
+  class WithSourceItemKindDb extends FakeObjectSchemaSuggestionDb {
+    override async query<Row = Record<string, unknown>>(sql: string) {
+      const base = await super.query<Row>(sql);
+      if (!/FROM space_object_profiles/.test(sql)) return base;
+      return {
+        rows: [
+          ...base.rows,
+          { id: "kind-feed-entry", key: "feed_entry", label: "Feed entry", base_object_type: "source_item", status: "active", version: 1 } as Row,
+        ],
+        rowCount: base.rows.length + 1,
+      };
+    }
+  }
+
+  it("does not call a source_item kind unused when the scan reads no source_item usage", async () => {
+    const report = await scanObjectSchemaSuggestions(new WithSourceItemKindDb(), {
+      spaceId: "space-1",
+      userId: "user-1",
+      request: { limit: 100, persist_artifact: false, review_scope: "private" },
+    });
+
+    expect(report.findings.filter((finding) => finding.base_object_type === "source_item")).toEqual([]);
+    expect(report.findings.some((finding) => finding.kind === "unused_active_profile" && finding.object_profile === "lesson")).toBe(true);
   });
 });

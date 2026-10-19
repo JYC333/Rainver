@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Refresh and restart server + frontend: prod pulls the CI-published images for
-# the configured tag. dev/test build from a checkout, which the deployer sidecar
-# does not mount — run those on the host.
+# Rebuild and restart server + frontend from a checkout. dev/test build from a
+# checkout, which the deployer sidecar does not mount — run those on the host.
+# prod never rebuilds: a production instance changes images only through the
+# instance update, and this script refuses before touching an image.
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
@@ -29,17 +30,24 @@ COMPOSE=(docker compose --env-file "$INSTANCE_ROOT/.env" -p "$COMPOSE_PROJECT" -
 
 echo "[rebuild] repo=$REPO_ROOT"
 if [[ "$MODE" == "prod" ]]; then
-    echo "[rebuild] pulling $API_SERVICE and $FRONTEND_SERVICE images..."
-    RAINVER_MODE_ROOT="$HOST_MODE_ROOT" "${COMPOSE[@]}" pull "$API_SERVICE" "$FRONTEND_SERVICE"
-else
-    if [[ ! -f "$REPO_ROOT/server/Dockerfile" ]]; then
-        echo "ERROR: $MODE images are built from the checkout, which this container does not mount." >&2
-        echo "       Build on the host instead: ops/scripts/start.sh --$MODE --build" >&2
-        exit 1
-    fi
-    echo "[rebuild] building $API_SERVICE and $FRONTEND_SERVICE images..."
-    RAINVER_MODE_ROOT="$HOST_MODE_ROOT" "${COMPOSE[@]}" build "$API_SERVICE" "$FRONTEND_SERVICE"
+    # A production instance changes images only through the instance update
+    # (ADR 0020): drain, backup, migrate, recreate, in that order, reported
+    # stage by stage. Pulling and recreating two services here would skip the
+    # dump and the migration and leave the stack half on a new build. Refused
+    # before any image is pulled; the guidance names the real path.
+    echo "ERROR: rebuild is not a production operation; no image was pulled or replaced." >&2
+    echo "       Update the instance instead: 'rainver update' on a standalone host, or" >&2
+    echo "       'git pull && ./ops/scripts/start.sh --prod --detach' on a checkout deployment." >&2
+    echo "       Both run the deployer update stages (deployer/scripts/update.sh)." >&2
+    exit 1
 fi
+if [[ ! -f "$REPO_ROOT/server/Dockerfile" ]]; then
+    echo "ERROR: $MODE images are built from the checkout, which this container does not mount." >&2
+    echo "       Build on the host instead: ops/scripts/start.sh --$MODE --build" >&2
+    exit 1
+fi
+echo "[rebuild] building $API_SERVICE and $FRONTEND_SERVICE images..."
+RAINVER_MODE_ROOT="$HOST_MODE_ROOT" "${COMPOSE[@]}" build "$API_SERVICE" "$FRONTEND_SERVICE"
 
 echo "[rebuild] restarting $API_SERVICE and $FRONTEND_SERVICE..."
 RAINVER_MODE_ROOT="$HOST_MODE_ROOT" "${COMPOSE[@]}" up -d --no-deps "$API_SERVICE" "$FRONTEND_SERVICE"

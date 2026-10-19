@@ -4,7 +4,7 @@ import { ensureGitRepository } from "@rainver/folder-read";
 import { configDir } from "./config.js";
 
 const ARCHIVE_MARKER = ".removed-";
-export const MANAGED_WORKSPACE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const MANAGED_WORKSPACE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type ManagedWorkspaceContainerKind = "direct" | "conversation";
 
@@ -15,7 +15,7 @@ export type ManagedWorkspaceContainerKind = "direct" | "conversation";
  * WorkspaceLocation the user owns, and that Location is what their vendor
  * session already belongs to.
  */
-export type RuntimeProfileContainerKind = ManagedWorkspaceContainerKind | "location" | "agent";
+type RuntimeProfileContainerKind = ManagedWorkspaceContainerKind | "location" | "agent";
 
 export interface ManagedWorkspaceContainer {
   kind: ManagedWorkspaceContainerKind;
@@ -80,7 +80,7 @@ export function runtimeProfileContainerPath(
 }
 
 /** Every profile container of one Agent — what `host-state/reset` moves. */
-export function agentProfilesRoot(agentId: string): string {
+function agentProfilesRoot(agentId: string): string {
   assertManagedWorkspaceId(agentId, "agent_id");
   return join(configDir(), "agents", agentId, "profiles");
 }
@@ -180,14 +180,29 @@ export async function archiveAgentProfiles(agentId: string): Promise<boolean> {
   return moved;
 }
 
+/**
+ * When a directory was archived, read from the timestamp `archiveDirectory`
+ * put in its name. Not its mtime: a rename leaves that alone, so a profile
+ * untouched since its first use would count as archived that long ago and be
+ * swept the moment it was archived.
+ */
+function archivedAtFromName(name: string): number | null {
+  const stamp = name.slice(name.lastIndexOf(ARCHIVE_MARKER) + ARCHIVE_MARKER.length);
+  const iso = stamp.replace(/T(\d{2})-(\d{2})-(\d{2})/u, "T$1:$2:$3");
+  const at = Date.parse(iso);
+  return Number.isNaN(at) ? null : at;
+}
+
 /** Removes every archive under one directory that is past the retention window. */
 async function sweepArchivesIn(base: string, now: Date): Promise<number> {
   let removed = 0;
   for (const entry of await readdir(base, { withFileTypes: true }).catch(() => [])) {
     if (!entry.isDirectory() || !entry.name.includes(ARCHIVE_MARKER)) continue;
     const path = join(base, entry.name);
-    const info = await stat(path).catch(() => null);
-    if (info && now.getTime() - info.mtimeMs > MANAGED_WORKSPACE_RETENTION_MS) {
+    const archivedAt = archivedAtFromName(entry.name)
+      ?? (await stat(path).catch(() => null))?.mtimeMs
+      ?? null;
+    if (archivedAt !== null && now.getTime() - archivedAt > MANAGED_WORKSPACE_RETENTION_MS) {
       await rm(path, { recursive: true, force: true });
       removed += 1;
     }
@@ -196,20 +211,17 @@ async function sweepArchivesIn(base: string, now: Date): Promise<number> {
 }
 
 /**
- * Moves the pre-Agent-keyed `<configDir>/profiles/<adapter>/<provider>` tree
- * aside. It held one login and one session store per adapter and provider,
- * shared by every Agent on the machine — the sharing the Agent-keyed profiles
- * ended — plus each bound run's dead lease token. Nothing reads it any more,
- * so it goes the way of every other retired directory here: archived under
- * the marker and swept after the retention window, never deleted outright.
- * False when there was nothing to move.
+ * Moves `<configDir>/profiles/<adapter>/<provider>` aside. Nothing reads it.
+ * Archive it under the marker and sweep it after the retention window. Do
+ * not delete it outright, and do not share one login across every Agent on
+ * the machine. False when there was nothing to move.
  */
 export async function archiveLegacyProfileTree(): Promise<boolean> {
   return archiveDirectory(join(configDir(), "profiles"));
 }
 
 export async function sweepManagedWorkspaceArchives(now = new Date()): Promise<number> {
-  // The archived legacy profile tree sits at the config root.
+  // The archived profile tree sits at the config root.
   let removed = await sweepArchivesIn(configDir(), now);
   const agentsRoot = join(configDir(), "agents");
   const agents = await readdir(agentsRoot, { withFileTypes: true }).catch(() => []);
@@ -286,8 +298,8 @@ export async function ensureManagedWorkspace(
   const path = managedWorkspacePath(agentId, container);
   await mkdir(path, { recursive: true, mode: 0o700 });
   // A repository from the first Run, so a managed workspace has the same diff
-  // and the same undo a Location does. Without it ADR 0016 section 11's "undo
-  // is git" was false for the very place an Agent works by default.
+  // and the same undo a Location does. ADR 0016 section 11's undo is git.
+  // Do not leave this workspace as a plain directory.
   await ensureGitRepository(path);
   return path;
 }

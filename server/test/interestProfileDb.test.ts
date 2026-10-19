@@ -27,7 +27,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["interest_topic_observations", "interest_topic_candidates", "interest_topics", "interest_profiles", "source_item_annotations", "source_item_user_states", "source_items", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "space_memberships", "users", "spaces"],
+    ["interest_topic_observations", "interest_topic_candidates", "interest_topics", "interest_profiles", "source_item_annotations", "source_item_user_states", "source_items", "source_channel_user_subscriptions", "source_channels", "source_connections", "source_provider_connectors", "source_providers", "source_connectors", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -58,11 +58,28 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO source_connections (
-       id, space_id, provider_connector_id, owner_user_id, name, status,
+       id, space_id, provider_connector_id, owner_user_id, name, status, visibility,
        capture_policy, trust_level, consent_json, policy_json, config_json, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,'Feed','active','reference_only','normal','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,$5,$5)`,
+     ) VALUES ($1,$2,$3,$4,'Feed','active','space_shared','reference_only','normal','{}'::jsonb,'{}'::jsonb,'{}'::jsonb,$5,$5)`,
     [CONNECTION, SPACE, mappingId, OWNER, now],
   );
+  // Both readers subscribe to the connection's channel: reading counts as
+  // interest evidence only for a source the reader subscribes to (or owns).
+  await db.pool.query(
+    `INSERT INTO source_channels (
+       id, space_id, source_connection_id, created_by_user_id, name, channel_type, endpoint_url,
+       query_json, provider_query_json, query_fingerprint, status, fetch_frequency, schedule_rule_json, created_at, updated_at
+     ) VALUES ($1,$2,$1,$3,'Feed Channel','feed','https://example.com/rss','{}'::jsonb,'{}'::jsonb,$1,'active','daily','{"frequency":"daily","hour":0,"minute":0}'::jsonb,$4,$4)`,
+    [CONNECTION, SPACE, OWNER, now],
+  );
+  for (const user of [OWNER, OTHER]) {
+    await db.pool.query(
+      `INSERT INTO source_channel_user_subscriptions (
+         id, space_id, source_channel_id, user_id, status, library_enabled, digest_enabled, created_at, updated_at
+       ) VALUES ($1,$2,$3,$4,'subscribed',true,true,$5,$5)`,
+      [randomUUID(), SPACE, CONNECTION, user, now],
+    );
+  }
 });
 
 const annotations = () => new PgSourceAnnotationRepository(db.pool);
@@ -73,6 +90,9 @@ async function seedAnnotatedItem(options: {
   domain: string;
   topics?: string[];
   readBy?: { user: string; readStatus: string; openedAt?: string }[];
+  /** Whose item it is and who may see it; shared with the Space by default. */
+  owner?: string;
+  visibility?: "space_shared" | "private";
 }): Promise<string> {
   const itemId = randomUUID();
   const now = new Date().toISOString();
@@ -80,8 +100,8 @@ async function seedAnnotatedItem(options: {
     `INSERT INTO source_items (
        id, space_id, owner_user_id, visibility, connection_id, item_type, title, source_uri,
        first_seen_at, last_seen_at, content_state, retention_policy, created_at, updated_at
-     ) VALUES ($1,$2,$3,'space_shared',$4,'feed_entry',$5,$6,$7,$7,'excerpt_saved','summary_only',$7,$7)`,
-    [itemId, SPACE, OWNER, CONNECTION, `Item ${itemId.slice(0, 8)}`, `https://example.com/${itemId}`, now],
+     ) VALUES ($1,$2,$3,$8,$4,'feed_entry',$5,$6,$7,$7,'excerpt_saved','summary_only',$7,$7)`,
+    [itemId, SPACE, options.owner ?? OWNER, CONNECTION, `Item ${itemId.slice(0, 8)}`, `https://example.com/${itemId}`, now, options.visibility ?? "space_shared"],
   );
   await annotations().enqueueItems(SPACE, [itemId], null);
   await annotations().markSucceeded(SPACE, {
@@ -194,6 +214,26 @@ describe("controlled topic growth", () => {
     expect(snapshot.topics).toEqual([]);
   });
 
+  it("does not count another member's private items toward this reader's candidates", async () => {
+    if (!db.available) return;
+    for (let i = 0; i < NEW_TOPIC_READ_THRESHOLD; i += 1) {
+      await seedAnnotatedItem({ domain: "artificial_intelligence", topics: ["Deep Sea Mining"], readBy: [{ user: OWNER, readStatus: "read" }] });
+    }
+    // Enough of OTHER's private items — a discovery probe's results, say — to
+    // cross the occurrence threshold if they counted for OWNER.
+    for (let i = 0; i < NEW_TOPIC_OCCURRENCE_THRESHOLD; i += 1) {
+      await seedAnnotatedItem({ domain: "artificial_intelligence", topics: ["deep sea mining"], owner: OTHER, visibility: "private" });
+    }
+    await service().runFactLayer(SPACE, OWNER);
+
+    expect((await service().snapshot(SPACE, OWNER)).ready_candidates).toEqual([]);
+    const candidates = await db.pool.query<{ occurrence_count: number; display_phrase: string }>(
+      `SELECT occurrence_count, display_phrase FROM interest_topic_candidates WHERE space_id = $1 AND user_id = $2`,
+      [SPACE, OWNER],
+    );
+    expect(candidates.rows).toEqual([{ occurrence_count: NEW_TOPIC_READ_THRESHOLD, display_phrase: "Deep Sea Mining" }]);
+  });
+
   it("does not promote a phrase the reader never engages with", async () => {
     if (!db.available) return;
     for (let i = 0; i < NEW_TOPIC_OCCURRENCE_THRESHOLD + 3; i += 1) {
@@ -223,6 +263,35 @@ describe("controlled topic growth", () => {
     const ready = (await service().snapshot(SPACE, OWNER)).ready_candidates;
     expect(ready).toHaveLength(1);
     expect(ready[0].occurrence_count).toBe(4);
+  });
+
+  it("counts an item once per candidate however many spellings it carries", async () => {
+    if (!db.available) return;
+    await seedAnnotatedItem({
+      domain: "artificial_intelligence",
+      topics: ["LLMs", "LLM", "large language models", "Large-Language-Model"],
+      readBy: [{ user: OWNER, readStatus: "read" }],
+    });
+    await service().runFactLayer(SPACE, OWNER);
+
+    const profile = await profiles().getProfile(SPACE, OWNER);
+    for (const key of ["llm", "large-language-model"]) {
+      expect(await profiles().getCandidate(profile!.id, key), key).toMatchObject({ occurrence_count: 1, read_count: 1 });
+    }
+  });
+
+  it("counts an item once when two passes run at the same time", async () => {
+    if (!db.available) return;
+    await profiles().ensureProfile(SPACE, OWNER);
+    await seedAnnotatedItem({
+      domain: "artificial_intelligence",
+      topics: ["model evaluation"],
+      readBy: [{ user: OWNER, readStatus: "read" }],
+    });
+    await Promise.all([service().runFactLayer(SPACE, OWNER), service().runFactLayer(SPACE, OWNER)]);
+
+    const profile = await profiles().getProfile(SPACE, OWNER);
+    expect(await profiles().getCandidate(profile!.id, "model-evaluation")).toMatchObject({ occurrence_count: 1, read_count: 1 });
   });
 
   it("is idempotent: re-running does not double-count toward the threshold", async () => {
@@ -429,6 +498,23 @@ describe("the confirmation boundary", () => {
     });
     const topics = await profiles().listTopics(profile.id);
     expect(topics).toHaveLength(1);
+    expect(topics[0].aliases).toContain("city-planning");
+  });
+
+  it("brings an archived topic back with its aliases and weight, not an empty copy", async () => {
+    if (!db.available) return;
+    const profile = await profiles().ensureProfile(SPACE, OWNER);
+    await profiles().upsertTopic({
+      spaceId: SPACE, userId: OWNER, profileId: profile.id,
+      label: "Urban planning", domainKey: "urbanism", aliases: ["city planning"], weight: 3,
+    });
+    expect(await profiles().archiveTopic(profile.id, "urban-planning")).toBe(true);
+
+    // The way a topic comes back in practice: created again with nothing but a label.
+    await profiles().upsertTopic({ spaceId: SPACE, userId: OWNER, profileId: profile.id, label: "Urban planning", domainKey: "urbanism" });
+    const topics = await profiles().listTopics(profile.id);
+    expect(topics).toHaveLength(1);
+    expect(topics[0]).toMatchObject({ weight: 3 });
     expect(topics[0].aliases).toContain("city-planning");
   });
 });

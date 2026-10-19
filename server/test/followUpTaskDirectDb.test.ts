@@ -166,6 +166,42 @@ describe("follow-up Tasks from a Run's output (real Postgres)", () => {
     });
   });
 
+  it("counts its follow-ups against the turn's one Task ceiling, leaving the rest as cards", async () => {
+    if (!db.available) return;
+    const run = await runWithOrigin("manual");
+    // Three Tasks the turn's own `task.create` calls already wrote.
+    for (let index = 0; index < 3; index += 1) {
+      await db.pool.query(
+        `INSERT INTO tasks (id, space_id, project_id, title, status, priority, created_by_user_id, owner_user_id, visibility, source_run_id, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'inbox', 'normal', $5, $5, 'space_shared', $6, now(), now())`,
+        [randomUUID(), SPACE, PROJECT, `Direct ${index}`, OWNER, run.id],
+      );
+    }
+    const fourFollowUps = {
+      ...adapterResult(),
+      output_json: {
+        proposed_changes: [1, 2, 3, 4].map((index) => ({
+          proposal_type: "follow_up_task",
+          payload_json: { task: { title: `Follow-up ${index}`, priority: "normal" } },
+        })),
+      },
+    } as unknown as RunAdapterResultEnvelope;
+    await service().materializeAdapterResult({ run, adapterResult: fourFollowUps }, { proposal_status: "staged" });
+    await promoteStagedProposals(run.id);
+    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri });
+    // Settled twice, concurrently: the shared count is taken under one lock.
+    await Promise.all([applyAttendedFollowUpTasks(config, db.pool, run), applyAttendedFollowUpTasks(config, db.pool, run)]);
+
+    const created = await tasks();
+    expect(created).toHaveLength(5);
+    const statuses = await db.pool.query<{ status: string; total: string }>(
+      `SELECT status, count(*)::text AS total FROM proposals WHERE space_id = $1 GROUP BY status ORDER BY status`,
+      [SPACE],
+    );
+    // Two applied up to the ceiling; the other two stay for the person.
+    expect(statuses.rows).toEqual([{ status: "accepted", total: "2" }, { status: "pending", total: "2" }]);
+  });
+
   it("leaves the card standing when nobody asked for the work", async () => {
     if (!db.available) return;
     const run = await runWithOrigin("autonomous");
@@ -299,9 +335,9 @@ describe("follow-up Tasks from a Run's output (real Postgres)", () => {
       { proposal_status: "staged" },
     );
     await promoteStagedProposals(run.id);
-    // Through the registry, not the function: deleting the registration line
-    // is the failure this case exists to catch.
-    await runFinalizationReconcilerRegistry.reconcileAll(db.pool, run);
+    // Through the registry, not the function. Deleting the registration line
+    // must fail here.
+    for (const { reconcile } of runFinalizationReconcilerRegistry.entries()) await reconcile(db.pool, run);
     expect(await tasks()).toHaveLength(1);
   });
 
@@ -327,6 +363,30 @@ describe("follow-up Tasks from a Run's output (real Postgres)", () => {
     // Not `/project/`: that would also match "Project not found" and
     // "Project is archived", so a drift from 403 to either would pass.
     })).rejects.toThrow(/writer|permission|forbidden/i);
+    expect(await tasks()).toEqual([]);
+  });
+
+  it("refuses a Folder that belongs to another Project than the one the Task lands in", async () => {
+    if (!db.available) return;
+    const other = await new PgProjectRepository(db.pool).create({ spaceId: SPACE, userId: OWNER }, { name: "Other Project" });
+    const folder = randomUUID();
+    const now = new Date().toISOString();
+    await db.pool.query(
+      `INSERT INTO project_folders (
+         id, space_id, project_id, created_by_user_id, name, status, kind,
+         is_primary, protected, system_managed, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, 'repo', 'active', 'code', true, false, false, $5, $5)`,
+      [folder, SPACE, other.id, OWNER, now],
+    );
+
+    await expect(createFollowUpTask(db.pool, { spaceId: SPACE, userId: OWNER }, {
+      pool: db.pool,
+      fields: parseFollowUpTaskPayload({ task: { title: "Wrong Folder" } }),
+      projectId: PROJECT,
+      projectFolderId: folder,
+      origin: { runId: null },
+      source: "test",
+    })).rejects.toMatchObject({ statusCode: 422 });
     expect(await tasks()).toEqual([]);
   });
 

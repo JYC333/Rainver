@@ -12,7 +12,7 @@ function initialsFrom(name: string | null | undefined, email: string | null | un
   return '?'
 }
 
-export interface UserAvatarProps {
+interface UserAvatarProps {
   avatarUrl: string | null | undefined
   displayName: string | null | undefined
   email?: string | null | undefined

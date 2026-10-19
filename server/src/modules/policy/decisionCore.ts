@@ -40,7 +40,7 @@ function num(value: unknown): number | null {
 }
 
 // ---------------------------------------------------------------------------
-// roles.py
+// Canonical roles
 // ---------------------------------------------------------------------------
 
 export const CANONICAL_ROLES = [
@@ -67,7 +67,7 @@ export function hasRoleAtLeast(role: string, required: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// hard_invariants.py
+// Hard invariants
 // ---------------------------------------------------------------------------
 
 const PERSISTENCE_ACTIONS = new Set([
@@ -79,7 +79,6 @@ const PERSISTENCE_ACTIONS = new Set([
   "project_folder.apply_patch",
   "proposal.create",
   "proposal.apply",
-  "policy.change",
   "capability.enable",
   "capability.update",
   "tool_binding.enable",
@@ -208,7 +207,7 @@ const publicTargetBlocksGrantDerived: Invariant = (ctx) => {
 
 const payloadFlagsNotApprovalProof: Invariant = (ctx) => {
   const action = str(ctx.action);
-  if (action !== "proposal.apply" && action !== "policy.change") return null;
+  if (action !== "proposal.apply") return null;
   const payload = asRecord(ctx.payload) ?? {};
   const metadata = asRecord(ctx.metadata_json) ?? {};
   const context = asRecord(ctx.context) ?? {};
@@ -273,7 +272,7 @@ export function checkHardInvariants(ctx: Ctx): PolicyDecision | null {
 }
 
 // ---------------------------------------------------------------------------
-// rules.py
+// Rules
 // ---------------------------------------------------------------------------
 
 type Rule = (ctx: Ctx) => PolicyDecision | null;
@@ -884,11 +883,10 @@ const ruleManagedSystemActionGrant: Rule = (ctx) => {
  * they are append-only or self-limiting — they can record, give work away, or
  * stop, never take ground.
  *
- * ADR 0017 §2 widened this from Tasks to every Project-internal write that
- * stopped being a proposal: opening a question, recording a conclusion,
- * adopting a recorded next step, starting a bounded acquisition. The gate they
- * lost was on authorship; this one is on whether anybody asked, which is the
- * question that was worth asking all along.
+ * ADR 0017 §2 covers every Project-internal write that is not a proposal:
+ * opening a question, recording a conclusion, adopting a recorded next step,
+ * starting a bounded acquisition. The gate is whether anybody asked, not who
+ * authored the write.
  */
 // `proposal.decide` is the sharpest of these: a decision is a person's, and
 // the only origin on which the Agent can be carrying one is the person's own
@@ -904,9 +902,8 @@ const ORIGIN_GATED_PROJECT_WRITES = new Set([
   "inquiry.iteration.record",
   "inquiry.advice.adopt",
   "research.acquisition.start",
-  // `memory.write` is here and not in `ruleMemoryScope`: what the older rule
-  // gates — scope and operation — ADR 0003 §1 now settles in the applier,
-  // and what remains for policy is the origin.
+  // `memory.write` is origin-gated here. Scope and operation are settled
+  // by the applier (ADR 0003 §1). Do not move that gate into `ruleMemoryScope`.
   "memory.write",
 ]);
 
@@ -969,7 +966,7 @@ const BUILTIN_RULES: readonly Rule[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// engine.py
+// Decision engine
 // ---------------------------------------------------------------------------
 
 /**

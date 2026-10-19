@@ -1,26 +1,25 @@
 import { randomUUID } from "node:crypto";
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import { assertProjectWriter } from "../projects/access.js";
+import { assertNoteEntryInvariant, lockNotesForPlacementChange } from "./notePlacementInvariant.js";
 
 /**
  * Additional Project scopes for a `space_objects` row — the write side of the
- * `space_object_project_shares` declaration the content-access registry reads
- * (U8/U9).
+ * `space_object_project_shares` declaration the content-access registry reads.
  *
  * A share is deliberate and narrow. It widens the **scope** half of the read
  * gate for one object and one Project: members of that Project stop being
  * blocked by `primary_project_id`. It is not a grant — `visibility`,
  * `access_level` and `content_access_grants` are separate conjuncts, so a
  * `private` object stays private to its owner however many Projects it reaches.
- * That is why there is no access level on a share (the open question's answer:
- * read-only by construction).
+ * A share has no access level. It is read-only by construction. Do not add one.
  *
  * Both sides are writes. Opening an object to a Project changes what that
  * Project's members can see, and it changes what the owning Project has
  * exposed — so the actor must be able to write to both.
  */
 
-export interface SpaceObjectProjectShareRow {
+interface SpaceObjectProjectShareRow {
   project_id: string;
   shared_by_user_id: string;
   created_at: string;
@@ -86,12 +85,13 @@ export async function shareSpaceObjectWithProject(
 
 /**
  * Withdraws a share, and with it every placement the object holds inside that
- * Project's folder subtree.
+ * Project's folder subtree — and nothing else: the owning Project's entries
+ * are not touched, so the note stays where its own Project can find it.
  *
- * Dropping the placements is the point rather than a side effect: a placement
+ * Do not leave the placements. A placement
  * inside a Project's tree is what puts the object in that Project's view, so
  * leaving them behind after a revoke would show that Project's members a tree
- * with a hole in it — the silent absence U8 exists to prevent, just arrived at
+ * with a hole in it — the silent absence a share must not leave, just arrived at
  * from the other direction.
  */
 export async function revokeSpaceObjectProjectShare(
@@ -104,6 +104,12 @@ export async function revokeSpaceObjectProjectShare(
     userId: string;
   },
 ): Promise<void> {
+  // Note row first, then the share row, then placements — the order every
+  // placement writer keeps (`notePlacementInvariant`): a confirmed cross-Project
+  // placement locks the note and then upserts this same share row, so taking
+  // the share row first here would deadlock with it. Empty for an object that
+  // is not a note.
+  const lockedNotes = await lockNotesForPlacementChange(db, input.spaceId, [input.objectId]);
   const existing = await db.query<{ id: string }>(
     `SELECT id FROM space_object_project_shares
       WHERE space_id = $1 AND object_id = $2 AND project_id = $3 AND revoked_at IS NULL
@@ -141,4 +147,5 @@ export async function revokeSpaceObjectProjectShare(
         )`,
     [input.spaceId, input.objectId, input.projectId],
   );
+  await assertNoteEntryInvariant(db, input.spaceId, lockedNotes);
 }

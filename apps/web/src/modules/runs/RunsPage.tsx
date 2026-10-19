@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { Play, FolderKanban, X } from 'lucide-react'
@@ -17,9 +17,10 @@ import { PreviewBadge } from '../../components/PreviewBadge'
 import { ScopeBadge } from '../../components/ScopeBadge'
 import { ProjectFolderSelectors } from '../../components/ProjectFolderSelectors'
 import { ProviderTaskBadge, runActorLabel } from './runActor'
+import { formatDateTime } from '../../i18n/format'
 
 function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString() : '—'
+  return formatDateTime(dt)
 }
 
 function RunRow({ r, agentName, onRefresh }: { r: Run; agentName: string | null; onRefresh: () => void }) {
@@ -40,11 +41,6 @@ function RunRow({ r, agentName, onRefresh }: { r: Run; agentName: string | null;
           {r.started_at && ` · started ${fmt(r.started_at)}`}
           {r.ended_at && ` · ended ${fmt(r.ended_at)}`}
         </p>
-        {r.task_id && (
-          <Link to={`/tasks/${r.task_id}`} className="text-xs text-accent-foreground hover:underline">
-            Open linked task
-          </Link>
-        )}
         {r.status === 'failed' && r.error_message && (
           <p className="text-xs text-destructive border border-destructive/20 rounded p-2 bg-destructive/5">
             {r.error_message}
@@ -99,7 +95,11 @@ export default function RunsPage() {
   const [fAgent, setFAgent] = useState('')
   const [fWs, setFWs] = useState('')
 
+  // Filters change faster than the list answers; only the latest request's
+  // rows are shown, as loadSubs already does for its own reads.
+  const listRequest = useRef(0)
   const load = useCallback(async () => {
+    const request = ++listRequest.current
     if (!browsingSpaceId) {
       setRuns([])
       setLoading(false)
@@ -115,12 +115,14 @@ export default function RunsPage() {
         project_folder_id: fWs || undefined,
         project_id: projectFilter || undefined,
       })
+      if (request !== listRequest.current) return
       setRuns(data)
     } catch (e) {
+      if (request !== listRequest.current) return
       toast.error(errMsg(e))
       setRuns([])
     } finally {
-      setLoading(false)
+      if (request === listRequest.current) setLoading(false)
     }
   }, [fStatus, fMode, fAgent, fWs, projectFilter, browsingSpaceId])
 

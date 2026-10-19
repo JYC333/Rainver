@@ -119,10 +119,10 @@ export * from "./capture.js";
 export * from "./capturefiling.js";
 export * from "./crossSpaceRetrieval.js";
 
-// Claim trajectory + contradiction loop contracts (Slice E)
+// Claim trajectory + contradiction loop contracts
 export * from "./claimReviewLoop.js";
 
-// Candidate-relation discovery pipeline contracts (Slice F)
+// Candidate-relation discovery pipeline contracts
 export * from "./relationDiscovery.js";
 
 // Graph projection rendering contract
@@ -160,3 +160,4 @@ export * from "./turnParts.js";
 
 // Instance update contracts (admin job + deployer pull loop)
 export * from "./deployment.js";
+export * from "./informationDigests.js";

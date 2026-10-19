@@ -1,7 +1,7 @@
 import { HttpError, type Queryable } from "../routeUtils/common.js";
 import {
   retrievalEgressAllowed,
-  retrievalProviderEgressDestination,
+  runtimeProviderEgressDestination,
   type RetrievalEgressDestination,
 } from "../retrieval/egress/egressPolicy.js";
 import { readSpaceRetrievalSettings } from "../retrieval/settings.js";
@@ -9,14 +9,18 @@ import { normalizeSourceConnectionReadGovernance } from "./sourceConsent.js";
 import type { SourceConnectionRow } from "./sourceRepositoryRows.js";
 
 /**
+ * Why the gate refused, as the stable `code` of its 403 body: the Space
+ * turned external model egress off, or the Source has not consented to the
+ * destination. Callers that wait on the refusal name the right condition.
+ */
+export const SOURCE_EGRESS_SPACE_DISABLED = "space_external_egress_disabled";
+export const SOURCE_EGRESS_NOT_CONSENTED = "source_model_egress_not_consented";
+
+/**
  * The consent/egress gate every path that ships source content to a model must
- * pass through.
- *
- * This lived as two private methods on `SourcePostProcessingService` while
- * post-processing was the only such path. The system annotation pass is the
- * second one, and a second copy of a gate whose whole purpose is to fail closed
- * is how one of them silently stops matching the other. Sources owns the gate;
- * callers own what they do when it throws.
+ * pass through. One gate. Do not keep a second copy: the copies stop matching
+ * and one of them fails open. Sources owns the gate; callers own what they do
+ * when it throws.
  */
 export async function assertSourcePromptEgressAllowed(
   db: Queryable,
@@ -27,10 +31,8 @@ export async function assertSourcePromptEgressAllowed(
   const governance = normalizeSourceConnectionReadGovernance(connection);
   const retrievalSettings = await readSpaceRetrievalSettings(db, connection.space_id);
   if (destination === "external_provider" && !retrievalSettings.externalEgressEnabled) {
-    throw new HttpError(
-      403,
-      "Space settings disable external model egress. Enable external egress in Space Settings or use a local model provider.",
-    );
+    const detail = "Space settings disable external model egress. Enable external egress in Space Settings or use a local model provider.";
+    throw new HttpError(403, detail, { detail, code: SOURCE_EGRESS_SPACE_DISABLED });
   }
   const allowed = retrievalEgressAllowed(
     {
@@ -52,14 +54,12 @@ export async function assertSourcePromptEgressAllowed(
   );
   if (!allowed) {
     const label = destination === "local_provider" ? "local provider" : "external model";
-    throw new HttpError(
-      403,
-      `This source has not allowed ${label} processing. Enable model egress for the source or choose an allowed provider.`,
-    );
+    const detail = `This source has not allowed ${label} processing. Enable model egress for the source or choose an allowed provider.`;
+    throw new HttpError(403, detail, { detail, code: SOURCE_EGRESS_NOT_CONSENTED });
   }
 }
 
-export async function resolveAgentPromptEgressDestination(
+async function resolveAgentPromptEgressDestination(
   db: Queryable,
   spaceId: string,
   agentId: string,
@@ -68,14 +68,22 @@ export async function resolveAgentPromptEgressDestination(
     runtime_key: string;
     backend_mode: "runtime_native" | "model_provider";
     model_provider_id: string | null;
+    model_name: string | null;
+    provider_space_id: string | null;
     provider_type: string | null;
     base_url: string | null;
+    config_json: unknown;
+    default_model: string | null;
   }>(
     `SELECT arp.runtime_key,
             arp.backend_mode,
             arp.model_provider_id,
+            arp.model_name,
+            p.space_id AS provider_space_id,
             p.provider_type,
-            p.base_url
+            p.base_url,
+            p.config_json,
+            p.default_model
        FROM agent_runtime_profiles arp
        LEFT JOIN model_provider_space_grants g
          ON g.space_id = arp.space_id
@@ -97,13 +105,17 @@ export async function resolveAgentPromptEgressDestination(
     if (!profile.model_provider_id) {
       throw new HttpError(409, "Selected agent Runtime Profile has no ModelProvider binding.");
     }
-    if (!profile.provider_type) {
+    if (!profile.provider_type || !profile.provider_space_id) {
       throw new HttpError(409, "Selected agent model provider is not available in this space.");
     }
-    return retrievalProviderEgressDestination({
+    return runtimeProviderEgressDestination(profile.runtime_key, {
+      space_id: profile.provider_space_id,
       provider_type: profile.provider_type,
       base_url: profile.base_url,
-    });
+      config_json: profile.config_json,
+      default_model: profile.default_model,
+      model: profile.model_name,
+    }, spaceId);
   }
   if (profile.model_provider_id) {
     throw new HttpError(409, "Runtime-native Agent Profiles cannot carry a ModelProvider binding.");

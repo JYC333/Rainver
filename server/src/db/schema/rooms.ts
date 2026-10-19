@@ -32,10 +32,9 @@ export const rooms = pgTable("rooms", {
   rosterRevision: bigint("roster_revision", { mode: "number" }).default(0).notNull(),
   /**
    * The Project's one mainline conversation. Project members belong to it by
-   * being Project members, so the chat panel has a stable Room to bind to
-   * rather than "whichever Room the viewer happens to be in that was most
-   * recently active" — which switched under people and was empty for anyone
-   * not on a roster. It is created with the Project (ADR 0018 decision 4);
+   * being Project members, so the chat panel has a stable Room to bind to.
+   * Do not bind whichever Room the viewer was most recently in. That switches
+   * under people and is empty for anyone not on a roster. It is created with the Project (ADR 0018 decision 4);
    * a Room opened afterwards is never the mainline.
    */
   isMainline: boolean("is_mainline").default(false).notNull(),

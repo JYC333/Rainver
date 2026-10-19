@@ -220,9 +220,8 @@ export async function finalizeChatTurn(
   } catch (error) {
     // A Run that died before execution (routing failure, admission refusal)
     // never created an invocation authority, so there is no context to
-    // finalize — treating that as fatal wedged the whole completion path:
-    // the reconciler re-threw forever and the host thread's dispatch lock
-    // was never released.
+    // finalize. Do not treat that as fatal. The reconciler would rethrow
+    // and the host thread's dispatch lock would never be released.
     if (!(error instanceof InvocationAuthorityNotFoundError)) throw error;
   }
   const completion: ChatTurnCompletion = {

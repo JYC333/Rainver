@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstat, mkdir, readdir, realpath, stat } from "node:fs/promises";
+import { lstat, mkdir, readdir, realpath, rm, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
   buildTree,
@@ -47,6 +47,9 @@ import {
   type ProjectFileDraftMutation,
   type ProjectFileDraftRow,
 } from "./draftRepository.js";
+import { assertRemoteRepositoryUrl, CLONE_GIT_ALLOW_PROTOCOL, redactRepositoryUrlCredentials } from "./repositoryUrl.js";
+import { startGuardedConnectProxy } from "@rainver/outbound-guard";
+import { outboundGuard } from "../sources/outboundUrlSafety.js";
 
 const FOLDER_KINDS = new Set(["code", "data", "docs"]);
 
@@ -96,11 +99,11 @@ export interface ProjectFolderOut {
   updated_at: string;
 }
 
-/** `workspace add`'s response shape — a merged view the host daemon expects
- * (`packages/host-daemon/src/api.ts`'s `WorkspaceOut`), predating the
- * Folder/Location split. `id` is the Location's id, not the Folder's — see
- * `createRemoteWorkspace`'s doc comment for why. */
-export interface RemoteWorkspaceOut {
+/** `workspace add`'s response shape — the merged view the host daemon expects
+ * (`packages/host-daemon/src/api.ts`'s `WorkspaceOut`). `id` is the Location's
+ * id, not the Folder's. The daemon pins a task thread and a Run to that
+ * execution site. */
+interface RemoteWorkspaceOut {
   id: string;
   project_id: string;
   name: string;
@@ -111,19 +114,19 @@ export interface RemoteWorkspaceOut {
   created_at: string;
 }
 
-export interface ProjectFolderPage {
+interface ProjectFolderPage {
   items: ProjectFolderOut[];
   total: number;
   limit: number;
   offset: number;
 }
 
-export interface ScanCandidate {
+interface ScanCandidate {
   name: string;
   path: string;
 }
 
-export interface ProjectFileDraftSaveOut {
+interface ProjectFileDraftSaveOut {
   file: FileContent;
   revision: ProjectFileRevisionOut;
   draft_deleted: boolean;
@@ -226,7 +229,7 @@ export class PgProjectFolderRepository {
     const now = new Date().toISOString();
     // This flow (mkdir/clone/scan under `workspaceRoot`) only ever creates a
     // folder on the server host — remote-host workspace registration is a
-    // separate daemon-driven path (P1's hosts module), not this endpoint.
+    // separate daemon-driven path, not this endpoint.
     const serverHostId = await new PgHostRepository(this.db).ensureServerHostId();
     const folder = await withTransactionIfPool(this.db, async (db) => {
       if (isPrimary) await demotePrimary(db, identity.spaceId, projectId);
@@ -260,8 +263,7 @@ export class PgProjectFolderRepository {
           now,
         ],
       );
-      // execution-topology-and-project-control-plane-plan.md P1 / D2: this
-      // flow's single physical checkout is this Folder's one active Location.
+      // This flow's single physical checkout is this Folder's one active Location.
       await new PgWorkspaceLocationRepository(db).create({
         spaceId: identity.spaceId,
         projectFolderId: id,
@@ -536,11 +538,23 @@ export class PgProjectFolderRepository {
         });
       }
       await new PgProjectFileDraftRepository(db).deleteForFolder(db, identity.spaceId, folderId);
-      const result = await db.query(
-        `DELETE FROM project_folders WHERE id = $1 AND space_id = $2 AND project_id = $3`,
-        [folderId, identity.spaceId, projectId],
-      );
-      return (result.rowCount ?? 0) > 0;
+      try {
+        const result = await db.query(
+          `DELETE FROM project_folders WHERE id = $1 AND space_id = $2 AND project_id = $3`,
+          [folderId, identity.spaceId, projectId],
+        );
+        return (result.rowCount ?? 0) > 0;
+      } catch (error) {
+        // Runs, Activity, Proposals and Rooms keep pointing at a Folder they
+        // used; its registration stays for them, and archiving is the way out.
+        if ((error as { code?: unknown }).code !== "23503") throw error;
+        const detail = "This Folder is referenced by existing Runs, Activity or other records; archive it instead";
+        throw new HttpError(409, detail, {
+          detail,
+          code: "project_folder_in_use",
+          constraint: (error as { constraint?: unknown }).constraint ?? null,
+        });
+      }
     });
   }
 
@@ -550,19 +564,15 @@ export class PgProjectFolderRepository {
    * Called with the host's owner as `userId`; write access to the target
    * Project is still required, exactly as the server-host `create` flow.
    *
-   * execution-topology-and-project-control-plane-plan.md P1 / D2: creates a
-   * logical Folder *and* its one remote Location together, keeping the
-   * daemon's `workspace add` UX exactly as it was pre-P1 (one call, one
-   * result). The returned `id` is the **Location's** id, not the Folder's —
+   * Creates a logical Folder and its one remote Location together: one call,
+   * one result. The returned `id` is the **Location's** id, not the Folder's —
    * the host daemon's wire protocol uses `workspace_location_id`, and this
    * value pins a task thread and a Run to one execution site. Registering a
-   * *second* Location for an
+   * second Location for an
    * existing Folder (the same repo checked out on another host) is
    * `addWorkspaceLocation`, not this method — this one always creates a
-   * fresh Folder, matching the daemon CLI's current one-shot `workspace add`
-   * command, which does not yet offer "attach to an existing Folder"
-   * (deferred with real Windows+WSL hardware, per the plan's P1
-   * acceptance section).
+   * fresh Folder. The daemon CLI's `workspace add` does not attach to an
+   * existing Folder.
    */
   async createRemoteWorkspace(
     projectId: string,
@@ -576,6 +586,14 @@ export class PgProjectFolderRepository {
     );
     const spaceId = project.rows[0]?.space_id;
     if (!spaceId) throw new HttpError(404, "Project not found");
+    // No request Space here — the host token names only its owner — so the
+    // Space the Project belongs to must still be one the owner is an active
+    // member of; Project ownership alone does not outlive Space membership.
+    const membership = await this.db.query(
+      `SELECT 1 FROM space_memberships WHERE space_id = $1 AND user_id = $2 AND status = 'active' LIMIT 1`,
+      [spaceId, userId],
+    );
+    if (!membership.rows[0]) throw new HttpError(404, "Project not found");
     await assertProjectWriter(this.db, spaceId, projectId, userId);
     const name = requiredText(input.name, "name");
     const duplicate = await this.db.query<{ id: string }>(
@@ -703,23 +721,7 @@ export class PgProjectFolderRepository {
         mutation,
       });
     } catch (error) {
-      if (error instanceof DraftVersionConflictError) {
-        throw new HttpError(409, error.message, {
-          detail: error.message,
-          code: "draft_version_conflict",
-          current: error.current,
-        });
-      }
-      if (error instanceof DraftQuotaError) {
-        throw new HttpError(413, error.message, {
-          detail: error.message,
-          code: "draft_quota_exceeded",
-          used_bytes: error.usedBytes,
-          requested_bytes: error.requestedBytes,
-          limit_bytes: PROJECT_FILE_DRAFT_MAX_TOTAL_BYTES,
-        });
-      }
-      throw error;
+      throw draftWriteError(error);
     }
   }
 
@@ -885,7 +887,11 @@ export class PgProjectFolderRepository {
     const location = await resolveLocationWithHost(this.db, folder.space_id, folder.id, revision.workspace_location_id);
     const current = await this.readCurrentFileForDraft(folder, identity.userId, location, revision.path);
     const content = revision.before_exists ? revision.before_content ?? "" : "";
-    return new PgProjectFileDraftRepository(this.db).upsert({
+    if (Buffer.byteLength(content, "utf8") > PROJECT_FILE_DRAFT_MAX_BYTES) {
+      throw new HttpError(422, "The revision is larger than a draft may be");
+    }
+    try {
+      return await new PgProjectFileDraftRepository(this.db).upsert({
       spaceId: folder.space_id,
       projectId,
       projectFolderId: folder.id,
@@ -893,6 +899,11 @@ export class PgProjectFolderRepository {
       ownerUserId: identity.userId,
       mutation: {
         targetKind: current.exists ? "existing" : "new",
+        // A person has one new-file draft per Location, whatever its path:
+        // restoring a deleted file into that slot must not overwrite the
+        // unsaved file they were writing there. Absent is the precondition,
+        // as `upsertDraft` requires of an unversioned request.
+        ...(current.exists ? {} : { expectedVersion: null }),
         relativePath: revision.path,
         baseExists: current.exists,
         baseSha256: current.file?.sha256 ?? null,
@@ -903,7 +914,10 @@ export class PgProjectFolderRepository {
         preserveBom: content.startsWith("\uFEFF"),
         lineEndingMode: lineEndingMode(content),
       },
-    });
+      });
+    } catch (error) {
+      throw draftWriteError(error);
+    }
   }
 
   async previewRevision(
@@ -916,6 +930,7 @@ export class PgProjectFolderRepository {
     const id = requiredText(revisionId, "revision_id");
     const revision = await new PgProjectFileRevisionStore(this.db).getAvailable(folder.space_id, projectId, folder.id, id);
     if (!revision) throw new HttpError(404, "File revision not found or expired");
+    await this.enforceRevisionRead(folder, identity.userId, revision);
     return {
       revision,
       content: revision.before_exists ? revision.before_content ?? "" : null,
@@ -1084,11 +1099,47 @@ export class PgProjectFolderRepository {
     return candidate;
   }
 
+  /**
+   * git opens its own connections, so the outbound guard cannot pin them the
+   * way it pins the server's fetches. The clone is instead pointed at a
+   * loopback CONNECT proxy that lives for this one clone: every host git asks
+   * for — the first, and each redirect it follows — is resolved through the
+   * guard and dialled only at the address the guard approved, so a public
+   * name that resolves or redirects into the instance's own network is
+   * refused at that hop. HTTPS only, through the proxy only (`http.proxy`
+   * set here beats any `~/.gitconfig` or environment proxy), and no prompt:
+   * a private repository authenticates with what its URL carries.
+   */
   private async cloneRepository(spaceId: string, name: string, repoUrl: string): Promise<string> {
+    assertRemoteRepositoryUrl(repoUrl);
     const target = await this.createManagedDir(spaceId, name);
-    const result = await runLocationGit(["clone", "--", repoUrl, target], resolve(this.config.workspaceRoot, spaceId), 120_000);
+    const proxy = await startGuardedConnectProxy(outboundGuard);
+    let result;
+    try {
+      result = await runLocationGit([
+        "-c", `http.proxy=${proxy.url}`,
+        "-c", "http.proxyAuthMethod=basic",
+        "-c", "http.followRedirects=initial",
+        "clone", "--", repoUrl, target,
+      ], resolve(this.config.workspaceRoot, spaceId), 120_000, {
+        env: {
+          GIT_ALLOW_PROTOCOL: CLONE_GIT_ALLOW_PROTOCOL,
+          GIT_TERMINAL_PROMPT: "0",
+          // The proxy above is the route; an environment proxy must not be.
+          NO_PROXY: "",
+          no_proxy: "",
+        },
+      });
+    } finally {
+      await proxy.close();
+    }
     if (result.code !== 0) {
-      throw new HttpError(422, `Failed to clone repository: ${result.stderr.slice(0, 400)}`);
+      const refused = proxy.refusals[0];
+      const detail = refused
+        ? `${refused.host}:${refused.port} was refused: ${refused.reason}`
+        : redactRepositoryUrlCredentials(result.stderr.slice(0, 400));
+      await rm(target, { recursive: true, force: true }).catch(() => undefined);
+      throw new HttpError(422, `Failed to clone repository: ${detail}`);
     }
     return target;
   }
@@ -1234,6 +1285,31 @@ export class PgProjectFolderRepository {
     });
   }
 
+  /**
+   * A revision holds the file's former body, so previewing it is a file read
+   * of the Location it was saved on: the same policy and audit, and for a
+   * paired Host the same owner-only rule as browsing that machine.
+   */
+  private async enforceRevisionRead(folder: ProjectFolderRow, userId: string, revision: ProjectFileRevisionOut): Promise<void> {
+    const result = await this.db.query<{
+      execution_host_kind: string; execution_host_id: string; host_owner_user_id: string | null; host_name: string;
+    }>(
+      `SELECT wl.execution_host_kind, wl.execution_host_id, h.owner_user_id AS host_owner_user_id, h.name AS host_name
+         FROM workspace_locations wl
+         JOIN hosts h ON h.id = wl.execution_host_id
+        WHERE wl.id = $1 AND wl.space_id = $2 AND wl.project_folder_id = $3`,
+      [revision.workspace_location_id, folder.space_id, folder.id],
+    );
+    const location = result.rows[0];
+    if (!location) throw new HttpError(404, "File revision not found or expired");
+    if (location.execution_host_kind !== "remote") {
+      await this.enforceFolderRead(folder, userId, "file", revision.path);
+      return;
+    }
+    await this.enforceFolderRead(folder, userId, "file", revision.path, { forceRecord: true, hostId: location.execution_host_id });
+    if (location.host_owner_user_id !== userId) throw hostNotOwnedError(location.host_name);
+  }
+
   private async readRemote<K extends FolderReadKind>(
     folder: ProjectFolderRow,
     userId: string,
@@ -1248,13 +1324,7 @@ export class PgProjectFolderRepository {
       throw new HttpError(403, detail, { detail, code: "path_forbidden" });
     }
     await this.enforceFolderRead(folder, userId, kind, requestedPath ?? null, { forceRecord: true, hostId: location.execution_host_id });
-    if (location.host_owner_user_id !== userId) {
-      throw new HttpError(403, `This Folder is on ${location.host_name}'s machine; only its owner can browse it here.`, {
-        detail: `This Folder is on ${location.host_name}'s machine; only its owner can browse it here.`,
-        code: "host_not_owned",
-        host_name: location.host_name,
-      });
-    }
+    if (location.host_owner_user_id !== userId) throw hostNotOwnedError(location.host_name);
     if (!location.host_online) {
       const detail = `This Folder is on ${location.host_name}, which is offline.`;
       throw new HttpError(409, detail, {
@@ -1276,7 +1346,7 @@ export class PgProjectFolderRepository {
   }
 }
 
-export function folderToOut(row: ProjectFolderRow): ProjectFolderOut {
+function folderToOut(row: ProjectFolderRow): ProjectFolderOut {
   return {
     id: row.id,
     space_id: row.space_id,
@@ -1345,6 +1415,8 @@ function folderReadHttpError(error: FolderReadError): HttpError {
       return new HttpError(413, error.message);
     case "path_forbidden":
       return new HttpError(403, error.message);
+    case "unsupported_platform":
+      return new HttpError(503, error.message, { detail: error.message, code: "unsupported_platform" });
   }
   return new HttpError(500, "Unknown Folder read failure");
 }
@@ -1372,6 +1444,8 @@ function mapRemoteFolderReadError(result: FolderReadFailure, hostName: string): 
       return new HttpError(409, `The host ${hostName} is offline.`, { detail: `The host ${hostName} is offline.`, code: "host_offline", host_name: hostName });
     case "read_failed":
       return new HttpError(502, message, { detail: message, code: "read_failed", host_name: hostName });
+    case "unsupported_platform":
+      return new HttpError(503, message, { detail: message, code: "unsupported_platform", host_name: hostName });
   }
   return new HttpError(502, message, { detail: message, code: "read_failed", host_name: hostName });
 }
@@ -1408,6 +1482,27 @@ function mapRemoteFolderWriteError(
       return new HttpError(502, message, { detail: message, code: "write_failed", host_name: hostName });
   }
   return new HttpError(502, message, { detail: message, code: "write_failed", host_name: hostName });
+}
+
+/** The draft store's refusals as the route answers them; anything else passes through. */
+function draftWriteError(error: unknown): unknown {
+  if (error instanceof DraftVersionConflictError) {
+    return new HttpError(409, error.message, {
+      detail: error.message,
+      code: "draft_version_conflict",
+      current: error.current,
+    });
+  }
+  if (error instanceof DraftQuotaError) {
+    return new HttpError(413, error.message, {
+      detail: error.message,
+      code: "draft_quota_exceeded",
+      used_bytes: error.usedBytes,
+      requested_bytes: error.requestedBytes,
+      limit_bytes: PROJECT_FILE_DRAFT_MAX_TOTAL_BYTES,
+    });
+  }
+  return error;
 }
 
 function parseDraftMutation(body: Record<string, unknown>): ProjectFileDraftMutation {
@@ -1521,9 +1616,8 @@ function assertRemoteWriteAccess(location: ActiveLocationWithHost, userId: strin
 /**
  * The saved file exactly as a fresh `getFile` would report it: `content` is the
  * decoded body without its BOM, while `size`/`sha256` describe the bytes on
- * disk. Returning a body-only shape here made the cached result drop
- * `has_bom`/`encoding`, so the next draft built from it silently stripped the
- * file's BOM.
+ * disk. Return `has_bom` and `encoding` with the body. A body-only shape drops
+ * them, and the next draft built from it strips the file's BOM.
  */
 function savedFileContent(draft: ProjectFileDraftRow, serialized: string, sha256: string): FileContent {
   const content = draft.preserve_bom && serialized.startsWith("\uFEFF") ? serialized.slice(1) : serialized;
@@ -1598,4 +1692,9 @@ function dateIso(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "string") return new Date(value).toISOString();
   return new Date(0).toISOString();
+}
+
+function hostNotOwnedError(hostName: string): HttpError {
+  const detail = `This Folder is on ${hostName}'s machine; only its owner can browse it here.`;
+  return new HttpError(403, detail, { detail, code: "host_not_owned", host_name: hostName });
 }

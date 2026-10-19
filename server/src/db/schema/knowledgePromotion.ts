@@ -8,10 +8,10 @@ import { domainChangeOutbox } from "./domainChangeOutbox.js";
 
 // Knowledge Candidate extraction and revalidation. Scoped to
 // the knowledge_items-backed candidate kinds (concept/lesson/procedure/
-// decision/summary) for this vertical slice — Claim and Relation promotion
-// already have their own extraction/review flows (claim_candidate_packet,
-// relation_discovery_packet in modules/knowledge/) and are not retrofitted
-// with a pinned source reference in this slice; see PROJECTS.md.
+// decision/summary). Claim and Relation promotion have their own
+// extraction and review flows (`claim_candidate_packet`,
+// `relation_discovery_packet` in modules/knowledge/). This table does not
+// add a pinned source reference for them. See PROJECTS.md.
 //
 // Accepting a Candidate never writes knowledge_items directly — it creates a
 // pending knowledge_create/knowledge_update proposal (payload carries

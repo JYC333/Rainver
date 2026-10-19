@@ -145,20 +145,18 @@ const tokensCache = new Map<string, TokenizedCode>();
 // Subscribers for async token updates
 const subscribers = new Map<string, Set<(result: TokenizedCode) => void>>();
 
-const getTokensCacheKey = (code: string, language: CodeLanguage) => {
-  const start = code.slice(0, 100);
-  const end = code.length > 100 ? code.slice(-100) : "";
-  return `${language}:${code.length}:${start}:${end}`;
-};
+// The whole text, not a length-plus-ends digest of it. Two tool results of
+// the same shape that differ only in an id in the middle must not share a
+// cache entry. The second would be shown with the first one's tokens.
+const getTokensCacheKey = (code: string, language: CodeLanguage) => `${language}:${code}`;
 
 /**
  * The languages a code block can highlight.
  *
- * Enumerated rather than taken from shiki's bundle, because importing the
- * bundle ships every grammar it knows: measured at 795 chunks and a 22MB
- * precache, against 2.9MB before — an eight-fold download for every visitor,
- * to syntax-highlight languages nobody in this product writes. These are what
- * the repository and its Agents actually produce.
+ * Enumerated rather than taken from shiki's bundle. Do not import the
+ * bundle. It ships every grammar it knows, an eight-fold download for every
+ * visitor, to syntax-highlight languages nobody in this product writes. These
+ * are what the repository and its Agents actually produce.
  *
  * An unlisted language still renders, unhighlighted, through `createRawTokens`.
  */

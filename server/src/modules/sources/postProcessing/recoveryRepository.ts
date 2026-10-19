@@ -12,7 +12,7 @@ export interface SourcePostProcessingRecoveryScope {
   operationCreatedAt?: string;
 }
 
-export interface SourcePostProcessingCoverage {
+interface SourcePostProcessingCoverage {
   classified: string;
   failed_runs: string;
   failed_run_summary: string | null;
@@ -22,7 +22,7 @@ export interface SourcePostProcessingCoverage {
   failed_recovery_job_error: string | null;
 }
 
-export interface ActiveProcessingRule {
+interface ActiveProcessingRule {
   id: string;
   source_channel_id: string;
 }

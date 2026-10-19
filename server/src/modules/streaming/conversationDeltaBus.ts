@@ -1,8 +1,8 @@
 import { EventEmitter } from "node:events";
 
-export const CHAT_TEXT_DELTA_TYPE = "chat.text_delta";
+const CHAT_TEXT_DELTA_TYPE = "chat.text_delta";
 
-export interface ChatTextDelta {
+interface ChatTextDelta {
   type: typeof CHAT_TEXT_DELTA_TYPE;
   run_id: string;
   delta_index: number;

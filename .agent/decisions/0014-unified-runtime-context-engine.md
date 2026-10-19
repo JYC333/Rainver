@@ -4,7 +4,7 @@ Date: 2026-08-08
 
 ## Status
 
-Accepted. Remote trusted-host scope is defined by ADR 0016. Current state lives in
+Accepted. Remote trusted-host trust and ownership are defined by ADR 0016. Current state lives in
 [`architecture/MEMORY_CONTEXT_RUNTIME.md`](../architecture/MEMORY_CONTEXT_RUNTIME.md)
 and [`modules/runtime-context.md`](../modules/runtime-context.md); this
 document holds the decisions and their reasoning.
@@ -55,12 +55,13 @@ of every production entrypoint (`runtimeContext/invocationInventory.ts`)
 is compared against source imports by boundary tests so a new bypass cannot
 land unseen.
 
-Remote trusted-host Runs follow [ADR 0016](0016-control-plane-execution-hosts.md)
-sections 2 and 4: the control plane supplies authorized task/conversation prompt
-content and any granted Run tool surface, without server-brokered Runtime
-Context retrieval, window planning, or continuity. This exception does not
-extend to server-host execution or authorize reading repository guides as
-runtime context.
+Remote trusted-host Runs are no exception: every Agent Run, whatever its Host
+kind, is authorized, planned, and snapshotted by the Gateway before ACP
+dispatch, and the Delivery's semantic sections are projected into ACP's single
+user-prompt channel ([ADR 0016](0016-control-plane-execution-hosts.md) §3
+amendment, [ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md)). Host
+trust, path ownership, and tool authorization still follow ADR 0016, and
+nothing authorizes reading repository guides as runtime context.
 
 The gateway is a facade: planning, policy resolution, explicit reference
 resolution, retrieval coordination, window allocation, rendering, continuity,
@@ -221,10 +222,10 @@ requires a separate explicit adapter decision.
 
 A paired personal execution host runs under
 [ADR 0016](0016-control-plane-execution-hosts.md)'s trusted-host model, where
-this decision's isolation and server-brokered Gateway delivery do not apply.
-Remote prompt and tool delivery follow ADR 0016; host ownership, tool grants,
-provider channel isolation, and the ban on implicit repository-guide context
-still apply.
+this decision's host-local isolation does not apply. Its Runs still receive
+Gateway-planned Delivery through ACP; host ownership, tool grants, provider
+channel isolation, and the ban on implicit repository-guide context still
+apply.
 
 ## Authorization
 
@@ -240,7 +241,7 @@ occurs at preview, preparation, and delivery.
 
 Do not reintroduce a parallel server-host context compiler, adapter-local
 planner, or fallback that bypasses the Gateway. Remote trusted-host execution
-uses only the explicit ADR 0016 exception described in decision 1.
+goes through the same Gateway; there is no remote exception.
 
 ## Consequences
 

@@ -36,11 +36,9 @@ describe("AdaptiveQueryEvaluator", () => {
   });
 
   it("scores an overloaded, low-precision result below a well-scoped one instead of letting a saturated yield win", () => {
-    // Real numbers from a production run: an arxiv attempt capped at 2,000
-    // accessible hits out of 17,831 total outscored a properly narrowed
-    // 60-hit attempt under the old formula (yieldScore saturates at 1.0 once
-    // projected yield clears the floor, and the old overload penalty topped
-    // out at 0.35 — nowhere near enough to offset that).
+    // yieldScore saturates at 1.0 once projected yield clears the floor. The
+    // overload penalty must be able to offset that. A 17,831-hit attempt
+    // capped at 2,000 accessible hits must not outscore a 60-hit attempt.
     const arxivPolicy = researchQueryPolicy("arxiv", 334);
     const overloaded = evaluator.evaluate(
       observation({ hits: 17_831, accessible: 2_000, lower: 0.174565, relevance: 0.366667 }),

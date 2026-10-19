@@ -5,16 +5,16 @@ import type { Queryable } from "../routeUtils/common.js";
 /**
  * Owner-private (or `space_ops`) artifact for a contradiction-discovery scan.
  *
- * The findings are stored in `metadata_json` so the existing Claim Candidate
+ * The findings are stored in `metadata_json` so the Claim Candidate
  * Packet builder can read them and turn each finding's `proposed_action` into a
  * child `object_relation_create` (contradicts) proposal — keeping the only
  * canonical-write path on the proposal-gated packet flow. No raw private claim
  * text or hidden claim counts are persisted; the report carries only the
  * findings the access-safe scan already surfaced.
  */
-export const CLAIM_CONTRADICTION_REPORT_ARTIFACT_TYPE = "claim_contradiction_report";
+const CLAIM_CONTRADICTION_REPORT_ARTIFACT_TYPE = "claim_contradiction_report";
 
-export interface ClaimContradictionReportContext {
+interface ClaimContradictionReportContext {
   spaceId: string;
   ownerUserId: string;
   report: ClaimContradictionReport;

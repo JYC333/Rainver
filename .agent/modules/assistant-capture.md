@@ -3,7 +3,10 @@
 ## Status
 **IMPLEMENTED** — capture entry and four destinations
 (`server/src/modules/capture/`, `apps/web/src/components/FloatingQuickCapture.tsx`).
-Voice, file/image, and browser-extension capture are not implemented.
+The Capture page and `POST /api/v1/activity/upload` store a file or a voice memo
+as an Activity record (`file_capture` / `voice_capture`). The floating composer
+does not accept a dropped file; that path stays text and URL. There is no
+browser-extension capture.
 
 ## Purpose
 Records thoughts and clips as they happen. Raw input becomes an
@@ -20,20 +23,24 @@ ActivityRecord first — not active memory.
 
 ## Capture Types
 
+These are usage examples, not stored types. A capture is distinguished only by
+its destination; its Activity `source_type` is `web_capture` when the text is a
+URL and `user_capture` otherwise.
+
 | Type | Example |
 |---|---|
 | Thought | "I want to learn Rust" |
 | Life log | "Had lunch with the team" |
 | Idea | "What if we added X feature" |
 | Reflection | "Today I noticed I work better in the morning" |
-| Chat import | Paste/import from external chat |
+| Chat import | Paste from an external chat (whole-session import belongs to imported sessions) |
 | URL clip | Save a web article for later processing |
 
 ## Destinations
 
 One floating composer serves every page and posts to `POST /api/v1/captures`.
 Outside a Project the only destination is the personal inbox; inside one there
-are four. Ownership and pipeline are separate axes (ADR 0013 amendment 3b):
+are three, plus `object_marginalia` when the composer has a target object. Ownership and pipeline are separate axes (ADR 0013 amendment 3b):
 
 | Destination | Scope | Visibility | Pipeline |
 |---|---|---|---|
@@ -88,7 +95,9 @@ modules, not by this capture entry.
 - `server/src/modules/captureFiling/` — filing a personal capture into a Project
 - `server/src/modules/agents/` — assistant agent/template behavior
 - `server/src/modules/memory/` — memory proposal/reflection behavior
-- `apps/web/src/components/FloatingQuickCapture.tsx` — the single capture entry
+- `apps/web/src/components/FloatingQuickCapture.tsx` — the floating composer
+- `apps/web/src/modules/capture/CapturePage.tsx` — the Capture page, including file and voice upload
+- `server/src/modules/activity/routes.ts` — `POST /api/v1/activity/upload`
 - `apps/web/src/contexts/CaptureContext.tsx` — how a Project
   and an Area declare what a capture may attach to
 
@@ -113,6 +122,11 @@ gated by it. Any crossing of a Space boundary — by either verb, to any
 destination — announces itself to the other members as pointer metadata when
 the Space has egress notifications on.
 
+The capture and its note are read as the caller alone, without Space
+oversight: a relocated block becomes a row other people read, and oversight is
+audit, not a route to publish. A colleague's private capture an admin can read
+only by oversight answers 404 to both preview and relocation.
+
 What counts as leaving is the *resolved destination Space*, not the destination
 name: a Project destination takes its Space from the caller's `project_id`, so
 `project_marginalia` can cross a boundary too.
@@ -120,5 +134,3 @@ name: a Project destination takes its Space from the caller's `project_id`, so
 The preview offers rather than decides: the anchored block is preselected and
 the blocks after it, up to the next capture or heading, are listed unchecked.
 
-Unimplemented capture extensions:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §6.

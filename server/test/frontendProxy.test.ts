@@ -4,9 +4,9 @@ import { describe, expect, it } from "vitest";
 
 // The production web image is the only public entrypoint of a hosted
 // instance, so what its nginx forwards to the server is a security boundary
-// as much as a routing table. Pinned here because the first hosted instance
-// found the gap the hard way: the daemon's WebSocket path fell through to the
-// SPA fallback and every pairing died with a 1006 before hello.
+// as much as a routing table. The daemon's WebSocket path must be forwarded.
+// Do not let it fall through to the SPA fallback. Pairing would die with a
+// 1006 before hello.
 const webDir = join(import.meta.dirname, "..", "..", "apps", "web");
 const nginxConf = readFileSync(join(webDir, "nginx.conf"), "utf8");
 const securityHeaders = readFileSync(join(webDir, "security-headers.conf"), "utf8");
@@ -55,9 +55,9 @@ describe("production nginx proxy", () => {
   /**
    * nginx *replaces* rather than inherits the `add_header` set as soon as a
    * location adds one of its own, so a location that sets a cache header and
-   * forgets the security set serves the app shell with no CSP at all. Five
-   * hand-maintained copies is how one of them came to disagree with the
-   * others; the rule now is that every such location includes the one file.
+   * forgets the security set serves the app shell with no CSP at all. Every
+   * such location includes the one file. Do not keep a second copy of the
+   * header set.
    */
   it("repeats that set in every location that sets a header of its own", () => {
     expect(nginxConf).toContain(HEADERS_INCLUDE);
@@ -87,8 +87,7 @@ describe("production nginx proxy", () => {
       expect(imgSrc, source).not.toContain(source);
     }
     expect(imgSrc).toContain("'self'");
-    // And the property the theme script was moved out of `index.html` to
-    // preserve: an inline `<script>` must stay unrunnable, or it comes back
+    // An inline `<script>` must stay unrunnable. Otherwise it comes back
     // silently and works in dev while doing nothing in production.
     const scriptSrc = (/script-src ([^;]+);/.exec(securityHeaders)?.[1] ?? "").split(/\s+/).filter(Boolean);
     expect(scriptSrc).toEqual(["'self'"]);

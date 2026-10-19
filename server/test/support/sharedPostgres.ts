@@ -110,9 +110,9 @@ export async function getTestPostgres(
             WHERE datname = $1 AND pid <> pg_backend_pid()`,
           [database],
         );
-        // WITH (FORCE) closes the terminate→drop race: a pooled connection
-        // from another worker can reattach in between, which intermittently
-        // failed whole files with "database is being accessed by other users".
+        // WITH (FORCE) closes the terminate→drop race. A pooled connection
+        // from another worker can reattach in between and fail the file
+        // with "database is being accessed by other users".
         await cleanup.query(`DROP DATABASE IF EXISTS ${quoteIdentifier(database)} WITH (FORCE)`);
       } finally {
         await cleanup.end();

@@ -150,7 +150,7 @@ class FakeClient {
     sql: string,
     params: readonly unknown[] = [],
   ): Promise<{ rows: Row[]; rowCount: number }> {
-    if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+    if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK" || sql.includes("pg_advisory_xact_lock")) {
       return { rows: [], rowCount: 0 };
     }
     // The subscription quota gate (`rooms/quotaGate.ts`).
@@ -573,7 +573,7 @@ class FakeClient {
 }
 
 function projectorFor(state: FakeState, quotaSource?: QuotaSource): AgentGroupRunLifecycleProjector {
-  // Every fixture group in this file has room_id: null, so the Phase 3
+  // Every fixture group in this file has room_id: null, so the
   // Room-notification path (which needs a real ServerConfig only to
   // construct RoomService) always short-circuits before touching config.
   return new AgentGroupRunLifecycleProjector(new FakePool(state) as unknown as Pool, {} as ServerConfig, quotaSource);

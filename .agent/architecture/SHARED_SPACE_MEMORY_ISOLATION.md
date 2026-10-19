@@ -18,9 +18,8 @@ canonical content access.
 In the `user` and `project` layers `memory_entries.agent_id` is
 producing-Agent provenance only: it does not make a Memory readable through
 that Agent and is absent from every Memory selection and authorization
-predicate there. The `agent` layer is the exception the column exists for
-([ADR 0003](../decisions/0003-memory-proposal-flow.md) §4) — there it is the
-ownership key, and `agentMemoryDelivery.ts` selects on it. That layer is
+predicate there. On the `agent` layer the column is the ownership key
+([ADR 0003](../decisions/0003-memory-proposal-flow.md) §4), and `agentMemoryDelivery.ts` selects on it. That layer is
 private by CHECK, Project-free, has no subject, and is excluded from the
 person-facing retrieval index entirely: what an Agent knows about itself and
 about a Room reaches the Agent through its own delivery path, under an
@@ -33,7 +32,8 @@ The database accepts `scope_type IN ('user', 'project', 'agent')`. User Memory
 has no `project_id`; Project Memory requires one; Agent Memory has none and
 requires both an `agent_id` and an `owner_user_id`. `memory_entries` has no
 Project Folder column: Project is the sole *shared* Memory attribution layer.
-System rules live in `policies`, and Agent/capability learning — how an Agent
+System rules are code-owned (the policy action registry and the Runtime
+Context Policy), and Agent/capability learning — how an Agent
 *works*, as opposed to what it knows — lives in `evolvable_assets`.
 
 ## Access model

@@ -48,8 +48,10 @@ export function SpaceProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false)
   const userId = currentUser?.id ?? ''
 
+  // The person's own personal Space: the personal Space they own. Being a
+  // member of someone else's never makes it theirs.
   const personalSpaceId = useMemo(
-    () => spaces.find(s => s.type === 'personal')?.id ?? null,
+    () => spaces.find(s => s.type === 'personal' && s.role === 'owner')?.id ?? null,
     [spaces],
   )
   const activeSpaceName = useMemo(
@@ -92,6 +94,7 @@ export function SpaceProvider({ children }: { children: ReactNode }) {
     } catch {
       setSpaces([])
     }
+    // Keyed on the user id: a refreshed currentUser object for the same user must not refetch.
   }, [currentUser?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { reloadSpaces() }, [reloadSpaces])

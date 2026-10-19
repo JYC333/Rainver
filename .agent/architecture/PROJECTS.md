@@ -58,7 +58,7 @@ Each step adds trust validation and human review opportunity.
 | `id` | UUID string | Immutable primary key |
 | `space_id` | FK → spaces | Hard access boundary; always included in queries |
 | `owner_user_id` | FK → users (nullable) | Who controls the project for ACL |
-| `name` | string | Unique among active projects within the space (service-layer check) |
+| `name` | string | Unique among active projects within the space (partial unique index `uq_projects_space_name_active`) |
 | `description` | text (nullable) | Optional long-form description |
 | `status` | string | `active` \| `archived` \| `deleted` |
 | `current_focus` | text (nullable) | Generic foreground/display focus for non-Inquiry work; Auto Research does not read or write it as a Question authority |
@@ -106,7 +106,7 @@ single-owner FK.
 | `kind` | string | `code` \| `data` \| `docs` |
 | `is_primary` | boolean | At most one primary Folder per Project |
 | `protected` | boolean | Safety flag gating destructive path operations; not an ACL |
-| `repo_url`, `default_branch` | string \| null | Logical repository metadata |
+| `repo_url`, `default_branch` | string \| null | Logical repository metadata; a Folder created from `repo_url` clones only a remote `https`/`http`/`ssh`/`git` source, never a server path or `file://` |
 | `snapshot_retention_days`, `snapshot_max_count` | int \| null | Code-patch rollback snapshot policy; falls back to the Space default |
 | `status` | string | `active` \| `archived` \| `stale` |
 | `created_at` / `updated_at` | datetime | |
@@ -144,7 +144,7 @@ Projects, and V1 has no Folder transfer between Projects.
 | `project_id` | FK -> projects | Project whose concrete memory can be read |
 | `user_id` | FK -> users | Space member receiving project-level access |
 | `role` | string | `owner` \| `member` \| `viewer` |
-| `status` | string | `active` \| `revoked` |
+| `status` | string | `active` \| `invited` \| `revoked` |
 | `created_at` / `updated_at` | datetime | |
 
 `project_members` is the ACL used by memory read/retrieval surfaces for
@@ -160,24 +160,37 @@ changing someone's role needs standing to grant the role they hold now.
 
 ### ProjectPublicSummary
 
+Two tables, one row each per Project, because the draft a writer edits and the
+snapshot every Space member reads must not be the same row: saving a draft
+would otherwise replace what readers see before anyone reviewed it.
+
+`project_public_summaries` is the **draft**:
+
 | Field | Type | Notes |
 |---|---|---|
 | `id` | UUID string | Primary key |
 | `space_id` | FK -> spaces | Space-public discovery boundary |
-| `project_id` | FK -> projects | Unique current summary per project |
+| `project_id` | FK -> projects | Unique current draft per project |
 | `summary_text` | text | Redacted, high-level project brief only |
 | `topics_json` | JSON array | Public aliases/topics for retrieval |
 | `highlights_json` | JSON array | Public high-level highlights |
 | `source_refs_json` | JSON array | Pointer metadata only; no raw memo/doc content |
 | `redaction_version` | string | Sanitization contract version |
-| `review_status` | string | `draft` \| `approved` \| `archived` |
+| `draft_version` | integer ≥ 1 | Incremented by every save; a publish names the version it approves |
 | `updated_by_user_id` | FK -> users (nullable) | Last human updater |
 | `generated_by_run_id` | FK -> runs (nullable) | Optional generating run, same project/space |
 | `created_at` / `updated_at` | datetime | |
 
+`project_public_summary_publications` is the **published snapshot**: the same
+content columns copied from the draft at publish time, plus
+`source_draft_version` (the draft version that was approved),
+`published_by_user_id` (nullable FK -> users) and `published_at`. Publishing
+again replaces the row; revoking deletes it.
+
 Project public summaries are intentionally separate from project memory. They
-are designed for cross-project discovery and inspiration: approved summaries are
-space-public and indexed as retrieval object type `project_public_summary`.
+are designed for cross-project discovery and inspiration: the published
+snapshot is space-public and indexed as retrieval object type
+`project_public_summary`; the draft is never indexed or served to readers.
 They must be sanitized before write; source refs may identify public pointers
 but must not embed raw private memory, memo excerpts, document bodies, or other
 concrete project content.
@@ -192,11 +205,11 @@ Each Brief version freezes the Project status, current focus, confirmed
 decisions, workspace identity/boundary, source references, and
 authorship alongside goal/scope/success/constraints/assumptions. Goal-only UI
 edits carry forward the user-owned aggregate fields; the server snapshots the
-current Project-owned status/focus/mode in the same transaction.
+current Project-owned status/focus in the same transaction.
 
 A Project's **mainline Room** is a second structural singleton on the same
 footing ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision
-4): created in the same transaction, present from the start, empty until a
+4): created in the same transaction, present with the Project, empty until a
 user explicitly opens a Conversation draft. "A Project with no Room" is not a
 state, so no caller handles its absence. Project/Room creation provisions no
 Assistant and opens no Conversation; the explicit draft action performs lazy
@@ -210,18 +223,13 @@ published Instruction is runtime-authoritative. Brief writer authority and
 Instruction/publish owner-level authority are rechecked and locked inside the
 mutating transaction, so concurrent member revocation wins deterministically.
 A Project has no type field ([ADR 0019](../decisions/0019-project-has-no-type-field.md)).
-There was a `primary_mode` — `research`, `delivery`, `operations`,
-`learning`, "how work advances" — chosen at creation, changed from Settings
-and logged in `project_mode_transitions`; by the end it was read in one place,
-to pick one of four wordings for the same five Loop stages, while every
-Project was in fact created as `research` with no chooser and advanced by
-research-shaped conversation policies regardless. What kind of work a Project
-is, is derived, never declared: the accepted Brief's goal says how it advances
-and the Agent reads it every turn, and what the Project comes to hold (Threads
-and Sources, or Tasks and file changes, or recurring Tasks) is its shape. A
-Project may change shape as it goes. No surface shows a type label. When a
-kind of work needs structure the shared model lacks, the answer is a new
-object owned by an Area, never a mode that switches behaviour.
+What kind of work a Project is, is derived, never declared: the accepted Brief's
+goal says how it advances and the Agent reads it every turn, and what the
+Project comes to hold (Threads and Sources, or Tasks and file changes, or
+recurring Tasks) is its shape. A Project may change shape as it goes. No
+surface shows a type label. When a kind of work needs structure the shared
+model lacks, the answer is a new object owned by an Area, never a mode that
+switches behaviour.
 
 `inquiry` and `decision` are entities with their own surfaces, not ways of
 advancing work: asking is how research starts and deciding is where it ends,
@@ -241,24 +249,11 @@ Those records describe readiness or work progress after initialization. The
 Overview exposes this distinction as `definition_status`; a Project may be
 initialized while nothing is under way yet.
 
-There was a **Project Template** here, and its removal is worth recording
-because the concept was rescued twice before it was retired. It began as a
-project type carrying `sections` and `starter_workflow_template_keys`; R1
-deleted those workflow templates for changing no concrete behaviour, leaving a
-descriptor nothing consumed. It was then re-purposed as a source-binding
-bundle, justified as *the only thing that writes a `profile_key` into a
-binding's `extraction_policy_json`* — true at the time, and falsified shortly
-afterwards when the Project Sources surface gained its own extraction-profile
-selector for new and existing bindings, with a registry default behind it.
-Nobody noticed the justification had expired. A later pass stripped its
-Primary Mode and `sections`, leaving a pack that saved roughly three clicks in
-the Sources Area and only when the Space already held matching connections.
-
-Every job it ever held has another home: classification is derived from the
+Creating a Project does not install a template. Classification comes from the
 goal and the Project's contents (ADR 0019); starting shape is each Area's
 empty state; extraction profiles are chosen per binding in Project Sources;
-Workflows are started explicitly. Nothing should reintroduce a creation-time
-preset without first naming which of these it is not.
+Workflows are started explicitly. Do not add a creation-time preset that
+bundles those choices.
 
 Academic research is a set of Sources and an extraction profile, not a project
 type. Binding active arXiv and OpenAlex channels with the `academic_paper_v1`
@@ -273,12 +268,12 @@ Overview surface either.
 Screening criteria are generic with one declared extension point. `include_keywords`,
 `exclude_keywords`, the date range and `required_evidence_fields` apply to any
 domain. `source_restrictions` is where material may come from — journals,
-outlets and sites are one concept, so it replaced the academic-only `venues`.
+outlets and sites are one concept (`source_restrictions`).
 Domain-specific axes live in `domain_criteria_json`, whose **legal keys come from
 the extraction profiles the Project's active source bindings name**: writing a
 key no bound profile declares is refused with the legal set named, rather than
-accepted and ignored. `academic_paper_v1` declares `methods`, which is what that
-column used to be; `generic_document_v1` declares none, so a Project screening
+accepted and ignored. `academic_paper_v1` declares `methods`.
+`generic_document_v1` declares none, so a Project screening
 only web material has no domain axis to screen on. This is the middle path
 between a fixed paper-shaped column every domain carries and an unconstrained
 JSON bag nobody can validate.
@@ -338,7 +333,7 @@ and supplied explicitly to synthesis and critique, so discovery, screening, and
 reporting use one scope without copying a potentially long question into a
 200-character criterion field. Discovery creates a project-owned
 `research_query_strategy` from that immutable context version. Provider plans
-are evaluated independently for at most three attempts; every attempt stores
+are evaluated independently for at most four attempts; every attempt stores
 its semantic query, exact compiled provider query, preview observation,
 decision, and fingerprint. Selected attempts are materialized atomically into
 `source_search_specs`, Source Channels, and Project Source bindings. Initial
@@ -365,8 +360,9 @@ provenance.
 
 ### Research Area
 
-`/projects/:projectId/research` is the project-owned, three-tab Area for the
-Reading List, Checklist, and immutable Report snapshots. Project Notes are a
+`/projects/:projectId/research` is the project-owned, six-tab Area: Standing
+overview (default), Focus workbench, Reading List, Checklist, immutable Report
+snapshots, and Runs. Project Notes are a
 separate surface at `/projects/:projectId/notes`; the reserved research roles
 described below supply baselines to research services without creating a
 duplicate Notebook tab:
@@ -377,8 +373,9 @@ duplicate Notebook tab:
   project may have any number of them, or none. They store canonical Tiptap
   JSON, server-derived normalized text and hash, and an optimistic version.
 
-  Four of them carry a **system-reserved role** in `notes.project_role`
-  (`understanding`, `questions`, `ideas`, `experiments`), scoped to
+  Five of them may carry a **system-reserved role** in `notes.project_role`
+  (`understanding`, `questions`, `ideas`, `experiments`, and the quick-capture
+  `inbox`, which is not part of the research baseline), scoped to
   `notes.role_project_id`, with a partial unique index enforcing one note per
   role per project. The role is what identifies the research baseline —
   **never the note's title**, which is a creation-time default the user is free
@@ -415,9 +412,9 @@ Every write path — user save, seeding, monitoring, ad-hoc analysis, rollback �
 goes through the shared note writer (`knowledge/noteWriter.ts`), which bumps
 the optimistic version, records a full-content row in `note_revisions`
 (source, block-op diff, user/run attribution), and refreshes the retrieval
-projection. The last of those used to be the caller's job, and only the
-user-facing route did it: a "current understanding" an agent had maintained for
-weeks stayed stale in search until a human saved it by hand. Starter notes are
+projection. Every path refreshes retrieval, including agent writes. Do not
+leave that to the caller: a note an agent maintains then stays stale in search
+until a human saves it. Starter notes are
 created through the same writer as any other note rather than by a second
 implementation of the same insert. AI edits are expressed as block-level ops (`append` / `insert` /
 `replace` / `delete` against top-level Tiptap blocks), so untouched blocks are
@@ -428,11 +425,11 @@ whose base version was overtaken degrades to a clearly labeled append instead
 of merging blindly.
 
 The first completed synthesis seeds only empty version-1 role-carrying notes.
-Later report snapshots never overwrite evolved notes; legacy projects with
-reports but no notebook are seeded from the latest non-rejected report on first
-Area initialization. Area initialization also adopts pre-role starter notes by
-title once — the only legitimate title match left, because it reconstructs the
-binding the old resolver created rather than being a binding of its own. The
+Later report snapshots never overwrite evolved notes. A project with
+reports but no notebook is seeded from the latest non-rejected report on first
+Area initialization. Area initialization also adopts starter notes that have
+no role marker, once, by title. Title matching is legitimate only for that
+adoption. It is not a general binding. The
 two notebook analysis entries — Ask-AI (`research.adhoc_analyze`) and notebook
 chat (`research.ask`) — are bounded single-shot structured generations with no
 tools and no turns of their own. Under ADR 0022 they are ProviderTask
@@ -453,10 +450,10 @@ contract and the resolved provider/model on its contract, enqueues one
 `provider_task_run` job, and answers `{ run_id, job_id, status: "queued" }`.
 The worker rebuilds the request from that contract — never from the job payload,
 so a re-resolved space default cannot change what a queued Run runs on — and
-applies the block ops before the Run goes terminal. It used to run inline on the
-request: a provider failure surfaced as a 502 with no worker retry behind it,
-and a crash between the Run going terminal and the ops being applied left an
-edit nothing would ever finish. Ask-AI's output contract is a `notebook_update`
+applies the block ops before the Run goes terminal. Do not apply them on the
+request: a provider failure then surfaces as a 502 with no worker retry, and a
+crash between the Run going terminal and the ops being applied leaves an edit
+nothing will finish. Ask-AI's output contract is a `notebook_update`
 ops document, applied through the same applier the research reconciler uses, so
 the ops land on the target note as an `ai_adhoc` revision attributed to the
 bounded Run; that applier is idempotent on the Run, so the reconciler remains a
@@ -475,8 +472,7 @@ Notes also persist referenced source-item ids, on `note_revisions.refs_json`.
 Applied AI updates merge their `refs` into that set — each write starts from
 the latest revision's list — so integrity monitoring audits the material the
 living understanding actually depends on instead of inferring citations from
-prose. `notes.refs_json` used to hold a second copy of the same list, kept in
-step by hand and read back by nothing; it was removed (N8), leaving one owner.
+prose. The owner of that list is `note_revisions.refs_json`.
 
 ### Automatic Project Research lifecycle
 
@@ -487,7 +483,7 @@ rewrites, sub-questions, scope, and clarification prompts. Refinement is a
 hard start gate: discovery and initial intake stay disabled until the assessment
 passes (answerable with mean FINER score at least 3) or the user adopts one of
 the bounded suggested rewrites. Drafts may still be saved before the gate
-passes; the legacy-named `question_refine_skipped` state field records whether
+passes; the `question_refine_skipped` state field records whether
 the gate is still outstanding. Saving or starting intake binds the selected
 Research Workflow to an immutable Inquiry Thread revision. It does not copy the
 Question into `projects.current_focus`.
@@ -495,7 +491,7 @@ Question into `projects.current_focus`.
 Source discovery is owned by the `research` module. `POST
 /api/v1/research/query-strategies/evaluate` plans and evaluates provider-specific
 queries from a persisted context version. The planner stores a bounded semantic
-intent, builds at most three provider-specific attempts, and uses observed hit
+intent on the strategy (`semantic_intent`), builds at most four provider-specific attempts, and uses observed hit
 count, sampled relevance, diversity, and duplicate rate to accept, broaden, or
 narrow the next attempt. Provider compilation is centralized in
 `ResearchProviderCompiler`; source connectors execute compiled queries and do
@@ -507,7 +503,11 @@ still be materialized. Secrets remain in the trusted fetch channel. The
 project-owned strategy id follows initial intake for reproducibility. The setup
 surface exposes the assessment, selected provider queries, attempt observations,
 and coverage warnings; raw model reasoning remains an internal implementation
-detail.
+detail. A provider plan carries only its most recent attempts (plus its
+selected and latest observed ones) and its full `attempt_count`; manual retries
+can accumulate any number of rounds. The full history is read page by page,
+newest first, from `GET
+/api/v1/research/query-strategies/{id}/providers/{providerKey}/attempts?project_id&limit&offset`.
 
 Monitoring records immutable performance observations against the active query
 version. A rolling window may propose one broader or narrower successor only
@@ -628,7 +628,8 @@ critique, monitoring comparison) it also reuses or provisions the
 system-managed research Agent and its Runtime Profile, and for bounded
 ProviderTask stages it resolves the provider and model alone. Research does not
 expose runtime adapter, CLI credential, Agent, or profile overrides. It reuses or creates the selected monitor's project binding,
-post-processing rule, and history plan. Research screening recovery batches
+post-processing rule, and history plan; a reused rule takes this start's Agent,
+Runtime Profile and research question, as a new one would. Research screening recovery batches
 are high-priority Source jobs. Each managed structured-output execution has a
 two-minute adapter deadline and at most two job attempts. Managed provider
 deadlines abort the underlying HTTP request; CLI deadlines terminate the child
@@ -691,7 +692,7 @@ artifact content remains available through the artifact record; logs only add a
 bounded, redacted preview/tail for diagnosis. The operation and Run detail
 views expose the same diagnostics, and the server emits a structured
 `[project-research.synthesis] validation_failed` log line. An `idea_review`
-checkpoint is recorded (and auto-waived — it no longer gates) before the
+checkpoint is recorded and auto-waived before the
 source schedule is activated.
 
 When a failed synthesis operation is retried, the retry clears the old
@@ -768,16 +769,16 @@ command locks the card and creates or returns the idempotent Inquiry Thread in
 the same transaction, then marks the card actioned. Repeated clicks cannot
 create duplicate Threads. Dismiss is a separate terminal user choice.
 
-Every Project overview is the presentation entry point for both research modes;
-Nothing about a Project's creation gates either mode. Its controlled **Standing
-overview** is selected first and
+The Research Area is the presentation entry point for both research modes;
+nothing about a Project's creation gates either mode. Its controlled **Standing
+overview** tab is selected first and
 shows the daily budget, open advice, and recent Project inflow without requiring
 a Workflow or Thread. Advice and inflow rows are filtered through the same
 SourceItem read policy as Project Sources, so Project membership alone never
 reveals a private source owner's title, excerpt, or derived advice. The sibling
-**Focus workbench** contains the existing
-Thread-scoped stage progression and controls. The Research Area remains a
-separate three-tab document surface: Reading List, Checklist, and Reports.
+**Focus workbench** tab contains the existing
+Thread-scoped stage progression and controls. The same tab bar carries the
+Reading List, Checklist, Reports, and Runs tabs.
 
 Every completed live scan has an append-only `research_scan_summaries` outcome:
 focused scans are scoped to a participating research Workflow, while standing
@@ -800,8 +801,13 @@ after either activation or proposal creation. Stable zero/low-volume,
 high-relevance scans may propose broadening; only overloaded scans with weak
 conservative acceptance or sustained queue pressure may propose narrowing.
 
-A feedback decision evaluates a fresh, maximum-three-attempt strategy from the
-active strategy's stored semantic intent. It never recompiles the long research
+A feedback decision evaluates a fresh, maximum-four-attempt strategy from the
+active strategy's stored semantic intent. Each provider steps in the decided
+direction from its selected query exactly as stored, not from a re-truncated
+baseline, and takes new terms from the original intent, which the replacement
+inherits; a provider retry does the same from its base attempt. When no
+provider's query can move that way within the intent, no replacement is
+evaluated or proposed. It never recompiles the long research
 question as a provider query and never edits an active Source Channel in place.
 The evaluated replacement is presented as a
 `research_query_strategy_activation` proposal. Approval materializes its exact
@@ -844,9 +850,9 @@ human-confirmed `triage_status`.
 counts. `POST /projects/{id}/research/question/resolve` accepts `rescreen`,
 `synthesis_only`, or `apply_forward`: all three refresh the profile and Auto
 Research rule judgement fields; re-screen resets only unconfirmed AI corpus
-projection and runs the normal screening/review/synthesis gates, synthesis-only
-reuses the corpus, queues a new synthesis, and still stops at idea review;
-apply-forward leaves existing decisions and artifacts unchanged. The older apply-forward endpoint delegates
+projection and runs the normal screening/review/synthesis gates; synthesis-only
+reuses the corpus and queues a new synthesis, and `idea_review` is recorded
+without holding the operation; apply-forward leaves existing decisions and artifacts unchanged. The older apply-forward endpoint delegates
 to the same transaction. Active or queued research/source-processing work must
 finish before resolution begins.
 
@@ -881,7 +887,10 @@ only one active/waiting-review research operation may exist per workflow.
 Creation and initial activation of a managed research operation are one
 transaction, so a uniqueness loser cannot leave a draft for the reconciler.
 Successful Source post-processing runs carry `research_reconciled_at` as the
-durable recovery marker consumed by level-triggered reconciliation. Extracted
+durable recovery marker consumed by level-triggered reconciliation; that scan
+reconciles each run and each Space on its own, so one that keeps failing (its
+rollback also undoes its marker) does not stop the rest, and the pass still
+reports the failure. Extracted
 Evidence deduplicates non-null content hashes per `(space_id, source_item_id)`
 regardless of extraction method, so crash/retry or alternate extractors cannot
 create two identities for the same source content. Each distinct extractor,
@@ -942,9 +951,9 @@ with `project_id = NULL` are unaffected.
 consumption configuration/read-model records, authored in
 `server/src/db/schema/projectSources.ts` and served by the Projects module.
 `source_connections` stay space-scoped under Sources. The binding is the
-project boundary: the same source connection can be bound to multiple projects
+project boundary: the same source channel can be bound to multiple projects
 because the uniqueness constraint includes `(space_id, project_id,
-source_connection_id, binding_key)`.
+source_channel_id, binding_key)`.
 
 `project_corpus_items` is Project-owned. It reconciles Sources output into the
 project's working corpus:
@@ -959,7 +968,13 @@ project's working corpus:
   every Corpus sync to that set; stale links from archived Projects neither
   expand the lock set nor block an active Project's reconciliation;
 
-- `status` is link lifecycle (`active` / `archived`);
+- `status` is link lifecycle (`active` / `archived`). Reconciliation archives a
+  SourceItem row whose Source links are gone, but never one a person added
+  (`added_by_user_id` set);
+- an upsert that meets an existing row changes only the fields the request
+  names (status still defaults to `active`); and when syncing merges a
+  SourceItem row into the Project's row for its Reference, upsert and update
+  answer with that Reference row;
 - `triage_status` is the project-level judgement (`new`, `relevant`, `maybe`,
   `excluded`, `included`);
 - `triage_confirmed_by_user` is set whenever a human explicitly sets
@@ -986,7 +1001,7 @@ state is not stored on source items and does not mutate Library state.
 ## API routes
 
 All routes are under `/api/v1/projects` and require authentication.
-Space scoping is enforced via the `space_id` query parameter resolved by `get_identity`.
+Space scoping is enforced via the requested Space (`X-Rainver-Space-Id` header or `space_id` query parameter) resolved by `resolveIdentity`.
 
 | Method | Path | Description |
 |---|---|---|
@@ -1010,11 +1025,14 @@ Space scoping is enforced via the `space_id` query parameter resolved by `get_id
 | GET / POST | `/projects/{id}/operations` | List or create product-level Project operations |
 | GET | `/projects/{id}/operations/{operationId}` | Read operation steps, links, and projected progress |
 | POST | `/projects/{id}/operations/{operationId}/cancel` | Cancel a non-terminal grouping record |
-| GET | `/projects/public-summaries` | List approved high-level project summaries in the current space |
-| POST | `/projects/public-summaries/search` | Search only `project_public_summary` retrieval objects |
-| GET | `/projects/{id}/public-summary` | Read the approved high-level public summary for a project |
-| PUT | `/projects/{id}/public-summary` | Create/update the sanitized public summary. A bare write stages `review_status = draft` (project writer authority). Publishing (`approved`) or unpublishing (`archived`) requires project-owner-level authority |
-| POST | `/projects/{id}/public-summary/draft` | Generate and store a sanitized **draft** public summary via the `project_public_summary` provider task; records a best-effort `policy_decision_records` audit of the model call |
+| GET | `/projects/public-summaries` | List published high-level project summaries in the current space |
+| POST | `/projects/public-summaries/search` | Search only `project_public_summary` retrieval objects (published snapshots) |
+| GET | `/projects/{id}/public-summary` | Read the published snapshot for a project; 404 while nothing is published |
+| GET | `/projects/{id}/public-summary/editor` | Draft and published snapshot side by side, plus `can_publish` (project writer authority) |
+| PUT | `/projects/{id}/public-summary` | Save the sanitized draft; bumps `draft_version` and never changes the published snapshot (project writer authority) |
+| POST | `/projects/{id}/public-summary/draft` | Generate and store a sanitized **draft** via the `project_public_summary` provider task; records a best-effort `policy_decision_records` audit of the model call |
+| POST | `/projects/{id}/public-summary/publish` | Approve `{ draft_version }` as the published snapshot (project-owner-level authority); 409 `project_public_summary_draft_changed` when the draft moved on since review |
+| POST | `/projects/{id}/public-summary/revoke` | Take the published snapshot down; the draft stays (project-owner-level authority) |
 | GET | `/projects/{id}/members` | List project-level memory ACL members |
 | POST | `/projects/{id}/members` | Add/update a project memory ACL member |
 | DELETE | `/projects/{id}/members/{user_id}` | Remove a project memory ACL member |
@@ -1043,7 +1061,7 @@ Space scoping is enforced via the `space_id` query parameter resolved by `get_id
 | POST | `/projects/{id}/research/workflow/{workflowId}/trigger` | Trigger an incremental run after baseline monitoring is active |
 | POST | `/projects/{id}/research/workflow/{workflowId}/history-backfill` | Extend a bounded baseline into a non-overlapping earlier arXiv range |
 | GET | `/projects/{id}/research/workflow/{workflowId}/checkpoints` | List checkpoints for a workflow |
-| POST | `/projects/{id}/research/workflow/{workflowId}/checkpoints/{checkpointId}/decide` | Record a human decision (`approved` / `rejected` / `waived`) on a checkpoint |
+| POST | `/projects/{id}/research/workflow/{workflowId}/checkpoints/{checkpointId}/decide` | Record a human decision (`approved` / `rejected` / `waived`) on a pending checkpoint; a decided one accepts only the same decision again, anything else is 409 |
 | POST | `/projects/{id}/research/operations/{operationId}/retry` | Retry a failed managed research operation from its persisted stage |
 | POST | `/projects/{id}/research/operations/{operationId}/cancel` | Cancel a running research operation: the row goes terminal synchronously and a job kills its Runs, screening batches, backfill plans, and pass Execution, and waives its pending checkpoints |
 | POST | `/projects/{id}/research/operations/{operationId}/reconcile` | Repair a stale operation projection from the canonical run; never re-queues the run |
@@ -1142,10 +1160,7 @@ The ordinary runtime owns sandboxing, credentials, attempts, supervision, and
 Artifacts. Terminal reconciliation validates code-patch paths against the
 Version scope, captures Run Artifacts, parses structured metrics into
 Observations, and completes or fails the same Experiment Run idempotently.
-
-The earlier `project_experiment_campaigns` / runs / provenance implementation
-was removed in a clean cutover. There is one Experiment authority and no
-compatibility or dual-write path.
+There is one Experiment authority and no compatibility or dual-write path.
 
 ## project_id query filter on durable object list APIs
 
@@ -1171,9 +1186,9 @@ validated value. Proposal apply carries `proposals.project_id` into
 `memory_entries.project_id` only after revalidating the project in the proposal
 space.
 
-**Output schemas:** Each corresponding output schema (`ActivityOut`, `ArtifactOut`, `ProposalOut`, `RunOut`, `MemoryOut`, `ActivityRecordOut`) now includes `project_id: Optional[str] = None`. Rows without a project are not affected.
+**Output schemas:** The corresponding output DTOs in `packages/protocol/src/` carry a nullable `project_id`. Rows without a project are not affected.
 
-**Frontend:** All five `*Api.list()` functions in `api/client.ts` accept `project_id`. `ProjectDetailPage` uses these to render per-section scoped previews (up to 5 items each) with "View all →" links to the global list.
+**Frontend:** The project-scoped `*Api.list()` functions in `api/client.ts` accept `project_id`.
 
 ## Access control
 
@@ -1195,7 +1210,7 @@ space.
   pause/remove, health, and the materialized project item collection. Global
   Sources remains the source-level management surface.
 - Project conversation enters the project-bound Room surface at
-  `/rooms?project={id}`. A Room may own multiple durable Conversations; each
+  `/projects/{id}/rooms?room={roomId}`, listed from `/projects/{id}/conversations`. A Room may own multiple durable Conversations; each
   explicit draft pins one Host, CLI installation, and Primary Workspace in its
   Conversation execution context, then each message opens one auditable
   collaboration task whose Runs retain the validated `project_id`, pinned
@@ -1215,12 +1230,15 @@ space.
   source post-processing decisions. These are selected/maybe candidate items for
   review and follow-up; accepting durable Knowledge still goes through proposal
   review.
-- **Publishing a public summary** (`review_status` other than `draft`) requires
-  project-**owner**-level authority — the project `owner_user_id`, an active
-  Project member with role `owner`, or a space `owner`/`admin`. A project
-  `member` (writer) can stage drafts but cannot self-approve. The draft
-  generator only ever writes `draft`. This gives Project owners a review gate
-  before content becomes space-public.
+- **Publishing a public summary** (`POST .../public-summary/publish`) and
+  revoking it require project-**owner**-level authority — the project
+  `owner_user_id`, an active Project member with role `owner`, or a space
+  `owner`/`admin`. A project `member` (writer) and the draft generator only
+  ever write the draft; they cannot self-approve. A publish names the
+  `draft_version` the owner reviewed and is checked against the locked draft
+  row inside the transaction, so a draft saved after the review is refused
+  rather than published. Saving a draft never changes the published snapshot;
+  only a later publish replaces it and only a revoke takes it down.
 - `settings_json` is free-form per-project configuration and may carry private
   operational detail. `GET /projects` and `GET /projects/{id}` redact it to
   `null` for non-writers; only project writers see it. `name`, `description`,
@@ -1251,26 +1269,19 @@ space.
 ## Project Kernel and Inquiry
 
 The Project Shell reads `/projects/{id}/overview`, which composes the active
-Brief Version, `definition_status`, the four available Modes, per-user
+Brief Version, `definition_status`, `has_project_folder`, per-user
 Attention through registered domain adapters, and `in_progress` — the
-Project's unfinished Operations. A per-Mode projection and per-entity summary
-rows used to ride along, and were removed when the front page stopped
-rendering them — an API field with no reader is the speculative code the repo
-forbids.
+Project's unfinished Operations.
 
-`in_progress` exists because Attention answers "what needs me" and nothing
-answered "what is happening": Pulse's In-progress list read the Task board,
-and an Operation is not a Task, so a research acquisition screening 873
-documents for four hours rendered as "nothing is being worked on right now".
+`in_progress` is what is happening. Attention answers "what needs me".
+Pulse's In-progress list reads Operations as well as the Task board. An
+Operation is not a Task.
 It carries the fields the Research Area's own `researchOperationDetail` and
 `researchOperationPercent` renderers read, so the front page shows that same
 sentence — "848/873 materials classified" — rather than a second, quieter
 version of it, and reaches it without calling an Area's endpoint.
 
-There is no readiness checklist. One used to list a Space-level Provider,
-"an Agent" (every Project now has its own), a Source only research work
-wants, and a Folder it called optional — configuration state dressed as a
-to-do and shown from every Area. A Project needs nothing configured before it
+There is no readiness checklist. A Project needs nothing configured before it
 can be talked to or have work put on it. The one Project-level readiness fact
 is whether its goal is defined: `definition_status`, which Pulse states until
 it is true and then stops. Each Area's own empty state offers its first
@@ -1449,8 +1460,9 @@ Resolution adopts the already-revised Thread without rewriting it.
 `projects.current_focus` is presentation metadata and never participates in
 this alignment or resolution path. Monitoring classifies every new comparison
 into an Evidence Signal: routine support auto-attaches; contradiction and new
-direction are material and consolidate into review Candidates. The removed
-synthetic `project_research_workflow` bridge Thread is not a second authority.
+direction are material and consolidate into review Candidates. Do not add a
+synthetic `project_research_workflow` Thread. The pinned Inquiry Thread is
+the Question authority.
 
 ## Knowledge promotion source contract
 
@@ -1471,7 +1483,7 @@ idempotently and records `no_impact`, `candidate_created`, or
 AI-assisted extraction uses the same contract: the queue command pins an exact
 source revision/hash into an immutable Run contract, and terminal
 reconciliation creates only pending Knowledge Candidates with Run provenance.
-Canonical Knowledge still requires the existing promotion Proposal.
+Canonical Knowledge requires a promotion Proposal.
 
 ## Project navigation and review
 
@@ -1487,12 +1499,11 @@ Everything else sits under a collapsible **Areas** disclosure whose open state
 is remembered per browser — six entries, flat: Notes, Inquiry, Research,
 Sources, Files & Code, Decisions. The Rooms page (roster, invitations, the
 full conversation surface) is reached from Conversations.
-What used to be thirteen entries in four groups folded without losing a route:
-Raw material and Digest are tabs of Sources (three points on one
-source → corpus pipeline); Knowledge review and Experiments are views of
-Inquiry (a candidate queue that linked back to Inquiry's Review, and a test of
-a hypothesis Thread); Learning and Operations retired to the Space. Every
-previous deep link redirects to its new home. Nothing about a Project adds, removes, or reorders an
+Raw material and Digest are tabs of Sources; Knowledge review and Experiments
+are views of Inquiry. Project `/learning` redirects to Pulse. `/operations`
+redirects to Research's Runs tab. `/digest` and `/raw` redirect to Sources
+tabs, `/experiments` to the Inquiry experiments view, and `/knowledge-review`
+to the Inquiry review candidates tab. `/delivery` redirects to Board. Nothing about a Project adds, removes, or reorders an
 entry — navigation position carries muscle memory, and a sidebar that grows as
 a Project is used costs more than the clutter it saves. An Area with nothing in
 it is still reachable and opens on an empty state offering the first action.
@@ -1513,14 +1524,13 @@ lifecycle. Attention rows retain the owning domain's canonical object id only
 as transport state and expose a concrete URL: Tasks open Task Detail, Inquiry
 Candidates and Decisions open their selected Project-Area records, research
 operations open the Research Area's Runs tab with the row selected, and
-operational alerts open the Space Inbox filtered to the Project (the
-Project-level Operations Area is retired). Pulse does not copy the domain
+operational alerts open the Space Inbox filtered to the Project. Pulse does not copy the domain
 action workflow.
 The Board is the Project's Task surface: lanes are flow statuses, a card
 carries its Loop stage and who holds it, and a drag to Done is refused when the
 Task has not met what it declared unless the person acknowledges what they are
-skipping (`architecture/PROJECT_WORK.md`). The flatter Delivery Area it
-replaced is gone and its route redirects. Task Detail remains the full workflow
+skipping (`architecture/PROJECT_WORK.md`). `/projects/:projectId/delivery`
+redirects to the Board. Task Detail remains the full workflow
 surface, and its Work tab is where the Loop, the completion requirements, and
 the responsibility timeline are read. Research operations, with their
 Checkpoint controls, are the Research Area's Runs tab; Automations and Runs

@@ -9,7 +9,7 @@ import {
 } from "./customSourceCredentialCrypto.js";
 
 /**
- * Custom Source's credential channel (Phase 10): a third credential class
+ * Custom Source's credential channel: a third credential class
  * alongside ModelProvider API keys and CLI login state (see
  * `.agent/architecture/CREDENTIAL_STORAGE.md`). Stores an encrypted secret
  * plus non-secret request-shaping metadata (which header to inject it as) in
@@ -19,7 +19,7 @@ import {
  * `customSourcePipelineInterpreter.ts`), never by handler code — ever
  * decrypts it.
  */
-export const CUSTOM_SOURCE_FETCH_CREDENTIAL_TYPE = "custom_source_fetch_credential";
+const CUSTOM_SOURCE_FETCH_CREDENTIAL_TYPE = "custom_source_fetch_credential";
 
 interface CredentialRow {
   id: string;
@@ -31,7 +31,7 @@ interface CredentialRow {
   updated_at: unknown;
 }
 
-export interface CustomSourceCredentialDTO {
+interface CustomSourceCredentialDTO {
   id: string;
   space_id: string;
   owner_user_id: string | null;

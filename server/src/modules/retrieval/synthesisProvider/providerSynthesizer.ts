@@ -11,12 +11,12 @@ import { buildSynthesisPrompt, parseSynthesis, type SynthesisDoc } from "./promp
 
 const TASK_POLICY_REQUIRED_PROVIDER_ID = "__retrieval_synthesis_task_policy_required__";
 
-export type SynthesisSystemPromptResolver = (
+type SynthesisSystemPromptResolver = (
   spaceId: string,
   viewerUserId: string,
 ) => Promise<string | null>;
 
-export interface ProviderSynthesizerOptions {
+interface ProviderSynthesizerOptions {
   /** Explicit fallback provider after the task chain. Omit to require the task policy. */
   providerId?: string | null;
   /** When set, a best-effort provider-egress audit row is written per synthesis call. */
@@ -25,7 +25,7 @@ export interface ProviderSynthesizerOptions {
   surface?: string | null;
   /** Test/integration seam for resolving the registry-backed system prompt. */
   systemPromptResolver?: SynthesisSystemPromptResolver | null;
-  /** W9 egress policy; when egress is disabled the synthesizer sends nothing. */
+  /** When egress is disabled the synthesizer sends nothing. */
   egressPolicy?: RetrievalEgressPolicy;
   /** Who the searches this helper serves spend for. */
   spend: CredentialSpendBasis;

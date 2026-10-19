@@ -2,11 +2,10 @@ import { tokenizeSimple } from "./normalize.js";
 import { DEFAULT_RANKING_SIGNALS, type RankingSignalConfig } from "./ranking.js";
 
 /**
- * Deterministic, query-only intent classification (W3 of the context-layer
- * roadmap). the context-and-retrieval design routes a query into entity / temporal / event / general and
- * applies per-type ranking knobs; rainver mirrors that with a rule-based
- * classifier (no LLM) whose only input is the query STRING — so it has no access
- * surface and is fully testable.
+ * Deterministic, query-only intent classification. A query is routed into
+ * entity, temporal, event, or general, and that choice applies per-type
+ * ranking knobs. The classifier is rule-based, with no LLM, and its only
+ * input is the query string, so it has no access surface.
  *
  * Intent NEVER changes which arms run or which objects are eligible; it only
  * selects access-neutral ranking knobs (a RankingSignalConfig variant). So an

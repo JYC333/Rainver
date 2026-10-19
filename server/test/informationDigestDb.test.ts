@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { InformationDigestService } from "../src/modules/informationDigest/service.js";
+import { digestPeriod } from "../src/modules/informationDigest/digestPeriod.js";
+import { PgAutomationRepository } from "../src/modules/automations/repository.js";
+import { automationTargetHandlerRegistry } from "../src/modules/automations/targetRegistry.js";
+import { registerInformationDigestAutomationTarget } from "../src/modules/informationDigest/automationTarget.js";
 import { PgInformationDigestRepository } from "../src/modules/informationDigest/repository.js";
-import type { Queryable, QueryResult } from "../src/modules/routeUtils/common.js";
 import { reconcileInformationDigestAutomations } from "../src/modules/informationDigest/automationProvisioning.js";
 import { PgSerendipityRepository } from "../src/modules/informationDigest/serendipityRepository.js";
 import { SerendipityProbeService, type SerendipityProbeProvider } from "../src/modules/informationDigest/serendipityProbe.js";
@@ -12,9 +14,15 @@ import { INTERESTING_COOLDOWN_DAYS, NEUTRAL_COOLDOWN_DAYS, SerendipityFeedbackSe
 import { InterestProfileService } from "../src/modules/interestProfile/service.js";
 import { InterestStarterPackService } from "../src/modules/informationDigest/starterPacks.js";
 import { PgSourceAnnotationRepository } from "../src/modules/sourceAnnotation/repository.js";
+import { materializeExternalDiscovery } from "../src/modules/sources/externalDiscoveryMaterializer.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
+import { buildModuleServer } from "./support/moduleServer.js";
+import { loadConfig } from "../src/config.js";
+import { informationDigestModule } from "../src/modules/informationDigest/index.js";
+import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -29,9 +37,16 @@ const AGENT_VERSION = "88888888-8888-4888-8888-888888888888";
 const MANAGED_ASSISTANT = "99999999-9999-4999-8999-999999999999";
 const MANAGED_ASSISTANT_VERSION = "99999999-9999-4999-8999-999999999998";
 const DATE = new Date().toISOString().slice(0, 10);
+/** The test day as the UTC period the scheduled pass reports on. */
+const PERIOD = digestPeriod(DATE, "UTC");
 
 
 const db = useTestDatabase(import.meta.filename);
+
+// The route test below sets the auth identity seam; files share a worker.
+afterEach(() => {
+  __setAuthIdentityForTests(null);
+});
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -68,8 +83,8 @@ beforeEach(async () => {
   );
   await db.pool.query(
     `INSERT INTO source_connections
-       (id,space_id,provider_connector_id,owner_user_id,name,status,capture_policy,trust_level,consent_json,policy_json,config_json,created_at,updated_at)
-     VALUES ($1,$2,$3,$4,'Feed','active','reference_only','normal','{}','{}','{}',$5,$5)`,
+       (id,space_id,provider_connector_id,owner_user_id,name,status,visibility,capture_policy,trust_level,consent_json,policy_json,config_json,created_at,updated_at)
+     VALUES ($1,$2,$3,$4,'Feed','active','space_shared','reference_only','normal','{}','{}','{}',$5,$5)`,
     [CONNECTION, SPACE, mapping, OWNER, now],
   );
   await db.pool.query(
@@ -127,6 +142,16 @@ beforeEach(async () => {
   await db.pool.query(`UPDATE agents SET current_version_id=$2 WHERE id=$1`, [AGENT, AGENT_VERSION]);
 });
 
+/** An annotated, subscribed item at an exact instant. */
+async function seedItemAt(title: string, at: string, options: { linked?: boolean } = {}): Promise<string> {
+  const id = await seedItem({ title, hour: 0, linked: options.linked });
+  await db.pool.query(
+    `UPDATE source_items SET occurred_at=$3, first_seen_at=$3, last_seen_at=$3 WHERE space_id=$1 AND id=$2`,
+    [SPACE, id, at],
+  );
+  return id;
+}
+
 async function seedItem(input: {
   title: string;
   hour: number;
@@ -182,14 +207,44 @@ async function seedItem(input: {
   return id;
 }
 
+describe("external discovery materialization", () => {
+  it("reuses an item whose source_uri the sample names, instead of colliding with it", async () => {
+    if (!db.available) return;
+    // A Custom Source item whose URL drifted: `source_uri` moved on, its
+    // `canonical_uri` did not. The active-row unique index is on `source_uri`.
+    const id = randomUUID();
+    await db.pool.query(
+      `INSERT INTO source_items
+         (id,space_id,owner_user_id,visibility,connection_id,item_type,title,source_uri,canonical_uri,occurred_at,
+          first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
+       VALUES ($1,$2,$3,'space_shared',$4,'feed_entry','Moved','https://example.test/new-path','https://example.test/old-path',now(),now(),now(),'excerpt_saved','summary_only',now(),now())`,
+      [id, SPACE, OWNER, CONNECTION],
+    );
+    const ids = await materializeExternalDiscovery(db.pool, {
+      spaceId: SPACE,
+      projectId: null,
+      userId: OWNER,
+      discoveryKey: "probe:1",
+      samples: [
+        { source_uri: "https://example.test/new-path", title: "Moved", excerpt: null, author: null, occurred_at: null },
+        { source_uri: "https://example.test/brand-new", title: "New", excerpt: null, author: null, occurred_at: null },
+      ],
+    });
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(id);
+    const rows = await db.pool.query<{ n: string }>(`SELECT count(*)::text AS n FROM source_items WHERE space_id = $1`, [SPACE]);
+    expect(rows.rows[0]!.n).toBe("2");
+  });
+});
+
 describe("information digest persistence", () => {
   it("uses the deterministic cold branch and persists complete slot attribution", async () => {
     if (!db.available) return;
     await seedItem({ title: "Older", hour: 7 });
     await seedItem({ title: "Newer", hour: 20 });
 
-    const first = await new InformationDigestService(db.pool).personal(SPACE, OWNER, DATE);
-    const second = await new InformationDigestService(db.pool).personal(SPACE, OWNER, DATE);
+    const first = (await new InformationDigestService(db.pool).scheduledPersonal(SPACE, OWNER, PERIOD, null)).digest;
+    const second = (await new InformationDigestService(db.pool).scheduledPersonal(SPACE, OWNER, PERIOD, null)).digest;
 
     expect(second.id).toBe(first.id);
     expect(first.profile_maturity).toBe("cold");
@@ -220,7 +275,7 @@ describe("information digest persistence", () => {
       interest_slots: 1,
     });
 
-    const digest = await new InformationDigestService(db.pool).personal(SPACE, OWNER, DATE, null);
+    const digest = (await new InformationDigestService(db.pool).scheduledPersonal(SPACE, OWNER, PERIOD, null)).digest;
     const snapshot = await new InterestProfileService(db.pool).snapshot(SPACE, OWNER);
 
     expect(digest.items.map((item) => item.source_item_id)).toEqual([kept]);
@@ -267,6 +322,35 @@ describe("information digest persistence", () => {
     expect((await db.pool.query(`SELECT status FROM source_item_annotations WHERE source_item_id=$1`, [id])).rows).toEqual([{ status: "pending" }]);
   });
 
+  it("backfills the most recent subscribed history first, whatever the item ids sort like", async () => {
+    if (!db.available) return;
+    // Ids sort the other way round from recency, so a LIMIT applied in id
+    // order would pick the older item.
+    const older = { id: "00000000-0000-4000-8000-00000000aaaa", at: `${DATE}T01:00:00.000Z` };
+    const newer = { id: "ffffffff-ffff-4fff-8fff-ffffffffffff", at: `${DATE}T05:00:00.000Z` };
+    for (const item of [older, newer]) {
+      await db.pool.query(
+        `INSERT INTO source_items
+           (id,space_id,owner_user_id,visibility,connection_id,item_type,title,source_uri,occurred_at,
+            first_seen_at,last_seen_at,content_state,retention_policy,created_at,updated_at)
+         VALUES ($1,$2,$3,'space_shared',$4,'feed_entry','Historical',$5,$6,$6,$6,'excerpt_saved','summary_only',$6,$6)`,
+        [item.id, SPACE, OWNER, CONNECTION, `https://example.test/history/${item.id}`, item.at],
+      );
+      await db.pool.query(
+        `INSERT INTO source_channel_item_links (id,space_id,source_channel_id,source_item_id,status,matched_at,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,'active',$5,$5,$5)`,
+        [randomUUID(), SPACE, CHANNEL, item.id, item.at],
+      );
+    }
+
+    const repo = new PgSourceAnnotationRepository(db.pool);
+    expect(await repo.enqueueSubscriptionHistory(SPACE, OWNER, 1)).toBe(1);
+    expect((await db.pool.query(`SELECT source_item_id FROM source_item_annotations WHERE space_id=$1`, [SPACE])).rows)
+      .toEqual([{ source_item_id: newer.id }]);
+    expect(await repo.enqueueSubscriptionHistory(SPACE, OWNER, 1)).toBe(1);
+    expect(await repo.enqueueSubscriptionHistory(SPACE, OWNER, 1)).toBe(0);
+  });
+
   it("selects personal and Project candidates by UTC day regardless of the database session timezone", async () => {
     if (!db.available) return;
     const personalItem = await seedItem({ title: "UTC personal", hour: 1 });
@@ -276,8 +360,8 @@ describe("information digest persistence", () => {
       await client.query("BEGIN");
       await client.query("SET LOCAL TIME ZONE 'America/Los_Angeles'");
       const repo = new PgInformationDigestRepository(client);
-      expect((await repo.personalCandidates(SPACE, OWNER, DATE)).map((item) => item.source_item_id)).toContain(personalItem);
-      expect((await repo.projectCandidates(SPACE, PROJECT, DATE)).map((item) => item.source_item_id)).toContain(projectItem);
+      expect((await repo.personalCandidates(SPACE, OWNER, PERIOD)).map((item) => item.source_item_id)).toContain(personalItem);
+      expect((await repo.projectCandidates(SPACE, PROJECT, PERIOD)).map((item) => item.source_item_id)).toContain(projectItem);
       await client.query("ROLLBACK");
     } finally {
       client.release();
@@ -308,7 +392,7 @@ describe("information digest persistence", () => {
       [randomUUID(), SPACE, itemId, OTHER, OWNER, now],
     );
 
-    const candidates = await new PgInformationDigestRepository(db.pool).personalCandidates(SPACE, OTHER, DATE);
+    const candidates = await new PgInformationDigestRepository(db.pool).personalCandidates(SPACE, OTHER, PERIOD);
 
     expect(candidates).toHaveLength(1);
     expect(candidates[0]).toMatchObject({
@@ -328,35 +412,58 @@ describe("information digest persistence", () => {
       [SPACE, itemId],
     );
 
-    expect(await new PgInformationDigestRepository(db.pool).projectCandidates(SPACE, PROJECT, DATE)).toEqual([]);
+    expect(await new PgInformationDigestRepository(db.pool).projectCandidates(SPACE, PROJECT, PERIOD)).toEqual([]);
   });
 
-  it("rechecks the daily snapshot after acquiring the scope lock under concurrent lazy reads", async () => {
+  it("makes one snapshot when two passes for the same day race, and never rewrites it", async () => {
     if (!db.available) return;
     await seedItem({ title: "Concurrent snapshot", hour: 12 });
-    let arrivals = 0;
-    let releaseBarrier!: () => void;
-    const barrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
-    const synchronizedDb: Queryable & { connect: () => ReturnType<Pool["connect"]> } = {
-      connect: () => db.pool.connect(),
-      async query<Row>(sql: string, params?: readonly unknown[]): Promise<QueryResult<Row>> {
-        const result = await db.pool.query(sql, params ? [...params] : undefined);
-        if (sql.includes("SELECT id, generated_by_automation_run_id FROM information_digests") && arrivals < 2) {
-          arrivals += 1;
-          if (arrivals === 2) releaseBarrier();
-          await barrier;
-        }
-        return result as QueryResult<Row>;
-      },
-    };
-
     const [first, second] = await Promise.all([
-      new InformationDigestService(synchronizedDb).personal(SPACE, OWNER, DATE),
-      new InformationDigestService(synchronizedDb).personal(SPACE, OWNER, DATE),
+      new InformationDigestService(db.pool).scheduledPersonal(SPACE, OWNER, PERIOD, null),
+      new InformationDigestService(db.pool).scheduledPersonal(SPACE, OWNER, PERIOD, null),
     ]);
+    expect(second.digest.id).toBe(first.digest.id);
+    expect([first.created, second.created].sort()).toEqual([false, true]);
+    expect(second.digest.items.map((item) => item.id)).toEqual(first.digest.items.map((item) => item.id));
 
-    expect(second.id).toBe(first.id);
-    expect(second.items.map((item) => item.id)).toEqual(first.items.map((item) => item.id));
+    // A restart that replays the same slot later finds the snapshot and changes nothing.
+    await seedItem({ title: "Arrived after the snapshot", hour: 13 });
+    const replay = await new InformationDigestService(db.pool).scheduledPersonal(SPACE, OWNER, PERIOD, null);
+    expect(replay.created).toBe(false);
+    expect(replay.digest.items.map((item) => item.id)).toEqual(first.digest.items.map((item) => item.id));
+    expect(replay.digest.generated_at).toBe(first.digest.generated_at);
+  });
+
+  it("records the day, its timezone and its half-open interval, and attributes each item to exactly one day", async () => {
+    if (!db.available) return;
+    const day = "2026-03-08";
+    const next = "2026-03-09";
+    const timezone = "America/New_York";
+    // 2026-03-08 is the US spring-forward day: 23 hours long.
+    const before = await seedItemAt("End of the 7th", "2026-03-08T04:59:59.000Z");
+    const early = await seedItemAt("Start of the 8th", "2026-03-08T05:00:00.000Z");
+    const lastSecond = await seedItemAt("Last second of the 8th", "2026-03-09T03:59:59.000Z");
+    const boundary = await seedItemAt("Midnight of the 9th", "2026-03-09T04:00:00.000Z");
+    const dayPeriod = digestPeriod(day, timezone);
+    const nextPeriod = digestPeriod(next, timezone);
+    expect(dayPeriod).toEqual({ date: day, timezone, startUtc: "2026-03-08T05:00:00.000Z", endUtc: "2026-03-09T04:00:00.000Z" });
+    expect(nextPeriod.startUtc).toBe(dayPeriod.endUtc);
+
+    const repo = new PgInformationDigestRepository(db.pool);
+    const onDay = (await repo.personalCandidates(SPACE, OWNER, dayPeriod)).map((item) => item.source_item_id);
+    const onNext = (await repo.personalCandidates(SPACE, OWNER, nextPeriod)).map((item) => item.source_item_id);
+    expect(onDay.sort()).toEqual([early, lastSecond].sort());
+    expect(onNext).toEqual([boundary]);
+    expect([...onDay, ...onNext]).not.toContain(before);
+
+    const generated = await new InformationDigestService(db.pool).scheduledPersonal(SPACE, OWNER, dayPeriod, null);
+    expect(generated.digest).toMatchObject({
+      digest_date: day,
+      timezone,
+      period_start_utc: dayPeriod.startUtc,
+      period_end_utc: dayPeriod.endUtc,
+      generation_kind: "scheduled",
+    });
   });
 
   it("stores one shared Project digest while hydrating each reader's private read state", async () => {
@@ -370,8 +477,8 @@ describe("information digest persistence", () => {
       [randomUUID(), SPACE, itemId, OTHER, now],
     );
 
-    const ownerView = await new InformationDigestService(db.pool).project(SPACE, PROJECT, OWNER, DATE);
-    const memberView = await new InformationDigestService(db.pool).project(SPACE, PROJECT, OTHER, DATE);
+    const ownerView = (await new InformationDigestService(db.pool).scheduledProject(SPACE, PROJECT, OWNER, PERIOD, null)).digest;
+    const memberView = (await new InformationDigestService(db.pool).scheduledProject(SPACE, PROJECT, OTHER, PERIOD, null)).digest;
 
     expect(memberView.id).toBe(ownerView.id);
     expect(ownerView.items[0].read_status).toBe("unread");
@@ -382,7 +489,7 @@ describe("information digest persistence", () => {
   it("rechecks Source access when a reader hydrates an existing Project digest", async () => {
     if (!db.available) return;
     await seedItem({ title: "Revoked Project source", hour: 12, project: true });
-    const ownerView = await new InformationDigestService(db.pool).project(SPACE, PROJECT, OWNER, DATE);
+    const ownerView = (await new InformationDigestService(db.pool).scheduledProject(SPACE, PROJECT, OWNER, PERIOD, null)).digest;
     expect(ownerView.items).toHaveLength(1);
 
     await db.pool.query(
@@ -391,7 +498,7 @@ describe("information digest persistence", () => {
       [SPACE, CHANNEL, OTHER],
     );
 
-    const memberView = await new InformationDigestService(db.pool).project(SPACE, PROJECT, OTHER, DATE);
+    const memberView = (await new InformationDigestService(db.pool).scheduledProject(SPACE, PROJECT, OTHER, PERIOD, null)).digest;
     expect(memberView.id).toBe(ownerView.id);
     expect(memberView.items).toEqual([]);
   });
@@ -410,14 +517,14 @@ describe("information digest persistence", () => {
       );
     }
 
-    const digest = await new InformationDigestService(db.pool).project(SPACE, PROJECT, OWNER, DATE);
+    const digest = (await new InformationDigestService(db.pool).scheduledProject(SPACE, PROJECT, OWNER, PERIOD, null)).digest;
     expect(digest.team_aggregates_available).toBe(true);
     expect(digest.team_blind_spot_domains).toEqual(["biology"]);
     expect(digest.items.find((item) => item.source_item_id === broadlyRead)?.anonymous_read_count).toBe(3);
     expect(digest.items.find((item) => item.title === "Unread domain")?.anonymous_read_count).toBeNull();
 
     await db.pool.query(`DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, [PROJECT, THIRD]);
-    const suppressed = await new InformationDigestService(db.pool).project(SPACE, PROJECT, OWNER, DATE);
+    const suppressed = (await new InformationDigestService(db.pool).scheduledProject(SPACE, PROJECT, OWNER, PERIOD, null)).digest;
     expect(suppressed.team_aggregates_available).toBe(false);
     expect(suppressed.team_blind_spot_domains).toEqual([]);
     expect(suppressed.items.every((item) => item.anonymous_read_count === null)).toBe(true);
@@ -455,7 +562,7 @@ describe("information digest persistence", () => {
       probePeriod: DATE,
     });
 
-    const digest = await new InformationDigestService(db.pool).personal(SPACE, OWNER, DATE);
+    const digest = (await new InformationDigestService(db.pool).scheduledPersonal(SPACE, OWNER, PERIOD, null)).digest;
     expect(digest.items.map((item) => item.section)).toEqual(["interest", "serendipity"]);
     expect(digest.items[1]).toMatchObject({
       title: "Outside",
@@ -469,6 +576,29 @@ describe("information digest persistence", () => {
     expect(poolState.rows).toEqual([{ status: "consumed" }]);
   });
 
+  it("never spends the standby pool on a backfilled day", async () => {
+    if (!db.available) return;
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const outside = await seedItemAt("Outside, yesterday", `${yesterday}T11:00:00.000Z`, { linked: false });
+    await seedItemAt("Familiar, yesterday", `${yesterday}T10:00:00.000Z`);
+    await new PgSerendipityRepository(db.pool).addPoolItem({
+      spaceId: SPACE, userId: OWNER, sourceItemId: outside,
+      targetDomainKey: "artificial_intelligence", origin: "weekly_probe", probePeriod: DATE,
+    });
+
+    const backfilled = await new InformationDigestService(db.pool).backfillPersonal(SPACE, OWNER, yesterday);
+
+    expect(backfilled.created).toBe(true);
+    expect(backfilled.digest).toMatchObject({ digest_date: yesterday, generation_kind: "backfill", timezone: "UTC" });
+    expect(backfilled.digest.items.length).toBeGreaterThan(0);
+    expect(backfilled.digest.items.every((item) => item.section === "interest")).toBe(true);
+    expect(backfilled.digest.settings).toMatchObject({ serendipity_slots: 0, history_note: expect.stringContaining("retained now") });
+    const pool = await db.pool.query<{ status: string }>(
+      `SELECT status FROM information_digest_serendipity_pool WHERE user_id=$1`, [OWNER],
+    );
+    expect(pool.rows).toEqual([{ status: "standby" }]);
+  });
+
   it("records explicit feedback in independent cooldown state without touching the interest profile", async () => {
     if (!db.available) return;
     const outside = await seedItem({ title: "Outside feedback", hour: 11, linked: false });
@@ -476,7 +606,7 @@ describe("information digest persistence", () => {
       spaceId: SPACE, userId: OWNER, sourceItemId: outside,
       targetDomainKey: "artificial_intelligence", origin: "weekly_probe", probePeriod: DATE,
     });
-    const digest = await new InformationDigestService(db.pool).personal(SPACE, OWNER, DATE);
+    const digest = (await new InformationDigestService(db.pool).scheduledPersonal(SPACE, OWNER, PERIOD, null)).digest;
     const item = digest.items.find((row) => row.section === "serendipity")!;
     const at = new Date(`${DATE}T21:00:00Z`);
 
@@ -504,12 +634,163 @@ describe("information digest persistence", () => {
       spaceId: SPACE, userId: OTHER, sourceItemId: otherOutside,
       targetDomainKey: "artificial_intelligence", origin: "weekly_probe", probePeriod: DATE,
     });
-    const otherDigest = await new InformationDigestService(db.pool).personal(SPACE, OTHER, DATE);
+    const otherDigest = (await new InformationDigestService(db.pool).scheduledPersonal(SPACE, OTHER, PERIOD, null)).digest;
     const otherItem = otherDigest.items.find((row) => row.section === "serendipity")!;
     const neutral = await new SerendipityFeedbackService(db.pool).record(SPACE, OTHER, otherItem.id, "neutral", at);
     expect(neutral.cooldown_until).toBe(new Date(at.getTime() + NEUTRAL_COOLDOWN_DAYS * 86_400_000).toISOString());
     expect((await db.pool.query(`SELECT id FROM interest_topics WHERE space_id=$1 AND user_id=$2`, [SPACE, OWNER])).rows).toEqual([]);
     await expect(new SerendipityFeedbackService(db.pool).record(SPACE, OTHER, item.id, "neutral", at)).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it("keeps a permanent block when another item of the same domain gets interesting feedback at the same time", async () => {
+    if (!db.available) return;
+    const first = await seedItem({ title: "Sports one", hour: 11, linked: false, domain: "sports" });
+    const second = await seedItem({ title: "Sports two", hour: 12, linked: false, domain: "sports" });
+    const pool = new PgSerendipityRepository(db.pool);
+    for (const sourceItemId of [first, second]) {
+      await pool.addPoolItem({ spaceId: SPACE, userId: OWNER, sourceItemId, targetDomainKey: "sports", origin: "weekly_probe", probePeriod: DATE });
+    }
+    const digest = (await new InformationDigestService(db.pool).scheduledPersonal(SPACE, OWNER, PERIOD, null)).digest;
+    const shown = digest.items.filter((row) => row.section === "serendipity");
+    const x = shown[0]!;
+    let y = shown[1];
+    if (!y) {
+      // Selection filled one slot; the second item of the domain is placed
+      // beside it the way a wider quota would have placed it.
+      const standby = await db.pool.query<{ id: string; source_item_id: string }>(
+        `SELECT id, source_item_id FROM information_digest_serendipity_pool WHERE space_id=$1 AND user_id=$2 AND status='standby'`,
+        [SPACE, OWNER],
+      );
+      const other = standby.rows[0]!;
+      const id = randomUUID();
+      await db.pool.query(
+        `INSERT INTO information_digest_items
+           (id, space_id, digest_id, source_item_id, section, position, quota_slot, serendipity_pool_item_id, score, component_scores_json, created_at)
+         SELECT $1, space_id, digest_id, $3, section, position + 100, quota_slot, $4, score, component_scores_json, created_at
+           FROM information_digest_items WHERE id=$2`,
+        [id, x.id, other.source_item_id, other.id],
+      );
+      y = { id } as typeof x;
+    }
+    const at = new Date(`${DATE}T21:00:00Z`);
+    const blocking = await db.pool.connect();
+    try {
+      await blocking.query("BEGIN");
+      await new SerendipityFeedbackService(blocking).record(SPACE, OWNER, x.id, "never", at);
+      let settled = false;
+      const liking = new SerendipityFeedbackService(db.pool).record(SPACE, OWNER, y.id, "interesting", at).finally(() => { settled = true; });
+      await waitForLockWaiter(db.pool, { settled: () => settled });
+      await blocking.query("COMMIT");
+      await expect(liking).rejects.toMatchObject({ statusCode: 409 });
+    } finally {
+      await blocking.query("ROLLBACK").catch(() => undefined);
+      blocking.release();
+    }
+    const state = await db.pool.query<{ blocked_at: string | null; last_feedback: string }>(
+      `SELECT blocked_at, last_feedback FROM information_digest_serendipity_domain_states WHERE space_id=$1 AND user_id=$2 AND domain_key='sports'`,
+      [SPACE, OWNER],
+    );
+    expect(state.rows[0]?.blocked_at).not.toBeNull();
+    expect(state.rows[0]?.last_feedback).toBe("never");
+  });
+
+  it("answers a history read without writing anything, and backfills only on request, once", async () => {
+    if (!db.available) return;
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    await seedItemAt("Yesterday's item", `${yesterday}T09:00:00.000Z`);
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OWNER });
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [informationDigestModule]);
+    try {
+      const footprint = async () => (await db.pool.query<{ digests: string; items: string; consumed: string }>(
+        `SELECT (SELECT count(*) FROM information_digests)::text AS digests,
+                (SELECT count(*) FROM information_digest_items)::text AS items,
+                (SELECT count(*) FROM information_digest_serendipity_pool WHERE status <> 'standby')::text AS consumed`,
+      )).rows[0];
+      const before = await footprint();
+      const missing = await app.inject({ method: "GET", url: `/api/v1/spaces/${SPACE}/information-digests/personal` });
+      expect(missing.statusCode).toBe(200);
+      expect(missing.json()).toMatchObject({ status: "missing", digest_date: yesterday, timezone: "UTC", reason: "not_generated", backfill_available: true });
+      const today = await app.inject({ method: "GET", url: `/api/v1/spaces/${SPACE}/information-digests/personal?date=${DATE}` });
+      expect(today.json()).toMatchObject({ status: "missing", reason: "day_not_complete", backfill_available: false });
+      expect(await footprint()).toEqual(before);
+
+      // Today has not ended: no backfill for it.
+      const early = await app.inject({ method: "POST", url: `/api/v1/spaces/${SPACE}/information-digests/personal/backfill`, payload: { date: DATE } });
+      expect(early.statusCode).toBe(422);
+      expect(early.json()).toMatchObject({ code: "digest_day_not_complete" });
+
+      const [a, b] = await Promise.all([
+        app.inject({ method: "POST", url: `/api/v1/spaces/${SPACE}/information-digests/personal/backfill`, payload: { date: yesterday } }),
+        app.inject({ method: "POST", url: `/api/v1/spaces/${SPACE}/information-digests/personal/backfill`, payload: { date: yesterday } }),
+      ]);
+      expect([a.statusCode, b.statusCode].sort()).toEqual([200, 201]);
+      expect(a.json().digest.id).toBe(b.json().digest.id);
+      expect((await db.pool.query(`SELECT id FROM information_digests WHERE digest_date=$1`, [yesterday])).rows).toHaveLength(1);
+
+      const read = await app.inject({ method: "GET", url: `/api/v1/spaces/${SPACE}/information-digests/personal?date=${yesterday}` });
+      expect(read.json()).toMatchObject({ status: "available", digest: { id: a.json().digest.id, generation_kind: "backfill" } });
+    } finally {
+      __setAuthIdentityForTests(null);
+      await app.close();
+    }
+  });
+
+  it("refuses a Project backfill to a reader who cannot write the Project", async () => {
+    if (!db.available) return;
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    __setAuthIdentityForTests({ spaceId: SPACE, userId: OTHER });
+    const app = buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [informationDigestModule]);
+    try {
+      // The history read says the day is missing without offering what the
+      // reader would be refused.
+      const read = await app.inject({ method: "GET", url: `/api/v1/spaces/${SPACE}/projects/${PROJECT}/information-digests?date=${yesterday}` });
+      expect(read.json()).toMatchObject({ status: "missing", reason: "not_generated", backfill_available: false });
+      const response = await app.inject({
+        method: "POST", url: `/api/v1/spaces/${SPACE}/projects/${PROJECT}/information-digests/backfill`, payload: { date: yesterday },
+      });
+      expect(response.statusCode).toBe(403);
+      expect((await db.pool.query(`SELECT id FROM information_digests WHERE project_id=$1`, [PROJECT])).rows).toEqual([]);
+    } finally {
+      __setAuthIdentityForTests(null);
+      await app.close();
+    }
+  });
+
+  it("reports the scheduled slot's previous local day in the scope's configured timezone, even when the fire runs late", async () => {
+    if (!db.available) return;
+    expect(await reconcileInformationDigestAutomations(db.pool)).toBeGreaterThan(0);
+    const updated = await db.pool.query<{ id: string }>(
+      `UPDATE automations SET config_json = config_json || '{"timezone":"Asia/Shanghai"}'::jsonb
+        WHERE space_id=$1 AND owner_user_id=$2 AND config_json->>'scope'='personal' AND config_json->>'operation'='daily'
+        RETURNING id`,
+      [SPACE, OWNER],
+    );
+    const row = await new PgAutomationRepository(db.pool).get(SPACE, updated.rows[0]!.id);
+    // The slot 2026-01-01 07:00 in Shanghai is 2025-12-31T23:00Z; the worker
+    // gets to it days later. The day reported is still 2025-12-31 there.
+    const automation = { ...row!, next_run_at: "2025-12-31T23:00:00.000Z" };
+    registerInformationDigestAutomationTarget();
+    const handler = automationTargetHandlerRegistry.get("information_digest")!;
+    const execute = async () => await handler.execute({
+      config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }),
+      repo: new PgAutomationRepository(db.pool),
+      host: {} as never,
+      automation,
+      fireInput: { spaceId: SPACE, automationId: automation.id, actorUserId: OWNER, triggerType: "schedule" },
+      triggerType: "schedule",
+      responsibility: { triggerOrigin: "automation", instructedByUserId: OWNER },
+      preflightSnapshot: {},
+      advanceSchedule: false,
+    } as never) as Record<string, unknown>;
+    const result = await execute();
+    expect(result).toMatchObject({ digest_date: "2025-12-31", timezone: "Asia/Shanghai", created: true });
+    const stored = await db.pool.query<{ period_start_utc: Date; period_end_utc: Date }>(
+      `SELECT period_start_utc, period_end_utc FROM information_digests WHERE id=$1`, [result.digest_id],
+    );
+    expect(stored.rows[0]!.period_start_utc.toISOString()).toBe("2025-12-30T16:00:00.000Z");
+    expect(stored.rows[0]!.period_end_utc.toISOString()).toBe("2025-12-31T16:00:00.000Z");
+    // A restart replaying the same slot answers with the same snapshot.
+    expect(await execute()).toMatchObject({ digest_id: result.digest_id, created: false });
   });
 
   it("uses the reader's configured serendipity cooldown", async () => {
@@ -520,7 +801,7 @@ describe("information digest persistence", () => {
       spaceId: SPACE, userId: OWNER, sourceItemId: outside,
       targetDomainKey: "artificial_intelligence", origin: "weekly_probe", probePeriod: DATE,
     });
-    const digest = await new InformationDigestService(db.pool).personal(SPACE, OWNER, DATE);
+    const digest = (await new InformationDigestService(db.pool).scheduledPersonal(SPACE, OWNER, PERIOD, null)).digest;
     const item = digest.items.find((row) => row.section === "serendipity")!;
     const at = new Date(`${DATE}T21:00:00Z`);
 
@@ -536,7 +817,7 @@ describe("information digest persistence", () => {
       spaceId: SPACE, userId: OWNER, sourceItemId: outside,
       targetDomainKey: "artificial_intelligence", origin: "weekly_probe", probePeriod: DATE,
     });
-    const digest = await new InformationDigestService(db.pool).personal(SPACE, OWNER, DATE);
+    const digest = (await new InformationDigestService(db.pool).scheduledPersonal(SPACE, OWNER, PERIOD, null)).digest;
     const item = digest.items.find((row) => row.section === "serendipity")!;
 
     const result = await new SerendipityFeedbackService(db.pool).record(
@@ -638,6 +919,21 @@ describe("bounded serendipity probe", () => {
     expect((await db.pool.query(`SELECT id FROM interest_profiles`)).rows).toEqual([]);
   });
 
+  it("records a probe whose every search failed as failed, not skipped", async () => {
+    if (!db.available) return;
+    const provider: SerendipityProbeProvider = {
+      available: async () => true,
+      search: async () => { throw new Error("quota exhausted"); },
+    };
+
+    const result = await new SerendipityProbeService(db.pool, provider).run(SPACE, OWNER, new Date(`${DATE}T12:00:00Z`));
+
+    expect(result.request_count).toBeGreaterThan(0);
+    expect(result.status).toBe("failed");
+    const ledger = await db.pool.query(`SELECT status FROM information_digest_probe_runs`);
+    expect(ledger.rows).toEqual([{ status: "failed" }]);
+  });
+
   it("respects the reader's configured weekly probe budget", async () => {
     if (!db.available) return;
     await new InterestProfileService(db.pool).updateSettings(SPACE, OWNER, { probe_domain_budget: 1 });
@@ -657,6 +953,15 @@ describe("bounded serendipity probe", () => {
     expect(result.domain_keys).toHaveLength(1);
     expect(result.request_count).toBe(1);
     expect(searched).toHaveLength(1);
+  });
+
+  it("keeps the weekly probe budget within what the probe ledger can record", async () => {
+    if (!db.available) return;
+    const profiles = new InterestProfileService(db.pool);
+    // The ledger's request_count CHECK allows at most 3; a setting above it
+    // is refused when written, so no probe can be asked for more.
+    await expect(profiles.updateSettings(SPACE, OWNER, { probe_domain_budget: 4 })).rejects.toThrow(/probe_domain_budget/);
+    await expect(profiles.updateSettings(SPACE, OWNER, { probe_domain_budget: 3 })).resolves.toMatchObject({ probe_domain_budget: 3 });
   });
 });
 

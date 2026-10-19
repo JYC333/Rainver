@@ -191,7 +191,6 @@ function canUseVersionForResolution(
 ): boolean {
   if (version.space_id === null) return version.scope_type === "system";
   if (version.space_id !== input.spaceId) return false;
-  if (version.scope_type === "system") return true;
   if (version.scope_type === "space") return version.scope_id === input.spaceId;
   if (version.scope_type === "project") return Boolean(input.projectId && version.scope_id === input.projectId);
   if (version.scope_type === "agent") return Boolean(input.agentId && version.scope_id === input.agentId);

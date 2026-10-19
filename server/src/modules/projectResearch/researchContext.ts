@@ -11,12 +11,12 @@ export interface ResearchScopeContext {
   nice_to_have: string[];
 }
 
-export interface ResearchRelevanceCriteria {
+interface ResearchRelevanceCriteria {
   include: string[];
   exclude: string[];
 }
 
-export interface ResearchRelevanceProfile {
+interface ResearchRelevanceProfile {
   enabled: true;
   objective: string;
   include_criteria: string[];
@@ -77,11 +77,6 @@ export function relevanceProfileFromResearchContext(
     must_have: scope.must_have,
     nice_to_have: scope.nice_to_have,
   };
-}
-
-export function researchScopeIsEmpty(scope: ResearchScopeContext): boolean {
-  return scope.sub_questions.length === 0 && scope.in.length === 0 && scope.out.length === 0
-    && scope.must_have.length === 0 && scope.nice_to_have.length === 0;
 }
 
 function boundedUniqueStrings(value: unknown): string[] {

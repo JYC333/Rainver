@@ -4,11 +4,10 @@ Date: 2026-05 (original)
 
 ## Status
 
-Accepted. Amended by
-[ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md): the
-`allowed_adapter_types` runtime-policy statements below are superseded —
-AgentVersion selects no runtime, and runtime deployment is the
-`AgentRuntimeProfile`'s authority. Everything else here stands.
+Accepted. Runtime selection is governed by
+[ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md): AgentVersion
+selects no runtime, and runtime deployment is the `AgentRuntimeProfile`'s
+authority.
 
 ## Context
 
@@ -30,11 +29,11 @@ system-provided ones. No concrete built-in agents are seeded: built-in
 behaviour ships as system Agent Templates (factories), and concrete agents are
 created on demand by copy-on-create.
 
-An Agent's behaviour is fully described by its versioned record — role
-instruction, model configuration, runtime policy (including
-`allowed_adapter_types`), memory policy (including `requires_proposal`),
-capabilities, and tool/output policy. The column set is code-owned
-(`server/src/db/schema/agents.ts`) and is not enumerated here.
+An Agent's behaviour is described by its versioned record — role
+instruction, context policy, memory policy (including `requires_proposal`),
+capabilities, and tool/output policy. Runtime and model selection belong to
+the `AgentRuntimeProfile` that deploys it, not to the version. The column set
+is code-owned (`server/src/db/schema/agents.ts`) and is not enumerated here.
 
 ### 2. The instructing human is resolved per message
 
@@ -57,9 +56,10 @@ capacity.
 - Users and agents have independent identity, permissions, and memory
   policies.
 - Several users may share a Space-owned or system agent.
-- `allowed_adapter_types` on the Agent restricts which runtime adapters a Run
-  may select.
-- Every Run carries both `instructed_by_user_id` (the human, per message) and
-  `agent_id` (the executing agent).
+- Runtime deployment is chosen by the Agent's `AgentRuntimeProfile`, not by
+  the Agent or its version (ADR 0022).
+- An Agent Run carries `agent_id` (the executing agent) and
+  `instructed_by_user_id` (the human, per message); the latter is nullable,
+  and retrieval tools are denied when it is absent.
 - Memory policy on the Agent restricts which memory scopes it may read,
   enforced at the Runtime Context and memory read boundaries.

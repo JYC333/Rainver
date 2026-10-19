@@ -213,8 +213,9 @@ export function normalizeMentionText(value: string): string {
 /**
  * Parse `@Label` mentions of roster Agents out of plain text — an Agent's
  * reply — into tokens. Labels match case-insensitively, longest first, and
- * only where the `@` starts a word and the label ends one. Code (fenced
- * blocks and inline spans) is never read as addressing anyone.
+ * only where the `@` starts a word and the label ends one (a CJK character on
+ * either side counts as a word edge). Code (fenced blocks and inline spans) is
+ * never read as addressing anyone.
  */
 export function parseAgentMentions(
   text: string,
@@ -240,13 +241,13 @@ export function parseAgentMentions(
       continue;
     }
     const character = text[index]!;
-    if (character === "@" && (index === 0 || !isWordCharacter(text[index - 1]!))) {
+    if (character === "@" && (index === 0 || isWordBoundary(text[index - 1]!, text[index + 1] ?? " "))) {
       // Compared on the original text, a label's length at a time: lowercasing
       // the rest first can change its length (`İ`) and shift every position.
       const match = entries.find((entry) => {
         const length = entry.label.trim().length;
         return text.slice(index + 1, index + 1 + length).toLowerCase() === entry.lower
-          && !isWordCharacter(text[index + 1 + length] ?? " ");
+          && isWordBoundary(text[index + length]!, text[index + 1 + length] ?? " ");
       });
       if (match) {
         flush();
@@ -312,4 +313,18 @@ function codeRanges(text: string): Array<{ start: number; end: number }> {
 
 function isWordCharacter(character: string): boolean {
   return /[\p{L}\p{N}_]/u.test(character);
+}
+
+/**
+ * Whether a word may end between `before` and `after`. Scripts written without
+ * spaces (Chinese, Japanese, and Korean particles that attach to a name) put a
+ * mention directly against the surrounding text, so a character from one of
+ * them is a boundary on either side; elsewhere two word characters are one word.
+ */
+function isWordBoundary(before: string, after: string): boolean {
+  return !isWordCharacter(before) || !isWordCharacter(after) || isUnspacedScript(before) || isUnspacedScript(after);
+}
+
+function isUnspacedScript(character: string): boolean {
+  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(character);
 }

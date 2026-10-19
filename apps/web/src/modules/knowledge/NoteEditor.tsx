@@ -34,19 +34,17 @@ import {
 } from '../../components/editor'
 
 /**
- * Checked against the widened target list (NB): all five still read sensibly
- * for every offered kind — a note references a Source, is derived from a
- * Claim, belongs to a Question. None needed constraining, because a
- * `note_link` is navigational and carries no graph authority (N4); the
- * backend validates the link type's name but deliberately not its endpoints,
- * so a combination that reads oddly is a wording choice, not a broken edge.
+ * The four link words apply to every offered kind — a note references a
+ * Source, is derived from a Claim, is a source for a Question. A `note_link`
+ * is navigational and carries no graph authority; the backend validates the
+ * link type's name but deliberately not its endpoints, so a combination that
+ * reads oddly is a wording choice, not a broken edge.
  */
 const LINK_TYPE_OPTIONS: { value: EntityLinkType; label: string }[] = [
   { value: 'related_to', label: 'related to' },
   { value: 'references', label: 'references' },
   { value: 'derived_from', label: 'derived from' },
   { value: 'source_for', label: 'source for' },
-  { value: 'belongs_to', label: 'belongs to' },
 ]
 
 const TARGET_KIND_LABELS: Record<NoteLinkTargetType, string> = {
@@ -58,11 +56,10 @@ const TARGET_KIND_LABELS: Record<NoteLinkTargetType, string> = {
 }
 
 /**
- * Derived from the shared vocabulary, not hand-written. The previous version
- * of this array listed `note` and `knowledge_item` only, while the backend
- * accepted more — so evidence, sources and open questions were reachable by
- * the API and offered by nothing, which is why notes and research never met.
- * `server/test/noteLinkTargetsGuard.test.ts` fails if the two diverge again.
+ * Derived from the shared vocabulary. Do not list a subset of the backend's
+ * types: evidence, sources, and open questions would be reachable by the API
+ * and offered by nothing. `server/test/noteLinkTargetsGuard.test.ts` fails
+ * if the two diverge.
  */
 const TARGET_KIND_OPTIONS = NOTE_LINK_TARGET_TYPE_VALUES.map(value => ({
   value,
@@ -75,9 +72,8 @@ const SEARCHED_TARGET_KINDS: readonly NoteLinkTargetType[] = ['source', 'claim',
 /**
  * Which actions the selection bar offers is the registry's answer, not this
  * file's: `applies_to` exists so a surface showing an object asks what it can
- * offer instead of hard-coding a menu, and a hand-maintained copy of a backend
- * list is the exact defect that left the link picker offering two of five
- * target kinds.
+ * offer instead of hard-coding a menu. Do not keep a second copy of the
+ * backend list: the picker then offers a subset of the target kinds.
  *
  * Only the wording is local. The registry's `title` is descriptive prose for
  * audit and policy surfaces ("Promote a passage to a Knowledge Item"), which
@@ -103,19 +99,18 @@ function fmt(dt: string | null | undefined) {
   return dt ? new Date(dt).toLocaleString() : '—'
 }
 
-export interface NoteEditorProps {
-  /** The note to edit. Which note is open is the surface's decision, not this
-   * component's — it used to read `useParams()`, which pinned it to one route. */
+interface NoteEditorProps {
+  /** The note to edit. Which note is open is the surface's decision. Do not
+   * read the route here. */
   noteId: string
   /** Report the resolved/saved note so the surface's tab label and list stay in sync. */
   onNoteResolved: (note: Note) => void
 }
 
 /**
- * The one open-note editor. Every notes surface mounts this component — there is
- * deliberately no second implementation, because the previous Project notebook
- * card was a subset of it and drifted (no actions, no links) the moment the two
- * existed side by side.
+ * The one open-note editor. Every notes surface mounts this component. Do not
+ * keep a second implementation. Two editors drift: the second one stops at
+ * actions and links.
  *
  * Layout is a full-bleed document: a borderless title + body that fill the pane,
  * with a bottom status bar. Links and backlinks are not rendered inline — they
@@ -169,7 +164,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   const [actionBusy, setActionBusy] = useState<NoteSystemActionId | null>(null)
 
   const [revisions, setRevisions] = useState<NoteRevision[] | null>(null)
-  // Which other Projects can read this note (U8). Loaded with the note rather
+  // Which other Projects can read this note. Loaded with the note rather
   // than behind the chip: the count has to be on the chip before it is opened,
   // because "who else can see this" is not something a user thinks to check.
   const [shares, setShares] = useState<NoteProjectShare[]>([])
@@ -185,7 +180,8 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
 
   const loadShares = useCallback(async (id: string) => {
     try {
-      setShares(await notesApi.shares(id))
+      const rows = await notesApi.shares(id)
+      if (noteRef.current?.id === id) setShares(rows)
     } catch {
       // Advisory: a note still reads and edits fine without its share list.
     }
@@ -210,6 +206,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   const loadLinks = useCallback(async (id: string) => {
     try {
       const [out, back] = await Promise.all([notesApi.links(id), notesApi.backlinks(id)])
+      if (noteRef.current?.id !== id) return
       // links() returns every link touching the note; keep only the outgoing ones here.
       setLinks(out.filter(l => l.source_type === 'note' && l.source_id === id))
       setBacklinks(back)
@@ -227,33 +224,47 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   // loaded) the save is refused rather than silently overwriting it; the
   // user's in-progress edit stays on screen and the History panel shows
   // what changed underneath them.
-  const performSaveImpl = useCallback(async () => {
+  //
+  // Saves run one after another, each on the version the one before it
+  // produced. Do not send two in flight with the same `expect_version`. The
+  // server would refuse the second as a change from elsewhere. What a save
+  // sends is read when it is asked for, so a flush on switching notes still
+  // sends the note being left.
+  const saveChainRef = useRef<Promise<unknown>>(Promise.resolve())
+  const savedVersionRef = useRef(new Map<string, number>())
+  const performSaveImpl = useCallback(() => {
     const current = noteRef.current
-    if (!current) return
+    if (!current) return Promise.resolve()
     const snapshot = editorRef.current?.getSnapshot() ?? richTextSnapshotFromDocument(editorDocumentRef.current)
     const trimmedTitle = titleRef.current.trim()
-    try {
-      const updated = await notesApi.update(current.id, {
-        ...(trimmedTitle ? { title: trimmedTitle } : {}),
-        ...snapshot,
-        expect_version: current.version,
-      })
-      onNoteResolved(updated)
-      noteCacheRef.current.set(updated.id, updated)
-      // Don't clobber the view if we've since navigated to a different note.
-      if (noteRef.current?.id === current.id) {
-        noteRef.current = updated
-        setNote(updated)
+    const run = saveChainRef.current.then(async () => {
+      const expectVersion = Math.max(current.version, savedVersionRef.current.get(current.id) ?? 0)
+      try {
+        const updated = await notesApi.update(current.id, {
+          ...(trimmedTitle ? { title: trimmedTitle } : {}),
+          ...snapshot,
+          expect_version: expectVersion,
+        })
+        savedVersionRef.current.set(updated.id, updated.version)
+        onNoteResolved(updated)
+        noteCacheRef.current.set(updated.id, updated)
+        // Don't clobber the view if we've since navigated to a different note.
+        if (noteRef.current?.id === current.id) {
+          noteRef.current = updated
+          setNote(updated)
+        }
+        setRevisions(null)
+      } catch (e) {
+        if (e instanceof ApiRequestError && e.status === 409) {
+          toast.error('This note changed elsewhere while you were editing. Your edit was not saved — check History, then retry.')
+        } else {
+          toast.error(errMsg(e))
+        }
+        throw e
       }
-      setRevisions(null)
-    } catch (e) {
-      if (e instanceof ApiRequestError && e.status === 409) {
-        toast.error('This note changed elsewhere while you were editing. Your edit was not saved — check History, then retry.')
-      } else {
-        toast.error(errMsg(e))
-      }
-      throw e
-    }
+    })
+    saveChainRef.current = run.catch(() => undefined)
+    return run
   }, [onNoteResolved])
 
   // `flushKey: noteId` flushes a pending save when switching to a different
@@ -322,7 +333,12 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
     if (JSON.stringify(freshDoc) !== currentJson) setEditorDocument(freshDoc)
   }, [onNoteResolved])
 
+  // Only the latest load applies. The editor stays mounted across a switch.
+  // A slow read for the note left behind must not replace the one switched to.
+  const loadSeqRef = useRef(0)
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current
+    const isCurrent = () => seq === loadSeqRef.current
     if (!noteId || !activeSpaceId) {
       setNote(null)
       setLoading(false)
@@ -350,6 +366,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
     try {
       const n = await notesApi.get(noteId)
       noteCacheRef.current.set(n.id, n)
+      if (!isCurrent()) return
       seedFromNote(n)
       onNoteResolved(n)
       // Links aren't on the critical path (they live behind a footer panel), so
@@ -357,11 +374,12 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
       void loadLinks(n.id)
       void loadShares(n.id)
     } catch (e) {
+      if (!isCurrent()) return
       if (isNotFoundError(e)) setNotFound(true)
       else toast.error(errMsg(e))
       setNote(null)
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [noteId, activeSpaceId, loadLinks, loadShares, onNoteResolved, seedFromNote, revalidate])
 
@@ -388,13 +406,17 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
   // Candidates for the search-backed kinds. Debounced, and guarded against a
   // slow response for an earlier query landing after a newer one.
   useEffect(() => {
+    // Nothing to search for: also not searching. The previous run's cleanup
+    // only cancels its request; its "searching" would otherwise stand.
     if (!activeSpaceId || !SEARCHED_TARGET_KINDS.includes(linkKind)) {
       setSearchResults([])
+      setSearching(false)
       return
     }
     const query = searchQuery.trim()
     if (!query) {
       setSearchResults([])
+      setSearching(false)
       return
     }
     let cancelled = false
@@ -592,7 +614,7 @@ export default function NoteEditor({ noteId, onNoteResolved }: NoteEditorProps) 
             className="mt-4 flex-1"
             onChange={scheduleSave}
           />
-          {/* NE: the actions the registry declares for a `note`, scoped to the
+          {/* The actions the registry declares for a `note`, scoped to the
               selection. A note usually holds several ideas, so acting on the
               whole note would promote all of them as one item. */}
           {selection && (

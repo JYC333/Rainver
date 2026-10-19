@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { AlertTriangle, ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, FileText, PanelRight, RefreshCw } from 'lucide-react'
 import { readerApi, sourcesApi } from '../../api/client'
@@ -27,6 +27,9 @@ function orderedItemIds(briefing: SourcePostProcessingBriefingDetail): string[] 
 
 export default function LibraryItemReaderPage() {
   const { itemId = '', connectionId, date } = useParams<{ itemId: string; connectionId?: string; date?: string }>()
+  const [searchParams] = useSearchParams()
+  // Reached from the digest's serendipity section: the open is reading, not interest evidence.
+  const readOrigin = searchParams.get('from') === 'serendipity' ? 'serendipity' as const : undefined
   const { activeSpaceId } = useSpace()
   const [briefing, setBriefing] = useState<SourcePostProcessingBriefingDetail | null>(null)
   const [document, setDocument] = useState<ReaderDocumentPayload | null>(null)
@@ -34,6 +37,11 @@ export default function LibraryItemReaderPage() {
   const [failedJob, setFailedJob] = useState<ExtractionJob | null>(null)
   const [loading, setLoading] = useState(true)
   const [reextracting, setReextracting] = useState(false)
+  // Prev/next stay clickable while an extraction runs, and the route then
+  // re-renders this same instance for another item; the result that comes
+  // back belongs to the item the reader has left.
+  const currentItemId = useRef(itemId)
+  currentItemId.current = itemId
 
   useEffect(() => {
     if (!connectionId || !date) return setBriefing(null)
@@ -46,13 +54,13 @@ export default function LibraryItemReaderPage() {
     if (!itemId || !activeSpaceId) { setDocument(null); setAnnotations([]); setLoading(false); return }
     let cancelled = false; setLoading(true); setDocument(null); setAnnotations([]); setFailedJob(null)
     Promise.all([
-      readerApi.getDocument('source_item', itemId), readerApi.listAnnotations('source_item', itemId),
+      readerApi.getDocument('source_item', itemId, { origin: readOrigin }), readerApi.listAnnotations('source_item', itemId),
       sourcesApi.jobs({ source_item_id: itemId, job_type: 'extract_text', limit: 1 }).catch(() => ({ items: [] as ExtractionJob[] })),
     ]).then(([doc, result, jobs]) => { if (!cancelled) { setDocument(doc); setAnnotations(result.items); setFailedJob(jobs.items[0]?.status === 'failed' ? jobs.items[0] : null) } })
       .catch(error => { if (!cancelled) { if (!isNotFoundError(error)) toast.error(errMsg(error)); setDocument(null) } })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
-  }, [activeSpaceId, itemId])
+  }, [activeSpaceId, itemId, readOrigin])
 
   const ids = useMemo(() => briefing ? orderedItemIds(briefing) : [], [briefing]); const index = ids.indexOf(itemId)
   const previous = index > 0 ? ids[index - 1] : null; const next = index >= 0 && index < ids.length - 1 ? ids[index + 1] : null
@@ -62,12 +70,14 @@ export default function LibraryItemReaderPage() {
   async function reextract() {
     if (!document || document.document_type !== 'source_item' || !document.content_state) return
     const reason = textExtractionDisabledReason({ content_state: document.content_state, source_uri: document.source_uri }); if (reason) return toast.error(reason)
+    const id = document.document_id
     setReextracting(true)
     try {
-      await sourcesApi.itemAction(document.document_id, 'queue_content'); const job = await runPendingItemJob(document.document_id, 'extract_text')
-      setFailedJob(job?.status === 'failed' ? job : null)
-      const [doc, result] = await Promise.all([readerApi.getDocument('source_item', document.document_id), readerApi.listAnnotations('source_item', document.document_id)])
-      setDocument(doc); setAnnotations(result.items); toast.success(job ? `Text extraction ${job.status}` : 'Text extraction queued')
+      await sourcesApi.itemAction(id, 'queue_content'); const job = await runPendingItemJob(id, 'extract_text')
+      const [doc, result] = await Promise.all([readerApi.getDocument('source_item', id), readerApi.listAnnotations('source_item', id)])
+      toast.success(job ? `Text extraction ${job.status}` : 'Text extraction queued')
+      if (currentItemId.current !== id) return
+      setFailedJob(job?.status === 'failed' ? job : null); setDocument(doc); setAnnotations(result.items)
     } catch (error) { toast.error(errMsg(error)) } finally { setReextracting(false) }
   }
 

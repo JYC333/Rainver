@@ -5,11 +5,9 @@ import {
   type CanonicalModelUsage,
   type CanonicalUsage,
 } from "@rainver/protocol";
-// D6 (twice-corrected, execution-topology-and-project-control-plane-plan.md
-// §6): the phase dispatcher below stays hand-rolled — no SDK hook reproduces
-// its tested start()-independent, phase-named anomaly handling — but its
-// wire shapes are checked against the SDK's own authoritative schema types
-// here, rather than trusted by convention alone.
+// The phase dispatcher stays hand-rolled. No SDK hook reproduces its
+// start()-independent, phase-named anomaly handling. Wire shapes are
+// checked against the SDK's schema types.
 import type { PermissionOption, ContentBlock } from "@agentclientprotocol/sdk";
 export type { ContentBlock } from "@agentclientprotocol/sdk";
 import { usageFromAcp } from "./cliRuntimeMeasurement.js";
@@ -51,7 +49,7 @@ export function acpSessionConfigFromRunOverride(value: unknown): AcpSessionConfi
  * Forces the selections a runtime's spec declares for a strict host, over
  * whatever the caller asked for on the same option.
  *
- * The caller's choice loses on purpose: these exist because the built-in
+ * The caller's choice loses. The built-in
  * host's namespace is already the boundary, and a vendor sandbox left on
  * inside it does not add a boundary — it takes the Run's own workspace away
  * (ADR 0016 section 2). A member who picked "ask for approval" on a host with
@@ -106,11 +104,9 @@ export function createCliConversationController(input: {
   attributed_model?: string | null;
   on_protocol_event?: (event: Record<string, unknown>) => void;
   /**
-   * execution-topology-and-project-control-plane-plan.md P0.4/D7: fired once
-   * per permission request, whatever the outcome, so a caller with a durable
-   * event stream (a remote dispatch's task thread) can record that this Run
-   * was pre-authorized rather than leaving it implicit. Callers with no such
-   * stream (a server-host sandboxed Run) may omit it; the decision itself is
+   * Fired once per permission request, whatever the outcome, so a caller with
+   * a durable event stream can record that this Run was pre-authorized. A
+   * caller with no such stream may omit it. The decision itself is
    * unaffected either way.
    */
   on_permission_decision?: (record: PermissionDecisionRecord) => void;
@@ -131,8 +127,7 @@ const AUTHENTICATE_REQUEST_ID = 2.5;
 
 /**
  * General Agent Client Protocol controller. All three conversation runtimes
- * use the same lifecycle on both server-host and remote paths; Claude's ACP
- * adapter replaced its stream-json path in P4 of the runtime replatform.
+ * use this lifecycle. Claude uses its ACP adapter.
  */
 export class AcpController implements CliStdioController {
   private phase: "initialize" | "session_new" | "authenticate" | "set_config" | "prompt" | "phase_acknowledge" | "terminal" = "initialize";
@@ -141,10 +136,10 @@ export class AcpController implements CliStdioController {
   private resumeHandshakeFailed = false;
   /**
    * Whether a `session/prompt` was ever sent. The runtime writes the session's
-   * transcript when it answers one, so a session that died before this — on a
-   * config option, say — leaves nothing behind to resume. Reporting its id
-   * anyway is what made the *next* turn fail with an opaque "Internal error:
-   * no rollout found", one failure after the one that actually went wrong.
+   * transcript when it answers one. A session that dies before that — on a
+   * config option, say — leaves nothing to resume. Do not report its id. The
+   * next turn would fail with "Internal error: no rollout found", one failure
+   * after the one that actually went wrong.
    */
   private prompted = false;
   /**
@@ -222,10 +217,9 @@ export class AcpController implements CliStdioController {
   // Async only to match `CliStdioController`'s interface (shared with
   // `CodexQuotaController`'s unrelated app-server RPC, which does need it —
   // see localCliExecution.ts). This body stays fully synchronous: every
-  // `send()` this method needs to produce still happens before it returns,
-  // preserving the ~58 existing synchronous test call sites that assert on
-  // `send()` output with no `await` at the call site (execution-topology-
-  // and-project-control-plane-plan.md §6 D6, twice-corrected there).
+  // `send()` this method needs to produce still happens before it returns.
+  // Call sites assert on `send()` output with no `await`. Do not make this
+  // body actually await: those call sites would stop compiling.
   // eslint-disable-next-line @typescript-eslint/require-await
   async receive(message: Record<string, unknown>, send: Send, closeStdin: () => void): Promise<void> {
     if (message.jsonrpc !== "2.0") {
@@ -491,14 +485,12 @@ export class AcpController implements CliStdioController {
       );
       return;
     }
-    // A notification we do not recognise is ignorable by definition: it
-    // carries no id, so nothing is waiting on an answer and skipping it leaves
-    // the protocol in the same state. Failing the turn on one instead made
-    // every vendor extension a broken conversation — `codex-acp` announces
+    // A notification we do not recognise is ignorable: it carries no id, so
+    // nothing is waiting on an answer, and skipping it leaves the protocol in
+    // the same state. Do not fail the turn on one. `codex-acp` announces
     // `_auth/status_update` right after `initialize`, and the underscore is
-    // ACP's own marker for an extension, so this will keep happening. An
-    // unknown *request* is different and is refused above, because the peer
-    // does wait for that one.
+    // ACP's own marker for an extension. An unknown *request* is different
+    // and is refused above, because the peer does wait for that one.
     if (typeof message.method === "string") return;
     this.fail(`${this.label()} ACP returned an unsupported protocol message`, closeStdin);
   }
@@ -631,7 +623,7 @@ export class AcpController implements CliStdioController {
 
   /**
    * A question can only end a prompt this session is running. Before the
-   * prompt, or for another session, the request keeps its old handling.
+   * prompt, or for another session, do not end the turn on it.
    */
   private inScopeQuestionRequest(params: Record<string, unknown>): boolean {
     if (this.phase !== "prompt" || !this.sessionId) return false;
@@ -677,10 +669,10 @@ export class AcpController implements CliStdioController {
       return;
     }
     // Cast against the SDK's own `PermissionOption` schema type rather than
-    // trusting the wire shape by convention — `optionId`/`kind` still go
+    // trusting the wire shape by convention. `optionId`/`kind` still go
     // through the same defensive `stringField` extraction as every other
-    // field on this generically-typed message, so a malformed entry behaves
-    // exactly as before, just checked against an authoritative shape.
+    // field on this generically-typed message. A malformed entry is refused
+    // on that shape.
     const rawOptions = Array.isArray(params.options) ? (params.options as PermissionOption[]) : [];
     const decision = decidePermission(rawOptions.map((option) => ({
       option_id: stringField(record(option), "optionId"),

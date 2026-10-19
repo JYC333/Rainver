@@ -4,11 +4,10 @@ Date: 2026-07-11
 
 ## Status
 
-Accepted. Amended by
-[ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md): the
-`model_api` / `ts_agent_host` runtimes named below no longer exist — bounded
-managed API work is a `provider_task` Run in the Provider subsystem, and every
-Agent runtime is ACP. Everything else here stands.
+Accepted. Agent runtime authority is set by
+[ADR 0022](0022-acp-runtime-authority-and-schema-epoch.md): every Agent
+runtime is ACP, and bounded managed API work is a `provider_task` Run in the
+Provider subsystem.
 
 ## Decision
 
@@ -47,7 +46,7 @@ selected by task shape rather than by a universal API-first rule
   wrapper) or through Rainver's in-process managed subscription OAuth channel
   ([ADR 0008](0008-credential-channel-isolation.md)); it is never routed
   through another vendor's runtime.
-- Managed API work uses `model_api` / `ts_agent_host` and the in-process
+- Bounded managed API work is a `provider_task` Run through the in-process
   provider invocation boundary. Separately, a CLI may use an explicit
   ModelProvider proxy binding under ADR 0008; that does not replace the managed
   API path or release the upstream key to the CLI.
@@ -55,8 +54,9 @@ selected by task shape rather than by a universal API-first rule
   sandbox level, audit needs, and vendor terms all participate in routing.
   Routing must expose allowance, cost, and failure state without conflating
   subscription with API spend.
-- Consumer CLI credentials stay isolated through `CredentialBroker`.
-  Subscription sessions are never converted into ambient API credentials or
+- Consumer CLI credentials stay with the CLI copy on the execution host; the
+  control plane brokers none, and the host daemon's environment filter keeps
+  them isolated (ADR 0008, ADR 0016). Subscription sessions are never converted into ambient API credentials or
   shared across users.
 - Unattended programmatic driving of a consumer subscription is not assumed
   to be permitted merely because interactive use is. Where vendor terms are

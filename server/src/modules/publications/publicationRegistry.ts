@@ -5,24 +5,24 @@ import type { Queryable } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
 import { AGENT_SCOPE_MEMORY_TYPES, PgMemoryApplyRepository } from "../memory/memoryApplyRepository.js";
 
-export interface PublicationImportContext {
+interface PublicationImportContext {
   targetSpaceId: string;
   ownerUserId: string;
 }
 
-export interface PublicationImportResult {
+interface PublicationImportResult {
   resource_type: string;
   resource_id: string;
 }
 
-export interface PublicationSnapshot {
+interface PublicationSnapshot {
   schema_version: number;
   resource_type: string;
   title: string;
   payload: Record<string, unknown>;
 }
 
-export interface PublicationAdapter {
+interface PublicationAdapter {
   resourceType: string;
   schemaVersion: number;
   serialize(db: Queryable, sourceSpaceId: string, resourceId: string): Promise<PublicationSnapshot>;

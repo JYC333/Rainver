@@ -82,10 +82,6 @@ export type ProviderTaskRunRecord = RunRecordBase & {
 
 export type RunRecord = AgentRunRecord | ProviderTaskRunRecord;
 
-export function isAgentRunRecord(run: RunRecord): run is AgentRunRecord {
-  return run.execution_kind === "agent";
-}
-
 /**
  * A Run as one viewer may read it. Only visible reads produce one, and the
  * read model takes nothing else, so a path that forgot to compute the level
@@ -155,6 +151,11 @@ export interface RunFinalizationRecord {
   metadata_json: unknown;
   finalized_at: string;
   created_at: string;
+  /** The completion gate: when settlement completed. Null while it is owed. */
+  settled_at: string | null;
+  settlement_attempts: number;
+  /** `{ completed: string[], last_failure?: { key, error_code, message, at }, next_attempt_at? }` */
+  settlement_json: unknown;
 }
 
 export interface RunStepDetailRecord {
@@ -255,6 +256,11 @@ export interface RunCreateInput {
   mode: string;
   run_type: string;
   trigger_origin: string;
+  /**
+   * Only on a `continuation` Run: the Run whose outcome this system-started
+   * turn reports on (`runs.cause_run_id`). Server-derived, never from a client.
+   */
+  cause_run_id?: string | null;
   session_id?: string | null;
   project_folder_id?: string | null;
   workspace_location_id?: string | null;
@@ -391,6 +397,12 @@ export interface RunChatResultRecord {
 export interface RunEventInput {
   run_id: string;
   space_id: string;
+  /**
+   * The attempt that produced the event, for events an execution emits. A
+   * write from an attempt that is no longer the Run's latest is dropped.
+   * Omitted for Run-level events, which belong to the current attempt.
+   */
+  attempt_number?: number | null;
   event_type: string;
   status: "pending" | "running" | "succeeded" | "failed" | "skipped" | "warning" | "cancelled";
   step_id?: string | null;

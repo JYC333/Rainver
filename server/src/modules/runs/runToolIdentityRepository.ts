@@ -5,10 +5,9 @@ import type { RunRecord } from "./repository.js";
 /**
  * The bearer identity a dispatched agent uses to call back into Rainver.
  *
- * Durable, unlike the in-process map it replaces: a remote run's CLI keeps
- * running across a server restart, and an identity that lived only in memory
- * came back unrecognized — the agent lost its tool surface mid-run with no way
- * to acquire another. Only the digest is stored, so reading the table cannot
+ * Durable. A remote run's CLI keeps running across a server restart. Do not
+ * keep the identity only in memory: after a restart the callback comes back
+ * unrecognized and the agent loses its tool surface mid-run. Only the digest is stored, so reading the table cannot
  * recover a live token.
  *
  * The identity authorizes the tool surface of exactly one Run. It is not a
@@ -16,13 +15,13 @@ import type { RunRecord } from "./repository.js";
  * ADR 0008's channel isolation and B67's mutual exclusion — both govern
  * upstream credentials, which this is not.
  */
-export interface RunToolIdentity {
+interface RunToolIdentity {
   run_id: string;
   space_id: string;
   expires_at: string;
 }
 
-export function runToolTokenDigest(token: string): string {
+function runToolTokenDigest(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
@@ -34,7 +33,7 @@ export function runToolTokenDigest(token: string): string {
  * surface is staged should not have to stand up a database to get a token.
  * The SQL behind it has its own real-Postgres coverage.
  */
-export interface RunToolIdentityPort {
+interface RunToolIdentityPort {
   issue(
     run: Pick<RunRecord, "id" | "space_id">,
     ttlMs: number,

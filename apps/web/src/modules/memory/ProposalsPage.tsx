@@ -23,6 +23,8 @@ import {
   proposalMatchesTypeFilter,
   type ProposalTypeFilter,
 } from './proposalFilters'
+import { useAppTranslation } from '../../i18n'
+import { proposalTitle } from './proposalTitle'
 
 function fmt(dt: string | null | undefined) { return dt ? new Date(dt).toLocaleString() : '—' }
 
@@ -50,6 +52,7 @@ function SourceActionReviewDetails({ proposal }: { proposal: Proposal }) {
 }
 
 export default function ProposalsPage() {
+  const { t } = useAppTranslation()
   const { activeSpaceId, activeSpaceName, userId } = useSpace()
   const [searchParams, setSearchParams] = useSearchParams()
   const projectFilter = searchParams.get('project_id') ?? ''
@@ -161,6 +164,9 @@ export default function ProposalsPage() {
   }
 
   const canDecide = (p: Proposal) => p.status === 'pending'
+  // A maintenance update the person has not revised yet is accepted only
+  // after the revision, which is made on its own page.
+  const awaitingRevision = (p: Proposal) => Boolean(p.operator_revision && !p.operator_revision.edited_by_user_id)
 
   return (
     <div className="p-6 space-y-6">
@@ -270,11 +276,13 @@ export default function ProposalsPage() {
           <Card key={p.id}>
             <div className="flex items-start justify-between gap-4 mb-3 flex-wrap">
               <Link to={`/proposals/${p.id}`} className="font-medium text-sm text-accent-foreground hover:underline">
-                {p.proposed_title}
+                {proposalTitle(p.proposed_title, p.title_parts)}
               </Link>
               {canDecide(p) && (
                 <div className="flex gap-1.5 shrink-0">
-                  <Button size="sm" variant="success" onClick={() => decide(p.id, 'accept')}>Accept</Button>
+                  {awaitingRevision(p)
+                    ? <Button size="sm" variant="outline" asChild><Link to={`/proposals/${p.id}`}>{t('knowledge_ui.memory_revision.revise_link')}</Link></Button>
+                    : <Button size="sm" variant="success" onClick={() => decide(p.id, 'accept')}>Accept</Button>}
                   <Button size="sm" variant="destructive" onClick={() => decide(p.id, 'reject')}>Reject</Button>
                 </div>
               )}

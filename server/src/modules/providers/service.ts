@@ -26,7 +26,7 @@ async function resolveIdentityOrReply(
   reply: FastifyReply,
   requestId: string,
 ): Promise<{ spaceId: string; userId: string } | FastifyReply> {
-  const identity = await introspectIdentity(config, request);
+  const identity = await introspectIdentity(config, request, reply);
   if (identity.ok) return { spaceId: identity.spaceId, userId: identity.userId };
   if (identity.reason === "denied") {
     // Pass the auth module's denial response through unchanged.
@@ -132,7 +132,7 @@ export function listProviderPresets(
   return serveProviderRead(config, request, reply, async () => listProviderPresetCatalog());
 }
 
-/** The server-owned vendor registry, served so the client stops keeping a copy. */
+/** The server owns the vendor registry and serves it. Do not keep a second copy in the client. */
 export async function listProviderVendorCatalog(
   config: ServerConfig,
   request: FastifyRequest,
@@ -150,6 +150,7 @@ export async function listProviderVendorCatalog(
       default_base_url: vendor.defaultBaseUrl,
       api_key_required: vendor.apiKeyRequired,
       subscription_only: vendor.subscriptionOnly,
+      self_hostable: vendor.selfHostable,
     })),
   );
 }

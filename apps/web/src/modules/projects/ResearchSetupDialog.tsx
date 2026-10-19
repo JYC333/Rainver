@@ -30,14 +30,14 @@ import { defaultModelProvider } from '../providers/defaultProvider'
 import { errMsg } from '../../lib/utils'
 import { useAuth } from '../../contexts/AuthContext'
 import { supportsStructuredOutput } from '../providers/providerMetadata'
+import { useAppTranslation } from '../../i18n'
 
 interface ResearchSetupDialogProps {
   projectId?: string
   workflowId?: string | null
-  // The Inquiry Thread this search is for — question/hypothesis definition
-  // happens entirely on that Thread's own page now; this dialog only ever
-  // configures how the search runs against whatever wording is confirmed
-  // there.
+  // The Inquiry Thread this search is for. Question and hypothesis wording
+  // live on that Thread's page. This dialog only configures how the search
+  // runs against the wording confirmed there.
   threadId: string
   open: boolean
   draft: ResearchSetupDraft
@@ -91,9 +91,9 @@ const SETUP_STEPS = ['Sources', 'Initial import', 'Execution'] as const
 function SemanticQueryColumns({ query }: { query: ResearchQueryAttempt['semantic_query'] }) {
   // core and qualifiers combine with different boolean operators (core is
   // OR'd into one topic clause, qualifiers are AND'd on top of it — see
-  // providers/arxiv.ts) and must stay visually separate: merging them under
-  // one "must match" label hides that dropping the one AND'd qualifier (not
-  // any of the OR'd topic terms) is what swings the hit count the most.
+  // providers/arxiv.ts). Do not merge them under one "must match" label.
+  // An AND'd qualifier and an OR'd topic term change the result in different
+  // directions.
   const columns: Array<{ key: string; title: string; concepts: ResearchSemanticConcept[] }> = [
     { key: 'topic', title: 'Topic (any of)', concepts: query.core },
     { key: 'broaden', title: 'Broadens with (any of)', concepts: query.expansions },
@@ -120,7 +120,7 @@ function SemanticQueryColumns({ query }: { query: ResearchQueryAttempt['semantic
   )
 }
 
-export function researchSetupDraftIsReady(draft: ResearchSetupDraft): boolean {
+function researchSetupDraftIsReady(draft: ResearchSetupDraft): boolean {
   const maxItems = Number(draft.max_items)
   return Boolean(
     draft.research_question.trim()
@@ -145,6 +145,7 @@ export function ResearchSetupDialog({
   onSave,
   onStart,
 }: ResearchSetupDialogProps) {
+  const { t } = useAppTranslation()
   const { currentUser } = useAuth()
   const userId = currentUser?.id
   const [draft, setDraft] = useState<ResearchSetupDraft>(() => copyDraft(initialDraft))
@@ -154,8 +155,28 @@ export function ResearchSetupDialog({
   // Workflow row. When `workflowId` is supplied, it always wins.
   const [sessionWorkflowId, setSessionWorkflowId] = useState<string | null>(null)
   const effectiveWorkflowId = workflowId ?? sessionWorkflowId
+  const loadAttemptHistory = async (strategyId: string, providerKey: ResearchProviderKey, total: number) => {
+    setLoadingHistory(providerKey)
+    try {
+      const attempts: ResearchQueryAttempt[] = []
+      for (let offset = 0; offset < total; offset += 100) {
+        const page = await researchDiscoveryApi.listAttempts(strategyId, providerKey, { project_id: projectId, limit: 100, offset })
+        attempts.push(...page.items)
+        if (page.items.length < 100) break
+      }
+      setAttemptHistory(current => ({ ...current, [providerKey]: attempts.reverse() }))
+    } catch (error) {
+      toast.error(errMsg(error))
+    } finally {
+      setLoadingHistory(null)
+    }
+  }
   const sessionScope = workflowId ?? 'new'
   const [engineResult, setEngineResult] = useState<ResearchQueryStrategy | null>(null)
+  // A plan's full attempt history, read page by page when asked for; the
+  // strategy itself carries only the recent attempts.
+  const [attemptHistory, setAttemptHistory] = useState<Partial<Record<ResearchProviderKey, ResearchQueryAttempt[]>>>({})
+  const [loadingHistory, setLoadingHistory] = useState<ResearchProviderKey | null>(null)
   const [materializedResult, setMaterializedResult] = useState<MaterializedResearchStrategy | null>(null)
   const [selectedProviders, setSelectedProviders] = useState<ResearchProviderKey[]>([])
   const [evaluationProviders, setEvaluationProviders] = useState<ResearchProviderKey[]>(['arxiv', 'openalex'])
@@ -258,9 +279,9 @@ export function ResearchSetupDialog({
   async function startResearch() {
     if (!ready || !canAct || busyAction !== null || draft.question_refine_skipped) return
     // Keep the setup visible while the server creates the Workflow and its
-    // first Operation. Closing first made every failed start look like a
-    // successful one-frame dialog: the user's configuration disappeared and
-    // only a detached toast remained.
+    // first Operation. Do not close first. A failed start would look like a
+    // successful one-frame dialog: the configuration disappears and only a
+    // detached toast remains.
     const started = await onStart(serializeResearchSetupDraft(draft), effectiveWorkflowId)
     if (!started) return
     clearResearchSetupSession(userId, projectId, sessionScope)
@@ -302,6 +323,7 @@ export function ResearchSetupDialog({
         ...(webCredentialId ? { credentials: { web_search: webCredentialId } } : {}),
       })
       setEngineResult(result.strategy)
+      setAttemptHistory({})
       setMaterializedResult(null)
       setSelectedProviders(result.strategy.provider_plans.filter(plan => plan.status === 'selected').map(plan => plan.provider_key))
       setDraft(current => ({ ...current, query_strategy_id: '' }))
@@ -318,6 +340,7 @@ export function ResearchSetupDialog({
         ...(webCredentialId ? { credentials: { web_search: webCredentialId } } : {}),
       })
       setEngineResult(result.strategy)
+      setAttemptHistory({})
       setSelectedProviders(current => {
         const stillSelected = result.strategy.provider_plans.find(plan => plan.provider_key === providerKey)?.status === 'selected'
         return stillSelected ? [...new Set([...current, providerKey])] : current.filter(key => key !== providerKey)
@@ -411,6 +434,7 @@ export function ResearchSetupDialog({
                     const selectable = plan.status === 'selected' && Boolean(plan.selected_attempt_id)
                     const selected = selectedProviders.includes(plan.provider_key)
                     const selectedAttempt = plan.attempts.find(attempt => attempt.id === plan.selected_attempt_id)
+                    const shownAttempts = attemptHistory[plan.provider_key] ?? plan.attempts
                     return <div key={plan.provider_key} className={`rounded-md border px-3 py-3 ${selected ? 'border-primary bg-primary/5' : 'border-border'}`}>
                       <div className="flex w-full items-center justify-between gap-3">
                         <label className={`flex flex-1 items-center justify-between gap-3 text-left ${selectable && !draft.query_strategy_id ? 'cursor-pointer' : 'cursor-default'}`}>
@@ -429,9 +453,15 @@ export function ResearchSetupDialog({
                         <SemanticQueryColumns query={selectedAttempt.semantic_query} />
                       </div>}
                       <details className="mt-2 text-xs">
-                        <summary className="cursor-pointer text-muted-foreground">View {plan.attempts.length} evaluation attempt{plan.attempts.length === 1 ? '' : 's'}</summary>
+                        <summary className="cursor-pointer text-muted-foreground">{t('management_ui.research_attempts.view_attempts', { count: plan.attempt_count })}</summary>
                         <div className="mt-2 space-y-1.5">
-                        {plan.attempts.map(attempt => <div key={attempt.id} className={`rounded border px-2 py-1.5 text-xs ${attempt.id === plan.selected_attempt_id ? 'border-success/50 bg-success/5' : 'border-border bg-background/40'}`}>
+                        {shownAttempts.length < plan.attempt_count && <div className="flex items-center justify-between gap-2 text-muted-foreground">
+                          <span>{t('management_ui.research_attempts.showing_recent', { count: shownAttempts.length })}</span>
+                          <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={loadingHistory !== null} onClick={() => void loadAttemptHistory(engineResult.id, plan.provider_key, plan.attempt_count)}>
+                            {loadingHistory === plan.provider_key ? t('management_ui.research_attempts.loading') : t('management_ui.research_attempts.show_all', { count: plan.attempt_count })}
+                          </Button>
+                        </div>}
+                        {shownAttempts.map(attempt => <div key={attempt.id} className={`rounded border px-2 py-1.5 text-xs ${attempt.id === plan.selected_attempt_id ? 'border-success/50 bg-success/5' : 'border-border bg-background/40'}`}>
                           <div className="flex items-center gap-1.5">
                             <Badge variant={attempt.id === plan.selected_attempt_id ? 'success' : 'outline'}>{attempt.round > 0 ? `Retry ${attempt.round} · ` : ''}L{attempt.sequence} · {attempt.direction}</Badge>
                             {attempt.id === plan.selected_attempt_id && <span className="inline-flex items-center gap-1 text-[11px] font-medium text-success"><Check className="size-3" />Selected</span>}

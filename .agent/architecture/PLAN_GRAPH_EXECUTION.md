@@ -45,8 +45,8 @@ references, and timestamps. A changed Plan definition requires a new
 PlanVersion; a changed fixed Workflow requires a new Workflow Version and a
 new WorkflowExecution. Editable product intent belongs only in `tasks`.
 
-The schema is authored under `server/src/db/schema/`; these tables were
-created by `server/migrations/0000_baseline.sql`.
+The schema is authored under `server/src/db/schema/`. The baseline migration
+`server/migrations/0000_baseline.sql` creates these tables.
 
 ## Agent planning lifecycle
 
@@ -68,7 +68,9 @@ The first proposal creates the Plan and Version; later Agent planning Runs add
 the next Version. A source Task cannot have two logical Plans. Safe low-risk
 graphs may be auto-approved; all other graphs create a `plan_review` Proposal
 and keep their nodes blocked. Proposal application approves the Version and
-unblocks nodes in the same transaction. Human revision is a new planning Run,
+unblocks nodes in the same transaction. A later Version supersedes the earlier
+one and, with it, that one's still-pending `plan_review` Proposal, which could
+never be applied. Human revision is a new planning Run,
 not a direct `POST /plans/:id/revise` operation.
 
 ## Plan execution
@@ -80,8 +82,17 @@ The retained Plan API is read/operate only:
 - `POST /api/v1/plans/:planId/execute` for an approved Version
 - `POST /api/v1/plans/:planId/reconcile` for owner/admin recovery
 
+A Plan is read through its source Task: listing, reading and executing a Plan
+require that the caller can read that Task, and execution of a Project Plan also
+requires Project write access, the same gate as a Task-owned Run and an Agent
+planning request.
+
 Execution creates a parked coordinator Run and `plan_node_runs` for ready
-nodes. It never inserts graph nodes into `tasks` or `task_runs`. The scheduler
+nodes. Every layer is scheduled the same way: a node without its own Agent runs
+on the coordinator's Agent (the one execution chose, not necessarily the
+planner), with the caller's `workflow_input_json` from the coordinator's
+contract, and with the node title as its prompt unless the caller gave one.
+It never inserts graph nodes into `tasks` or `task_runs`. The scheduler
 waits for dependency completion, creates checkpoint Proposals when required,
 and consumes the latest `RunEvaluation`: a terminal adapter success without a
 passed evaluation does not complete a node. Finalization discovers the graph
@@ -101,6 +112,10 @@ without changing its version because there is no deployed compatibility boundary
 
 Plan reconciliation schedules newly-ready nodes, verifies integration nodes,
 and completes the coordinator only after dependency and output checks pass.
+An integration node requires each dependency to be done; a Run-backed
+dependency must also have a passed evaluation and valid outputs, while an
+approval checkpoint or integration dependency has no Run and needs only to be
+done.
 Retries are represented by new Run attempts/finalizations while preserving the
 same node-to-Run relation.
 
@@ -111,7 +126,13 @@ Version, snapshots the definition and resolution trace, then creates a
 `WorkflowExecution`. Scheduled Workflow Automation must be pinned. Materialized
 nodes and dependencies live only in the Workflow Execution tables. Workflow
 checkpoint approval uses `workflow_execution_checkpoint`; it never uses
-`plan_checkpoint` and never creates a Plan.
+`plan_checkpoint` and never creates a Plan. The execution records its
+responsible person once, at start (`workflow_executions.responsible_user_id`,
+from `fireResponsibility`); every later reconciliation — after a checkpoint
+approval, a Run's finalization, or a recovery pass — schedules node Runs as
+that person. The checkpoint's approver is audit only: `reviewed_by` on the
+proposal and `approved_by_user_id`/`approved_at` in the node's
+`metadata_json`. An execution without a recorded person schedules nothing.
 
 The shared execution behavior is exposed through `PlanExecutionService` and
 `WorkflowExecutionService`; both use durable node-run
@@ -119,8 +140,16 @@ links and post-finalization reconciliation. The Automation fire transaction
 commits the Workflow Execution, coordinator Run, child scheduling, and
 `automation_runs` audit link together.
 
-Workflow nodes may be Model (`leaf`), deterministic `action`, integration, or
-approval-checkpoint nodes. Model and Action failures create bounded new Run
+Workflow and Plan nodes may be Model (`leaf`), deterministic `action`,
+integration, or approval-checkpoint nodes. An `action` node in either graph
+runs through one executor (`execution/actionNodeExecution.ts`): the handler
+`actionNodeHandlerRegistry` holds for its `metadata_json.action_key`, with its
+attempts in `workflow_execution_action_attempts` or
+`plan_node_action_attempts`, never an Agent Run. A handler registers the
+graphs it can run in (`workflow_execution`, `plan_version`; research handlers
+read their Workflow execution and serve Workflows only), and a Plan naming an
+action no Plan-capable handler serves is refused when it is proposed
+(`action_not_executable`). A Plan node's attempts are its `max_runs`. Model and Action failures create bounded new Run
 attempts on the same node according to `contract_json.max_attempts`; retry does
 not reopen a completed execution or add a graph cycle. A domain that needs to
 project terminal Workflow status into its own aggregate registers an outcome
@@ -131,7 +160,7 @@ An Action may return a `delegatedRunId` for durable asynchronous work that it
 started. Its own system Run completes immediately, but the node remains
 `in_progress` and links the delegated Run with role `delegated`. The delegated
 Run's evaluated terminal outcome becomes the node outcome and authoritative
-downstream output. Attempt counts include only primary node Runs, so delegated
+downstream output (`plan_node_runs` carries the same `delegated` role). Attempt counts include only primary node Runs, so delegated
 work does not consume a retry attempt. If delegated work fails and the node
 has another attempt, its audit link is retained as `delegated_superseded`
 before the new primary attempt becomes authoritative.
@@ -146,10 +175,17 @@ are guarded by the operation's `current_execution_id`, so an older pass cannot
 overwrite the outcome of a newer authoritative pass.
 
 Post-finalization reconciliation is the immediate path, not the only recovery
-path. `ExecutionGraphRecoveryService` scans active Plan and Workflow executions
+path. It is part of the Run's completion gate (`EXECUTION_MODEL.md`,
+"Finalized"): a graph reconciliation that fails leaves the Run's settlement
+owed, and the worker resumes it. Within one Plan pass, a node that settles without a Run (an integration
+verdict, a failed input binding) readies the nodes behind it and can finish
+or fail the Plan in that same pass, rather than at the next scan.
+`ExecutionGraphRecoveryService` scans active Plan and Workflow executions
 at startup and periodically, then idempotently reconciles each graph under its
-aggregate row lock. Per-graph failures are isolated and emit deduplicated
-operational alerts.
+aggregate row lock. Each scan is a bounded page that continues where the
+previous one stopped and wraps after the last page, so a graph that is still
+waiting cannot hold its place at the front and starve the rest. Per-graph
+failures are isolated and emit deduplicated operational alerts.
 
 AgentRunGroup owns interactive, policy-gated dynamic delegation inside an
 Agent Room. Plan and Workflow Execution own persistent, reviewable DAG nodes.
@@ -169,7 +205,6 @@ Neither mechanism creates, adopts, or reschedules the other's nodes.
 
 There is no Workflow Canvas in this scope. Automatic candidate-run launch is
 still open; it selects existing candidate Runs rather than starting one
-automatically, and is tracked as an `evaluation_candidate` candidate kind in
-the Always-on section of the orchestration plan. Runtime session
+automatically. Runtime session
 checkpoint/resume is delivered — see the "Runtime session" section of ADR 0007
 and [../modules/rooms.md](../modules/rooms.md).

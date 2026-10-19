@@ -2,10 +2,9 @@ import { domainStatusSources } from "../modules/ontology/entities.js";
 /**
  * Domain status for a `space_objects` row.
  *
- * Status left the root table (ADR 0012 decision 1 / B12D): it had no
- * cross-domain reader, and keeping it there forced
- * `ck_space_objects_status_by_type` to branch on `object_type`, so every new
- * domain had to edit a root-table constraint.
+ * Status lives on the extension table (ADR 0012 decision 1 / B12D). Do not
+ * put a status constraint on the root that branches on `object_type`. A new
+ * domain must not have to edit a root-table constraint to add a status.
  *
  * A reader that already knows the object type should simply read the
  * extension table's own `status` column. These helpers exist only for
@@ -22,9 +21,10 @@ import { domainStatusSources } from "../modules/ontology/entities.js";
  */
 
 /**
- * Derived from the entity registry rather than listed here: a hardcoded list is
- * how Inquiry Threads first vanished from the generic graph projection — their
- * status resolved to NULL, and `NULL NOT IN (...)` filtered every Thread out.
+ * Derived from the entity registry rather than listed here. Do not hardcode
+ * the list. A domain left off it resolves to NULL, and `NULL NOT IN (...)`
+ * filters every row of that domain out. That is how an Inquiry Thread
+ * disappears from the generic graph projection.
  */
 function statusSources(): readonly { table: string; alias: string; column: string }[] {
   return domainStatusSources().map((source, index) => ({

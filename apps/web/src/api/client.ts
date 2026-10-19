@@ -10,7 +10,6 @@ import type {
   ExtractionOutcome,
   ImportedSession,
   ImportedSessionRecord,
-  AcademicPaper,
   ProjectBoard,
   ProjectMainlineRoomResponse,
   ProjectReadersResponse,
@@ -18,19 +17,11 @@ import type {
   ProjectWorkUpdatesResponse,
   TaskWorkView,
   WorkLoopStageKey,
-  AcademicPaperAuthor,
-  AcademicPaperCitation,
-  AcademicPaperCreate,
-  AcademicPaperUpdate,
   ActivityInboxRecord,
-  ActivityRecord,
   ActivitySourceType,
   AgentConfigUpdateBody,
   AgentCreateBody,
   AgentOut,
-  AgentRunGroup,
-  AgentRunGroupTimeline,
-  AgentRunGroupTrace,
   AgentRuntimeProfileCreateBody,
   AgentRuntimeProfileOut,
   AgentRuntimeProfileUpdateBody,
@@ -91,8 +82,6 @@ import type {
   ConversationRetryResponse,
   ConversationExecutionSummary,
   CreateAgentFromTemplateBody,
-  CreateAgentRunGroupRequest,
-  CreateAgentRunGroupResponse,
   CreateRoomRequest,
   CreateRoomResponse,
   RoomAgentAddRequest,
@@ -150,7 +139,6 @@ import type {
   ExperimentVersion,
   ExtractedEvidence,
   ExtractionJob,
-  Feature,
   InstanceOperationsSettings,
   InstanceOperationsSettingsUpdate,
   FileContent,
@@ -169,7 +157,10 @@ import type {
   HostExecutionTargetsResponse,
   WorkspaceLocation,
   HomeSummaryOut,
-  InformationDigest,
+  InformationDigestBackfillResult,
+  InformationDigestLookup,
+  SourceAnnotationEpisode,
+  SourceAnnotationRetryResult,
   InquiryCandidate,
   InquiryDeltaBriefContent,
   InquiryEvidenceSignal,
@@ -201,6 +192,7 @@ import type {
   MemoryMaintenanceReport,
   MemoryVersion,
   MemoryMaintenanceScanRequestInput,
+  MemoryProposalRevisionRequest,
   MePendingProposalItem,
   Message,
   MeSummaryOut,
@@ -244,11 +236,13 @@ import type {
   ProjectCorpusBackfillResult,
   ProjectCorpusItem,
   ProjectCreate,
+  ProjectPublicSummary,
+  ProjectPublicSummaryDraft,
+  ProjectPublicSummaryEditorState,
+  ProjectPublicSummaryUpsertBody,
   ProjectExtractionProfile,
   ProjectFolder,
   ProjectFolderCreateBody,
-  ProjectFolderExecutionConfig,
-  ProjectFolderExecutionConfigUpdate,
   ProjectFolderScanCandidate,
   ProjectFolderUpdateBody,
   ProjectInstructionVersion,
@@ -279,6 +273,7 @@ import type {
   PromptEvaluationRequest,
   PromptEvaluationResult,
   PromptPromotionRequestInput,
+  PromptPromotionResult,
   PromptRenderPreviewRequest,
   PromptRenderPreviewResult,
   PromptRollbackRequest,
@@ -363,8 +358,6 @@ import type {
   RunStatusOut,
   RunSupervisorDecision,
   RunVerificationResult,
-  SendAgentRunGroupMessageRequest,
-  SendAgentRunGroupMessageResponse,
   SendRoomMessageRequest,
   SerendipityFeedbackResult,
   Session,
@@ -411,6 +404,7 @@ import type {
   SourceRecipePlanResponse,
   SourceRecipeVersion,
   SourceRecommendation,
+  FollowedSourceChannel,
   SourceScheduleRule,
   SpaceAssistantSettingsOut,
   SpaceAssistantSettingsUpdate,
@@ -434,8 +428,6 @@ import type {
   TaskProposal,
   TaskRunCreateBody,
   TaskRunListItem,
-  UpdateAgentRunGroupRequest,
-  UpdateAgentRunGroupResponse,
   WorkflowExecutionSummary,
 } from '../types/api'
 import type {
@@ -459,6 +451,10 @@ import type {
   ConversationInputMediaOut,
   ConversationInputPart,
   ConversationInputFileSearchResponse,
+  OfficialPluginEffectiveResponse,
+  ListResearchQueryAttemptsResponse,
+  WorkRetrievalSwitch,
+  WorkRetrievalSwitchRequest,
 } from '@rainver/protocol'
 import { ConversationInputMediaOutSchema } from '@rainver/protocol'
 
@@ -466,12 +462,15 @@ const BASE = '/api/v1'
 
 let _spaceId = 'personal'
 let _apiKey: string | null = null
+let _authContextGeneration = 0
 
 export function setSpaceContext(spaceId: string): void {
   _spaceId = spaceId
 }
 
 export function setAuth(key: string | null): void {
+  // Cookie logout also calls setAuth(null) when no bearer key was present.
+  _authContextGeneration += 1
   _apiKey = key
 }
 
@@ -534,10 +533,6 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
 
   const r = await fetch(url, opts)
 
-  if (r.status === 401) {
-    window.dispatchEvent(new CustomEvent('auth:required'))
-  }
-
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`
     let code: string | undefined
@@ -550,6 +545,12 @@ async function request<T = unknown>(method: string, path: string, body?: unknown
     } catch {
       const text = await r.text().catch(() => '')
       if (text) msg = text
+    }
+    // A missing session signs the browser out. `operation_unavailable` is an
+    // authentication step that failed (a mistyped password at
+    // re-authentication) while the session stays valid.
+    if (r.status === 401 && code !== 'operation_unavailable') {
+      window.dispatchEvent(new CustomEvent('auth:required'))
     }
     throw new ApiRequestError(msg, r.status, code, payload)
   }
@@ -666,7 +667,7 @@ function streamHeaders(spaceId?: string): Record<string, string> {
  * Folds one stream frame into the turn so far.
  *
  * A snapshot replaces; a state change replaces the state; an appended or
- * updated part lands at its own index, which is why both are one case — a
+ * updated part lands at its own index. Both are one case: a
  * tool call finishing writes over the part it started as.
  *
  * A `streamed` text part is the exception: it is live prose the projection
@@ -937,6 +938,10 @@ export const memoryApi = {
     post<Memory>(`/memory/${id}/revert`, {}),
   versions: (id: string) =>
     get<{ items: MemoryVersion[] }>(`/memory/${id}/versions`),
+  // The revision a maintenance finding asked for, written into its pending
+  // update; accepting the proposal is still a separate decision.
+  reviseProposal: (proposalId: string, body: MemoryProposalRevisionRequest) =>
+    post<Proposal>(`/memory/proposals/${proposalId}/revision`, body),
   search: (data: { query: string; scope?: string; namespace?: string; type?: string; limit?: number }) =>
     // Memory search is identity-scoped server-side; do not send space_id/user_id.
     post<Memory[]>('/memory/search', data),
@@ -1033,7 +1038,7 @@ export interface GraphProjectionQuery {
   include_clusters?: boolean
 }
 
-export interface GraphViewStateRecord {
+interface GraphViewStateRecord {
   scope_key: string
   state_json: Record<string, unknown>
   updated_at: string | null
@@ -1108,8 +1113,8 @@ export const notesCollectionsApi = {
 }
 
 /**
- * Discuss and edit the Project's notes. Project-level, not research-level —
- * it moved off `.../research/` when the notes surface did.
+ * Discuss and edit the Project's notes. The routes are Project-level.
+ * Do not put them under `.../research/`.
  */
 export const projectNotebookChatApi = {
   send: (projectId: string, body: { message: string; session_id?: string; source_item_ids?: string[]; execution: { model_provider_id: string; model_name?: string } }) =>
@@ -1145,7 +1150,7 @@ export const notesApi = {
   delete: (id: string) => del<Note>(`/knowledge/notes/${id}`),
   purgeDeleted: () => post<{ deleted: number; retention_days: number }>('/knowledge/notes/deleted/purge'),
   /**
-   * Place a note in a further folder, keeping the ones it is already in (U5) —
+   * Place a note in a further folder, keeping the ones it is already in —
    * distinct from moving it, which the tree reorder does.
    */
   addPlacement: (id: string, collectionId: string, shareWithProject = false) =>
@@ -1153,7 +1158,7 @@ export const notesApi = {
       collection_id: collectionId,
       ...(shareWithProject ? { share_with_project: true } : {}),
     }),
-  /** Which other Projects this note is readable in, and who opened it (U8). */
+  /** Which other Projects this note is readable in, and who opened it. */
   shares: (id: string) => get<NoteProjectShare[]>(`/knowledge/notes/${id}/shares`),
   /** Withdraw a share. Takes the note's placements in that Project with it. */
   revokeShare: (id: string, projectId: string) =>
@@ -1169,19 +1174,23 @@ export const notesApi = {
     del<void>(`/knowledge/notes/${id}/links/${linkId}`),
   revisions: (id: string, limit?: number) =>
     get<NoteRevision[]>(`/knowledge/notes/${id}/revisions` + (limit ? `?limit=${limit}` : '')),
-  rollback: (id: string, toVersion: number) =>
-    post<Note>(`/knowledge/notes/${id}/rollback`, { to_version: toVersion }),
+  /** With `expectVersion`, refused (409) unless the note is still at that version. */
+  rollback: (id: string, toVersion: number, expectVersion?: number) =>
+    post<Note>(`/knowledge/notes/${id}/rollback`, {
+      to_version: toVersion,
+      ...(expectVersion === undefined ? {} : { expect_version: expectVersion }),
+    }),
   /**
-   * Jot a note against an object and link it in one call (N7). Two calls would
-   * strand a note whenever the link failed, and the round trip for a note id
-   * is why the connection was never made by hand.
+   * Jot a note against an object and link it in one call. Two calls would
+   * strand a note whenever the link failed. Do not make the connection by
+   * hand across a round trip.
    */
   jot: (body: NoteJotBody) => post<Note>('/knowledge/notes/jot', body),
   /** Notes citing a non-note object — the reverse of a jot. */
   linkingTo: (objectId: string) => get<EntityLink[]>(`/knowledge/objects/${objectId}/note-links`),
   /**
-   * Promote a selected passage into a Knowledge Item (ND). Returns the
-   * proposal — the review gate is unchanged — with the note recorded as
+   * Promote a selected passage into a Knowledge Item. Returns the
+   * proposal — the review gate still applies — with the note recorded as
    * provenance.
    */
   promote: (id: string, body: NotePromoteBody) =>
@@ -1244,7 +1253,7 @@ export const promptsApi = {
   evaluate: (assetKey: string, body: PromptEvaluationRequest) =>
     post<PromptEvaluationResult>(`/prompts/assets/${encodeURIComponent(assetKey)}/evaluate`, body),
   promote: (assetKey: string, body: PromptPromotionRequestInput) =>
-    post<Proposal>(`/prompts/assets/${encodeURIComponent(assetKey)}/promote`, body),
+    post<PromptPromotionResult>(`/prompts/assets/${encodeURIComponent(assetKey)}/promote`, body),
   listDeployments: (assetKey: string, params: { include_history?: boolean } = {}) => {
     const q: Record<string, string> = {}
     if (params.include_history !== undefined) q.include_history = String(params.include_history)
@@ -1259,8 +1268,8 @@ export const promptsApi = {
 
 // ── Boards (task surfaces) ────────────────────────────────────────────────
 export const boardsApi = {
-  list:   (params: Record<string, string> = {}) =>
-    get<Page<Board>>('/boards?' + new URLSearchParams(params)),
+  list:   (params: Record<string, string> = {}, options: { spaceId?: string } = {}) =>
+    get<Page<Board>>('/boards?' + new URLSearchParams(params), { spaceId: options.spaceId }),
   create: (body: Partial<Board> & { name: string }) =>
     post<Board>('/boards', body),
   get:    (id: string) => get<Board>(`/boards/${id}`),
@@ -1371,7 +1380,7 @@ export const runsApi = {
   resume: (id: string) => post<{ id: string; status: string; resumed_at: string; resume_kind: string }>(`/runs/${id}/resume`, {}),
   abandon: (id: string, body: { reason?: string | null } = {}) => post<{ id: string; status: string; abandoned_at: string }>(`/runs/${id}/abandon`, body),
   activities: (id: string, params: Record<string, string> = {}) =>
-    get<Page<ActivityRecord>>(`/runs/${id}/activities?` + new URLSearchParams(params)),
+    get<Page<ActivityInboxRecord>>(`/runs/${id}/activities?` + new URLSearchParams(params)),
   artifacts: (id: string, params: Record<string, string> = {}) =>
     get<Page<Artifact>>(`/runs/${id}/artifacts?` + new URLSearchParams(params)),
   proposals: (id: string, params: Record<string, string> = {}) =>
@@ -1413,34 +1422,6 @@ export const plansApi = {
   execute: (id: string, body: PlanExecuteBody) =>
     post<PlanExecutionResult>(`/plans/${encodeURIComponent(id)}/execute`, body),
   reconcile: (id: string) => post<PlanExecutionResult>(`/plans/${encodeURIComponent(id)}/reconcile`, {}),
-}
-
-// ── Collaboration task groups (advanced audit/control) ────────────────────
-export const agentGroupsApi = {
-  list: (params: { status?: string; limit?: number; offset?: number } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.status !== undefined) q.status = params.status
-    if (params.limit !== undefined) q.limit = String(params.limit)
-    if (params.offset !== undefined) q.offset = String(params.offset)
-    return get<Page<AgentRunGroup>>('/agent-groups?' + new URLSearchParams(q))
-  },
-  create: (body: CreateAgentRunGroupRequest) =>
-    post<CreateAgentRunGroupResponse>('/agent-groups', body),
-  update: (groupId: string, body: UpdateAgentRunGroupRequest) =>
-    patch<UpdateAgentRunGroupResponse>(`/agent-groups/${groupId}`, body),
-  timeline: (groupId: string, params: { limit?: number; offset?: number } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.limit !== undefined) q.limit = String(params.limit)
-    if (params.offset !== undefined) q.offset = String(params.offset)
-    return get<AgentRunGroupTimeline>(`/agent-groups/${groupId}/timeline?` + new URLSearchParams(q))
-  },
-  trace: (groupId: string) =>
-    get<AgentRunGroupTrace>(`/agent-groups/${groupId}/trace`),
-  sendMessage: (groupId: string, body: SendAgentRunGroupMessageRequest) =>
-    post<SendAgentRunGroupMessageResponse>(`/agent-groups/${groupId}/messages`, body),
-  pause: (groupId: string) => post<AgentRunGroup>(`/agent-groups/${groupId}/pause`, {}),
-  resume: (groupId: string) => post<AgentRunGroup>(`/agent-groups/${groupId}/resume`, {}),
-  cancel: (groupId: string) => post<AgentRunGroup>(`/agent-groups/${groupId}/cancel`, {}),
 }
 
 export const roomsApi = {
@@ -1903,8 +1884,8 @@ export const evolutionApi = {
 
 // ── Agents ────────────────────────────────────────────────────────────────
 export const agentsApi = {
-  list: (params: Record<string, string> = {}) =>
-    get<AgentOut[]>('/agents?' + new URLSearchParams(params)),
+  list: (params: Record<string, string> = {}, options: { spaceId?: string } = {}) =>
+    get<AgentOut[]>('/agents?' + new URLSearchParams(params), { spaceId: options.spaceId }),
   get: (agentId: string) => get<AgentOut>(`/agents/${agentId}`),
   /** The managed Assistant instance for a scope: the Space's own, or a Project's (null before its first Room message). */
   getSystemAssistant: (projectId?: string | null) =>
@@ -2230,15 +2211,6 @@ export const hostsApi = {
     ),
 }
 
-export const projectFolderExecutionConfigsApi = {
-  get:    (projectId: string, folderId: string) =>
-    get<ProjectFolderExecutionConfig>(`/projects/${projectId}/folders/${folderId}/execution-config`),
-  create: (projectId: string, folderId: string, data: ProjectFolderExecutionConfigUpdate) =>
-    post<ProjectFolderExecutionConfig>(`/projects/${projectId}/folders/${folderId}/execution-config`, data),
-  update: (projectId: string, folderId: string, data: ProjectFolderExecutionConfigUpdate) =>
-    patch<ProjectFolderExecutionConfig>(`/projects/${projectId}/folders/${folderId}/execution-config`, data),
-}
-
 export const capabilitiesFrameworkApi = {
   listCapabilityDefinitions: () =>
     get<CapabilityDefinition[]>('/capability-definitions'),
@@ -2250,7 +2222,8 @@ export const capabilitiesFrameworkApi = {
     get<CapabilityPackDescriptor>(`/capability-packs/${encodeURIComponent(id)}`),
   previewSkillImport: (data: { url: string }) =>
     post<SkillImportPreviewResponse>('/skill-sources/import-preview', data),
-  importSkill: (data: { url: string }) =>
+  /** Imports the previewed package; `package_hash` is the preview's, and a changed package answers 409 `skill_package_changed`. */
+  importSkill: (data: { url: string; package_hash: string }) =>
     post<SkillPackage>('/skill-sources/import', data),
   listSkillPackages: () =>
     get<Page<SkillPackage>>('/skill-packages'),
@@ -2398,7 +2371,7 @@ export type HostLoginTarget =
   | { kind: 'logout' }
 
 /** The daemon's report for one install/uninstall of a managed runtime copy. */
-export interface RuntimeInstallResult {
+interface RuntimeInstallResult {
   host_id: string
   runtime_key: string
   ok: boolean
@@ -2487,14 +2460,25 @@ export const activityApi = {
 
 // ── Source / Evidence ────────────────────────────────────────────────────
 export const informationDigestsApi = {
+  /** Read-only: the day's snapshot, or `missing`. Without a date, the latest complete day of the digest's timezone. */
   personal: (spaceId: string, date?: string) => {
     const q = date ? `?date=${encodeURIComponent(date)}` : ''
-    return get<InformationDigest>(`/spaces/${encodeURIComponent(spaceId)}/information-digests/personal${q}`)
+    return get<InformationDigestLookup>(`/spaces/${encodeURIComponent(spaceId)}/information-digests/personal${q}`)
   },
   project: (spaceId: string, projectId: string, date?: string) => {
     const q = date ? `?date=${encodeURIComponent(date)}` : ''
-    return get<InformationDigest>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-digests${q}`)
+    return get<InformationDigestLookup>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-digests${q}`)
   },
+  /** Builds a missing complete day once; never rewrites an existing snapshot. */
+  backfillPersonal: (spaceId: string, date: string) =>
+    post<InformationDigestBackfillResult>(`/spaces/${encodeURIComponent(spaceId)}/information-digests/personal/backfill`, { date }),
+  backfillProject: (spaceId: string, projectId: string, date: string) =>
+    post<InformationDigestBackfillResult>(`/spaces/${encodeURIComponent(spaceId)}/projects/${encodeURIComponent(projectId)}/information-digests/backfill`, { date }),
+  /** The caller's own Source annotation failure episodes. */
+  annotationEpisodes: (spaceId: string) =>
+    get<{ episodes: SourceAnnotationEpisode[] }>(`/spaces/${encodeURIComponent(spaceId)}/source-annotation/episodes`),
+  retryAnnotation: (spaceId: string, body: { episode_id?: string; connection_id?: string } = {}) =>
+    post<SourceAnnotationRetryResult>(`/spaces/${encodeURIComponent(spaceId)}/source-annotation/retry`, body),
   profile: (spaceId: string) =>
     get<InterestProfileSnapshot>(`/spaces/${encodeURIComponent(spaceId)}/interest-profile`),
   acceptCandidate: (spaceId: string, phraseKey: string, body: { label?: string; domain_key?: string }) =>
@@ -2534,8 +2518,12 @@ export const sourcesApi = {
     return get<SourceChannel[]>(`/sources/channels${suffix}`)
   },
   recommendations: () => get<SourceRecommendation[]>('/sources/recommendations'),
+  followed: () => get<FollowedSourceChannel[]>('/sources/followed'),
   decideRecommendation: (channelId: string, decision: 'subscribed' | 'dismissed' | 'muted') =>
     post<{ source_channel_id: string; status: string; updated_at: string }>(`/sources/recommendations/${encodeURIComponent(channelId)}/decision`, { decision }),
+  /** Leave (`muted`) or rejoin (`subscribed`) a channel; what was delivered while subscribed stays readable. */
+  setChannelSubscription: (channelId: string, status: 'subscribed' | 'muted') =>
+    post<{ source_channel_id: string; status: string; updated_at: string }>(`/sources/channels/${encodeURIComponent(channelId)}/subscription`, { status }),
   customSourceCredentials: () => get<CustomSourceCredentialDTO[]>('/sources/custom-source-credentials'),
   getChannel: (id: string) => get<SourceChannel>(`/sources/channels/${id}`),
   createChannel: (body: {
@@ -2547,6 +2535,7 @@ export const sourcesApi = {
     fetch_frequency?: 'manual' | 'hourly' | 'daily' | 'weekly'
     schedule_rule?: Record<string, unknown>
     capture_policy?: SourceCapturePolicy
+    source_connection_id?: string
   }) => post<SourceChannel>('/sources/channels', body),
   previewQuery: (body: { provider_key: string; query: Record<string, unknown>; source_channel_id?: string }) =>
     post<SourceQueryPreview>('/sources/query-preview', body),
@@ -2829,8 +2818,9 @@ export const sourcesApi = {
 
 // ── Reader ────────────────────────────────────────────────────────────────
 export const readerApi = {
-  getDocument: (documentType: string, documentId: string) =>
-    get<ReaderDocumentPayload>(`/reader/documents/${documentType}/${documentId}`),
+  /** `origin: 'serendipity'` marks an open that came from the digest's serendipity section; it is not interest evidence. */
+  getDocument: (documentType: string, documentId: string, options: { origin?: 'serendipity' } = {}) =>
+    get<ReaderDocumentPayload>(`/reader/documents/${documentType}/${documentId}${options.origin ? `?origin=${options.origin}` : ''}`),
 
   listAnnotations: (documentType: string, documentId: string) =>
     get<ReaderAnnotationsResponse>(`/reader/documents/${documentType}/${documentId}/annotations`),
@@ -2881,6 +2871,20 @@ export const projectsApi = {
   get: (id: string) => get<Project>(`/projects/${id}`),
   update: (id: string, data: ProjectUpdate) => patch<Project>(`/projects/${id}`, data),
   archive: (id: string) => post<Project>(`/projects/${id}/archive`),
+  /** Draft and published snapshot side by side, for Project writers. */
+  publicSummaryEditor: (id: string) =>
+    get<ProjectPublicSummaryEditorState>(`/projects/${encodeURIComponent(id)}/public-summary/editor`),
+  /** Saves the draft; every save bumps `draft_version`. Never changes what readers see. */
+  savePublicSummaryDraft: (id: string, body: ProjectPublicSummaryUpsertBody) =>
+    put<ProjectPublicSummaryDraft>(`/projects/${encodeURIComponent(id)}/public-summary`, body),
+  generatePublicSummaryDraft: (id: string) =>
+    post<ProjectPublicSummaryDraft>(`/projects/${encodeURIComponent(id)}/public-summary/draft`, {}),
+  /** Approves the named draft version as the space-public snapshot (owner-level). */
+  publishPublicSummary: (id: string, draftVersion: number) =>
+    post<ProjectPublicSummary>(`/projects/${encodeURIComponent(id)}/public-summary/publish`, { draft_version: draftVersion }),
+  /** Takes the snapshot down; the draft stays (owner-level). */
+  revokePublicSummary: (id: string) =>
+    post<void>(`/projects/${encodeURIComponent(id)}/public-summary/revoke`, {}),
   getOverview: (id: string) => get<ProjectOverview>(`/projects/${id}/overview`),
   hostExecutionTargets: (id: string) =>
     get<HostExecutionTargetsResponse>(`/projects/${encodeURIComponent(id)}/host-execution-targets`),
@@ -2993,7 +2997,7 @@ export const inquiryApi = {
   createThread: (projectId: string, data: Record<string, unknown>) =>
     post<InquiryThread>(`/projects/${encodeURIComponent(projectId)}/inquiry/threads`, data),
   /**
-   * NE: raise a note passage as a Question. Creates the Thread and the link
+   * Raise a note passage as a Question. Creates the Thread and the link
    * back to the note, so the Question keeps a route to its reasoning.
    */
   raiseFromNote: (projectId: string, data: { note_object_id: string; statement: string; kind?: 'question' | 'hypothesis' }) =>
@@ -3270,7 +3274,7 @@ export const decisionCasesApi = {
   createDelivery: (projectId: string, caseId: string, commitmentId: string) => post<Record<string, unknown>>(`/projects/${encodeURIComponent(projectId)}/decision-cases/${encodeURIComponent(caseId)}/commitments/${encodeURIComponent(commitmentId)}/deliver`, {}),
 }
 
-export interface LearningObjective {
+interface LearningObjective {
   id: string
   project_id: string | null
   title: string
@@ -3278,7 +3282,7 @@ export interface LearningObjective {
   status: string
 }
 
-export interface LearningItem {
+interface LearningItem {
   id: string
   project_id: string | null
   objective_id: string | null
@@ -3321,9 +3325,8 @@ export const projectResearchApi = {
   createChecklistItem: (projectId: string, text: string) => post<ResearchChecklistItem>(`/projects/${encodeURIComponent(projectId)}/research/checklist`, { text }),
   updateChecklistItem: (projectId: string, itemId: string, body: Partial<Pick<ResearchChecklistItem, 'text' | 'status' | 'sort_order'>>) => patch<ResearchChecklistItem>(`/projects/${encodeURIComponent(projectId)}/research/checklist/${encodeURIComponent(itemId)}`, body),
   deleteChecklistItem: (projectId: string, itemId: string) => del<{ id: string }>(`/projects/${encodeURIComponent(projectId)}/research/checklist/${encodeURIComponent(itemId)}`),
-  // `section_key` is a legacy field name accepted for backward compatibility
-  // (see areaService.ts askAi): a known starter-note key maps to its
-  // title; any other value is used as a literal note title.
+  // `section_key` is accepted (see areaService.ts askAi): a registered role
+  // resolves to the note holding that role; any other value is a literal title.
   // Enqueues a bounded `provider_task` Run and answers 201 `queued`. The note is
   // NOT updated when this resolves: a `provider_task_run` job applies the block
   // ops and then marks the Run terminal, so a caller may only report that the
@@ -3464,37 +3467,17 @@ export const researchDiscoveryApi = {
     post<MaterializedResearchStrategy>(`/research/query-strategies/${encodeURIComponent(strategyId)}/materialize`, body),
   retryProvider: (strategyId: string, providerKey: ResearchProviderKey, body: { project_id: string; execution?: { model_provider_id?: string; model_name?: string }; credentials?: Record<string, string> }) =>
     post<{ strategy: ResearchQueryStrategy }>(`/research/query-strategies/${encodeURIComponent(strategyId)}/providers/${encodeURIComponent(providerKey)}/retry`, body),
+  /** One page of a provider plan's attempts, newest first. */
+  listAttempts: (strategyId: string, providerKey: ResearchProviderKey, query: { project_id: string; limit: number; offset: number }) =>
+    get<ListResearchQueryAttemptsResponse>(`/research/query-strategies/${encodeURIComponent(strategyId)}/providers/${encodeURIComponent(providerKey)}/attempts?${new URLSearchParams({ project_id: query.project_id, limit: String(query.limit), offset: String(query.offset) })}`),
 }
 
-export const academicApi = {
-  listPapers: (params: { q?: string; limit?: number; offset?: number } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.q !== undefined) q.q = params.q
-    if (params.limit !== undefined) q.limit = String(params.limit)
-    if (params.offset !== undefined) q.offset = String(params.offset)
-    return get<Page<AcademicPaper>>('/academic/papers?' + new URLSearchParams(q))
-  },
-  createPaper: (body: AcademicPaperCreate) =>
-    post<AcademicPaper>('/academic/papers', body),
-  getPaper: (objectId: string) =>
-    get<AcademicPaper>(`/academic/papers/${encodeURIComponent(objectId)}`),
-  updatePaper: (objectId: string, body: AcademicPaperUpdate) =>
-    patch<AcademicPaper>(`/academic/papers/${encodeURIComponent(objectId)}`, body),
-  linkAuthor: (objectId: string, body: { person_object_id: string; author_position?: number | null; is_corresponding?: boolean }) =>
-    post<{ object_relation_id: string }>(`/academic/papers/${encodeURIComponent(objectId)}/authors`, body),
-  listAuthors: (objectId: string) =>
-    get<AcademicPaperAuthor[]>(`/academic/papers/${encodeURIComponent(objectId)}/authors`),
-  linkCitation: (objectId: string, body: { cited_paper_object_id: string }) =>
-    post<{ object_relation_id: string }>(`/academic/papers/${encodeURIComponent(objectId)}/citations`, body),
-  listCitations: (objectId: string) =>
-    get<AcademicPaperCitation[]>(`/academic/papers/${encodeURIComponent(objectId)}/citations`),
-  listCitedBy: (objectId: string) =>
-    get<AcademicPaperCitation[]>(`/academic/papers/${encodeURIComponent(objectId)}/cited-by`),
-}
-
-// ── Features ──────────────────────────────────────────────────────────────
-export const featuresApi = {
-  list: () => get<Feature[]>('/features'),
+/** A conversation's knowledge-retrieval switch, kept per person and conversation. */
+export const runtimeContextApi = {
+  retrievalSwitch: (scopeId: string) =>
+    get<WorkRetrievalSwitch>(`/runtime-context/work-contexts/${encodeURIComponent(scopeId)}/retrieval`),
+  setRetrievalSwitch: (scopeId: string, body: WorkRetrievalSwitchRequest) =>
+    put<WorkRetrievalSwitch>(`/runtime-context/work-contexts/${encodeURIComponent(scopeId)}/retrieval`, body),
 }
 
 export const instanceOperationsApi = {
@@ -3581,6 +3564,9 @@ export type ProviderType =
   | 'cohere'
   | 'openai_compatible'
 
+/** How a Provider is deployed, as declared by its owner; see the server's provider policy. */
+export type ProviderDeployment = 'cloud' | 'trusted_local'
+
 export interface ModelProviderOut {
   id: string
   space_id: string
@@ -3590,6 +3576,7 @@ export interface ModelProviderOut {
   name: string
   provider_type: ProviderType | string
   base_url: string
+  deployment: ProviderDeployment
   network_profile_id: string | null
   claude_compatible_base_url: string | null
   openai_compatible_base_url: string | null
@@ -3607,7 +3594,7 @@ export interface ModelProviderOut {
   updated_at: string
 }
 
-export interface ModelProviderModelsOut {
+interface ModelProviderModelsOut {
   models: string[]
   source: 'configured' | 'live'
 }
@@ -3632,7 +3619,7 @@ export interface ProviderPresetOut {
   task?: string | null
 }
 
-export interface ProviderFromPresetCreateRequest {
+interface ProviderFromPresetCreateRequest {
   preset_id: string
   api_key?: string | null
   name?: string
@@ -3643,7 +3630,7 @@ export interface ProviderFromPresetCreateRequest {
   is_default?: boolean
 }
 
-export interface ProviderFromPresetCreateResponse {
+interface ProviderFromPresetCreateResponse {
   provider: ModelProviderOut
 }
 
@@ -3659,15 +3646,14 @@ export interface ProviderTaskPolicyOut {
   updated_at: string
 }
 
-export interface ProviderTaskPolicyPutRequest {
+interface ProviderTaskPolicyPutRequest {
   chain: ProviderTaskChainEntry[]
   enabled?: boolean
 }
 
 /**
- * The server-owned vendor registry. The client reads these facts rather than
- * keeping its own copy of them — the two used to be maintained by hand on both
- * sides, and had already drifted.
+ * The server-owned vendor registry. The client reads these facts. Do not keep
+ * a second copy.
  */
 export interface ProviderVendorOut {
   id: ProviderType
@@ -3680,9 +3666,10 @@ export interface ProviderVendorOut {
   default_base_url: string | null
   api_key_required: boolean
   subscription_only: boolean
+  self_hostable: boolean
 }
 
-export interface TestConnectionOut {
+interface TestConnectionOut {
   success: boolean
   message: string
   model?: string
@@ -3709,7 +3696,11 @@ export type ManagedSubscriptionLoginEvent =
   | { type: 'error'; message: string }
 
 export const providersApi = {
+  /** Every Provider this person may see here, including the ones they own and disabled. For management. */
   list: () => get<ModelProviderOut[]>('/providers'),
+  /** The Providers a run can use here: enabled, with an enabled grant. For pickers. */
+  usable: () => get<ModelProviderOut[]>('/providers')
+    .then(rows => rows.filter(row => row.enabled && row.grant_enabled !== false)),
 
   presets: () => get<ProviderPresetOut[]>('/providers/presets'),
 
@@ -3720,6 +3711,7 @@ export const providersApi = {
     default_model?: string
     available_models?: string[]
     base_url: string
+    deployment?: ProviderDeployment
     network_profile_id?: string | null
     claude_compatible_base_url?: string
     openai_compatible_base_url?: string
@@ -3734,9 +3726,11 @@ export const providersApi = {
     name: string
     provider_type: ProviderType | string
     api_key: string
-    default_model: string
+    /** null clears the default; undefined leaves it. */
+    default_model: string | null
     available_models: string[]
     base_url: string
+    deployment: ProviderDeployment
     network_profile_id: string | null
     claude_compatible_base_url: string | null
     openai_compatible_base_url: string | null
@@ -3764,28 +3758,39 @@ export const providersApi = {
   sendSubscriptionLoginInput: (type: ManagedSubscriptionType, input: string) =>
     post<{ status: string }>(`/providers/subscriptions/login/input?type=${encodeURIComponent(type)}`, { input }),
 
-  async *subscriptionLoginStream(type: ManagedSubscriptionType): AsyncGenerator<ManagedSubscriptionLoginEvent> {
+  // The server ends the login session only when this response closes, and
+  // allows one session per user and type: the caller aborts when it leaves,
+  // as hostsApi.loginStream's callers do.
+  async *subscriptionLoginStream(type: ManagedSubscriptionType, signal?: AbortSignal): AsyncGenerator<ManagedSubscriptionLoginEvent> {
     const url = `${BASE}/providers/subscriptions/login/stream?type=${encodeURIComponent(type)}`
     const headers: Record<string, string> = {}
     if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
     headers['X-Rainver-Space-Id'] = _spaceId
-    const response = await fetch(url, { headers })
+    const response = await fetch(url, { headers, signal })
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
     if (!response.body) throw new Error('No response body')
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const blocks = buffer.split('\n\n')
-      buffer = blocks.pop() ?? ''
-      for (const block of blocks) {
-        const line = block.trim()
-        if (!line.startsWith('data: ')) continue
-        try { yield JSON.parse(line.slice(6)) as ManagedSubscriptionLoginEvent } catch { /* ignore malformed SSE */ }
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const blocks = buffer.split('\n\n')
+        buffer = blocks.pop() ?? ''
+        for (const block of blocks) {
+          const line = block.trim()
+          if (!line.startsWith('data: ')) continue
+          try { yield JSON.parse(line.slice(6)) as ManagedSubscriptionLoginEvent } catch { /* ignore malformed SSE */ }
+        }
       }
+    } catch (caught) {
+      // An abort is the caller leaving, not a failure to report.
+      if (!(caught instanceof DOMException && caught.name === 'AbortError')) throw caught
+    } finally {
+      // A consumer that stops iterating lands here too; release the connection.
+      void reader.cancel().catch(() => undefined)
     }
   },
 
@@ -3818,7 +3823,7 @@ export const providersApi = {
 // PATCH /api/v1/plugins/:id/settings — patch settings
 export const pluginsApi = {
   list: () => get<{ items: unknown[] }>('/plugins'),
-  effective: () => get<{ plugins: Record<string, unknown> }>('/plugins/effective'),
+  effective: () => get<OfficialPluginEffectiveResponse>('/plugins/effective'),
   get: (pluginId: string) => get<unknown>(`/plugins/${encodeURIComponent(pluginId)}`),
   install: (pluginId: string) =>
     post<unknown>(`/plugins/${encodeURIComponent(pluginId)}/install`, {}),
@@ -3972,11 +3977,55 @@ export interface FinanceTransactionInput {
   }>
 }
 
-export interface FinanceImportResult {
-  import_source_id: string | null
-  deduplicated: boolean
-  created_directives: number
+export type FinanceImportEntryStatus =
+  | 'imported'
+  | 'pending_mapping'
+  | 'needs_review'
+  | 'duplicate'
+  | 'error'
+  | 'excluded'
+
+export interface FinanceImportSource {
+  id: string
+  source_type: string
+  source_name: string | null
+  content_hash: string | null
+  created_at: string
+}
+
+export interface FinanceImportEntry {
+  id: string
+  entry_key: string
+  identity_kind: 'external_id' | 'content_occurrence'
+  external_id: string | null
+  entry_type: string
+  entry_date: string | null
+  source_lineno: number
+  raw_text: string
+  status: FinanceImportEntryStatus
+  status_reason: string | null
+  directive_id: string | null
+  duplicate_of_entry_id: string | null
+  missing_accounts: string[]
+  missing_commodities: string[]
+  account_mapping: Record<string, string>
+  mapping_version: number
   errors: FinanceLedgerError[]
+}
+
+export type FinanceImportSummary = Record<FinanceImportEntryStatus, number>
+
+export interface FinanceImportResult {
+  import_source: FinanceImportSource
+  batch_existed: boolean
+  created_directives: number
+  summary: FinanceImportSummary
+  entries: FinanceImportEntry[]
+  errors: FinanceLedgerError[]
+}
+
+export interface FinanceImportBatch extends FinanceImportSource {
+  summary: FinanceImportSummary
 }
 
 export interface FinanceExportResult {
@@ -4022,13 +4071,30 @@ export const financeApi = {
     ),
   validateBook: (bookId: string) =>
     post<{ errors: FinanceValidationError[] }>(`/finance/books/${encodeURIComponent(bookId)}/validate`),
-  importBeancount: (bookId: string, input: { text: string; post_directly?: boolean }) =>
+  importBeancount: (bookId: string, input: { text: string }) =>
     post<FinanceImportResult>(`/finance/books/${encodeURIComponent(bookId)}/import/beancount`, input),
+  listImports: (bookId: string) =>
+    get<{ imports: FinanceImportBatch[] }>(`/finance/books/${encodeURIComponent(bookId)}/imports`),
+  getImport: (bookId: string, importSourceId: string) =>
+    get<FinanceImportResult>(`/finance/books/${encodeURIComponent(bookId)}/imports/${encodeURIComponent(importSourceId)}`),
+  retryImport: (bookId: string, importSourceId: string) =>
+    post<FinanceImportResult>(`/finance/books/${encodeURIComponent(bookId)}/imports/${encodeURIComponent(importSourceId)}/retry`),
+  mapImportEntry: (bookId: string, importSourceId: string, entryId: string, accountMapping: Record<string, string>) =>
+    post<FinanceImportResult>(
+      `/finance/books/${encodeURIComponent(bookId)}/imports/${encodeURIComponent(importSourceId)}/entries/${encodeURIComponent(entryId)}/mapping`,
+      { account_mapping: accountMapping },
+    ),
+  reviewImportEntries: (bookId: string, importSourceId: string, decision: 'import' | 'duplicate', entryIds?: string[]) =>
+    post<FinanceImportResult>(
+      `/finance/books/${encodeURIComponent(bookId)}/imports/${encodeURIComponent(importSourceId)}/review`,
+      entryIds ? { decision, entry_ids: entryIds } : { decision },
+    ),
   exportBeancount: (bookId: string) =>
     post<FinanceExportResult>(`/finance/books/${encodeURIComponent(bookId)}/export/beancount`),
 }
 
 export const diaryApi = {
+  saveContextKey: () => `${_authContextGeneration}:${_spaceId}`,
   today: () => get<{ date: string; entry: DiaryEntry | null }>('/diary/today'),
   listEntries: (params: { limit?: number; before?: string } = {}) => {
     const q = new URLSearchParams()

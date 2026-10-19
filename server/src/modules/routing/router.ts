@@ -112,16 +112,9 @@ function hardFilterReasons(request: RouteRequest, hints: RouteHints, candidate: 
   const shape = hints.execution_shape;
   // File and code shapes are admitted on what the adapter declares, never on
   // its name: a runtime without file access has no working directory to act in.
-  //
-  // Risk no longer narrows a CLI candidate here. The conformance gate that used
-  // to — refusing anything above low risk, and any file-shaped work, without a
-  // passed suite — was removed on 2026-09-09 with the suite itself: a one-shot
-  // behaviour probe of a non-deterministic runtime, cached against a version
-  // key and blind to the model actually selected, was not evidence a gate could
-  // rest on. What contains a CLI Run is the host's namespace, its egress
-  // profile and ADR 0008's credential channel, none of which vary by risk. That
-  // this leaves risk with no teeth for CLI dispatch is stated in the deferred
-  // register rather than implied by a check that no longer exists.
+  // Risk does not narrow a CLI candidate. Containment is the host namespace,
+  // its egress profile, and ADR 0008's credential channel. Do not gate CLI
+  // dispatch on a one-shot behavioral probe: it is blind to the model selected.
   const fileShape = shape === "agentic_files" || shape === "code_execution";
   if (fileShape && !candidate.requires_file_access) {
     reasons.push("execution_shape_incompatible");
@@ -148,10 +141,8 @@ function hardFilterReasons(request: RouteRequest, hints: RouteHints, candidate: 
     && isLocalCliRuntimeAdapter(candidate.runtime_key)
     ? "one_shot_docker" as const
     : requiredSandbox;
-  // A local CLI may have a worktree baseline while also supporting a
-  // stronger one-shot Docker execution mode. Model that capability
-  // explicitly; the old rank comparison treated worktree as sufficient for
-  // Docker simply because it was below the requested rank.
+  // `one_shot_docker` is a declared capability, not a rank above worktree.
+  // A worktree baseline does not satisfy it.
   const sandboxSupported = candidateSandbox === "one_shot_docker"
     ? candidate.supports_one_shot_docker
     : SANDBOX_RANK[candidate.minimum_sandbox_level] >= SANDBOX_RANK[candidateSandbox];
@@ -195,12 +186,9 @@ function scoreCandidate(request: RouteRequest, hints: RouteHints, candidate: Rou
   const latency = candidate.estimated_latency_ms === null ? 0 : Math.max(-10, 5 - (candidate.estimated_latency_ms / 1000));
   const latencyBudget = hints.latency_budget_ms !== null && candidate.estimated_latency_ms !== null && candidate.estimated_latency_ms <= hints.latency_budget_ms ? 4 : 0;
   const costBudget = hints.cost_budget_usd !== null && candidate.estimated_cost_usd !== null && candidate.estimated_cost_usd <= hints.cost_budget_usd ? 4 : 0;
-  // Execution shape no longer discriminates between candidates: every runtime
-  // is an ACP runtime, and shape-sensitive admission is `required_capabilities`
-  // and file-access filtering, not a score. The term that used to sit here
-  // added 30 for a default Profile on conversational/structured work — a
-  // ten-fold restatement of `default_profile` that could outrank an explicit
-  // `profile_preference`, under a name that promised something about shape.
+  // Shape is not a score. Admission uses required capabilities and file-access
+  // filtering. Do not add a default-profile bonus under a shape name: it
+  // outranks an explicit profile preference.
   return { preference, profile_preference: profilePreference, default_profile: defaultProfile, verification_pass_rate: passRate, cost, latency, latency_budget: latencyBudget, cost_budget: costBudget };
 }
 

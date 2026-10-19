@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   FileText,
@@ -157,6 +157,9 @@ export default function AskSpacePage() {
   const [combineIncludeMemory, setCombineIncludeMemory] = useState(false)
   const [includeTrajectory, setIncludeTrajectory] = useState(false)
   const [busy, setBusy] = useState(false)
+  // Enter reaches ask() without the button's disabled state, so the guard
+  // against a second question in flight lives here.
+  const asking = useRef(false)
   const [followUpBusy, setFollowUpBusy] = useState<string | null>(null)
   const [result, setResult] = useState<AskSpaceResponse | null>(null)
 
@@ -174,6 +177,8 @@ export default function AskSpacePage() {
       toast.error('Select at least one domain.')
       return
     }
+    if (asking.current) return
+    asking.current = true
     setBusy(true)
     try {
       // Keep the request domains in canonical order regardless of toggle order.
@@ -189,6 +194,7 @@ export default function AskSpacePage() {
     } catch (error) {
       toast.error(errMsg(error))
     } finally {
+      asking.current = false
       setBusy(false)
     }
   }, [query, domains, persist, combine, combineIncludeMemory, includeTrajectory])

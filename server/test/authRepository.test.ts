@@ -64,7 +64,7 @@ describe("PgAuthRepository", () => {
 
     const identity = await repo.resolveIdentity({ sessionToken: "raw-token" });
 
-    expect(identity).toEqual({ ok: true, spaceId: "personal-1", userId: "user-1" });
+    expect(identity).toEqual({ ok: true, spaceId: "personal-1", userId: "user-1", sessionId: "session-1", setCookies: [] });
     const touched = await db.pool.query("SELECT updated_at FROM user_sessions WHERE id = 'session-1'");
     expect(touched.rows[0].updated_at).not.toBeNull();
   });
@@ -74,7 +74,7 @@ describe("PgAuthRepository", () => {
 
     expect(
       await repo.resolveIdentity({ sessionToken: "raw-token", requestedSpaceId: "team-1" }),
-    ).toEqual({ ok: true, spaceId: "team-1", userId: "user-1" });
+    ).toEqual({ ok: true, spaceId: "team-1", userId: "user-1", sessionId: "session-1", setCookies: [] });
 
     const denied = await repo.resolveIdentity({
       sessionToken: "raw-token",
@@ -105,6 +105,31 @@ describe("PgAuthRepository", () => {
 
     const space = await repo.getSpaceForUser("user-1", "team-1");
     expect(space).toMatchObject({ id: "team-1", role: "admin" });
+  });
+
+  it("lands a person in their own personal Space, never one they only belong to", async () => {
+    if (!db.available || !repo) return;
+    await expect(repo.getCurrentUser("raw-token")).resolves.toMatchObject({ default_space_id: "personal-1" });
+
+    // user-2 joined user-1's personal Space before creating their own.
+    await db.pool.query(
+      `INSERT INTO spaces (id, name, type, created_by_user_id, created_at, updated_at)
+       VALUES ('personal-2', 'Personal Two', 'personal', 'user-2', now(), now())`,
+    );
+    await db.pool.query(
+      `INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at)
+       VALUES ('m-guest', 'personal-1', 'user-2', 'member', 'active', now() - interval '3 days', now()),
+              ('m-personal-2', 'personal-2', 'user-2', 'owner', 'active', now(), now())`,
+    );
+    await insertSession("raw-token-2", "user-2", "session-2", "1 day");
+    await expect(repo.getCurrentUser("raw-token-2")).resolves.toMatchObject({ default_space_id: "personal-2" });
+    await expect(repo.resolveIdentity({ sessionToken: "raw-token-2" })).resolves.toMatchObject({ ok: true, spaceId: "personal-2" });
+  });
+
+  it("reads a Space the user is not a member of as absent, the same as a Space that does not exist", async () => {
+    if (!db.available || !repo) return;
+    await expect(repo.getSpaceForUser("user-1", "other-1")).resolves.toBeNull();
+    await expect(repo.getSpaceForUser("user-1", "no-such-space")).resolves.toBeNull();
   });
 
 });

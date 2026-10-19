@@ -340,7 +340,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // Maintenance scan (W7 "context review cycle"): a read-only, batched report of review
+  // Maintenance scan: a read-only, batched report of review
   // candidates (duplicates, orphans, thin pages, suggested relations) over the
   // derived projection. It writes NOTHING canonical — acting on a finding stays
   // on the proposal/approval flow. Owner/admin only, and every finding is
@@ -605,7 +605,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // Slice E: advisory claim trajectory. Read-only and viewer-gated (the service
+  // Advisory claim trajectory. Read-only and viewer-gated (the service
   // only loads visible claims), so it needs no Context Ops scan authority.
   app.get("/api/v1/knowledge/claims/trajectory", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -635,7 +635,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // Slice E: deterministic, access-safe contradiction-discovery scan. Gated by
+  // Deterministic, access-safe contradiction-discovery scan. Gated by
   // Context Ops scan authority; optionally fans findings into a Claim Candidate
   // Packet so the only canonical write path stays the proposal-gated packet flow.
   app.post("/api/v1/knowledge/claims/contradiction-scan", async (request, reply) => {
@@ -711,7 +711,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // Slice F: deterministic candidate-relation discovery scan. Gated by Context Ops
+  // Deterministic candidate-relation discovery scan. Gated by Context Ops
   // scan authority; emits a single batched proposal packet — never a direct edge
   // or item write.
   app.post("/api/v1/knowledge/relations/discovery-scan", async (request, reply) => {
@@ -1425,9 +1425,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
 
   /**
    * The Project's notes folder, created on first use. The Project notes surface
-   * is hoisted to it, so it has to exist before the surface can show anything —
-   * and it is no longer the Research Area's to create, since notes are a
-   * Project-level surface reachable from every Area.
+   * is hoisted to it, so it has to exist before the surface can show anything.
+   * Notes are a Project-level surface reachable from every Area. Do not
+   * create this folder from the Research Area.
    */
   app.post("/api/v1/notes/collections/project/:projectId", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -1484,7 +1484,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      await repository().deleteNoteCollection(identity, params(request).collectionId ?? "");
+      await withDbTransaction(dbPool(context.config), (client) =>
+        new PgKnowledgeRepository(client).deleteNoteCollection(identity, params(request).collectionId ?? ""),
+      );
       return reply.code(204).send();
     } catch (error) {
       return sendRouteError(reply, error);
@@ -1524,7 +1526,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // N7: "jot a note" from an evidence or material card. Creates (or appends
+  // "jot a note" from an evidence or material card. Creates (or appends
   // to) a note and makes the note_link in one call, so the connection is
   // recorded without a trip to the Notes page and back for an id.
   app.post("/api/v1/knowledge/notes/jot", async (request, reply) => {
@@ -1599,7 +1601,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 
   /**
-   * Placements (U5). A note may sit in several folders at once; adding one is a
+   * Placements. A note may sit in several folders at once; adding one is a
    * separate action from moving the note, and removing the last one is refused
    * rather than quietly leaving a note no tree can reach.
    */
@@ -1639,7 +1641,7 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
   });
 
   /**
-   * Cross-Project shares (U8). Listing is gated by the note's own read gate, so
+   * Cross-Project shares. Listing is gated by the note's own read gate, so
    * a caller who cannot see the note cannot learn which Projects can.
    */
   app.get("/api/v1/knowledge/notes/:noteId/shares", async (request, reply) => {
@@ -1669,8 +1671,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // ND: promote a selected passage into a Knowledge Item. Builds an ordinary
-  // knowledge_create proposal — the review gate is unchanged — and records the
+  // Promote a selected passage into a Knowledge Item. Builds an ordinary
+  // knowledge_create proposal — the review gate still applies — and records the
   // originating Note as provenance.
   app.post("/api/v1/knowledge/notes/:noteId/promote", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
@@ -1712,12 +1714,13 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      const toVersion = numberValue(jsonBody(request).to_version);
+      const body = jsonBody(request);
+      const toVersion = numberValue(body.to_version);
       if (toVersion === null || toVersion === undefined) {
         return reply.code(422).send({ detail: "to_version is required" });
       }
       return reply.send(
-        await repository().rollbackNote(identity, params(request).noteId ?? "", toVersion),
+        await repository().rollbackNote(identity, params(request).noteId ?? "", toVersion, numberValue(body.expect_version)),
       );
     } catch (error) {
       return sendRouteError(reply, error);

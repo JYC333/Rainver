@@ -440,7 +440,7 @@ export class ProjectResearchOrchestrator {
     if (!workflow) throw new HttpError(409, "There is no active research workflow to update");
     const workflowState = objectValue(workflow.state_json);
     const workflowQuestion = optionalString(workflowState.research_question);
-    const ruleIds = stringArray(workflowState.source_post_processing_rule_ids);
+    const ruleIds = workflowRuleIds(workflowState);
     if (!workflowQuestion) throw new HttpError(409, "The research workflow has no question snapshot to update");
     const currentThreadScope = normalizeThreadScope(workflowState.thread_scope);
     const scopedThread = currentThreadScope[0];
@@ -614,18 +614,15 @@ export class ProjectResearchOrchestrator {
     const workflowState = objectValue(workflow.state_json);
     const monitoring = objectValue(workflowState.monitoring);
     if (monitoring.active !== true) throw new HttpError(409, "Historical extension requires a completed baseline with active monitoring");
-    // An "all available" baseline used to be refused here as having nothing
-    // earlier to reach. That stopped being true when the acquisition became
-    // bounded: the walk is newest-first and stops at its item budget, so the
-    // whole point of the cap is that earlier history remains. What actually
-    // has nothing left is coverage that already reaches the floor, and the
-    // range checks below say so on their own terms.
+    // An "all available" baseline can still have earlier history: the walk is
+    // newest-first and stops at its item budget. Coverage that already reaches
+    // the floor is what has nothing left, and the range checks below say so.
     if (coverageReachesFloor(workflowState)) {
       throw new HttpError(409, "This research workflow already covers the earliest available history");
     }
     const channelIds = stringArray(workflowState.channel_ids);
-    const bindingIds = stringArray(workflowState.project_source_binding_ids);
-    const ruleIds = stringArray(workflowState.source_post_processing_rule_ids);
+    const bindingIds = workflowBindingIds(workflowState);
+    const ruleIds = workflowRuleIds(workflowState);
     if (!channelIds.length || channelIds.length !== bindingIds.length || channelIds.length !== ruleIds.length) throw new HttpError(409, "The research workflow has not completed monitor setup");
 
     const coverage = historyCoverage(workflowState);
@@ -740,9 +737,7 @@ export class ProjectResearchOrchestrator {
     if (!workflow) throw new HttpError(404, "Research workflow not found");
     await this.assertResearchQuestionAligned(identity.spaceId, projectId, workflow.state_json);
     const state = researchState(workflow.state_json);
-    const bindingIds = state.project_source_binding_ids?.length
-      ? state.project_source_binding_ids
-      : state.project_source_binding_id ? [state.project_source_binding_id] : [];
+    const bindingIds = state.project_source_binding_ids ?? [];
     if (!(state.channel_ids?.length ?? 0) || bindingIds.length !== state.channel_ids.length) {
       throw new HttpError(409, "The research workflow has not completed monitor setup");
     }
@@ -757,12 +752,11 @@ export class ProjectResearchOrchestrator {
     // Backlog first, so nothing scanned long ago starves behind today's items.
     const scannedItemIds = unique([...pendingItemIds, ...stringArray(body.source_item_ids)]);
     /**
-     * A daily update is bounded the same way a baseline is, and for the same
-     * reason: an unbounded run put 873 documents through an LLM before anyone
-     * saw a number. It answers differently, though — this one does not ask.
-     * A monitor that scans more than one update can afford leaves the rest in
+     * A daily update is bounded the same way a baseline is. Do not run it
+     * unbounded, and do not stop for a decision. A monitor that scans more
+     * than one update can afford leaves the rest in
      * `pending_incremental_source_item_ids`, which the next update drains, so
-     * a backlog costs days rather than a decision nobody is awake to make.
+     * a backlog costs days.
      */
     const takeWithin = (alreadyInCorpus: number) => {
       const headroom = Math.max(0, SCREENING_AUTO_CONTINUE_CORPUS_LIMIT - alreadyInCorpus);
@@ -1010,14 +1004,13 @@ export class ProjectResearchOrchestrator {
       const backfillDone = backfillCanProceed(plans.rows, backfillPlanIds.length);
       // Once the workflow has advanced past screening (synthesis, idea_review,
       // complete, failed, ...), this whole backfill->screening transition must
-      // stay inert. Without this guard, backfillDone stays true forever (plans
+      // stay inert. Do not re-enter it. backfillDone stays true (plans
       // never leave 'completed'), so every later reconcile tick would still
       // re-enter it, stomp current_stage back to "screening", and — since
       // createCheckpoint only recognizes a still-*pending* checkpoint as
       // "already exists" — mint a brand-new pending screening_gate checkpoint
-      // even after the user already approved it and synthesis started. That is
-      // exactly what "I approved the checkpoint but it came back after
-      // refresh" looks like from the outside.
+      // even after the user already approved it and synthesis started. The
+      // approved checkpoint would come back after a refresh.
       // The stage alone is not enough: approving the gate does not move
       // `current_stage` out of "screening" until the next tick advances it, so
       // a reconcile racing that approval (the approval itself enqueues one)
@@ -1036,13 +1029,11 @@ export class ProjectResearchOrchestrator {
         && (state.current_stage === "backfill" || state.current_stage === "screening");
       if (backfillDone && stillAtOrBeforeScreening && !plans.rows.some((plan) => plan.status === "failed")) {
         state.coverage_degraded = deferredPlans.length > 0;
-        // Keep the items-in-scope list and screening progress fresh on every
-        // reconcile tick, independent of whether classification batches are
-        // still running. isSourcePipelineDrained below only gates the stage
-        // transition (finalizing coverage and creating the screening_gate
-        // checkpoint) — without this, "Items classified"/"Batches" only ever
-        // showed their pre-run (empty) and post-run (final) values, never
-        // anything in between while batches were actually in flight.
+        // Refresh the items-in-scope list and screening progress on every
+        // reconcile tick, whether or not classification batches are still
+        // running. `isSourcePipelineDrained` below only gates the stage
+        // transition. Do not refresh only when that transition runs. The
+        // counts would jump from empty to final and skip the batches in flight.
         const sourceRecoveryPreview = new SourcePostProcessingRecoveryService(this.db);
         state.source_item_ids = await sourceRecoveryPreview.channelScopedItemIds(
           spaceId,
@@ -1100,10 +1091,7 @@ export class ProjectResearchOrchestrator {
           spaceId,
           projectId: row.project_id,
           channelIds: state.channel_ids,
-          ruleIds: unique([
-            ...state.source_post_processing_rule_ids,
-            ...(state.source_post_processing_rule_id ? [state.source_post_processing_rule_id] : []),
-          ]),
+          ruleIds: unique(state.source_post_processing_rule_ids),
           sourceItemIds: state.source_item_ids,
           operationId: row.id,
           recoveryRequestedAt: state.post_processing_recovery_requested_at,
@@ -1516,7 +1504,7 @@ export class ProjectResearchOrchestrator {
       if (state.run_kind === "baseline") {
         await this.completeWorkflowCoverage(spaceId, projectId, workflowId, operation.id, state.partial ? "partial" : "completed");
         // The bounded pass read the newest matches and stopped. Offer the
-        // rest now that there is a finished baseline to extend from.
+        // rest. There is a finished baseline to extend from.
         await offerEarlierHistoryExtension(this.db, {
           spaceId, projectId, workflowId, userId,
           operationProgress: objectValue(operation.progress_json),
@@ -1751,6 +1739,7 @@ export class ProjectResearchOrchestrator {
     if (state.run_kind !== "baseline" && state.run_kind !== "historical_backfill") {
       throw new HttpError(409, "Only material backfill operations have an item limit");
     }
+    assertStillAcquiring(operation.status, state);
     const planIds = state.source_backfill_plan_ids?.length
       ? state.source_backfill_plan_ids
       : state.source_backfill_plan_id ? [state.source_backfill_plan_id] : [];
@@ -1817,6 +1806,7 @@ export class ProjectResearchOrchestrator {
     if (stage === "monitor_setup") {
       throw new HttpError(409, "This operation hasn't started importing material yet");
     }
+    assertStillAcquiring(operation.status, state);
     const active = await this.activeResearchOperation(identity.spaceId, projectId, state.workflow_id);
     if (active && active.id !== operation.id) throw new HttpError(409, "Another Project Research operation is already active for this workflow");
     const additionalItems = body.additional_max_items === undefined ? 0 : Number(body.additional_max_items);
@@ -1961,14 +1951,10 @@ export class ProjectResearchOrchestrator {
       input.sourceChannelIds,
       input,
     );
-    const binding = bindings[0]!;
-    const rule = rules[0]!;
     const state = researchState(operation.progress_json);
     state.channel_ids = channels.map((channel) => String(channel.id));
     state.project_source_binding_ids = bindings.map((row) => String(row.id));
     state.source_post_processing_rule_ids = rules.map((row) => String(row.id));
-    state.project_source_binding_id = String(binding.id);
-    state.source_post_processing_rule_id = String(rule.id);
     state.source_backfill_plan_ids = plans.map((plan) => String(plan.id));
     state.source_backfill_plan_id = state.source_backfill_plan_ids[0] ?? null;
     state.coverage_ranges = [{ from: input.from!, to: input.to!, operation_id: operation.id, status: "pending" }];
@@ -1989,8 +1975,8 @@ export class ProjectResearchOrchestrator {
         WHERE object.id=changed.object_id AND object.space_id=changed.space_id`,
       [identity.spaceId, projectId, workflow.id, JSON.stringify({
         channel_ids: state.channel_ids,
-        project_source_binding_id: state.project_source_binding_id,
-        source_post_processing_rule_id: state.source_post_processing_rule_id,
+        project_source_binding_ids: state.project_source_binding_ids,
+        source_post_processing_rule_ids: state.source_post_processing_rule_ids,
         source_backfill_plan_id: state.source_backfill_plan_id,
         source_backfill_plan_ids: state.source_backfill_plan_ids,
         agent_id: state.agent_id,
@@ -2003,7 +1989,9 @@ export class ProjectResearchOrchestrator {
       }), new Date().toISOString()],
     );
     await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "research_workflow", workflow.id, "workflow_definition");
-    await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "project_source_binding", String(binding.id), "source_binding");
+    for (const binding of bindings) {
+      await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "project_source_binding", String(binding.id), "source_binding");
+    }
     for (let index = 0; index < plans.length; index += 1) {
       await new ProjectOperationService(this.db).link(identity.spaceId, projectId, operation.id, "source_backfill_plan", String(plans[index]!.id), "history_backfill");
     }
@@ -2616,7 +2604,7 @@ export class ProjectResearchOrchestrator {
     const pinned = scope[0];
     if (!pinned) return true;
     // The pinned Inquiry Thread is the sole Question authority for this
-    // Workflow. Project.current_focus and the legacy research profile are
+    // Workflow. Project.current_focus and the research profile are
     // presentation/setup state; comparing either here would let selecting a
     // different Workflow incorrectly stall this one.
     return (await checkPinnedThreadDrift(this.db, spaceId, projectId, pinned)).drifted;
@@ -2697,12 +2685,8 @@ export class ProjectResearchOrchestrator {
    * every operation not started via `research.start_acquisition`.
    *
    * All three variants (`failed`, `completed`, `waiting_review`) go through
-   * here. The last two became reachable with the checkpoint reform: before
-   * it, a Room-started acquisition that finished or paused told
-   * the Room nothing, and the user had to discover it from the web UI's
-   * Operation surface — which is precisely the interruption the reform set out
-   * to remove, so removing the gates without wiring these would have made the
-   * Room *less* informative, not more.
+   * here, including a Room-started acquisition that finishes or pauses.
+   * Omitting the finished and paused variants leaves the Room silent.
    *
    * Enqueues a job via `this.db` rather than posting the Room message
    * directly. `failOperation` is called from action-node handlers that
@@ -2721,10 +2705,10 @@ export class ProjectResearchOrchestrator {
    * `failed` fires once per pass (`failOperation` early-returns on a terminal
    * row), `completed` paths are reached once, and the `waiting_review` pause
    * notifies only on the transition edge (`createGate` checks the prior
-   * `stage_state`). An earlier version deduped here against any previously
-   * enqueued `(operation, status)` job, which was permanent — a retried
-   * operation's second failure, or a second distinct pause, was silently
-   * dropped forever. The `episode` (the operation's pass generation, for
+   * `stage_state`). Do not dedupe here against any previously enqueued
+   * `(operation, status)` job: that drop is permanent, so a retried
+   * operation's second failure, or a second distinct pause, never arrives.
+   * The `episode` (the operation's pass generation, for
    * `failed`) flows into the Room event key so a genuinely new episode of the
    * same status is a new Room event rather than a Room-side dedupe casualty. */
   private async notifyRoomOfOperationStatus(
@@ -2773,9 +2757,7 @@ export class ProjectResearchOrchestrator {
     const channelRows = state.channel_ids?.length
       ? await new SourceChannelService(this.db, this.config!).listForSpaceByIds(identity, state.channel_ids)
       : [];
-    const bindingIds = state.project_source_binding_ids?.length
-      ? state.project_source_binding_ids
-      : state.project_source_binding_id ? [state.project_source_binding_id] : [];
+    const bindingIds = state.project_source_binding_ids ?? [];
     const bindingRows = bindingIds.length
       ? (await this.db.query(
         `SELECT * FROM project_source_bindings WHERE id=ANY($1::text[]) AND space_id=$2 ORDER BY created_at ASC`,
@@ -2911,7 +2893,7 @@ function normalizeInitialIntakeInput(body: Record<string, unknown>, profileQuest
   const executionBody = objectValue(body.execution);
   const reportDepth = normalizeReportDepth(body.report_depth);
   const questionRefineSkipped = normalizeQuestionRefineSkipped(body.question_refine_skipped);
-  // Refinement is a hard gate for starting (revised D5): a failing question
+  // Refinement is a hard gate for starting. A failing question
   // may still be saved as a draft, but it cannot spend the intake budget.
   if (questionRefineSkipped) {
     throw new HttpError(422, "The research question has not passed refinement; adopt a suggested question or reassess with your answers before starting");
@@ -3097,14 +3079,14 @@ function questionVersion(value: unknown): number {
 
 function initialState(input: ResearchInput, workflowId: string, fingerprint: string): ResearchOperationState {
   return {
-    schema_version: "project_research_operation.v1", run_kind: "baseline", workflow_id: workflowId, query_strategy_id: input.queryStrategyId, research_question: input.researchQuestion, research_question_version: 1, thread_scope: input.threadScope, research_scope: input.researchScope, report_depth: input.reportDepth, question_refine_skipped: input.questionRefineSkipped, channel_ids: input.sourceChannelIds, project_source_binding_ids: [], source_post_processing_rule_ids: [], project_source_binding_id: null, source_post_processing_rule_id: null, source_backfill_plan_id: null,
+    schema_version: "project_research_operation.v1", run_kind: "baseline", workflow_id: workflowId, query_strategy_id: input.queryStrategyId, research_question: input.researchQuestion, research_question_version: 1, thread_scope: input.threadScope, research_scope: input.researchScope, report_depth: input.reportDepth, question_refine_skipped: input.questionRefineSkipped, channel_ids: input.sourceChannelIds, project_source_binding_ids: [], source_post_processing_rule_ids: [], source_backfill_plan_id: null,
     query: { source_channel_ids: input.sourceChannelIds, fingerprint: fingerprintOf({ source_channel_ids: input.sourceChannelIds, history_mode: input.historyMode, from: input.from, to: input.to, sort_by: input.monitoringField }), sort_by: input.monitoringField, history_mode: input.historyMode, from: input.from, to: input.to },
     history: { mode: input.historyMode, from: input.from, to: input.to, max_items: input.maxItems }, watermark: { before: null, after: null, overlap_hours: OVERLAP_HOURS }, source_item_ids: [], current_stage: "monitor_setup", stage_state: "running", agent_id: input.agentId, runtime_profile_id: input.runtimeProfileId,
     source_backfill_plan_ids: [], checkpoint_ids: [], synthesis_run_id: null, artifact_ids: [], partial: false, monitoring_active: false, idempotency: { key: input.idempotencyKey, fingerprint },
   };
 }
 
-export function incrementalStateFromWorkflow(
+function incrementalStateFromWorkflow(
   workflowValue: unknown,
   workflowId: string,
   sourceItemIds: string[],
@@ -3130,10 +3112,8 @@ export function incrementalStateFromWorkflow(
     report_depth: normalizeReportDepth(workflow.report_depth),
     question_refine_skipped: workflow.question_refine_skipped === true,
     channel_ids: stringArray(workflow.channel_ids),
-    project_source_binding_ids: stringArray(workflow.project_source_binding_ids),
-    source_post_processing_rule_ids: stringArray(workflow.source_post_processing_rule_ids),
-    project_source_binding_id: optionalString(workflow.project_source_binding_id),
-    source_post_processing_rule_id: optionalString(workflow.source_post_processing_rule_id),
+    project_source_binding_ids: workflowBindingIds(workflow),
+    source_post_processing_rule_ids: workflowRuleIds(workflow),
     source_backfill_plan_id: null,
     source_backfill_plan_ids: [],
     query: {
@@ -3183,10 +3163,8 @@ function historicalBackfillStateFromWorkflow(
     report_depth: normalizeReportDepth(workflow.report_depth),
     question_refine_skipped: workflow.question_refine_skipped === true,
     channel_ids: stringArray(workflow.channel_ids),
-    project_source_binding_ids: stringArray(workflow.project_source_binding_ids),
-    source_post_processing_rule_ids: stringArray(workflow.source_post_processing_rule_ids),
-    project_source_binding_id: optionalString(workflow.project_source_binding_id),
-    source_post_processing_rule_id: optionalString(workflow.source_post_processing_rule_id),
+    project_source_binding_ids: workflowBindingIds(workflow),
+    source_post_processing_rule_ids: workflowRuleIds(workflow),
     source_backfill_plan_id: null,
     source_backfill_plan_ids: [],
     query: {
@@ -3268,4 +3246,28 @@ function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)]));
   return value;
+}
+
+/** A Workflow's monitor bindings and screening rules, one per channel. */
+function workflowBindingIds(state: Record<string, unknown>): string[] {
+  return stringArray(state.project_source_binding_ids);
+}
+
+function workflowRuleIds(state: Record<string, unknown>): string[] {
+  return stringArray(state.source_post_processing_rule_ids);
+}
+
+/**
+ * Raising the limit or rescanning sends an operation back to backfill. One
+ * that has finished, or moved past screening, cannot re-enter from there: its
+ * decided screening gate keeps it from ever reaching screening again, so it
+ * would sit in backfill for good. Continuing past that point is a new
+ * historical operation.
+ */
+function assertStillAcquiring(status: string, state: { current_stage?: string | null; failed_stage?: string | null }): void {
+  const stage = state.failed_stage ?? state.current_stage;
+  if (status === "completed" || status === "cancelled"
+    || stage === "comparison" || stage === "synthesis" || stage === "idea_review" || stage === "complete") {
+    throw new HttpError(409, "This operation is past material import; start a historical extension to collect more");
+  }
 }

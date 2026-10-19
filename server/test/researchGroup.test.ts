@@ -19,11 +19,11 @@ import { SourceChannelService } from "../src/modules/sources/channels/sourceChan
 import { SearchExecutionAdapter } from "../src/modules/sources/search/searchExecutionAdapter.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { insertResearchWorkflowFixture } from "./support/researchWorkflow.js";
 
 describe("researchCheckpointPolicy", () => {
-  // The checkpoint reform's decision table. These assertions are
-  // the product decision written down: changing one means the reform changed,
-  // not that a test needs updating.
+  // The checkpoint policy decision table. These assertions are the product
+  // decision. Changing one changes the decision.
 
   describe("research checkpoint policy", () => {
     it("keeps a blocking gate only for the external-facing manuscript step", () => {
@@ -42,10 +42,10 @@ describe("researchCheckpointPolicy", () => {
       expect(screeningExceedsAutoBudget(under)).toBe(false);
       expect(screeningExceedsAutoBudget(at)).toBe(false);
       expect(screeningExceedsAutoBudget(over)).toBe(true);
-      // `checkpointBlocks` deliberately answers only the unconditional half:
-      // an earlier signature that took the counts as an optional context bag
-      // failed open when a caller forgot them. The screening site must combine
-      // both predicates explicitly.
+      // `checkpointBlocks` answers only the unconditional half. Do not take
+      // the counts as an optional context bag. A caller that forgot them
+      // would fail open. The screening site must combine both predicates
+      // explicitly.
       expect(checkpointBlocks("screening_gate")).toBe(false);
     });
 
@@ -96,10 +96,8 @@ describe("researchGeneralizationGuard", () => {
         source("server/src/modules/projectResearch/synthesisOnlyExecution.ts"),
       ].join("\n");
 
-      // The pack used to carry an empty `workflow_template_ids: []` to prove no
-      // label-only preset had crept back. The workflow template layer is gone
-      // entirely, so the absence of the field is the stronger form of the same
-      // guard: there is nothing left for a preset to be declared in.
+      // The pack does not declare `workflow_template_ids`. There is no preset
+      // field for a label-only workflow to be declared in.
       expect(pack).not.toContain("workflow_template_ids");
       for (const retired of [
         "research.academic_literature_review",
@@ -123,9 +121,8 @@ describe("researchGeneralizationGuard", () => {
         "apps/web/src/modules/projects/ResearchSetupSummary.tsx",
         "apps/web/src/modules/projects/researchArea/ResearchRunsTab.tsx",
         "apps/web/src/modules/projects/researchArea/ReadingListView.tsx",
-        // The Research Area page replaced the ProjectResearchWorkbench wrapper
-        // as the surface that composes standing and focus; useProjectResearch
-        // holds the copy that used to sit in the Project Overview.
+        // The Research Area page composes standing and focus. useProjectResearch
+        // holds the Research state. Do not mount it on the Project Overview.
         "apps/web/src/modules/projects/ResearchAreaPage.tsx",
         "apps/web/src/modules/projects/ResearchSettingsCard.tsx",
         "apps/web/src/modules/projects/useProjectResearch.ts",
@@ -322,8 +319,25 @@ describe("researchMonitorMaterializerDb", () => {
       await queries.selectAttempt(SPACE, plan.id, attempt.id, { terminalDecision: "accept" });
       await queries.finalizeStrategy(SPACE, strategy.id);
 
+      // Three active workflows in the Project: one already on this context's
+      // strategy, one on another Thread's strategy, and a draft with none.
+      const workflowOn = async (state: Record<string, unknown>) => {
+        const id = randomUUID();
+        await insertResearchWorkflowFixture(db.pool, {
+          id, spaceId: SPACE, projectId: PROJECT, startedByUserId: USER, state, now: new Date().toISOString(),
+        });
+        return id;
+      };
+      const sameContext = await workflowOn({ query_strategy_id: strategy.id, channel_ids: [] });
+      const otherThread = await workflowOn({ query_strategy_id: "another-threads-strategy", channel_ids: ["their-channel"] });
+      const draft = await workflowOn({ channel_ids: [] });
+      const strategyOf = async (id: string) => (await db.pool.query<{ state_json: { query_strategy_id?: string; channel_ids?: string[] } }>(
+        `SELECT state_json FROM project_research_workflows WHERE object_id=$1`, [id])).rows[0]!.state_json;
+
       const materializer = new ResearchMonitorMaterializer(db.pool, {} as ServerConfig);
       const first = await materializer.materialize(identity, strategy.id, { providerKeys: ["openalex"] });
+      expect(await strategyOf(otherThread)).toEqual({ query_strategy_id: "another-threads-strategy", channel_ids: ["their-channel"] });
+      expect((await strategyOf(draft)).query_strategy_id).toBeUndefined();
       const second = await materializer.materialize(identity, strategy.id, { providerKeys: ["openalex"] });
       expect(second).toEqual(first);
       expect(first.sources).toHaveLength(1);
@@ -420,6 +434,8 @@ describe("researchMonitorMaterializerDb", () => {
       expect(switched.rows.find((row) => row.id === first.sources[0]!.source_channel_id)?.status).toBe("archived");
       expect(switched.rows.find((row) => row.id === first.sources[0]!.source_channel_id)?.scheduler_status).toBe("archived");
       expect(switched.rows.find((row) => row.id === replacementMaterialized.sources[0]!.source_channel_id)?.status).toBe("active");
+      expect((await strategyOf(sameContext)).query_strategy_id).toBe(replacement.id);
+      expect((await strategyOf(otherThread)).query_strategy_id).toBe("another-threads-strategy");
 
       await new ResearchStrategyActivationService(db.pool).activate({ identity, strategyId: strategy.id, reason: "rollback" });
       const history = await db.pool.query<{ strategy_id: string; reason: string; deactivated_at: string | null }>(
@@ -631,6 +647,59 @@ describe("researchQueryRepositoryDb", () => {
       expect(versions.strategies.map((item) => item.version)).toEqual([2, 1]);
     });
 
+    it("keeps a plan with more than 200 attempts readable: bounded recent attempts, the full count, and pages of history", async () => {
+      if (!db.available) return;
+      const context = await new ResearchContextRepository(db.pool).create({ spaceId: SPACE, userId: USER }, PROJECT, validContext());
+      const queries = new ResearchQueryRepository(db.pool);
+      const strategy = await queries.createStrategy({ spaceId: SPACE, userId: USER }, {
+        projectId: PROJECT,
+        researchContextVersionId: context.id,
+        providers: ["openalex"],
+        policyVersion: "adaptive-recall.v1",
+        policy: {},
+        executionBudget: { candidate_budget: 50 },
+      });
+      await queries.recordSemanticIntent(SPACE, strategy.id, semanticQuery());
+      const plan = strategy.provider_plans[0]!;
+      const selected = await queries.createAttempt(SPACE, {
+        providerPlanId: plan.id, round: 0, sequence: 1, direction: "initial",
+        semanticQuery: semanticQuery(), compiledQuery: compiledQuery("openalex"),
+      });
+      await queries.completeAttempt(SPACE, selected.id, { observation: previewObservation(), score: 0.8, decision: "accept" });
+      await queries.selectAttempt(SPACE, plan.id, selected.id, { terminalDecision: "accept" });
+      // 220 later attempts across many retry rounds, none observed.
+      await db.pool.query(
+        `INSERT INTO research_query_attempts
+           (id,space_id,provider_plan_id,round,sequence,direction,semantic_query_json,compiled_query_json,query_fingerprint,created_at)
+         SELECT gen_random_uuid()::text,$1,$2,1 + (g - 1) / 4,1 + (g - 1) % 4,
+                CASE WHEN (g - 1) % 4 = 0 THEN 'initial' ELSE 'broaden' END,
+                $3::jsonb,$4::jsonb,'bulk-' || g,now()
+           FROM generate_series(1,220) g`,
+        [SPACE, plan.id, JSON.stringify(semanticQuery()), JSON.stringify(compiledQuery("openalex"))],
+      );
+
+      const stored = await queries.getStrategy(SPACE, PROJECT, strategy.id);
+      expect(() => protocol.ResearchQueryStrategySchema.parse(stored)).not.toThrow();
+      expect(stored?.semantic_intent).toEqual(semanticQuery());
+      const storedPlan = stored!.provider_plans[0]!;
+      expect(storedPlan.attempt_count).toBe(221);
+      expect(storedPlan.attempts.length).toBe(protocol.RESEARCH_QUERY_RECENT_ATTEMPTS + 1);
+      // The selected attempt, far older than the recent window, is still there.
+      expect(storedPlan.attempts[0]!.id).toBe(selected.id);
+      expect(storedPlan.attempts.at(-1)).toMatchObject({ round: 55, sequence: 4 });
+
+      const seen = new Set<string>();
+      for (let offset = 0; offset < 221; offset += protocol.RESEARCH_QUERY_ATTEMPT_PAGE_MAX) {
+        const page = await queries.listAttempts(SPACE, PROJECT, strategy.id, "openalex", { limit: protocol.RESEARCH_QUERY_ATTEMPT_PAGE_MAX, offset });
+        expect(page.total).toBe(221);
+        expect(() => protocol.ListResearchQueryAttemptsResponseSchema.parse({ ...page, limit: protocol.RESEARCH_QUERY_ATTEMPT_PAGE_MAX, offset })).not.toThrow();
+        for (const item of page.items) seen.add(item.id);
+      }
+      expect(seen.size).toBe(221);
+      await expect(queries.listAttempts(SPACE, OTHER_PROJECT, strategy.id, "openalex", { limit: 10, offset: 0 }))
+        .rejects.toMatchObject({ statusCode: 404 });
+    });
+
     it("enforces sequential attempts, the attempt ceiling, and immutable selection", async () => {
       if (!db.available) return;
       const context = await new ResearchContextRepository(db.pool).create({ spaceId: SPACE, userId: USER }, PROJECT, validContext());
@@ -750,6 +819,13 @@ describe("researchQueryRepositoryDb", () => {
         { round: 1, sequence: 1 },
       ]);
       expect(storedPlan).toMatchObject({ status: "selected", selected_attempt_id: round1Attempt.id });
+
+      // Once materialized, a forced recompute (a retry that outran the
+      // materialization) must leave the strategy materialized.
+      await db.pool.query(`UPDATE research_query_strategies SET status='materialized', materialized_at=now() WHERE id=$1`, [strategy.id]);
+      await queries.finalizeStrategy(SPACE, strategy.id, { force: true });
+      const materialized = await db.pool.query<{ status: string }>(`SELECT status FROM research_query_strategies WHERE id=$1`, [strategy.id]);
+      expect(materialized.rows[0]?.status).toBe("materialized");
     });
 
     it("resets an already-selected provider plan too, clearing its old selection so a retry can record its own — but refuses once the strategy is materialized", async () => {
@@ -787,9 +863,9 @@ describe("researchQueryRepositoryDb", () => {
       const reset = await queries.resetProviderPlan(SPACE, plan.id);
       expect(reset).toEqual({ nextRound: 1 });
 
-      // The old provider_query_provider_selections row must be gone — otherwise
-      // the retry's own selectAttempt would collide on the provider_plan_id
-      // primary key.
+      // The previous round's `provider_query_provider_selections` row is gone.
+      // Do not leave it. The retry's `selectAttempt` would collide on
+      // `provider_plan_id`.
       const secondAttempt = await queries.createAttempt(SPACE, {
         providerPlanId: plan.id,
         round: reset.nextRound,

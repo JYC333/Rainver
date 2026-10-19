@@ -1,8 +1,10 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import ProjectSourcesPage from '../ProjectSourcesPage'
+import { projectSourceOptions } from '../sourcesArea/SaveProjectUrlDialog'
 import { projectResearchApi, projectsApi, readerApi, sourcesApi } from '../../../api/client'
 
 vi.mock('sonner', () => ({
@@ -366,6 +368,31 @@ function renderPage(initialEntry = '/spaces/space-1/projects/project-1/sources')
 }
 
 describe('ProjectSourcesPage', () => {
+  it('shows the items of the latest search, not of a slower earlier one', async () => {
+    const basePage = await sourcesApi.projectItems({ project_id: 'project-1' })
+    const pageWith = (id: string, title: string) => ({
+      ...basePage,
+      items: [{ ...basePage.items[0]!, id, source_item_id: id, item: { ...basePage.items[0]!.item, id, title } }],
+    })
+    let answerFirst: (value: typeof basePage) => void = () => {}
+    vi.mocked(sourcesApi.projectItems).mockImplementation((params) => params.q === 'm'
+      ? new Promise(resolve => { answerFirst = resolve })
+      : params.q === 'ml'
+        ? Promise.resolve(pageWith('item-ml', 'Machine learning paper'))
+        : Promise.resolve(basePage))
+    renderPage()
+
+    const search = await screen.findByPlaceholderText('Search items')
+    fireEvent.change(search, { target: { value: 'm' } })
+    fireEvent.change(search, { target: { value: 'ml' } })
+    expect(await screen.findByText('Machine learning paper')).toBeInTheDocument()
+
+    answerFirst(pageWith('item-m', 'Mystery paper'))
+    await waitFor(() => expect(sourcesApi.projectItems).toHaveBeenCalledWith(expect.objectContaining({ q: 'm' })))
+    expect(screen.getByText('Machine learning paper')).toBeInTheDocument()
+    expect(screen.queryByText('Mystery paper')).not.toBeInTheDocument()
+  })
+
   it('renders project source bindings and project items from project APIs', async () => {
     renderPage()
 
@@ -539,6 +566,22 @@ describe('ProjectSourcesPage', () => {
     ))
   })
 
+  it('lets a screening list be typed key by key, with spaces and commas', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderPage()
+    const include = await screen.findByLabelText('Include keywords or concepts')
+    await waitFor(() => expect(include).toBeEnabled())
+
+    await user.type(include, 'agent memory, retrieval')
+    expect(include).toHaveValue('agent memory, retrieval')
+    fireEvent.click(screen.getByRole('button', { name: /save criteria/i }))
+
+    await waitFor(() => expect(projectResearchApi.upsertScreeningCriteria).toHaveBeenCalledWith(
+      'project-1',
+      expect.objectContaining({ include_keywords: ['agent memory', 'retrieval'] }),
+    ))
+  })
+
   it('keeps domain screening fields absent when no active profile declares one', async () => {
     renderPage()
     await screen.findByText('Screening criteria')
@@ -558,8 +601,8 @@ describe('ProjectSourcesPage', () => {
 /**
  * What this Project's sources produced, and saving a URL into them.
  *
- * These lived on the Project Overview while the bindings and items they
- * derive from lived here, so one source pipeline was split across two pages.
+ * Derived source signals are on this page, with the bindings and items they
+ * come from. Do not split the pipeline onto the Project Overview.
  */
 describe('ProjectSourcesPage derived source signals', () => {
   it('shows active evidence, recommendations, and reader annotations for the project', async () => {
@@ -731,5 +774,19 @@ describe('ProjectSourcesPage derived source signals', () => {
     await waitFor(() => {
       expect(sourcesApi.updateItem).toHaveBeenCalledWith('item-manual', { connection_id: 'conn-2' })
     })
+  })
+})
+
+describe('projectSourceOptions', () => {
+  it('offers only the connections of active bindings, since a paused binding routes nothing into the Project', () => {
+    const channel = (id: string, connectionId: string) => ({
+      id, source_connection_id: connectionId, name: `Channel ${id}`, provider: { key: 'rss', display_name: 'RSS' },
+    })
+    const binding = (channelId: string, status: string) => ({ id: `binding-${channelId}`, source_channel_id: channelId, status })
+    const options = projectSourceOptions(
+      [binding('ch-paused', 'paused'), binding('ch-active', 'active')] as never,
+      [channel('ch-paused', 'conn-paused'), channel('ch-active', 'conn-active')] as never,
+    )
+    expect(options.map(option => option.value)).toEqual(['conn-active'])
   })
 })

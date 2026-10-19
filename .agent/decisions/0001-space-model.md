@@ -76,12 +76,14 @@ The aggregated read is sound only while all five hold:
    exception applies only to the aggregated retrieval path enumerated in
    ADR 0013.
 
-The other intentional cross-Space exceptions (`/me` aggregation, personal
-memory grants, targeted publications, egress approval) are pointer-metadata
-reads and are documented in
+The other intentional cross-Space exceptions are documented in
 [`architecture/SECURITY_AND_ACCESS_BOUNDARIES.md`](../architecture/SECURITY_AND_ACCESS_BOUNDARIES.md)
-section 8. The aggregated read is the only one whose payload is content —
-hence constraint 3.
+section 8. `/me` aggregation, personal memory grants, and egress approval
+return pointer metadata. Targeted publications carry an immutable snapshot
+taken at publish time, which target-Space members can read and import as a
+new private copy; they never resolve a live source resource. The aggregated
+read is the only path that resolves another Space's live content at read
+time — hence constraint 3.
 
 ## Consequences
 

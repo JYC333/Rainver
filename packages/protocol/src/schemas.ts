@@ -21,8 +21,8 @@ export const SpaceRefSchema = z.object({
   id: IdSchema,
   name: z.string(),
   type: z.string(), // personal | family | team (see SPACE_TYPE_VALUES)
-  // Older consumers may omit the field; server-produced Space DTOs always
-  // include the persisted mode and parsing normalizes legacy payloads to the
+  // The field may be omitted. Server-produced Space DTOs always
+  // include the persisted mode. Parsing maps an omitted mode to the
   // fail-closed default.
   oversight_mode: SpaceOversightModeSchema.default("none"),
   egress_notifications_enabled: z.boolean(),
@@ -97,8 +97,9 @@ export const ProposalDTOSchema = z.object({
 export const RunDTOSchema = z.object({
   id: IdSchema,
   space_id: IdSchema,
-  agent_id: IdSchema,
-  agent_version_id: IdSchema,
+  /** Null for a `provider_task` Run, which has no Agent. */
+  agent_id: IdSchema.nullable(),
+  agent_version_id: IdSchema.nullable(),
   run_role: z.enum(["execution", "coordinator"]),
   requested_runtime_profile_id: IdSchema.nullish(),
   selected_runtime_profile_id: IdSchema.nullish(),
@@ -169,7 +170,7 @@ export const ArtifactDTOSchema = z.object({
 export const MemoryDTOSchema = z.object({
   id: IdSchema,
   space_id: IdSchema,
-  scope: z.enum(["user", "project"]),
+  scope: z.enum(["user", "project", "agent"]),
   type: z.string(),
   status: z.string(),
   visibility: z.string(),

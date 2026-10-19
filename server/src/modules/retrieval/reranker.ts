@@ -3,7 +3,7 @@ import type { RetrievalEgressPolicy } from "./egress/egressPolicy.js";
 import type { ScoredCandidate } from "./types.js";
 
 /**
- * Post-fusion, post-revalidate reranking stage (Phase 2, step 8).
+ * Post-fusion, post-revalidate reranking stage.
  *
  * The reranker is a NON-deterministic LLM stage. Two contracts make it safe to
  * layer on top of the deterministic recall arms:
@@ -61,10 +61,10 @@ export interface RerankConfig {
   /** Hard cap on the window regardless of the requested page size. */
   maxWindow: number;
   /**
-   * Token (char-proxy) budget on the rerank payload (§2.6): per-candidate text is
-   * truncated to `maxCandidateTextChars`, and once the running total reaches
-   * `maxPayloadChars` no further candidate text is sent (those candidates keep
-   * their fused order). Bounds the payload in tokens, not just rows. 0 disables.
+   * Token (char-proxy) budget on the rerank payload: titles plus texts stay
+   * within `maxPayloadChars`, shared fairly across the window, and no one text
+   * exceeds `maxCandidateTextChars` (`boundRerankTexts`). Bounds the payload in
+   * tokens, not just rows. 0 disables that bound.
    */
   maxCandidateTextChars: number;
   maxPayloadChars: number;

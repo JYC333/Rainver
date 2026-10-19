@@ -6,13 +6,11 @@ import { modelSpec } from "./modelSpecs.js";
  * `max_tokens` caps the completion, not the context window. Reasoning models
  * spend their thinking inside the same completion budget, so a small cap
  * silently starves outputs: the model burns the whole budget thinking and is
- * truncated before the answer starts (observed as MiniMax-M3 emitting stub
- * synthesis tool calls under an 8k cap, and refine failing schema validation
- * under 1800). The figures live in the shared model registry alongside each
- * model's context window — see {@link modelSpec} — because keeping them apart
- * is what let a model have output guidance and no window. A recommendation is
- * only a default: an explicit caller budget is part of the run/request contract
- * and must never be widened here.
+ * truncated before the answer starts. The figures live in the shared model
+ * registry alongside each model's context window — see {@link modelSpec}.
+ * Do not keep the two apart. A model would then have output guidance and no
+ * window. A recommendation is only a default: an explicit caller budget is
+ * part of the run/request contract and must never be widened here.
  */
 export function recommendedMaxOutputTokens(model: string | null | undefined): number | null {
   return modelSpec(model)?.recommendedMaxOutputTokens ?? null;

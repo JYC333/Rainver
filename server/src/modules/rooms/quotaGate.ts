@@ -36,14 +36,14 @@ import {
  * has reset. A **person's** turn is never held: it runs until the CLI itself
  * refuses, and that refusal is itself a reading (`subscriptionLogins.ts`).
  *
- * The gate replaces the admission's own job enqueue, so a held Run has no
- * job to run and nothing else to undo. A held Run does not hold the
+ * This gate is the job enqueue. A held Run has no job to run and nothing
+ * else to undo. A held Run does not hold the
  * conversation's turn (`conversationTurnTaken`): a person may speak while
  * Agents wait, and a held Run is admitted only once the turn is free again.
  */
 
 /** What is enqueued for a Run when it is admitted: the `agent_run` job as its admission built it. */
-export interface AgentRunJob {
+interface AgentRunJob {
   user_id: string | null;
   agent_id: string | null;
   project_folder_id: string | null;
@@ -63,7 +63,7 @@ interface WaitingForQuota {
   continued_by_user_id?: string;
 }
 
-export type QuotaVerdict = { hold: false } | { hold: true; window: SubscriptionQuotaWindow };
+type QuotaVerdict = { hold: false } | { hold: true; window: SubscriptionQuotaWindow };
 
 /**
  * Whether a turn on a login with this window waits. Nothing known, below the
@@ -85,8 +85,7 @@ export function quotaVerdict(input: {
 
 /**
  * Admit an Agent-triggered Run — enqueue its job — or hold it at the reserve
- * line. Called where the admission would have enqueued the job, inside the
- * admission's transaction.
+ * line. Call it at the enqueue site, inside the admission's transaction.
  */
 export async function admitAgentOriginRun(
   client: PoolClient,
@@ -527,7 +526,7 @@ async function admitHeldRun(client: PoolClient, spaceId: string, runId: string):
  * to any of those Agents must not wait behind Agents waiting for a window.
  * Admission claims each back (`reclaimDispatchLock`).
  */
-export async function releaseDispatchLock(db: Queryable, spaceId: string, runId: string): Promise<void> {
+async function releaseDispatchLock(db: Queryable, spaceId: string, runId: string): Promise<void> {
   await db.query(
     `UPDATE host_threads thread
         SET dispatch_lock_id = NULL, updated_at = now()

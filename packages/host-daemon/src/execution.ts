@@ -122,15 +122,15 @@ export function resolveInputResourcePaths(
  * The wire's `launch` frame (`HostLaunchFrameSchema` in `@rainver/protocol`)
  * as this daemon executes it. Every field is the contract's own — nothing is
  * declared here that the server does not send — and the only difference is
- * the managed-workspace container, renamed to this daemon's `{ kind, id }`
+ * the managed-workspace container, mapped to this daemon's `{ kind, id }`
  * form by `commands/run.ts`. See the contract for what each field means.
  */
 export type LaunchFrame = Omit<HostLaunchFrame, "type" | "workspace"> & { workspace?: LaunchWorkspace };
 export type WorkSurfaceFrame = HostLaunchWorkSurface;
 export type ProviderBindingFrame = HostLaunchProviderBinding;
-export type StdinFrame = Pick<HostServerFrameOf<"stdin">, "run_id" | "value">;
-export type StdinCloseFrame = Pick<HostServerFrameOf<"stdin_close">, "run_id">;
-export type TerminateFrame = Pick<HostServerFrameOf<"terminate">, "run_id"> & Partial<Pick<HostServerFrameOf<"terminate">, "launch_id">> & { force?: boolean };
+type StdinFrame = Pick<HostServerFrameOf<"stdin">, "run_id" | "value">;
+type StdinCloseFrame = Pick<HostServerFrameOf<"stdin_close">, "run_id">;
+type TerminateFrame = Pick<HostServerFrameOf<"terminate">, "run_id"> & Partial<Pick<HostServerFrameOf<"terminate">, "launch_id">> & { force?: boolean };
 
 interface ActiveRun {
   child: ChildProcess;
@@ -174,21 +174,21 @@ export function launchFailureMessage(input: {
 }
 
 /**
- * ACP runtime replatform P2 (A2): the daemon must not become a vendor
- * protocol translator. Raw placeholder substitution remains for argv and
- * legacy non-ACP values; structured ACP JSON goes through `substituteAcpInput`,
+ * The daemon must not become a vendor
+ * protocol translator. Argv and non-ACP values use raw placeholder
+ * substitution; structured ACP JSON goes through `substituteAcpInput`,
  * which changes only the protocol's `cwd` fields and server-issued resource
  * links, never user text, filenames, or snapshot bodies.
  */
 export { REMOTE_CWD_PLACEHOLDER };
 
-/** Substitute placeholders in an argv value or legacy non-ACP payload. */
+/** Substitute placeholders in an argv value or a non-ACP payload. */
 export function substituteCwd(value: string, cwd: string): string {
   return substitutePlaceholders(value, { [REMOTE_CWD_PLACEHOLDER]: cwd });
 }
 
 /** Every placeholder the control plane may have written, in argv, stdin, or a prompt. */
-export function substitutePlaceholders(value: string, placeholders: Record<string, string>): string {
+function substitutePlaceholders(value: string, placeholders: Record<string, string>): string {
   let result = value;
   for (const [placeholder, replacement] of Object.entries(placeholders)) {
     result = result.split(placeholder).join(replacement);
@@ -198,7 +198,7 @@ export function substitutePlaceholders(value: string, placeholders: Record<strin
 
 /**
  * Resolve only the ACP ResourceLink URI owned by a conversation input part.
- * CWD and Skill placeholders retain their legacy handling; new resources use
+ * CWD and Skill placeholders keep their own substitution; new resources use
  * parsed JSON fields so a filename or snapshot body containing the same token
  * can never be rewritten accidentally.
  */
@@ -245,9 +245,8 @@ export function substituteAcpInput(
   placeholders: Record<string, string>,
   paths: Record<string, string>,
 ): string {
-  // Legacy commands still send plain-text stdin. Preserve the old placeholder
-  // contract for those payloads; only parsed ACP JSON needs field-scoped
-  // substitution to keep user-owned text opaque.
+  // Plain-text stdin uses the placeholder contract. Only parsed ACP JSON
+  // is field-scoped, so user-owned text stays opaque.
   if (!value.trim().startsWith("{")) return substitutePlaceholders(value, placeholders);
   let parsed: unknown;
   try { parsed = JSON.parse(value); } catch { return substitutePlaceholders(value, placeholders); }
@@ -288,7 +287,7 @@ export function substituteAcpInput(
 }
 
 /**
- * ACP runtime replatform P3/P4: the bundled ACP adapter commands are not
+ * The bundled ACP adapter commands are not
  * binaries a trusted host has on PATH — they are pinned dependencies of THIS
  * package (an ACP adapter is our client, not the vendor runtime). The daemon
  * resolves its own installed copy and spawns it through `node` rather than
@@ -300,7 +299,7 @@ export function resolveAcpEntrypoint(command: string): string | null {
 }
 
 /** What actually gets spawned for an ACP argv: the vendor CLI as-is, or a bundled adapter through `node`. */
-export interface AcpLaunch {
+interface AcpLaunch {
   command: string;
   args: string[];
   env: Record<string, string>;
@@ -364,11 +363,10 @@ export function managedToolTreeForLaunch(runtimeKey: string | undefined, install
 }
 
 /**
- * Keyed by run_id, not by connection: a run outlives a WebSocket reconnect
- * (control-center-plan.md §5 — "an interrupted connection while a run is
- * active keeps the process alive"). Same reasoning as
- * `sharedHostConnectionRegistry` on the server side — one instance for the
- * daemon process's lifetime.
+ * Keyed by run_id, not by connection: a run outlives a WebSocket reconnect.
+ * An interrupted connection while a run is active keeps the process alive.
+ * Same reasoning as `sharedHostConnectionRegistry` on the server side — one
+ * instance for the daemon process's lifetime.
  */
 const activeRuns = new Map<string, ActiveRun>();
 /**
@@ -398,10 +396,10 @@ function isLaunching(runId: string): boolean {
  * Runs whose child has exited but whose directory is still being read.
  *
  * The diff and output uploads happen after the child is gone and take as long
- * as the network does. A reconnect in that window would otherwise let
- * `sweepStaleRunProfiles` — which now removes the whole run directory — delete
- * the outputs out from under `collectOutputFiles`, losing the deliverables
- * silently and turning every `artifact.submit` declaration into "declared but
+ * as the network does. A reconnect in that window must not let
+ * `sweepStaleRunProfiles` — which removes the whole run directory — delete
+ * the outputs out from under `collectOutputFiles`. The deliverables would be
+ * lost, and every `artifact.submit` declaration would read "declared but
  * not delivered".
  */
 const finishingRuns = new Set<string>();
@@ -433,11 +431,11 @@ export function isRuntimeKeyBeingReplaced(runtimeKey: string | null | undefined)
  * Work that runs a copy without being a Run: a verification recipe, a usage
  * probe, or an open login terminal.
  *
- * They are in neither run registry, so a drain that only counted Runs reported
- * "quiet" and then deleted the directory one of them was executing from. The
- * closed door alone is not enough either — it only orders *replacement before
- * work*, and this is the other order. Counted per runtime key because that is what
- * a replacement holds.
+ * They are in neither run registry. Count them. A drain that only counted
+ * Runs would report "quiet" and then delete the directory one of them is
+ * executing from. The closed door only orders replacement before work, and
+ * this is the other order. Counted per runtime key, because that is what a
+ * replacement holds.
  */
 const runtimeKeyHolders = new Map<string, number>();
 
@@ -518,12 +516,16 @@ export function stopAllRunsForRevocation(log: (line: string) => void = () => {})
   registrationRevoked = true;
   // A launch still queued for its Location has no process yet; it ends here.
   cancelAllLeaseWaits();
+  // One already past its lease but still preparing (capturing a large
+  // workspace) is not in `activeLaunches` yet; marking it stopped is what the
+  // last check before spawn reads, so it never starts.
+  for (const launchId of launchingRuns.keys()) stoppedLaunches.add(launchId);
   for (const { runId, active } of activeLaunches.values()) {
     log(`run ${runId}: terminating because this host was revoked`);
-    // Like every other deliberate stop: without it, a strict run killed here
-    // before its namespace reported would be blamed on the namespace. Not
-    // reachable today — a strict daemon re-adopts its credential instead of
-    // being revoked — which is exactly why it should be right before it is.
+    // Like every other deliberate stop. Do not omit this: a strict run killed
+    // here before its namespace reported would be blamed on the namespace.
+    // A strict daemon re-adopts its credential and is not revoked. Set this
+    // before a revoke path can reach a strict run.
     active.terminationRequested = true;
     terminateWithEscalation(active.child, true, log);
   }
@@ -531,15 +533,13 @@ export function stopAllRunsForRevocation(log: (line: string) => void = () => {})
 
 /**
  * Removes run directories left behind by a daemon that was killed mid-run.
- * Each holds that run's outputs and work surface, and an older layout also put
- * a live lease token there; nothing else would ever remove one, because the
- * same run id never comes back.
+ * Each holds that run's outputs and work surface, including its tool token.
+ * Nothing else removes one, because the same run id never comes back.
  */
 export async function sweepStaleRunProfiles(): Promise<number> {
   // `launchingRuns` as well as `activeRuns`: a reconnect can land between a
-  // launch frame arriving and its child being registered, and deleting that
-  // run's profile mid-launch is the exact silent-unbinding this phase exists
-  // to prevent.
+  // launch frame arriving and its child being registered. Do not delete that
+  // run's directory mid-launch.
   return sweepOrphanedRunDirectories(
     join(configDir(), "runs"),
     new Set([...[...activeLaunches.values()].map(({ runId }) => runId), ...launchingRuns.values(), ...finishingRuns]),
@@ -556,17 +556,15 @@ function runOutputsDir(runId: string): string {
  * the run — including a work surface carrying its tool token.
  */
 function runDir(runId: string): string {
-  // The Runner this replaces resolved every mount id below a managed root and
-  // refused one that escaped it. The daemon addresses paths directly, so the
-  // equivalent guard is here: a run id is one path segment, and `join` would
-  // otherwise turn `../..` into a real parent directory that `resolve()` then
-  // considers perfectly normal — and in strict mode that directory becomes a
+  // A run id is one path segment. Do not join a value that escapes the run
+  // directory: `join` turns `../..` into a parent directory that `resolve()`
+  // then treats as normal, and in strict mode that directory becomes a
   // read-write bind carrying this daemon's own registration.
   if (!RUN_ID_SEGMENT.test(runId)) throw new Error(`run id is not a usable directory name: ${runId}`);
   return join(configDir(), "runs", runId);
 }
 
-/** Same shape `sandbox/runner.mjs` validated its run and scope ids against. */
+/** Run and scope ids are one path segment of this shape. */
 const RUN_ID_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
 
 /** Exported for the containment test; not part of this package's public API. */
@@ -681,7 +679,7 @@ function rainverCliPath(): string {
  * unsandboxed on a machine the user owns, so the control plane is not trusted
  * to have sent a key that stays inside the config directory.
  */
-export function providerProfileDir(profileKey: string): string {
+function providerProfileDir(profileKey: string): string {
   const segments = profileKey.split("/");
   const [agents, agentId, containerKind, containerId, runtimeKey, providerId] = segments;
   if (segments.length !== 6 || agents !== "agents") {
@@ -695,10 +693,10 @@ export function providerProfileDir(profileKey: string): string {
       throw new Error(`runtime profile key has an unusable segment: ${profileKey}`);
     }
   }
-  // Derived from the container path rather than rebuilt: archive, restore and
-  // reset all move the container level, and a second construction of the same
-  // five segments that drifted would leave launches working while every
-  // archive silently moved nothing.
+  // Derived from the container path rather than rebuilt. Archive, restore and
+  // reset all move the container level. Do not construct the same five
+  // segments a second time: a drift leaves launches working while every
+  // archive moves nothing.
   return join(
     runtimeProfileContainerPath(agentId!, containerKind, containerId!),
     runtimeKey!,
@@ -709,8 +707,8 @@ export function providerProfileDir(profileKey: string): string {
 /**
  * The HOME whose login state this installation uses.
  *
- * One login per host × installation, which is the whole point of linking the
- * credential rather than logging in per profile: an Agent × container profile
+ * One login per host × installation. Link the credential. Do not log in per
+ * profile: an Agent × container profile
  * per Room would otherwise multiply logins by Agents × Rooms. `own` is the
  * machine's own home directory — the CLI the user already logged into — and a
  * managed runtime has a stable private HOME so its login never mixes with the
@@ -724,12 +722,10 @@ function loginHomeFor(runtimeKey: string, installation: string): string | null {
 /**
  * What a strict namespace applies when the dispatch stated no policy.
  *
- * Fail-closed on both axes: a read-only workspace and no network at all. The
- * Runner this replaces refused a launch whose egress profile did not match the
- * channels it actually carried, so a request that named no channel could not
- * obtain a network; the daemon has no typed channels to cross-check against,
- * so the equivalent is to give an unpolicied Run nothing. A Run that needs
- * either says so, and a control plane that forgets to says nothing — which
+ * Fail-closed on both axes: a read-only workspace and no network at all. A
+ * request that names no channel gets no network. The daemon has no typed
+ * channels to cross-check against, so an unpolicied Run gets nothing. A Run
+ * that needs either says so. A control plane that forgets to say anything
  * must fail visibly rather than quietly hand a shared host the container's
  * network.
  */
@@ -754,7 +750,7 @@ export function setEgressProxy(handle: EgressProxyHandle | null, serverUrl: stri
 }
 
 /** What a Run reached, and what it was refused; empty when this host runs no proxy. */
-export function runEgressLog(runId: string) {
+function runEgressLog(runId: string) {
   return egressProxy?.log(runId) ?? [];
 }
 
@@ -864,7 +860,7 @@ export function strictBindsForRun(input: {
  * process receives, which HOME it writes into, and what is bound — and none of
  * that is reachable by a test that has to spawn `bwrap` to observe it.
  */
-export interface StrictLaunch {
+interface StrictLaunch {
   command: string;
   args: string[];
   home: string;
@@ -893,16 +889,13 @@ export function planStrictLaunch(input: {
 }): StrictLaunch {
   // **The container contributes nothing.** A trusted host keeps the machine's
   // environment because it is the owner's machine; a strict host is not
-  // anyone's machine, and its environment is the instance's. Compose no longer
-  // hands this container the control plane's internal token — `.runner.env`
-  // and `SANDBOX_RUNNER_TOKEN` went with the Runner — so this filter is not
-  // what stops that token reaching a Run. It stops the next variable to land
-  // in the container's environment from doing so: this namespace shares the
-  // instance's network, every Space's Runs pass through it, and none of them
-  // has any claim on what the instance configured itself with. The Runner this
-  // replaces `--setenv`-ed a hand-written allowlist and nothing else; this is
-  // the same rule, reusing the allowlist the bound-run path already applies
-  // for B67.
+  // anyone's machine, and its environment is the instance's. This filter is
+  // not what stops a control-plane token reaching a Run. It stops the next
+  // variable to land in the container's environment from doing so: this
+  // namespace shares the instance's network, every Space's Runs pass through
+  // it, and none of them has any claim on what the instance configured itself
+  // with. The allowlist is the one the bound-run path already applies for
+  // B67. Do not pass the container environment through.
   const home = join(input.runDir, "home");
   const env: Record<string, string> = {
     ...filterAmbientEnv(input.ambient),
@@ -916,7 +909,7 @@ export function planStrictLaunch(input: {
     // the container's — one directory that every Run of every Space writes
     // its vendor history and scratch files into, read-write. The runtime
     // reaches its own state through the profile's state-root variables, which
-    // is what B68 keys by Agent × container in the first place.
+    // is what B68 keys by Agent × container.
     HOME: home,
   };
   const isolation = input.isolation ?? DEFAULT_STRICT_ISOLATION;
@@ -964,9 +957,8 @@ export async function handleLaunch(
     send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false, error: "This host registration was revoked." });
     return;
   }
-  // Refused rather than raced: this copy is being replaced, and starting
-  // against a directory that is about to be renamed away is the failure the
-  // drain exists to prevent (ADR 0016 §9).
+  // Refused rather than raced. Do not start against a directory that is about
+  // to be renamed away (ADR 0016 §9).
   if (isRuntimeKeyBeingReplaced(frame.runtime_key)) {
     send({
       type: "complete",
@@ -1296,24 +1288,21 @@ async function launchRun(
   //
   // For a run on this machine's own login, B67's closing rule stands — it is
   // "not affected" — so the machine's environment is kept and only the
-  // runtime's *state root* moves into the Agent's profile. Filtering here
-  // instead would take `~/.gitconfig`, `~/.ssh/config` and the proxy variables
-  // away from every Task run on a paired machine, which no part of this was
-  // meant to do.
+  // runtime's *state root* moves into the Agent's profile. Do not filter
+  // this run. It would take `~/.gitconfig`, `~/.ssh/config` and the proxy
+  // variables away from every Task run on a paired machine.
   //
   // The default is the credential-cleared environment, not `process.env` whole.
-  // Every branch below narrows, so the bare spread was reachable only when a
-  // frame carries no `provider_binding` — which the wire contract allows and
-  // today's single producer never sends. Reachable or not, the default for
-  // "we do not yet know what this run is" must not be the one that hands the
-  // runtime an ambient `ANTHROPIC_API_KEY`. This keeps `~/.gitconfig`,
-  // `~/.ssh/config` and the proxy variables: it drops vendor prefixes only.
+  // Every branch below narrows, so the bare spread applies only when a
+  // frame carries no `provider_binding` — which the wire contract allows.
+  // Do not hand that case an ambient `ANTHROPIC_API_KEY`. This keeps
+  // `~/.gitconfig`, `~/.ssh/config` and the proxy variables: it drops vendor
+  // prefixes only.
   // `?? ""` means "drop every vendor prefix", which is the right answer for a
   // frame that does not say what it is running — and the wrong one to arrive at
   // by accident, since it also takes `GOOGLE_APPLICATION_CREDENTIALS` from a
-  // Task run that needs gcloud. Today's single producer always sends a real
-  // adapter type; the wire contract allows it to be absent, and this is what
-  // that case gets.
+  // Task run that needs gcloud. The wire contract allows the adapter type
+  // to be absent, and this is what that case gets.
   let baseEnv: Record<string, string> = clearVendorCredentialEnv(process.env, frame.runtime_key ?? "");
   let bindingEnv: Record<string, string> = {};
   let workSurfaceEnv: Record<string, string> = {};
@@ -1362,11 +1351,11 @@ async function launchRun(
       } else if (relocatesState) {
         baseEnv = clearStateRootEnv(process.env, runtimeKey);
         // A managed copy is launched with `HOME` pointing inside its own tree
-        // so its login never mixes with the machine's. That reason is gone
-        // once the credential is linked into the profile and the state root is
-        // the profile's own variable — and leaving it would take
+        // so its login never mixes with the machine's. Do not leave `HOME`
+        // set once the credential is linked into the profile and the state
+        // root is the profile's own variable. Leaving it would take
         // `~/.gitconfig` and `~/.ssh/config` away from exactly the runs this
-        // branch exists to keep them for.
+        // branch keeps them for.
         delete acpAdapterEnv.HOME;
       } else {
         baseEnv = clearVendorCredentialEnv(process.env, runtimeKey);
@@ -1402,10 +1391,9 @@ async function launchRun(
   const strict = config.trust === "strict";
   if (strict && frame.runtime_key === "codex_cli") {
     // This Run's own profile — the Agent × container one (`profileDir`), never
-    // the login home. `profileDir` is set in the same branch that resolves
-    // `loginHome`, so the old third fallback could not be reached — and had it
-    // been, this would have rewritten the config the managed login shares
-    // across every Agent and every Room on this installation.
+    // the login home. Writing the login home would rewrite the config the
+    // managed login shares across every Agent and every Room on this
+    // installation.
     const codexHome = derivedEnv.CODEX_HOME
       ?? (profileDir ? join(profileDir, ".codex") : null);
     if (codexHome) {
@@ -1514,16 +1502,19 @@ async function launchRun(
   });
   // From here the close handler below releases the leases.
   hold.spawned = true;
+  // A `stdin` frame that lands as the agent exits fails asynchronously (EPIPE)
+  // on the stream's own 'error' event; unheard, it ends the daemon and every
+  // Run it supervises. The exit that follows is the report.
+  child.stdin?.on("error", (error) => log(`run ${frame.run_id}: stdin write failed: ${error.message}`));
   if (strict) {
     // "The namespace could not be built" and "the runtime exited immediately"
     // are the same exit code; this handshake is what tells them apart, and it
     // is the reason the run is started through `sh -c` at all.
     (child.stdio[3] as NodeJS.ReadableStream | null)?.once("data", (value: Buffer) => {
       namespaceReady = value.toString("utf8").startsWith("ready");
-      // The Runner killed a child that answered anything else, and so does
-      // this: whatever is on the other side of that fd is not the launch
-      // handshake, and letting it run to completion would report a namespace
-      // failure about a process that ran.
+      // Anything other than the readiness report is not the launch handshake.
+      // Kill it. Letting it run would report a namespace failure about a
+      // process that ran.
       if (!namespaceReady) terminateWithEscalation(child, true, log);
     });
   }
@@ -1545,7 +1536,7 @@ async function launchRun(
   // is still being torn down; the newest dispatch owns the id from here.
   activeRuns.set(frame.run_id, active);
   activeLaunches.set(active.launchId, { runId: frame.run_id, active });
-  // ACP runtime replatform P2: the server must not write a `stdin` frame
+  // The server must not write a `stdin` frame
   // (e.g. a controller's `initialize` request) until it knows this run is
   // actually registered here — `launch` and any immediately-following
   // `stdin` frame are two separate WS messages, and this handler reaches
@@ -1559,19 +1550,22 @@ async function launchRun(
   }
   if (!frame.keep_stdin_open) child.stdin?.end();
 
-  child.stdout?.on("data", (chunk: Buffer) => {
-    send({ type: "output", run_id: frame.run_id, launch_id: frame.launch_id, chunk: chunk.toString("utf8") });
+  // Decoded by the stream, not per chunk: a pipe splits output at arbitrary
+  // bytes, and a character cut in two decodes to U+FFFD on both sides.
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
+    send({ type: "output", run_id: frame.run_id, launch_id: frame.launch_id, chunk });
   });
   let stderrTail = "";
   child.on("error", (error) => {
     stderrTail = error.message.slice(-4000);
   });
-  child.stderr?.on("data", (chunk: Buffer) => {
-    const text = chunk.toString("utf8");
+  child.stderr?.on("data", (text: string) => {
     stderrTail = (stderrTail + text).slice(-4000);
-    // control-center-phase2-plan.md P1 (C5): the full live stream, not just
-    // the failure tail the `complete` frame still carries below — normalized
-    // into diagnostic conversation events server-side.
+    // The full live stream, not only the failure tail the `complete` frame
+    // still carries. Normalized into diagnostic conversation events on the
+    // server.
     send({ type: "stderr", run_id: frame.run_id, launch_id: frame.launch_id, chunk: text });
   });
 
@@ -1620,6 +1614,7 @@ async function launchRun(
       try {
         if (diff !== null || gitAfter) {
           await uploadRunDiff(config.server_url, config.token, frame.run_id, {
+            launch_id: frame.launch_id,
             diff,
             truncated: false,
             ...(gitBefore ? { git_before: gitBefore } : {}),
@@ -1631,7 +1626,7 @@ async function launchRun(
       }
       try {
         const files = await collectOutputFiles(outputsDir);
-        await uploadRunOutputs(config.server_url, config.token, frame.run_id, files);
+        await uploadRunOutputs(config.server_url, config.token, frame.run_id, { launch_id: frame.launch_id, files });
       } catch (error) {
         log(`run ${frame.run_id}: output upload failed: ${error instanceof Error ? error.message : String(error)}`);
       }

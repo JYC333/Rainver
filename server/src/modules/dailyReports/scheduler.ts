@@ -1,17 +1,12 @@
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
-import type { PgJobQueueRepository } from "../jobs/repository.js";
-import {
-  isValidTimezone,
-  localDateFromSlot,
-  PgDailyReportSettingsRepository,
-  type DailyReportSettingRow,
-} from "./repository.js";
+import { withTransaction } from "../../db/tx.js";
+import { PgJobQueueRepository } from "../jobs/repository.js";
+import { wakeJobWorkers } from "../jobs/wakeSignal.js";
+import { isValidTimezone, reportDateForSlot } from "../scheduler/localDay.js";
+import { PgDailyReportSettingsRepository, type DailyReportSettingRow } from "./repository.js";
 
-export async function scanDailyReportsAndEnqueue(
-  config: ServerConfig,
-  queue: PgJobQueueRepository,
-): Promise<number> {
+export async function scanDailyReportsAndEnqueue(config: ServerConfig): Promise<number> {
   if (!config.databaseUrl) return 0;
   const db = getDbPool(config.databaseUrl);
   const repo = new PgDailyReportSettingsRepository(db);
@@ -23,18 +18,23 @@ export async function scanDailyReportsAndEnqueue(
     const payload = buildDailyReportJobPayload(setting, slotUtc);
     if (!payload) continue;
     try {
-      await queue.enqueue({
-        job_type: "daily_capture_report",
-        space_id: setting.space_id,
-        user_id: setting.user_id,
-        priority: 0,
-        max_attempts: 1,
-        payload,
+      // The job and the slot advance commit together: a job enqueued with
+      // `next_run_at` left behind would be enqueued again by the next scan.
+      await withTransaction(db, async (tx) => {
+        await new PgJobQueueRepository(tx).enqueue({
+          job_type: "daily_capture_report",
+          space_id: setting.space_id,
+          user_id: setting.user_id,
+          priority: 0,
+          max_attempts: 1,
+          payload,
+        });
+        await new PgDailyReportSettingsRepository(tx).advanceNextRun(setting, slotUtc);
       });
-      await repo.advanceNextRun(setting, slotUtc);
+      wakeJobWorkers();
       count += 1;
     } catch {
-      // Leave next_run_at unchanged so the next scan retries.
+      // Nothing was written, so the next scan retries this slot.
     }
   }
   return count;
@@ -49,9 +49,10 @@ export function buildDailyReportJobPayload(
     space_id: setting.space_id,
     user_id: setting.user_id,
     setting_id: setting.id,
-    local_date: localDateFromSlot(slotUtc, setting.timezone),
+    // The slot reports on the day before its own: the last complete local
+    // day. A slot that fires late still names the day it was scheduled for.
+    local_date: reportDateForSlot(slotUtc, setting.timezone),
     timezone: setting.timezone,
     trigger_origin: "automation",
-    force: false,
   };
 }

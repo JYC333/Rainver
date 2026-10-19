@@ -24,22 +24,21 @@ let maxTrackedSources = MAX_TRACKED_SOURCES;
 /**
  * How often the whole map is swept.
  *
- * Sweeping on every call was O(buckets) of synchronous work on an
- * unauthenticated request path: at the cap that is milliseconds per call, paid
+ * Do not sweep on every call. That is O(buckets) of synchronous work on an
+ * unauthenticated request path: at the cap it is milliseconds per call, paid
  * by everyone once an attacker has filled the map. The window each call
- * actually depends on is its own bucket's, which is filtered on read; the sweep
- * only exists to let a bucket nobody touches again be forgotten.
+ * actually depends on is its own bucket's, which is filtered on read. The
+ * sweep forgets a bucket nobody touches again.
  */
 const PRUNE_INTERVAL_MS = 30_000;
 
 /**
  * How often the window is written out.
  *
- * On the same clock as the sweep, and for the same reason. Coalescing bounded
- * the write *queue* at one, but a write was still asked for on every attempt,
- * and each one copies and serialises the whole map — so a throttled caller
- * flooding the endpoint kept that work running continuously. The synchronous
- * cost per attempt was what moving persistence off the request stack was for.
+ * On the same clock as the sweep. Coalescing bounds the write queue at one.
+ * Do not also write on every attempt. Each write copies and serialises the
+ * whole map, so a throttled caller flooding the endpoint keeps that work
+ * running. The interval is what takes that cost off the request.
  *
  * The cost is that a restart can lose up to this interval's attempts rather
  * than one snapshot's. Against a ten-minute window, and given that the
@@ -86,9 +85,9 @@ export function rateLimitKey(ip: string): string {
 
 /** The eight hextets of an IPv6 address, or null if it cannot be read as one. */
 function expandIpv6(raw: string): string[] | null {
-  // A trailing dotted quad is two hextets — `2001:db8:1:1:0:0:192.168.0.1` is
-  // a valid, unabbreviated address, and reading it as seven groups lost its
-  // /64 and silently fell back to per-address keying.
+  // A trailing dotted quad is two hextets. `2001:db8:1:1:0:0:192.168.0.1` is
+  // a valid, unabbreviated address. Do not read it as seven groups: the /64
+  // is lost and the limiter falls back to per-address keying.
   const address = raw.replace(/(\d{1,3}(?:\.\d{1,3}){3})$/, (quad) => {
     const parts = quad.split(".").map(Number);
     return `${((parts[0]! << 8) | parts[1]!).toString(16)}:${((parts[2]! << 8) | parts[3]!).toString(16)}`;
@@ -131,12 +130,12 @@ function prune(now: number): void {
     else attempts.set(key, recent);
   }
   if (attempts.size <= maxTrackedSources) return;
-  // Down to a fraction of the cap, not to the cap. Evicting only the excess
-  // left the map pinned one over the cap, so the size term in
-  // `hostRegisterRateLimited` was true on *every* subsequent request and this
-  // sweep ran on every one of them — the O(buckets) cost on an unauthenticated
-  // path that `PRUNE_INTERVAL_MS` exists to avoid, and reachable by one
-  // already-throttled caller once the map is full.
+  // Down to a fraction of the cap, not to the cap. Do not evict only the
+  // excess. The map would stay pinned one over the cap, the size term in
+  // `hostRegisterRateLimited` would be true on every subsequent request, and
+  // this sweep would run on every one of them — the O(buckets) cost on an
+  // unauthenticated path that `PRUNE_INTERVAL_MS` avoids, and reachable by
+  // one already-throttled caller once the map is full.
   //
   // Map iteration is insertion-ordered and `hostRegisterRateLimited` re-inserts
   // on every touch, so this drops the least recently *used* buckets first.
@@ -151,15 +150,14 @@ function prune(now: number): void {
 /**
  * Writes the window out without holding the request.
  *
- * This ran as a synchronous `writeFileSync` on every attempt, on the path an
- * unauthenticated caller drives — so the cheapest way to stall the event loop
- * was to pair repeatedly.
+ * Do not write the window with `writeFileSync` on the request path. An
+ * unauthenticated caller drives that path, and a synchronous write is how
+ * repeated pairing stalls the event loop.
  *
  * At most one write is queued behind the one in flight, and the snapshot is
- * taken when that write runs rather than when it is asked for. A plain
- * `.then()` chain per call was worse than what it replaced: `writeFileSync`
- * at least supplied backpressure, while an unbounded chain grows one
- * whole-map copy per request under exactly the flood this limiter exists for.
+ * taken when that write runs rather than when it is asked for. Do not queue a
+ * `.then()` chain per call. An unbounded chain grows one whole-map copy per
+ * request under a pairing flood.
  * Coalescing is safe because every write carries the complete window — the
  * skipped ones would only have written a prefix of what the next one does.
  * Serialized rather than parallel so two writes cannot interleave into a
@@ -195,19 +193,19 @@ export function hostRegisterRateLimited(ip: string, now = Date.now(), persistDir
   // sweep: the sweep is periodic, and a decision must never count a stamp that
   // has already expired.
   const recent = (attempts.get(key) ?? []).filter((stamp) => now - stamp < WINDOW_MS);
-  // Deleted and re-set so Map order is last-touch: the cap evicts from the
-  // front, and without this it dropped the buckets that had been under the
-  // limit longest — so a caller with enough distinct keys could push their own
-  // throttled bucket out and earn a fresh quota.
+  // Deleted and re-set so Map order is last-touch. The cap evicts from the
+  // front. Do not leave an existing key in place: a caller with enough
+  // distinct keys can push their own throttled bucket out and earn a fresh
+  // quota.
   attempts.delete(key);
   const throttled = recent.length >= HOST_REGISTER_MAX_ATTEMPTS;
   if (!throttled) recent.push(now);
   attempts.set(key, recent);
-  // On the interval, and always at the moment a bucket fills. The second half
-  // is what persistence is *for*: a restart must not hand a caller who has
-  // just spent their quota a fresh one. Everything after that — the flood from
-  // an already-throttled caller — is what the interval is for, since the
-  // window it would write is the one already on disk.
+  // On the interval, and always at the moment a bucket fills. Persist that
+  // fill: a restart must not hand a caller who has just spent their quota a
+  // fresh one. After that, the interval covers the flood from an
+  // already-throttled caller. The window it would write is the one already
+  // on disk.
   const justFilled = !throttled && recent.length >= HOST_REGISTER_MAX_ATTEMPTS;
   if (persistDir && (justFilled || now - lastPersistRequestedAt >= PERSIST_INTERVAL_MS)) {
     lastPersistRequestedAt = now;

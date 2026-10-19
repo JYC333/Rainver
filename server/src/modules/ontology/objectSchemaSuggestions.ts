@@ -16,7 +16,7 @@ import {
   sourcePolicyAllowsRead,
 } from "../retrieval/sourcePolicy.js";
 
-export const OBJECT_SCHEMA_SUGGESTION_REPORT_ARTIFACT_TYPE = "object_schema_suggestion_report";
+const OBJECT_SCHEMA_SUGGESTION_REPORT_ARTIFACT_TYPE = "object_schema_suggestion_report";
 
 interface RegistryKind {
   id: string;
@@ -105,6 +105,9 @@ export async function scanObjectSchemaSuggestions(
   const usageKeys = new Set(usageRows.map((row) => registryKey(row.base_object_type, row.object_profile)));
   for (const row of registryRows) {
     if (row.status !== "active") continue;
+    // No usage loader, no verdict: a kind whose rows this scan never reads
+    // is not "unused", it is unobserved.
+    if (!USAGE_LOADED_BASE_TYPES.has(row.base_object_type)) continue;
     if (usageKeys.has(registryKey(row.base_object_type, row.key))) continue;
     findings.push({
       id: randomUUID(),
@@ -199,6 +202,9 @@ async function loadRegistryKinds(
   );
   return result.rows;
 }
+
+/** The base types `loadVisibleUsage` has a loader for; the others are listed from the registry only. */
+const USAGE_LOADED_BASE_TYPES = new Set(["knowledge_item", "claim", "source", "note", "memory_entry", "project_public_summary"]);
 
 async function loadVisibleUsage(
   db: Queryable,
@@ -362,16 +368,15 @@ async function loadMemoryEntryKindUsageObjects(db: Queryable, spaceId: string, u
 
 async function loadProjectPublicSummaryKindUsageObjects(db: Queryable, spaceId: string): Promise<UsageObjectRow[]> {
   const result = await db.query<{ object_id: string }>(
-    `SELECT ps.project_id AS object_id
-       FROM project_public_summaries ps
+    `SELECT pub.project_id AS object_id
+       FROM project_public_summary_publications pub
        JOIN projects p
-         ON p.id = ps.project_id
-        AND p.space_id = ps.space_id
-      WHERE ps.space_id = $1
-        AND ps.review_status = 'approved'
+         ON p.id = pub.project_id
+        AND p.space_id = pub.space_id
+      WHERE pub.space_id = $1
         AND p.status = 'active'
         AND p.deleted_at IS NULL
-      ORDER BY ps.project_id ASC`,
+      ORDER BY pub.project_id ASC`,
     [spaceId],
   );
   return result.rows.map((row) => ({

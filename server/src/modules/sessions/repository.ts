@@ -20,7 +20,7 @@ import {
   loadChatActionPreviewsByRunIds,
 } from "../agents/projectChatActionPreviews.js";
 
-export interface CreateSessionInput {
+interface CreateSessionInput {
   projectFolderId?: string | null;
   projectId?:string|null;
   title?: string | null;
@@ -98,6 +98,9 @@ interface MessageRow {
  * Owns list/get/create sessions plus list/add messages.
  * Session `reflect` creates proposal-first memory candidates in the server.
  */
+/** How much of a direct chat a reflection proposal carries, from its newest message back. */
+const REFLECTION_TRANSCRIPT_CHARS = 12_000;
+
 export class PgSessionRepository {
   constructor(private readonly db: Queryable) {}
 
@@ -240,9 +243,8 @@ export class PgSessionRepository {
    *
    * The transcript predicate is applied to every session, not only to a Room's:
    * `room_display = 'internal'` is written by `addRoomInternalInstruction`
-   * alone, so it is vacuous for an ordinary session — and a flag that decided
-   * whether to apply it was a second copy of the rule that a new caller could
-   * pass `false` to.
+   * alone, so it is vacuous for an ordinary session. Do not add a flag that
+   * decides whether to apply it. A new caller could pass `false`.
    */
   private async loadMessagePage(
     spaceId: string,
@@ -255,9 +257,7 @@ export class PgSessionRepository {
     const result = await this.db.query<MessageRow>(
       // Newest-first with LIMIT/OFFSET selects the window, then the outer
       // query returns it in transcript order. `path` restricts both to the
-      // conversation's visible branch.
-      // Newest-first with LIMIT/OFFSET selects the window, then the outer
-      // query returns it in transcript order. Ordering is by `path_depth`,
+      // conversation's visible branch. Ordering is by `path_depth`,
       // which is the conversation's own order — `created_at` would order two
       // branches by when each was written rather than by where each sits.
       `SELECT *
@@ -332,8 +332,8 @@ export class PgSessionRepository {
         userId,
       );
       const metadata = { ...(message.metadata_json ?? {}) } as MessageMetadata;
-      // Replace, do not merge. This also removes owner-only previews persisted
-      // by older builds before the shared-message boundary was fixed.
+      // Replace, do not merge. Owner-only previews must not remain on a
+      // shared message.
       if (visible.length > 0) metadata.action_previews = visible;
       else delete metadata.action_previews;
       return { ...message, metadata_json: metadata };
@@ -395,9 +395,9 @@ export class PgSessionRepository {
           AND (m.metadata_json->'run_ids' ? $3::text OR m.metadata_json->'retry_run_ids' ? $3::text)
           AND ${visibleRoomTranscriptSql({ alias: "m", spaceParam: "$1", sessionParam: "$2" })}
         LIMIT 1`,
-      // Only the three this statement names: the Room and viewer are the
-      // second read's arguments, and binding them here left PostgreSQL unable
-      // to type an unreferenced parameter, which failed every retry.
+      // Only the three this statement names. The Room and viewer are the
+      // second read's arguments. Do not bind them here. PostgreSQL cannot
+      // type an unreferenced parameter, and every retry fails.
       [spaceId, sessionId, runId],
     );
     const id = result.rows[0]?.id;
@@ -911,9 +911,9 @@ export class PgSessionRepository {
     return result.rows[0] ? messageToOut(result.rows[0]) : null;
   }
 
-  /** The event-triggered sibling of `findRoomProposalContinuation` (plan
-   * Phase 3): dedupes a domain-completion continuation by (event kind,
-   * event key) instead of a Proposal id. */
+  /** The event-triggered sibling of `findRoomProposalContinuation`. Dedupes a
+   * domain-completion continuation by (event kind, event key) instead of a
+   * Proposal id. */
   async findRoomEventContinuation(
     spaceId: string,
     userId: string,
@@ -956,15 +956,13 @@ export class PgSessionRepository {
    *
    * - **Inside a transaction** a collision is unrecoverable — the failed
    *   statement poisons the transaction, so every retry returns 25P02 and the
-   *   caller's whole unit of work is lost. The lock has to *prevent* it, and
-   *   here it does: measured 16 concurrent transactional appends completing
-   *   with zero retries and no duplicate position.
+   *   caller's whole unit of work is lost. The lock has to prevent it.
    * - **On a pool** this lock does nothing: each statement is its own
    *   transaction, so it is released before the insert runs. Nothing is
    *   poisoned there either, so `uq_messages_branch_position` plus
-   *   `withBranchPositionRetry` handle the collision, as they did before this
-   *   lock existed. The extra round trip buys nothing on that path and is
-   *   kept only because the method cannot tell which kind of client it has.
+   *   `withBranchPositionRetry` handle the collision. The extra round trip
+   *   buys nothing on that path. It stays because the method cannot tell
+   *   which kind of client it has.
    */
   private async lockConversationForAppend(spaceId: string, sessionId: string): Promise<boolean> {
     const locked = await this.db.query(
@@ -1263,15 +1261,23 @@ export class PgSessionRepository {
     if (!session) return null;
     const messages = await this.listMessages(spaceId, userId, sessionId, 200, 0);
     if (!messages) return null;
-    const usable = messages
+    const recent = messages
       .filter((message) => message.content.trim().length > 0)
       .slice(-40);
-    if (usable.length === 0) return { session_id: sessionId, proposals_created: 0 };
+    if (recent.length === 0) return { session_id: sessionId, proposals_created: 0 };
 
-    const transcript = usable
-      .map((message) => `${message.role}: ${message.content.trim()}`)
-      .join("\n\n")
-      .slice(0, 12_000);
+    // The newest messages are the reflection's substance, so the budget is
+    // spent from the end of the conversation backwards, and the provenance
+    // names exactly the messages whose text made it into the proposal.
+    const lines = recent.map((message) => `${message.role}: ${message.content.trim()}`);
+    let first = recent.length - 1;
+    let length = lines[first]!.length;
+    while (first > 0 && length + 2 + lines[first - 1]!.length <= REFLECTION_TRANSCRIPT_CHARS) {
+      first -= 1;
+      length += 2 + lines[first]!.length;
+    }
+    const usable = recent.slice(first);
+    const transcript = lines.slice(first).join("\n\n").slice(0, REFLECTION_TRANSCRIPT_CHARS);
     const title = session.title
       ? `Session reflection: ${session.title}`.slice(0, 512)
       : "Session reflection";
@@ -1300,9 +1306,12 @@ export class PgSessionRepository {
         ],
       },
       projectFolderId: session.project_folder_id,
+      projectId: session.project_id,
       rationale: "Session reflection requested by the user.",
       createdByUserId: userId,
-      visibility: "space_shared",
+      // The payload is the person's own direct-chat transcript, so the review
+      // row is as private as the memory it proposes.
+      visibility: "private",
       riskLevel: "low",
     });
     return { session_id: sessionId, proposals_created: 1 };
@@ -1365,9 +1374,9 @@ function messageMetadataParam(value: MessageMetadata | null | undefined): string
 }
 
 /**
- * Session metadata, which is a different and still open-ended thing: callers
- * stamp their own bookkeeping on a conversation (`execution_setup_started`,
- * for one) and no reader depends on a closed set.
+ * Session metadata is open-ended. Callers stamp their own bookkeeping on a
+ * conversation (`execution_setup_started`, for one) and no reader depends on
+ * a closed set.
  */
 function sessionMetadataParam(value: Record<string, unknown> | null | undefined): string | null {
   return value === null || value === undefined ? null : JSON.stringify(value);

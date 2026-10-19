@@ -1,31 +1,34 @@
 import type { GraphProjection, GraphProjectionLayoutMode } from '@rainver/protocol'
 import type { GraphLayoutConfig, GraphViewState } from '../types'
 
-export const IN_THREAD_FORCE_NODE_LIMIT = 1500
+const IN_THREAD_FORCE_NODE_LIMIT = 1500
 export const WORKER_LAYOUT_NODE_LIMIT = 3000
-export const CLIENT_GRAPH_NODE_BUDGET = 5000
+const CLIENT_GRAPH_NODE_BUDGET = 5000
 export const CLIENT_GRAPH_EDGE_BUDGET = CLIENT_GRAPH_NODE_BUDGET * 3
-export const IN_THREAD_DYNAMIC_FORCE_ITERATIONS = 260
-export const WORKER_FORCE_ITERATIONS = 80
+const IN_THREAD_DYNAMIC_FORCE_ITERATIONS = 260
+const WORKER_FORCE_ITERATIONS = 80
 
 const COMPONENT_CLUSTER_BY = 'node.componentId'
 const SEMANTIC_CLUSTER_BY = 'node.clusterId || node.data.projection.clusterId || node.data.kind || node.componentId'
 
-export type GraphLayoutTier = 'in-thread' | 'worker' | 'degraded'
+type GraphLayoutTier = 'in-thread' | 'worker' | 'degraded'
 
-export interface GraphScalePolicy {
+/** Why a projection is laid out below its best layout; the view words it. */
+export type GraphLayoutWarning = 'node_and_edge_budget' | 'node_budget' | 'edge_budget' | 'worker_budget' | 'large'
+
+interface GraphScalePolicy {
   nodeCount: number
   edgeCount: number
   layoutTier: GraphLayoutTier
   nodeBudgetExceeded: boolean
   edgeBudgetExceeded: boolean
-  warning: string | null
+  warning: GraphLayoutWarning | null
 }
 
-export interface GraphLayoutResolution {
+interface GraphLayoutResolution {
   layout: GraphLayoutConfig
   mode: GraphProjectionLayoutMode
-  warning: string | null
+  warning: GraphLayoutWarning | null
 }
 
 export function resolveGraphLayout(
@@ -121,26 +124,12 @@ export function resolveGraphLayout(
   }
 }
 
-export function layoutWarningForNodeCount(nodeCount: number): string | null {
-  return layoutWarningForCounts(nodeCount, 0)
-}
-
-export function layoutWarningForCounts(nodeCount: number, edgeCount: number): string | null {
-  if (nodeCount > CLIENT_GRAPH_NODE_BUDGET && edgeCount > CLIENT_GRAPH_EDGE_BUDGET) {
-    return 'Projection exceeds the client node and edge budgets; using a degraded layout and requiring producer-side capping or aggregation.'
-  }
-  if (nodeCount > CLIENT_GRAPH_NODE_BUDGET) {
-    return 'Projection exceeds the client node budget; using a degraded layout.'
-  }
-  if (edgeCount > CLIENT_GRAPH_EDGE_BUDGET) {
-    return 'Projection exceeds the client edge budget; ask the projection producer to cap or aggregate edges.'
-  }
-  if (nodeCount > WORKER_LAYOUT_NODE_LIMIT) {
-    return 'Projection exceeds the worker layout budget; using a degraded layout.'
-  }
-  if (nodeCount > IN_THREAD_FORCE_NODE_LIMIT) {
-    return 'Large projection; layout may run in a worker or degrade.'
-  }
+function layoutWarningForCounts(nodeCount: number, edgeCount: number): GraphLayoutWarning | null {
+  if (nodeCount > CLIENT_GRAPH_NODE_BUDGET && edgeCount > CLIENT_GRAPH_EDGE_BUDGET) return 'node_and_edge_budget'
+  if (nodeCount > CLIENT_GRAPH_NODE_BUDGET) return 'node_budget'
+  if (edgeCount > CLIENT_GRAPH_EDGE_BUDGET) return 'edge_budget'
+  if (nodeCount > WORKER_LAYOUT_NODE_LIMIT) return 'worker_budget'
+  if (nodeCount > IN_THREAD_FORCE_NODE_LIMIT) return 'large'
   return null
 }
 

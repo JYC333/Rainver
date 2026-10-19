@@ -421,6 +421,9 @@ describe("Memory retrieval projection eligibility", () => {
   it("drops memory rows that this retrieval surface can never return", () => {
     expect(isMemoryRetrievalProjectable({ ...base, visibility: "unknown" })).toBe(false);
     expect(isMemoryRetrievalProjectable({ ...base, access_level: "unknown" })).toBe(false);
+    // Agent-scope memory reaches the Agent only through its delivery path.
+    // Indexing it here would return a Room-limited note in any other search.
+    expect(isMemoryRetrievalProjectable({ ...base, scope_type: "agent", owner_user_id: USER_A })).toBe(false);
   });
 });
 

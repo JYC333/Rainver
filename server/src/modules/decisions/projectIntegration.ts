@@ -1,3 +1,4 @@
+import { contentReadSql } from "../access/contentAccessSql.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import {
   projectAttentionRegistry,
@@ -12,11 +13,12 @@ import {
 
 // A Case is ready once it has at least two Options, at least one Criterion,
 // and every active Option has a score for every Criterion.
-async function readyToDecideCases(db: Queryable, spaceId: string, projectId: string): Promise<Array<{ id: string; title: string }>> {
+async function readyToDecideCases(db: Queryable, identity: SpaceUserIdentity, projectId: string): Promise<Array<{ id: string; title: string }>> {
   const rows = await db.query<{ id: string; title: string }>(
     `SELECT c.object_id AS id, so.title FROM decision_cases c
       JOIN space_objects so ON so.id = c.object_id AND so.space_id = c.space_id
       WHERE c.space_id = $1 AND c.project_id = $2 AND c.status = 'open'
+        AND ${contentReadSql("space_object", "so", "$3")}
         AND (SELECT count(*) FROM decision_options o WHERE o.decision_case_id = c.object_id AND o.status = 'active') >= 2
         AND (SELECT count(*) FROM decision_criteria cr WHERE cr.decision_case_id = c.object_id) >= 1
         AND NOT EXISTS (
@@ -28,7 +30,7 @@ async function readyToDecideCases(db: Queryable, spaceId: string, projectId: str
            WHERE o.decision_case_id=c.object_id AND o.status='active' AND cr.decision_case_id=c.object_id
              AND s.id IS NULL
         )`,
-    [spaceId, projectId],
+    [identity.spaceId, projectId, identity.userId],
   );
   return rows.rows;
 }
@@ -36,7 +38,7 @@ async function readyToDecideCases(db: Queryable, spaceId: string, projectId: str
 const decisionAttentionAdapter: ProjectAttentionAdapter = {
   areaKind: "decision",
   async listAttentionItems(db: Queryable, identity: SpaceUserIdentity, projectId: string): Promise<ProjectAttentionItem[]> {
-    const cases = await readyToDecideCases(db, identity.spaceId, projectId);
+    const cases = await readyToDecideCases(db, identity, projectId);
     return cases.map((c): ProjectAttentionItem => ({
       id: `decision_case:${c.id}`,
       attention_class: "gate",

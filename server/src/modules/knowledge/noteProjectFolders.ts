@@ -20,7 +20,7 @@ import { HttpError, type Queryable } from "../routeUtils/common.js";
  *
  * Ancestry rather than a direct column: a Project's folder has subfolders, and
  * "in the Project" has to mean the whole subtree or a note dragged one level
- * deeper would silently leave it (U6).
+ * deeper would silently leave it.
  */
 export async function projectOwningCollection(
   db: Queryable,
@@ -29,15 +29,16 @@ export async function projectOwningCollection(
 ): Promise<string | null> {
   const result = await db.query<{ project_id: string | null }>(
     `WITH RECURSIVE ancestry AS (
-       SELECT id, parent_id, project_id, 0 AS depth
+       SELECT id, parent_id, project_id, 0 AS depth, ARRAY[id::text] AS visited
          FROM note_collections
         WHERE space_id = $1 AND id = $2
        UNION ALL
-       SELECT parent.id, parent.parent_id, parent.project_id, ancestry.depth + 1
+       SELECT parent.id, parent.parent_id, parent.project_id, ancestry.depth + 1,
+              ancestry.visited || parent.id::text
          FROM note_collections parent
          JOIN ancestry ON ancestry.parent_id = parent.id
         WHERE parent.space_id = $1
-          AND ancestry.depth < 64
+          AND NOT parent.id::text = ANY(ancestry.visited)
      )
      SELECT project_id
        FROM ancestry
@@ -54,8 +55,8 @@ export async function projectOwningCollection(
  *
  * Nested under the space's protected "Projects" PARA folder when one exists, so
  * it turns up where a user following that structure would look. Looked up by
- * `system_role` rather than by name, like Inbox and Archive; a space seeded
- * before that role existed degrades to a root-level folder.
+ * `system_role` rather than by name, like Inbox and Archive. A space with
+ * no Projects role gets a root-level folder.
  */
 export async function ensureProjectNotesFolder(
   db: Queryable,

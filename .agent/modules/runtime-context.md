@@ -42,9 +42,12 @@ before planning and recorded on the Delivery. ACP config options do not report
 model context limits, so every runtime-native ACP session uses a null window
 (`acp-runtime-managed.v1`) instead of a guessed 16K limit or per-model Rainver
 exceptions. Required and pinned content remains intact; optional ranked content
-has a separate 16,384-byte-estimate budget. The CLI enforces its actual model
+has a separate 16,384-byte-estimate budget. A ranked item that does not fit is
+cut to the remaining budget: conversation continuity keeps its end (the turns
+just before the current message), anything else its beginning, and at equal
+rank continuity is placed before a retrieved hit. The CLI enforces its actual model
 limit and any rejection is surfaced as a runtime error. A Profile bound to a
-Rainver ModelProvider still uses the shared model catalog and its numeric window
+Rainver ModelProvider uses the shared model catalog and its numeric window
 plan, including the conservative unknown-model fallback.
 
 The Delivery renderer keeps delegated instructions and reference data before
@@ -72,6 +75,41 @@ semantic state without rewriting history. CLI bindings keep an acknowledged
 cursor and rotate fail closed when scope, generation, session state, or replay
 authority is invalid.
 
+A Run executes on a CLI binding under its execution lease. The lease names its
+holder Run and a fencing generation that every acquisition raises and every
+rotation carries over. It lasts five minutes without renewal; the holder renews
+it once a minute while it runs. A lease whose holder Run is no longer live is
+free at once, and the same Run's next attempt is not held off by its own dead
+attempt. A Run waiting for another holder waits at most ten minutes, and stops
+waiting when it is itself no longer live; either way it fails with the
+retryable `cli_execution_lease_unavailable`. A Delivery carries the fencing
+generation it was planned under, and acknowledgements and vendor-session
+records are refused once another Run has taken the lease over. An overflow
+reconstruction moves the lease onto the replacement binding. A missing vendor
+state rotates once per lease: asking again answers with the binding the lease
+already holds.
+
+## Knowledge retrieval switch
+
+Whether a conversation searches the knowledge base on its own is the person's
+choice. A direct chat or Room recipient retrieves only when its Work Context
+Setup's `retrieval_preferences.enabled` is true, so a new conversation starts
+with retrieval off. Root tasks and workflows keep retrieving unless their setup
+turns it off. `GET`/`PUT /api/v1/runtime-context/work-contexts/:scopeId/retrieval`
+read and set the switch and its `preferred_domains` as the next Setup version
+for that person and scope: a direct chat's scope is its session, so the choice
+holds for that conversation; a Room recipient's scope is its
+`room_agent_members` row, so the choice holds for that Agent across the
+person's conversations in the Room. The direct-chat composer shows one switch;
+the Room composer shows one per Agent the next message reaches (the manager
+when nobody is named). Governing policy can still forbid retrieval.
+The switch also withholds the managed retrieval tools from a Run planned under
+an off setup, and narrows them to the chosen domains under an on one
+(knowledge, memory, projects → Project summaries, sources; inquiry has no
+tool of its own; no choice keeps every tool) — `runRetrievalChoice` reads both
+from the Run's frozen setup. It never affects material the person attaches or pins: explicit
+references and `input_resource` descriptors reach the turn either way.
+
 ## Security boundaries
 
 - All acquisition is Space- and instructing-user-scoped and revalidated in the
@@ -91,12 +129,5 @@ authority is invalid.
   through normal delivery reads.
 - Delivery is passed directly at the invocation boundary and is never written
   to `CLAUDE.md`, `AGENTS.md`, Cursor rules, or another vendor context file.
-
-## Retired architecture
-
-The old Context Compiler/Builder/Prepare service, Context Profiles, routing
-manifests, Context Snapshots/Digests, manual context artifact attachment flow,
-route-owned chat bundle, session-summary cache, and vendor context-file
-rendering have been deleted. Do not reintroduce compatibility aliases or dual
-write/read paths; ADR 0014 records the decision and Git history records the
-migration.
+  There is no compatibility alias or dual write/read path. ADR 0014 records
+  the decision.

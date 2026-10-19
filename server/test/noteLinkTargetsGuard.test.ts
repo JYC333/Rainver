@@ -5,19 +5,15 @@ import { join } from "node:path";
 import { retrievableEntityTypes, spaceObjectSubtypes } from "../src/modules/ontology/entities.js";
 
 /**
- * The guardrail the plan asks for: the editor's target-kind list must be
- * derived from the backend's accepted set, never hand-maintained.
+ * The editor's target-kind list is derived from the backend's accepted set.
+ * Do not hand-maintain it. A second list drifts: the editor then offers a
+ * subset while storage and the backlinks query accept more, and notes and
+ * research material cannot be connected. This check fails when the two
+ * disagree.
  *
- * Gap 3 was exactly a hand-maintained list drifting from its backend —
- * `NoteEditor.tsx` offered `note` and `knowledge_item` while the storage and
- * the backlinks query handled far more, so notes and research material could
- * not be connected at all. Fixing the list once fixes nothing durably; what
- * stops the drift recurring is a check that fails when the two disagree.
+ * Not every `retrieval_object_type` is offerable.
  *
- * Two corrections to the plan's premise, found while implementing NB. The plan
- * says the backend "already accepts" all nine `retrieval_object_type` values.
- *
- * - The *storage column* is typed that wide, but `createNoteLink` resolves both
+ * - The storage column accepts every `retrieval_object_type`, but `createNoteLink` resolves both
  *   endpoints through `requireVisibleSpaceObject`, so an entity with no
  *   `space_objects` row — `source_item`, `extracted_evidence`, `memory_entry` —
  *   is rejected at write time. Offering those three would 404 on every use.
@@ -50,10 +46,9 @@ describe("note link target guardrail", () => {
   });
 
   it("offers every type that is both linkable and searchable", async () => {
-    // The direction gap 3 actually failed in: the list was a strict subset of
-    // what the backend supported, and the missing entries were the ones that
-    // connected notes to research material. Registering a new searchable
-    // `space_objects` subtype must fail here until the editor offers it.
+    // The editor list is the linkable-and-searchable intersection. Registering
+    // a new searchable `space_objects` subtype fails here until the editor
+    // offers it. Do not keep the list a subset of what the backend supports.
     const { NOTE_LINK_TARGET_TYPE_VALUES } = await import("@rainver/protocol");
     const offered = new Set<string>(NOTE_LINK_TARGET_TYPE_VALUES);
     const retrievable = new Set<string>(retrievableEntityTypes());
@@ -83,8 +78,7 @@ describe("note link target guardrail", () => {
     expect(editor, "NoteEditor.tsx has moved; update this guard").toBeTruthy();
     const source = readFileSync(editor!, "utf8");
     expect(source).toContain("NOTE_LINK_TARGET_TYPE_VALUES");
-    // The two literals the old hand-maintained array was built from. Their
-    // presence as quoted option values would mean the array came back.
+    // Do not bring back a local array of `{ value: 'note', label: ... }`.
     expect(source).not.toMatch(/\{\s*value:\s*'note'\s*,\s*label:/);
     expect(source).not.toMatch(/\{\s*value:\s*'knowledge_item'\s*,\s*label:/);
   });

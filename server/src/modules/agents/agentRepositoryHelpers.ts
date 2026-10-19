@@ -30,6 +30,8 @@ export function agentOut(row: WithAccessLevel<AgentRecord>): AgentOut {
     status: row.status,
     agent_kind: row.agent_kind,
     current_version_id: row.current_version_id,
+    source_template_id: row.source_template_id,
+    source_template_version_id: row.source_template_version_id,
     model: hasModel
       ? {
           provider_id: row.model_provider_id ?? null,
@@ -49,10 +51,6 @@ export function recordValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
-}
-
-export function stringValue(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 export function stringOrNull(value: unknown): string | null {

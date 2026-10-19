@@ -104,6 +104,104 @@ describe("terminal Chat Run reconciliation", () => {
     ]);
   });
 
+  it("completes the chat turn of a Run whose settlement is only owed", async () => {
+    const events: RunEventInput[] = [];
+    const run: RunRecord = {
+      id: "run-orphaned",
+      space_id: "space-1",
+      execution_kind: "agent",
+      agent_id: "agent-1",
+      agent_version_id: "version-1",
+      status: "orphaned",
+      mode: "live",
+      prompt: "hello",
+      instruction: null,
+      project_folder_id: null,
+      session_id: "session-1",
+      project_id: null,
+      runtime_key: "opencode",
+      model_provider_id: null,
+      model_override_json: {
+        chat_turn: {
+          schema_version: "chat_turn.v1",
+          session_id: "session-1",
+          user_id: "user-1",
+          user_message_id: "message-user-1",
+          agent_id: "agent-1",
+          agent_version_id: "version-1",
+          project_id: null,
+        },
+      },
+      output_json: null,
+      error_json: {
+        error_code: "orphaned",
+        error_text: "The worker disappeared.",
+      },
+      required_sandbox_level: "none",
+      trigger_origin: "manual",
+      instructed_by_user_id: "user-1",
+      started_at: "2026-07-26T10:00:00.000Z",
+      ended_at: "2026-07-26T10:05:00.000Z",
+    };
+    const repository = {
+      async listTerminalChatRunsAwaitingCompletion() {
+        return [{ id: run.id, space_id: run.space_id }];
+      },
+      async listWaitingRoomChatRunsAwaitingReply() {
+        return [];
+      },
+      async getRun() {
+        return run;
+      },
+      async listRunEventsPage() {
+        return { items: [], total: 0, limit: 1, offset: 0 };
+      },
+      async appendRunEvent(input: RunEventInput) {
+        events.push(input);
+        return {} as never;
+      },
+    } as unknown as PgRunRepository;
+
+    await reconcileTerminalChatRuns(
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://unused/test" }),
+      repository,
+      undefined,
+      {
+        async finalizeRun() {
+          // The evaluation is durable; the settlement sweep finishes the rest.
+          return {
+            kind: "activity",
+            status: "failed",
+            error_code: "settlement_pending",
+            error_message: "settlement owed",
+            metadata_json: {},
+          };
+        },
+      },
+      {
+        loadActionPreviews: async () => [],
+        resolveAgentActorId: async (_space: string, agentId: string) => agentId,
+        continuity: {
+          async finalizeChatTurn() {
+            return {
+              space_id: run.space_id,
+              work_context_scope_id: run.id,
+            } as never;
+          },
+        },
+      },
+    );
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        run_id: "run-orphaned",
+        event_type: "chat_completed",
+        status: "failed",
+        error_code: "orphaned",
+      }),
+    ]);
+  });
+
   it("completes a chat turn whose Run died before creating an invocation authority", async () => {
     const events: RunEventInput[] = [];
     const run: RunRecord = {

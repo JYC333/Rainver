@@ -9,11 +9,11 @@ import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
 /**
- * Placement is what binds a note to a Project (U7), and the binding is
+ * Placement is what binds a note to a Project, and the binding is
  * single-valued because `space_objects.primary_project_id` is a hard AND in the
  * content read gate — display ownership may be plural, governance ownership may
- * not. Until a share table widens that gate (S6), a note placed into a second
- * Project's folder would simply be invisible to its members, so it is refused.
+ * not. An unconfirmed placement into a second Project's folder is refused.
+ * Sharing is a separate confirmation.
  */
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
@@ -108,6 +108,22 @@ describe("note project binding by placement (real Postgres)", () => {
     expect(await primaryProjectOf(note.id)).toBe(projectId);
   });
 
+  it("keeps Project ownership through more than 64 nested folders", async () => {
+    const repository = new PgKnowledgeRepository(db.pool);
+    const projectId = await makeProject("Study");
+    const projectFolder = await withTransaction(db.pool, (tx) => ensureProjectNotesFolder(tx, SPACE, projectId));
+    const ids = Array.from({ length: 70 }, () => randomUUID());
+    const rows = ids.map((id, index) => ({ id, parent: index ? ids[index - 1] : projectFolder }));
+    await db.pool.query(`INSERT INTO note_collections
+      (id,space_id,parent_id,name,system_role,sort_order,is_system,is_hidden,created_at,updated_at)
+      SELECT id,$1,parent,'Folder','normal',0,false,false,now(),now()
+      FROM jsonb_to_recordset($2::jsonb) AS items(id text,parent text)`, [SPACE, JSON.stringify(rows)]);
+    const loose = await makeFolder("Loose");
+    const note = await repository.createNote(identity, { title: "Unfiled", collection_id: loose }) as { id: string };
+    await repository.addNotePlacement(identity, note.id, ids.at(-1)!);
+    expect(await primaryProjectOf(note.id)).toBe(projectId);
+  });
+
   it("refuses an unconfirmed placement into a second Project's subtree", async () => {
     if (!db.available) return;
     const repository = new PgKnowledgeRepository(db.pool);
@@ -117,9 +133,9 @@ describe("note project binding by placement (real Postgres)", () => {
     const secondFolder = await withTransaction(db.pool, (tx) => ensureProjectNotesFolder(tx, SPACE, second));
     const note = await repository.createNote(identity, { title: "Owned", collection_id: firstFolder }) as { id: string };
 
-    // 409 with a code rather than a flat refusal: S6 made this case reachable
-    // through an explicit share, so the client's answer is to ask the user.
-    // The drag path has no such answer and stays refused.
+    // 409 with a code rather than a flat refusal: a confirmed share makes this
+    // case reachable, so the client's answer is to ask the user. The drag path
+    // has no such answer and stays refused.
     await expect(repository.addNotePlacement(identity, note.id, secondFolder))
       .rejects.toMatchObject({ statusCode: 409 });
     await expect(withTransaction(db.pool, (client) => persistNotesTreeReorder(client, identity, {
@@ -139,8 +155,8 @@ describe("note project binding by placement (real Postgres)", () => {
     const projectFolder = await withTransaction(db.pool, (tx) => ensureProjectNotesFolder(tx, SPACE, projectId));
     const loose = await makeFolder("Loose");
     const note = await repository.createNote(identity, { title: "Stale role", collection_id: loose }) as { id: string };
-    // A role scoped to a Project the note is not (yet) in — the shape the guard
-    // exists for. The role write path refuses to create this, so it is set up
+    // A role scoped to a Project the note is not in. The guard drops that role
+    // on a drag. The role write path refuses to create this, so it is set up
     // directly.
     await db.pool.query(
       `UPDATE notes SET project_role = 'understanding', role_project_id = $2 WHERE object_id = $1`,
@@ -169,6 +185,29 @@ describe("note project binding by placement (real Postgres)", () => {
 
     expect(await primaryProjectOf(note.id)).toBe(projectId);
     expect(await roleOf(note.id)).toEqual({ project_role: "understanding", role_project_id: projectId });
+  });
+
+  it("files a note created for a Project into that Project's folder when no folder is named", async () => {
+    if (!db.available) return;
+    const projectId = await makeProject("Alpha");
+    const repository = new PgKnowledgeRepository(db.pool);
+    const loose = await makeFolder("Loose");
+
+    const note = await repository.createNote(identity, { title: "Bound", primary_project_id: projectId }) as {
+      id: string; placements: Array<{ collection_id: string }>;
+    };
+    const projectRoot = await withTransaction(db.pool, (tx) => ensureProjectNotesFolder(tx, SPACE, projectId));
+    expect(note.placements).toEqual([{ collection_id: projectRoot, sort_order: 0 }]);
+
+    // Naming a folder outside the Project for a note bound to it is refused:
+    // the note would be unreachable from the Project that owns it.
+    await expect(repository.createNote(identity, { title: "Astray", primary_project_id: projectId, collection_id: loose }))
+      .rejects.toMatchObject({ statusCode: 422, responseBody: { code: "note_owning_entry_required", owning_project_id: projectId } });
+    // Rebinding an existing note to a Project it has no entry in is the same refusal.
+    const other = await makeProject("Beta");
+    await expect(repository.updateNote(identity, note.id, { primary_project_id: other }))
+      .rejects.toMatchObject({ statusCode: 422, responseBody: { code: "note_owning_entry_required", owning_project_id: other } });
+    expect(await primaryProjectOf(note.id)).toBe(projectId);
   });
 
   it("creates the Project notes folder once, under the seeded Projects root", async () => {

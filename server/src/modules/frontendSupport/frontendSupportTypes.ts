@@ -55,7 +55,8 @@ export interface HomeSummaryOut {
     priority: "high" | "normal" | "low";
   }>;
   source_summary: {
-    open_items: number;
+    /** Items this viewer may read in the Library and has not opened or set aside. */
+    pending_reading_items: number;
     new_items_today: number;
     pending_extraction_jobs: number;
     failed_extraction_jobs: number;
@@ -125,6 +126,8 @@ export interface HomePendingProposalItem {
   preview: boolean;
   created_by_run_id: string | null;
   visibility: string;
+  /** Accept is refused until the person saves their revision (maintenance updates). */
+  awaiting_revision: boolean;
 }
 
 export interface HomeArtifactSummaryItem {

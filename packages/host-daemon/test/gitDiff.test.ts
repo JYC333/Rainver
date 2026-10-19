@@ -120,7 +120,7 @@ describe("captureWorkspaceDiff against a Run baseline", () => {
     await writeFile(join(dir, "a.txt"), "dirty before\n");
     const baseline = await captureWorkspaceTree(dir);
     expect(await captureWorkspaceDiff(dir, baseline)).toBe("");
-    // Without a baseline the old shape — every uncommitted change — is all it can report.
+    // Without a baseline, every uncommitted change is all it can report.
     expect(await captureWorkspaceDiff(dir, null)).toContain("+dirty before");
   });
 

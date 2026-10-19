@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PostRunFinalizationService,
+  RunSettlementPendingError,
 } from "../src/modules/runs/finalizationService.js";
 import type {
   PgRunRepository,
@@ -62,6 +63,7 @@ class FinalizationRepository {
 
   async getRun(): Promise<RunRecord> { return this.currentRun; }
   async getRunFinalizationByVersion(): Promise<null> { return null; }
+  async getRunEvaluationForAttempt(): Promise<null> { return null; }
   async listRunSteps(): Promise<never[]> { return []; }
   async listRunEvents(): Promise<never[]> { return []; }
   async listVerificationResults(): Promise<VerificationResultRecord[]> { return this.verificationRows; }
@@ -99,10 +101,16 @@ class FinalizationRepository {
       metadata_json: null,
       finalized_at: new Date().toISOString(),
       created_at: new Date().toISOString(),
+      settled_at: null,
+      settlement_attempts: 0,
+      settlement_json: {},
     };
   }
 
-  async markRunFinalizationGateCommitted(): Promise<void> {}
+  readonly settlements: Array<{ completed: readonly string[]; failure: { key: string } | null }> = [];
+  async recordRunSettlement(_spaceId: string, _finalizationId: string, input: { completed: readonly string[]; failure: { key: string } | null }): Promise<void> {
+    this.settlements.push(input);
+  }
   async withRunFinalizationLock<T>(
     _spaceId: string,
     _runId: string,
@@ -144,25 +152,45 @@ describe("post-run verification outcome", () => {
     expect(finalization.failure_reason_code).toBe("verification_missing");
   });
 
-  it("best-effort reconciles a plan child after finalization", async () => {
-    const currentRun = run({});
-    currentRun.owner_user_id = "user-1";
-    const repository = new FinalizationRepository(
-      currentRun,
-      [],
-    );
-    const reconciled: string[] = [];
+  it("commits the completion gate only once every settlement reconciler completed", async () => {
+    const repository = new FinalizationRepository(run({}), []);
+    const settled: string[] = [];
     await new PostRunFinalizationService(
       repository as unknown as PgRunRepository,
       undefined,
       undefined,
       undefined,
       {
-        async reconcileForRun(spaceId, runId, userId) {
-          reconciled.push(`${spaceId}:${userId}:${runId}`);
-        },
+        reconcilers: () => [
+          { key: "plan_graph", settle: async (target) => { settled.push(`plan_graph:${target.id}`); } },
+          { key: "project_work", settle: async (target) => { settled.push(`project_work:${target.id}`); } },
+        ],
       },
     ).finalize("run-1", "space-1");
-    expect(reconciled).toEqual(["space-1:user-1:run-1"]);
+    expect(settled).toEqual(["plan_graph:run-1", "project_work:run-1"]);
+    expect(repository.settlements).toEqual([{ completed: ["plan_graph", "project_work"], failure: null, at: expect.any(String) }]);
+  });
+
+  it("leaves settlement owed when a reconciler fails, still running the others", async () => {
+    const repository = new FinalizationRepository(run({}), []);
+    const settled: string[] = [];
+    await expect(new PostRunFinalizationService(
+      repository as unknown as PgRunRepository,
+      undefined,
+      undefined,
+      undefined,
+      {
+        reconcilers: () => [
+          { key: "plan_graph", settle: async () => { throw Object.assign(new Error("deadlock"), { code: "40P01" }); } },
+          { key: "project_work", settle: async () => { settled.push("project_work"); } },
+        ],
+      },
+    ).finalize("run-1", "space-1")).rejects.toBeInstanceOf(RunSettlementPendingError);
+    expect(settled).toEqual(["project_work"]);
+    expect(repository.settlements).toEqual([{
+      completed: ["project_work"],
+      failure: { key: "plan_graph", error_code: "40P01", message: "deadlock" },
+      at: expect.any(String),
+    }]);
   });
 });

@@ -73,7 +73,12 @@ function eventSummary(kind: string, data: Record<string, unknown>): string {
   }
 }
 
-export default function TaskWorkTab({ taskId, onChanged }: { taskId: string; onChanged?: () => void }) {
+export default function TaskWorkTab({ taskId, refreshToken = 0, onChanged }: {
+  taskId: string
+  /** Incremented by the page after a write that may have changed the Work view. */
+  refreshToken?: number
+  onChanged?: () => void
+}) {
   const [view, setView] = useState<TaskWorkView | null>(null)
   const [loading, setLoading] = useState(true)
   const [stagePick, setStagePick] = useState<WorkLoopStageKey | ''>('')
@@ -90,7 +95,7 @@ export default function TaskWorkTab({ taskId, onChanged }: { taskId: string; onC
     }
   }, [taskId])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => { void load() }, [load, refreshToken])
 
   const moveStage = useCallback(async () => {
     if (!stagePick || !reason.trim()) return

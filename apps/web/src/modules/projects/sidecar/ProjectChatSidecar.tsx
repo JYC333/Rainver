@@ -12,7 +12,6 @@ import { Button } from '../../../components/ui/button'
 import { Select } from '../../../components/ui/select'
 import { Skeleton } from '../../../components/ui/skeleton'
 import { ConversationSurface } from '../../conversation/ConversationSurface'
-import { ConversationBackendSetupCard } from '../../agent_groups/conversation/ConversationBackendSetupCard'
 import { ConversationExecutionPreflight } from '../../conversation/ConversationExecutionPreflight'
 import { conversationInputSourcesFromExecutionSummary } from '../../conversation/ConversationInputComposer'
 import ProjectConversationBackendCard from '../ProjectConversationBackendCard'
@@ -20,16 +19,12 @@ import { useProjectFolderConversation, type CurrentFileAttachment } from '../Pro
 
 /**
  * Talking to the Project's Agent without leaving what you are looking at.
- *
- * Before this, the Room was a separate page: discussing anything meant leaving
- * the thing you were discussing and then describing it again in words. The
- * sidecar carries that description for you — see `focusRefsFor` — which is the
- * highest-frequency friction in a system you use every day.
+ * The sidecar carries the current focus — see `focusRefsFor`.
  *
  * It binds to the Project's **mainline** Room — the one every Project member
- * belongs to — rather than to whichever Room the viewer happened to be on the
- * roster of that was most recently active. That version switched Rooms under
- * people and was empty for anyone nobody had invited. It renders the Room's
+ * belongs to. Do not bind whichever Room the viewer was most recently on:
+ * that switches Rooms under people and is empty for anyone not invited.
+ * It renders the Room's
  * own conversation, not a private one: a teammate opening the full Room sees
  * what was said here. The rich Room surface (run progress,
  * action previews, roster, invitations) stays on that page; this is the daily
@@ -78,9 +73,8 @@ export function focusRefsFor(pathname: string): Array<{ type: 'task'; id: string
 export default function ProjectChatSidecar() {
   const { projectId = '' } = useParams()
   const { pathname } = useLocation()
-  // The Rooms Area is already a Room, usually this one. Two live views of the
-  // same conversation side by side is not a second opinion, it is a bug the
-  // person has to reason about.
+  // The Rooms Area is already a Room, usually this one. Do not show two live
+  // views of the same conversation side by side.
   const onRoomsArea = /\/rooms(\/|$)/.test(pathname)
   const onFilesArea = /\/files(\/|$)/.test(pathname)
 
@@ -131,7 +125,6 @@ export default function ProjectChatSidecar() {
   const [failure, setFailure] = useState<string | null>(null)
   const [conversations, setConversations] = useState<RoomConversationRecord[]>([])
   const [sessionId, setSessionId] = useState<string>('')
-  const [setupTargets, setSetupTargets] = useState<string[]>([])
   const [runtimeRevision, setRuntimeRevision] = useState(0)
   const [runtimeOpen, setRuntimeOpen] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -167,7 +160,6 @@ export default function ProjectChatSidecar() {
     if (!projectId || !open || onRoomsArea) return
     let active = true
     setLoading(true)
-    setSetupTargets([])
     setExecutionReady(false)
     setExecutionSummary(null)
     void (async () => {
@@ -186,7 +178,7 @@ export default function ProjectChatSidecar() {
         setConversations(page.items)
         if (page.items.length === 0) setRuntimeOpen(true)
         // Remembered per Room, not per Project: the id names a conversation
-        // *in* a Room, and a stale one matching nothing silently fell back.
+        // *in* a Room. Do not fall back when a stale id matches nothing.
         const remembered = readStored(conversationKey(mainline.room.id))
         const chosen = page.items.find(item => item.id === remembered) ?? page.items[0]
         setSessionId(chosen?.id ?? '')
@@ -336,11 +328,6 @@ export default function ProjectChatSidecar() {
         <p className="p-3 text-xs text-destructive">{failure}</p>
       ) : !room ? null : (
         <>
-          {setupTargets.length > 0 && (
-            <div className="border-b border-border p-3">
-              <ConversationBackendSetupCard setupTargets={setupTargets} />
-            </div>
-          )}
           {/* The same conversation module the full Room page renders: one
               implementation of what a conversation is, two places it is read. */}
           {onFilesArea && currentFileAttachment && (
@@ -380,9 +367,7 @@ export default function ProjectChatSidecar() {
             )}
             variant="panel"
             focusRefs={focusRefs}
-            onBackendRequired={setSetupTargets}
             onSent={() => {
-              setSetupTargets([])
               setRuntimeRevision(current => current + 1)
             }}
             onConversationUpdated={conversation => {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { seedServerHost, seedMainlineRoomsForAllProjects, seedServerRuntimeProfile } from "./support/domainSeeds.js";
+import { seedServerHost, seedMainlineRoomsForAllProjects, seedServerRuntimeProfile, seedSpaceMember } from "./support/domainSeeds.js";
 import { beforeEach, describe, expect, it } from "vitest";
-import { normalizeExecutorConfig } from "../src/modules/experiments/common.js";
+import { assertScopesDoNotOverlap, managedScopeViolation, normalizeExecutorConfig, scopePathArray } from "../src/modules/experiments/common.js";
 import { ExperimentDefinitionService } from "../src/modules/experiments/definitionService.js";
 import { ExperimentInterpretationService } from "../src/modules/experiments/interpretationService.js";
 import { ExperimentRunService } from "../src/modules/experiments/runService.js";
@@ -12,6 +12,7 @@ import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js"
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { waitForLockWaiter } from "./support/lockWait.js";
 
 describe("experimentsCommon", () => {
   describe("Experiment executor configuration", () => {
@@ -31,6 +32,16 @@ describe("experimentsCommon", () => {
         .toThrow(/positive integer/);
     });
 
+    it("treats a scope directory written with a trailing slash as that directory", () => {
+      const editable = scopePathArray(["src/"], "editable_scope");
+      expect(editable).toEqual(["src"]);
+      expect(managedScopeViolation(["src/main.py"], editable, [])).toBeNull();
+      expect(managedScopeViolation(["src/main.py"], ["src/"], [])).toBeNull();
+      expect(managedScopeViolation(["docs/notes.md"], editable, [])).toMatch(/outside editable scope/);
+      expect(() => assertScopesDoNotOverlap(editable, scopePathArray(["src/secret"], "protected_scope")))
+        .toThrow(/overlaps protected scope/);
+    });
+
     it("keeps positive integer budgets in the immutable normalized config", () => {
       expect(normalizeExecutorConfig("managed_code_comparison", {
         ...base,
@@ -47,10 +58,9 @@ describe("experimentsCommon", () => {
 describe("experimentsDb", () => {
   // Real-Postgres coverage for the Experiment Domain: Definition
   // -> Version (manual or managed_code_comparison) -> Run -> Observation ->
-  // Interpretation -> convert to Inquiry Evidence Signal. Replaces the earlier
-  // project_experiment_campaigns/runs/provenance model — managed_code_comparison
-  // is one executor_type here, not a second Experiment concept (see
-  // projectResearchIntegrityDb.test.ts for the retargeted integrity check).
+  // Interpretation -> convert to Inquiry Evidence Signal.
+  // `managed_code_comparison` is one executor_type, not a second Experiment
+  // concept. Do not add a parallel campaign model beside it.
 
   const SPACE = "11111111-1111-4111-8111-111111111111";
   const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -239,8 +249,8 @@ describe("experimentsDb", () => {
       });
 
       // The Signal enters the same material-consolidation path as a
-      // literature-sourced Signal — one open Candidate, reviewable and
-      // acceptable through the existing Candidate review flow unchanged.
+      // literature-sourced Signal: one open Candidate. Do not add a second
+      // review flow for it.
       const candidates = await signalSvc.listCandidates(identity, PROJECT, "pending");
       expect(candidates).toHaveLength(1);
       const accepted = await signalSvc.decideCandidate(identity, PROJECT, (candidates[0] as Record<string, unknown>).id as string, {
@@ -252,6 +262,42 @@ describe("experimentsDb", () => {
       // A converted Interpretation is immutable; converting twice is refused.
       await expect(interpretations.convertToSignal(identity, PROJECT, interpretation.id as string, {}))
         .rejects.toMatchObject({ statusCode: 409 });
+    });
+
+    it("keeps a Project writer from reviewing an Interpretation of a Definition they cannot read", async () => {
+      if (!db.available) return;
+      const REVIEWER = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+      await seedSpaceMember(db.pool, { space: SPACE, user: REVIEWER });
+      await db.pool.query(
+        `INSERT INTO project_members (id, space_id, project_id, user_id, role, status, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'member', 'active', now(), now())`,
+        [randomUUID(), SPACE, PROJECT, REVIEWER],
+      );
+      const hypothesis = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
+        kind: "hypothesis", statement: "Private experiment stays its owner's",
+      });
+      const definitions = new ExperimentDefinitionService(db.pool);
+      const definition = await definitions.createDefinition(identity, PROJECT, {
+        name: "Owner-only experiment", objective: "Review gate", primary_hypothesis_thread_id: hypothesis.id,
+      });
+      const version = await definitions.createVersion(identity, PROJECT, definition.id as string, { executor_type: "manual" });
+      await definitions.approveVersion(identity, PROJECT, definition.id as string, version.id as string);
+      const runs = new ExperimentRunService(db.pool);
+      const run = await runs.createRun(identity, PROJECT, definition.id as string, version.id as string, { is_baseline: true });
+      await runs.completeRun(identity, PROJECT, definition.id as string, run.id as string, {
+        status: "completed", observations: [{ metric_name: "p95_latency_ms", value_number: 200, is_primary: true }],
+      });
+      const interpretations = new ExperimentInterpretationService(db.pool);
+      const interpretation = await interpretations.createInterpretation(identity, PROJECT, definition.id as string, {
+        run_ids: [run.id], verdict: "inconclusive", conclusion: "One run says little.",
+      });
+      await db.pool.query(`UPDATE space_objects SET visibility = 'private' WHERE id = $1 AND space_id = $2`, [definition.id, SPACE]);
+
+      const reviewer: SpaceUserIdentity = { spaceId: SPACE, userId: REVIEWER };
+      await expect(definitions.getDefinition(reviewer, PROJECT, definition.id as string)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(interpretations.markReviewed(reviewer, PROJECT, interpretation.id as string)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(db.pool.query<{ status: string }>(`SELECT status FROM experiment_interpretations WHERE id = $1`, [interpretation.id]))
+        .resolves.toMatchObject({ rows: [{ status: "draft" }] });
     });
 
     it("enforces managed_code_comparison config validation and baseline-first Run ordering", async () => {
@@ -300,6 +346,18 @@ describe("experimentsDb", () => {
       const candidateRun = await runs.createRun(identity, PROJECT, definition.id as string, version.id as string, { is_baseline: false });
       expect(candidateRun.is_baseline).toBe(false);
 
+      // A Project writer cannot point the Run at an Agent they cannot read.
+      const admin = randomUUID();
+      await db.pool.query(`INSERT INTO users (id, display_name, status, created_at, updated_at, email, registration_source) VALUES ($1,$1,'active',now(),now(), lower(gen_random_uuid()::text || '@test.invalid'), 'system')`, [admin]);
+      await db.pool.query(`INSERT INTO space_memberships (id, space_id, user_id, role, status, created_at, updated_at) VALUES ($1,$2,$3,'admin','active',now(),now())`, [randomUUID(), SPACE, admin]);
+      await expect(runs.launchManagedRun(
+        { spaceId: SPACE, userId: admin },
+        PROJECT,
+        definition.id as string,
+        version.id as string,
+        { agent_id: AGENT, is_baseline: false },
+      )).rejects.toMatchObject({ statusCode: 404 });
+
       const launched = await runs.launchManagedRun(
         identity,
         PROJECT,
@@ -335,6 +393,44 @@ describe("experimentsDb", () => {
       expect(observations).toEqual(expect.arrayContaining([
         expect.objectContaining({ metric_name: "accuracy", value_number: 0.91, source: "parsed" }),
       ]));
+    });
+
+    it("does not let a completion overwrite a terminal state committed under it", async () => {
+      if (!db.available) return;
+      const definitions = new ExperimentDefinitionService(db.pool);
+      const definition = await definitions.createDefinition(identity, PROJECT, { name: "Raced completion" });
+      const version = await definitions.createVersion(identity, PROJECT, definition.id as string, { executor_type: "manual" });
+      const primary = await new InquiryThreadService(db.pool).createThread(identity, PROJECT, {
+        kind: "hypothesis", statement: "A completion arriving beside a reconcile keeps the reconcile's verdict",
+      });
+      await definitions.updateDefinition(identity, PROJECT, definition.id as string, { primary_hypothesis_thread_id: primary.id });
+      await definitions.approveVersion(identity, PROJECT, definition.id as string, version.id as string);
+      const runs = new ExperimentRunService(db.pool);
+      const run = await runs.createRun(identity, PROJECT, definition.id as string, version.id as string, { is_baseline: true });
+
+      // A reconcile holds the Run row failed but uncommitted; it locks only
+      // the Run, not the Project, so the completion is not serialized by the
+      // Project lock and must find the terminal state itself.
+      const reconcile = await db.pool.connect();
+      try {
+        await reconcile.query("BEGIN");
+        await reconcile.query(`UPDATE experiment_runs SET status='failed' WHERE id=$1 AND space_id=$2`, [run.id, SPACE]);
+        let settled = false;
+        const completion = runs.completeRun(identity, PROJECT, definition.id as string, run.id as string, { status: "completed" })
+          .finally(() => { settled = true; });
+        const outcome = expect(completion).rejects.toMatchObject({ statusCode: 409 });
+        await waitForLockWaiter(db.pool, { settled: () => settled });
+        await reconcile.query("COMMIT");
+        await outcome;
+      } finally {
+        await reconcile.query("ROLLBACK").catch(() => undefined);
+        reconcile.release();
+      }
+      expect((await db.pool.query<{ status: string }>(`SELECT status FROM experiment_runs WHERE id=$1`, [run.id])).rows)
+        .toEqual([{ status: "failed" }]);
+      expect((await db.pool.query<{ baseline_run_id: string | null }>(
+        `SELECT baseline_run_id FROM experiment_definitions WHERE object_id=$1`, [definition.id],
+      )).rows).toEqual([{ baseline_run_id: null }]);
     });
 
     it("requires a primary Hypothesis Thread before the first Run, and the DB rejects a Signal with both or neither source", async () => {

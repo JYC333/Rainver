@@ -22,7 +22,7 @@ export function normalizeThreadScope(value: unknown): ResearchThreadScopeRef[] {
   });
 }
 
-export interface ResearchThreadDriftResult {
+interface ResearchThreadDriftResult {
   /** True when the pinned ref no longer matches the Thread's live row (or the Thread is gone/inactive). */
   drifted: boolean;
   /** The Thread's current row, or null if it no longer exists/is no longer an active Question. */
@@ -31,7 +31,7 @@ export interface ResearchThreadDriftResult {
 
 /**
  * The pinned Inquiry Thread is the sole Question authority for a research
- * Workflow — Project.current_focus and the legacy research profile are
+ * Workflow. Project.current_focus and the research profile are
  * presentation/setup state, never compared here.
  */
 export async function checkPinnedThreadDrift(
@@ -56,13 +56,11 @@ export async function checkPinnedThreadDrift(
  * Whether a materialized question that reads differently from the Thread is a
  * *refinement of that same Thread* rather than a different Question's.
  *
- * Assessment legitimately rewrites the question it plans queries from — it
- * may translate it, narrow it, or make it answerable — and the strategy
- * carries that rewritten text. Comparing the two texts therefore rejects the
- * pipeline's own correct output (`research.start_acquisition` could never
- * start once assessment changed a word), while the thing the comparison was
- * protecting against — a strategy built for a *different* Question — is a
- * question of provenance, so provenance is what is checked: the strategy's
+ * Assessment rewrites the question it plans queries from — it may translate
+ * it, narrow it, or make it answerable — and the strategy carries that
+ * rewritten text. Do not compare the two texts. A changed word is still this
+ * Thread, and `research.start_acquisition` would never start. A strategy
+ * built for a different Question is a provenance check: the strategy's
  * research-context version belongs to an assessment session for this Thread.
  * The Thread's own statement stays the authoritative question either way.
  */

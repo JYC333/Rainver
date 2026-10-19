@@ -5,7 +5,7 @@ import type { SystemActionExecutor } from "../systemActions/gateway.js";
 import type { AgentRunRecord } from "../runs/repository.js";
 import { PgPlanRepository } from "./repository.js";
 
-/** `task.plan.propose` (action authority consolidation plan, P1.5). */
+/** `task.plan.propose`. */
 export function registerPlansSystemActionExecutors(
   executors: Map<SystemActionId, SystemActionExecutor>,
   config: ServerConfig,
@@ -16,7 +16,7 @@ export function registerPlansSystemActionExecutors(
 
   executors.set("task.plan.propose" as SystemActionId, async (input, context) => {
     const body = input as Record<string, unknown>;
-    const plan = await new PgPlanRepository(db).createPlanFromAgent(identity, {
+    const plan = await new PgPlanRepository(db, config).createPlanFromAgent(identity, {
       sourceTaskId: String(body.task_id ?? ""),
       planId: typeof body.plan_id === "string" ? body.plan_id : null,
       planningRunId: run.id,

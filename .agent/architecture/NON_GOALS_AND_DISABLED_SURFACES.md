@@ -1,7 +1,6 @@
 # Non-Goals and Disabled Surfaces
 
-Current absences and product-scope refusals. Unimplemented designs that
-used to live here are in
+Current absences and product-scope refusals. Unimplemented designs are in
 [../plans/unimplemented-from-guides.md](../plans/unimplemented-from-guides.md).
 
 ## Currently Disabled or Not Implemented
@@ -10,8 +9,8 @@ used to live here are in
 |---|---|
 | Broad autonomous discovery / crawling | No crawler engine |
 | Connector marketplace / integration lifecycle | No marketplace; Sources connections and recipes exist |
-| Capability marketplace or remote install UX | File-defined registry; local workspace roots; no remote install |
-| Automatic system self-evolution | Removed; no privileged Evolver Agent |
+| Capability marketplace or remote install UX | Built-in definitions in `capabilities/registry.ts`; catalog YAML is diagnostic; skill import is GitHub only; no remote install |
+| Automatic system self-evolution | No privileged Evolver Agent |
 | App-container self-deployment | Blocked by deployer allowlist |
 | Deployment from an Agent, automation, or Proposal | Blocked; instance admin creates the job |
 | Arbitrary deployer commands | Only `rebuild_rainver`, `restart_rainver`, `health_check` |
@@ -20,10 +19,10 @@ used to live here are in
 | Multi-device conflict resolution | Not present |
 | Public internet sharing | Not present. Instance-local targeted publication exists (`publications`) |
 | Public SaaS / multi-tenant | Out of scope |
-| API key persistence UI | Feature-gated (501 in production); no `api_keys` table |
-| Files & Code interactive session execution | Removed. Files & Code has bounded human file editing, but no interactive Agent-session execution |
+| API key authentication and management | Not implemented: Bearer requests and `/api/v1/auth/keys` return 501; no `api_keys` table |
+| Files & Code interactive session execution | Not present. Files & Code has bounded human file editing, but no interactive Agent-session execution |
 | Runtime adapter bypassing credential resolver | Blocked by `RunOrchestrationService` |
-| Runtime adapter bypassing sandbox/path policy | Blocked by `execution_workspace` |
+| Runtime adapter bypassing sandbox/path policy | Blocked by `PathPolicy` and the host namespace |
 | Agent file mutation without approved proposal + PathPolicy | Blocked by code-patch apply; explicit human File-page edits are draft-backed and only Save to Folder performs the bounded direct write |
 | Automatic memory promotion from source/evidence | Blocked by proposal/apply |
 | Vector index over an **external** corpus | Not present. Space-internal pgvector recall exists |
@@ -44,7 +43,7 @@ external webhook/cron marketplace.
 
 - Personal spaces (`personal`) and household shared spaces (`household`).
 - Explicit membership and space switching.
-- Auth via session cookies or API keys. No dev-identity fallback.
+- Auth via session cookies only; Bearer API keys are rejected with 501. No dev-identity fallback.
 - Activity Inbox via `POST /api/v1/activity`.
 - Sources via `/api/v1/sources/*`.
 - Capture destinations via `POST /api/v1/captures`.

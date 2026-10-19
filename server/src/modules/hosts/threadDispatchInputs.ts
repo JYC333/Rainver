@@ -5,19 +5,12 @@ import type { RunRecord } from "../runs/repository.js";
  * Run itself: which thread it belongs to, and which vendor session the thread
  * asked it to resume.
  *
- * The Run row is the one authority for this. It used to travel in the
- * `agent_run` job payload instead, rebuilt by hand at each place that
- * enqueues one — and there are twenty of those. The Room path built it, the
- * lifecycle projector built it, the thread queue built it, and direct chat,
- * the supervisor retry, the authorization re-enqueue and the resume endpoint
- * each did not, so a Run on those paths started a fresh vendor session every
- * turn while its thread believed it was resuming one, and its thread's
- * dispatch claim was released only by the reconciler's safety net. Every
- * creation path already writes `model_override_json.host_thread` (the Room,
- * delegation and direct-chat overrides, and `createDispatchRun`), so the job
- * carries nothing and there is nothing to forget.
+ * The Run row is the one authority for this. Do not carry it in the
+ * `agent_run` job payload: enqueue sites that omit it start a fresh vendor
+ * session while the thread believes it is resuming one. Creation paths write
+ * `model_override_json.host_thread`, so the job carries nothing.
  */
-export interface HostThreadDispatchInputs {
+interface HostThreadDispatchInputs {
   thread_id: string | null;
   /** The vendor session the thread asked this Run to resume, if any. */
   resume_session_id: string | null;

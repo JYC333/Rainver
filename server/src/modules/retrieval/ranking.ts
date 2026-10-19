@@ -3,20 +3,18 @@ import { normalizeTextForSearch } from "./normalize.js";
 import type { EvidenceKind, ScoredCandidate } from "./types.js";
 
 /**
- * Deterministic ranking signals applied after RRF fusion (Phase 2, step 7).
+ * Deterministic ranking signals applied after RRF fusion.
  *
  * Every signal here is **access-neutral**: it is computed only from the
  * candidate's OWN canonical metadata/evidence — its object type, its own match
  * kind, its own surfaced relation type, its own `updated_at`, whether the query
  * phrase appears in its OWN title, and its own fused score for the floor gate.
  * None reads any other object, so a boost can never reveal the existence or
- * scale of objects the viewer cannot read (invariant 2). Cross-object signals
- * (backlink / graph degree, co-citation) are intentionally deferred because they
- * would require counting edges from objects that may be invisible to the viewer —
- * making them access-safe needs per-viewer visible-edge counting, a separate task.
+ * scale of objects the viewer cannot read (invariant 2). Do not count edges
+ * from objects the viewer cannot read: backlink, graph degree, and
+ * co-citation need per-viewer visible-edge counting before they can be a signal.
  *
- * Weights are conservative placeholders. Real tuning needs real relevance
- * signal (usage logs); until then these only mildly reorder and never gate.
+ * Weights are conservative. They mildly reorder and never gate.
  */
 export interface RankingSignalConfig {
   /** Per-object-type multiplier (source/canonical tier). Missing type = 1. */
@@ -26,9 +24,9 @@ export interface RankingSignalConfig {
   /** Candidate fused score floor before metadata boosts may apply. 0 disables. */
   metadataBoostFloor: number;
   /**
-   * Floor-ratio gate (§2.2): metadata boosts also require the candidate's fused
+   * Floor-ratio gate: metadata boosts also require the candidate's fused
    * score to be at least this fraction of the TOP fused score of the visible set.
-   * 0 disables. The absolute `metadataBoostFloor` remains as a secondary guard.
+   * 0 disables. The absolute `metadataBoostFloor` is a secondary guard.
    * `topScore` is the max over already-revalidated/visible candidates only, so it
    * never leaks a hidden object's existence — it just makes the floor adapt to the
    * result-set scale instead of being a fixed absolute number.
@@ -48,7 +46,7 @@ export interface RankingSignalConfig {
   /** Max recency multiplier for a brand-new object (1 disables recency). */
   recencyMaxBoost: number;
   /**
-   * Deterministic post-RRF cosine blend strength α (§2.3). For a candidate that
+   * Deterministic post-RRF cosine blend strength α. For a candidate that
    * had a vector hit, `score *= 1 + α·(cosineSim − 0.5)` using the candidate's OWN
    * best-chunk query/chunk cosine similarity (access-safe — reads only its own
    * embedding vs the query). 0 disables. Kept small so it reorders near-ties
@@ -76,12 +74,12 @@ export const DEFAULT_RANKING_SIGNALS: RankingSignalConfig = {
 };
 
 /**
- * Aggregate-safe ranking telemetry (§2.8). Counts how often each boost axis
+ * Aggregate-safe ranking telemetry. Counts how often each boost axis
  * fired and how many candidates were gated off by the floor/ratio — never any
  * object id, title, query, or snippet. Populated by `applyRankingSignals` when a
  * sink is passed; surfaced only as aggregate `trace.boost_attribution`.
  */
-export interface RankingTelemetry {
+interface RankingTelemetry {
   boost_attribution: Record<string, number>;
 }
 
@@ -106,7 +104,7 @@ const NAME_MATCH_KINDS: ReadonlySet<EvidenceKind> = new Set<EvidenceKind>([
  * title. Access-neutral: reads only the candidate's own title. An empty query
  * never matches (so create-safety / blank queries get no spurious boost).
  */
-export function titlePhraseMatches(title: string, normalizedQuery: string): boolean {
+function titlePhraseMatches(title: string, normalizedQuery: string): boolean {
   if (!normalizedQuery) return false;
   return normalizeTextForSearch(title).includes(normalizedQuery);
 }
@@ -168,14 +166,14 @@ export function rankingBoost(
     recordAxis(telemetry, "floor_gated");
   }
   // Cosine blend is a relevance signal, not a metadata boost, so it applies even
-  // when the metadata floor gated the candidate off (§2.3).
+  // when the metadata floor gated the candidate off.
   const blend = cosineBlendFactor(candidate, cfg);
   if (blend !== 1) { boost *= blend; recordAxis(telemetry, "cosine_blend"); }
   return boost > 0 && Number.isFinite(boost) ? boost : 1;
 }
 
 /**
- * Post-RRF cosine blend factor from the candidate's own vector similarity (§2.3).
+ * Post-RRF cosine blend factor from the candidate's own vector similarity.
  * Returns 1 (no-op) for candidates with no vector hit or when α is disabled.
  */
 function cosineBlendFactor(candidate: ScoredCandidate, cfg: RankingSignalConfig): number {
@@ -211,7 +209,7 @@ export function applyRankingSignals(
   telemetry?: RankingTelemetry,
 ): ScoredCandidate[] {
   const normalizedQuery = normalizeTextForSearch(query);
-  // Top fused score over the (visible) input set for the floor-ratio gate (§2.2).
+  // Top fused score over the (visible) input set for the floor-ratio gate.
   const topScore = candidates.reduce((max, candidate) => Math.max(max, candidate.score), 0);
   return candidates
     .map((candidate) => {

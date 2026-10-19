@@ -48,8 +48,8 @@ describe("the bound model in each runtime's identifier space", () => {
       models: { default_reasoning_level: string; supported_reasoning_levels: { effort: string }[] }[];
     };
     expect(catalog.models[0]!.supported_reasoning_levels.map((l) => l.effort)).toEqual(["low", "medium", "high"]);
-    // Codex's own fallback, so an endpoint that ignores the parameter behaves
-    // exactly as it did before.
+    // Codex's own fallback. An endpoint that ignores the parameter still
+    // reasons at `medium`.
     expect(catalog.models[0]!.default_reasoning_level).toBe("medium");
   });
 

@@ -136,9 +136,11 @@ describe('HostExecutionTargetPicker', () => {
     await waitFor(() => expect(screen.getByLabelText('Execution Location')).toHaveTextContent('Financial System'))
     expect(screen.getByText('Account not signed in')).toBeInTheDocument()
     expect(screen.getByText(/Models reported by ACP may still work without an account/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Login' }))
-    expect(await screen.findByTestId('runtime-login-terminal')).toBeInTheDocument()
-    expect(mockedApi.loginStream).toHaveBeenCalledWith('host-1', 'claude_code', 'own', null, expect.any(AbortSignal))
+    // Signing in happens where this host's real login methods are offered;
+    // the picker starts no login of its own.
+    expect(screen.getByRole('link', { name: /Sign in from Command Center/ })).toHaveAttribute('href', expect.stringContaining('/command-center'))
+    expect(screen.queryByRole('button', { name: 'Login' })).not.toBeInTheDocument()
+    expect(mockedApi.loginStream).not.toHaveBeenCalled()
   })
 
   it('does not require a native login for a ModelProvider-backed Server Profile', async () => {
@@ -216,7 +218,7 @@ describe('HostExecutionTargetPicker', () => {
   })
 
   it('says the Server Runtime is still installing rather than that a login is needed', async () => {
-    // Plan "Default path" §3: while Rainver's provisioner is still working,
+    // While Rainver's provisioner is still working,
     // an Agent surface shows installing/failed/incompatible — never a login
     // prompt for a copy that does not exist yet.
     mockedApi.executionTargets.mockResolvedValue({ targets: [SERVER_TARGET] })
@@ -256,8 +258,8 @@ describe('HostExecutionTargetPicker', () => {
   it("says a paired Host routes only its owner's own Runs, up to medium risk", async () => {
     // ROUTING.md "Effective trust": the owner's own Run on their paired Host
     // is `medium`, another member's stays at the `low` baseline, and nothing
-    // reaches `high`. Offering the Host without saying so produced a Profile
-    // that saved and then died `route_no_candidate`.
+    // reaches `high`. Do not offer the Host without saying so. The Profile
+    // saves and then dies `route_no_candidate`.
     render(<Harness />)
     fireEvent.click(await screen.findByLabelText('Execution host'))
     fireEvent.click(screen.getByRole('option', { name: 'Workstation · online' }))

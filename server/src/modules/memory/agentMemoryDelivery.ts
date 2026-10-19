@@ -6,21 +6,20 @@ import { roomConversationReadAccessSql } from "../access/contentAccessSql.js";
  * ([ADR 0003](../../../../.agent/decisions/0003-memory-proposal-flow.md) §4).
  *
  * Two kinds, with different reach. The **persona** — one active entry per
- * Agent — is delivered everywhere, which is why it is free of Project facts by
- * rule. A **note** carries the Room it was learned in and is delivered only
+ * Agent — is delivered everywhere. It is free of Project facts by rule. A **note** carries the Room it was learned in and is delivered only
  * where everyone who may read the current Room's conversations may also read
  * the origin Room's: an audience that could not have seen the conversation the
  * note came from never receives the note. A note taken in direct chat with the
  * owner has no origin Room and reaches only that direct chat.
  *
  * "May read" is asked of the read gate (`roomConversationReadAccessSql`), not
- * of the roster: a mainline's audience is every Project reader, of whom the
- * roster holds only those who have opened it, and a limited Room's is its
- * roster intersected with Project readability. Measuring by roster understated
- * the mainline — a note from a limited Room was delivered into a mainline
- * nobody but the owner had opened yet, and whoever opened it next read the
- * reply. The audience is enumerated over the Space's active members, which is
- * what `projectReaderIds` does for Thread References.
+ * of the roster. A mainline's audience is every Project reader; the roster
+ * holds only those who have opened it. A limited Room's audience is its
+ * roster intersected with Project readability. Do not measure by roster. A
+ * note from a limited Room would reach a mainline nobody but the owner had
+ * opened, and whoever opened it next would read the reply. The audience is
+ * enumerated over the Space's active members, which is what
+ * `projectReaderIds` does for Thread References.
  *
  * The test is computed here, at dispatch, and not at write time: a Room whose
  * roster or Project changed must change what is delivered into it, and ADR
@@ -28,7 +27,7 @@ import { roomConversationReadAccessSql } from "../access/contentAccessSql.js";
  * query rather than filtering afterwards, so an entry the audience must not
  * have never leaves the database.
  */
-export interface AgentMemoryEntry {
+interface AgentMemoryEntry {
   id: string;
   memory_type: string;
   title: string | null;
@@ -37,7 +36,7 @@ export interface AgentMemoryEntry {
   updated_at: string;
 }
 
-export interface AgentMemoryAudience {
+interface AgentMemoryAudience {
   spaceId: string;
   agentId: string;
   /** The Room this dispatch is speaking in, or null for a direct chat. */

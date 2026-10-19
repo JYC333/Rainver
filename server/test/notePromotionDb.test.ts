@@ -8,10 +8,10 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
 
-// ND: promoting a passage produces a knowledge item whose provenance records
-// the originating Note, and the Note is unchanged. "This knowledge came from
-// my note" was not expressible before — `knowledge_item_sources` has a hard FK
-// to `sources(object_id)`, and a Note is a `notes` row.
+// Promoting a passage produces a knowledge item whose provenance records
+// the originating Note, and the Note is unchanged. Do not record that
+// provenance through `knowledge_item_sources.source_id`. That column has a
+// hard FK to `sources`, and a Note is a `notes` row.
 
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -76,8 +76,8 @@ describe("promote a note passage to knowledge (real Postgres)", () => {
     }) as { id: string };
     const proposal = await repository.promoteNoteToKnowledge(identity, note.id, { content: PASSAGE });
 
-    // Accepted through the real gate, not by calling the applier directly —
-    // the point of ND is that promotion changes nothing about governance.
+    // Accepted through the real gate, not by calling the applier directly.
+    // Promotion changes nothing about governance.
     const config = loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
       SERVER_INTERNAL_TOKEN: "test-internal-token",

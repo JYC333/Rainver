@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
 import { withTransaction } from "../../db/tx.js";
-import { HttpError } from "../routeUtils/common.js";
+import { HttpError, type SpaceUserIdentity } from "../routeUtils/common.js";
 import {
   ScopedSettingsStore,
   SETTINGS_KEYS,
@@ -28,8 +28,8 @@ import {
 } from "../access/contentAccessTypes.js";
 import { contentResourceDefinition } from "../access/contentAccessRegistry.js";
 import { contentDecisionFromDb } from "../access/contentAccessQuery.js";
-import { assertAgentOwner, canChangeAgent } from "./agentAccess.js";
-import { canReadProject, canWriteProject } from "../projects/access.js";
+import { assertAgentOwner, canChangeAgent, canConfigureAssistant } from "./agentAccess.js";
+import { canReadProject } from "../projects/access.js";
 import {
   DEFAULT_MEMORY_POLICY,
   DEFAULT_AGENT_MAX_RUN_TIME_SECONDS,
@@ -89,6 +89,8 @@ export interface AgentRecord {
   current_version_id: string | null;
   visibility: string;
   access_level: string;
+  source_template_id: string | null;
+  source_template_version_id: string | null;
   created_at: unknown;
   updated_at: unknown;
   model_provider_id?: string | null;
@@ -100,7 +102,7 @@ export interface AgentRecord {
   runtime_key?: string | null;
 }
 
-export interface AgentVersionRecord {
+interface AgentVersionRecord {
   id: string;
   agent_id: string;
   space_id: string;
@@ -140,6 +142,9 @@ export interface AgentOut {
   status: string;
   agent_kind: string;
   current_version_id: string | null;
+  /** Provenance only: the catalog template this Agent was created from. */
+  source_template_id: string | null;
+  source_template_version_id: string | null;
   model: {
     provider_id: string | null;
     provider_name: string | null;
@@ -152,9 +157,12 @@ export interface AgentOut {
   updated_at: unknown;
 }
 
-export interface AssistantSettingsRecord {
+interface AssistantSettingsRecord {
   id: string;
   space_id: string;
+  /** The Assistant these settings belong to: the Space's own, or a Project's. */
+  scope: "space" | "project";
+  project_id: string | null;
   assistant_agent_id: string | null;
   response_style: string | null;
   verbosity: string | null;
@@ -166,7 +174,7 @@ export interface AssistantSettingsRecord {
   updated_at: unknown;
 }
 
-export interface SpaceAgentRuntimeDefaultRecord {
+interface SpaceAgentRuntimeDefaultRecord {
   space_id: string;
   runtime_key: string;
   backend_mode: "runtime_native" | "model_provider";
@@ -203,12 +211,15 @@ export interface AgentCreateInput {
   outputSchemaJson?: Record<string, unknown> | null;
   agentKind?: string | null;
   ownerUserId?: string | null;
+  /** The catalog template this Agent is created from; absent for a direct create. */
+  sourceTemplate?: { templateId: string; versionId: string } | null;
 }
 
 const AGENT_COLUMNS = `
   a.id, a.space_id, a.project_id, a.owner_user_id, a.name, a.description, a.role_instruction,
   a.status, a.agent_kind,
-  a.current_version_id, a.visibility, a.access_level, a.created_at, a.updated_at,
+  a.current_version_id, a.visibility, a.access_level, a.source_template_id, a.source_template_version_id,
+  a.created_at, a.updated_at,
   arp.model_provider_id, arp.model_name,
   av.system_prompt,
   arp.runtime_key,
@@ -305,6 +316,34 @@ const ASSISTANT_SETTINGS_DEFINITION = defineScopedSetting<AssistantSettingsValue
   serialize: assistantSettingsJson,
 });
 
+/** A Project's Assistant keeps its own settings row, scoped to the Project. */
+const PROJECT_ASSISTANT_SETTINGS_DEFINITION = defineScopedSetting<AssistantSettingsValue>({
+  key: ASSISTANT_SETTINGS_KEY,
+  scopeType: "project",
+  defaults: ASSISTANT_SETTINGS_DEFAULTS,
+  parse: parseAssistantSettings,
+  serialize: assistantSettingsJson,
+});
+
+/**
+ * Which managed Assistant a settings read or write is about: the Space's own
+ * (personal or shared, `projectId: null`) or a Project's. Named explicitly at
+ * the route so the read, the write and the authority check all address the
+ * same Assistant.
+ */
+export interface AssistantSettingsTarget {
+  spaceId: string;
+  projectId: string | null;
+}
+
+function assistantSettingsDefinition(target: AssistantSettingsTarget) {
+  return target.projectId ? PROJECT_ASSISTANT_SETTINGS_DEFINITION : ASSISTANT_SETTINGS_DEFINITION;
+}
+
+function assistantSettingsScopeId(target: AssistantSettingsTarget): string {
+  return target.projectId ?? target.spaceId;
+}
+
 function enumStringOrNull(value: unknown, allowed: ReadonlySet<string>, field: string): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") return null;
@@ -347,13 +386,15 @@ function booleanRecord(value: unknown): Record<string, boolean> {
 }
 
 function assistantSettingsRecordFromRead(
-  spaceId: string,
+  target: AssistantSettingsTarget,
   read: ScopedSettingsRead<AssistantSettingsValue>,
 ): AssistantSettingsRecord {
   if (!read.row) throw new Error("assistant settings row was not created");
   return {
     id: read.row.id,
-    space_id: spaceId,
+    space_id: target.spaceId,
+    scope: target.projectId ? "project" : "space",
+    project_id: target.projectId,
     assistant_agent_id: read.value.assistant_agent_id,
     response_style: read.value.response_style,
     verbosity: read.value.verbosity,
@@ -366,7 +407,7 @@ function assistantSettingsRecordFromRead(
   };
 }
 
-export interface AgentChatRecord {
+interface AgentChatRecord {
   id: string;
   space_id: string;
   name: string | null;
@@ -503,10 +544,10 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
    * Mark the instance's current version as a materialization of a seed.
    *
    * Creation goes through the ordinary `create` path, which knows nothing
-   * about seeds; this is the provisioner saying "that first version was mine".
-   * It never clears the mark and never touches a version that already carries
-   * a different one, so it cannot re-attach an instance somebody has since
-   * given a version of its own.
+   * about seeds. This marks the version just created as following the seed.
+   * Do not clear the mark. Do not touch a version that already carries a
+   * different one. That would re-attach an instance somebody has since given
+   * a version of its own.
    */
   async markCurrentVersionFollowsSeedInTransaction(
     db: Queryable,
@@ -602,7 +643,11 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     const agent = result.rows[0];
     if (!agent) return false;
     if (agent.agent_kind === "system_assistant") {
-      return agent.project_id ? canReadProject(this.pool, spaceId, agent.project_id, userId) : false;
+      // A Project's Assistant is the Project's: its readers may see where it
+      // runs. The Space's own Assistant is read by whoever configures it.
+      return agent.project_id
+        ? canReadProject(this.pool, spaceId, agent.project_id, userId)
+        : canConfigureAssistant(this.pool, { spaceId, userId }, { projectId: null });
     }
     return Boolean(await this.getVisible(spaceId, userId, agentId));
   }
@@ -617,11 +662,13 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     );
     const agent = result.rows[0];
     if (!agent) return false;
-    if (agent.agent_kind === "system_assistant") {
-      return agent.project_id ? canWriteProject(this.pool, spaceId, agent.project_id, userId) : false;
-    }
     // Profiles decide where the Agent runs and on whose host: changing them
-    // is changing the Agent.
+    // is changing the Agent. An Assistant is configured by the one person
+    // who configures it (the Space creator, or the Project owner), never by
+    // any Project writer or Space admin.
+    if (agent.agent_kind === "system_assistant") {
+      return canConfigureAssistant(this.pool, { spaceId, userId }, { projectId: agent.project_id });
+    }
     return canChangeAgent(this.pool, { spaceId, userId }, agentId);
   }
 
@@ -837,10 +884,10 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
    * The Space provisioning template, with whether it can still provision.
    *
    * Disabling or ungranting the Provider a template names does not rewrite
-   * the template and does not touch an existing Profile — it makes future
-   * provisioning fail, which the plan requires to be a *visible* repair. The
-   * state is derived from the same grant join Profile admission uses, so the
-   * page and the failing create agree about why.
+   * the template and does not touch an existing Profile. Future provisioning
+   * fails, and that failure stays visible. The state is derived from the same
+   * grant join Profile admission uses, so the page and the failing create
+   * agree about why.
    */
   async getSpaceAgentRuntimeDefault(spaceId: string): Promise<SpaceAgentRuntimeDefaultRecord | null> {
     const result = await this.pool.query<Omit<SpaceAgentRuntimeDefaultRecord, "state" | "state_reason">
@@ -1015,6 +1062,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       workspaceLocationId: null,
       workspaceMode,
       runtimeInstallation,
+      sourceTemplate: input.sourceTemplate ?? null,
     });
   }
 
@@ -1084,9 +1132,14 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       actorUserId: input.actorUserId,
     });
     if (normalized.isDefault) await clearDefaultRuntimeProfile(client, spaceId, agentId);
+    // The match above is by backend, so the caller's display name may already
+    // belong to another of this Agent's profiles — two members' hosts can share
+    // a name. Keep the name readable and make it unique, as host profiles do.
+    const name = await unusedRuntimeProfileName(client, spaceId, agentId, normalized.name, existing.rows[0]?.id ?? null);
     if (existing.rows[0]) {
       return runtimeProfileOut(await updateRuntimeProfileRow(client, {
         ...normalized,
+        name,
         spaceId,
         agentId,
         profileId: existing.rows[0].id,
@@ -1094,6 +1147,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     }
     return runtimeProfileOut(await insertRuntimeProfile(client, {
       ...normalized,
+      name,
       spaceId,
       agentId,
     }));
@@ -1238,7 +1292,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
 
   /**
    * Replaces the current version of a system-managed Agent without mutating
-   * historical AgentVersion rows. The Agent row is locked so concurrent
+   * other AgentVersion rows. The Agent row is locked so concurrent
    * refreshes either observe the newly-published version or serialize behind
    * the publisher instead of allocating the same version label.
    */
@@ -1369,11 +1423,9 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     // A version somebody else authored is not the seed's to overwrite. The
     // instance keeps its identity fields in step and stops there.
     //
-    // An unmarked version that is nevertheless identical to what the seed
-    // produces is adopted rather than treated as divergence: it predates the
-    // mark and provably nobody has changed it. Where an unmarked version
-    // *differs*, a legacy drift and a person's edit are indistinguishable, and
-    // declining to overwrite is the safe direction.
+    // An unmarked version identical to the seed is adopted. Where an unmarked
+    // version differs, do not overwrite it: a seed drift and a person's edit
+    // cannot be told apart.
     if (current && input.followsSeedKey && current.follows_seed_key !== input.followsSeedKey) {
       if (equal && current.follows_seed_key === null) {
         // Adopt only an *unmarked* version. One already carrying a different
@@ -1508,25 +1560,77 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     return result.rows[0]?.id ?? null;
   }
 
-  async getAssistantSettings(spaceId: string): Promise<AssistantSettingsRecord> {
-    const store = new ScopedSettingsStore(this.pool);
-    const existing = await store.get(ASSISTANT_SETTINGS_DEFINITION, spaceId);
-    if (existing.row) return assistantSettingsRecordFromRead(spaceId, existing);
-    const created = await store.createIfMissing(ASSISTANT_SETTINGS_DEFINITION, spaceId, {
-      ...ASSISTANT_SETTINGS_DEFAULTS,
-      assistant_agent_id: await this.defaultAssistantId(spaceId),
-    });
-    return assistantSettingsRecordFromRead(spaceId, created);
+  /** The managed Assistant of one Project, if its Room has minted it. */
+  async projectAssistantId(spaceId: string, projectId: string): Promise<string | null> {
+    const result = await this.pool.query<{ id: string }>(
+      `SELECT a.id
+         FROM agents a
+        WHERE a.space_id = $1
+          AND a.project_id = $2
+          AND a.agent_kind = 'system_assistant'
+          AND a.status = 'active'
+        LIMIT 1`,
+      [spaceId, projectId],
+    );
+    return result.rows[0]?.id ?? null;
   }
 
+  private async targetAssistantId(target: AssistantSettingsTarget): Promise<string | null> {
+    return target.projectId
+      ? this.projectAssistantId(target.spaceId, target.projectId)
+      : this.defaultAssistantId(target.spaceId);
+  }
+
+  /**
+   * Who may read an Assistant's settings: a member of its Space for the
+   * Space's own, a reader of the Project for a Project's. A Project the
+   * person cannot read is answered as absent.
+   */
+  async assertAssistantSettingsReadable(identity: SpaceUserIdentity, target: AssistantSettingsTarget): Promise<void> {
+    if (target.projectId && !(await canReadProject(this.pool, target.spaceId, target.projectId, identity.userId))) {
+      throw new HttpError(404, "Project not found");
+    }
+  }
+
+  /** Whether this person configures the Assistant (`canConfigureAssistant`). */
+  async canConfigureAssistantSettings(identity: SpaceUserIdentity, target: AssistantSettingsTarget): Promise<boolean> {
+    return canConfigureAssistant(this.pool, identity, { projectId: target.projectId });
+  }
+
+  async getAssistantSettings(target: AssistantSettingsTarget): Promise<AssistantSettingsRecord> {
+    const store = new ScopedSettingsStore(this.pool);
+    const definition = assistantSettingsDefinition(target);
+    const scopeId = assistantSettingsScopeId(target);
+    const existing = await store.get(definition, scopeId);
+    if (existing.row) return assistantSettingsRecordFromRead(target, existing);
+    const created = await store.createIfMissing(definition, scopeId, {
+      ...ASSISTANT_SETTINGS_DEFAULTS,
+      assistant_agent_id: await this.targetAssistantId(target),
+    });
+    return assistantSettingsRecordFromRead(target, created);
+  }
+
+  /**
+   * Writes the Assistant's soft preferences. The caller has established that
+   * the actor configures this Assistant. A `default_project_id` must name an
+   * active Project of the same Space that the actor can read — and, for a
+   * Project's Assistant, that Project itself — or the write is refused rather
+   * than pointing the Assistant at something its configurer cannot see.
+   */
   async updateAssistantSettings(
-    spaceId: string,
+    target: AssistantSettingsTarget,
     patch: Record<string, unknown>,
-    options: { actorUserId?: string | null } = {},
+    options: { actorUserId: string },
   ): Promise<AssistantSettingsRecord> {
-    const existing = await this.getAssistantSettings(spaceId);
+    const existing = await this.getAssistantSettings(target);
+    const defaultProjectId = Object.hasOwn(patch, "default_project_id")
+      ? stringOrNull(patch.default_project_id)
+      : existing.default_project_id;
+    if (Object.hasOwn(patch, "default_project_id") && defaultProjectId) {
+      await this.assertAssistantDefaultProject(target, defaultProjectId, options.actorUserId);
+    }
     const next: AssistantSettingsValue = {
-      assistant_agent_id: existing.assistant_agent_id ?? await this.defaultAssistantId(spaceId),
+      assistant_agent_id: existing.assistant_agent_id ?? await this.targetAssistantId(target),
       response_style: Object.hasOwn(patch, "response_style")
         ? enumStringOrNull(patch.response_style, ASSISTANT_RESPONSE_STYLES, "response_style")
         : existing.response_style,
@@ -1536,9 +1640,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       default_context_toggles_json: Object.hasOwn(patch, "default_context_toggles_json")
         ? booleanRecord(patch.default_context_toggles_json)
         : booleanRecord(existing.default_context_toggles_json),
-      default_project_id: Object.hasOwn(patch, "default_project_id")
-        ? stringOrNull(patch.default_project_id)
-        : existing.default_project_id,
+      default_project_id: defaultProjectId,
       proposal_style: Object.hasOwn(patch, "proposal_style")
         ? enumStringOrNull(patch.proposal_style, ASSISTANT_PROPOSAL_STYLES, "proposal_style")
         : existing.proposal_style,
@@ -1547,23 +1649,42 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         : recordValue(existing.model_preferences_json) ?? {},
     };
     const result = await new ScopedSettingsStore(this.pool).upsert(
-      ASSISTANT_SETTINGS_DEFINITION,
-      spaceId,
+      assistantSettingsDefinition(target),
+      assistantSettingsScopeId(target),
       next,
-      { updatedByUserId: options.actorUserId ?? null },
+      { updatedByUserId: options.actorUserId },
     );
-    return assistantSettingsRecordFromRead(spaceId, result);
+    return assistantSettingsRecordFromRead(target, result);
+  }
+
+  private async assertAssistantDefaultProject(
+    target: AssistantSettingsTarget,
+    projectId: string,
+    actorUserId: string,
+  ): Promise<void> {
+    if (target.projectId && projectId !== target.projectId) {
+      throw new HttpError(422, "A Project Assistant's default Project is its own Project");
+    }
+    const project = await this.pool.query<{ id: string }>(
+      `SELECT id FROM projects
+        WHERE id = $1 AND space_id = $2 AND deleted_at IS NULL AND status = 'active'
+        LIMIT 1`,
+      [projectId, target.spaceId],
+    );
+    if (!project.rows[0] || !(await canReadProject(this.pool, target.spaceId, projectId, actorUserId))) {
+      throw new HttpError(422, "default_project_id must name an active Project of this Space that you can read");
+    }
   }
 
   /**
    * Why this Space's provisioning template cannot provision, in its own terms.
    *
-   * Without this, disabling the Provider a template names failed every Agent
-   * creation in the Space — including the managed Space/Project Assistant a
-   * Room mints on its first message — with the Profile-level
+   * Disabling the Provider a template names must not fail every Agent
+   * creation in the Space — including the managed Space or Project Assistant
+   * a Room mints on its first message — with the Profile-level
    * "Model provider is not selectable in this space", which names nothing the
-   * person can act on. The template is deliberately *not* rewritten to native
-   * mode: the plan requires a visible repair, not a silent downgrade.
+   * person can act on. The template is not rewritten to native mode.
+   * The repair stays visible. Do not downgrade it silently.
    */
   private async assertSpaceRuntimeTemplateUsable(
     db: Queryable,
@@ -1717,6 +1838,7 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       runtimeInstallation: string | null;
       /** Who is provisioning; a system Agent has no owner to fall back on. */
       actorUserId: string;
+      sourceTemplate?: { templateId: string; versionId: string } | null;
     },
   ): Promise<AgentOut> {
     const agentId = randomUUID();
@@ -1724,8 +1846,8 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     await client.query(
       `INSERT INTO agents (
          id, space_id, project_id, owner_user_id, name, description, role_instruction,
-         status, agent_kind, visibility, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)`,
+         status, agent_kind, visibility, source_template_id, source_template_version_id, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $13, $11, $11)`,
       [
         agentId,
         input.spaceId,
@@ -1738,6 +1860,8 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
         input.agentKind,
         input.visibility,
         now,
+        input.sourceTemplate?.templateId ?? null,
+        input.sourceTemplate?.versionId ?? null,
       ],
     );
     const version = await this.insertVersion(client, {
@@ -1762,8 +1886,8 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
       [input.spaceId, agentId, version.id, now],
     );
     // The default Profile is admitted by the same normalizer every other
-    // Profile write uses. Inlining a second copy of these rules here is what
-    // let Agent creation and the Profile API disagree about what is valid.
+    // Profile write uses. Do not inline a second copy of these rules.
+    // Agent creation and the Profile API would disagree about what is valid.
     const normalized = await normalizeRuntimeProfileInput(client, input.spaceId, {
       agentId,
       name: "Default",
@@ -1896,4 +2020,20 @@ ${DEFAULT_RUNTIME_PROFILE_JOIN}
     );
     return result.rows[0] ? agentOut(result.rows[0]) : null;
   }
+}
+
+async function unusedRuntimeProfileName(
+  db: Queryable,
+  spaceId: string,
+  agentId: string,
+  name: string,
+  ownProfileId: string | null,
+): Promise<string> {
+  const taken = await db.query(
+    `SELECT 1 FROM agent_runtime_profiles
+      WHERE space_id = $1 AND agent_id = $2 AND name = $3 AND id IS DISTINCT FROM $4
+      LIMIT 1`,
+    [spaceId, agentId, name, ownProfileId],
+  );
+  return taken.rows[0] ? `${name.slice(0, 112)} · ${randomUUID().slice(0, 8)}` : name;
 }

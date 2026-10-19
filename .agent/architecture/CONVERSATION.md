@@ -24,9 +24,8 @@ prefix match rather than a walk:
 
 `visibleMessagePathSql` (`modules/sessions/messagePath.ts`) is the one place
 that knows their encoding. It uses `starts_with` rather than `LIKE`, because a
-branch path can legitimately contain `%` and `_`. A recursive CTE was the first
-implementation and cost O(conversation) buffers per page; the prefix match is
-flat.
+branch path can legitimately contain `%` and `_`. The prefix match is flat.
+Do not walk the conversation with a recursive query on each page.
 
 `uq_messages_branch_position` keeps two concurrent appends from claiming the
 same position. `lockConversationForAppend` takes the conversation's lock as its
@@ -67,9 +66,9 @@ failure; only a provider-reported failed status is one.
 
 ### State is decided once, on the server
 
-`turnReadModel.turnState` is the sole authority for which of D3's four states a
-turn is in, and clients render `turn.state` without re-deriving it. That rule
-exists because the derivation needs facts a client does not have:
+`turnReadModel.turnState` is the sole authority for which of the four states a
+turn is in, and clients render `turn.state` without re-deriving it. The
+derivation needs facts a client does not have:
 
 - A `degraded` Run can still carry a complete reply — the status records a
   non-blocking warning — so it maps to `done`, not `failed`.
@@ -89,8 +88,8 @@ exists because the derivation needs facts a client does not have:
   chain or discussion proceeds as after any reply. The web shows "waiting for
   an answer" under such a reply (`AwaitingAnswerMarker`).
 
-A client that re-derives state from the Run's status gets `degraded` wrong, and
-that is not hypothetical — it happened during this work, on two surfaces.
+A client that re-derives state from the Run's status gets `degraded` wrong.
+Do not re-derive `turn.state` on the client.
 
 ### Reading a turn back
 
@@ -102,9 +101,11 @@ Two clients need a settled turn from a saved reply, and both go through
   actually saved and leaves the work above it. The caller passes the state,
   because only the caller knows what settled — a reply row is not proof a turn
   is over, since the server writes one at the pause too.
-- `readBackTurnState(state)` settles a `working` turn read from history to
-  `done`, since the message is written before `chat_completed` lands and a
-  read is not a stream: nothing else would ever correct it.
+- `readBackTurnState(state, blockedOn)` settles a `working` turn read from
+  history to `done`, since the message is written before `chat_completed` lands
+  and a read is not a stream: nothing else would ever correct it. A `blocked`
+  turn with `blocked_on === 'workspace'` (queued behind another writer of the
+  directory) also reads back as `done`; any other `blocked` is kept.
 
 ## The turn stream
 
@@ -335,5 +336,4 @@ real status.
 A remote Task run is admitted like a server one: one Run, created
 synchronously, carrying the thread, the adapter, the installation and the
 vendor session to resume in `model_override_json.host_thread`. There is no
-message queue — see `modules/hosts.md` for why the one that existed was
-removed with the page it served.
+message queue. Do not add one for a remote Task run.

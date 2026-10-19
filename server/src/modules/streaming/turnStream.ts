@@ -207,7 +207,7 @@ export function turnDiffFrames(
 }
 
 /** The SSE event name a frame is sent under. */
-export function frameEvent(frame: TurnStreamFrame): string {
+function frameEvent(frame: TurnStreamFrame): string {
   switch (frame.type) {
     case "turn.snapshot": return SNAPSHOT_EVENT;
     case "turn.part_appended": return APPENDED_EVENT;

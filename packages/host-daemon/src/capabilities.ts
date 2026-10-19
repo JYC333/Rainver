@@ -49,8 +49,9 @@ export interface RuntimeLookup {
 /**
  * What this machine can run. One identity for a runtime on a host — the
  * runtime key and the copy — and everything about a copy lives on the
- * copy. `runtimes`/`versions` remain as the plain PATH inventory (vendor
- * binaries and git) for display and for readers that predate installations.
+ * copy. `runtimes`/`versions` are the plain PATH inventory (vendor
+ * binaries and git), for display and for readers that do not know
+ * installations.
  */
 export interface DaemonCapabilities {
   runtimes: ProbedBinary[];
@@ -63,8 +64,8 @@ function probeVersion(bin: string, timeoutMs = 4000): Promise<string | null> {
   return new Promise((resolve) => {
     let settled = false;
     // The version probe gets the same helper environment every other probe
-    // does. It passed nothing, so it was the one spawn still handed the
-    // machine's whole environment, vendor keys included.
+    // does. Do not spawn it with the machine's whole environment. That
+    // includes vendor keys.
     const child = spawn(bin, ["--version"], {
       env: helperProcessEnv(process.env),
       stdio: ["ignore", "pipe", "ignore"],
@@ -142,8 +143,8 @@ function supportsManagedCliLogin(manifest: ToolManifest, entryArgs: string[]): P
   if (cached) return cached;
   const result = new Promise<boolean>((resolve) => {
     let settled = false;
-    // Two named deletions were a denylist of length two; this is the one the
-    // rest of the daemon uses, so a new vendor key is dropped here too.
+    // The denylist the rest of the daemon uses. A new vendor key is dropped
+    // here too. Do not keep a second list of two names.
     const env: Record<string, string | undefined> = {
       ...helperProcessEnv(process.env, manifest.runtime_key ?? ""),
       ...manifest.env,
@@ -173,15 +174,17 @@ function supportsManagedCliLogin(manifest: ToolManifest, entryArgs: string[]): P
 }
 
 /**
- * Compatibility for Agents that advertise ACP auth but require their own
- * top-level `login` command first. This is a fixed managed command, not a
- * remotely programmable shell. Old binary manifests safely imply no entry
- * args; old Node package manifests must be reinstalled to learn that prefix.
+ * Agents that advertise ACP auth but need their own top-level `login`
+ * command first. This is a fixed managed command, not a remotely
+ * programmable shell. A manifest that omits `entry_args` is probed with no
+ * prefix when its command is not Node. A Node manifest that omits
+ * `entry_args` is not probed. Reinstall that copy so the manifest carries
+ * the prefix. Do not guess a Node prefix.
  */
 async function withManagedCliLogin(manifest: ToolManifest, options: RuntimeOptions | null): Promise<RuntimeOptions | null> {
   if (manifest.login || !options || options.cli_login_available || !terminalAuthAvailable()) return options;
-  // This compatibility path is only useful for Agents that advertised ACP
-  // Agent Auth but cannot complete it until their own CLI has credentials.
+  // Only Agents that advertised ACP Agent Auth but cannot complete it until
+  // their own CLI has credentials.
   if (!options.auth_methods?.some((method) => method.type === "agent")) return options;
   const entryArgs = manifest.entry_args ?? (manifest.command === process.execPath ? null : []);
   if (!entryArgs) return options;
@@ -208,7 +211,7 @@ async function runtimeOptions(
 
 /** Asks one copy for its options; the caller decides how (`api.ts`). */
 export type AskRuntimeOptions = (lookup: RuntimeLookup, installation: string) => Promise<RuntimeOptions | null>;
-export type EnsureOwnRuntime = (lookup: RuntimeLookup) => Promise<boolean>;
+type EnsureOwnRuntime = (lookup: RuntimeLookup) => Promise<boolean>;
 
 export async function detectCapabilities(
   askOptions?: AskRuntimeOptions,
@@ -225,8 +228,9 @@ export async function detectCapabilities(
     const found: RuntimeInstallation[] = [];
     if (lookup.runtime) {
       const version = await probeVersion(lookup.runtime);
-      if (version !== null) {
-        if (ensureOwnRuntime && !(await ensureOwnRuntime(lookup))) continue;
+      // A held-back own copy (its packaged adapter is missing) drops only
+      // itself; managed copies launch from their own manifest and stay listed.
+      if (version !== null && (!ensureOwnRuntime || await ensureOwnRuntime(lookup))) {
         runtimes.push(lookup.runtime);
         versions[lookup.runtime] = version;
         const asked = askOptions ? await runtimeOptions(`${lookup.runtime_key}@${OWN_INSTALLATION}`, () => askOptions(lookup, OWN_INSTALLATION)) : null;

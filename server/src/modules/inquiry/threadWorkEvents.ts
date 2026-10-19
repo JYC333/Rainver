@@ -11,7 +11,7 @@ import {
  *
  * The attribution, folding and undo-linkage rules live in
  * `projectWork/domainWorkEvents.ts` and are shared with every other domain
- * that writes directly; this fixes the subject to a Thread and nothing else.
+ * that writes directly. This sets the subject to a Thread and nothing else.
  */
 export type ThreadEventProvenance = WorkEventProvenance;
 

@@ -30,13 +30,13 @@ export function safeMarkdownImageSource(url: string): string {
  * keys in `html-url-attributes`, and `srcSet` is not one of them — which is
  * why {@link SAFE_SANITIZE_SCHEMA} has to take `<source>` away rather than
  * this function cleaning it. `poster` belongs to `<video>`, which sanitize
- * strips. Listing them here read as coverage of three vectors and was
- * coverage of one.
+ * strips. Do not list `srcSet` or `poster` on this transform. That lists
+ * three vectors and covers one.
  */
 export function safeMarkdownUrlTransform(url: string, key: string): string {
   if (key === 'src') return safeMarkdownImageSource(url)
-  // An in-app path is a real destination in this product, and blanking it gave
-  // `href=""`, which reloads the page on click.
+  // An in-app path is a real destination in this product. Do not blank it.
+  // An empty `href` reloads the page on click.
   if (key === 'href') return safeAppPath(url) ?? safeHttpUrl(url) ?? ''
   return safeHttpUrl(url) ?? ''
 }
@@ -60,8 +60,8 @@ export const SAFE_SANITIZE_SCHEMA = {
   tagNames: (defaultSchema.tagNames as string[]).filter(tag => tag !== 'source'),
   // Taking the tag out is what matters — with `source` gone from `tagNames` the
   // element is unwrapped before its attributes are read, so this entry never
-  // fires. It stays so that a future schema that allows `source` again for some
-  // other reason does not also hand it back its `srcSet`.
+  // fires. Keep `source` attributes empty. Do not put `srcSet` back: allowing
+  // the tag again would then hand the attribute back.
   attributes: { ...(defaultSchema.attributes as Record<string, unknown>), source: [] },
 }
 
@@ -90,7 +90,7 @@ export function isSameOriginImage(src: string | undefined): boolean {
  * URL it fetches can carry whatever the model was induced to put in it. So an
  * external image is never loaded — it renders as an ordinary link, with the
  * domain visible, the full URL on hover, and a new tab if the person decides to
- * open it (D5). Click-to-load was rejected: the click sends the same URL, so it
+ * open it (D5). Do not use click-to-load. The click sends the same URL, so it
  * only turns zero-click into one-click.
  *
  * This catches raw `<img>` HTML as well as markdown: Streamdown's default
@@ -98,8 +98,8 @@ export function isSameOriginImage(src: string | undefined): boolean {
  * written HTML is parsed into real elements and both kinds of image arrive
  * here. `skipHtml` does not catch it — it visits `raw` nodes after the unified
  * run, and `rehype-raw` has already consumed them into elements, so it finds
- * none and silently does nothing. That is why the prop was removed rather than
- * trusted, and why what stands between model-written HTML and the DOM is the
+ * none and silently does nothing. Do not trust `skipHtml` for this. What
+ * stands between model-written HTML and the DOM is the
  * sanitize schema (see {@link SAFE_SANITIZE_SCHEMA}), not a skip flag.
  */
 export function MarkdownImage({ src, alt, title, node: _node, ...props }: ComponentProps<'img'> & { node?: unknown }) {
@@ -134,11 +134,10 @@ export function MarkdownImage({ src, alt, title, node: _node, ...props }: Compon
 /**
  * Syntax plugins.
  *
- * CJK spacing only. Mermaid, Shiki and LaTeX are absent for the same kind of
- * reason: a second of import time each per test file, and a large chunk in a
- * bundle every visitor downloads, to render something nobody has asked a
- * conversation to do. Add one back when a surface needs it — and pin its
- * grammar set if it is `code`.
+ * CJK spacing only. Mermaid, Shiki and LaTeX stay out: a second of import
+ * time each per test file, and a large chunk in a bundle every visitor
+ * downloads, for something no conversation asks to render. Add one when a
+ * surface needs it, and pin its grammar set if it is `code`.
  */
 const streamdownPlugins = { cjk }
 
@@ -147,7 +146,7 @@ const streamdownPlugins = { cjk }
  *
  * Streamdown asks this at click time and shows its confirmation modal when the
  * answer is no. An in-app path does not need it — it is this instance — and
- * without the check every `[x](/projects/abc)` a model wrote put a confirmation
+ * without the check every `[x](/projects/abc)` a model wrote would put a confirmation
  * dialog in front of an ordinary piece of navigation. Everything else keeps the
  * modal, which is what an external link in a conversation should get, since the
  * URL was written by a model that may have read someone else's text.

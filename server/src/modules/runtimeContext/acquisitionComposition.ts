@@ -45,7 +45,7 @@ export interface RuntimeContextRetrievalIntentPort {
 }
 
 /**
- * Production acquisition composition used by the gateway cutover. Each owning
+ * Production acquisition composition. Each owning
  * domain remains responsible for its own authorization and version lookup;
  * this class only coordinates the four typed acquisition channels.
  */

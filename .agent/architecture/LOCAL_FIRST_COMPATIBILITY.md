@@ -11,7 +11,7 @@ Rainver is **not** a local-first system and will not become one. The server-auth
 
 The compatible goal is narrower: **local-first personal interfaces for capture, drafts, tasks, cards, lightweight notes, and offline reading** — where local-first genuinely improves user experience — while keeping active memory, proposals, credentials, policy, and deployment firmly server-authoritative.
 
-**Amended 2026-08-21 ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):** agent execution and Project Folder operations are authoritative to whichever **execution host** owns the folder, not necessarily the server process — the server host (unchanged, strictly isolated) or a personal machine the user has explicitly paired as a trusted execution host. This is a narrowing, not a reversal: an execution host is a machine the user owns and has paired with the control plane, never an arbitrary or untrusted client, and it never gains the ability to originate syncable drafts the way the local-first clients in §2 do. The "not local-first" stance in this document is entirely about client-originated sync of drafts/records, and is unaffected by where a paired execution host happens to run an agent.
+**Execution host ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):** agent execution and Project Folder operations are authoritative to whichever **execution host** owns the folder, not necessarily the server process — the server host (strictly isolated) or a personal machine the user has explicitly paired as a trusted execution host. This is a narrowing, not a reversal: an execution host is a machine the user owns and has paired with the control plane, never an arbitrary or untrusted client, and it never gains the ability to originate syncable drafts the way the local-first clients in §2 do. The "not local-first" stance in this document is entirely about client-originated sync of drafts/records, and is unaffected by where a paired execution host happens to run an agent.
 
 Key principle: any object that feeds into durable system state must pass through the server. Local-first is a client convenience layer, not a durability layer.
 
@@ -56,7 +56,7 @@ Objects that must never leave the server boundary:
 - Deployment jobs
 - Capability install / update state
 
-**Amended 2026-08-21 ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):**
+**Remote Folder ([ADR 0016](../decisions/0016-control-plane-execution-hosts.md)):**
 for a Project Folder row bound to a remote execution host, there is no
 server-side path to keep server-only — the control plane never possesses
 one. Only a daemon-reported `display_path` (UI-display data, never an access
@@ -76,7 +76,7 @@ Read-only local copies; never written back as truth:
 
 ## 3. New Syncable Table Guidelines
 
-Any future table designed to participate in sync should prefer these columns:
+A table that participates in sync uses these columns:
 
 ```
 id                        -- stable UUID
@@ -130,7 +130,7 @@ offline capture → ActivityDraft → sync → ActivityRecord (server-accepted)
                                        → [optional] Reflector → Proposal → ProposalApply → Memory
 ```
 
-Raw offline input must not become active Memory directly, even when the content is clearly factual. The proposal workflow exists to enforce quality, context, and authorization checks that cannot run offline.
+Raw offline input must not become active Memory directly, even when the content is clearly factual. The proposal workflow enforces the quality, context, and authorization checks that cannot run offline.
 
 ---
 
@@ -208,5 +208,3 @@ design. There is no local-first infrastructure. When adding new syncable
 objects, apply the column guidelines in section 3. When adding
 server-authoritative objects, do not expose them to offline mutation paths.
 
-Unimplemented mobile/sync ideas:
-[unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §5.

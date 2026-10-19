@@ -1,6 +1,18 @@
 import { PgOntologyRepository } from "../ontology/repository.js";
 import { assertEvidenceableObjectType } from "../ontology/validation.js";
 import { hasDeclaration } from "../ontology/linkTypes.js";
+
+/**
+ * The link types `note_links` stores: its `ck_note_links_link_type` check
+ * (`db/schema/knowledge.ts`). The registry declares more — `cites`,
+ * `authored_by`, `proposes` — which belong to other relation tables, so a
+ * declared type outside this set is a 422 here rather than a constraint error.
+ */
+const NOTE_LINK_TYPES = new Set([
+  "related_to", "references", "depends_on", "part_of", "source_for", "derived_from",
+  "about", "supports", "contradicts", "supersedes", "refines", "same_as", "explains",
+  "prerequisite_of", "example_of", "applies_to", "summarizes", "updates",
+]);
 import { buildSpaceObjectInsert } from "../../db/spaceObjectWriter.js";
 import {
   appendMarginalia,
@@ -99,6 +111,7 @@ import { knowledgeRetrievalRegistry } from "./retrievalAdapter.js";
 import { isKnowledgeRetrievalObjectType } from "./retrievalObjectTypes.js";
 import { markdownToPm } from "./noteDocument.js";
 import { ensureProjectNotesFolder, projectOwningCollection } from "./noteProjectFolders.js";
+import { assertNoteEntryInvariant, lockNotesForPlacementChange } from "./notePlacementInvariant.js";
 import { NOTE_PROJECT_ROLE_DEFAULT_TITLES } from "./noteProjectRoles.js";
 import { listNoteRevisions as listNoteRevisionRows } from "./noteRevisionService.js";
 import {
@@ -108,6 +121,7 @@ import {
 import {
   addNotePlacement,
   moveNoteToCollection,
+  requireNoteCollectionRow,
   removeNotePlacement,
   withNoteWrites,
   type NoteInsert,
@@ -162,14 +176,9 @@ export class PgKnowledgeRepository {
   constructor(private readonly db: Queryable) {}
 
   /**
-   * Counts for the Knowledge overview — every one of them gated.
-   *
-   * Three of these four used to filter on `space_id` alone while the fourth
-   * applied the content gate, which is the shape an oversight takes rather than
-   * a decision: whoever added the claim count gated it and did not backfill the
-   * older three. A count is a weaker leak than a list — no titles, no bodies —
-   * but it is still an answer about content the viewer cannot open, and "47
-   * notes" next to twelve openable ones is also just wrong as a number.
+   * Counts for the Knowledge overview — every one of them gated. A count is a
+   * weaker leak than a list and is still an answer about content the viewer
+   * cannot open. Do not filter any of them on `space_id` alone.
    */
   async summary(identity: SpaceUserIdentity): Promise<Record<string, unknown>> {
     const [notes, wiki, sources, claims] = await Promise.all([
@@ -684,22 +693,20 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * Promote a passage of a Note into a Knowledge Item (ND).
+   * Promote a passage of a Note into a Knowledge Item.
    *
-   * Governance is unchanged: this builds an ordinary `knowledge_create`
-   * proposal and nothing bypasses the review gate. What it adds is the
-   * provenance the model could not express before — "this knowledge came from
-   * my note" — carried as a `source_refs` entry of type `note`.
+   * This builds an ordinary `knowledge_create` proposal and nothing bypasses
+   * the review gate. The proposal carries "this knowledge came from my note"
+   * as a `source_refs` entry of type `note`.
    *
-   * The carrier is `provenance_links`, chosen over the plan's two other
-   * candidates. Widening `knowledge_item_sources.source_id`'s foreign key from
+   * The carrier is `provenance_links`. Widening `knowledge_item_sources.source_id`'s foreign key from
    * `sources(object_id)` to `space_objects(id)` would enlarge what B12A calls
    * a *curated citation and evidence* path so it could carry an unreviewed
    * one; a dedicated column or table would be a third provenance mechanism.
    * `provenance_links` already answers this exact question — a knowledge
    * item's `source_refs` are read from it with `target_type = 'knowledge'` —
-   * so `note` joins a vocabulary that is now owned in one place rather than
-   * copied into three.
+   * so `note` joins that one vocabulary. Do not copy the list into a second
+   * place.
    *
    * The Note keeps its content. Promotion is not a move.
    */
@@ -707,9 +714,8 @@ export class PgKnowledgeRepository {
     const note = await this.getNoteRow(identity, noteId);
     if (!note) throw new HttpError(404, "Note not found");
     const content = requiredString(body.content, "content");
-    // The passage the user selected, not the note's whole text: a note usually
-    // holds several ideas, and promoting all of them as one item is what N6's
-    // selection scoping exists to avoid.
+    // The passage the user selected, not the note's whole text. A note usually
+    // holds several ideas. Do not promote all of them as one item.
     const title = optionalString(body.title) ?? note.title;
     const projectId = optionalString(body.project_id) ?? note.primary_project_id;
     return this.proposeCreate(identity, {
@@ -732,14 +738,13 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * The knowledge items a note produced (ND).
+   * The knowledge items a note produced.
    *
-   * The forward direction already worked — an item lists its `source_refs`, so
-   * it can say it came from a note. This is the direction the note needs: a
-   * user who promoted three passages should see the three items without
-   * knowing their ids. Read from `provenance_links` rather than `note_links`,
-   * because promotion records provenance, not navigation — and an item created
-   * from a note may never be linked to it.
+   * An item lists its `source_refs`, so it can say it came from a note. The
+   * note lists the items: a user who promoted three passages sees the three
+   * items without knowing their ids. Read from `provenance_links` rather than
+   * `note_links`, because promotion records provenance, not navigation — and
+   * an item created from a note may never be linked to it.
    */
   async knowledgeItemsPromotedFromNote(identity: SpaceUserIdentity, noteId: string): Promise<Record<string, unknown>[]> {
     if (!(await this.getNoteRow(identity, noteId))) throw new HttpError(404, "Note not found");
@@ -1039,9 +1044,9 @@ export class PgKnowledgeRepository {
     const built = buildNoteWhere(identity, filters);
     // The membership join exists only to answer "is this note in *that* folder,
     // and where in its order" — a single collection, so it contributes at most
-    // one row. Joined unconditionally it multiplied every note by its number of
-    // placements, which is why the page rows and the DISTINCT count disagreed
-    // for any note filed in two folders.
+    // one row. Do not join it unconditionally. Every note would be multiplied
+    // by its placements, and the page rows and the DISTINCT count would
+    // disagree for any note filed in two folders.
     const membershipJoin = filters.collectionId
       ? `LEFT JOIN note_collection_items nci_filter
            ON nci_filter.note_id = n.object_id
@@ -1160,6 +1165,28 @@ export class PgKnowledgeRepository {
     return noteCollectionOut(result.rows[0]!);
   }
 
+  /**
+   * Whether `candidateId` sits at or below `ancestorId`, walking up from the
+   * candidate. UNION deduplicates visited rows even in an already cyclic tree.
+   */
+  private async isDescendantNoteCollection(spaceId: string, candidateId: string, ancestorId: string): Promise<boolean> {
+    const result = await this.db.query<{ found: boolean }>(
+      `WITH RECURSIVE ancestry AS (
+         SELECT id, parent_id
+           FROM note_collections
+          WHERE id = $2 AND space_id = $1
+         UNION
+         SELECT parent.id, parent.parent_id
+           FROM note_collections parent
+           JOIN ancestry ON parent.id = ancestry.parent_id
+          WHERE parent.space_id = $1
+       )
+       SELECT EXISTS (SELECT 1 FROM ancestry WHERE id = $3) AS found`,
+      [spaceId, candidateId, ancestorId],
+    );
+    return result.rows[0]?.found === true;
+  }
+
   async updateNoteCollection(
     identity: SpaceUserIdentity,
     collectionId: string,
@@ -1186,6 +1213,11 @@ export class PgKnowledgeRepository {
       : current.parent_id;
     if (parentId === collectionId) throw new HttpError(422, "parent_id cannot reference the same collection");
     if (parentId) await this.requireNoteCollection(identity, parentId);
+    // Nothing in the database stops a cycle, and a folder in one has no path
+    // to the root: every note below it disappears from the tree.
+    if (parentId && await this.isDescendantNoteCollection(identity.spaceId, parentId, collectionId)) {
+      throw new HttpError(422, "parent_id cannot reference a descendant of the collection");
+    }
     if (parentId !== current.parent_id) {
       const nextProjectId = current.project_id
         ?? (parentId ? await projectOwningCollection(this.db, identity.spaceId, parentId) : null);
@@ -1218,9 +1250,9 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * The Project's notes folder, created on first use (U1: notes are a
+   * The Project's notes folder, created on first use. Notes are a
    * Project-level surface, so the folder cannot depend on the Research Area
-   * having been opened). Creating it is a write to the Project.
+   * having been opened. Creating it is a write to the Project.
    */
   async ensureProjectNotesCollection(
     identity: SpaceUserIdentity,
@@ -1242,6 +1274,16 @@ export class PgKnowledgeRepository {
     return noteCollectionOut(row);
   }
 
+  /**
+   * Deletes a folder. Its subfolders move up to its parent, so they stay in
+   * the same Project subtree (the database's own `ON DELETE SET NULL` would
+   * push them to the root and out of the Project). Its placements go with it,
+   * and a note that would be left without its required entry refuses the
+   * whole delete — the person moves or deletes that note first.
+   *
+   * Runs inside the route's transaction: the note locks and the invariant
+   * check have to see the same rows the delete removes.
+   */
   async deleteNoteCollection(identity: SpaceUserIdentity, collectionId: string): Promise<void> {
     const current = await this.getNoteCollectionRow(identity, collectionId);
     if (!current) throw new HttpError(404, "Note collection not found");
@@ -1250,10 +1292,33 @@ export class PgKnowledgeRepository {
       await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     }
     if (current.is_system) throw new HttpError(422, "System note collections cannot be deleted");
+    // Folder rows before note rows (`notePlacementInvariant`): the folder and
+    // the subfolders this moves, so a reorder or placement holding them
+    // waits here rather than after this has taken the notes it needs.
+    await this.db.query(
+      `SELECT id FROM note_collections
+        WHERE space_id = $1 AND (id = $2 OR parent_id = $2)
+        ORDER BY id ASC
+        FOR UPDATE`,
+      [identity.spaceId, collectionId],
+    );
+    const placed = await this.db.query<{ note_id: string }>(
+      `SELECT note_id FROM note_collection_items WHERE space_id = $1 AND collection_id = $2`,
+      [identity.spaceId, collectionId],
+    );
+    const lockedNotes = await lockNotesForPlacementChange(
+      this.db, identity.spaceId, placed.rows.map((row) => row.note_id),
+    );
+    await this.db.query(
+      `UPDATE note_collections SET parent_id = $3, updated_at = $4
+        WHERE space_id = $1 AND parent_id = $2`,
+      [identity.spaceId, collectionId, current.parent_id, new Date().toISOString()],
+    );
     await this.db.query(
       `DELETE FROM note_collections WHERE id = $1 AND space_id = $2`,
       [collectionId, identity.spaceId],
     );
+    await assertNoteEntryInvariant(this.db, identity.spaceId, lockedNotes);
   }
 
   async getNote(identity: SpaceUserIdentity, noteId: string): Promise<Record<string, unknown> | null> {
@@ -1319,14 +1384,23 @@ export class PgKnowledgeRepository {
     status: string | null | undefined,
     now: string,
   ): Promise<void> {
+    // Folder before note (`notePlacementInvariant`): the root update below
+    // locks the note row, and a folder named here is pinned before that.
+    const collectionId = optionalString(body.collection_id);
+    if (collectionId) await requireNoteCollectionRow(scope.db, identity.spaceId, collectionId);
     await scope.db.query(
       `WITH obj AS (
          UPDATE space_objects
             SET title = COALESCE($3, title),
                 summary = CASE WHEN $6::boolean THEN $7 ELSE summary END,
                 primary_project_id = CASE WHEN $9::boolean THEN $10 ELSE primary_project_id END,
-                archived_at = CASE WHEN $8::varchar(32) = 'archived' THEN $11::timestamptz ELSE archived_at END,
-                deleted_at = CASE WHEN $8::varchar(32) = 'deleted' THEN $11::timestamptz ELSE deleted_at END,
+                -- A status change sets its own timestamp and clears the other:
+                -- restoring a note must clear deleted_at, or the purge, which
+                -- reads only that column, destroys a note in use.
+                archived_at = CASE WHEN $8::varchar(32) = 'archived' THEN $11::timestamptz
+                                   WHEN $8::varchar(32) IS NOT NULL THEN NULL ELSE archived_at END,
+                deleted_at = CASE WHEN $8::varchar(32) = 'deleted' THEN $11::timestamptz
+                                  WHEN $8::varchar(32) IS NOT NULL THEN NULL ELSE deleted_at END,
                 updated_at = $11
           WHERE id = $1 AND space_id = $2 AND object_type = 'note'
           RETURNING id
@@ -1395,9 +1469,8 @@ export class PgKnowledgeRepository {
         at: now,
       });
     }
-    // Content changes go through the versioned writer so every save (not
-    // just AI-driven ones) produces a note_revisions row and an incrementing
-    // version — see .agent knowledge-base notes-vs-AI-co-edit unification.
+    // Content changes go through the versioned writer. Every save produces
+    // a note_revisions row and an incrementing version.
     if (Object.hasOwn(body, "content_json")) {
       const plainText = Object.hasOwn(body, "plain_text") ? optionalString(body.plain_text) ?? "" : undefined;
       const result = await scope.write({
@@ -1412,9 +1485,23 @@ export class PgKnowledgeRepository {
         throw new HttpError(409, "Note changed since it was loaded; reload and retry", { current_version: result.currentVersion });
       }
     }
-    const collectionId = optionalString(body.collection_id);
     if (collectionId) {
       await moveNoteToCollection(scope.db, identity.spaceId, noteId, collectionId, { userId: identity.userId });
+    }
+    // Rebinding the Project (an explicit `primary_project_id`) or filing the
+    // note elsewhere must leave it with an entry in the Project that owns it.
+    // Bringing a Project note back from the trash must too: its folders can
+    // be deleted under it (the invariant does not hold a deleted note), so
+    // that restore is refused, with the move-or-delete actions, until it
+    // names a folder (`collection_id`). A note outside every Project may be
+    // unfiled, so restoring one never needs a folder.
+    if (Object.hasOwn(body, "primary_project_id") || collectionId) {
+      await assertNoteEntryInvariant(
+        scope.db, identity.spaceId, await lockNotesForPlacementChange(scope.db, identity.spaceId, [noteId]),
+      );
+    } else if (status && status !== "deleted") {
+      const locked = await lockNotesForPlacementChange(scope.db, identity.spaceId, [noteId]);
+      await assertNoteEntryInvariant(scope.db, identity.spaceId, locked.filter((note) => note.primary_project_id));
     }
     // Metadata-only edits (a rename, an archive) still change what retrieval
     // should return, so the scope is told even when no content write happened.
@@ -1423,7 +1510,7 @@ export class PgKnowledgeRepository {
 
   /**
    * Place a note in a further folder without taking it out of the ones it is
-   * already in (U5). A distinct action from moving it, because a drag that
+   * already in. A distinct action from moving it, because a drag that
    * silently widened where a note lives would be a different decision than the
    * one the user made.
    */
@@ -1431,7 +1518,7 @@ export class PgKnowledgeRepository {
     identity: SpaceUserIdentity,
     noteId: string,
     collectionId: string,
-    /** Confirms the cross-Project case; see `bindNoteToPlacementProject` (U8). */
+    /** Confirms the cross-Project case; see `bindNoteToPlacementProject`. */
     shareWithProject = false,
   ): Promise<Record<string, unknown>> {
     if (!(await this.getNoteRow(identity, noteId))) throw new HttpError(404, "Note not found");
@@ -1445,7 +1532,7 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * The contextless half of a jot (U11): append to the Project's `inbox` note.
+   * The contextless half of a jot: append to the Project's `inbox` note.
    *
    * The inbox is a fifth `project_role`, so it survives a rename and a move
    * between folders the way the research baseline's four do. It is created on
@@ -1461,6 +1548,13 @@ export class PgKnowledgeRepository {
     const projectId = requiredString(body.project_id, "project_id");
     await assertProjectWriter(this.db, identity.spaceId, projectId, identity.userId);
     const noteId = await withNoteWrites(this.db, async (scope) => {
+      // Two first captures for one Project both find no inbox and both create
+      // one; assigning the role then displaces the other's. Serialize on the
+      // Project, as the object-targeted jot does on its target.
+      await scope.db.query(
+        `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+        [`note-jot-inbox:${identity.spaceId}:${projectId}`],
+      );
       const existing = await scope.db.query<{ object_id: string }>(
         `SELECT n.object_id
            FROM notes n
@@ -1516,7 +1610,7 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * The Projects this note is shared into, beyond the one that owns it (U8).
+   * The Projects this note is shared into, beyond the one that owns it.
    * Read through the same gate as the note itself: a caller who cannot see the
    * note cannot enumerate who else can.
    */
@@ -1593,10 +1687,15 @@ export class PgKnowledgeRepository {
     return listNoteRevisionRows(this.db, { spaceId: identity.spaceId, noteId, limit });
   }
 
-  async rollbackNote(identity: SpaceUserIdentity, noteId: string, toVersion: number): Promise<Record<string, unknown>> {
+  async rollbackNote(
+    identity: SpaceUserIdentity,
+    noteId: string,
+    toVersion: number,
+    expectVersion?: number | null,
+  ): Promise<Record<string, unknown>> {
     await this.requireWritableNote(identity, noteId);
     await withNoteWrites(this.db, (scope) =>
-      scope.rollback({ spaceId: identity.spaceId, noteId, toVersion, userId: identity.userId }));
+      scope.rollback({ spaceId: identity.spaceId, noteId, toVersion, userId: identity.userId, expectVersion }));
     return (await this.getNote(identity, noteId))!;
   }
 
@@ -1605,28 +1704,25 @@ export class PgKnowledgeRepository {
   }
 
   /**
-   * "Jot a note" from an evidence or material card (N7).
+   * "Jot a note" from an evidence or material card.
    *
-   * One call, because the two-step version is the reason the connection never
-   * got made: a user reading a paper had to leave for the Notes page, create a
-   * note, come back for the id, and link it — so in practice nobody recorded
-   * what a conclusion rested on. Creating the note and the link separately
-   * from the client would also leave a stranded note whenever the second call
-   * failed.
+   * One call from the card. Creating the note and the link separately leaves a
+   * stranded note when the second call fails. Do not send the reader to the
+   * Notes page to create a note, come back for the id, and link it.
    *
    * Appends to an existing note when given one, so jotting twice against the
    * same paper accumulates in one place rather than littering the tree. The
    * link is created once: a second jot against a target the note already links
    * to adds the text without a duplicate edge.
    *
-   * **`target_id` is optional** (U11). A thought that arrives while doing an
+   * **`target_id` is optional**. A thought that arrives while doing an
    * experiment or weighing a decision has no object to hang on, and the two
    * obvious answers are both wrong: always appending to one inbox buries ten
    * papers' annotations in a single note, and always creating a new note turns
    * the tree into fragments. So: *with* a context object, one note per object;
    * *without* one, append to the Project's `inbox` note, created on first use.
-   * The inbox is found by its `project_role`, never by title — the previous
-   * work removed title-based note resolution and this must not reintroduce it.
+   * The inbox is found by its `project_role`, never by title. Do not resolve
+   * it by title.
    */
   async jotNoteForObject(identity: SpaceUserIdentity, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const targetId = optionalString(body.target_id);
@@ -1671,7 +1767,7 @@ export class PgKnowledgeRepository {
           spaceId: identity.spaceId,
           actor: { userId: identity.userId },
           // The target's own title is the most useful default, and the user can
-          // rename it — NA made titles safe to change.
+          // rename it.
           title: `Note on ${target.title}`,
           doc: markdownToPm(text),
           contentFormat: "prosemirror_json",
@@ -1724,10 +1820,10 @@ export class PgKnowledgeRepository {
   // a note deleted a minute ago is still recoverable by un-deleting it, and
   // only notes past the window are actually destroyed.
   //
-  // Scoped to notes this person could have deleted themselves. Space-wide it
-  // was an unauthenticated-by-object destruction: any member could empty every
-  // other member's private wastebasket, irreversibly, through one route with no
-  // object named in the request.
+  // Scoped to notes this person could have deleted themselves. Do not purge
+  // Space-wide. Any member could empty every other member's private
+  // wastebasket, irreversibly, through one route with no object named in
+  // the request.
   async purgeDeletedNotes(identity: SpaceUserIdentity): Promise<Record<string, unknown>> {
     const candidates = await this.db.query<{ id: string }>(
       `SELECT id
@@ -1739,6 +1835,35 @@ export class PgKnowledgeRepository {
           -- wastebasket does not make this route cost one round trip per note
           -- another member deleted, until it can no longer finish at all.
           AND (visibility = 'space_shared' OR owner_user_id = $3)
+          -- The Project half of the same rule. A batch of refusals is not
+          -- "the next call takes the rest": the refused notes stay, fill the
+          -- next batch too, and the caller's own notes never come up.
+          AND (primary_project_id IS NULL OR EXISTS (
+            SELECT 1
+              FROM projects project
+             WHERE project.id = space_objects.primary_project_id
+               AND project.space_id = space_objects.space_id
+               AND project.deleted_at IS NULL
+               AND (
+                 project.owner_user_id = $3
+                 OR EXISTS (
+                   SELECT 1 FROM space_memberships membership
+                    WHERE membership.space_id = space_objects.space_id
+                      AND membership.user_id = $3
+                      AND membership.status = 'active'
+                      AND membership.role IN ('owner', 'admin')
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM project_members project_member
+                    WHERE project_member.space_id = space_objects.space_id
+                      AND project_member.project_id = project.id
+                      AND project_member.user_id = $3
+                      AND project_member.status = 'active'
+                      AND project_member.role IN ('owner', 'member')
+                 )
+               )
+          ))
+        ORDER BY deleted_at ASC
         LIMIT ${NOTE_PURGE_BATCH}`,
       [identity.spaceId, String(NOTE_PURGE_RETENTION_DAYS), identity.userId],
     );
@@ -1756,30 +1881,53 @@ export class PgKnowledgeRepository {
       }
     }
     if (purgeable.length === 0) return { deleted: 0, retention_days: NOTE_PURGE_RETENTION_DAYS };
-    // The retention predicate stays in the DELETE: a note pulled back out of
-    // the wastebasket between the two statements must not be destroyed anyway.
-    const result = await this.db.query<{ id: string }>(
-      `DELETE FROM space_objects
-        WHERE space_id = $1 AND id = ANY($2::varchar[])
-          AND deleted_at IS NOT NULL
-          AND deleted_at < now() - ($3 || ' days')::interval
-        RETURNING id`,
-      [identity.spaceId, purgeable, String(NOTE_PURGE_RETENTION_DAYS)],
-    );
+    const deleted = await withQueryableTransaction(this.db, async (tx) => {
+      // The retention predicate is re-checked under the row lock: a note
+      // pulled back out of the wastebasket since the candidate read must not
+      // be destroyed anyway.
+      const doomed = await tx.query<{ id: string }>(
+        `SELECT id FROM space_objects
+          WHERE space_id = $1 AND id = ANY($2::varchar[])
+            AND deleted_at IS NOT NULL
+            AND deleted_at < now() - ($3 || ' days')::interval
+          FOR UPDATE`,
+        [identity.spaceId, purgeable, String(NOTE_PURGE_RETENTION_DAYS)],
+      );
+      const ids = doomed.rows.map((row) => row.id);
+      if (ids.length === 0) return 0;
+      // Relations reference space_objects without ON DELETE, so one edge to a
+      // purged note (a Thread's `references`, say) would fail the whole batch,
+      // and every later purge with it. An edge to the note goes with the note;
+      // an edge between two surviving objects only loses its provenance pointer.
+      await tx.query(
+        `DELETE FROM object_relations
+          WHERE space_id = $1 AND (from_object_id = ANY($2::varchar[]) OR to_object_id = ANY($2::varchar[]))`,
+        [identity.spaceId, ids],
+      );
+      await tx.query(
+        `UPDATE object_relations SET source_object_id = NULL, updated_at = now()
+          WHERE space_id = $1 AND source_object_id = ANY($2::varchar[])`,
+        [identity.spaceId, ids],
+      );
+      const result = await tx.query<{ id: string }>(
+        `DELETE FROM space_objects WHERE space_id = $1 AND id = ANY($2::varchar[]) RETURNING id`,
+        [identity.spaceId, ids],
+      );
+      return result.rowCount ?? result.rows.length;
+    });
     return {
-      deleted: result.rowCount ?? result.rows.length,
+      deleted,
       retention_days: NOTE_PURGE_RETENTION_DAYS,
     };
   }
 
   /**
-   * The notes linking to a non-note object — the other half of N7's "both
-   * ways".
+   * The notes linking to a non-note object.
    *
    * {@link noteLinks} cannot answer this: it is note-keyed on both sides, so
-   * `backlinks` there means "notes linking to *this note*". Asking an evidence
-   * card what notes cite it needs the target to be anything, which is why this
-   * is a separate read rather than a flag on that one.
+   * `backlinks` there means "notes linking to *this note*". An evidence card
+   * asking which notes cite it needs a target that can be anything. This is
+   * that read.
    */
   async notesLinkingToObject(identity: SpaceUserIdentity, objectId: string): Promise<Record<string, unknown>[]> {
     await this.requireVisibleSpaceObject(identity, objectId, "Object not found");
@@ -1857,8 +2005,8 @@ export class PgKnowledgeRepository {
     const finalTargetId = direction === "incoming" ? noteId : targetId;
     // The link is written *on* its source object, so that one has to be
     // writable — not merely visible. With `direction: "incoming"` the source is
-    // the caller-supplied `target_id`, which was checked for visibility alone,
-    // so a reader holding a grant on someone else's note could attach an
+    // the caller-supplied `target_id`. Do not check it for visibility alone.
+    // A reader holding a grant on someone else's note could attach an
     // outgoing link to it. The target stays a read check: being linked *to* is
     // not a change to the thing linked to.
     const sourceObject = sourceId === noteId
@@ -1869,7 +2017,7 @@ export class PgKnowledgeRepository {
       throw new HttpError(404, "Note link endpoint not found");
     }
     const linkType = optionalString(body.link_type) ?? "related_to";
-    if (!hasDeclaration(linkType)) {
+    if (!hasDeclaration(linkType) || !NOTE_LINK_TYPES.has(linkType)) {
       throw new HttpError(422, "invalid link_type");
     }
     const now = new Date().toISOString();
@@ -1947,15 +2095,28 @@ export class PgKnowledgeRepository {
   }
 
   // Reindex is best-effort: the derived projection must never fail a canonical
-  // CRUD write. These repository methods run on a pool connection (no ambient
-  // transaction), so a thrown projection query is contained by this catch and
-  // logged rather than surfaced as a 500 on a write that already committed.
+  // CRUD write. On a pool connection a thrown projection query is contained by
+  // the catch and logged rather than surfaced as a 500 on a write that already
+  // committed. A repository built on a checked-out client (a jot, a marginalia
+  // capture) runs inside its caller's transaction, where a caught database
+  // error would still leave that transaction aborted and its COMMIT would
+  // silently roll the whole write back — so there the refresh runs behind a
+  // savepoint. A client with no open transaction cannot take one, and has
+  // nothing to abort either.
   private async safeReindex(
     run: (projection: RetrievalProjectionService) => Promise<void>,
   ): Promise<void> {
+    const db = this.db as Queryable & { release?: () => void; connect?: () => Promise<unknown> };
+    const onPool = typeof db.connect === "function" && typeof db.release !== "function";
+    const contained = !onPool && await this.db.query("SAVEPOINT knowledge_reindex").then(() => true, () => false);
     try {
       await run(new RetrievalProjectionService(this.db, knowledgeRetrievalRegistry));
+      if (contained) await this.db.query("RELEASE SAVEPOINT knowledge_reindex");
     } catch (error) {
+      if (contained) {
+        await this.db.query("ROLLBACK TO SAVEPOINT knowledge_reindex").catch(() => undefined);
+        await this.db.query("RELEASE SAVEPOINT knowledge_reindex").catch(() => undefined);
+      }
       process.stderr.write(
         `[knowledge.retrieval] reindex failed after canonical write: ${String((error as Error)?.message ?? error)}\n`,
       );
@@ -2048,12 +2209,11 @@ export class PgKnowledgeRepository {
     return result.rows[0] ?? null;
   }
 
-  // Kept for the import path; used by profile-key uniqueness checks.
   /**
-   * Ontology surfaces delegate to `PgOntologyRepository`. The public routes keep
-   * their `/api/v1/knowledge/` paths — moving them would be a client-visible
-   * break this phase does not imply — but the implementation and its ownership
-   * now live with the ontology (ADR 0012 decision 3, B12I).
+   * Ontology surfaces delegate to `PgOntologyRepository`. The public routes stay
+   * at `/api/v1/knowledge/`. Moving them would be a client-visible break.
+   * Implementation and ownership live with the ontology (ADR 0012 decision 3,
+   * B12I).
    */
   private ontology(): PgOntologyRepository {
     return new PgOntologyRepository(this.db, {
@@ -2358,13 +2518,9 @@ export class PgKnowledgeRepository {
   /**
    * The shared lookup behind every single-note read *and* mutation.
    *
-   * It applies the read gate, which the list path has always applied and this
-   * did not: a private note was absent from the list and returned by a direct
-   * fetch, and because `updateNote` / `deleteNote` / `rollbackNote` all gate on
-   * this row's existence, it was also editable by anyone in the Space. The same
-   * defect class the ontology audit fixed for `requireCase` and
-   * `definitionRow`; gating here means a caller cannot mutate what it cannot
-   * see.
+   * It applies the read gate. `updateNote`, `deleteNote`, and `rollbackNote`
+   * all gate on this row's existence, so a caller cannot mutate a note it
+   * cannot see.
    */
   private async getNoteRow(identity: SpaceUserIdentity, noteId: string): Promise<WithAccessLevel<NoteRow> | null> {
     const result = await this.db.query<WithAccessLevel<NoteRow>>(
@@ -2506,11 +2662,8 @@ function buildNoteWhere(
     params.push(value);
     return `$${params.length}`;
   };
-  // The list was gated by Space membership alone: `getNoteRow` applies the
-  // content gate but this did not, so every note in the Space was listable by
-  // any member regardless of owner, visibility, or Project — the note bodies
-  // and titles with them. A list that leaks what a detail read refuses is the
-  // same defect the ontology audit fixed for `requireCase`, one level up.
+  // The list uses the same content gate as `getNoteRow`. A list that returns
+  // what a detail read refuses would publish every note in the Space.
   clauses.push(contentReadSql("space_object", "so", add(identity.userId)));
   clauses.push(filters.status ? `n.status = ${add(filters.status)}` : "n.status <> 'deleted'");
   if (filters.projectId) clauses.push(`so.primary_project_id = ${add(filters.projectId)}`);

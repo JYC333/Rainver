@@ -305,9 +305,9 @@ export const financeLedgerRepository = {
    *
    * The one resolver for every read and every mutation that names an account
    * id. `findAccount` answers about the whole book and is for the engine's own
-   * internal load; a route reaching it directly is how a member closed another
-   * member's private account and got the row back as confirmation that it
-   * existed.
+   * internal load. Do not let a route call it directly. A member would close
+   * another member's private account and get the row back as confirmation
+   * that it is there.
    *
    * `writable` narrows it further: a personal account is its owner's to close
    * or to unhide. Both refusals are the same "not found" the invisible case
@@ -420,6 +420,32 @@ export const financeLedgerRepository = {
     );
     if (!result.rows[0]) throw new AccountNotFoundError();
     return result.rows[0];
+  },
+
+  /** Whether a posted entry uses the account after `date`. */
+  async hasPostedEntriesAfter(
+    db: Queryable,
+    spaceId: string,
+    bookId: string,
+    accountId: string,
+    date: string,
+  ): Promise<boolean> {
+    const result = await db.query<{ found: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM finance_directives d
+          WHERE d.space_id = $1 AND d.book_id = $2 AND d.status = 'posted' AND d.date > $4::date
+            AND (
+              EXISTS (SELECT 1 FROM finance_postings p WHERE p.transaction_directive_id = d.id AND p.account_id = $3)
+              OR EXISTS (SELECT 1 FROM finance_balance_assertions b WHERE b.directive_id = d.id AND b.account_id = $3)
+              OR EXISTS (SELECT 1 FROM finance_pad_directives pd WHERE pd.directive_id = d.id AND $3 IN (pd.account_id, pd.source_account_id))
+              OR EXISTS (SELECT 1 FROM finance_notes n WHERE n.directive_id = d.id AND n.account_id = $3)
+              OR EXISTS (SELECT 1 FROM finance_documents doc WHERE doc.directive_id = d.id AND doc.account_id = $3)
+            )
+       ) AS found`,
+      [spaceId, bookId, accountId, date],
+    );
+    return result.rows[0]?.found === true;
   },
 
   async nextSequence(
@@ -616,9 +642,9 @@ export const financeLedgerRepository = {
     if (filters?.viewerUserId) {
       params.push(filters.viewerUserId);
       const viewer = `$${params.length}`;
-      // A transaction is hidden when any leg touches a hidden account; every
-      // other directive type names its account by name in a child table, and
-      // returning one of those was returning the private account's *name*.
+      // A transaction is hidden when any leg touches a hidden account. Every
+      // other directive type names its account by name in a child table. Do
+      // not return that name. It is the private account's name.
       conditions.push(`(
         CASE WHEN directive_type = 'transaction'
           THEN NOT ${transactionTouchesHiddenAccountSql("finance_directives.id", "finance_directives.space_id", viewer)}
@@ -812,4 +838,14 @@ function transactionTouchesHiddenAccountSql(
        AND p.space_id = ${spaceIdExpr}
        AND NOT (a.visibility = 'space' OR a.owner_user_id = ${viewerParam})
   )`;
+}
+
+/** A directive insert refused because its (book, date, sequence) was taken meanwhile. */
+export function isSequenceConflict(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const pgError = err as { code?: string; constraint?: string };
+  return (
+    pgError.code === "23505" &&
+    (pgError.constraint ?? "").includes("book_date_sequence")
+  );
 }

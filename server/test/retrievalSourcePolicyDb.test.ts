@@ -8,13 +8,13 @@ import { RetrievalSearchService } from "../src/modules/retrieval/searchService.j
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
 import { insertKnowledgeItem } from "./support/knowledgeFixtures.js";
 
-// Closes Slice-1 audit gaps end-to-end over real Postgres:
-//   G4 — a connector-ingested object lands a provenance_link → source_item →
-//        source_connection, so the projection carries source_connection_ids and
-//        search fails closed for a non-allowed reader.
-//   G1 — the maintenance scan applies the same source read policy and never
-//        surfaces a source-restricted object to a non-allowed operator.
-//   G5 — Context Ops drill-down object lists apply the same source read policy.
+// Source read policy over real Postgres:
+//   a connector-ingested object lands a provenance_link → source_item →
+//   source_connection, so the projection carries source_connection_ids and
+//   search fails closed for a non-allowed reader.
+//   The maintenance scan applies the same source read policy and never
+//   surfaces a source-restricted object to a non-allowed operator.
+//   Context Ops drill-down object lists apply the same source read policy.
 // Both knowledge items are canonically space_shared, so ONLY the source policy
 // differentiates the restricted object — isolating the gate under test.
 

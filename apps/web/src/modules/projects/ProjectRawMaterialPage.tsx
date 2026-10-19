@@ -8,9 +8,7 @@ import { ActivityQueue } from '../activity/ActivityQueue'
  * The records are the Space's one review queue filtered to this Project — not
  * a second queue, and not a second implementation of one: the list, the
  * filters and the review/archive actions are {@link ActivityQueue}, mounted
- * here pinned. Linking out to the Space Inbox instead was the previous answer
- * and it cost the reader their place in the Project every time they wanted to
- * see what they had captured.
+ * here pinned. The queue stays inside the Project.
  */
 export default function ProjectRawMaterialPage() {
   const { projectId = '' } = useParams()

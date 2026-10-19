@@ -2,10 +2,9 @@ import { describe, expect, it } from "vitest";
 import { hostThreadDispatchInputs } from "../src/modules/hosts/threadDispatchInputs.js";
 
 // The Run row is the only place the job handler learns which host thread a
-// Run belongs to and which vendor session to resume. It used to be the job
-// payload, rebuilt by hand at each of the twenty enqueue sites — and the
-// supervisor retry, direct chat, the resume endpoint and the authorization
-// re-enqueue all built it without those fields, so their Runs resumed nothing.
+// Run belongs to and which vendor session to resume. Do not put it in the
+// job payload. A payload rebuilt at each enqueue site omits the fields, and
+// the Run resumes nothing.
 describe("hostThreadDispatchInputs", () => {
   it("reads the thread and the session to resume from the Run's host_thread override", () => {
     expect(hostThreadDispatchInputs({

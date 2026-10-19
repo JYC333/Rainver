@@ -10,9 +10,31 @@ import { mixedSurfacesEn } from './mixedSurfaces.en'
 import { mixedSurfacesZhCN } from './mixedSurfaces.zh-CN'
 import { publicAuthEn } from './publicAuth.en'
 import { publicAuthZhCN } from './publicAuth.zh-CN'
+import { digestReportsEn } from './digestReports.en'
+import { digestReportsZhCN } from './digestReports.zh-CN'
+import { conversationRetrievalEn } from './conversationRetrieval.en'
+import { conversationRetrievalZhCN } from './conversationRetrieval.zh-CN'
+import { skillPackagesEn } from './skillPackages.en'
+import { skillPackagesZhCN } from './skillPackages.zh-CN'
+import { conversationUiEn } from './conversationUi.en'
+import { conversationUiZhCN } from './conversationUi.zh-CN'
+import { sessionsUiEn } from './sessionsUi.en'
+import { sessionsUiZhCN } from './sessionsUi.zh-CN'
+import { managementUiEn } from './managementUi.en'
+import { managementUiZhCN } from './managementUi.zh-CN'
+import { activityUiEn } from './activityUi.en'
+import { activityUiZhCN } from './activityUi.zh-CN'
+import { knowledgeUiEn } from './knowledgeUi.en'
+import { knowledgeUiZhCN } from './knowledgeUi.zh-CN'
+import { coreUiEn } from './coreUi.en'
+import { coreUiZhCN } from './coreUi.zh-CN'
+import { sourcesUiEn } from './sourcesUi.en'
+import { sourcesUiZhCN } from './sourcesUi.zh-CN'
+import { workspaceUiEn } from './workspaceUi.en'
+import { workspaceUiZhCN } from './workspaceUi.zh-CN'
 
 export type Locale = 'en' | 'zh-CN'
-export const LOCALE_STORAGE_KEY = 'rainver:locale'
+const LOCALE_STORAGE_KEY = 'rainver:locale'
 
 function supportedLocale(value: string | null | undefined): Locale {
   return value === 'zh-CN' ? 'zh-CN' : 'en'
@@ -32,8 +54,8 @@ void i18n.use(initReactI18next).init({
   fallbackLng: 'en',
   supportedLngs: ['en', 'zh-CN'],
   resources: {
-    en: { translation: { ...en, home: homeEn, evolution: evolutionEn, ...mixedSurfacesEn, ...publicAuthEn } },
-    'zh-CN': { translation: { ...zhCN, home: homeZhCN, evolution: evolutionZhCN, ...mixedSurfacesZhCN, ...publicAuthZhCN } },
+    en: { translation: { ...en, home: homeEn, evolution: evolutionEn, digest_reports: digestReportsEn, ...mixedSurfacesEn, ...publicAuthEn, ...conversationRetrievalEn, ...skillPackagesEn, ...conversationUiEn, ...sessionsUiEn, ...managementUiEn, ...activityUiEn, ...knowledgeUiEn, ...coreUiEn, ...sourcesUiEn, ...workspaceUiEn } },
+    'zh-CN': { translation: { ...zhCN, home: homeZhCN, evolution: evolutionZhCN, digest_reports: digestReportsZhCN, ...mixedSurfacesZhCN, ...publicAuthZhCN, ...conversationRetrievalZhCN, ...skillPackagesZhCN, ...conversationUiZhCN, ...sessionsUiZhCN, ...managementUiZhCN, ...activityUiZhCN, ...knowledgeUiZhCN, ...coreUiZhCN, ...sourcesUiZhCN, ...workspaceUiZhCN } },
   },
   interpolation: { escapeValue: false }, // React escapes text when it renders.
   initAsync: false,

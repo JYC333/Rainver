@@ -20,11 +20,10 @@ const MAX_TOOL_INPUT_SUMMARY_CHARS = 200;
  * Turns a remote-host vendor CLI's ACP protocol traffic into the thread's
  * normalized conversation events, incrementally as it arrives.
  *
- * This is deliberately a thin ACP projection, matching Zed's thread model:
- * agent-message and agent-thought chunks stay on the channel the protocol
- * assigned, in arrival order; ToolCall creates or replaces an entry and
- * ToolCallUpdate carries patch fields for that same id. It never infers
- * reasoning from message text.
+ * This is a thin ACP projection. Agent-message and agent-thought chunks stay
+ * on the channel the protocol assigned, in arrival order. ToolCall creates or
+ * replaces an entry and ToolCallUpdate carries patch fields for that same id.
+ * It never infers reasoning from message text.
  */
 export function createThreadEventNormalizer(): {
   pushStderr(chunk: string): ThreadEventDraft[];
@@ -99,7 +98,7 @@ export function createThreadEventNormalizer(): {
           tool_call_id: lifecycle.callId,
           tool_name: toolName,
           tool_input_summary: summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS),
-          // ACP runtime replatform P3 (A9): the 9-category kind is what
+          // The 9-category kind is what
           // makes claude/codex/opencode tool rows comparable in the UI.
           tool_kind: stringValue(update.kind),
           tool_result_summary: summarizeToolResultContent(update.content)
@@ -138,14 +137,14 @@ export function createThreadEventNormalizer(): {
           tool_input_summary: toolInput,
           tool_kind: toolKind,
           status: acpToolStatus(status),
-          // A9: absorbed for claude/opencode; codex-acp currently reports none
+          // Absorbed for claude/opencode; codex-acp reports none
           // (a known adapter asymmetry, not a bug).
           tool_result_summary: toolOutput,
         },
       ];
     }
     if (update.sessionUpdate === "plan") {
-      // A9: appended as a snapshot, never mutated — a reader takes the
+      // Appended as a snapshot, never mutated — a reader takes the
       // thread's latest plan_updated event, not a running diff of them.
       return [
         ...flushTextSegment(),
@@ -199,7 +198,7 @@ function summarizeJson(value: unknown, maxChars: number): string | null {
 }
 
 /**
- * ACP runtime replatform P3 (A9): only the "content" tool-call-content
+ * Only the "content" tool-call-content
  * variant is absorbed — text an agent explicitly reported as a tool's
  * result. The "diff" variant is declined by design (the daemon's own
  * `git diff HEAD` captures the workspace's true state, including changes the

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import SourceChannelsPage from '../SourceChannelsPage'
 import { projectsApi, sourcesApi } from '../../../api/client'
+import i18n from '../../../i18n'
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
@@ -21,6 +22,8 @@ vi.mock('../../../api/client', () => ({
     providers: vi.fn(),
     channels: vi.fn(),
     recommendations: vi.fn(),
+    followed: vi.fn(),
+    setChannelSubscription: vi.fn(),
     decideRecommendation: vi.fn(),
     createChannel: vi.fn(),
     previewQuery: vi.fn(),
@@ -101,6 +104,7 @@ describe('Sources page', () => {
     vi.mocked(sourcesApi.providers).mockResolvedValue(providers)
     vi.mocked(sourcesApi.channels).mockResolvedValue([source()])
     vi.mocked(sourcesApi.recommendations).mockResolvedValue([])
+    vi.mocked(sourcesApi.followed).mockResolvedValue([])
     vi.mocked(sourcesApi.createChannel).mockResolvedValue(source())
     vi.mocked(sourcesApi.previewQuery).mockResolvedValue({
       provider_key: 'arxiv', compiled_query: 'all:"agent memory"', approximate_hit_count: 42,
@@ -136,7 +140,24 @@ describe('Sources page', () => {
     expect(screen.getByText('These remain suggestions until you choose to follow them.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Follow' }))
     await waitFor(() => expect(sourcesApi.decideRecommendation).toHaveBeenCalledWith('recommended-channel', 'subscribed'))
-    await waitFor(() => expect(screen.queryByText('Outside Review · Systems monitor')).not.toBeInTheDocument())
+    // No longer a suggestion: it is one of the sources this person follows.
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Source recommendations' })).not.toBeInTheDocument())
+    const followedRegion = await screen.findByRole('region', { name: 'Followed sources' })
+    expect(followedRegion).toHaveTextContent('Outside Review · Systems monitor')
+  })
+
+  it('still shows the page when only the followed list fails to load, in either language', async () => {
+    vi.mocked(sourcesApi.followed).mockRejectedValue(new Error('Followed unavailable'))
+    renderPage()
+    expect(await screen.findByText(/Sources you follow could not be loaded/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Sources' })).toBeInTheDocument()
+
+    await i18n.changeLanguage('zh-CN')
+    try {
+      expect(await screen.findByText(/无法加载你关注的来源/)).toBeInTheDocument()
+    } finally {
+      await i18n.changeLanguage('en')
+    }
   })
 
   it('configures an academic source through the provider-aware setup dialog', async () => {
@@ -221,5 +242,74 @@ describe('Sources page', () => {
 
     await waitFor(() => expect(sourcesApi.createChannel).toHaveBeenCalled())
     expect(projectsApi.createSourceBinding).not.toHaveBeenCalled()
+  })
+
+  it('calls a source whose monitors are all stopped Paused, whatever order they come in', async () => {
+    vi.mocked(sourcesApi.channels).mockResolvedValue([
+      source({ id: 'source-1', name: 'Agent memory', status: 'paused' }),
+      source({ id: 'source-2', name: 'Agent planning', status: 'archived' }),
+    ])
+    renderPage()
+
+    await screen.findByText('Agent memory')
+    expect(screen.queryByText('Mixed')).not.toBeInTheDocument()
+    expect(screen.getAllByText('Paused').length).toBeGreaterThan(0)
+  })
+
+  it('closes only the category list on Escape, keeping the dialog and what was typed', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: /add source/i }))
+    await user.click(screen.getByRole('button', { name: 'Search scope' }))
+    await user.click(screen.getByRole('option', { name: 'Category stream' }))
+    await user.click(screen.getByText('Select categories'))
+    const option = screen.getByRole('checkbox', { name: /cs\.AI/i })
+    fireEvent.keyDown(option, { key: 'Escape' })
+
+    await waitFor(() => expect(screen.queryByRole('checkbox', { name: /cs\.AI/i })).not.toBeInTheDocument())
+    expect(screen.getByRole('heading', { name: 'Add source' })).toBeInTheDocument()
+  })
+
+  it('names a new source after the platform chosen, until the name is edited by hand', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: /add source/i }))
+    expect(screen.getByDisplayValue('arXiv')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Source platform' }))
+    await user.click(screen.getByRole('option', { name: 'RSS Feed' }))
+    expect(screen.getByDisplayValue('RSS Feed')).toBeInTheDocument()
+
+    await user.clear(screen.getByDisplayValue('RSS Feed'))
+    await user.type(screen.getByPlaceholderText('RSS Feed'), 'My feeds')
+    await user.click(screen.getByRole('button', { name: 'Source platform' }))
+    await user.click(screen.getByRole('option', { name: 'arXiv' }))
+    expect(screen.getByDisplayValue('My feeds')).toBeInTheDocument()
+  })
+
+  it('drops a query preview once the query it was for changes', async () => {
+    const user = userEvent.setup({ delay: null })
+    renderPage()
+
+    await user.click(await screen.findByRole('button', { name: /add source/i }))
+    fireEvent.change(screen.getByPlaceholderText('e.g. all:"agent memory"'), { target: { value: 'agent memory' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Test query' }))
+    expect(await screen.findByText('Approximately 42 matches')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Search scope' }))
+    await user.click(screen.getByRole('option', { name: 'All arXiv papers' }))
+    expect(screen.queryByText('Approximately 42 matches')).not.toBeInTheDocument()
+  })
+
+  it('lets a follower leave another member\'s source and follow it again', async () => {
+    const followedChannel = { ...source({ id: 'channel-shared', name: 'Team feed' }), subscription_status: 'subscribed' as const }
+    vi.mocked(sourcesApi.followed).mockResolvedValue([followedChannel])
+    vi.mocked(sourcesApi.setChannelSubscription).mockResolvedValue({ source_channel_id: 'channel-shared', status: 'muted', updated_at: '2026-10-14T00:00:00Z' })
+    renderPage()
+    const leave = await screen.findByRole('button', { name: 'Leave' })
+    fireEvent.click(leave)
+    await waitFor(() => expect(sourcesApi.setChannelSubscription).toHaveBeenCalledWith('channel-shared', 'muted'))
+    expect(await screen.findByRole('button', { name: 'Follow again' })).toBeInTheDocument()
   })
 })

@@ -46,8 +46,8 @@ export default defineConfig({
   },
   resolve: {
     alias: [
-      // The shadcn CLI writes `@/…` imports into the components it copies, so
-      // the alias exists for those. Everything hand-written here stays on
+      // The shadcn CLI writes `@/…` imports into the components it copies.
+      // Those imports resolve through this alias. Everything hand-written here stays on
       // relative paths.
       { find: /^@\//, replacement: `${resolve(projectRoot, 'src')}/` },
       { find: /^react$/, replacement: resolve(projectRoot, 'node_modules/react/index.js') },
@@ -80,7 +80,7 @@ export default defineConfig({
       workbox: {
         // A full-page navigation to /api/... (the Google sign-in start and
         // callback are top-level redirects, not fetches) must reach the
-        // server. Without this the SPA navigation fallback serves the cached
+        // server. Do not fall through to the SPA fallback. It serves the cached
         // index.html for it, the app loads at that URL, sees a 401 from /me,
         // and bounces to /login without ever leaving the browser.
         navigateFallbackDenylist: [/^\/api\//],
@@ -146,11 +146,10 @@ export default defineConfig({
       // origin as the REST registration flow, and explicitly enable WS
       // upgrade forwarding.
       //
-      // This one path, not all of `/internal`: production nginx forwards
-      // `/api/` and this endpoint and nothing else, and a dev proxy that
-      // forwarded the whole prefix meant a path only reachable in dev looked
-      // like it worked everywhere. The Run tool surface moved under `/api/v1`
-      // for exactly that reason.
+      // This one path, not all of `/internal`. Production nginx forwards
+      // `/api/` and this endpoint and nothing else. Do not forward the whole
+      // prefix. A path only reachable in dev would look like it works
+      // everywhere. The Run tool surface is under `/api/v1`.
       '/internal/hosts/ws': {
         target: apiProxyTarget,
         changeOrigin: true,

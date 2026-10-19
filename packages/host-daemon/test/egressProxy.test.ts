@@ -44,8 +44,8 @@ describe("what a Run may reach", () => {
     for (const address of ["10.0.0.5", "172.17.0.2", "192.168.1.1", "127.0.0.1", "169.254.169.254", "::1", "fd00::1", "fe80::1"]) {
       expect(isBlockedAddress(address), address).toBe(true);
     }
-    // The cloud metadata endpoint is the one that hands out instance
-    // credentials; a Run reaching it is the failure this exists to prevent.
+    // The cloud metadata endpoint hands out instance credentials. A Run must
+    // not reach it.
     expect(isBlockedAddress("169.254.169.254")).toBe(true);
     // An IPv4-mapped address names a v4 address and is judged as one.
     expect(isBlockedAddress("::ffff:10.0.0.5")).toBe(true);
@@ -118,6 +118,8 @@ describe("host-owned upstream proxy routing", () => {
       targets.push(request.url ?? "");
       proxyAuthorizations.push(request.headers["proxy-authorization"]);
       socket.write("HTTP/1.1 200 Connection Established\r\n\r\nhello-through-upstream");
+      // An upstream that drops an established tunnel with a reset.
+      if (request.url?.startsWith("reset.example")) setImmediate(() => (socket as import("node:net").Socket).resetAndDestroy());
     });
     await new Promise<void>((resolve) => upstreamProxy.listen(0, "127.0.0.1", resolve));
     const address = upstreamProxy.address();
@@ -181,6 +183,12 @@ describe("host-owned upstream proxy routing", () => {
     expect(proxy.log("proxied-run")).toEqual([
       expect.objectContaining({ allowed: true, host: "api.openai.com", port: 443 }),
     ]);
+  });
+
+  it("closes one tunnel the upstream resets and keeps serving the next", async () => {
+    await request("reset.example:443");
+    const next = await request("api.openai.com:443");
+    expect(next).toContain("hello-through-upstream");
   });
 
   it("never treats a literal synthetic address as a hostname for upstream resolution", async () => {
@@ -297,9 +305,9 @@ describe("the proxy as a running server", () => {
   });
 
   it("dials an IPv6 literal target rather than failing to parse it", async () => {
-    // `[::1]:443` is how a client writes one. With the brackets left on, the
-    // host was never recognised as an address at all — so every IPv6 target
-    // failed *and* skipped the block list.
+    // `[::1]:443` is how a client writes one. Do not leave the brackets on.
+    // The host is never recognised as an address, so every IPv6 target fails
+    // and the block list is skipped for it.
     const grant = proxy.grant("run-1", "install", { mode: "direct" });
     const response = await connect("[::1]:443", grant.token);
     expect(response).toContain("403");
@@ -308,8 +316,8 @@ describe("the proxy as a running server", () => {
 
   it("reads a CONNECT that arrives in pieces", async () => {
     // A client that writes its request line and headers separately is
-    // ordinary; reading one chunk turned that into a 405 or a 407 depending
-    // on where the split fell.
+    // ordinary. Do not read only one chunk. The split becomes a 405 or a 407
+    // depending on where it falls.
     const grant = proxy.grant("run-1", "default", { mode: "direct" });
     const { connect: dial } = await import("node:net");
     const [host, port] = proxy.address.split(":");
@@ -337,9 +345,8 @@ describe("the proxy as a running server", () => {
       "http://server:3000/api/v1",
       "http://server:9000/lease/abc",
       "not-a-url",
-      // Two of the three CLI adapters receive their lease URL inside a config
-      // file rather than the environment, so the file's contents are scanned
-      // too — reading only the environment covered one adapter in three.
+      // `codex_cli` and `opencode` receive their lease URL inside a config
+      // file. Scan that text too. Do not read only the environment.
       'base_url = "http://proxy.internal:9000/lease/xyz"\nmodel = "gpt-5"',
     ]);
     expect(bypass.sort()).toEqual(["proxy.internal", "server"]);

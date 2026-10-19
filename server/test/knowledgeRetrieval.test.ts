@@ -502,6 +502,9 @@ class ProjectionFakeDb implements Queryable {
       this.retrievalEdges.push(edge);
       return result([] as Row[]);
     }
+    if (norm.startsWith("SELECT pg_advisory_xact_lock")) {
+      return result([] as Row[]);
+    }
     throw new Error(`unexpected SQL: ${norm}`);
   }
 }

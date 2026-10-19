@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { dailyReportApi } from '../../api/client'
+import { useAppTranslation } from '../../i18n'
 import type {
   DailyCaptureReportSettingOut,
   DailyReportRunResponse,
   DailyReportArtifactItem,
 } from '../../types/api'
+import { formatDateTime } from '../../i18n/format'
 
 function errMsg(e: unknown): string {
   if (e instanceof Error) return e.message
@@ -14,6 +16,7 @@ function errMsg(e: unknown): string {
 }
 
 export default function DailyReportSettingsPage() {
+  const { t } = useAppTranslation()
   const [setting, setSetting] = useState<DailyCaptureReportSettingOut | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -45,6 +48,7 @@ export default function DailyReportSettingsPage() {
   async function toggleEnabled() {
     if (!setting) return
     setSaving(true)
+    setError(null)
     try {
       const updated = await dailyReportApi.updateSettings({ enabled: !setting.enabled })
       setSetting(updated)
@@ -56,14 +60,18 @@ export default function DailyReportSettingsPage() {
     }
   }
 
-  async function saveSchedule(local_time: string, timezone: string) {
+  /** Resolves whether the server took the schedule, so the editor keeps unsaved input on failure. */
+  async function saveSchedule(local_time: string, timezone: string): Promise<boolean> {
     setSaving(true)
+    setError(null)
     try {
       const updated = await dailyReportApi.updateSettings({ local_time, timezone })
       setSetting(updated)
       showToast('Schedule saved.')
+      return true
     } catch (e) {
       setError(errMsg(e))
+      return false
     } finally {
       setSaving(false)
     }
@@ -72,6 +80,7 @@ export default function DailyReportSettingsPage() {
   async function toggleExperienceProposals() {
     if (!setting) return
     setSaving(true)
+    setError(null)
     try {
       const updated = await dailyReportApi.updateSettings({
         create_experience_proposals: !setting.create_experience_proposals,
@@ -87,6 +96,7 @@ export default function DailyReportSettingsPage() {
   async function toggleMemoryProposals() {
     if (!setting) return
     setSaving(true)
+    setError(null)
     try {
       const updated = await dailyReportApi.updateSettings({
         create_memory_proposals: !setting.create_memory_proposals,
@@ -101,8 +111,10 @@ export default function DailyReportSettingsPage() {
 
   async function runNow() {
     setRunning(true)
+    setError(null)
     try {
-      const result = await dailyReportApi.run({ force: false })
+      // No date: the server reports the last complete day of the configured timezone.
+      const result = await dailyReportApi.run({})
       setLastRun(result)
       showToast(`Report ${result.status}: ${result.capture_count} captures.`)
       const updated = await dailyReportApi.listReports(5)
@@ -214,7 +226,8 @@ export default function DailyReportSettingsPage() {
 
       {/* Manual run */}
       <div className="border-t pt-4 space-y-3">
-        <div className="text-sm font-medium">Generate today's report</div>
+        <div className="text-sm font-medium">{t('digest_reports.daily_run_title')}</div>
+        <p className="text-xs text-gray-500">{t('digest_reports.daily_run_hint', { timezone: setting.timezone || 'UTC' })}</p>
         <button
           onClick={runNow}
           disabled={running}
@@ -275,7 +288,7 @@ export default function DailyReportSettingsPage() {
       )}
       {setting.next_run_at && (
         <div className="text-xs text-gray-400">
-          Next scheduled run: {new Date(setting.next_run_at).toLocaleString()}
+          Next scheduled run: {formatDateTime(setting.next_run_at)}
         </div>
       )}
     </div>
@@ -290,7 +303,7 @@ function ScheduleEditor({
 }: {
   localTime: string
   timezone: string
-  onSave: (time: string, tz: string) => void
+  onSave: (time: string, tz: string) => Promise<boolean>
   disabled: boolean
 }) {
   const [time, setTime] = useState(localTime)
@@ -328,7 +341,7 @@ function ScheduleEditor({
         </div>
         {dirty && (
           <button
-            onClick={() => { onSave(time, tz); setDirty(false) }}
+            onClick={() => { void onSave(time, tz).then(saved => { if (saved) setDirty(false) }) }}
             disabled={disabled}
             className="px-2 py-1 text-xs bg-gray-100 border rounded hover:bg-gray-200 disabled:opacity-50"
           >

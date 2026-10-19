@@ -6,16 +6,13 @@ import { SourceQueryPreviewService } from "../sources/sourceQueryPreviewService.
 import { materializeExternalDiscovery, type ExternalDiscoverySample } from "../sources/externalDiscoveryMaterializer.js";
 import { PgSerendipityRepository } from "./serendipityRepository.js";
 import { InterestProfileService } from "../interestProfile/service.js";
-import { DEFAULT_INTEREST_PROFILE_SETTINGS } from "../interestProfile/settings.js";
-
-export const SERENDIPITY_PROBE_DOMAIN_BUDGET = DEFAULT_INTEREST_PROFILE_SETTINGS.probe_domain_budget;
 
 export interface SerendipityProbeProvider {
   available(identity: SpaceUserIdentity): Promise<boolean>;
   search(identity: SpaceUserIdentity, domainLabel: string): Promise<ExternalDiscoverySample[]>;
 }
 
-export interface SerendipityProbeResult {
+interface SerendipityProbeResult {
   period_start: string;
   status: "succeeded" | "degraded" | "failed" | "skipped";
   domain_keys: string[];
@@ -84,9 +81,13 @@ export class SerendipityProbeService {
         }
       }
       const total = recommendations + externalResults;
-      const status = failures.length > 0 || requests === 0
-        ? (total > 0 ? "degraded" : "skipped")
-        : "succeeded";
+      // Every search failed and nothing landed: that is a failed probe, not a
+      // skipped one — skipped is for a week with nothing to ask.
+      const status = failures.length > 0
+        ? (total > 0 ? "degraded" : "failed")
+        : requests === 0
+          ? (total > 0 ? "degraded" : "skipped")
+          : "succeeded";
       await this.repo.finishProbe(runId, { status, requests, results: total, error: failures[0] });
       return { period_start: period, status, domain_keys: domainKeys, request_count: requests,
         external_result_count: externalResults, source_recommendation_count: recommendations, already_ran: false };
@@ -133,7 +134,7 @@ export class BraveSerendipityProbeProvider implements SerendipityProbeProvider {
   }
 }
 
-export function weekStart(at: Date): string {
+function weekStart(at: Date): string {
   const date = new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate()));
   const weekday = date.getUTCDay() || 7;
   date.setUTCDate(date.getUTCDate() - weekday + 1);

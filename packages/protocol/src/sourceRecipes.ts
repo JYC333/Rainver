@@ -21,10 +21,9 @@
  *   reference, limits). Selector/step changes live in `recipe_json` and are
  *   never a permission delta; policy review only compares the envelope.
  * - The bounded dry-run result and per-step execution trace.
- * - The `source_runs` product read model. Decision (Phase 2): `source_runs`
- *   starts as a read model over `extraction_jobs` and `source_handler_runs`
- *   (plus recipe dry-run results stored on recipe versions), not a physical
- *   table. It becomes a table only if the union query proves insufficient.
+ * - The `source_runs` product read model. It is a read model over
+ *   `extraction_jobs` and `source_handler_runs` (plus recipe dry-run results
+ *   stored on recipe versions), not a physical table.
  *
  * Recipe output items reuse `CustomSourceHandlerOutputItemSchema`; both
  * levels materialize through the same server-side contract validator and
@@ -461,12 +460,13 @@ export const ProjectSourceBindingDTOSchema = z
     id: IdSchema,
     space_id: IdSchema,
     project_id: IdSchema,
-    source_connection_id: IdSchema,
+    source_channel_id: IdSchema,
     binding_key: z.string(),
     status: z.enum(["active", "paused", "archived"]),
     priority: z.number().int(),
     delivery_scope: z.enum(PROJECT_SOURCE_DELIVERY_SCOPE_VALUES),
     collection_notifications_enabled: z.boolean(),
+    standing_comparison_enabled: z.boolean(),
     filters_json: z.record(z.unknown()),
     routing_policy_json: z.record(z.unknown()),
     extraction_policy_json: z.record(z.unknown()),
@@ -498,6 +498,7 @@ export const SourceHealthDTOSchema = z
     binding_id: IdSchema.nullish(),
     project_id: IdSchema.nullish(),
     source_connection_id: IdSchema,
+    source_channel_id: IdSchema.nullish(),
     source_name: z.string(),
     status: z.enum(SOURCE_HEALTH_STATUS_VALUES),
     last_success_at: ISODateTimeSchema.nullish(),

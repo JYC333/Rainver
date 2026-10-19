@@ -3,8 +3,8 @@
  *
  * Contract for `GET /api/v1/auth/introspect`. The server owns
  * session-cookie identity, Google OAuth, and the current feature-gated API-key
- * routes; DB-persisted API-key storage is still deferred until the canonical
- * schema grows that table. The response carries identifiers only — never token,
+ * routes; DB-persisted API-key storage is disabled. There is no `api_keys`
+ * table. The response carries identifiers only — never token,
  * session, or key material.
  */
 

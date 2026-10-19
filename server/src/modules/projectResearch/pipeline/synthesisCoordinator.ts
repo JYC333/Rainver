@@ -27,7 +27,7 @@ import { researchStage, researchState, advanceOperation as advanceResearchOperat
 import { deriveStepStates } from "../operationProjection.js";
 import { setResearchOperationState } from "./operationProjectionWriter.js";
 
-export const RESEARCH_SYNTHESIS_CAPABILITIES = [
+const RESEARCH_SYNTHESIS_CAPABILITIES = [
   "research.source_collect",
   "research.source_summarize",
   "research.evidence_extract",
@@ -35,7 +35,7 @@ export const RESEARCH_SYNTHESIS_CAPABILITIES = [
   "research.idea_generate",
 ];
 
-export interface SynthesisOperationRow {
+interface SynthesisOperationRow {
   id: string;
   space_id: string;
   project_id: string;
@@ -55,7 +55,7 @@ export interface QueueSynthesisInput {
   critiqueContext?: string;
 }
 
-export interface QueueSynthesisStageInput {
+interface QueueSynthesisStageInput {
   spaceId: string;
   userId: string;
   projectId: string;
@@ -63,7 +63,7 @@ export interface QueueSynthesisStageInput {
   workflowId: string;
 }
 
-export interface ProjectResearchSynthesisPorts {
+interface ProjectResearchSynthesisPorts {
   operation(spaceId: string, operationId: string): Promise<SynthesisOperationRow | null>;
   setWorkflowMonitoring(
     spaceId: string,
@@ -501,11 +501,10 @@ export class ProjectResearchSynthesisCoordinator {
     });
     state.artifact_ids = unique([...state.artifact_ids, input.archiveArtifactId]);
     state.synthesis_run_id = input.runId;
-    // Checkpoint reform: when idea_review does not gate, this
-    // stage is under way rather than waiting on anybody. Writing
-    // `waiting_review`/`blocked` first and waiving after would advertise a
-    // review nobody will be asked for — and if the reconciler is not running,
-    // the operation would sit that way indefinitely.
+    // When idea_review does not gate, this stage is under way. Do not write
+    // `waiting_review` or `blocked` first and waive after. That advertises a
+    // review nobody will be asked for, and if the reconciler is not running
+    // the operation sits that way.
     const gated = checkpointBlocks("idea_review");
     state.current_stage = "idea_review";
     state.stage_state = gated ? "waiting_review" : "running";

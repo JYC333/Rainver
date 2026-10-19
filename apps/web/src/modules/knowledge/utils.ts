@@ -6,6 +6,7 @@ import type {
   KnowledgeLinkType,
   KnowledgeVisibility,
 } from '../../types/api'
+import { formatDateTime } from '../../i18n/format'
 
 export const KNOWLEDGE_ITEM_KINDS: KnowledgeItemKind[] = [
   'concept',
@@ -38,8 +39,9 @@ export const KNOWLEDGE_LINK_TYPES: KnowledgeLinkType[] = [
 
 export const KNOWLEDGE_RELATION_STATUSES: Extract<KnowledgeRelationStatus, 'candidate' | 'active'>[] = ['candidate', 'active']
 
+/** A timestamp in the current UI locale; a missing one reads as a dash. */
 export function fmt(dt: string | null | undefined): string {
-  return dt ? new Date(dt).toLocaleString() : '-'
+  return formatDateTime(dt, { fallback: '-' })
 }
 
 export function parseTags(value: string): string[] {
@@ -64,9 +66,8 @@ export function validateConfidence(value: number | null): boolean {
  * to `notes` on a fresh client. See KnowledgeModule / KnowledgeSectionHeader.
  */
 /**
- * `domains` (focus areas) is a section but deliberately not a workspace section:
- * it is parked under Knowledge until the app has a home for life-area groupings,
- * so `/knowledge` should not reopen it as a last-used destination.
+ * `domains` (focus areas) is a section and not a workspace section.
+ * `/knowledge` must not reopen it as a last-used destination.
  */
 export type KnowledgeSection = 'home' | 'notes' | 'wiki' | 'sources' | 'cards' | 'domains'
 
@@ -78,7 +79,7 @@ export const KNOWLEDGE_WORKSPACE_SECTIONS: Exclude<KnowledgeSection, 'home'>[] =
   'cards',
 ]
 
-export const DEFAULT_KNOWLEDGE_SECTION: KnowledgeSection = 'notes'
+const DEFAULT_KNOWLEDGE_SECTION: KnowledgeSection = 'notes'
 
 const LAST_SECTION_KEY = 'rainver:knowledge-section'
 

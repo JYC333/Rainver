@@ -223,6 +223,18 @@ function parseBalance(date: string, tail: string, source: { filename: string; li
   const parts = tail.split(/\s+/).filter(Boolean);
   if (parts.length < 3) throw new Error("balance requires account, number, and currency");
   const account = parts[0]!;
+  // Beancount's `NUMBER ~ TOLERANCE CURRENCY`. Also read currency-before-tilde:
+  // exported files may still use that order.
+  if (parts[2] === "~") {
+    if (parts.length < 5) throw new Error("balance tolerance requires a tolerance number and currency");
+    const currency = parts[4]!;
+    return {
+      type: "balance", date, account,
+      amount: Amount.of(parts[1]!, currency),
+      tolerance: Amount.of(parts[3]!, currency),
+      meta: {}, source,
+    };
+  }
   const amount = Amount.of(parts[1]!, parts[2]!);
   let tolerance: Amount | null = null;
   const toleranceIndex = parts.indexOf("~");
@@ -373,9 +385,16 @@ function isIgnorable(line: string): boolean {
   return trimmed === "" || trimmed.startsWith(";");
 }
 
+/** Cuts a trailing `;` comment; a `;` inside a quoted string is text. */
 function stripComment(line: string): string {
-  const index = line.indexOf(";");
-  return index === -1 ? line : line.slice(0, index);
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (quoted && char === "\\") index += 1;
+    else if (char === '"') quoted = !quoted;
+    else if (char === ";" && !quoted) return line.slice(0, index);
+  }
+  return line;
 }
 
 function splitFirst(input: string): readonly [string, string] {
@@ -386,12 +405,15 @@ function splitFirst(input: string): readonly [string, string] {
 }
 
 function quotedValues(input: string): string[] {
-  return [...input.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((match) =>
-    match[1]!.replace(/\\"/g, '"'),
-  );
+  return [...input.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((match) => unescapeString(match[1]!));
 }
 
 function unquote(input: string): string {
-  if (input.startsWith('"') && input.endsWith('"')) return input.slice(1, -1).replace(/\\"/g, '"');
+  if (input.startsWith('"') && input.endsWith('"')) return unescapeString(input.slice(1, -1));
   return input;
+}
+
+/** The inverse of the exporter's `escapeString`: `\\` and `\"`, in one pass. */
+function unescapeString(input: string): string {
+  return input.replace(/\\(["\\])/g, "$1");
 }

@@ -10,10 +10,10 @@ import { ResearchProviderCompiler } from '../research/queryPlanning/providerComp
 import type { ResearchProviderKey } from '@rainver/protocol'
 
 /**
- * The outbound port, typed from `fetchSource`'s own options rather than a
- * hand-written subset of them. The subset omitted `credentialHeaders`, so this
- * caller had nowhere to put the provider key but `headers` — which is the field
- * that survives a redirect to another origin.
+ * The outbound port, typed from `fetchSource`'s own options. Do not narrow
+ * it to a subset that omits `credentialHeaders`: the provider key then has
+ * nowhere to go but `headers`, and that field survives a redirect to
+ * another origin.
  */
 type PreviewFetcher = (url: string, options: Pick<SourceFetchOptions, 'headers' | 'credentialHeaders' | 'maxDownloadBytes' | 'timeoutMs'>) => Promise<SourceFetchResult>
 
@@ -28,11 +28,12 @@ const PREVIEW_UNAVAILABLE_MESSAGE =
  * Resolves a stored credential into the header it should be sent as.
  *
  * A port so a test can watch which *field* the credential lands in — the
- * distinction that matters here, and the one that was wrong: `headers` survives
- * a redirect to another origin, `credentialHeaders` does not. Production passes
+ * distinction that matters here: `headers` survives
+ * a redirect to another origin, `credentialHeaders` does not. Do not put the
+ * credential in `headers`. Production passes
  * the real service.
  */
-export type PreviewCredentialResolver = (
+type PreviewCredentialResolver = (
   spaceId: string,
   credentialId: string,
 ) => Promise<{ header_name: string; header_value: string } | null>
@@ -86,7 +87,7 @@ export class SourceQueryPreviewService {
     // strips when a redirect leaves the first origin, and what makes it refuse
     // an https→http downgrade. Merged in, a provider key whose header is not
     // one of the three names the guard recognises by default — Semantic
-    // Scholar's `x-api-key`, Brave's `X-Subscription-Token` — travelled to
+    // Scholar's `x-api-key`, Brave's `X-Subscription-Token` — travels to
     // whatever origin the upstream redirected to.
     const headers = { ...(request.headers ?? {}) }
     const credentialHeaders = credential ? { [credential.header_name]: credential.header_value } : undefined

@@ -14,7 +14,7 @@ import { enforceSources } from "./enforceSources.js";
 import { SourceRecipeService } from "./sourceRecipeService.js";
 import { applyContentCreationContext, resolveContentCreationContext } from "../access/creationContext.js";
 
-/** Level 2 Source recipe routes (plan/create, dry-run preview, activation, and the recipe-version read model), split out of routes.ts like customSourceRoutes.ts. */
+/** Level 2 Source recipe routes: plan/create, dry-run preview, activation, and the recipe-version read model. */
 export function registerSourceRecipeRoutes(app: FastifyInstance, context: ModuleContext): void {
   const recipeService = () => new SourceRecipeService(dbPool(context.config), context.config);
 
@@ -105,7 +105,7 @@ export function registerSourceRecipeRoutes(app: FastifyInstance, context: Module
     try {
       const { limit, offset } = parsePage(query(request));
       return reply.send(await recipeService().listVersions(
-        identity.spaceId,
+        identity,
         params(request).connectionId ?? "",
         { limit, offset },
       ));
@@ -122,7 +122,7 @@ export function registerSourceRecipeRoutes(app: FastifyInstance, context: Module
       try {
         const p = params(request);
         const version = await recipeService().getVersion(
-          identity.spaceId,
+          identity,
           p.connectionId ?? "",
           p.versionId ?? "",
         );

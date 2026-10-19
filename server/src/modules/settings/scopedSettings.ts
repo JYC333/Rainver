@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../routeUtils/common.js";
 
-export type ScopedSettingsScopeType = "instance" | "space" | "user" | "space_user";
+export type ScopedSettingsScopeType = "instance" | "space" | "project" | "user" | "space_user";
 
 export interface ScopedSettingsDescriptor<TValue extends object> {
   key: string;

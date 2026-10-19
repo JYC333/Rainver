@@ -3,9 +3,9 @@
 ## Status
 Implemented. Files & Code is a Project-local Area, not a global operator console.
 
-The shipped full-file editor, recovery drafts, and message-owned lazy input
+The editor, recovery drafts, and message-owned lazy input
 resources are recorded in [ADR 0021](../decisions/0021-files-code-codemirror-drafts-and-input-resources.md).
-This module guide describes the post-integration behavior.
+This module guide describes the current behavior.
 
 ## Purpose
 Project-local interface for browsing and editing a Project Folder's files with CodeMirror 6,
@@ -15,7 +15,10 @@ filesystem directly.
 
 ## Owns
 - Project Folder file tree browser UI (`/projects/{projectId}/files`)
-- Git status and diff viewer UI
+- Git status and diff viewer UI. A status whose file list was cut
+  (`GitStatus.truncated`, from the bounded `git status` read in
+  `@rainver/folder-read`) is shown as the first files of an incomplete list,
+  never as a clean or complete working tree.
 - Project Folder settings UI (`/projects/{projectId}/folders/{folderId}`), including
   per-Folder snapshot retention overrides
 - Files & Code backend read APIs (tree, file content, git status, git diff)
@@ -25,11 +28,11 @@ filesystem directly.
   unregister, scan)
 
 ## Does Not Own
-- Sandbox creation (sandbox module)
+- Run sandbox provisioning. Run preparation calls `projectFolders/sandbox.ts`; it is not a Files & Code write.
 - Proposal storage (proposals module)
 - Memory display (memory module)
 - Agent run dispatch (agents module)
-- Interactive agent-session execution over a Folder — never implemented, not planned
+- Interactive agent-session execution over a Folder
 
 ## UI Routes
 
@@ -44,6 +47,8 @@ filesystem directly.
 GET/POST   /api/v1/projects/{projectId}/folders
 GET/PATCH  /api/v1/projects/{projectId}/folders/{folderId}
 DELETE     /api/v1/projects/{projectId}/folders/{folderId}
+GET        /api/v1/projects/{projectId}/folders/{folderId}/locations
+POST       /api/v1/projects/{projectId}/folders/{folderId}/locations/{locationId}/activate
 POST       /api/v1/projects/{projectId}/folders/{folderId}/unregister
 POST       /api/v1/projects/{projectId}/folders/scan
 GET        /api/v1/projects/{projectId}/folders/{folderId}/tree?path=...
@@ -80,13 +85,55 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   and an online paired Host.
 - Frontend must not access arbitrary server paths — all file access via
   `PgProjectFolderRepository` / `PgRunSandboxManager`.
-- Agent code changes still use the `code_patch` proposal flow. A person using
+- Agent code changes use the `code_patch` proposal flow. A person using
   Files & Code edits a bounded text file in a recovery draft; Save to Folder
   stores the preimage in `project_file_revisions` and then removes only the exact
   saved draft version. There is no direct browser-content write or user-facing
   rollback route. History offers Restore as draft, which never mutates the
-  Project Folder; revision rows and historical status values remain readable for
-  compatibility.
+  Project Folder; it answers the draft store's refusals as Save does (409
+  `draft_version_conflict`, 413 `draft_quota_exceeded`), will not take the
+  person's one new-file draft slot while an unsaved new file holds it, and
+  refuses a revision larger than a draft may be. Revision rows stay readable,
+  including their stored status values.
+- A file read (`readFolderFile` in `@rainver/folder-read`, used by the server
+  for a local Location and by the daemon for a remote one) validates the path
+  lexically with `PathPolicy` once and then never uses the name again: the
+  file is opened through `openFileBeneathRoot` (`safeOpen.ts`), which makes
+  the kernel resolve every component below the trusted, canonicalised root
+  without following links — on Linux by opening each directory
+  `O_NOFOLLOW` relative to its parent's `/proc/self/fd` handle, on macOS with
+  a single `O_NOFOLLOW_ANY` open — and the type check, the size check and
+  the bytes all come from that one handle. Any symbolic link below the root,
+  final or ancestor, inside or outside, is refused (`path_forbidden`); FIFOs,
+  devices and other non-regular files are refused without blocking; at most
+  `MAX_FILE_BYTES + 1` bytes are read so a file that grows under the read is
+  still `too_large`. Each mechanism is proved once per process with a
+  linked fixture before first use; a platform where the proof does not hold
+  (Windows, or a kernel that ignores the flag) answers every file read with
+  `unsupported_platform` (503) rather than falling back to a path-based read.
+  Windows hosts therefore cannot serve Files & Code reads until a race-free
+  open exists for them. The tree walk `lstat`s each entry so a link that
+  appeared after `readdir` is left out rather than described.
+- Server `code_patch` apply, snapshot restore and failure rollback open each
+  directory component the same way and operate relative to its
+  Linux `/proc/self/fd` handle. Replacing a parent path with a link cannot
+  redirect the file operation. All symlink components are refused (422);
+  non-Linux server patching fails closed (503). Existing executable modes are
+  preserved. These operations do not turn the external filesystem into a
+  database transaction or prevent another writer from changing file content.
+  [fs-native-extensions](https://github.com/holepunchto/fs-native-extensions)
+  offers advisory locks but no directory-relative open API, so no native
+  dependency is added for either purpose-specific open.
+- A clone (`repo_url` on Folder creation) accepts only an `https://` URL and
+  runs `git clone` through a per-clone loopback CONNECT proxy
+  (`startGuardedConnectProxy` in `@rainver/outbound-guard`) that resolves
+  every host git asks for — the first and each redirect — through the
+  instance's outbound guard and dials only the pinned address, so a name that
+  resolves or redirects into the instance's own network is refused at that
+  hop. `ssh://`, `git://`, `http://`, scp-like and local sources are refused
+  with a message pointing at the two supported ways to bring in a private
+  repository: connect an existing directory, or register it through a paired
+  host. Credentials pasted into the URL are redacted from the failure text.
 - Save to Folder requires the exact draft version and Host existence/hash observed
   by the editor, is atomic, rejects traversal/symlink escapes and secret-like
   paths, and is capped at 1 MiB, matching the File-page read limit.
@@ -129,9 +176,9 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   resource.
   Normal and retry Runs receive only its descriptor and read it lazily through
   the governed `input_resource.read/search` actions; no Host temporary file,
-  generic database URL, or prompt-embedded body is used. Legacy
-  `conversation_file_snapshots` remain readable and are hydrated only by their
-  compatibility paths. The shared composer still searches authorized Folder
+  generic database URL, or prompt-embedded body is used.
+  A `file_reference` part freezes its text in `conversation_file_snapshots`.
+  Do not treat that table as unused. The shared composer searches authorized Folder
   trees through `GET /api/v1/sessions/{sessionId}/input-files` for explicit
   path references; that search is not a second resource index.
 - An attached immutable resource is the authoritative input state for its Run.
@@ -169,11 +216,19 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 - Git operations must be scoped to the Folder root; no `..` traversal allowed.
 - Full git diff output is bounded. Full diff, protected-Folder, external-root,
   protected/restricted, and secret-like read attempts force policy audit records.
-- Secret-like diff values are redacted. Diffs touching secret-like paths are denied.
+- Secret-like diff values are redacted. Diffs touching secret-like paths are denied;
+  a whole-Folder diff is denied when any file it shows would be refused by PathPolicy
+  as a single-file read.
+- A file revision preview returns the file's former body, so it is a `file` read of
+  the Location the revision came from: `project_folder.read` policy and audit, and
+  for a paired Host only that Host's owner.
 - `resource_space_id` for policy enforcement comes from the actual Project Folder row,
   not caller-supplied input.
 - Archiving a Folder disables new Folder-backed execution but never touches disk.
   Unregistering removes only the registration row; it also never touches disk.
+  A Folder that Runs, Activity, Proposals, Rooms or other records still reference
+  keeps its row: unregister answers 409 `project_folder_in_use`, and archiving is
+  the way to retire it.
 
 ## Related Files
 - `server/src/db/schema/projectFolders.ts` — Project Folder + execution-config schema; access derives from Space/Project authority

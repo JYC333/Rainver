@@ -5,13 +5,14 @@ import { setDynamicRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/dy
 import { acpAgentRuntimeKey, acpAgentRuntimeAdapterSpec } from "../src/modules/acpAgents/service.js";
 import { getRuntimeAdapterSpec } from "../src/modules/runtimeAdapters/specs.js";
 import { acpRuntimeProbes } from "../src/modules/hosts/runtimeProbes.js";
+import { MAX_REGISTRY_ID_LENGTH, parseEntry } from "../src/modules/acpAgents/registry.js";
+import { RuntimeKeySchema } from "@rainver/protocol";
 
 /**
  * An ACP agent enabled from the registry is a runtime adapter like any other,
  * but it is never in `BUILTIN_RUNTIME_ADAPTER_SPECS` — it is published into
- * the dynamic catalog at boot. Reading the builtin table directly therefore
- * makes it invisible, which is how "Unknown runtime_key" came back for a
- * Cursor agent the operator had enabled and installed on a host.
+ * the dynamic catalog at boot. Do not read the builtin table for it. The
+ * agent is invisible there, and dispatch answers "Unknown runtime_key".
  */
 const CURSOR = {
   id: "cursor",
@@ -29,6 +30,20 @@ const CURSOR = {
 describe("a registry ACP agent is a runtime adapter everywhere", () => {
   afterEach(() => setDynamicRuntimeAdapterSpecs([]));
 
+  it("drops a registry entry whose id would not fit the wire's runtime_key", () => {
+    const entry = (id: string) => ({
+      id,
+      name: "Long",
+      version: "1.0.0",
+      distribution: { kind: "npx", package: "long@1", args: [], env: {} },
+    });
+    const longest = "a".repeat(MAX_REGISTRY_ID_LENGTH);
+    expect(parseEntry(entry(longest))?.id).toBe(longest);
+    expect(RuntimeKeySchema.safeParse(acpAgentRuntimeKey(longest)).success).toBe(true);
+    // One over, and every daemon would refuse the hello_ack carrying its probe.
+    expect(parseEntry(entry(`${longest}a`))).toBeNull();
+  });
+
   it("resolves through the accessor once published", () => {
     expect(getRuntimeAdapterSpec(acpAgentRuntimeKey("cursor"))).toBeNull();
     setDynamicRuntimeAdapterSpecs([acpAgentRuntimeAdapterSpec(CURSOR)]);
@@ -42,7 +57,7 @@ describe("a registry ACP agent is a runtime adapter everywhere", () => {
         const path = join(dir, entry);
         if (statSync(path).isDirectory()) { walk(path); continue; }
         if (!path.endsWith(".ts") || path.endsWith("runtimeAdapters/specs.ts")) continue;
-        // Subscripting the table is the bug; re-exporting or iterating it is not.
+        // Do not subscript the table. Re-exporting or iterating it is fine.
         if (/BUILTIN_RUNTIME_ADAPTER_SPECS\s*\[/.test(readFileSync(path, "utf8"))) offenders.push(path);
       }
     };

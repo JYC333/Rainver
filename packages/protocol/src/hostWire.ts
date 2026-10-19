@@ -4,16 +4,15 @@
  * `HostServerFrameSchema` is every frame the control plane pushes to a paired
  * daemon; `HostDaemonFrameSchema` is every frame a daemon sends back. Both
  * ends parse inbound frames with these schemas and type outbound frames
- * against them, so a field exists in exactly one place. Before this each side
- * rebuilt every frame by hand from untyped JSON, and a field the rebuild did
- * not name vanished without a trace — `provider_binding`, then `server_url`,
- * then `work_surface`, each shipped inert once that way.
+ * against them, so a field exists in exactly one place. Do not rebuild a
+ * frame by hand from untyped JSON on either side. A field this contract
+ * drops must leave the senders in the same change. Do not drop a field on
+ * one side while the other still sends it.
  *
  * Objects are not `.strict()`: an unknown field is dropped, not fatal. What
  * guards against a field being *lost* is that neither side names fields by
- * hand any more. Both ends ship from this repository together, so there is no
- * older peer to stay compatible with and nothing here is optional for that
- * reason.
+ * hand. Do not keep a field optional for an older sender, and do not add a
+ * second frame shape beside this one.
  *
  * Wire shapes only. What a daemon does with a frame — resolving a Location to
  * a path, choosing a profile directory — is the daemon's, and the server's
@@ -136,9 +135,10 @@ export type WorkspaceStatusReport = z.infer<typeof WorkspaceStatusReportSchema>;
 /**
  * What a daemon says about itself in `hello` and every `heartbeat`.
  *
- * `capabilities_json` is deliberately loose here: the daemon's wire format for
- * it and its history are the server's `hosts/capabilities.ts` concern, which
- * normalizes it into `HostCapabilities` before anything reads it.
+ * `capabilities_json` is deliberately loose here. Its wire format is
+ * `hosts/capabilities.ts`'s concern alone, which normalizes `runtimes`,
+ * `versions`, and `installations` into `HostCapabilities` before anything
+ * reads them. Do not parse capabilities in this schema.
  */
 export const HostHelloInfoSchema = z.object({
   platform: z.string(),
@@ -290,6 +290,7 @@ export const FolderReadDaemonErrorSchema = z.enum([
   "is_directory",
   "too_large",
   "read_failed",
+  "unsupported_platform",
 ]);
 export type FolderReadDaemonError = z.infer<typeof FolderReadDaemonErrorSchema>;
 
@@ -410,9 +411,8 @@ export const HostCommandRunFrameSchema = z.object({
  * What one copy's subscription has left.
  *
  * Asked of the host because that is where the login is: a subscription's quota
- * is readable only with the credential the copy holds, and the whole point of
- * keeping credentials with the copy (ADR 0016 §7) is that nothing brokers them
- * back here. The daemon answers with numbers — never the token, never the
+ * is readable only with the credential the copy holds. Do not broker that
+ * credential back here (ADR 0016 §7). The daemon answers with numbers — never the token, never the
  * credential file — and the control plane caches them beside the copy.
  */
 export const HostUsageProbeFrameSchema = z.object({
@@ -957,10 +957,23 @@ export type HostRunGitAfter = z.infer<typeof HostRunGitAfterSchema>;
  * fields are absent outside a git checkout and for a Run that executed in a
  * worktree of its own, whose HEAD is not the Location's.
  */
+/**
+ * Both uploads name the launch attempt they belong to. The control plane
+ * accepts them only against the Run's current, still-open attempt carrying
+ * that nonce; a late upload from a superseded or terminated attempt is refused
+ * instead of overwriting what the live attempt produced.
+ */
 export const HostRunDiffUploadSchema = z.object({
+  launch_id: IdSchema,
   diff: z.string().nullable(),
   truncated: z.boolean().optional(),
   git_before: HostRunGitAfterSchema.optional(),
   git_after: HostRunGitAfterSchema.optional(),
 });
 export type HostRunDiffUpload = z.infer<typeof HostRunDiffUploadSchema>;
+
+export const HostRunOutputsUploadSchema = z.object({
+  launch_id: IdSchema,
+  files: z.array(z.object({ name: z.string().min(1).max(512), content: z.string() })).max(1_000),
+});
+export type HostRunOutputsUpload = z.infer<typeof HostRunOutputsUploadSchema>;

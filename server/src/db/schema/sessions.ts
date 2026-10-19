@@ -166,7 +166,7 @@ export const messages = pgTable("messages", {
 	// prefix: `/` for the original branch, `/<fork message id>/` for a branch
 	// started by a fork, and so on.
 	//
-	// It is a prefix key, which is the whole point. A message is on the
+	// It is a prefix key. A message is on the
 	// visible path exactly when the head's `branch_path` starts with this
 	// message's `branch_path` and this message's depth is at most the head's
 	// — one indexed range scan over `(space_id, session_id, path_depth)`, no

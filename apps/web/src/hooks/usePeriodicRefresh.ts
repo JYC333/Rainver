@@ -6,9 +6,9 @@ import { useEffect } from 'react'
  * A read refresh cadence only — nothing here decides anything. Two triggers:
  * the tab becoming visible again (a backgrounded tab must not show a stale
  * situation on return), and a fixed interval while it is visible. The same
- * shape the Inquiry Area uses for a live Thread; without it the Board and
- * Pulse loaded once on arrival, so work an Agent recorded from the Room
- * appeared only after leaving the page and coming back.
+ * shape the Inquiry Area uses for a live Thread. Do not load the Board and
+ * Pulse once on arrival. Work an Agent recorded from the Room would appear
+ * only after leaving the page and coming back.
  *
  * `refresh` must be quiet: it is called while the person is looking at the
  * surface, so it must not put a skeleton over what is already drawn.

@@ -24,7 +24,7 @@ export default function AgentsPage() {
     }
     setLoading(true)
     agentsApi.list({ status: 'active,disabled,inactive' })
-      // The retired hardcoded Assistant is not a selectable Room participant.
+      // A system assistant is not a selectable Room participant.
       .then(async list => {
         const visible = list.filter(a => a.agent_kind !== 'system_assistant')
         setAgents(visible)

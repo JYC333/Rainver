@@ -18,16 +18,15 @@ export const projectWorkEvents = pgTable("project_work_events", {
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
 	projectId: varchar("project_id", { length: 36 }).notNull(),
 	// Closed-set validation is the registry's job (B12F), so the column carries
-	// a format constraint only. `modules/projectWork/eventKinds.ts` is the
-	// replacement, and a demoted constraint without one would be strictly worse
-	// than the constraint it replaced.
+	// a format constraint only. `modules/projectWork/eventKinds.ts` asks the
+	// registry on the one writer. Do not add a closed-set CHECK here.
 	eventKind: varchar("event_kind", { length: 64 }).notNull(),
 	subjectType: varchar("subject_type", { length: 32 }).notNull(),
 	subjectId: varchar("subject_id", { length: 36 }).notNull(),
-	// Actor-neutral from the start. A responsibility handoff whose recipient can
-	// only be an Agent has to be redesigned the first time the answer is "wait
-	// for the supplier" or "wait for Tuesday", and `actors` already spans user,
-	// agent, system, automation, connector, integration, service and job.
+	// Actor-neutral. Do not restrict a handoff recipient to an Agent. The answer
+	// can be "wait for the supplier" or "wait for Tuesday". `actors` already
+	// spans user, agent, system, automation, connector, integration, service
+	// and job.
 	actorId: varchar("actor_id", { length: 36 }).notNull(),
 	occurredAt: timestamp("occurred_at", { withTimezone: true, mode: 'string' }).notNull(),
 	correlationId: varchar("correlation_id", { length: 64 }),
@@ -43,7 +42,7 @@ export const projectWorkEvents = pgTable("project_work_events", {
 	// is total. `byDefault` rather than `always` so a fixture that restores a
 	// stream can write its own values.
 	// `bigint`, not `number`: the column is 64-bit and a JS number loses
-	// precision past 2^53, which is why the Updates cursor keeps `seq` as a
+	// precision past 2^53. The Updates cursor keeps `seq` as a
 	// decimal string end to end.
 	seq: bigint("seq", { mode: "bigint" }).generatedByDefaultAsIdentity().notNull(),
 }, (table): PgTableExtraConfigValue[] => [
@@ -52,11 +51,10 @@ export const projectWorkEvents = pgTable("project_work_events", {
 	// descending columns is load-bearing: `ORDER BY ... DESC` is NULLS FIRST in
 	// Postgres, `DESC NULLS LAST` is a different ordering the planner cannot
 	// match to it, and Drizzle writes NULLS LAST unless told otherwise. With
-	// the mismatch the planner sorted the whole filtered set on every page
-	// (measured on 200k rows: Bitmap Index Scan + Sort; a plain Index Scan
-	// under the LIMIT once the nulls ordering matches). A separate
-	// `(space_id, subject_type, subject_id, seq)` index served no query — no
-	// reader orders by `seq` alone — and is not replaced.
+	// the mismatch the planner sorts the whole filtered set on every page
+	// instead of an Index Scan under the LIMIT. Do not add a separate
+	// `(space_id, subject_type, subject_id, seq)` index. No reader orders by
+	// `seq` alone.
 	index("ix_project_work_events_project_occurred").using("btree", table.spaceId.asc().nullsLast(), table.projectId.asc().nullsLast(), table.occurredAt.desc().nullsFirst(), table.seq.desc().nullsFirst()),
 	index("ix_project_work_events_subject").using("btree", table.spaceId.asc().nullsLast(), table.subjectType.asc().nullsLast(), table.subjectId.asc().nullsLast(), table.occurredAt.desc().nullsFirst(), table.seq.desc().nullsFirst()),
 	index("ix_project_work_events_kind").using("btree", table.spaceId.asc().nullsLast(), table.eventKind.asc().nullsLast(), table.occurredAt.desc().nullsLast()),
@@ -97,11 +95,10 @@ export const projectWorkEvents = pgTable("project_work_events", {
  * The current Loop stage of one Task: a fold of `project_work_events`, never a
  * second authority.
  *
- * Deriving the stage from surrounding facts instead was the first design and it
- * does not survive two requirements. A Task that legitimately skips planning
+ * Do not derive the stage from surrounding facts. A Task that skips planning
  * looks identical to one still planning, and a Task sent back to `plan` after a
- * failed check looks identical to one that has already verified — in both cases
- * the facts are the same and only an actor's decision separates them. So the
+ * failed check looks identical to one that has already verified. In both cases
+ * the facts are the same and only an actor's decision separates them. The
  * decision is recorded, and this row is the replayable answer to "where is it
  * now" rather than a value anyone edits directly.
  */

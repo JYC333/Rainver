@@ -90,16 +90,16 @@ async function seedExecution(operationId: string, status: string): Promise<strin
     [assetId, SPACE, `research_pass_${assetId.slice(0, 8)}`, now],
   );
   await db.pool.query(
-    `INSERT INTO evolvable_asset_versions (id, asset_id, space_id, scope_type, version, status, source, created_at, updated_at)
-     VALUES ($1,$2,$3,'space',1,'approved','built_in',$4,$4)`,
+    `INSERT INTO evolvable_asset_versions (id, asset_id, space_id, scope_type, scope_id, version, status, source, created_at, updated_at)
+     VALUES ($1,$2,$3,'space',$3,1,'approved','user_authored',$4,$4)`,
     [versionId, assetId, SPACE, now],
   );
   await db.pool.query(
     `INSERT INTO workflow_executions (
        id, space_id, automation_id, workflow_version_id, status, trigger_type, definition_json,
-       research_operation_id, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,$5,'manual','{}'::jsonb,$6,$7,$7)`,
-    [executionId, SPACE, automationId, versionId, status, operationId, now],
+       research_operation_id, responsible_user_id, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,'manual','{}'::jsonb,$6,$8,$7,$7)`,
+    [executionId, SPACE, automationId, versionId, status, operationId, now, OWNER],
   );
   return executionId;
 }
@@ -231,9 +231,9 @@ describe("research_operation_cancel job (real Postgres)", () => {
     // plan `running` would keep fetching from the provider after "Stop".
     const planRow = await db.pool.query<{ status: string }>(`SELECT status FROM source_backfill_plans WHERE id=$1`, [plan]);
     expect(planRow.rows[0]?.status).toBe("cancelled");
-    // Pre-reform the checkpoint decision WAS the stop lever, so stopping
-    // resolved the row; a surviving pending gate would keep the web UI
-    // advertising a review whose approval no-ops on a cancelled operation.
+    // Stopping waives the pending checkpoint. A surviving pending gate keeps
+    // the web UI advertising a review whose approval no-ops on a cancelled
+    // operation. Do not leave the checkpoint as the stop lever.
     const checkpointRow = await db.pool.query<{ status: string }>(`SELECT status FROM project_research_checkpoints WHERE id=$1`, [checkpoint]);
     expect(checkpointRow.rows[0]?.status).toBe("waived");
     expect(result).toMatchObject({
@@ -284,12 +284,11 @@ describe("research_operation_cancel job (real Postgres)", () => {
 
     await runHandler();
 
-    const finalization = await db.pool.query<{ completion_gate_committed: boolean }>(
-      `SELECT (metadata_json->>'completion_gate_committed')::boolean AS completion_gate_committed
-         FROM run_finalizations WHERE space_id=$1 AND run_id=$2`,
+    const finalization = await db.pool.query<{ settled: boolean }>(
+      `SELECT settled_at IS NOT NULL AS settled FROM run_finalizations WHERE space_id=$1 AND run_id=$2`,
       [SPACE, run],
     );
-    expect(finalization.rows).toEqual([{ completion_gate_committed: true }]);
+    expect(finalization.rows).toEqual([{ settled: true }]);
   });
 
   it("is idempotent, so a retried job cannot re-cancel or double count", async () => {

@@ -55,7 +55,7 @@ let app: FastifyInstance | undefined;
 const db = useTestDatabase(import.meta.filename);
 
 function user(id: string, email: string): CurrentUser {
-  return { id, email, display_name: id, avatar_url: null, is_instance_admin: false, created_at: new Date().toISOString(), last_login_at: null };
+  return { id, email, display_name: id, avatar_url: null, is_instance_admin: false, created_at: new Date().toISOString(), default_space_id: null, last_login_at: null };
 }
 
 function stubAuth(): AuthRepository {
@@ -166,7 +166,7 @@ describe("ACP registry agents", () => {
     expect(enabled.statusCode).toBe(201);
     expect(enabled.json()).toMatchObject({ id: "goose", runtime_key: "acp_goose" });
 
-    // The adapter catalog now carries it, shaped as low trust and remote-only.
+    // The adapter catalog includes it, shaped as low trust and remote-only.
     const spec = getRuntimeAdapterSpec("acp_goose");
     expect(spec).toMatchObject({
       display_name: "goose",

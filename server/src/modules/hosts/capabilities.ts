@@ -1,5 +1,6 @@
 import {
   HostCapabilitiesSchema,
+  RuntimeAccountSchema,
   type HostCapabilities,
   type RuntimeInstallation,
   type RuntimeAuthMethod,
@@ -29,11 +30,12 @@ export function hasSubscriptionQuota(runtimeKey: string): boolean {
  * `managed:<version>`) — and everything reported about a copy (version, login
  * state, options) is resolved from that installation and its stable HOME.
  *
- * Normalized once when a daemon's hello/heartbeat is recorded. The daemon and
- * server ship together, so obsolete capability layouts are rejected instead
- * of maintaining a second interpretation path.
+ * Normalized once when a daemon's hello/heartbeat is recorded. Readers see
+ * `runtimes`, `versions`, and `installations` only. An installation entry
+ * that does not parse is dropped. Do not add a second parser for another
+ * layout.
  */
-export type { HostCapabilities, RuntimeAuthMethod, RuntimeInstallation, RuntimeOptionChoice, RuntimeOptions, RuntimeSessionConfigOption, RuntimePromptCapabilities } from "@rainver/protocol";
+export type { HostCapabilities, RuntimeInstallation, RuntimeOptions, RuntimeSessionConfigOption, RuntimePromptCapabilities } from "@rainver/protocol";
 export { OWN_INSTALLATION } from "@rainver/protocol";
 
 function record(value: unknown): Record<string, unknown> {
@@ -55,16 +57,32 @@ function choices(value: unknown): RuntimeOptionChoice[] {
       })
     : [];
 }
+// The protocol's bounds on Agent-reported option text. One option the Agent
+// described too generously is dropped or shortened here; left to the final
+// schema parse it would fail the whole hello and close the Host's connection.
+const MAX_OPTION_ID = 256;
+const MAX_OPTION_DESCRIPTION = 2000;
+const MAX_OPTION_CATEGORY = 128;
+const MAX_AUTH_ARG = 2000;
+
+function identifier(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_OPTION_ID;
+}
+
+function description(value: unknown): string | null {
+  return typeof value === "string" ? value.slice(0, MAX_OPTION_DESCRIPTION) : null;
+}
+
 function configOptions(value: unknown): RuntimeSessionConfigOption[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item): RuntimeSessionConfigOption[] => {
     const entry = record(item);
-    if (typeof entry.id !== "string" || typeof entry.name !== "string") return [];
+    if (!identifier(entry.id) || !identifier(entry.name)) return [];
     const base = {
       id: entry.id,
       name: entry.name,
-      description: typeof entry.description === "string" ? entry.description : null,
-      category: typeof entry.category === "string" ? entry.category : null,
+      description: description(entry.description),
+      category: typeof entry.category === "string" && entry.category.length <= MAX_OPTION_CATEGORY ? entry.category : null,
     };
     if (entry.type === "boolean" && typeof entry.current_value === "boolean") {
       return [{ ...base, type: "boolean" as const, current_value: entry.current_value }];
@@ -79,13 +97,17 @@ function authMethods(value: unknown): RuntimeAuthMethod[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item): RuntimeAuthMethod[] => {
     const entry = record(item);
-    if (typeof entry.id !== "string" || typeof entry.name !== "string" || (entry.type !== "agent" && entry.type !== "terminal")) return [];
+    if (!identifier(entry.id) || !identifier(entry.name) || (entry.type !== "agent" && entry.type !== "terminal")) return [];
+    // Arguments are run, not shown, so an over-long one drops the method
+    // rather than being shortened into a different command.
+    const args = strings(entry.args);
+    if (args.some((arg) => arg.length > MAX_AUTH_ARG)) return [];
     return [{
       id: entry.id,
       name: entry.name,
-      description: typeof entry.description === "string" ? entry.description : null,
+      description: description(entry.description),
       type: entry.type,
-      args: strings(entry.args),
+      args,
       env: stringMap(entry.env),
     }];
   });
@@ -113,13 +135,17 @@ function promptCapabilities(value: unknown): RuntimePromptCapabilities | null {
     resource_link: typeof entry.resource_link === "boolean" ? entry.resource_link : null,
   };
 }
+/**
+ * One account the daemon read out of a CLI's credential file. Like an option
+ * above, an entry outside the wire's limits (a provider id longer than the
+ * schema allows) is dropped here rather than failing the whole hello.
+ */
 function accounts(value: unknown): RuntimeAccount[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.flatMap((item): RuntimeAccount[] => {
     const entry = record(item);
-    return typeof entry.id === "string" && entry.id && typeof entry.kind === "string" && entry.kind
-      ? [{ id: entry.id, kind: entry.kind }]
-      : [];
+    const parsed = RuntimeAccountSchema.safeParse({ id: entry.id, kind: entry.kind });
+    return parsed.success ? [parsed.data] : [];
   });
 }
 function installation(value: unknown, reportsSubscriptionQuota: boolean): RuntimeInstallation | null {

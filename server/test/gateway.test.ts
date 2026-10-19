@@ -14,6 +14,7 @@ import {
   SERVER_MARKER_HEADER,
   SERVER_MARKER_VALUE,
   readHeader,
+  resolveRequestId,
 } from "../src/gateway/requestContext.js";
 import { __setHealthDatabaseForTests } from "../src/modules/system/service.js";
 
@@ -80,6 +81,27 @@ describe("error envelope for server-owned routes", () => {
     expect(res.payload).not.toContain("at "); // stack frame marker
   });
 
+  it("answers a request that sent no x-request-id with one id in the header, body and log", async () => {
+    // The browser sends none, so every id here is generated; the header, the
+    // envelope and whatever a route resolved along the way have to be the same
+    // one, or the id a user reads out of a response finds nothing in the logs.
+    app = buildServer(loadConfig({}), { logger: false });
+    app.get("/api/v1/server/ids", async (request) => ({
+      first: resolveRequestId(request),
+      second: resolveRequestId(request),
+    }));
+    app.get("/api/v1/server/boom", async () => { throw new Error("kaboom"); });
+    const ids = await app.inject({ method: "GET", url: "/api/v1/server/ids" });
+    const body = ids.json() as { first: string; second: string };
+    expect(body.first).toBeTruthy();
+    expect(body.second).toBe(body.first);
+    expect(ids.headers["x-request-id"]).toBe(body.first);
+
+    const failed = await app.inject({ method: "GET", url: "/api/v1/server/boom" });
+    expect(failed.statusCode).toBe(500);
+    expect((failed.json() as { request_id: string }).request_id).toBe(failed.headers["x-request-id"]);
+  });
+
   it("keeps intentional client-safe messages for 4xx", async () => {
     app = buildAppWithThrowingRoute("unknown feature flag", 404);
     const res = await app.inject({ method: "GET", url: "/api/v1/server/boom" });
@@ -131,12 +153,11 @@ describe("safe header access", () => {
    * were typed somewhere; what has to hold is that the bytes pino emits for a
    * request carrying every one of these headers contain none of their values.
    *
-   * Worth knowing while reading this: what actually keeps them out today is
-   * Fastify's own `req` serializer, which reduces the request to method, url
-   * and address and never reaches `headers`. `LOG_REDACT_PATHS` is the second
-   * line — it is what would catch a custom serializer, or a handler logging a
-   * request-shaped object — and it is unreachable while the default serializer
-   * stands. This test pins the outcome either way.
+   * What keeps them out is Fastify's own `req` serializer, which reduces the
+   * request to method, url and address and never reaches `headers`.
+   * `LOG_REDACT_PATHS` is the second line. It catches a custom serializer, or
+   * a handler logging a request-shaped object, and it is unreachable while
+   * the default serializer stands. This test pins the outcome either way.
    */
   it("keeps credential-bearing request headers out of what the logger emits", async () => {
     const lines: string[] = [];
@@ -147,9 +168,9 @@ describe("safe header access", () => {
       SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
       SERVER_LOG_LEVEL: "info",
     });
-    // Only `logStream`: passing `logger` too takes the override branch and the
-    // stream is ignored, which is how a test like this reads as passing while
-    // asserting nothing.
+    // Pass only `logStream`. Passing `logger` too takes the override branch
+    // and the stream is ignored, so this test would pass while asserting
+    // nothing.
     const app = createServerApp(config, { logStream: stream });
     registerGatewayConventions(app, config);
     app.get("/api/v1/logging-probe", async (request, reply) => {
@@ -182,6 +203,38 @@ describe("safe header access", () => {
     // what the logger writes rather than about an empty stream.
     expect(emitted).toContain("logging probe");
     expect(emitted).toContain("/api/v1/logging-probe");
+  });
+
+  /**
+   * The query string too. An OAuth callback carries its authorization code
+   * and state there. Do not log those values. The incoming-request line
+   * includes `req.url`.
+   */
+  it("keeps a request's query string out of the request log line", async () => {
+    const lines: string[] = [];
+    const stream = new Writable({
+      write(chunk, _encoding, done) { lines.push(String(chunk)); done(); },
+    });
+    const config = loadConfig({
+      SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
+      SERVER_LOG_LEVEL: "info",
+    });
+    const app = createServerApp(config, { logStream: stream });
+    registerGatewayConventions(app, config);
+    app.get("/api/v1/auth/callback/probe", async (_request, reply) => reply.send({ ok: true }));
+    await app.ready();
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/auth/callback/probe?code=4/0Ab-oauth-code-value&state=state-secret-value",
+    });
+    expect(response.statusCode).toBe(200);
+    await app.close();
+
+    const emitted = lines.join("");
+    expect(emitted).toContain("/api/v1/auth/callback/probe");
+    expect(emitted).not.toContain("oauth-code-value");
+    expect(emitted).not.toContain("state-secret-value");
   });
 
   /**

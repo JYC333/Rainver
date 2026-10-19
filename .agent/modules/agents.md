@@ -29,10 +29,11 @@ resources and keep their explicitly declared scope.
 - `Agent` ORM model and CRUD
 - `AgentVersion` model (immutable Agent behavior/constraint snapshot per Run)
 - `AgentRuntimeProfile` model (Agent-scoped runtime/backend/Host deployment)
-- `AgentTemplate` / `AgentTemplateVersion` — reusable factories (NOT runtime objects)
-- `AgentTemplateService` — author templates + copy-on-create `create_agent_from_template`
+- Agent templates — read-only file specs in `catalog/agent_templates/<key>/template.yaml`
+  (NOT runtime objects), served by `server/src/modules/agentTemplates/routes.ts` with
+  copy-on-create `POST /api/v1/agent-templates/{id}/agents`
 - `Run` rows created through `RunService` (queued work, lifecycle, delegation links)
-- System AgentTemplate seeding (factories; concrete system agents are provisioned on demand)
+- Built-in template catalog (factories; concrete system agents are provisioned on demand)
 - Agent seeding and product-level agent configuration
 
 ### Project Research execution defaults
@@ -51,24 +52,24 @@ keys never enter the runtime process.
 ## Agent Template Model (factory → instance)
 
 ```
-AgentTemplate            — reusable factory; scope=system|space|user; NOT a runtime object
-    → AgentTemplateVersion   — immutable config snapshot (published versions are immutable)
+Agent template           — reusable factory; a catalog file spec; NOT a runtime object
+    → template version       — the spec's config, exposed read-only as its single version
         ⇒ (copy-on-create)
 Agent                    — the runtime instance
     → AgentVersion           — immutable prompt/policy/base config snapshot
     → AgentRuntimeProfile    — mutable named runtime binding; snapshotted onto each Run
 ```
 
-Rules (clean model — no old paths):
-- A **template is a factory**, never executed. No `Run` / model-call path reads an
-  `AgentTemplate` or `AgentTemplateVersion`.
+Rules:
+- A **template is a factory**, never executed. No `Run` / model-call path reads a
+  template spec.
 - **Agent behavior always comes from** `Agent.current_version_id` →
   `AgentVersion`; runtime deployment is independently selected from the Agent's
   `AgentRuntimeProfile` rows.
-- Creating an Agent from a template **copies** the selected `AgentTemplateVersion` into a
-  new `AgentVersion` (copy-on-create). `Agent.source_template_id` /
-  `source_template_version_id` are **provenance only** — never used to assemble runtime config.
-- **Template updates never mutate existing Agents.** Publishing a new template version has no
+- Creating an Agent from a template **copies** the template's config into a
+  new `AgentVersion` (copy-on-create). The `agents` table has no template
+  provenance columns; the template is never used to assemble runtime config.
+- **Template updates never mutate existing Agents.** Changing a catalog spec has no
   effect on already-created agents.
 - **Version objects are immutable runtime snapshots.**
 - No template inheritance, no runtime merging, no dynamic parent-template lookup.
@@ -100,7 +101,7 @@ Rules (clean model — no old paths):
     and source links (a source is not an item type; an answer is a relation).
   - `research_reader` (category `research`) — reads selected sources only; no web search/crawl.
   - `coding_reviewer` (category `workspace`) — read-only review/report outputs; no file write,
-    no shell, no patch apply. (`coding_task_agent`, a code-writing agent, is future scope.)
+    no shell, no patch apply. There is no code-writing `coding_task_agent`.
 - **Output policy uses `allowed_output_types`** (never a misleading `default_outputs`/`allowed_outputs`).
   The set is a ceiling; the model selects which output(s) to emit per run
   (`classification_mode: model_selects`), bounded by `allow_multiple_outputs_per_run` /
@@ -137,21 +138,18 @@ Rules (clean model — no old paths):
   version carrying the current seed key, adopts an unmarked version whose
   content is already identical to what the seed produces (provably untouched),
   and leaves anything else alone rather than overwrite work it cannot account
-  for. No path can author a version for a `system_assistant` today —
-  `requireAgent` excludes the kind, and `publishSystemManagedPrompt` refuses it
-  — so the day one lands it must clear the mark, which is what makes divergence
-  real. The unmarked column *is* the record of divergence; nothing writes a
+  for. No path authors a version for a `system_assistant`.
+  `requireAgent` excludes the kind, and `publishSystemManagedPrompt` refuses it.
+  Do not add a path that leaves the mark set. The unmarked column *is* the
+  record of divergence; nothing writes a
   second copy of that fact. A left-alone instance still has its runtime profiles
   reconciled, and routing builds its candidates from `agent_runtime_profiles`
   rather than from the version, so declining to republish an instance's prompt
   does not also stop it working.
 
-  Two further decisions, recorded rather than left to be rediscovered:
-
-  - **`agents.project_id` is `ON DELETE NO ACTION`, deliberately.** Projects are
-    archived, never deleted, so there is no live failure mode. Should a deletion
-    path land, it must **archive** the Project's Assistant — a non-`active`
-    status frees the partial-unique slot — rather than delete a row that owns
+  - **`agents.project_id` is `ON DELETE NO ACTION`.** Projects are
+    archived, never deleted. Do not delete the Project's Assistant. Archive
+    it: a non-`active` status frees the partial-unique slot. The row owns
     Run and token-usage history.
   - **An Assistant's name follows its Project's and is refreshed on the next
     reconcile**, so a Project renamed between Room creations carries the old
@@ -162,7 +160,7 @@ Rules (clean model — no old paths):
   `reconcileSeedFollowersForAllSpaces` runs once on start (and daily as a
   backstop) over every instance whose current version follows the seed,
   re-materializing it as the Project owner would by creating a Room — so a
-  prompt shipped in a release lands on every Assistant that already exists,
+  changed seed prompt lands on every Assistant that already exists,
   not only on the next Project to start a conversation. It is idempotent, and
   an instance whose Project has no eligible backend for its owner is skipped
   and logged rather than failed on.
@@ -184,10 +182,19 @@ Project visibility, or non-Room Run authorization. A grant is revocable and is
 always rechecked at dispatch and Room runtime-context setup; Run snapshots
 preserve history after a specialist or human member is removed.
 - **Assistant preferences are a soft layer, never policy.** The
-  `agent.default_assistant.settings` space-scoped setting
-  (`GET`/`PATCH /api/v1/agents/default-assistant/settings`) holds
+  `agent.default_assistant.settings` setting
+  (`GET`/`PATCH /api/v1/agents/default-assistant/settings`, with
+  `?project_id=` naming a Project's Assistant, otherwise the Space's own) holds
   response style, verbosity, default context toggles, default project, and
-  proposal style. These shape default UI/context behavior only — they are never merged into the
+  proposal style, in one row per Assistant (`settings.scope_type` `space` or
+  `project`). Reading needs Space membership, or reading the Project; the
+  response carries `scope`, `project_id` and `can_configure`. Writing is
+  `canConfigureAssistant` (`agents/agentAccess.ts`): the personal Space's
+  Assistant is its person's, a shared Space's is its creator's by
+  `spaces.created_by_user_id` (another owner/admin is refused), a Project's is
+  its owner's by `projects.owner_user_id`. Nothing transfers this authority.
+  `default_project_id` must name an active Project of the same Space the
+  configurer can read, and for a Project's Assistant that Project itself. These shape default UI/context behavior only — they are never merged into the
   immutable `AgentVersion` and can never loosen the hard tool/runtime/output/memory/safety policy
   or edit the core system prompt. Per-invocation selection stays dynamic through
   Runtime Context typed acquisition, Delivery, and safe Invocation Snapshot and
@@ -216,7 +223,7 @@ capabilities. Host-bound profiles do not require a server ModelProvider or
 server runtime-tool installation: the paired host owns the CLI login and
 runtime process. For input admission, an unbound Host-owned ACP profile uses
 the installation's initialize prompt capability as the image authority; a
-Provider-bound profile still requires the conservative runtime/Provider-model
+Provider-bound profile requires the conservative runtime/Provider-model
 intersection. Room and direct chat dispatch apply the profile's owner-only
 trigger and record the real Agent id on the remote Run.
 
@@ -247,7 +254,7 @@ Rules:
 - Editing a Profile affects future route selection only. An initialized
   Conversation/Host thread retains its pinned execution snapshot.
 - Public Run creation accepts explicit `runtime_profile_id` when the caller
-  owns that choice; it does not accept legacy per-run `adapter_type` or
+  owns that choice; it does not accept per-run `adapter_type` or
   AgentVersion model fields as alternate authority.
 - `model_provider` is available on a paired Host as well as the Server
   Runtime; the daemon receives a short-lived proxy lease URL, never a key. A
@@ -264,12 +271,13 @@ Host/workspace binding check, the backend-mode rules, Provider selectability,
 the option-bag schemas, the Agent-row lock every default flip takes, and the
 one `INSERT` and one `UPDATE` that write a Profile. `repository.ts` owns
 Agents, AgentVersions and the Space provisioning template, and reaches Profile
-writes only through that module — its public API is unchanged. Request bodies
+writes only through that module. Do not add a second profile writer on the
+repository. Request bodies
 for both surfaces are validated by the `@rainver/protocol` schemas
 (`AgentRuntimeProfile{Create,Update}BodySchema`,
-`SpaceAgentRuntimeDefaultWriteSchema`), whose `.strict()` is what retires
-`adapter_type`, `credential_profile_id` and the other deployment aliases; no
-route keeps a second list of retired names.
+`SpaceAgentRuntimeDefaultWriteSchema`), whose `.strict()` rejects
+`adapter_type`, `credential_profile_id`, and the other deployment aliases.
+Do not keep a second list of those names on a route.
 
 `runtime_config_json` and `runtime_policy_json` have disjoint authored keys
 (see [AGENT_RUNTIME_AUTHORITY](../architecture/AGENT_RUNTIME_AUTHORITY.md));
@@ -326,14 +334,16 @@ context file, and the CLI's own auto-memory is scratch Rainver never reads,
 imports or promotes.
 
 **Who may change a persona is decided by who is responsible for the Run**,
-read from the **root** Run's `trigger_origin` and `instructed_by_user_id`
-together (`systemActions/effectiveRunTrigger.ts`,
-one row, so a delegated child is judged by what started the chain), and never
+read from the verified **root** Run's `trigger_origin` and
+`instructed_by_user_id` together (`systemActions/effectiveRunTrigger.ts`,
+through parent and continuation-cause hops, so a delegated child or a Room
+continuation is judged by what started the chain, and an unverifiable chain by
+nobody), and never
 from the prompt. Person-facing run create always stamps `manual`; a client
 cannot send `automation` to skip the in-turn proposal. The owner's own turn
 produces a proposal decided in that turn; any other member's turn produces a
-proposal only the owner can accept (`required_owner_user_id`, by identity and
-not by role). Owner-only proposal text is never stored in the shared Room
+proposal only the owner can accept (`memoryProposalDecider`, by identity and
+not by role, derived from the entry or the applier's own fields). Owner-only proposal text is never stored in the shared Room
 message; the Room reader projects it from the proposal authority only for that
 owner, so the member who asked gets nothing. An unattended Run applies it
 directly — and records it where the write happened — **only when the person
@@ -423,6 +433,7 @@ Run:
                                   — required for formal provider_task Runs
   status, mode, trigger_origin
   parent_run_id               — lineage link (follow-up/retry/manual continuation or delegated child run)
+  cause_run_id                — only on a `continuation` Run: the Run its report is about, within budget
   root_run_id                 — root of an AgentRunGroup run tree when grouped
   run_group_id                — owning AgentRunGroup when grouped
   delegation_id               — RunDelegation that created a delegated child run
@@ -449,8 +460,9 @@ Run:
 
 `parent_run_id` supports user-created lineage: follow-up runs, retries, manual continuations, and
 external run imports. `trigger_origin="parent_run"` is not a valid trigger origin — parent lineage
-is a structural link, not a trigger type. Valid trigger origins: `manual`, `automation`, `job`,
-`system`, `delegation`.
+is a structural link, not a trigger type. Valid trigger origins: `manual`, `automation`,
+`autonomous`, `job`, `system`, `delegation`. `user`, `api`, and `workflow` are
+accepted on read so existing rows parse. Do not write them as a new trigger origin.
 
 Agent-to-agent child-run creation is represented by `run.spawn_child` inside
 `AgentRunGroup`. The backend route surface lets a human manager create rooms,
@@ -479,8 +491,9 @@ the worker is released, and the lifecycle projector requeues the same run with
 dependency summaries once all declared dependency runs are terminal. Delegation
 completion alone does not create an inferred follow-up run.
 
-The web Agent Rooms surface is space-scoped at `/agent-groups` under the Agents
-scene. It creates manager-led rooms, reads group timeline/trace, posts
+The web Agent Rooms surface is the Projects module's `rooms` route
+(`/projects/:projectId/rooms`, `apps/web/src/modules/agent_groups/AgentGroupsPage.tsx`).
+It creates manager-led rooms, reads group timeline/trace, posts
 natural-language room messages, and exposes room settings separately from the
 chat surface. The default recipient is the manager. Structured Tiptap `@`
 mentions route direct segments to selected room members, adjacent mentions fan
@@ -492,25 +505,18 @@ surfaces instead of creating a separate approval path.
 
 **Agent definition changes**
 
-There are two paths, by who is making the change:
+Both paths are owner direct edits, gated by `assertAgentOwner`; there is no
+public config-proposal route:
 
 1. **Owner direct edit (no proposal).** `PATCH /agents/{agent_id}` applies
    identity fields directly on the `Agent` row. Agent definition changes
    (system prompt, execution constraints, context/memory/tool/output policy,
-   schedule and output schema) append a new immutable `AgentVersion`, advance
-   `Agent.current_version_id`, and record a lightweight
-   `system_event` Activity** (`metadata_json.kind="agent_config_updated"`) instead of a
-   proposal. The owner is the authority and there is no second party to review, so a
+   schedule and output schema) append a new immutable `AgentVersion` and advance
+   `Agent.current_version_id`; no Activity row is written. The owner is the
+   authority and there is no second party to review, so a
    proposal would be pure ceremony. Runtime policy gates still apply at execution.
 
-2. **Proposed change (needs review) → proposal.**
-   `POST /api/v1/agents/{agent_id}/config-proposals` creates an `agent_config_update`
-   proposal for changes suggested by a non-owner actor (e.g. an agent learning loop or
-   automation). Accepting it validates Agent scope and base version,
-   rejects a stale `base_version_id`, creates a new immutable `AgentVersion`, records
-   proposal/activity provenance, and advances `Agent.current_version_id`.
-
-3. **Owner config UI edit → `POST /api/v1/agents/{agent_id}/config`.** This
+2. **Owner config UI edit → `POST /api/v1/agents/{agent_id}/config`.** This
    focused endpoint appends an immutable `AgentVersion` and accepts the prompt,
    context/memory/tool/output policy, schedule/output schema, and typed
    `execution_constraints` (`risk_level`, `max_run_time_seconds`). It does not
@@ -528,8 +534,12 @@ There are two paths, by who is making the change:
    (`agents/agentAccess.ts`, 404 on refusal): the owner may; an unowned
    system-managed Agent (Project Research, source annotation, source
    post-processing) only the Space's owner or admin may; the Assistant is never
-   changed through these paths — its runtime profiles follow its Project's
-   write boundary.
+   changed through these paths — its runtime profiles, like its settings and
+   its agent-scope prompt and workflow versions, are changed only by the
+   person who configures it (`canConfigureAssistant`: the Space creator for
+   the Space Assistant, the Project owner for a Project Assistant). Agent-scope
+   asset versions and pins of any other Agent follow `canChangeAgent`; Space
+   role alone grants neither.
 
 **Read endpoints for the config UI:**
    `GET /agents/{id}/current-version` (current `AgentVersionOut` config snapshot),
@@ -548,7 +558,7 @@ version creation via `POST /agents/{id}/versions` remains disabled.
 ## Frontend Agent Configuration Surfaces
 
 The React `agents` module (`apps/web/src/modules/agents/`) renders the product-level UI over
-the backend AgentTemplate → AgentVersion model. No mock/hardcoded template or agent data
+the backend template → AgentVersion model. No mock/hardcoded template or agent data
 remains; every card is backed by an API call.
 
 - **Template Library** (`TemplateLibraryPage.tsx`, `/agents/templates`) — lists real
@@ -583,23 +593,22 @@ remains; every card is backed by an API call.
 
 Not built on this surface: full scheduled reflection execution, marketplace /
 sharing / import / export, template inheritance, runtime use of templates,
-direct memory writes, or faked frontend data. Template create/publish
-endpoints exist; the Agents UI does not author custom templates.
+direct memory writes, or faked frontend data. There are no template
+create/publish endpoints; templates are catalog files and the Agents UI does
+not author custom templates.
 
-Unimplemented template authoring: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §24.
 
 ## Built-in Templates (no built-in concrete agents)
 
-There are no eagerly seeded per-space concrete Agents. The old boot-time
-concrete-agent seeder was removed. Built-in product behavior comes from system
+There are no eagerly seeded per-space concrete Agents. Built-in product behavior comes from system
 templates (factories), while a Project's hidden managed Assistant is provisioned lazily
 and only when someone first speaks in one of its Rooms. Keeping it off Room
 creation is what lets a Project be created with its mainline Room without a
 Space's backend configuration being able to fail the Project
 ([ADR 0018](../decisions/0018-room-as-visibility-boundary.md) decision 4).
 
-Built-in **templates** (global factories, idempotent, seeded by the server agents module,
-seeded once in `bootstrap`). Five are **public** reusable specialized factories; the sixth,
+Built-in **templates** (global factories read from
+`catalog/agent_templates/<key>/template.yaml`; nothing is seeded into the database). Five are **public** reusable specialized factories; the sixth,
 `personal_assistant`, is an **internal seed spec** (`visibility=system_internal`) for the
 per-Project `system_assistant`-kind Agent — hidden from the public library and not
 user-instantiable.
@@ -622,7 +631,7 @@ than a space-wide default:
 - `research_reader` (`research`) — reads selected sources only; no web search / crawling; produces
   source summaries, questions, and knowledge proposals
 - `coding_reviewer` (`workspace`) — read-only review/report outputs; no file write, no shell, no
-  patch apply (a code-writing `coding_task_agent` is future scope)
+  patch apply. There is no code-writing `coding_task_agent`.
 
 Why no `general_chat` or generic DirectChat: a generic session-only chat object would be a naked
 conversation with no Agent identity or space-aware policy. Every Room conversation, and every
@@ -630,8 +639,8 @@ host-bound direct chat, instead targets an explicit, space-scoped `Agent` — ca
 context policy and proposal-only output policy — resolved through the conversation backend
 binding (`modules/rooms.md`). Host-bound direct chat is owner-only, uses one direct container per
 Agent × owner, and exposes reset/archive/opt-in restore semantics; it does not make arbitrary
-Agents into a global default. Templates not seeded
-initially (future scope): `coding_task_agent`, `research_scout`, `source_processor`,
+Agents into a global default. These template ids are not seeded:
+`coding_task_agent`, `research_scout`, `source_processor`,
 `weekly_planner`, `finance_reviewer`, `health_reviewer`, `task_manager`.
 
 There is **no** single global "default agent" that runs implicitly. Every `Run` targets an
@@ -646,10 +655,11 @@ is resolved per conversation binding. It also anchors soft Assistant **preferenc
 (`agent.default_assistant.settings`) without allowing those preferences to change the core prompt
 or hard policy.
 
-Memory reflection (`POST /sessions/{id}/reflect`) is an explicit **internal service**
-(the memory consolidation/reflection path via the `memory.reflect` capability) — it does not run
-through a concrete built-in agent. The `memory_reflector` template is the factory for users who
-want a standalone reflection Agent instance.
+Memory reflection (`POST /api/v1/sessions/:sessionId/reflect`) writes a
+`memory_create` proposal from the recent transcript. It does not run a
+capability or a built-in Agent. The `memory_reflector` template is the factory
+for a standalone reflection Agent. Do not route that request through
+`memory.reflect`.
 
 Agent runtime tests exercise ACP or inject a narrow test execution port. The
 planned `capability` entry is not an implemented no-credential Agent runtime.
@@ -677,10 +687,10 @@ by routing and the Host daemon.
 - `agent_version_id` on `Run` is immutable per row — historical runs stay reproducible after edits to `Agent`
 - `runtime_profile_snapshot_json` on `Run` is immutable per row — historical runs keep the selected runtime binding after profile edits
 - `AgentVersion` is append-only — prior rows are not rewritten in place
-- Public post-create execution config mutation is proposal-only. Direct public
-  AgentVersion creation must not advance `Agent.current_version_id`.
-- Accepted config proposals leave provenance from the new AgentVersion to the
-  accepted Proposal and ActivityRecord.
+- Public post-create execution config mutation is owner-direct. `PATCH
+  /agents/{agent_id}` and `POST /agents/{agent_id}/config` append an
+  `AgentVersion` and may advance `Agent.current_version_id`. There is no
+  config-proposal route, and these writes do not record proposal provenance.
 - Agent configuration is loaded from the immutable AgentVersion path; it is not
   represented by a Memory row or Runtime Context checkpoint.
 - The owner config UI (`POST /agents/{id}/config`) and create-from-template overrides
@@ -696,10 +706,10 @@ by routing and the Host daemon.
 - `server/src/modules/runs/` and `policy/` — risk/sandbox mapping and file-access adapter validation
 - `server/src/modules/runtimeAdapters/specs.ts` — RuntimeAdapterSpec catalog
 - `server/src/modules/runs/remoteHostCliAdapter.ts` — the host daemon CLI adapter local CLI execution
-- `server/src/modules/agents/` — system AgentTemplate/AgentVersion behavior
+- `server/src/modules/agents/` — AgentVersion behavior
 - `server/src/modules/agents/routes.ts` — agent HTTP API incl. `/config`, `/current-version`,
   `/versions/{id}/restore`, `/proposals`
-- `server/src/modules/agents/` — template HTTP API when enabled
+- `server/src/modules/agentTemplates/routes.ts` — template HTTP API over `catalog/agent_templates/`
 - `apps/web/src/modules/agents/policyMap.ts` + `ConfigCards.tsx` — policy/config JSON → product cards
 - `apps/web/src/modules/agents/{TemplateLibraryPage,TemplateDetailPage,CreateFromTemplatePage,AgentDetailPage}.tsx`
 
@@ -711,5 +721,5 @@ by routing and the Host daemon.
 ## Related Docs
 
 - [runtime-adapters.md](runtime-adapters.md) — adapter registry, three-way separation, license notes
-- [hosts.md](hosts.md) — execution hosts, the strict-mode namespace, and what became of the sandbox line
+- [hosts.md](hosts.md) — execution hosts and the strict-mode namespace
 - [provider-policy.md](provider-policy.md) — model provider configuration

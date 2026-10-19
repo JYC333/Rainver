@@ -1,13 +1,10 @@
 /**
  * Source-domain scheduled tasks.
  *
- * These were one `source_extraction_scheduler` task whose `run()` performed
- * every source-side step in sequence with no per-step guard. A throw in one
- * domain therefore skipped every domain after it for that pass — backfill
- * reconciliation failing meant recipe scans and post-processing enqueue simply
- * stopped, while the only alert named the combined task. They are separate
- * tasks so each domain gets its own failure isolation, its own
- * `scheduler_task_failed` dedupe key, and its own liveness record.
+ * Each source-side step is its own scheduled task, with its own failure
+ * isolation, its own `scheduler_task_failed` dedupe key, and its own liveness
+ * record. Do not run every source-side step in one task with no per-step
+ * guard: a throw in one domain then skips every domain after it for that pass.
  *
  * Steps within one task remain sequential on purpose: they are one domain's
  * pipeline, where reclaim-then-enqueue-then-run is the intended order.
@@ -15,7 +12,7 @@
 
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
-import type { ScheduledTask } from "./registry.js";
+import { throwIfAnyFailed, type ScheduledTask } from "./registry.js";
 import type { PgJobQueueRepository } from "../jobs/repository.js";
 import { SourceExtractionWorker } from "../sources/extractionWorker.js";
 import { enqueueDueSourceChannelScans } from "../sources/scanSchedule.js";
@@ -28,11 +25,12 @@ import {
 import { runPendingCustomSourceHandlerRuns } from "../sources/customSources/customSourceScanWorker.js";
 import {
   enqueueDueSourceRecipeScans,
+  reclaimStuckSourceRecipeScans,
   runPendingSourceRecipeScans,
 } from "../sources/sourceRecipes/recipeScanWorker.js";
 import { SourceBackfillExecutionService } from "../sources/sourceBackfillExecutionService.js";
 
-export interface SourceTaskLogger {
+interface SourceTaskLogger {
   info(message: string): void;
   warn(message: string): void;
 }
@@ -86,6 +84,8 @@ export function buildSourceSchedulerTasks(
       runOnStart: true,
       run: async () => {
         const pool = db();
+        const reclaimed = await reclaimStuckSourceRecipeScans(pool);
+        if (reclaimed > 0) log?.warn(`[scheduler] source recipe reclaimed ${reclaimed} stuck scan(s)`);
         const enqueued = await enqueueDueSourceRecipeScans(pool);
         if (enqueued > 0) log?.info(`[scheduler] source recipe enqueued ${enqueued} scan job(s)`);
         const processed = await runPendingSourceRecipeScans(pool, config);
@@ -101,7 +101,7 @@ export function buildSourceSchedulerTasks(
       intervalSeconds,
       runOnStart: true,
       run: async () => {
-        const enqueued = await enqueueDueSourcePostProcessingRules(config, queue);
+        const enqueued = await enqueueDueSourcePostProcessingRules(config);
         if (enqueued > 0) {
           log?.info(`[scheduler] source enqueued ${enqueued} post-processing job(s)`);
         }
@@ -123,21 +123,34 @@ export function buildSourceSchedulerTasks(
   return tasks;
 }
 
-async function reconcileSourceBackfills(db: ReturnType<typeof getDbPool>): Promise<void> {
+export async function reconcileSourceBackfills(db: ReturnType<typeof getDbPool>): Promise<void> {
   const plans = await db.query<{ id: string; space_id: string }>(
     `SELECT id,space_id FROM source_backfill_plans
       WHERE status IN ('approved','running')
          OR (status='paused' AND next_eligible_at<=now())
       ORDER BY updated_at LIMIT 25`,
   );
+  const failures: unknown[] = [];
   for (const plan of plans.rows) {
-    await db.query(
-      `UPDATE source_backfill_plans SET status='approved',next_eligible_at=NULL,updated_at=now()
-        WHERE id=$1 AND space_id=$2 AND status='paused' AND next_eligible_at<=now()`,
-      [plan.id, plan.space_id],
-    );
-    await new SourceBackfillExecutionService(db).reconcile(plan.space_id, plan.id);
+    try {
+      await db.query(
+        `UPDATE source_backfill_plans SET status='approved',next_eligible_at=NULL,updated_at=now()
+          WHERE id=$1 AND space_id=$2 AND status='paused' AND next_eligible_at<=now()`,
+        [plan.id, plan.space_id],
+      );
+      await new SourceBackfillExecutionService(db).reconcile(plan.space_id, plan.id);
+    } catch (error) {
+      failures.push(error);
+      // A failed reconcile rolls back its own `updated_at` bump, which would
+      // keep the plan first in line on every pass; move it to the back so the
+      // other plans keep being reconciled.
+      await db.query(
+        `UPDATE source_backfill_plans SET updated_at=now() WHERE id=$1 AND space_id=$2`,
+        [plan.id, plan.space_id],
+      ).catch((bumpError: unknown) => failures.push(bumpError));
+    }
   }
+  throwIfAnyFailed(failures, "Source backfill reconciliation");
 }
 
 async function processPendingSourceJobs(

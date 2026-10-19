@@ -34,18 +34,19 @@ describe("AdaptiveQueryOrchestrator", () => {
     await orchestrator.evaluate({ spaceId: "space", userId: "user" }, input(["arxiv", "openalex"]));
     // Evaluation previews, plus one final check per provider at the page size
     // history import actually requests — a query can pass the small preview and
-    // fail the large page, which is how a plan used to be "validated" and then
-    // import nothing.
+    // fail the large page. Do not treat a passing small preview as validation:
+    // the import then finds nothing.
     expect(calls).toEqual({ arxiv: 3, openalex: 2 });
     expect(store.selected.map((item) => item.providerKey).sort()).toEqual(["arxiv", "openalex"]);
     expect(store.finalized).toBe(true);
   });
 
   /**
-   * The real failure: a broad boolean arXiv query answered 200 at the 15-row
-   * preview and 5xx at the 100-row page history import uses. The plan was
-   * recorded as validated, imported nothing, and Research reported "no relevant
-   * sources" over a corpus missing that provider entirely.
+   * Check the selected query at the page size history import uses. A query
+   * can answer 200 at the 15-row preview and 5xx at the 100-row page. Do not
+   * record that preview as validation. Import would record nothing, and
+   * Research would report no relevant sources for a corpus missing that
+   * provider.
    */
   it("warns when the selected query fails at the page size history import uses", async () => {
     const store = new FakeStore(["arxiv"]);
@@ -272,6 +273,25 @@ describe("AdaptiveQueryOrchestrator", () => {
     });
     expect(store.createdStrategyInput).toMatchObject({ parentStrategyId: "strategy", adaptationDirection: "broaden" });
     expect(store.attempts[0]?.direction).toBe("broaden");
+    // Broadened from the monitored query itself (all three expansions), not
+    // from a re-truncated baseline that broadening only restored.
+    expect(store.attempts[0]?.semanticQuery).toMatchObject({ expansions: semanticIntent().expansions, qualifiers: [] });
+  });
+
+  it("refuses a replacement version when no monitored query can move in the requested direction", async () => {
+    const store = new FakeStore(["openalex"]);
+    store.seedMaterialized();
+    const orchestrator = new AdaptiveQueryOrchestrator({} as Queryable, {} as ServerConfig, {
+      repository: store,
+      contextRepository: { get: async () => contextVersion() },
+      previewGateway: { preview: async () => ({ providerHitCount: 50, accessibleHitCount: 50, candidates: [] }) },
+      assessor: { assess: () => observation(50) },
+    });
+    await expect(orchestrator.evaluateVersion({ spaceId: "space", userId: "user" }, {
+      projectId: "project", sourceStrategyId: "strategy", direction: "narrow", candidateBudget: 100,
+    })).rejects.toMatchObject({ statusCode: 409 });
+    expect(store.createdStrategyInput).toBeNull();
+    expect(store.attempts).toHaveLength(0);
   });
 
   describe("retryProvider", () => {
@@ -302,6 +322,40 @@ describe("AdaptiveQueryOrchestrator", () => {
       expect(openalexPlan.status).toBe("selected");
       const retriedAttempt = store.attempts.find((attempt) => attempt.providerPlanId === "plan-1" && attempt.round === 1);
       expect(retriedAttempt).toBeTruthy();
+    });
+
+    it("restarts a selected plan from the attempt that was selected, not from a later step that failed its preview", async () => {
+      const store = new FakeStore(["arxiv"]);
+      store.seedSelected("arxiv");
+      const plan = store.provider_plans()[0]!;
+      const selected = plan.attempts[0]!;
+      // A broaden step tried after the selection, never observed: the plan
+      // kept the selected attempt and this one carries only its error.
+      plan.attempts.push({
+        ...selected,
+        id: "later-broaden",
+        sequence: 2,
+        direction: "broaden",
+        semantic_query: { ...selected.semantic_query, qualifiers: [] },
+        observation: null,
+        score: null,
+        decision: null,
+        error_class: "timeout",
+      });
+
+      const orchestrator = new AdaptiveQueryOrchestrator({} as Queryable, {} as ServerConfig, {
+        repository: store,
+        contextRepository: { get: async () => contextVersion() },
+        intentPlanner: { plan: async () => { throw new Error("must not run"); } },
+        previewGateway: { preview: async () => ({ providerHitCount: 50, accessibleHitCount: 50, candidates: [] }) },
+        assessor: { assess: () => observation(50) },
+      });
+      await orchestrator.retryProvider({ spaceId: "space", userId: "user" }, {
+        projectId: "project", strategyId: "strategy", providerKey: "arxiv",
+      });
+
+      const retried = store.attempts.find((attempt) => attempt.providerPlanId === plan.id && attempt.round === 1);
+      expect(retried?.semanticQuery).toEqual(selected.semantic_query);
     });
 
     it("continues a retried plan's attempts in a new round instead of colliding with round 0's sequence", async () => {
@@ -379,8 +433,9 @@ describe("AdaptiveQueryOrchestrator", () => {
       })).rejects.toMatchObject({ statusCode: 409 });
     });
 
-    it("falls back to the intent planner when the unavailable plan has no prior attempt to reuse", async () => {
+    it("plans and records the intent when the strategy has none stored yet", async () => {
       const store = new FakeStore(["arxiv"]);
+      store.setSemanticIntent(null);
       const plan = store.provider_plans()[0]!;
       plan.status = "unavailable";
       let planned = false;
@@ -397,7 +452,35 @@ describe("AdaptiveQueryOrchestrator", () => {
       });
 
       expect(planned).toBe(true);
+      expect(store.recordedIntents).toEqual([semanticIntent()]);
     });
+  });
+
+  it("broadens a monitored query with terms from the original intent, not only from its own trimmed terms", async () => {
+    const store = new FakeStore(["arxiv"]);
+    store.seedMaterialized();
+    // The monitored query is a trimmed step: one expansion and the qualifier.
+    const plan = store.provider_plans()[0]!;
+    const trimmed = { ...semanticIntent(), expansions: semanticIntent().expansions.slice(0, 1) };
+    plan.attempts[0] = { ...plan.attempts[0]!, semantic_query: trimmed };
+    const orchestrator = new AdaptiveQueryOrchestrator({} as Queryable, {} as ServerConfig, {
+      repository: store,
+      contextRepository: { get: async () => contextVersion() },
+      intentPlanner: { plan: async () => { throw new Error("must not reinterpret the question"); } },
+      previewGateway: { preview: async () => ({ providerHitCount: 50, accessibleHitCount: 50, candidates: [] }) },
+      assessor: { assess: () => observation(50) },
+    });
+    await orchestrator.evaluateVersion({ spaceId: "space", userId: "user" }, {
+      projectId: "project", sourceStrategyId: "strategy", direction: "broaden", candidateBudget: 100,
+    });
+    // Broadening adds the next expansion from the stored intent and keeps the
+    // qualifier; with only the trimmed query as vocabulary it could only have
+    // dropped the qualifier.
+    expect(store.attempts[0]?.semanticQuery).toMatchObject({
+      expansions: semanticIntent().expansions.slice(0, 2),
+      qualifiers: semanticIntent().qualifiers,
+    });
+    expect(store.createdStrategyInput?.semanticIntent).toEqual(semanticIntent());
   });
 });
 
@@ -413,11 +496,11 @@ class FakeStore {
     this.strategy = {
       id: "strategy", project_id: "project", research_context_version_id: "11111111-1111-4111-8111-111111111111",
       question_snapshot: "question", status: "planning", policy_version: "adaptive-recall.v1", policy: {}, execution_budget: {},
-      version: 1, parent_strategy_id: null, adaptation_direction: null,
+      version: 1, parent_strategy_id: null, adaptation_direction: null, semantic_intent: semanticIntent(),
       created_at: new Date().toISOString(), selected_at: null, materialized_at: null,
       provider_plans: providers.map((provider, index) => ({
         id: `plan-${index}`, provider_key: provider, status: "pending", selected_attempt_id: null,
-        terminal_decision: null, decision_reason: null, coverage_warning: null, attempts: [],
+        terminal_decision: null, decision_reason: null, coverage_warning: null, attempts: [], attempt_count: 0,
       })),
     };
   }
@@ -426,7 +509,7 @@ class FakeStore {
 
   /** Seeds a plan as already `selected` from a prior evaluation round, the
    * way an accepted-and-reviewed provider looks before a sibling provider's
-   * retry runs — used to assert a retry leaves it byte-for-byte alone. */
+   * retry runs. A retry leaves it byte-for-byte alone. */
   seedSelected(providerKey: ResearchProviderKey) {
     const plan = this.strategy.provider_plans.find((item) => item.provider_key === providerKey)!;
     const id = `seed-attempt-${providerKey}`;
@@ -483,6 +566,12 @@ class FakeStore {
     return this.strategy;
   }
   async markStrategyEvaluating() { this.strategy.status = "evaluating"; }
+  recordedIntents: ResearchSemanticQuery[] = [];
+  async recordSemanticIntent(_spaceId: string, _strategyId: string, intent: ResearchSemanticQuery) {
+    this.recordedIntents.push(intent);
+    this.strategy.semantic_intent ??= intent;
+  }
+  setSemanticIntent(intent: ResearchSemanticQuery | null) { this.strategy.semantic_intent = intent; }
   async createAttempt(_spaceId: string, attempt: CreateResearchQueryAttemptInput) {
     const plan = this.strategy.provider_plans.find((item) => item.id === attempt.providerPlanId)!;
     const stored = { ...attempt, id: `attempt-${this.attempts.length + 1}`, providerKey: plan.provider_key };

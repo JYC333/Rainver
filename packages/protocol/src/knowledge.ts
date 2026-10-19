@@ -17,11 +17,10 @@ const DateLikeSchema = ISODateTimeSchema.nullish();
 /**
  * The system-reserved roles a Note can hold in its Project's notebook.
  *
- * Lives in the protocol because both ends need the same list and each had its
- * own before: the server resolved the research baseline by matching note
- * titles, so a rename silently emptied it, and the editor's target list was a
- * hand-maintained copy that drifted from the backend's. One vocabulary, two
- * consumers.
+ * Lives in the protocol because both ends need the same list. Do not resolve
+ * the research baseline by matching note titles: a rename then empties it
+ * without saying so. Do not keep a second list in the editor. One
+ * vocabulary, two consumers.
  *
  * The server registry (`modules/knowledge/noteProjectRoles.ts`) owns membership
  * for validation; `notes.project_role` carries only a format constraint (B12F).
@@ -40,8 +39,7 @@ export type NoteProjectRole = z.infer<typeof NoteProjectRoleSchema>;
 /**
  * Object types the note editor can offer as a link target.
  *
- * Two constraints intersect here, and the plan's gap-3 note anticipated only
- * one of them:
+ * Two constraints intersect here:
  *
  * - `createNoteLink` resolves both endpoints against `space_objects`, so the
  *   reachable set is that table's subtypes, *not* the wider
@@ -57,9 +55,8 @@ export type NoteProjectRole = z.infer<typeof NoteProjectRoleSchema>;
  * not a vocabulary problem — NC's cross-type picker is where that belongs.
  *
  * The editor's dropdown is built from this list rather than its own literals.
- * A hand-maintained copy of a backend vocabulary is the defect gap 3 *was*, so
- * the server asserts this against its entity registry instead of trusting that
- * someone will remember to update both.
+ * Do not keep a second copy of this vocabulary. The server asserts it
+ * against its entity registry.
  */
 export const NOTE_LINK_TARGET_TYPE_VALUES = [
   "note",
@@ -70,6 +67,44 @@ export const NOTE_LINK_TARGET_TYPE_VALUES = [
 ] as const;
 export const NoteLinkTargetTypeSchema = z.enum(NOTE_LINK_TARGET_TYPE_VALUES);
 export type NoteLinkTargetType = z.infer<typeof NoteLinkTargetTypeSchema>;
+
+/**
+ * Machine-readable codes for placement refusals the client answers with a
+ * question rather than an error toast. Both ends read these names from here.
+ *
+ * - `note_cross_project_share_required`: a placement into another Project's
+ *   subtree would also make the note readable there; the client confirms and
+ *   re-issues with `share_with_project: true`.
+ * - `note_owning_entry_required`: the change would leave a note with no entry
+ *   in the Project that owns it (or, for a note outside every Project, no
+ *   folder at all). The client offers the two actions the server will accept:
+ *   move the note within its owning Project, or delete the note itself.
+ */
+export const NOTE_CROSS_PROJECT_SHARE_REQUIRED_CODE = "note_cross_project_share_required";
+export const NOTE_OWNING_ENTRY_REQUIRED_CODE = "note_owning_entry_required";
+
+export const NOTE_OWNING_ENTRY_ACTION_VALUES = [
+  "move_within_owning_project",
+  "move_to_folder",
+  "delete_note",
+] as const;
+export const NoteOwningEntryActionSchema = z.enum(NOTE_OWNING_ENTRY_ACTION_VALUES);
+export type NoteOwningEntryAction = z.infer<typeof NoteOwningEntryActionSchema>;
+
+/** The 422 body of a `note_owning_entry_required` refusal. */
+export const NoteOwningEntryRequiredErrorSchema = z
+  .object({
+    code: z.literal(NOTE_OWNING_ENTRY_REQUIRED_CODE),
+    detail: z.string(),
+    note_id: IdSchema,
+    note_title: z.string().nullable(),
+    owning_project_id: IdSchema.nullable(),
+    actions: z.array(NoteOwningEntryActionSchema),
+    /** How many notes the refused operation would have affected this way (a folder delete covers many). */
+    affected_note_count: z.number().int().positive(),
+  })
+  .strict();
+export type NoteOwningEntryRequiredError = z.infer<typeof NoteOwningEntryRequiredErrorSchema>;
 
 export const CLAIM_KIND_VALUES = [
   "fact",
@@ -172,8 +207,10 @@ export const ClaimSummaryOutSchema = z
     subject_object_id: IdSchema.nullish(),
     subject_text: z.string().nullish(),
     claim_kind: z.string(),
-    claim_text: z.string(),
-    normalized_claim_hash: z.string(),
+    /** Null when the reader holds summary access only: the body is withheld. */
+    claim_text: z.string().nullable(),
+    /** Withheld with `claim_text`: an unsalted hash would confirm a guess at it. */
+    normalized_claim_hash: z.string().nullable(),
     confidence: ConfidenceSchema,
     confidence_method: z.string(),
     resolution_state: z.string(),

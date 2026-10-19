@@ -18,7 +18,7 @@ type PreviewFetcher = (
 const PREVIEW_ATTEMPT_TIMEOUT_MS = 10_000;
 const PREVIEW_UNAVAILABLE_MESSAGE = "The source provider is temporarily unavailable or rate limiting; try again shortly.";
 
-export interface ProviderPreviewInput {
+interface ProviderPreviewInput {
   compiledQuery: ResearchCompiledQuery;
   accessibleResultCap: number;
   credentialId?: string | null;
@@ -47,8 +47,8 @@ export class ProviderPreviewGateway {
       ? await this.resolveCredential(identity, input.credentialId)
       : null;
     const request = this.executor.buildScanRequest({ compiledQuery: input.compiledQuery });
-    // The credential goes in its own field, never merged into `headers` — see
-    // `sourceQueryPreviewService` for what merging it cost.
+    // The credential goes in its own field. Do not merge it into `headers`.
+    // `headers` is sent on every hop, including a redirect to another origin.
     const headers = { ...(request.headers ?? {}) };
     const credentialHeaders = credential ? { [credential.header_name]: credential.header_value } : undefined;
     let response = await this.attemptFetch(input.compiledQuery.provider_key, request.url, headers, credentialHeaders);
@@ -62,9 +62,8 @@ export class ProviderPreviewGateway {
     }
     if (response === "timeout" || response.status >= 500 || response.status === 429) {
       // The retry itself failed too — surface what actually happened on that
-      // second attempt (timeout vs. a real upstream status) instead of
-      // collapsing it into an undifferentiated 503, the same masking bug
-      // already fixed for the single-attempt non-retryable-4xx path below.
+      // second attempt (timeout vs. a real upstream status). Do not collapse
+      // it into an undifferentiated 503.
       throw new HttpError(503, PREVIEW_UNAVAILABLE_MESSAGE, {
         upstream_status: response === "timeout" ? "timeout" : response.status,
       });

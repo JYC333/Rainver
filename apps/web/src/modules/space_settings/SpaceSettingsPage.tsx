@@ -15,6 +15,8 @@ import { CustomSourceSpacePolicyPanel } from './CustomSourceSpacePolicyPanel'
 import { ObjectSchemaPanel } from './ObjectSchemaPanel'
 import { promptLibraryPath } from '../prompts/paths'
 import type { MemberRole, SpaceMember, SpaceOversightMode } from '../../types/api'
+import { OneTimeLink } from '../../components/OneTimeLink'
+import { useAppTranslation } from '../../i18n'
 
 const INVITE_ROLES: MemberRole[] = ['admin', 'member', 'viewer']
 
@@ -30,6 +32,7 @@ function canManageSpace(role: MemberRole | undefined): boolean {
 }
 
 export default function SpaceSettingsPage() {
+  const { t } = useAppTranslation()
   const headingId = useId()
   const { currentUser } = useAuth()
   const { activeSpaceId, activeSpaceName, spaces, reloadSpaces } = useSpace()
@@ -38,6 +41,7 @@ export default function SpaceSettingsPage() {
   const waitingForSpace = Boolean(activeSpaceId && !activeSpace && spaces.length === 0)
 
   const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteLink, setInviteLink] = useState<{ email: string; link: string } | null>(null)
   const [inviteRole, setInviteRole] = useState<MemberRole>('member')
   const [inviting, setInviting] = useState(false)
   const [members, setMembers] = useState<SpaceMember[]>([])
@@ -45,6 +49,9 @@ export default function SpaceSettingsPage() {
   const [snapshotDefaultDays, setSnapshotDefaultDays] = useState('')
   const [snapshotDefaultCount, setSnapshotDefaultCount] = useState('')
   const [savingSnapshotDefaults, setSavingSnapshotDefaults] = useState(false)
+  // Saving sends both defaults, so an unread Space must not be saved: empty
+  // fields would write null over whatever it holds.
+  const [snapshotDefaultsLoaded, setSnapshotDefaultsLoaded] = useState(false)
   const [savingEgressNotifications, setSavingEgressNotifications] = useState(false)
 
   useEffect(() => {
@@ -61,12 +68,19 @@ export default function SpaceSettingsPage() {
 
   useEffect(() => {
     if (!activeSpaceId || !manageable) return
+    let cancelled = false
+    setSnapshotDefaultsLoaded(false)
+    setSnapshotDefaultDays('')
+    setSnapshotDefaultCount('')
     spacesApi.getSnapshotDefaults(activeSpaceId)
       .then(d => {
+        if (cancelled) return
         setSnapshotDefaultDays(d.snapshot_retention_days_default !== null ? String(d.snapshot_retention_days_default) : '')
         setSnapshotDefaultCount(d.snapshot_max_count_default !== null ? String(d.snapshot_max_count_default) : '')
+        setSnapshotDefaultsLoaded(true)
       })
-      .catch(() => null)
+      .catch(err => { if (!cancelled) toast.error(errMsg(err)) })
+    return () => { cancelled = true }
   }, [activeSpaceId, manageable])
 
   async function handleSaveSnapshotDefaults() {
@@ -95,10 +109,8 @@ export default function SpaceSettingsPage() {
     setInviting(true)
     try {
       const inv = await spacesApi.invite(activeSpaceId, { email: inviteEmail.trim(), role: inviteRole })
-      toast.success(`Invitation sent to ${inv.invited_email}`)
-      const link = `${window.location.origin}/invitations/claim#token=${encodeURIComponent(inv.token)}`
-      await navigator.clipboard.writeText(link).catch(() => null)
-      toast.info('Invite link copied to clipboard')
+      toast.success(t('management_ui.space_invite.invite_created', { email: inv.invited_email }))
+      setInviteLink({ email: inv.invited_email, link: `${window.location.origin}/invitations/claim#token=${encodeURIComponent(inv.token)}` })
       setInviteEmail('')
     } catch (err) {
       toast.error(errMsg(err))
@@ -275,7 +287,7 @@ export default function SpaceSettingsPage() {
                 size="sm"
                 variant="outline"
                 className="h-8"
-                disabled={savingSnapshotDefaults}
+                disabled={savingSnapshotDefaults || !snapshotDefaultsLoaded}
                 onClick={handleSaveSnapshotDefaults}
               >
                 {savingSnapshotDefaults ? 'Saving…' : 'Save defaults'}
@@ -369,11 +381,18 @@ export default function SpaceSettingsPage() {
                 </div>
               </div>
               <p className="text-xs text-muted-foreground">
-                An invitation link will be generated and copied to your clipboard.
+                {t('management_ui.space_invite.invite_hint')}
               </p>
+              {inviteLink && (
+                <OneTimeLink
+                  link={inviteLink.link}
+                  label={t('management_ui.space_invite.invite_link_label', { email: inviteLink.email })}
+                  onDismiss={() => setInviteLink(null)}
+                />
+              )}
               <Button type="submit" size="sm" disabled={!inviteEmail.trim() || inviting}>
                 <Send className="size-3.5 mr-1.5" />
-                {inviting ? 'Sending…' : 'Generate invite link'}
+                {inviting ? t('management_ui.space_invite.sending') : t('management_ui.space_invite.generate')}
               </Button>
             </form>
           </Card>

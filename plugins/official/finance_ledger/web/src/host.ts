@@ -112,11 +112,58 @@ export interface FinanceTransactionInput {
   }>
 }
 
-export interface FinanceImportResult {
-  import_source_id: string | null
-  deduplicated: boolean
-  created_directives: number
+export type FinanceImportEntryStatus =
+  | 'imported'
+  | 'pending_mapping'
+  | 'needs_review'
+  | 'duplicate'
+  | 'error'
+  | 'excluded'
+
+export interface FinanceImportSource {
+  id: string
+  source_type: string
+  source_name: string | null
+  content_hash: string | null
+  created_at: string
+}
+
+export interface FinanceImportEntry {
+  id: string
+  entry_key: string
+  identity_kind: 'external_id' | 'content_occurrence'
+  external_id: string | null
+  entry_type: string
+  entry_date: string | null
+  source_lineno: number
+  raw_text: string
+  status: FinanceImportEntryStatus
+  status_reason: string | null
+  directive_id: string | null
+  duplicate_of_entry_id: string | null
+  missing_accounts: string[]
+  missing_commodities: string[]
+  account_mapping: Record<string, string>
+  mapping_version: number
   errors: FinanceLedgerError[]
+}
+
+export type FinanceImportSummary = Record<FinanceImportEntryStatus, number>
+
+export interface FinanceImportResult {
+  import_source: FinanceImportSource
+  /** The file was already a batch of this book; its unfinished entries were retried. */
+  batch_existed: boolean
+  /** Dated directives this call persisted. */
+  created_directives: number
+  summary: FinanceImportSummary
+  entries: FinanceImportEntry[]
+  /** Parse errors that belong to no entry. */
+  errors: FinanceLedgerError[]
+}
+
+export interface FinanceImportBatch extends FinanceImportSource {
+  summary: FinanceImportSummary
 }
 
 export interface FinanceExportResult {
@@ -140,7 +187,12 @@ export interface FinanceApi {
   getAccountLedger(bookId: string, accountId: string): Promise<{ postings: FinancePosting[] }>
   getBalances(bookId: string, scope?: FinanceBalanceScope): Promise<{ balances: FinanceBalancePosition[] }>
   validateBook(bookId: string): Promise<{ errors: FinanceValidationError[] }>
-  importBeancount(bookId: string, input: { text: string; post_directly?: boolean }): Promise<FinanceImportResult>
+  importBeancount(bookId: string, input: { text: string }): Promise<FinanceImportResult>
+  listImports(bookId: string): Promise<{ imports: FinanceImportBatch[] }>
+  getImport(bookId: string, importSourceId: string): Promise<FinanceImportResult>
+  retryImport(bookId: string, importSourceId: string): Promise<FinanceImportResult>
+  mapImportEntry(bookId: string, importSourceId: string, entryId: string, accountMapping: Record<string, string>): Promise<FinanceImportResult>
+  reviewImportEntries(bookId: string, importSourceId: string, decision: 'import' | 'duplicate', entryIds?: string[]): Promise<FinanceImportResult>
   exportBeancount(bookId: string): Promise<FinanceExportResult>
 }
 

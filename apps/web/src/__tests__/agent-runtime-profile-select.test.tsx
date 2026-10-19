@@ -3,10 +3,9 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { AgentOut, AgentVersionOut } from '../types/api'
 
-// The runtime profile form used to hard-code three runtimes. It reads the
-// live adapter catalog now, so an enabled ACP registry agent and OpenCode are
-// as selectable as the two it used to know about, and what a runtime supports
-// comes from the catalog row rather than from its name.
+// The runtime profile form reads the live adapter catalog. An enabled ACP
+// registry agent and OpenCode are selectable. What a runtime supports comes
+// from the catalog row, not from its name. Do not hard-code the runtime list.
 const { getMock, listVersionsMock, listRuntimeProfilesMock, listRuntimeDefinitionsMock, executionTargetsMock, updateRuntimeProfileMock, createRuntimeProfileMock } = vi.hoisted(() => ({
   getMock: vi.fn(),
   listVersionsMock: vi.fn(),
@@ -159,7 +158,7 @@ describe('AgentDetailPage — runtime profile Runtime select', () => {
     // A paired Host is handed a short-lived proxy lease address, never a key
     // (AGENT_RUNTIME_AUTHORITY, "Paired Host path"), so admission accepts
     // `model_provider` on either Host kind and only refuses an *unbound*
-    // Profile. The composer used to force the binding back to native here.
+    // Profile. Do not force the binding back to native here.
     listRuntimeProfilesMock.mockResolvedValue([{
       id: 'p1', agent_id: 'a1', name: 'Proxied', runtime_key: 'opencode', runtime_config_json: {}, runtime_policy_json: {},
       backend_mode: 'model_provider', model: { provider_id: 'prov-1', model: 'gpt-4o' },
@@ -204,8 +203,8 @@ describe('AgentDetailPage — runtime profile Runtime select', () => {
   })
 
   it('keeps the way out of provider mode when the runtime catalog fails to load', async () => {
-    // Without the catalog every backend-mode control used to disappear while
-    // the Profile still claimed provider mode, so save() could only ever fail.
+    // A failed catalog must not hide every backend-mode control while the
+    // Profile still claims provider mode: save() could then only fail.
     listRuntimeProfilesMock.mockResolvedValue([{
       id: 'p1', agent_id: 'a1', name: 'Proxied', runtime_key: 'opencode', runtime_config_json: {}, runtime_policy_json: {},
       backend_mode: 'model_provider', model: { provider_id: 'prov-1', model: 'gpt-4o' },
@@ -245,11 +244,11 @@ describe('AgentDetailPage — runtime profile Runtime select', () => {
 
   it('starts a new Profile from the default Profile, not from the one on screen', async () => {
     // "New profile" clears the Profile selection, and the reset effect keyed on
-    // that selection fires on the same transition. While the defaults lived in
-    // the click handler the effect overwrote every one of them: the name went
-    // back to the previous Profile's, the execution target went to null, and
-    // the picker — which ignores a null value — kept showing the Host of the
-    // Profile that was open. Save then refused a form that looked configured.
+    // that selection fires on the same transition. Keep the defaults out of
+    // the click handler. The effect overwrites them: the name returns to the
+    // Profile that was open, the execution target goes to null, and the picker
+    // — which ignores a null value — keeps showing that Host. Save then
+    // refuses a form that looks configured.
     const runtimes = [{
       runtime_key: 'opencode', display_name: 'OpenCode',
       installations: [{ id: 'managed:1.0.0', version: '1.0.0', logged_in: true }],
@@ -297,11 +296,67 @@ describe('AgentDetailPage — runtime profile Runtime select', () => {
     expect(updateRuntimeProfileMock).not.toHaveBeenCalled()
   })
 
+  it('saves the model typed into the Model field of a provider-bound Profile', async () => {
+    listRuntimeProfilesMock.mockResolvedValue([{
+      id: 'p1', agent_id: 'a1', name: 'Proxied', runtime_key: 'opencode', runtime_config_json: {}, runtime_policy_json: {},
+      backend_mode: 'model_provider', model: null,
+      provider_binding: { state: 'bound', provider_id: 'prov-1', model: 'gpt-4o' },
+      enabled: true, is_default: true, execution_host_id: 'host-server', workspace_location_id: null,
+      workspace_mode: 'managed', runtime_installation: 'managed:1.0.0',
+    }])
+    render(<AgentDetailPage />)
+    await userEvent.click(await screen.findByRole('tab', { name: 'Runtime' }))
+    const model = await screen.findByPlaceholderText('claude-sonnet-4-6')
+    expect(model).toHaveValue('gpt-4o')
+    await userEvent.clear(model)
+    await userEvent.type(model, 'gpt-4.1')
+    await userEvent.click(screen.getByRole('button', { name: 'Save runtime profile' }))
+    await waitFor(() => expect(updateRuntimeProfileMock).toHaveBeenCalledWith('a1', 'p1', expect.objectContaining({
+      model_provider_id: 'prov-1', model_name: 'gpt-4.1',
+    })))
+  })
+
+  it('edits the Profile it just created instead of creating it a second time', async () => {
+    const existing = {
+      id: 'p1', agent_id: 'a1', name: 'Server default', runtime_key: 'opencode', runtime_config_json: {}, runtime_policy_json: {},
+      backend_mode: 'runtime_native', model: null, provider_binding: null,
+      enabled: true, is_default: true, execution_host_id: 'host-server', workspace_location_id: null,
+      workspace_mode: 'managed', runtime_installation: 'managed:1.0.0',
+    }
+    const profiles = [existing]
+    listRuntimeProfilesMock.mockImplementation(async () => [...profiles])
+    createRuntimeProfileMock.mockImplementation(async () => {
+      const created = { ...existing, id: 'p2', name: 'New runtime profile', is_default: false }
+      profiles.push(created)
+      return created
+    })
+    render(<AgentDetailPage />)
+    await userEvent.click(await screen.findByRole('tab', { name: 'Runtime' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'New profile' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save runtime profile' }))
+    await waitFor(() => expect(createRuntimeProfileMock).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Profile' })).toHaveTextContent('New runtime profile'))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Save runtime profile' }))
+    await waitFor(() => expect(updateRuntimeProfileMock).toHaveBeenCalledWith('a1', 'p2', expect.objectContaining({ name: 'New runtime profile' })))
+    expect(createRuntimeProfileMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('drops cancelled overview edits instead of carrying them into the next edit', async () => {
+    render(<AgentDetailPage />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    await userEvent.type(screen.getByPlaceholderText('System prompt (role/identity)'), 'abandoned draft')
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.getByPlaceholderText('System prompt (role/identity)')).toHaveValue('')
+    expect(screen.getByPlaceholderText('Name')).toHaveValue('My Agent')
+  })
+
   it('waits for the runtime catalog before saying a runtime refuses ModelProvider mode', async () => {
-    // `cliAdapters` starts empty, and an empty catalog used to be read as
-    // "this runtime does not support a Provider binding": every open of a
-    // `model_provider` Profile flashed that alert until the first answer
-    // landed. Not-yet-asked and answered-no are different facts.
+    // `cliAdapters` starts empty. An empty catalog is "not loaded yet", not
+    // "this runtime does not support a Provider binding". Do not flash that
+    // alert on every open of a `model_provider` Profile. Not-yet-asked and
+    // answered-no are different facts.
     let resolveCatalog: ((value: { items: typeof CATALOG }) => void) | null = null
     listRuntimeDefinitionsMock.mockReturnValue(new Promise(resolve => { resolveCatalog = resolve }))
     listRuntimeProfilesMock.mockResolvedValue([{

@@ -6,18 +6,23 @@ import {
   objectValue,
   optionalObject,
   optionalString,
+  withQueryableTransaction,
   type Queryable,
   type SpaceUserIdentity,
 } from "../routeUtils/common.js";
+import { lockEvolutionAssets } from "./assetLocks.js";
 import {
   assertAssetAllowsTargetScope,
   assertCanPinScope,
+  assetVersionContentHash,
   assertCanReadAssetOwnerScope,
   assertCanWriteAssetOwnerScope,
   canReadAssetOwnerScope,
   canViewScopedRef,
+  canViewVersionScope,
   normalizeAssetOwnerScopeForCreate,
   normalizeVersionScopeForWrite,
+  versionServesScope,
   type EvolvableAssetAccessRow,
 } from "./assetAccess.js";
 
@@ -32,9 +37,15 @@ const OWNER_SCOPE_TYPES = new Set(["system", "space", "project", "user", "agent"
 const PIN_SCOPE_TYPES = new Set(["space", "project", "user", "agent"]);
 const VERSION_SOURCES = new Set(["built_in", "user_authored", "evolved", "imported", "generated"]);
 // approved/deprecated are reachable only through the promotion proposal
-// applier. This repository's own transitionVersionStatus rejects them so
-// human review remains the only durable promotion path.
-const DIRECT_VERSION_STATUSES = new Set(["draft", "candidate", "testing", "archived"]);
+// applier, so human review remains the only durable promotion path. A
+// version only moves forward: once it leaves draft its content is what its
+// evaluations judged, and a change is a child version, never a return to
+// draft.
+const DIRECT_VERSION_TRANSITIONS: Readonly<Record<string, ReadonlySet<string>>> = {
+  draft: new Set(["candidate", "archived"]),
+  candidate: new Set(["testing", "archived"]),
+  testing: new Set(["archived"]),
+};
 
 function requiredDateIso(value: unknown): string {
   return dateIso(value) ?? new Date(0).toISOString();
@@ -339,7 +350,7 @@ export class EvolvableAssetRepository {
     }
     const contentJson = await validateAssetVersionContent(asset.asset_type, optionalObject(body.content_json));
     const contentRef = optionalString(body.content_ref);
-    if (!contentJson && !contentRef) throw new HttpError(422, "content_json or content_ref is required");
+    const contentHash = assetVersionContentHash(contentJson, contentRef);
     const nextVersionResult = await this.db.query<{ next: number }>(
       `SELECT COALESCE(MAX(version), 0) + 1 AS next FROM evolvable_asset_versions WHERE asset_id = $1`,
       [assetId],
@@ -362,7 +373,7 @@ export class EvolvableAssetRepository {
         nextVersion,
         source,
         contentRef,
-        optionalString(body.content_hash),
+        contentHash,
         contentJson ? JSON.stringify(contentJson) : null,
         identity.userId,
         now,
@@ -391,23 +402,20 @@ export class EvolvableAssetRepository {
       ? optionalObject(current.content_json)
       : optionalObject(body.content_json);
     const validatedContentJson = await validateAssetVersionContent(asset.asset_type, contentJson);
+    const contentRef = body.content_ref === undefined ? current.content_ref : optionalString(body.content_ref);
+    const contentHash = assetVersionContentHash(validatedContentJson, contentRef);
     const now = new Date().toISOString();
-    await this.db.query(
+    // Still a draft at write time: a concurrent transition out of draft wins.
+    const updated = await this.db.query(
       `UPDATE evolvable_asset_versions
           SET content_ref = $3, content_hash = $4, content_json = $5::jsonb, updated_at = $6
-        WHERE asset_id = $1 AND id = $2`,
-      [
-        assetId,
-        versionId,
-        body.content_ref === undefined ? current.content_ref : optionalString(body.content_ref),
-        body.content_hash === undefined ? current.content_hash : optionalString(body.content_hash),
-        validatedContentJson ? JSON.stringify(validatedContentJson) : null,
-        now,
-      ],
+        WHERE asset_id = $1 AND id = $2 AND status = 'draft'`,
+      [assetId, versionId, contentRef, contentHash, validatedContentJson ? JSON.stringify(validatedContentJson) : null, now],
     );
-    const updated = await this.versionRow(assetId, versionId);
-    if (!updated) throw new HttpError(500, "Failed to update asset version");
-    return versionOut(updated, false);
+    if (updated.rowCount !== 1) throw new HttpError(409, "The version left draft; create a child version instead");
+    const row = await this.versionRow(assetId, versionId);
+    if (!row) throw new HttpError(500, "Failed to update asset version");
+    return versionOut(row, false);
   }
 
   async transitionVersionStatus(
@@ -423,17 +431,23 @@ export class EvolvableAssetRepository {
     assertAssetAllowsTargetScope(asset, identity, current.scope_type, current.scope_id);
     const status = optionalString(body.status);
     if (!status) throw new HttpError(422, "status is required");
-    if (!DIRECT_VERSION_STATUSES.has(status)) {
+    if (status === "approved" || status === "deprecated") {
       throw new HttpError(422, "'approved' and 'deprecated' are only reachable through the promotion proposal flow");
     }
-    if (current.status === "approved" || current.status === "deprecated") {
-      throw new HttpError(422, `Cannot transition a ${current.status} version directly — use rollback/promotion instead`);
+    if (!DIRECT_VERSION_TRANSITIONS[current.status]?.has(status)) {
+      throw new HttpError(
+        422,
+        status === "draft"
+          ? "A version cannot return to draft once it left it; create a child version to change its content"
+          : `Cannot move a ${current.status} version to ${status}`,
+      );
     }
     const now = new Date().toISOString();
-    await this.db.query(
-      `UPDATE evolvable_asset_versions SET status = $3, updated_at = $4 WHERE asset_id = $1 AND id = $2`,
-      [assetId, versionId, status, now],
+    const moved = await this.db.query(
+      `UPDATE evolvable_asset_versions SET status = $3, updated_at = $4 WHERE asset_id = $1 AND id = $2 AND status = $5`,
+      [assetId, versionId, status, now, current.status],
     );
+    if (moved.rowCount !== 1) throw new HttpError(409, "The version's status changed; reload and try again");
     const updated = await this.versionRow(assetId, versionId);
     if (!updated) throw new HttpError(500, "Failed to transition asset version");
     return versionOut(updated, false);
@@ -477,30 +491,41 @@ export class EvolvableAssetRepository {
     assertAssetAllowsTargetScope(asset, identity, scopeType, scopeId);
     const versionId = optionalString(body.version_id);
     if (!versionId) throw new HttpError(422, "version_id is required");
-    const version = await this.versionRow(assetId, versionId);
-    if (!version) throw new HttpError(422, "version_id does not reference a version of this asset");
-    if (version.status !== "approved") throw new HttpError(422, "Only an approved version can be pinned");
-    if (!canPinVersionToScope(identity, scopeType, scopeId, version)) {
-      throw new HttpError(422, "version_id is not visible to the target pin scope");
-    }
-    // Archive any existing active pin for this exact scope target (same
-    // scope_type AND scope_id — not just scope_type, which would archive an
-    // unrelated project/agent/user's pin on the same asset), then insert a
-    // fresh row — keeps pin history instead of updating in place.
-    const now = new Date().toISOString();
-    await this.db.query(
-      `UPDATE evolvable_asset_pins
-          SET status = 'archived', updated_at = $5
-        WHERE space_id = $1 AND asset_id = $2 AND scope_type = $3 AND scope_id = $4 AND status = 'active'`,
-      [identity.spaceId, assetId, scopeType, scopeId, now],
-    );
     const id = randomUUID();
-    await this.db.query(
-      `INSERT INTO evolvable_asset_pins (
-         id, space_id, asset_id, scope_type, scope_id, version_id, status, pinned_by_user_id, reason, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $9)`,
-      [id, identity.spaceId, assetId, scopeType, scopeId, versionId, identity.userId, optionalString(body.reason), now],
-    );
+    await withQueryableTransaction(this.db, async (db) => {
+      // Under the asset lock a promotion takes to deprecate earlier versions:
+      // a pin either lands before that check (and keeps its version approved)
+      // or sees the version already deprecated here. Never a pin on a version
+      // that stopped being approved in between.
+      await lockEvolutionAssets(db, [assetId]);
+      const found = await db.query<VersionRow>(
+        `SELECT ${VERSION_COLUMNS} FROM evolvable_asset_versions WHERE asset_id = $1 AND id = $2 LIMIT 1`,
+        [assetId, versionId],
+      );
+      const version = found.rows[0];
+      if (!version) throw new HttpError(422, "version_id does not reference a version of this asset");
+      if (version.status !== "approved") throw new HttpError(422, "Only an approved version can be pinned");
+      if (!versionServesScope(identity, { scopeType, scopeId }, version)) {
+        throw new HttpError(422, "version_id is not visible to the target pin scope");
+      }
+      // Archive any existing active pin for this exact scope target (same
+      // scope_type AND scope_id — not just scope_type, which would archive an
+      // unrelated project/agent/user's pin on the same asset), then insert a
+      // fresh row — keeps pin history instead of updating in place.
+      const now = new Date().toISOString();
+      await db.query(
+        `UPDATE evolvable_asset_pins
+            SET status = 'archived', updated_at = $5
+          WHERE space_id = $1 AND asset_id = $2 AND scope_type = $3 AND scope_id = $4 AND status = 'active'`,
+        [identity.spaceId, assetId, scopeType, scopeId, now],
+      );
+      await db.query(
+        `INSERT INTO evolvable_asset_pins (
+           id, space_id, asset_id, scope_type, scope_id, version_id, status, pinned_by_user_id, reason, created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, 'active', $7, $8, $9, $9)`,
+        [id, identity.spaceId, assetId, scopeType, scopeId, versionId, identity.userId, optionalString(body.reason), now],
+      );
+    });
     const result = await this.db.query<PinRow>(`SELECT ${PIN_COLUMNS} FROM evolvable_asset_pins WHERE id = $1`, [id]);
     const row = result.rows[0];
     if (!row) throw new HttpError(500, "Failed to set pin");
@@ -521,16 +546,6 @@ export class EvolvableAssetRepository {
   }
 }
 
-async function canViewVersionScope(
-  db: Queryable,
-  identity: SpaceUserIdentity,
-  row: VersionRow,
-): Promise<boolean> {
-  if (row.space_id === null) return row.scope_type === "system";
-  if (row.space_id !== identity.spaceId) return false;
-  return canViewScopedRef(db, identity, row.scope_type, row.scope_id);
-}
-
 async function validateAssetVersionContent(
   assetType: string,
   contentJson: Record<string, unknown> | null,
@@ -542,24 +557,6 @@ async function validateAssetVersionContent(
     throw new HttpError(422, `workflow_definition.v1 is invalid: ${parsed.error.issues[0]?.message ?? "invalid content"}`);
   }
   return parsed.data as Record<string, unknown>;
-}
-
-function canPinVersionToScope(
-  identity: SpaceUserIdentity,
-  targetScopeType: string,
-  targetScopeId: string,
-  version: VersionRow,
-): boolean {
-  if (version.space_id === null) return version.scope_type === "system";
-  if (version.space_id !== identity.spaceId) return false;
-  if (version.scope_type === "system") return true;
-  if (version.scope_type === "space") return version.scope_id === identity.spaceId;
-  if (version.scope_type === "project") return targetScopeType === "project" && version.scope_id === targetScopeId;
-  if (version.scope_type === "user") {
-    return targetScopeType === "user" && targetScopeId === identity.userId && version.scope_id === targetScopeId;
-  }
-  if (version.scope_type === "agent") return targetScopeType === "agent" && version.scope_id === targetScopeId;
-  return false;
 }
 
 function scopeKey(scopeType: string, scopeId: string | null): string {

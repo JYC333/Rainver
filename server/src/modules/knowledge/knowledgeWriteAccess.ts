@@ -8,19 +8,18 @@ import { canWriteProject } from "../projects/access.js";
  * anything else that hangs off `space_objects`.
  *
  * Readable is not writable. A `selected_users` grant and the oversight branch
- * both hand out *reading*, so a repository that gated a mutation on the read
- * predicate alone let a grantee rewrite the owner's note and let an admin
+ * both hand out *reading*. Do not gate a mutation on the read predicate
+ * alone. A grantee could rewrite the owner's note, and an admin could
  * rewrite a member's. Two terms decide it:
  *
  * - anything but `space_shared` belongs to its owner, who is the only person
- *   who may change it. `space_shared` stays collaboratively writable, which is
- *   the point of sharing it — and is why this keys on visibility rather than on
- *   `owner_user_id`, which a shared object may also carry;
+ *   who may change it. `space_shared` stays collaboratively writable. Key on
+ *   visibility rather than on `owner_user_id`, which a shared object may also carry;
  * - a Project-bound object additionally needs writer authority in that Project,
  *   because a Project share widens read scope only;
- * - a reader who is served this object at `summary` may not write it. Phase 2
- *   withholds the body from them; letting them replace it would be the same
- *   content boundary crossed from the other side. Oversight is excluded from
+ * - a reader who is served this object at `summary` may not write it. The body
+ *   is withheld from them; letting them replace it would cross the same
+ *   content boundary from the other side. Oversight is excluded from
  *   that level: supervising a member's note is reading, and an admin computing
  *   `full` through oversight must not thereby become its writer.
  *
@@ -32,7 +31,7 @@ import { canWriteProject } from "../projects/access.js";
  * told this person. A surface that refused before saying the object exists
  * answers 404, so a denial cannot be read as "it is there, you may not have
  * it". A surface that already returned the object to them — every placement
- * and relocation path reads it first — keeps the 403 it has always answered,
+ * and relocation path reads it first — answers 403,
  * because hiding what they are looking at tells them nothing and loses the
  * reason.
  */

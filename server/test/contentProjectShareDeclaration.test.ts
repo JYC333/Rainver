@@ -3,10 +3,10 @@ import { contentReadSql } from "../src/modules/access/contentAccessSql.js";
 import { contentResourceDefinitions } from "../src/modules/access/contentAccessRegistry.js";
 
 /**
- * The share term is on the read gate of every content resource, so what matters
- * as much as it working is it not being *there* for the resources that never
- * declared it. `contentAccessSql` runs on every content read in the system;
- * "equivalent to before" is not the bar — "identical to before" is.
+ * The share term is on the read gate of every content resource that declares
+ * one, and absent from every resource that does not. Do not emit the term as
+ * false, and do not add it to a resource that never declared a share. The
+ * predicate would change.
  */
 describe("additional project scope declaration", () => {
   it("emits the share term only for the resource that declares one", () => {
@@ -28,8 +28,7 @@ describe("additional project scope declaration", () => {
 
   it("keeps the share strictly inside the project-scope conjunct", () => {
     // A share widens *scope*. If the term ever escaped into the visibility
-    // disjunct it would silently become a grant, which is the one thing U8
-    // says sharing must never be.
+    // disjunct it would silently become a grant, which sharing must never be.
     const sql = contentReadSql("space_object", "so", "$1");
     const shareIndex = sql.indexOf("space_object_project_shares");
     const visibilityIndex = sql.indexOf("so.visibility IN ('private', 'space_shared', 'selected_users')");

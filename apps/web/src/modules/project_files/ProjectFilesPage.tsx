@@ -64,6 +64,8 @@ function readErrorMessage(error: ReadError): string {
       return `This Folder is on ${host}'s machine. Only its owner can browse it here.`
     case 'location_unknown_on_host':
       return `The daemon on ${host} no longer knows this directory. Run rainver-host workspace add there.`
+    case 'unsupported_platform':
+      return `Files cannot be read safely on ${host}'s operating system. Browse this Folder from a Linux or macOS host.`
     default:
       return error.message ?? 'The Folder could not be read.'
   }
@@ -174,6 +176,7 @@ export default function ProjectFilesPage() {
     } finally {
       setFoldersLoading(false)
     }
+    // preselectedId only picks the first selection; changing it must not reload the folders.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId])
 
@@ -187,7 +190,7 @@ export default function ProjectFilesPage() {
       await loadFolders()
     } catch (e) {
       // The server reports the active drafts it would remove and refuses until
-      // they are acknowledged; without this second step a Folder with any live
+      // they are acknowledged. Do not skip that step. A Folder with any live
       // draft could not be unregistered from here at all.
       const drafts = confirm ? null : activeDraftConfirmation(e)
       if (drafts) {
@@ -340,11 +343,17 @@ export default function ProjectFilesPage() {
     const cachedFile = fileCache.current.get(cacheKey)
     setSelectedFilePath(path)
     setFileRevisions([])
-    setFileDraft(null)
-    setDraftLoading(typeof projectFoldersApi.draft === 'function')
-    if (cachedFile) {
-      setCenterView({ mode: 'file', data: cachedFile })
+    // The draft goes with the file it belongs to: cleared only when the next
+    // file is shown. Clearing it up front unbound the draft from the editor
+    // still showing the previous file, for good if the next read failed.
+    const showFile = (data: FileContent) => {
+      setCenterView({ mode: 'file', data })
       setCenterLoading(false)
+      setFileDraft(null)
+      setDraftLoading(typeof projectFoldersApi.draft === 'function')
+    }
+    if (cachedFile) {
+      showFile(cachedFile)
     } else {
       setCenterLoading(true)
     }
@@ -363,8 +372,8 @@ export default function ProjectFilesPage() {
       const fc = await projectFoldersApi.file(projectId, folderId, path)
       if (isCurrentSelection()) {
         fileCache.current.set(cacheKey, fc)
-        setCenterView({ mode: 'file', data: fc })
-        setCenterLoading(false)
+        if (!cachedFile) showFile(fc)
+        else setCenterView({ mode: 'file', data: fc })
       }
       const draft = await draftPromise
       if (isCurrentSelection()) {
@@ -742,10 +751,15 @@ export default function ProjectFilesPage() {
                 <ReadErrorState error={readError} onRetry={retryReads} />
               ) : !gitStatus?.is_repo ? (
                 <p className="text-xs text-muted-foreground p-3">Not a git repository</p>
-              ) : gitStatus.files.length === 0 ? (
+              ) : gitStatus.files.length === 0 && !gitStatus.truncated ? (
                 <p className="text-xs text-muted-foreground p-3">Working tree clean</p>
               ) : (
                 <div className="space-y-3">
+                  {gitStatus.truncated && (
+                    <p role="status" className="text-xs text-warning px-2 py-1">
+                      Showing the first {gitStatus.files.length} changed files; the list is incomplete.
+                    </p>
+                  )}
                   {gitGroupOrder.map(grp => {
                     const files = gitGroups[grp]
                     if (!files?.length) return null

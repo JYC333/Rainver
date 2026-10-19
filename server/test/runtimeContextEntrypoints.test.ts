@@ -170,11 +170,10 @@ function agentInvocationCallsites(source: string, relativeFile: string): string[
   const localHelpers = new Map<string, string>();
   const namespaces = new Set<string>();
   // The CLI invoker is scanned for like every other one. It is classified as a
-  // *renderer* rather than a Gateway invoker — a run handed to a daemon gets no
-  // server-brokered Runtime Context — but leaving it out of this list, as a
-  // first cut did, made the scanner return nothing for the entire CLI path, so
-  // an unregistered CLI callsite anywhere under `server/src/modules` would have
-  // passed the guard below unnoticed.
+  // renderer rather than a Gateway invoker: a run handed to a daemon gets no
+  // server-brokered Runtime Context. Do not leave it out of this list. The
+  // scanner would return nothing for the entire CLI path, and an unregistered
+  // CLI callsite under `server/src/modules` would pass the guard unnoticed.
   const exportedHelpers = ["executeRemoteHostCliAdapter"];
   const helperPattern = exportedHelpers.join("|");
   const isAgentModule = (modulePath: string) =>
@@ -407,7 +406,8 @@ describe("Runtime Context invocation entrypoint inventory", () => {
   });
 
   it("registers every concrete Agent delivery renderer", () => {
-    // `VendorCli` is gone: the CLI renderer is the daemon adapter now.
+    // The CLI renderer is the daemon adapter. Do not register a
+    // separate `VendorCli` renderer.
     const rendererDefinition = /export\s+async\s+function\s+execute(?:ManagedApiNoTool|RemoteHostCli)Adapter\b/;
     const discovered = tsFiles(modulesRoot)
       .filter((file) => rendererDefinition.test(readFileSync(file, "utf8")))

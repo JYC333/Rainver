@@ -5,6 +5,8 @@ import { frontendSupportModule } from "../src/modules/frontendSupport/index.js";
 import { loadConfig } from "../src/config.js";
 import { __setAuthIdentityForTests } from "../src/modules/auth/identity.js";
 import { __setFrontendSupportServiceFactoryForTests } from "../src/modules/frontendSupport/routes.js";
+import { RUN_STATUS_VALUES, TASK_STATUSES } from "@rainver/protocol";
+import { ACTIVE_RUN_STATUSES, REVIEW_TASK_STATUSES } from "../src/modules/frontendSupport/frontendSupportReadModel.js";
 
 let app: FastifyInstance;
 
@@ -15,6 +17,17 @@ afterEach(async () => {
 });
 
 describe("frontend-support read models", () => {
+  it("counts review and active work with the statuses the protocol actually uses", () => {
+    // A status the protocol never produces counts nothing. Do not omit
+    // `waiting_for_review`. needs_review_count would stay 0 while Tasks
+    // sit in that status.
+    expect(REVIEW_TASK_STATUSES.length).toBeGreaterThan(0);
+    for (const status of REVIEW_TASK_STATUSES) expect(TASK_STATUSES).toContain(status);
+    expect(REVIEW_TASK_STATUSES).toContain("waiting_for_review");
+    for (const status of ACTIVE_RUN_STATUSES) expect(RUN_STATUS_VALUES).toContain(status);
+    expect(ACTIVE_RUN_STATUSES).toEqual(expect.arrayContaining(["cancelling", "waiting_for_dependency"]));
+  });
+
   it("serves home as space-scoped and me as user-wide native read models", async () => {
     __setAuthIdentityForTests({ spaceId: "space-active", userId: "user-1" });
     __setFrontendSupportServiceFactoryForTests(() => ({
@@ -149,7 +162,7 @@ function emptyHomeSummary() {
     },
     suggested_actions: [],
     source_summary: {
-      open_items: 0,
+      pending_reading_items: 0,
       new_items_today: 0,
       pending_extraction_jobs: 0,
       failed_extraction_jobs: 0,

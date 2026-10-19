@@ -1,13 +1,10 @@
 /**
  * The single registry of per-model limits.
  *
- * A model's limits used to live in two unrelated places — output guidance here
- * in Providers, context-window sizing in the Usage model catalog — so adding a
- * model meant editing both and forgetting one was silent. It was: MiniMax-M3
- * had output guidance but no window, so Runtime Context planned every MiniMax
- * run against the generic 16k fallback and Project Research screening failed
- * with `required_context_overflow` on a model whose real window is half a
- * million tokens. One registry, one entry per model family.
+ * A model's limits live in one registry. Adding a model means one entry.
+ * A model with output guidance and no window makes Runtime Context plan
+ * against the generic 16k fallback, and Project Research screening then fails
+ * with `required_context_overflow` on a model whose real window is much larger.
  *
  * Entries match by pattern, not exact id, so provider-prefixed spellings
  * (`minimax/MiniMax-M3`) and family variants (`-highspeed`, `-lightning`) are
@@ -23,7 +20,7 @@
  * you touch a row, re-read its source and move the date; `modelSpecs.test.ts`
  * fails on a row that has neither.
  */
-export interface ModelSpec {
+interface ModelSpec {
   contextWindowTokens: number;
   defaultOutputReserveTokens: number;
   providerOverheadTokens: number;
@@ -41,8 +38,8 @@ const STANDARD_OUTPUT_RESERVE_TOKENS = 16_384;
 
 const MODEL_SPECS: Array<{ pattern: RegExp; spec: ModelSpec }> = [
   // MiniMax M3 (minimax.io/models/text/m3): "up to 1M tokens context window
-  // with a guaranteed minimum of 512K" — the guaranteed floor is what we plan
-  // against. Recommended max output 131072, hard cap 524288.
+  // with a guaranteed minimum of 512K" — planning uses the guaranteed floor.
+  // Recommended max output 131072, hard cap 524288.
   {
     pattern: /(^|\/)minimax-m3/i,
     spec: {
@@ -56,8 +53,8 @@ const MODEL_SPECS: Array<{ pattern: RegExp; spec: ModelSpec }> = [
   },
   // MiniMax M2 family (M2, M2.1, M2.5, M2.7 and their -highspeed/-lightning
   // variants): 204800-token window covering input and output together.
-  // MiniMax publishes no per-request output default for these, so we don't
-  // invent one — callers keep whatever budget they set.
+  // MiniMax publishes no per-request output default for these. Do not
+  // invent one. Callers keep whatever budget they set.
   {
     pattern: /(^|\/)minimax-m2/i,
     spec: {

@@ -28,9 +28,8 @@ import { tryQueueAdviceForFocusedThread } from "./adviceJob.js";
 // Protected cognitive fields. Only `recordIteration` may write these — the
 // generic project PATCH route does not exist for Threads at all, and this
 // service's own `reviseDefinition`/`updateWork` deliberately never read
-// these keys. This is the concrete mechanism behind plan section 9.4's
-// "Protected cognitive fields are writable only through the Iteration
-// command."
+// these keys. Protected cognitive fields are writable only through the Iteration
+// command.
 const QUESTION_COGNITIVE_FIELDS = ["current_answer_summary", "answer_state", "known_gaps", "answerability"] as const;
 const HYPOTHESIS_COGNITIVE_FIELDS = ["evaluation_state", "confidence", "confidence_method"] as const;
 
@@ -61,7 +60,7 @@ export class InquiryIterationService {
     return new InquiryIterationService(getDbPool(config.databaseUrl));
   }
 
-  // The cognitive Iteration command (plan section 9.4). Substantive user
+  // The cognitive Iteration command. Substantive user
   // edits to the confirmed position create this directly — no proposal is
   // needed for a direct user edit; AI-proposed changes become Candidates in
   // the Candidate review service, not here.
@@ -332,7 +331,7 @@ export class InquiryIterationService {
     return rows.rows;
   }
 
-  // Thread Definition Revision command (plan section 9.4). `wording_only`
+  // Thread Definition Revision command. `wording_only`
   // updates presentation text without a Definition Revision's structural
   // consequence; `semantic_change` cannot be downgraded by the client and
   // must choose narrow-in-place, child-with-a-new-Thread, or
@@ -418,7 +417,7 @@ export class InquiryIterationService {
       }
 
       // child/supersede: create a new Thread carrying the revised definition.
-      // The historical Thread is deliberately not mutated before the branch.
+      // Do not mutate the Thread being superseded before the branch.
       const newThreadId = randomUUID();
       // The branch copies this Thread's fields, so it starts no wider than this
       // Thread: same visibility and level. Selected-people grants are not
@@ -535,10 +534,27 @@ export class InquiryIterationService {
          VALUES ($1,$2,$3,$4,$5,'superseded',$6,$7,$8)`,
         [randomUUID(), identity.spaceId, projectId, threadId, thread.lifecycle_status, optionalString(body.impact_note), identity.userId, now],
       );
+      // Like any Thread leaving `active` (transitionLifecycle): its open steps
+      // end here and the projection follows, or rows no command can ever
+      // close stay behind, since a superseded Thread transitions no further.
+      // Its open recommendation retires with it.
+      await closeOpenSteps(db, {
+        spaceId: identity.spaceId,
+        threadId,
+        reason: "abandoned",
+        at: now,
+        includeBackground: true,
+      });
       await db.query(
-        `UPDATE inquiry_threads SET lifecycle_status = 'superseded', attention_state = 'archived'
+        `UPDATE inquiry_threads SET lifecycle_status = 'superseded', attention_state = 'archived',
+           blocked_reason = NULL, ${STEP_PROJECTION_SET_SQL}, ${STEP_NOTE_SET_SQL}
           WHERE object_id = $1 AND space_id = $2`,
         [threadId, identity.spaceId],
+      );
+      await db.query(
+        `UPDATE inquiry_thread_advice SET status = 'dismissed', updated_at = $3
+          WHERE space_id = $1 AND thread_id = $2 AND status = 'open'`,
+        [identity.spaceId, threadId, now],
       );
       await db.query(TOUCH_THREAD_ROOT_SQL, [now, threadId, identity.spaceId]);
       const supersededThread = await db.query<ThreadRow>(
@@ -597,7 +613,7 @@ export class InquiryIterationService {
     }
   }
 
-  // Work-management command (plan section 9.4): priority, owner, Focus
+  // Work-management command: priority, owner, Focus
   // membership, Current Next Focus, blocking reason. Audited action history,
   // never a cognitive Iteration — this method never touches
   // inquiry_question_states/inquiry_hypothesis_states/inquiry_iterations, and
@@ -740,7 +756,7 @@ export class InquiryIterationService {
          WHERE object_id = $4 AND space_id = $5`,
         [nextPriority, nextAttention, nextBlockedReason, threadId, identity.spaceId],
       );
-      // Ownership is a root column now (B12D), so reassignment writes there.
+      // Ownership is a root column (B12D). Reassignment writes there.
       await db.query(
         `UPDATE space_objects SET owner_user_id = $1, updated_at = $2 WHERE id = $3 AND space_id = $4`,
         [nextOwner, now, threadId, identity.spaceId],

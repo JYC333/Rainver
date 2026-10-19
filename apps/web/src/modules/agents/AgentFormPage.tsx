@@ -207,7 +207,7 @@ export default function AgentFormPage() {
                   { value: 'low', label: 'Low' },
                   { value: 'medium', label: 'Medium' },
                   // Risk requires trust, and no runtime or Host reaches `high`
-                  // today (ROUTING.md, "Effective trust"), so either of these
+                  // (ROUTING.md, "Effective trust"), so either of these
                   // leaves the Agent with no eligible candidate anywhere.
                   { value: 'high', label: 'High · no execution target reaches high trust yet', disabled: true },
                   { value: 'critical', label: 'Critical · no execution target reaches high trust yet', disabled: true },

@@ -27,17 +27,14 @@ Every system action declares:
   policy adapter (`declared_resource`, `retrieval`, or `agent_delegate`) when
   the action is Agent-callable.
 
-There are currently no public `external_mcp` actions, and no MCP surface at
-all: the Run-scoped one this repository used to mount was deleted with the
-`rainver` command that replaced it. `external_mcp` stays in the enum because
-its trigger is real and recorded — an external MCP client becoming a
-requirement, which is a different question from how Rainver's own dispatched
-agents call back.
+There are currently no public `external_mcp` actions, and no MCP surface.
+`external_mcp` stays in the enum because its trigger is real and recorded —
+an external MCP client becoming a requirement, which is a different question
+from how Rainver's own dispatched agents call back.
 
 ## Dispatch boundary
 
-Three layers, each owning exactly one concern (action authority consolidation
-plan):
+Three layers, each owning exactly one concern:
 
 - **`SystemActionGateway`** (`systemActions/gateway.ts`) is the actor-neutral
   core: registry lookup, actor and visibility checks, idempotency validation,
@@ -48,14 +45,16 @@ plan):
   or transports.
 - **`SystemActionDispatcher`** (`systemActions/systemActionDispatcher.ts`) is
   the Run-scoped layer Agent-facing entry points call. Given a `RunRecord` and
-  a request, it computes the Run's tool grants, builds the gateway's executor
+  a request, it reads the Run's persisted tool grants
+(`permission_snapshot_json.tool_grants`, via `assembleRunInputEnvelope`),
+builds the gateway's executor
   map (via `registerModuleSystemActionExecutors` / `executorRegistry.ts`, one
   registration function per owning module) and policy enforcer, and
   normalizes gateway results/errors into one structured tool-call shape.
   `dispatch()` and `listGrantedDefinitions()` are its call surface. Runtime delegation
   materialization (Path B, below) is the one deliberate exception: it runs
   after the Run has already terminated, when a run-scoped in-flight dispatch
-  is no longer meaningful, so it does not call `SystemActionDispatcher` at
+  does not apply, so it does not call `SystemActionDispatcher` at
   all — it independently checks the same grant snapshot and shares the
   schema and audit-event shape, but its own code is the dispatch path for
   that one case.
@@ -82,8 +81,9 @@ in-process because the caller outlives the process — a remote Run's CLI keeps
 working across a server restart. The route reloads the Run and rejects unless
 it is `running`; the transport (`assertActive()`) repeats that check before
 every `list`/`call`, then only builds a dispatcher and forwards to it —
-neither computes tool permissions itself, that intersection is
-`SystemActionDispatcher`'s grant computation. The CLI never receives database
+neither computes tool permissions itself; that intersection is computed by
+`buildRunToolGrants` (`systemActions/runToolGrants.ts`) when the Run is
+created, and the dispatcher only reads the persisted result. The CLI never receives database
 credentials or an internal service token.
 
 Run creation computes that intersection from the Run's declared
@@ -96,47 +96,36 @@ the normal call-time PolicyGateway decision remains mandatory and authoritative.
 `authorization.request` is the sole built-in companion to capability
 intersection: a Run receives it only when that intersection exposes at least
 one other Agent tool, so an Agent can reference a denial from a tool it could
-actually call. Tool-free Runs remain tool-free (including network-isolated
-Docker CLI execution). The action does not grant authority; it can only create
+actually call. Tool-free Runs remain tool-free. The action does not grant authority; it can only create
 a bounded `authorization_requests` row.
 
-**Delivery carries no runtime name.** A Run is given a handful of environment
+**Delivery carries no runtime name.** A dispatched Run is given environment
 variables and the files behind them — the command, reachable at `RAINVER_CLI`
-(the daemon resolves its own copy and generates a launcher; the server, whose
-sandbox mounts nothing of its own, stages the file itself), the Rainver Work
-Skill
+(the daemon resolves its own copy and writes a launcher into the Run's
+directory), the Rainver Work Skill
 (`capabilities/workSkill.ts`, rendered from `systemActions/conversationPolicy.ts`
 constants the conversational surfaces share),
 and a pointer to the Skill appended to the prompt the runtime is actually
-sent. There is no per-vendor branch anywhere in that path, which is what the
-three generated MCP configuration files it replaced each required. A newly
+sent. There is no per-vendor branch anywhere in that path. Do not add a
+generated MCP configuration file per vendor. A newly
 registered ACP agent needs nothing added.
 
 Side-effecting calls use the caller's `Idempotency-Key` header as the
 canonical tool-call/idempotency key; a caller that sends none gets a fresh one
 per request rather than a constant, so a second call of the same action in one
-attempt is not swallowed by the event writer. Network-isolated one-shot Docker
-execution fails closed when a Run requests tools because it cannot reach the
-server.
+attempt is not swallowed by the event writer.
 
-There are two delivery sites, one per execution host kind, and they differ
-only in where the files land: the daemon writes them into the Run's own
-directory under its config root and removes them with the Run
-(`packages/host-daemon/src/execution.ts`); the server writes them into the
-Run's isolated HOME, which the sandbox runner mounts at `/home/sandbox`
-(`runs/runWorkSurface.ts`). Neither writes into the workspace — on the
-server host a staged directory there would be collected as an untracked change
-in the Run's own code patch, and on a paired machine the workspace is the
-user's checkout.
+The server builds that frame in `runs/runWorkSurface.ts` and the remote-host
+adapter sends it on the launch. The daemon writes the files into the Run's
+own directory under its config root and removes them with the Run
+(`packages/host-daemon/src/execution.ts`). Do not write them into the
+workspace. On a paired machine that directory is the user's checkout.
 
-`artifact.submit` is granted only on the remote-host path. It declares that a
-file the Run leaves behind is a Task's output, and only that path applies a
-declaration today (the executing host uploads its output directory and
-`hosts/repository.ts` gives those files the declared type and Task link, which
-is what lets settlement match `tasks.required_outputs_json`). A sandboxed
-Run's artifacts come through `materializationService` instead, which does not
-consume declarations, so the action is withheld rather than accepted and
-ignored.
+`artifact.submit` is granted only for `trusted_host`. It declares that a
+file the Run leaves behind is a Task's output. The paired host uploads its
+output directory and `hosts/repository.ts` gives those files the declared type
+and Task link, which is what lets settlement match
+`tasks.required_outputs_json`. Do not grant it on a `sandboxed` Run.
 
 The `task.create.required_outputs` field therefore carries only concrete file
 Artifact type labels. Replies, reports, inspections, and edits to an existing
@@ -188,9 +177,9 @@ Dynamic tool presentation has two bounded exceptions:
   cannot be a static Zod at the definition at all.
 - **`agent.delegate`** does have a real static registry Zod
   (`RuntimeDelegationOutputItemSchema`, shared with Path B's structured
-  output validation, D8), but its hand-written tool definition
-  (`agentDelegateToolDefinition()`, same file) exists because the
-  model-facing schema needs a `target_agent_id` enum populated from that
+  output validation), but its hand-written tool definition
+  (`agentDelegateToolDefinition()`, same file) supplies the
+  model-facing `target_agent_id` enum populated from that
   Run's live room roster — a per-request enrichment
   `systemActionInputJsonSchema()` cannot express from a static definition.
   `SystemActionGateway` still validates the actual call against the shared
@@ -235,17 +224,26 @@ Run grants, no admin oversight); the read is audited as that person's.
 and fails closed when the allowance is missing or malformed. That allowance
 normally comes from the AgentVersion, which models a tool as a property of the
 Agent. Some capabilities are properties of a *place* instead:
-`modules/systemActions/scenarioToolAllowance.ts` declares two:
+`modules/systemActions/scenarioToolAllowance.ts` declares them:
 `CONVERSATION_TOOL_ALLOWANCE`, what an Agent may do because a person is
-talking to it at all, and `ROOM_CONVERSATION_TOOL_ALLOWANCE`, that plus the
-Project write surface an Agent may use because it was spoken to in a Room.
-`RunCreateInput.scenario_tool_allowance` supplies the applicable one in place
-of the AgentVersion's for every Run dispatched from a group message. A
-delegated child spawned inside a group is not one of those: it carries no
-declared capabilities and so no system-action grants at all.
+talking to it at all; `ROOM_CONVERSATION_TOOL_ALLOWANCE`, that plus the
+Project write surface an Agent may use because it was spoken to in a Room;
+`INPUT_RESOURCE_TOOL_ALLOWANCE`, added only for a turn whose persisted message
+owns text resources; and `dispatchToolAllowance()`, what a Run Rainver
+dispatched to work on a Task may call (the Task write surface plus read-only
+`retrieval.brief`/`retrieval.search`, and `artifact.submit` only on a
+`trusted_host`). `RunCreateInput.scenario_tool_allowance` supplies the
+applicable one in place of the AgentVersion's for every conversation Run (via
+`conversationToolGrantInput`) and every Task-dispatched Run
+(`tasks/repository.ts`); the session-handoff turn carries
+`HANDOFF_TOOL_ALLOWANCE` (`agentGroups/sessionHandoff.ts`). A
+delegated child spawned inside a group carries the same conversation allowance
+as its Room's turns — `createDelegatedChildRun` expands
+`conversationToolGrantInput` for the group's Room and Project — behind the
+root origin gate above; it declares no capabilities of its own.
 
-This is a change of scope, not of strength: the intersection is unchanged, an
-action outside the list is still denied, and the Run must still declare it.
+The intersection is the allowance list: an action outside the list is denied,
+and the Run must still declare it.
 The allowance also carries the four id-discovery reads (`inquiry.list_threads`,
 `task.list`, `proposal.list_pending`, `research.list_operations`), without
 which the id-taking actions below could only be called with a composed id —
@@ -264,8 +262,8 @@ specialist investigation, starting a tracked research acquisition, and
 stopping one are all execution on an already-accepted Thread, not the
 agent-drafted structure/content write ADR 0003 gates. Cancel is in the list so
 a Room notification about running research always has a matching in-Room
-action; a report the user can only act on by leaving for the web UI is the
-interruption the reform removed, moved rather than deleted. It exists because a Room's roster
+action. Do not leave a report the user can only act on by leaving for the
+web UI. A Room's roster
 is fixed at creation and no product surface edits `tool_permissions_json` at
 all, so binding Room conversation to Agent permissions means a Room built
 around a differently configured Agent silently does nothing, with nowhere for
@@ -274,22 +272,20 @@ unchanged.
 
 The allowance is also written to the Run's `capabilities_json`, because the
 declaration side of the intersection has to be satisfied too. That field is
-overloaded and the coupling is load-bearing in two directions worth knowing
-about:
+overloaded. The coupling runs in two directions:
 
 - `explicitRetrievalToolDomainsFromRun` (`runs/managedRetrievalTools.ts`)
   treats a retrieval action id in `capabilities_json` as the *enablement
-  switch* for that retrieval domain. **No retrieval action may be added to a
-  scenario allowance without solving viewer scope first**: retrieval runs
-  under `instructed_by_user_id` — the message sender, whose reads include
-  their own `private` content — while the Room reply is visible to every Room
-  member, so granting it would let one member's private material be surfaced
-  into a shared conversation by asking a question.
-- `capabilityIdsForRun` selects runtime-skill bindings from the same field, so
-  a Run carrying a scenario allowance selects bindings keyed on these action
-  ids rather than the AgentVersion's own capability list. Inert today (nothing
-  writes `agent_versions.capabilities_json` either), but it is why the two
-  concerns should be separated if either grows.
+  switch* for that retrieval domain. `dispatchToolAllowance` includes
+  `retrieval.brief` and `retrieval.search`. Those reads use
+  `instructed_by_user_id`, the person who dispatched the Task. The Room
+  conversation allowance does not include them: a Room reply is visible to
+  every Room member, and the sender's private reads would otherwise surface
+  in that shared reply.
+- `capabilityIdsForRun` selects runtime-skill bindings from the Run's
+  `capability_id` and `capabilities_json`. A scenario allowance written into
+  that field is what the lookup sees. It does not read
+  `agent_versions.capabilities_json`.
 
 The allowance and its resulting grants are persisted together in
 `permission_snapshot_json`. Production execution binds queued Runs to their
@@ -306,9 +302,15 @@ equivalent of Run materialization's derived-output clamp (B8A).
 
 The proposal-shaped generic write tools are
 `source.channel.propose_activation`, `project.source.propose_bind`,
-`project.propose_definition`, `source.backfill.propose_start`, `task.plan.propose`,
+`project.propose_definition`, `source.backfill.propose_start`,
 and `inquiry.promote_knowledge` (plus
-`authorization.request`, which is not itself proposal-shaped). They receive
+`authorization.request`, which is not itself proposal-shaped).
+`task.plan.propose` is a *conditional* proposal (`side_effects:
+"conditional_proposal"`, `proposal_type: "plan_review"`, `gate_class:
+"direction"`): a Plan inside its declared budget and risk is approved as
+written, and one past them files a `plan_review` and waits — the Plan
+repository reads that proposal type from the registry, so the two cannot
+drift. They receive
 the run's space, agent, instructed user, run, and Project scope. Project-only
 actions reject an unscoped run; backfill proposal lookup also proves the plan
 belongs to that Project. Agents do not receive direct activation, proposal-apply,
@@ -326,19 +328,35 @@ proposal names its class in the registry (`gate_class`, required by
 and a non-null class imply each other). Nothing else is a proposal, because
 "an Agent wrote it" is not a reason: under an Agent that advances work,
 per-write approval degrades into a rubber stamp on exactly the writes that
-matter, and one Room turn once produced six pending cards for a single
-decomposition a person had asked for.
+matter. One decomposition a person asked for must not become a stack of
+pending cards.
 
 Every other Project-internal write is governed by two things instead. **The
-trigger origin**: a write from a person's own turn (`manual`) executes, and a
-write from any other origin — scheduled, automated, or a delegated child whose
-root was unattended — is `require_approval` (`ruleUnattendedProjectWrite`,
-covering `task.create`, `task.stage.advance`, `proposal.decide`,
-`inquiry.thread.create`, `inquiry.iteration.record`, `inquiry.advice.adopt`
-and `research.acquisition.start`). And **bounds set before the work runs**: at
+trigger origin**, read as the Run's *effective* origin
+(`systemActions/effectiveRunTrigger.ts`, the one lineage every origin gate —
+memory, persona, credential spend, system actions, the update drain — reads):
+the origin of the verified root, reached through parent hops (a delegated
+child, a later Room recipient, a graph node) and cause hops (a `continuation`,
+the turn the system starts to report a delegated result, a research outcome or
+a discussion wave, records `cause_run_id`). A continuation inherits its cause's
+origin only while inside the budget its cause's turn was given; one past it, or
+with no verifiable cause, is recorded without a cause and is unattended, and a
+chain that cannot be verified (a missing Run, a loop, a delegated child with no
+parent) is `unverified` — never `manual`. A write from a person's own turn
+(`manual`, stamped only by the server) executes, and a write from any other
+effective origin — scheduled, automated, an unattended chain — is
+`require_approval` (`ruleUnattendedProjectWrite`,
+covering `task.create`, `task.stage.advance`, `task.complete`,
+`proposal.decide`, `inquiry.thread.create`, `inquiry.iteration.record`,
+`inquiry.advice.adopt`, `research.acquisition.start` and `memory.write`). And **bounds set before the work runs**: at
 most five Threads opened per turn (`THREAD_FAN_OUT_PER_TURN`, counted from the
-Project's own event stream so a resumed Run cannot spend the budget twice),
-and a bounded acquisition corpus. Refusing a bound costs a turn, not a
+Project's own event stream so a resumed Run cannot spend the budget twice), at
+most five Tasks per turn (`TASK_FAN_OUT_PER_TURN`, `tasks/turnFanOut.ts`),
+counted from every Task the Run created — its `task.create` calls and the
+follow-up Tasks applied for it after it succeeds — under one per-Run lock both
+routes take, so concurrent writers cannot both see room for the last one;
+follow-ups past the ceiling stay pending cards for the person, and a
+bounded acquisition corpus. Refusing a bound costs a turn, not a
 decision — the sixth question is opened in the next one.
 
 The counterpart is review-after: every such write is in the Project's updates
@@ -351,10 +369,8 @@ reason and granted to one kind of Run only — the handoff turn before a
 Conversation × Agent session rotates (`modules/hosts.md`): it writes one
 Artifact on the Agent's own thread and nothing else.
 
-**What flipped, and what did not.** `inquiry.propose_thread` became
-`inquiry.create_thread` and `inquiry.record_conclusion` became a direct write;
-their proposal types, services, appliers and the per-proposal continuation
-that had to count its own pending siblings are deleted. Still gated, each
+**Inquiry writes.** `inquiry.create_thread` and `inquiry.record_conclusion`
+are direct writes. Still gated, each
 naming its class: `inquiry.promote_knowledge` (exposure — it leaves the
 Project for Space-level Knowledge), `project.propose_definition` (direction),
 `source.channel.propose_activation` / `project.source.propose_bind` /
@@ -393,17 +409,12 @@ that binds the Project writes to a Room applies. That reasoning survives the
 ([ADR 0003](../decisions/0003-memory-proposal-flow.md) §4): an agent-scope
 entry is not private to the *speaker* but to the Agent and its owner, and it
 still touches no Project and still crosses no audience that could not already
-see it — a note's origin-Room filter is what replaces "private to the speaker"
-there, and a persona's gate is §5. They are also the one action family
+see it. A note's audience is its origin-Room filter, and a persona's gate is §5. They are also the one action family
 registered for a Run with **no** instructing person, because §5 lets an
 unattended Run revise a persona; everything else the family can do refuses
-there with a reason rather than being invisible. (A group with
-no Room previously declared no capabilities at all, so its Agent could call
-nothing whatever its own permissions said.) They are the same shape applied to
+there with a reason rather than being invisible. They are the same shape applied to
 memory
-([ADR 0003](../decisions/0003-memory-proposal-flow.md)). Before them no Agent
-could write memory from a conversation at all, so the person was not the
-bottleneck on what it learned — nothing was. A write that stays `private`,
+([ADR 0003](../decisions/0003-memory-proposal-flow.md)). A write that stays `private`,
 `normal`-sensitivity and about the person in the turn applies through
 `PgMemoryApplyRepository.applyDirect` as a new version with
 `created_by = agent:<id>`, `approved_by = null` and the run, session and
@@ -416,8 +427,13 @@ executor rather than returned as an error.
 `lesson` are the Agent's own and carry the Room they were learned in;
 `persona` is the one entry per Agent delivered everywhere, and its gate is the
 Run's trigger rather than its reach — the owner's own turn proposes it, anyone
-else's turn leaves a proposal only the owner may decide
-(`required_owner_user_id`, by identity and not by role), and an unattended
+else's turn leaves a proposal only the owner may decide (by identity and not
+by role: `memoryProposalDecider` (`memory/memoryProposalDecider.ts`) derives
+the decider from what the canonical applier will write — the stored entry a
+revision or archive names, or the scope and Agent a create's applier fields
+name — never from a payload's scope claim, and an Agent nobody owns has nobody
+to decide its persona; a revision can never move an entry into or out of an
+Agent's scope), and an unattended
 origin applies it. That last case is the one exemption from
 `ORIGIN_GATED_PROJECT_WRITES`, resolved server-side by `memoryPolicyContext`
 and scoped to a persona write on an `agent`-scope entry; every other memory
@@ -433,8 +449,8 @@ place that flag is enforced rather than merely displayed.
 `inquiry.promote_knowledge` combines `KnowledgePromotionCandidateService
 .createFromThread` and an immediate `decideCandidate({decision:"promote"})`
 into one call so a conversational instruction produces one Proposal instead of
-a Candidate stranded pending a second manual visit to Knowledge Review; the
-two-hop Candidate design is unchanged for the manual review path.
+a Candidate stranded pending a second manual visit to Knowledge Review.
+The manual review path is two steps: create a Candidate, then decide it.
 
 `project.propose_definition` is the Room action for formal Project
 initialization. It drafts a complete next Brief version (preserving omitted
@@ -511,7 +527,7 @@ cannot override a hard-invariant decision, and its use is consumed atomically
 only by the proposal apply transaction.
 
 The decision and an `authorization_request_reconcile` job commit together.
-While the old execution lock remains held, the reconciler durably returns its
+While the execution lock remains held, the reconciler durably returns its
 Job to `pending` with a bounded future `scheduled_at` and restores the claim's
 attempt budget instead of burning attempts in the worker loop. After release,
 approval requeues the same Run exactly once; rejection uses canonical Run
@@ -564,14 +580,17 @@ knowledge review gate), while the other two are `durable` direct writes —
 Thread structure stays direct and a `note_link` is navigational with no graph
 authority (B12A).
 
-Two of the policy actions they name — `inquiry.thread.create` and
-`note.link.create` — are **`reserved`**, meaning declared and not evaluated by
-any code path. They were introduced alongside the actions and first marked
-`wired_direct` on the grounds that they made the operation auditable. They do
-not: enforcement is the route's own Project ACL and note read gate, and who
-performed the write is already on the canonical row
-(`space_objects.created_by_user_id`, `note_links.created_by_user_id`), so a
-policy audit record would restate it. Wiring them is a decision still to be
+Of the policy actions they name, `note.link.create` is **`reserved`**, meaning
+declared and not evaluated by any code path. Do not mark it `wired_direct`
+on the grounds that a policy audit would make the operation auditable.
+Enforcement is the route's own Project ACL
+and note read gate, and who performed the write is already on the canonical
+row (`note_links.created_by_user_id`), so a policy audit record would restate
+it. `inquiry.thread.create`, the other one, is `wired_direct`:
+`SystemActionDispatcher` evaluates it when an Agent calls
+`inquiry.create_thread`, origin-gated by `ruleUnattendedProjectWrite` and
+recorded `fail_closed`; the user-facing Note path still relies on the route's
+Project ACL. Wiring them is a decision still to be
 made; `reserved` is what the registry's own vocabulary calls that state.
 Reserved declarations default to `deny`; descriptive registration never grants
 authority before an enforcement point is deliberately wired.
@@ -592,15 +611,14 @@ the Thread takes the recommended focus (`step_origin: "advice"`, attention
 `focused`) and the advice row becomes `adopted`. It refuses anything that is
 not currently open and current, so an already-taken or stale recommendation
 cannot be adopted twice. Policy action `inquiry.advice.adopt` (low risk,
-allow, audited); a proposal gate would have meant reviewing a suggestion the
-system itself made.
+allow, audited). Do not put a proposal gate on it. That would review a
+suggestion the system itself made.
 
-It exists because the advice had nowhere to go. Written the moment a search
-finishes (`tryQueueAdviceForWorkflowThread`, trigger `search_completed`), it
-rendered only in the Inquiry Area's stage workspace for the one Thread you had
-selected — so a finished four-hour search ended with the Project front page
-silent about what to do next, and the Room's Agent inventing a question of its
-own because it could not read the advice either. Three surfaces now carry it:
+Advice is written when a search finishes (`tryQueueAdviceForWorkflowThread`,
+trigger `search_completed`). Project Attention, the Room, and the completed
+instruction read it. Do not leave it only in the Inquiry Area stage workspace
+of the selected Thread. The Project front page and the Room's Agent would
+have nothing to read. Three surfaces carry it:
 Project Attention (`inquiry_advice` items, stale ones omitted), the
 `research_workflow_terminal` completed instruction (which relays the recorded
 step and its reasoning and forbids substituting one of the Agent's own), and
@@ -621,7 +639,10 @@ read that returned it in the same turn. Every such action is paired with one:
 | `research.list_operations` | `{operation_id, title, status}` (`include_terminal` opt-in) | `research.cancel_acquisition` |
 
 All four are `none`-side-effect reads scoped to the Run's own Project (and, for
-proposals, its own conversation, matching `proposal.decide`'s reach), carry
+proposals, its own conversation filtered by `proposalReadSql` for the
+instructing person — the same predicate `proposal.decide` resolves its id
+with, so a proposal that person cannot read is neither listed, suggested in a
+404, nor decided), carry
 low-risk allow policy actions (`inquiry.thread.list`, `task.list`,
 `proposal.list`, `research.operation.list`), and read under the instructing
 person's identity — so a helpful failure can never name an object that person
@@ -658,8 +679,7 @@ materialization plus strategy activation in one call) →
 `ProjectResearchOrchestrator.startInitialIntake`. Providers, candidate budget,
 and execution model are server-derived defaults, not caller-supplied — the
 action's only input is `thread_id` (plus an optional `intent_note`);
-auto-selecting these per invocation is not implemented
-([backlog.md](../plans/backlog.md) R1.2). The Manager Agent chooses
+auto-selecting these per invocation is not implemented. The Manager Agent chooses
 between `agent.delegate` (an ad hoc specialist investigation) and this action
 (a tracked, monitored acquisition Workflow) from context; the two are not
 mutually exclusive and no server code intercepts a phrasing to force one.
@@ -671,23 +691,23 @@ retry after a mid-pipeline failure resumes rather than restarts. A second,
 fully-identical invocation coalesces onto the same Operation through
 `startInitialIntake`'s own idempotency-key fingerprint match; a *different*
 concurrent start on an already-active workflow surfaces as a reported stage
-failure instead of a duplicate Operation.
+failure instead of a duplicate Operation. The job keeps its outcome in its
+payload before reporting it to the Room, so a report deferred by a busy Room
+turn is retried on its own rather than by running the pipeline again.
 
 **Bounded before it runs.** The acquisition passes
-`max_items: SCREENING_AUTO_CONTINUE_CORPUS_LIMIT` (200). Unbounded — which is
-what `history_mode: "all_available"` meant with no cap — one Room turn walked
-a source's whole history, ingested 873 documents and put every one through an
-LLM classification: hours of work and roughly a million input tokens, with no
-confirmation asked and nothing on screen until the failure four hours later.
+`max_items: SCREENING_AUTO_CONTINUE_CORPUS_LIMIT` (200). Do not run
+`history_mode: "all_available"` with no cap. One Room turn would walk a
+source's whole history and put every item through an LLM classification,
+with no confirmation and nothing on screen.
 The history walk is newest-first and the item budget is operation-wide, so the
 cap buys the most recent 200 matches and stops; earlier history stays
 reachable as a decision rather than a default. The `started` outcome carries
 `screening_cap` and `matched_estimate`, so the Room is told what this pass
 reads *before* it runs — the cap first, the match size second and labelled as
 an upper bound. `matched_estimate` is the *largest* single provider's recorded
-hit count, not the sum: providers overlap heavily, and summing them announced
-2,065 for a query whose corpus was 873, which read as the scope having grown
-when it had just been capped.
+hit count, not the sum. Do not sum them. Providers overlap, and the sum
+overstates the corpus.
 
 **Scope is the caller's.** `max_items` and `since` are inputs on
 `research.start_acquisition`, defaulting to the cap and to all available
@@ -706,11 +726,10 @@ overlap, idempotency, and the Operation it produces are that method's
 already. The offer is made at completion rather than at the start because
 that is when there is a baseline to extend from; the start message already
 says how much matched and how much this pass reads, so nothing about the size
-waits for it. One standing offer per workflow. `startHistoricalBackfill` used
-to refuse an `all_available` baseline outright as having nothing earlier to
-reach; that stopped being true when the acquisition became bounded, so it now
-refuses only coverage that already reaches the floor (and the front end's
-`canExtendHistory` no longer tests the history mode's name either).
+waits for it. One standing offer per workflow. `startHistoricalBackfill`
+refuses only coverage that already reaches the floor. An `all_available`
+baseline can still have earlier history. `canExtendHistory` tests coverage,
+not the history mode's name.
 
 The same number bounds a daily incremental update, which answers differently:
 it does not ask. `triggerIncremental` takes at most that many scanned items
@@ -721,13 +740,12 @@ visible. A cadence that runs daily drains its own backlog; a question nobody
 is awake to answer would not.
 
 The Thread's own statement is the authoritative question. Assessment
-legitimately rewrites the question it plans queries from (translating or
-narrowing it), so `resolveResearchThreadScope` no longer compares the
-strategy's text with the Thread's — text equality rejected the pipeline's own
-output and made `research.start_acquisition` unable to start once a single
-word changed. It checks provenance instead: the strategy's research-context
-version must belong to an assessment session for this Thread. A strategy built
-for a *different* Question is still a 409.
+rewrites the question it plans queries from (translating or narrowing it).
+`resolveResearchThreadScope` checks provenance: the strategy's research-context
+version must belong to an assessment session for this Thread. Do not compare
+the strategy's text with the Thread's: text equality rejects the pipeline's
+own output and `research.start_acquisition` cannot start after one word
+changes. A strategy built for a different Question is still a 409.
 
 A run that stops before `startInitialIntake` records the attempt as a
 terminal `failed` research Operation (`progress_json.run_kind =
@@ -737,7 +755,7 @@ for rather than living only in `jobs.result_json`. Every domain failure
 reports its own message; there is no catch-all remap of 409s.
 
 Completion reports back through the `ConversationContinuationRegistry` event
-side (Phase 3): `research_pipeline_outcome` (keyed by `<thread id>:<pipeline
+side: `research_pipeline_outcome` (keyed by `<thread id>:<pipeline
 job id>`, so each run reports its own outcome and a retry is never silently
 answered with the previous attempt's message) covers
 acquisition started, the question failing its FINER assessment (a first-class
@@ -761,8 +779,7 @@ the screening budget, then finish — and a bare operation id would make
 
 ## `research.cancel_acquisition`
 
-The symmetric stop for the action above, and the control that replaced the
-blocking checkpoints. Direct execution, not
+The symmetric stop for the action above. Direct execution, not
 proposal-gated, for the same reason as its counterpart plus one of its own: a
 stop that waits on a review is not a stop while a Run keeps spending.
 
@@ -778,13 +795,13 @@ from the jobs worker where the process registry lives: its Runs (found by the
 by `project_id` for the index), its screening batch jobs, its source backfill
 plans (the acquisition itself — the segment scheduler never consults the
 Operation's status), and its pass Execution. It also waives the Operation's
-still-pending checkpoints: pre-reform the checkpoint decision *was* the stop
-lever, so stopping resolved the row as a side effect, and a surviving pending
-gate would keep the web UI advertising a review whose approval no-ops. A Run
+still-pending checkpoints. Stopping waives them. A surviving pending gate
+keeps the web UI advertising a review whose approval no-ops. Do not leave the
+checkpoint as the stop lever. A Run
 that answers `cancelling` (kill requested, process exit unconfirmed) defers
 the job for a later retry rather than being counted as cancelled. Managed API
 Runs register their AbortController in the same process-wide execution
-registry as CLI Runner callbacks, so Stop aborts the live provider request and
+registry as ACP execution callbacks, so Stop aborts the live provider request and
 waits for the adapter to unwind instead of only changing the database row.
 Cancelled Runs are reselected because terminal finalization and delegation
 projection are idempotent; the job fails and retries until both complete.
@@ -799,27 +816,25 @@ the cancellation job and becomes the Run's terminal cancellation reason.
 ## Research checkpoint policy
 
 `researchCheckpointPolicy.ts` is the single authority for which checkpoints
-still stop a workflow. Dogfooding (2026-08-20) found the gates were
-rubber-stamp approved every time, so they interrupted without changing any
-decision; the reform keeps the checkpoint row as the durable record of what
-the machine concluded and lets the workflow continue.
+stop a workflow. Checkpoints are informational by default. The row is the
+durable record of what the machine concluded, and the workflow continues.
+Do not make them blocking gates.
 
-`manuscript_gate` still blocks, because its output is external-facing and
+`manuscript_gate` blocks, because its output is external-facing and
 nothing downstream can un-send it. `screening_gate` blocks conditionally, on
-corpus size (`SCREENING_AUTO_CONTINUE_CORPUS_LIMIT`): removing it removed the
-only place a user saw "N papers matched" before paying for a synthesis over
-all of them, so the budget protection moved from a prompt to a limit. Under
-it the operation continues unattended; over it the operation pauses and tells
-the Room why, which is a report the user acts on rather than a question they
-answer on every ordinary run. `idea_review`, `integrity_gate`, and
+corpus size (`SCREENING_AUTO_CONTINUE_CORPUS_LIMIT`). That is where the user
+sees how many items matched before a synthesis over all of them. Do not drop
+the gate. Under the limit the operation continues unattended; over it the
+operation pauses and tells the Room why. That is a report the user acts on,
+not a question they answer on every ordinary run. `idea_review`, `integrity_gate`, and
 `review_gate` are records only.
 
 An automatic pass writes `status='waived'` with `user_decision` and
 `decided_by_user_id` left NULL, so an audit can still tell whether anybody
 looked. Auto-continue additionally waits for classification to drain: on the
 incremental path the checkpoint opens before classification finishes and each
-reconcile tick refreshes its snapshot in place, so the gate was also serving
-as that sync point — waiving early would both freeze the snapshot (only
+reconcile tick refreshes its snapshot in place. The pending gate is that
+sync point. Do not waive early. That would both freeze the snapshot (only
 pending rows refresh) and send a partly-classified corpus to synthesis. A
 human approving the still-pending gate from the web UI remains the manual
 override for a classification that will never finish.

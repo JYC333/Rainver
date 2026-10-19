@@ -24,12 +24,13 @@ never accepted directly. Connect existing and paired-host registration preserve
 the directory's existing Git state; they do not initialize an unrelated
 directory.
 
-**Project Folder path resolution** (`projectFolderAbsoluteRoot()` in
-`server/src/modules/projectFolders/repository.ts`):
+**Project Folder path resolution** (`locationAbsoluteRoot()` in
+`server/src/modules/projectFolders/workspaceLocations.ts`, over the Folder's
+Workspace Location):
 ```
-folder.root_path is absolute → use as-is
-folder.root_path is relative → WORKSPACE_ROOT / folder.root_path
-folder.root_path is None     → WORKSPACE_ROOT / folder.id
+location.root_path is absolute → use as-is
+location.root_path is relative → WORKSPACE_ROOT / location.root_path
+location.root_path is empty    → WORKSPACE_ROOT / location.id
 ```
 Server-managed Folder roots must stay under `WORKSPACE_ROOT`; attaching an
 existing external directory is available only on a paired trusted host.
@@ -63,20 +64,20 @@ Proposal. Read access is allowed. The forbidden write suffixes are declared in
 
 Files & Code routes live inside the registered `projectFolders` module and
 provide bounded tree, file, git status, and git diff reads plus explicit human
-file create/edit/rollback controls. The former Workspace
-Console's runtime-status/session create/detail/run/stop surface was a
-never-implemented stub and has been removed entirely — do not describe it as
-a current local CLI execution path.
+file create/edit/rollback controls. There is no Workspace Console
+runtime-status or session surface. Do not describe one as a local CLI
+execution path.
 
 **RuntimeAdapterSpec owns local CLI command semantics.**
 
 Model flags, permission bypass flags, invocation templates, and output parser
 selection are declared in `server/src/modules/runtimeAdapters/specs.ts`. CLI binary install
-and status use the host card and `/api/v1/hosts/:hostId/installations/*`; the retired
-`/api/v1/runtime-adapters` instance API must not be used.
+and status use the host card and `/api/v1/hosts/:hostId/installations/*`. There is
+no `/api/v1/runtime-adapters` instance API. Do not add one.
 
-Managed CLI execution belongs to the server `runs` path, which prepares
-ephemeral/worktree sandboxes and records evidence, artifacts, and proposals.
+Managed CLI execution belongs to the server `runs` path, which records evidence,
+artifacts, and proposals. The daemon owns the working directory. Do not provision
+a server sandbox for a daemon Run.
 
 ---
 

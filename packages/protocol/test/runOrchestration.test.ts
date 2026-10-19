@@ -247,9 +247,9 @@ describe("run orchestration contract", () => {
     expect(RunExecutionKnownErrorCodeSchema.parse("duplicate_execution")).toBe(
       "duplicate_execution",
     );
-    // A code that used to be known and no longer is. The known list is
+    // A code outside the known list. The known list is
     // descriptive, so the DTO still round-trips it — persisted rows keep
-    // whatever they were written with — but it is no longer in the enum.
+    // whatever they were written with — but it is not in the enum.
     expect(RunExecutionKnownErrorCodeSchema.safeParse("missing_runtime_credential").success).toBe(false);
     const result = RunJobResultSchema.parse({
       run_id: "run-1",

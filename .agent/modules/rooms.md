@@ -14,9 +14,8 @@ The Project's **Conversations** page is where they are read, and
 settings and full transcript — reached from that list. There is no
 cross-Project Rooms index and no Rooms entry in the top navigation: a Room is
 a visibility boundary rather than a place, so a picker in front of it would
-charge every reader for a layer most Projects never use. This replaced the old
-Project Chat surface and the hardcoded default-Assistant chat entry — neither
-exists anymore.
+charge every reader for a layer most Projects never use. There is no Project
+Chat surface and no hardcoded default-Assistant chat entry.
 
 A Room does not create a new orchestration mechanism. Every message opens one
 `agent_run_group` as one collaboration task (see `modules/agents.md` and
@@ -103,9 +102,8 @@ task/audit authority, not a second conversation UI.
 - A Project showing no Rooms has failed to load them, since every Project is
   created with its mainline (ADR 0018 decision 4). The empty state offers a
   retry, never creation: a Room made there would be a second shared one beside
-  the mainline it could not see. Clients present the retired
-  `Project conversation` default as `<Project name> Room` for existing
-  records.
+  the mainline it could not see. A Room whose stored title is `Project conversation`
+  is shown as `<Project name> Room`.
 - Roster controls follow the authority each one needs, not one flag. Invite,
   remove, transfer and the specialist controls go through the server's
   `withRoomWriter` and are shown only to a Project writer. Deciding a
@@ -175,8 +173,8 @@ Room conversation summaries:
   run of ASCII letters, and whitespace, a quarter token a character; a run of
   ASCII letters and digits that holds a digit — numbers, hashes, UUIDs,
   base64 — three quarters; other ASCII punctuation half; any other character
-  one), not UTF-8 bytes. Measured against real tokenizers it stays at or
-  above the real count on prose, code, ids and encoded data. The summary
+  one), not UTF-8 bytes. The estimate is an approximate upper bound (CJK can
+  sit slightly under). The summary
   scheduler's SQL threshold gate (`conversationSummaryService.ts`)
   approximates it in the database: every ASCII character a quarter, every
   multi-byte character one. It under-counts digits and punctuation, which only
@@ -194,7 +192,9 @@ Room conversation summaries:
 - Room prompts enforce write/report consistency: listing a decomposition in a
   reply does not count as creating Project objects. If an Agent says it split
   work into N Project research questions, it must invoke
-  `inquiry.create_thread` once per question — at most five in a turn — and
+  `inquiry.create_thread` once per question — the prompt allows at most three
+  in a turn (one when no decomposition was asked for), and the server refuses
+  a sixth (`THREAD_FAN_OUT_PER_TURN = 5`) — and
   report the actual created count or any failure in plain language. The
   questions exist immediately; the Agent is told not to ask for confirmation
   per question, because the person sees each one in the Project's updates and
@@ -205,8 +205,7 @@ Room conversation summaries:
   research-execution tool its Room allowance currently grants, not to ask
   which part to start or turn the instruction into another confirmation
   loop. Two tools are granted: `agent.delegate` to an available Research
-  specialist for an ad hoc investigation, and `research.start_acquisition`
-  (plan Phase 4) to start a tracked, monitored acquisition Workflow directly
+  specialist for an ad hoc investigation, and   `research.start_acquisition` to start a tracked, monitored acquisition Workflow directly
   — a background pipeline (question assessment → query evaluation → strategy
   materialization/activation → initial intake) that reports back through the
   same completion-event mechanism `agent.delegate` uses. The two are not
@@ -215,21 +214,19 @@ Room conversation summaries:
   **Which tool (or tools) to use, and whether to wait for a delegate's result
   before replying, is the Manager's own judgment call, not a server-side
   gate**: no request text is pattern-matched to force a specific tool or an
-  automatic `agent.wait_for_results` call — a prior mechanism that did this
-  was removed as brittle (fixed phrasing only) and because it took a real
-  choice away from the model. If the Manager does not wait and its turn ends
+  automatic `agent.wait_for_results` call. If the Manager does not wait and its turn ends
   before a delegated child run finishes, the delegation completing later
   still reaches the conversation on its own: `AgentGroupRunLifecycleProjector`
   posts a `ConversationContinuationRegistry` event continuation
   (`agent_delegation_result`) the moment nothing is left waiting on that
   child, so the Room does not go silent just because the Manager chose not
-  to block (plan Phase 3). A child that changed files carries its `[Changes]`
+  to block. A child that changed files carries its `[Changes]`
   block (file list with counts and a `rainver://artifacts/<id>` link, never
   the patch) in the delegation result itself — in a Room only, since only a
   Room turn has the resource tools to follow the link — so the `delegation_result`
   message, the continuation and its retry job all hand it on; a turn whose
   instruction carries such a link is granted the resource tools that read it. A Manager that *did* wait is unaffected — that
-  case already resumes through the pre-existing dependency-wait path and
+  case already resumes through the dependency-wait path and
   never reaches this second notification. `research.start_acquisition`
   reports the same way: `research_pipeline_outcome` (started, the question
   failing FINER assessment, or a stage failure) and `research_workflow_terminal`
@@ -238,6 +235,17 @@ Room conversation summaries:
   shape. `research.cancel_acquisition` is the matching in-Room stop, so a
   report about running research never forces the user out to the web UI to
   act on it.
+- A domain-event continuation is the system's turn, not the person's: its
+  Runs carry `trigger_origin = 'continuation'` and `cause_run_id`, the Run its
+  report is about (a delegation's task-group root, the turn that started the
+  research, the discussion's latest wave). Its authority is its cause's
+  (`effectiveRunTrigger`), and only while inside that turn's budget
+  (`agentOriginContinuation` reports `within_budget` from the container or
+  discussion charge; a discussion wave also stays within its spend cap). Past
+  the budget, or with no originating turn (a research outcome no Room turn
+  started), the cause is not recorded on the Run — only on the message as
+  `continuation_cause_run_id` / `continuation_within_budget` for audit — and
+  the turn is unattended: its Project writes wait for approval.
 - Proposal-card continuation is a system execution instruction, not a human
   chat utterance. The dedicated Proposal-continuation endpoint accepts only a
   Proposal id; the server verifies that it is decided, visible, belongs to the
@@ -332,7 +340,7 @@ replaced recipient ids as `retry_superseded_run_ids`. Failed Agent replies for
 those Runs are retained in storage with `retry_superseded = true` for audit but
 excluded by the canonical Room transcript predicate; pagination, summaries,
 runtime-context tails and both conversation surfaces therefore agree that the
-old error is no longer history the person must read. Drafts are kept in
+replaced error is not history the person must read. Drafts are kept in
 destination-scoped sessionStorage as validated logical references;
 they never contain image bytes, absolute Host paths, or credentials.
 
@@ -387,7 +395,7 @@ resumed one only when its sha256 differs from `host_threads.identity_digest`,
 the digest of what that session last received. A revised persona, a roster
 change that alters which notes may be delivered, or a rules edit is a new
 digest and goes out on the next turn; an unchanged block is not repeated, so a
-resumed session no longer grows by one copy per turn and its prefix stays
+resumed session does not grow by one copy per turn and its prefix stays
 stable for vendor caching. The digest is written **only** by the terminal
 outcome of a Run that carried the block and completed
 (`PgHostThreadRepository.recordRunOutcome`, `landed`): a dispatch that never
@@ -440,9 +448,10 @@ delegated scratch it never reads or imports.
 The same owner-only gate permits a direct chat with a host-bound Agent. Direct
 chat has one `host_threads` container per Agent × owner, renders recent messages
 from that session (not a Room summary), and exposes
-`POST /api/v1/agents/:agentId/chat/reset-context`. Deleting the direct session
-closes and archives both the Agent's runtime profile and, when Rainver managed
-it, the workspace; the first later message may opt into restoring the newest
+`POST /api/v1/agents/:agentId/chat/reset-context`. Deleting the person's last
+active direct session of the Agent (several direct sessions share the one
+container) closes and archives both the Agent's runtime profile and, when
+Rainver managed it, the workspace; the first later message may opt into restoring the newest
 archive, but never restores the vendor session. Removing a Room specialist
 follows the same archive-not-delete rule, with offline archives replayed on the
 daemon's next heartbeat — with one distinction the shared Conversation cwd
@@ -465,7 +474,10 @@ Manager and is immutable through the roster API. Project-writer Room members
 may add visible existing Agents or instantiate one of the server-defined
 presets, and may remove specialists without deleting the Agent or historical
 messages. Preset creation is retry-safe when the caller supplies an
-`Idempotency-Key`.
+`Idempotency-Key`. A preset added without a chosen Host Profile copies the
+Manager's Host-bound runtime profiles, each on its own Host and admitted for the
+person adding it; a profile that person cannot run there is left out, and the new
+Agent keeps its own Server Runtime default.
 
 An Agent with `visibility=private` or `visibility=selected_users` remains
 restricted in all ordinary Agent surfaces. Adding it to a Room requires the
@@ -537,7 +549,7 @@ The send freezes saved/draft bytes into an immutable message resource without
 putting the body in the prompt. The Agent reads that resource lazily through
 the Run-scoped `input_resource.read/search` tools.
 
-## Project state context (Phase A)
+## Project state context
 
 `RoomService.sendMessage` builds a domain-neutral "Project state" text block
 once per dispatch (`buildRoomProjectStateContext`, `rooms/service.ts`) from
@@ -547,8 +559,7 @@ and the Task the person is looking at, see `PROJECT_WORK.md`), and prefixes it o
 every recipient run's prompt (`roomRunPrompt`,
 `agentGroups/service.ts`). It never reads a specific domain's tables and fails
 open to no prefix on any error, so a Project state read never blocks sending a
-message. This is the mechanism behind the retired conversational-advancement
-plan's decision 3: the Room agent's contract stays domain-neutral, and a Mode/domain extends what the
+message. The Room agent's contract stays domain-neutral, and a Mode/domain extends what the
 agent knows by registering with the Overview/attention registries, not by the
 Room learning about it.
 
@@ -560,8 +571,7 @@ Room agents are explicitly instructed not to collapse these two states.
 
 Agent-drafted changes that still wait for a person (see
 `project.propose_definition` and `inquiry.promote_knowledge` in
-`architecture/SYSTEM_ACTIONS.md`; opening a Thread and recording a conclusion
-no longer do) surface back
+`architecture/SYSTEM_ACTIONS.md`) surface back
 into the conversation as an inline Proposal review card
 (`modules/conversation/ActionPreviewCard.tsx`, used by Room, Project sidecar,
 and direct Agent chat), reusing
@@ -582,19 +592,16 @@ An Agent gets the Room's conversational actions because it was spoken to in a
 Room, not because of how that Agent was configured:
 `AgentGroupRunService.dispatchMessageInTransaction` passes
 `ROOM_CONVERSATION_TOOL_ALLOWANCE` as the Run's `scenario_tool_allowance`
-whenever the group has a `room_id`, independent of whether the Run executes on
+whenever the conversation has a `room_id` or a `project_id`, independent of whether the Run executes on
 the server Host or a remote trusted Host. Host kind changes how the same
 Run-scoped tool surface is delivered, not which Room-owned actions the Run may
-use. Non-Room groups receive `CONVERSATION_TOOL_ALLOWANCE`. See
-`architecture/SYSTEM_ACTIONS.md` for why the scope moved and what stayed
-fail-closed.
+use. Conversations with neither receive `CONVERSATION_TOOL_ALLOWANCE`
+(`architecture/SYSTEM_ACTIONS.md`).
 
 The allowance is decided once, by `conversationToolGrantInput()`
 (`systemActions/scenarioToolAllowance.ts`), for every way a person or a Room
 talks to an Agent: a Room message, a delegation the Room's Agent makes
 (`createDelegatedChildRun` carries it), and a direct chat opened in a Project.
-Before that, a delegated child declared nothing and could call no action, and
-direct chat kept a three-action list from before scenario allowances existed.
 The Room allowance carries both halves of delegation (`agent.delegate` and
 `agent.wait_for_results`), the Project write surface, `task.plan.propose`
 (proposal-gated), and the two Source proposals.
@@ -609,10 +616,7 @@ dates, blockers) and `inquiry.list_threads` (each Thread's recorded
 `next_step`) (`PLAN_ACTION_POLICY`). The Project-state block lists pending
 decisions (attention class `gate`) before anything else and carries each
 item’s summary, so an Inquiry next step arrives with its rationale and a
-pending proposal is never crowded out by a busy board. A conversation turn
-gets eight model turns in the managed loop (`CONVERSATION_MAX_MODEL_TURNS`),
-twice a dispatched Task's default, because the policies chain reads and
-writes before the reply.
+pending proposal is never crowded out by a busy board.
 
 The same policy tells the Agent that `task.create.required_outputs` is only for
 file Artifact types collected as deliverables. A reply, inspection, or edit to
@@ -738,11 +742,11 @@ Conversations destination in the Project shell; the Rooms page stays the full
 per-Room surface.
 
 A Project **viewer** is a Project member and is therefore in the mainline, and
-may converse there: asking the Project's Assistant "is this one done?" is the
-panel's whole purpose, and reading the answer is what a viewer is for. What a
+may converse there. A viewer may ask the Project's Assistant "is this one done?"
+and read the answer. What a
 viewer says cannot change the Project's work — every Task-addressed action an
 Agent takes on their instruction requires writer authority on the Project and
-is refused. Speaking *first* is no longer a separate authority either: the
+is refused. Speaking first is not a separate authority: the
 mainline is created with the Project, so a viewer can be the one who opens the
 Project's Conversation draft, and that explicit draft action provisions the
 Assistant. The manager
@@ -756,10 +760,17 @@ marker. There is no product surface for `tool_permissions_json`, so Room
 scenario permissions remain a Room execution concern rather than silently
 depending on a specialist's private Agent configuration.
 
-The allowance holds four proposal-gated actions — propose a Project
-definition, create an Inquiry Thread, record a conclusion, and promote
-Knowledge — plus two directly-executed, idempotency-guarded actions:
-`agent.delegate` and `research.start_acquisition` (plan Phase 4). Delegation
+The allowance (`ROOM_PROJECT_TOOL_ALLOWANCE` plus the memory actions, in
+`systemActions/scenarioToolAllowance.ts`) holds the proposal-gated
+`project.propose_definition`, `inquiry.promote_knowledge`,
+`task.plan.propose`, `project.source.propose_bind`, and
+`source.backfill.propose_start`; the direct Project writes
+`inquiry.create_thread`, `inquiry.record_conclusion`,
+`inquiry.adopt_next_step`, and the `task.*` actions; the reads
+`inquiry.list_threads`, `task.list`, `research.list_operations`, and
+`proposal.list_pending`; `proposal.decide`; and the directly-executed,
+idempotency-guarded `agent.delegate` / `agent.wait_for_results` and
+`research.start_acquisition` / `research.cancel_acquisition`. Delegation
 is bounded to one level and two specialists per turn (`max_depth: 1`,
 `max_fanout: 2`, prospective counts — the third request is refused and
 recorded as refused, and a refused request does not consume the budget).
@@ -771,8 +782,7 @@ directly-executed action is a general Agent permission.
 Retrieval is excluded on purpose: it would execute under the message sender's
 identity, including their `private` content, and answer into a conversation
 every Room member can read. Grounding a drafted conclusion in Project material
-needs a retrieval path scoped to what the Room may read, which does not exist
-yet.
+needs a retrieval path scoped to what the Room may read. That path does not exist.
 
 Both direct action executors clamp their Proposal to the Room Run's
 `selected_users` visibility and inherit the active Run grants transactionally.
@@ -804,10 +814,12 @@ When a Room is open, conversation is the dominant surface: a compact left rail
 contains Room metadata, the conversation switcher, collapsed Room creation,
 and collapsed roster controls; the center column owns the available width and
 scrolls messages inside a viewport-height card; Project state remains a narrow
-supporting rail. Runtime/backend controls are collapsed under Run settings so
-they do not compete with the message history and composer.
+supporting rail. Routing is collapsed under Run settings so it does not
+compete with the message history and composer. Each Agent's runtime is chosen
+and pinned only in the conversation's execution preflight, before its first
+message; the Room page offers no second backend chooser.
 
-## Project state panel (Phase B)
+## Project state panel
 
 `AgentGroupsPage.tsx`'s Room view renders `RoomProjectStatePanel` beside the
 conversation, fetched once per Room load via the same
@@ -820,18 +832,12 @@ fetch failure degrades to
 awareness, not a second command surface — the panel has no actions of its
 own, only links out.
 
-The Inquiry kind→stage vocabulary (`StageId`, `STAGE_ORDER`, `STAGE_LABELS`,
-`STAGE_HELP`, `STAGE_FOR_KIND`, `kindsInStage`) moved from
-`apps/web/src/modules/projects/inquiryArea/stages.ts` into
-`packages/protocol/src/inquiry.ts` (as `Inquiry*`-prefixed exports;
-`stages.ts` re-exports the original names as aliases so its four page
-consumers are unchanged) so a future non-frontend consumer of this
-classification — a per-Thread "stage" line in the Room's Project state
-context, or a Project-level stage rollup — shares one definition instead of a
-second copy. No such consumer exists yet: a Project-level stage rollup was
-scoped out of Phase B (it would need new aggregation across a Project's open
-Threads, which is not the "small mapping move" this phase is) and stays a
-deferred item pending real usage evidence.
+The Inquiry kind→stage vocabulary lives in `packages/protocol/src/inquiry.ts`
+(`InquiryStageId`, `INQUIRY_STAGE_ORDER`, `INQUIRY_STAGE_LABELS`,
+`INQUIRY_STAGE_HELP`, `INQUIRY_STAGE_FOR_KIND`, `inquiryKindsInStage`).
+`apps/web/src/modules/projects/inquiryArea/stages.ts` re-exports those as
+`StageId`, `STAGE_ORDER`, `STAGE_LABELS`, `STAGE_HELP`, `STAGE_FOR_KIND`.
+Do not keep a second copy of that vocabulary.
 
 ## Thread References
 
@@ -856,20 +862,9 @@ imported records. References are attached through
 `POST /rooms/:roomId/conversations/:sessionId/references` after an explicit
 Conversation draft exists; sending is always addressed to that Conversation.
 
-Reuse / Dependency Check (recorded at close; the plan omitted it)
-- Existing repository capability found? Yes — `contentAccessSql` /
-  `projectReadAccessSql` for every audience, `readImportedSessionForViewer` for
-  the transcript gate, the `Idempotency-Key` + fingerprint table pattern from
-  Room creation, `fitTextToTokenBudget` for clipping. The Room conversation
-  summary service was evaluated and rejected for imported sessions: it compacts
-  a growing thread behind a lease, and a session's records are fixed.
-- Existing installed dependency found? `zod`, `pg`, `node:crypto` — nothing new.
-- Mature external option evaluated? n/a — domain logic.
-- Chosen approach: extend (one new message kind; the
-  `imported_history_summaries` table; the attach and
-  `/projects/:id/readers` routes).
-- Why: a reference is content already governed by the Room's own gates; the
-  only new authority is the disclosure calculus, which asks existing predicates.
+An imported session is summarized into `imported_history_summaries`. Do not
+run it through the Room conversation summary service. That service compacts a
+growing thread behind a lease, and a session's records are fixed.
 
 ### Disclosure is confirmed, and names who gains
 
@@ -995,7 +990,7 @@ a discussion's spend cap. Inside a discussion the count is the row's
 bounded by rounds); otherwise it is one counter on the task group of the
 person's message, `budget_json.container_turns_used`, which every branch of
 the chain charges through its `budget_json.container_group_id` pointer. A
-completion turn can therefore no longer delegate again with a fresh budget.
+completion turn cannot delegate again with a fresh budget.
 A research acquisition an Agent starts (`research.start_acquisition`) carries
 its turn's group (`origin_group_id`, through the pipeline job and the
 Operation's progress), so its result and status turns are charged to that
@@ -1066,9 +1061,9 @@ addresses are named in a `not_admitted` notice, never silently dropped.
 able to steer a running discussion, and a mid-turn injection into the vendor
 session is deferred (deferred register), so the message enters at the next
 turn boundary — the running turn finishes first — and every later turn sees
-it. The same queue replaced the plain `409` outside discussions. The queue is
-its own table rather than a hidden message in the tree, so nothing that reads
-the message tree has to filter it out.
+it. The queue also covers a message outside a discussion. Do not answer that
+with a plain `409`. The queue is its own table rather than a hidden message
+in the tree, so nothing that reads the message tree has to filter it out.
 `POST …/messages` with `queue: true` (the client's default for a message
 without attachments) returns 202 with the queued message when another turn
 holds the conversation, or when earlier messages are still waiting (a queued
@@ -1184,8 +1179,7 @@ directly, or released from the queue, while the discussion's latest wave waits
 stays outside it when sent as an ordinary message (no new round or owner
 change). An Agent reply to that ordinary message may still address another
 Agent, but does not enroll them in the active discussion: a visible notice
-outside the discussion explains why that follow-up was not admitted. Legacy
-unmarked non-discussion turns and Agent-origin continuations (late delegation
+outside the discussion explains why that follow-up was not admitted. Unmarked non-discussion turns and Agent-origin continuations (late delegation
 or research result) can still add addressed Agents to the discussion's held
 Agents; in a debate they are named as not admitted instead. Those held Agents
 are checked against the discussion owner's authority when it next advances
@@ -1214,7 +1208,10 @@ window's reset time has passed, and otherwise refreshes the marker (and says
 so again) when the window holding it or its reset time changed; and a delegated
 child's FIFO re-evaluating its head, which admits it the same way. Stopping a
 discussion does not cancel a held wave, which runs after admission and then
-closes it; the Agents it held are named in its "already ended" notice.
+closes it; the Agents it held are named in its "already ended" notice. A
+discussion stopped after an ordinary message took its last wave boundary has no
+wave left to end it, so the stop itself dispatches the closing turn and names the
+Agents held behind that message.
 Stopping a discussion held at its cap ends it for good: the rounds on offer
 are given up and a closing turn still waiting for the window is cancelled, so
 no conclusion arrives hours later; a person who wants one asks for it.
@@ -1279,14 +1276,21 @@ is slow to answer is decided on the cached reading.
 - `GET /api/v1/rooms/:roomId/agent-candidates` — visible existing Agents and
   separately typed preset factories
 - `POST /api/v1/rooms/:roomId/agents` — add/reactivate a specialist with
-  explicit private Room-share confirmation and optional `restore_workspace`
+  explicit private Room-share confirmation and optional `restore_workspace`;
+  the Agent is added either way, and the response's
+  `managed_workspace_restore` carries the Host's outcome, which the roster
+  panel reports when nothing was restored
 - `POST /api/v1/rooms/:roomId/agent-presets` — instantiate and add a preset
 - `DELETE /api/v1/rooms/:roomId/agents/:agentId` — remove a specialist and
-  revoke future Room grants
+  revoke future Room grants; `managed_workspace_archive` lists one Host
+  outcome per archived thread
 - `POST /api/v1/rooms/:roomId/agents/:agentId/reset-context` — reset a
   host-bound specialist's vendor session (Host owner and Project writer)
 - `GET/POST /api/v1/rooms/:roomId/invitations` — list or create human
-  invitations; pending invitations carry owner approvals
+  invitations; pending invitations carry owner approvals. The list answers the
+  Room-not-found 404 to a Project reader who is neither an active member nor
+  party to any of the Room's invitations (ADR 0018 decision 3); an invitee or
+  approval owner reads their own before joining
 - `POST /api/v1/rooms/:roomId/invitations/:invitationId/decision` — approve or
   reject one owned private-Agent share
 - `GET /api/v1/rooms/pending-approvals` — owner-scoped pending private-Agent
@@ -1295,7 +1299,8 @@ is slow to answer is decided on the cached reading.
 - `POST /api/v1/rooms/:roomId/owner-transfer` — transfer to an active Project
   writer Room member
 - `POST /api/v1/rooms/:roomId/owner-claim` — recover a suspended Room for a
-  Project owner or Space owner/admin
+  Project owner or Space owner/admin; a caller without that authority gets the
+  Room-not-found 404 unless they can already see the Room, in which case 403
 - `GET /api/v1/rooms/:roomId/conversations` — list conversations
 - `GET /api/v1/rooms/:roomId/conversations/:sessionId/messages` — paged history
 - `GET /api/v1/rooms/:roomId/conversations/:sessionId/summary` — active summary,
@@ -1335,8 +1340,9 @@ is slow to answer is decided on the cached reading.
   sender's message claims them in the same transaction. Current-file
   references are re-authorized through Project Folder reads and frozen as
   bounded message-owned resources, so later workspace changes do not rewrite
-  transcript or retry input. The older `conversation_file_snapshots` shape is
-  retained only for readable historical messages.
+  transcript or retry input. A `file_reference` freezes its text in
+  `conversation_file_snapshots`. An `input_resource` freezes a
+  content-addressed blob. Do not re-read the workspace for either.
 - A reference is resolved once, under the attacher's identity, with oversight
   excluded, and never re-read. Nothing re-authorizes it per turn, because
   there is nothing live to re-authorize.
@@ -1357,8 +1363,8 @@ is slow to answer is decided on the cached reading.
 - Room navigation stays inside the Project Shell. A Room is reached from the
   Project's Conversations list — a conversation row, a limited group's ⚙, or
   the chat panel's "Full Room" link — never from top-level navigation. There is
-  no global `/rooms` route: it was a picker in front of a layer that should be
-  invisible, and every Room already belongs to exactly one Project.
+  no global `/rooms` route. A Room is a Project conversation, not a top-level
+  picker, and every Room belongs to exactly one Project.
 - A Room does not turn `agent_run_groups` into a conversation container; each
   message is its own collaboration task.
 - The vendor CLI runtime session, when resumed, is permitted runtime state and
@@ -1370,10 +1376,9 @@ Every reader of `messages` that answers a person uses
 `visibleRoomTranscriptSql` — the page, the pick-by-id surface, the recent
 context window — and it is applied unconditionally rather than behind a flag:
 `room_display = 'internal'` is written only by `addRoomInternalInstruction`, so
-it is vacuous for an ordinary session, and a flag deciding whether to apply the
-rule was a second copy of it. Agent replay and continuation lookups still read
-the internal rows through `visibleMessagePathSql`, which is why they are stored
-in order at all.
+it is vacuous for an ordinary session. Do not put the filter behind a flag.
+That flag would be a second copy of the same rule. Agent replay and continuation lookups still read
+the internal rows through `visibleMessagePathSql`, so those rows stay in order.
 
 A domain-event continuation is the system talking to the Room's own Agents. It
 is stored as a `user_instruction` so replay sees it in order, and carries

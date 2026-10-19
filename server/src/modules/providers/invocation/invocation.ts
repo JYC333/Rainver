@@ -41,7 +41,7 @@ import { classifyProviderFailure, type ProviderResilienceDecision } from "./resi
 import { fetchWithNetworkProfile, type ResolvedNetworkProfile } from "../../networkProfiles/index.js";
 import {
   retrievalEgressAllowed,
-  retrievalProviderEgressDestination,
+  providerEgressDestination,
   type RetrievalEgressPolicy,
 } from "../../retrieval/egress/egressPolicy.js";
 import { normalizeGatewayShapes, normalizeNullableNearMisses, validateStructuredOutput } from "../../runs/structuredOutputValidation.js";
@@ -92,7 +92,7 @@ export interface ProviderUsageCost {
   total: number;
 }
 
-export type ProviderChatInvocationResult = ProviderChatResponseBody & {
+type ProviderChatInvocationResult = ProviderChatResponseBody & {
   /** The configured ModelProvider row that actually served the request. */
   provider_id: string;
 };
@@ -105,7 +105,7 @@ export type ProviderChatInvocationResult = ProviderChatResponseBody & {
  * headers. The full raw response, when available, is carried separately on
  * ProviderInvocationError for failure logging only.
  */
-export type StructuredOutputDiagnostics = Record<string, unknown>;
+type StructuredOutputDiagnostics = Record<string, unknown>;
 
 export interface ProviderStructuredOutput {
   type: "json_schema";
@@ -602,7 +602,11 @@ function structuredOutputUnsupportedError(providerType: string): ProviderInvocat
 
 function providerTargetEgressAllowed(
   target: InvocationTarget,
+  /** The Space whose content the call carries. */
+  spaceId: string,
   policy: RetrievalEgressPolicy | null | undefined,
+  /** The model this call will run; the Provider's default when the request names none. */
+  model: string | null = null,
 ): boolean {
   if (!policy) return true;
   return retrievalEgressAllowed(
@@ -613,7 +617,8 @@ function providerTargetEgressAllowed(
     },
     {
       ...policy,
-      destination: retrievalProviderEgressDestination(target.provider),
+      // Local only where it was declared: the Provider's home Space.
+      destination: providerEgressDestination({ ...target.provider, space_id: target.provider.home_space_id, model }, spaceId),
     },
   );
 }
@@ -1191,14 +1196,14 @@ async function completeAuthorizedProviderChat(
 
   let lastError: unknown = null;
   for (const [index, target] of chain.entries()) {
-    if (!providerTargetEgressAllowed(target, body.egressPolicy)) {
+    // Fallback providers serve THEIR OWN default model: an explicit model
+    // name from the request only binds to the provider it was meant for.
+    const effectiveBody = index === 0 ? body : { ...body, model: null };
+    if (!providerTargetEgressAllowed(target, spaceId, body.egressPolicy, effectiveBody.model ?? null)) {
       lastError = providerEgressDeniedError(target);
       continue;
     }
     try {
-      // Fallback providers serve THEIR OWN default model: an explicit model
-      // name from the request only binds to the provider it was meant for.
-      const effectiveBody = index === 0 ? body : { ...body, model: null };
       try {
         const result = await invokeProviderWithPool(store, target, effectiveBody, attribution);
         return { ...result, provider_id: target.provider.id };
@@ -1257,7 +1262,7 @@ function structuredOutputCorrectionBody(
   };
 }
 
-export interface ProviderTextCompletionInput {
+interface ProviderTextCompletionInput {
   provider_id: string;
   model?: string | null;
   system: string;
@@ -1271,7 +1276,7 @@ export interface ProviderTextCompletionInput {
   providerTaskRunLifecycle?: ProviderTaskRunLifecycle;
 }
 
-export interface ProviderMessagesCompletionInput {
+interface ProviderMessagesCompletionInput {
   provider_id: string;
   model?: string | null;
   system?: string | null;
@@ -1400,7 +1405,7 @@ export async function completeProviderMessages(
   };
 }
 
-export interface ProviderEmbeddingInput {
+interface ProviderEmbeddingInput {
   /** Caller's own provider; used as the safety net after any task chain. */
   provider_id?: string | null;
   model?: string | null;
@@ -1416,13 +1421,13 @@ export interface ProviderEmbeddingInput {
   spend: CredentialSpendBasis;
 }
 
-export interface ProviderEmbeddingResult {
+interface ProviderEmbeddingResult {
   vectors: number[][];
   model: string;
   usage: Record<string, unknown>;
 }
 
-export interface ProviderRerankInput {
+interface ProviderRerankInput {
   /** Caller's own provider; used as the safety net after any task chain. */
   provider_id?: string | null;
   model?: string | null;
@@ -1537,7 +1542,7 @@ async function completeProviderEmbeddingWithFallback(
 
   let lastError: unknown = null;
   for (const [index, candidate] of chain.entries()) {
-    if (!providerTargetEgressAllowed(candidate, egressPolicy)) {
+    if (!providerTargetEgressAllowed(candidate, spaceId, egressPolicy)) {
       lastError = providerEgressDeniedError(candidate);
       continue;
     }
@@ -1745,7 +1750,17 @@ async function embedOnce(
         embeddings?: { float?: number[][] } | number[][];
         meta?: Record<string, unknown>;
       };
-      vectors.push(...cohereFloatEmbeddings(data.embeddings));
+      const batchVectors = cohereFloatEmbeddings(data.embeddings);
+      // Results are matched to inputs by position across every batch. A batch
+      // short by one — a vector omitted or non-finite — would shift every later
+      // vector onto the neighbouring chunk with the right dimensions.
+      if (batchVectors.length !== batch.length) {
+        throw new ProviderInvocationError(
+          502,
+          `provider_type 'cohere' returned ${batchVectors.length} embeddings for ${batch.length} inputs`,
+        );
+      }
+      vectors.push(...batchVectors);
       usage = mergeUsage(usage, data.meta);
     }
     return { vectors, model: resolvedModel, usage };
@@ -1879,7 +1894,7 @@ async function completeProviderRerankWithFallback(
 
   let lastError: unknown = null;
   for (const [index, candidate] of chain.entries()) {
-    if (!providerTargetEgressAllowed(candidate, egressPolicy)) {
+    if (!providerTargetEgressAllowed(candidate, spaceId, egressPolicy)) {
       lastError = providerEgressDeniedError(candidate);
       continue;
     }

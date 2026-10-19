@@ -17,18 +17,18 @@ Sessions must not be used as generic raw-capture storage for non-chat content.
 
 ```
 ActivityRecord (raw capture)
-  ↓ ActivityConsolidationService
-  ↓ visible Memory create-safety pre-dedupe
-  ↓ MemoryCandidateClassifier → MemoryProposalProducer
+  ↓ PgActivityConsolidationRepository.runPending
+  ↓ visible Memory create-safety pre-dedupe (assessActivityMemoryDuplicate)
+  ↓ insertMemoryProposal
 Proposal (pending; payload_json.provenance_entries contains activity entry)
-  ↓ SourceMonitoringService gate
   ↓ PgProposalApplyService.accept
-  ↓ MemoryProposalApplier.apply_create / apply_update
+  ↓ PgMemoryApplyRepository.applyOnly (evaluateMemoryProposal gate)
+  ↓ PgMemoryApplyRepository.applyCreate / applyUpdate
 MemoryEntry (active)
   + ProvenanceLink rows (source_type=activity, source_type=proposal)
 ```
 
-Memory writes are **proposal-first**. The public memory write API returns `ProposalOut` (HTTP 202). `ProposalApplyService.apply` is the only path that creates active `MemoryEntry` from a proposal.
+Memory writes are **proposal-first**. The public memory write API returns `ProposalOut` (HTTP 202). `PgMemoryApplyRepository.applyOnly`, reached from `PgProposalApplyService.accept`, is the only path that creates active `MemoryEntry` from a proposal.
 
 ## Source and Provenance Field Mapping
 
@@ -43,18 +43,13 @@ Memory writes are **proposal-first**. The public memory write API returns `Propo
 | `source_integrity_json` | Evidence payload: optional integrity/checksum metadata. |
 | `payload_json` / `metadata_json` | Source metadata: structured capture metadata. |
 
-### ContextSource
-
-The `context_sources` table was removed from the schema. It is not present in the current
-migration and `server/test/baselineSchema.test.ts` asserts it does not exist. Provenance uses
-`ActivityRecord` + `ProvenanceLink` instead. A future first-class Source model would be
-a new table, not a revival of this removed table.
+Provenance uses `ActivityRecord` and `ProvenanceLink`.
 
 ### ProvenanceLink — Provenance Chain
 
 | Field | Responsibility |
 |---|---|
-| `source_type` | Kind of producing object: `activity`, `proposal`, `memory`, `artifact`, `run_step`, `run_event`, `external_source`, `user_confirmation`, `source_item`, `source_snapshot`, `extracted_evidence`. |
+| `source_type` | Kind of producing object: `activity`, `proposal`, `memory`, `artifact`, `run`, `user_confirmation`, `source_item`, `source_snapshot`, `extracted_evidence`, `note`, `imported_session`, and the sentinel `external_source` (`provenanceSourceTypes()` is authoritative). |
 | `source_id` | ID of the producing object. |
 | `source_trust` | Trust level of this provenance link. |
 | `evidence_json` | Structured evidence at this link in the chain. |
@@ -74,11 +69,10 @@ accepted into Memory or Knowledge.
 | Field | Responsibility |
 |---|---|
 | `provenance_entries` | List of `{source_type, source_id, source_trust, evidence_json}`. Canonical format. |
-| `source_monitoring_result` | Snapshot of SourceMonitoring gate at proposal creation or acceptance. |
+| `source_monitoring_result` | Snapshot of the source-monitoring gate, written at acceptance when the gate requires review. |
 | `consolidation_run_id` | Which consolidation run produced this proposal. |
-| `activity_batch_hash` | Hash of contributing activity IDs. |
 | `source_run_id` (stored payload, normalized on read) | Denormalized run reference; normalized into `provenance_entries` at build time. |
-| `source_activity_id` (stored payload, normalized on read) | Compatibility shortcut on pending proposals; normalized into `provenance_entries` via `provenance_entries_from_payload`. Active Memory provenance is not stored on `memory_entries.source_activity_id`. |
+| `source_activity_id` (stored payload, normalized on read) | Denormalized Activity id on the pending payload. `provenanceEntriesFromPayload` folds it into an activity provenance entry. Accepted Memory provenance is `provenance_links`, not a column on `memory_entries`. |
 
 ### MemoryEntry — Approved Knowledge Layer
 
@@ -87,7 +81,6 @@ accepted into Memory or Knowledge.
 | `source_trust` | Dominant trust level from accepted provenance_entries. |
 | `created_from_proposal_id` | Links MemoryEntry back to accepted Proposal. |
 | `agent_id` | Producing Agent provenance in user/project scope; the ownership and explicit filter key in Agent scope. |
-| `last_verified_at` | Last time this memory claim was explicitly verified. |
 
 Activity, Artifact, Run, and evidence provenance for accepted Memory is stored
 in `provenance_links` attached to the MemoryEntry, not duplicated onto
@@ -114,7 +107,7 @@ default to `untrusted_external`.
 
 Some Activity rows are attention pointers, not raw memory candidates. Daily
 Sources briefings set `activity_records.aggregate_key` to
-`source:briefing:<source_connection_id>:<local_date>` and carry only a short
+`source:briefing:<source_channel_id>:<local_date>` and carry only a short
 preview plus ids/counts in `payload_json`. The full content remains in the
 Library/Sources read model. Activity consolidation paths must exclude rows where
 `aggregate_key IS NOT NULL`.
@@ -135,7 +128,7 @@ when useful; they are not silently reused as evidence trust.
 
 ## SourceMonitoring Trust Gate
 
-`SourceMonitoringService` (`server/src/modules/memory/sourceMonitoring.ts`) is the deterministic trust gate before any durable memory or policy apply.
+`evaluateMemoryProposal` (`server/src/modules/memory/sourceMonitoring.ts`) is the deterministic trust gate before any durable memory or policy apply.
 
 Hard rules:
 - `agent_inferred` alone → **reject** (cannot back active semantic memory or policy).
@@ -143,13 +136,20 @@ Hard rules:
 - No provenance entries → **reject**.
 - `user_confirmed`, `internal_system`, or `trusted_external` → **allow**.
 
-The gate runs inside proposal apply before any durable write. `accept_context="explicit_user_accept"` is set by `PgProposalApplyService.accept` (the human approval API). No HTTP input can override `accept_context`.
+The gate runs inside proposal apply before any durable write. `accept_context="explicit_user_accept"` is fixed by `PgMemoryApplyRepository.applyOnly`, reached from `PgProposalApplyService.accept` (the human approval API). No HTTP input can override `accept_context`.
 
 Activity-first capture with `source_type=user_capture` resolves to `user_confirmed`, which satisfies the gate for semantic memory proposals.
 
 ## Memory Write Boundary
 
-Active `MemoryEntry` creation requires the `_INTERNAL_WRITE_AUTHORITY` sentinel (held only by `MemoryInternalWriter._persist()`). The only allowed write paths are the proposal-approval path (`ProposalApplyService` → `MemoryInternalWriter.create_from_approved_proposal()`) and the bootstrap seed path (`MemoryInternalWriter.create_system_seed_memory()`). There is no policy-based write gate on this boundary — it is structural.
+Active `MemoryEntry` rows are written only by `PgMemoryApplyRepository`
+(`server/src/modules/memory/memoryApplyRepository.ts`), by the three routes
+[B10](../BOUNDARIES.md) and [`modules/memory.md`](../modules/memory.md) name: the
+proposal-approval path (`PgProposalApplyService` → `applyOnly` →
+`applyCreate`/`applyUpdate`), an Agent's own bounded write (`applyDirect`), and a
+person importing a published user-memory snapshot (`applyPublicationImport`:
+private, normal-sensitivity, attributed to the importer, carrying the
+publisher's trust). No adapter, job or route inserts around it.
 
 Approved proposal apply uses proposal-validated writer methods. Ordinary callers cannot pass a generic bypass reason string.
 
@@ -175,22 +175,17 @@ Current enforcement:
   in `writeProvenanceLinks` — the entrance — rather than at each caller, and an
   unknown value is an error rather than a dropped row.
 
-  The list existed **four** times before: that CHECK plus three separate `Set`s
-  (`knowledge/proposalApplier.ts`, `memory/sourceMonitoring.ts`, and
-  `proposals/repository.ts`), two of which *silently dropped* what they did not
-  recognize, so a divergence lost provenance without an error. Two of the three
-  disagreed with the other by five values.
+  Do not keep a second copy of the list. A Set that drops an unrecognized
+  value loses provenance without an error.
 
-  Auditing it on 2026-08-06 by asking what writes each member and what
-  `source_id` holds changed the vocabulary:
-
-  | value | outcome |
+  | value | rule |
   |---|---|
-  | `run_step` | renamed `run` — it was written from `payload.source_run_id` and read back as a run id |
-  | `user_confirmation` | kept as the stored token, now declared on a registered `user` entity |
-  | `run_event` | dropped: no writer, no reader, and a run's internal structure is not an entity (B12C) |
-  | `source_snapshot` | kept: no writer, but `retrieval/sourcePolicy.ts` resolves it |
-  | `external_source` | kept as the one provenance **sentinel** — outside material with no row; runtime context items, by contrast, must resolve to typed product objects |
+  | `run` | a run id. Do not record `run_step` |
+  | `user_confirmation` | the stored token, declared on a registered `user` entity |
+  | `source_snapshot` | `retrieval/sourcePolicy.ts` resolves it; it has no writer of its own |
+  | `external_source` | the one provenance sentinel — outside material with no row. Runtime context items must resolve to typed product objects |
+
+  `run_event` is not a provenance type. A run's internal structure is not an entity (B12C).
 
   `note` is a member: promoting a Note passage to a Knowledge Item records the
   originating Note here rather than widening `knowledge_item_sources.source_id`'s
@@ -199,11 +194,12 @@ Current enforcement:
 - Internal run/activity/artifact records are valid source references via
   `source_object_type`/`source_object_id`, not fake internal URLs.
 - `source_uri` remains external HTTP/HTTPS only.
-- `ActivityConsolidationService` runs visible Memory create-safety before
-  `MemoryProposalProducer`; duplicate visible Memory marks the Activity
-  `processed` and does not create another proposal.
-- `ActivityConsolidationService` → `MemoryProposalProducer` is the only pipeline that creates Proposal rows from Activity. Proposals remain `pending` until explicitly accepted.
-- `ProposalApplyService.apply` is the only path that creates active `MemoryEntry` from a proposal.
+- `PgActivityConsolidationRepository.runPending` runs visible Memory
+  create-safety (`assessActivityMemoryDuplicate`) before `insertMemoryProposal`;
+  duplicate visible Memory marks the Activity `processed` and does not create
+  another proposal.
+- `PgActivityConsolidationRepository` is the only pipeline that creates Proposal rows from Activity. Proposals remain `pending` until explicitly accepted.
+- `PgMemoryApplyRepository.applyOnly` is the only path that creates active `MemoryEntry` from a proposal.
 - No code path creates active Memory from source/evidence payload without proposal.
 
 Future automated source work must enter the Sources/Activity → proposal path before Memory.
@@ -213,7 +209,7 @@ Future automated source work must enter the Sources/Activity → proposal path b
 | Question | Answer source |
 |---|---|
 | Which Activity generated this proposal? | `Proposal.payload_json["provenance_entries"]` with `source_type="activity"` |
-| What source kind / URL was involved? | Pending: `Proposal.payload_json["provenance_entries"]` or compatibility `source_activity_id`; accepted: `provenance_links` source row → `ActivityRecord.activity_type`, `ActivityRecord.source_url` |
+| What source kind / URL was involved? | Pending: `Proposal.payload_json["provenance_entries"]`, including an entry folded from `source_activity_id`; accepted: `provenance_links` source row → `ActivityRecord.activity_type`, `ActivityRecord.source_url` |
 | What trust state was known? | `Proposal.payload_json["provenance_entries"][*].source_trust`, `source_monitoring_result` |
 | Was SourceMonitoring run? | `Proposal.payload_json["source_monitoring_result"]` |
 | Which Proposal approved it? | `MemoryEntry.created_from_proposal_id` |

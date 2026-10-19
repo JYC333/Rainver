@@ -137,8 +137,8 @@ export async function getProjectBoard(
   );
 
   // Attached outputs come back with the card, so the completion answer costs
-  // no extra round trip. Asking per card turned one Board load into one query
-  // per Task that declared anything.
+  // no extra round trip. Do not ask per card. That turns one Board load into
+  // one query per Task that declared anything.
   const cards: ProjectBoardCard[] = cardRows.rows.map((row) => {
     const declared = declaredRequiredOutputs(row.required_outputs_json);
     const present = new Set(row.present_outputs ?? []);
@@ -196,9 +196,8 @@ export async function getProjectBoard(
 /**
  * A Project's own Board columns when it has one, the defaults otherwise.
  *
- * A Project with no Board row is the ordinary case today — Boards are created
- * explicitly — and showing nothing would make the Board look broken rather than
- * empty.
+ * A Project with no Board row is ordinary. Boards are created explicitly.
+ * Showing nothing would make the Board look broken. Do not omit the defaults.
  */
 async function boardColumns(
   db: Queryable,
@@ -206,8 +205,8 @@ async function boardColumns(
   projectId: string,
   cards: readonly ProjectBoardCard[],
 ): Promise<ProjectBoardResponse["columns"]> {
-  // One Board's columns. Nothing stops a Project having two Board rows, and
-  // concatenating them produced duplicate lanes with every card drawn twice.
+  // One Board's columns. Nothing stops a Project having two Board rows.
+  // Do not concatenate them. That draws duplicate lanes and every card twice.
   const configured = await db.query<{ status_key: string; name: string; wip_limit: number | null }>(
     `SELECT c.status_key, c.name, c.wip_limit
        FROM board_columns c
@@ -339,8 +338,8 @@ export async function getTaskWorkView(
           AND ${artifactReadSql("$3")}`,
       [identity.spaceId, taskId, identity.userId],
     ),
-    // The same rule the Board card and the manual-close gate use. Asking a
-    // different question here is what let the tab say a Task was ready while
+    // The same rule the Board card and the manual-close gate use. Do not
+    // ask a different question. The tab would say a Task was ready while
     // the write path refused to close it.
     taskCompletionState(db, identity.spaceId, taskId, task.required_outputs_json, identity.userId),
     db.query<{ entity_type: string; entity_id: string; role: string }>(

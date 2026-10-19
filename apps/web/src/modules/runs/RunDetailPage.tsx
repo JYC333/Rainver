@@ -5,7 +5,7 @@ import { ArrowLeft, ExternalLink, FileCode2, FlaskConical, Loader2, Save, Shield
 import { toast } from 'sonner'
 import { artifactsApi, authorizationRequestsApi, evolutionApi, runsApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
-import type { ActivityRecord, Artifact, AuthorizationRequest, Proposal, Run, RunAttempt, RunEvaluation, RunFinalization, RunLogicalIO, RunSupervisorDecision, RunVerificationResult } from '../../types/api'
+import type { ActivityInboxRecord, Artifact, AuthorizationRequest, Proposal, Run, RunAttempt, RunEvaluation, RunFinalization, RunLogicalIO, RunSupervisorDecision, RunVerificationResult } from '../../types/api'
 import { Card } from '../../components/ui/card'
 import { Button } from '../../components/ui/button'
 import { Badge, StatusBadge } from '../../components/ui/badge'
@@ -25,6 +25,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '../../components/ui/input'
 import { Label } from '../../components/ui/label'
 import { Textarea } from '../../components/ui/textarea'
+import { formatDateTime } from '../../i18n/format'
+import { useAppTranslation } from '../../i18n'
+import { proposalTitle } from '../memory/proposalTitle'
 
 type RunDetailTab = 'io' | 'activities' | 'artifacts' | 'proposals' | 'contract' | 'verification' | 'route' | 'attempts'
 type OptionalRunResource = 'io' | 'activities' | 'artifacts' | 'proposals' | 'authorization' | 'attempts' | 'evaluations' | 'verifications' | 'finalizations'
@@ -38,7 +41,7 @@ async function loadOptionalRunResource<T>(loader: Promise<T>, fallback: T): Prom
 }
 
 function fmt(dt: string | null | undefined) {
-  return dt ? new Date(dt).toLocaleString() : '—'
+  return formatDateTime(dt)
 }
 
 interface PromptRef {
@@ -61,16 +64,8 @@ function JsonBlock({ value }: { value: unknown }) {
 }
 
 function promptRefsForRun(run: Run): PromptRef[] {
+  // The prompts a Run actually executed, as its output recorded them.
   const refs: PromptRef[] = []
-  if (run.prompt_asset_key) {
-    refs.push({
-      key: run.prompt_asset_key,
-      label: 'run',
-      versionId: run.prompt_version_id ?? null,
-      contentHash: run.prompt_content_hash ?? null,
-    })
-  }
-
   const prompts = isRecord(run.output_json?.prompts) ? run.output_json.prompts : null
   if (prompts) {
     for (const [label, value] of Object.entries(prompts)) {
@@ -89,6 +84,7 @@ function promptRefsForRun(run: Run): PromptRef[] {
 }
 
 export default function RunDetailPage() {
+  const { t } = useAppTranslation()
   const { runId = '' } = useParams()
   const { spaces, activeSpaceId, activeSpaceName, personalSpaceId, userId } = useSpace()
   const [reloadKey, setReloadKey] = useState(0)
@@ -97,7 +93,7 @@ export default function RunDetailPage() {
   const [abandonOpen, setAbandonOpen] = useState(false)
   const [abandonReason, setAbandonReason] = useState('')
   const { run: polled, loading, error } = useRun(runId && activeSpaceId ? runId : null, reloadKey)
-  const [activities, setActivities] = useState<ActivityRecord[]>([])
+  const [activities, setActivities] = useState<ActivityInboxRecord[]>([])
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [proposals, setProposals] = useState<Proposal[]>([])
   const [authorizationRequests, setAuthorizationRequests] = useState<AuthorizationRequest[]>([])
@@ -414,7 +410,10 @@ export default function RunDetailPage() {
     polled && polled.id === runId && polled.space_id === activeSpaceId,
   )
 
-  if ((loading && !polled) || (polled !== null && !polledMatchesScope)) {
+  // A failure to load the Run named in the route is reported below even
+  // while the hook still holds the previous Run; otherwise a switch to a Run
+  // that cannot be loaded shows this skeleton for good.
+  if (!error && ((loading && !polled) || (polled !== null && !polledMatchesScope))) {
     return (
       <div className="p-6 space-y-4 max-w-4xl">
         <Skeleton className="h-10 w-64" />
@@ -656,11 +655,11 @@ export default function RunDetailPage() {
             </details>
           </Card>
         )}
-        {r.task_id && (
-          <Link to={`/tasks/${r.task_id}`} className="text-sm text-accent-foreground hover:underline inline-flex items-center gap-1">
-            Open linked task <ExternalLink className="size-3" />
+        {(r.linked_tasks ?? []).map(task => (
+          <Link key={task.id} to={`/tasks/${task.id}`} className="text-sm text-accent-foreground hover:underline inline-flex items-center gap-1">
+            Open task: {task.title} <ExternalLink className="size-3" />
           </Link>
-        )}
+        ))}
 
         {r.status === 'queued' && (
           <div className="rounded-lg border border-border bg-muted/30 p-3 space-y-2 mt-2">
@@ -728,11 +727,11 @@ export default function RunDetailPage() {
                     to={`/activity/${act.id}`}
                     className="text-sm font-medium text-accent-foreground hover:underline"
                   >
-                    {act.title ?? act.activity_type}
+                    {act.title ?? act.source_type}
                   </Link>
                   <span className="text-xs text-muted-foreground">{fmt(act.occurred_at)}</span>
                 </div>
-                <Badge variant="outline" className="mt-2">{act.activity_type}</Badge>
+                <Badge variant="outline" className="mt-2">{act.source_type}</Badge>
                 <ScopeBadge visibility={act.visibility} className="mt-2 ml-1" omitShared />
                 {act.content && <p className="text-xs text-muted-foreground mt-2 whitespace-pre-wrap">{act.content}</p>}
               </Card>
@@ -777,7 +776,7 @@ export default function RunDetailPage() {
                     to={`/proposals/${p.id}`}
                     className="font-medium text-sm text-accent-foreground hover:underline"
                   >
-                    {p.proposed_title}
+                    {proposalTitle(p.proposed_title, p.title_parts)}
                   </Link>
                   <Badge variant="outline">{p.proposal_type}</Badge>
                   <StatusBadge status={p.status} />
@@ -811,7 +810,7 @@ export default function RunDetailPage() {
         <TabsContent value="verification" className="mt-4 space-y-3">
           <Card className="p-4"><h2 className="text-sm font-semibold">Verification results</h2>{!resourcesReady ? <Skeleton className="mt-3 h-24 w-full" /> : subresourceErrors.verifications ? <EmptyState title="Verification results unavailable" description={subresourceErrors.verifications} /> : verifications.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">No verification results recorded.</p> : <div className="mt-3 space-y-2">{verifications.map(result => <div key={result.id} className="rounded-md border border-border p-3"><div className="flex flex-wrap items-center gap-1.5"><StatusBadge status={result.status} /><Badge variant="outline">{result.verifier_type}</Badge><span className="text-xs text-muted-foreground">{result.verifier_version}</span></div><p className="mt-1 text-sm text-muted-foreground">{result.summary ?? '—'}</p></div>)}</div>}</Card>
           <Card className="p-4"><h2 className="text-sm font-semibold">Post-run evaluations</h2>{!resourcesReady ? <Skeleton className="mt-3 h-24 w-full" /> : subresourceErrors.evaluations ? <EmptyState title="Evaluations unavailable" description={subresourceErrors.evaluations} /> : evaluations.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">No evaluation records.</p> : <div className="mt-3 space-y-2">{evaluations.map(evaluation => <div key={evaluation.id} className="rounded-md border border-border p-3"><div className="flex flex-wrap items-center gap-1.5"><StatusBadge status={evaluation.outcome_status} /><Badge variant="outline">{evaluation.evaluator_type}</Badge><span className="text-xs text-muted-foreground">{fmt(evaluation.evaluated_at)}</span></div><p className="mt-1 text-xs text-muted-foreground">{evaluation.failure_reason_code ?? 'No failure reason'}</p></div>)}</div>}</Card>
-          <Card className="p-4"><h2 className="text-sm font-semibold">Finalization history</h2>{!resourcesReady ? <Skeleton className="mt-3 h-24 w-full" /> : subresourceErrors.finalizations ? <EmptyState title="Finalization history unavailable" description={subresourceErrors.finalizations} /> : finalizations.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">No finalization records.</p> : <div className="mt-3 space-y-2">{finalizations.map(finalization => <div key={finalization.id} className="flex flex-wrap items-center gap-1.5 rounded-md border border-border p-3"><Badge variant="outline">attempt {finalization.attempt_number}</Badge><StatusBadge status={finalization.outcome_status} /><span className="text-xs text-muted-foreground">{finalization.finalizer_version}</span></div>)}</div>}</Card>
+          <Card className="p-4"><h2 className="text-sm font-semibold">{t('management_ui.run_finalization.title')}</h2>{!resourcesReady ? <Skeleton className="mt-3 h-24 w-full" /> : subresourceErrors.finalizations ? <EmptyState title={t('management_ui.run_finalization.unavailable')} description={subresourceErrors.finalizations} /> : finalizations.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">{t('management_ui.run_finalization.empty')}</p> : <div className="mt-3 space-y-2">{finalizations.map(finalization => <div key={finalization.id} className="flex flex-wrap items-center gap-1.5 rounded-md border border-border p-3"><Badge variant="outline">{t('management_ui.run_finalization.attempt', { number: finalization.attempt_number })}</Badge><StatusBadge status={finalization.outcome_status} />{finalization.settlement.status === 'pending' && <Badge variant="warning" title={t('management_ui.run_finalization.settlement_pending_hint', { reason: finalization.settlement.reason_code ?? 'settlement_pending' })}>{t('management_ui.run_finalization.settlement_pending')}</Badge>}<span className="text-xs text-muted-foreground">{finalization.finalizer_version}</span></div>)}</div>}</Card>
         </TabsContent>
 
         <TabsContent value="route" className="mt-4"><Card className="p-4"><h2 className="mb-3 text-sm font-semibold">Route decision</h2>{!resourcesReady ? <Skeleton className="h-24 w-full" /> : routeDecisionError ? <EmptyState title="Route decision unavailable" description={routeDecisionError} /> : routeDecision ? <JsonBlock value={routeDecision} /> : <EmptyState title="No persisted route decision" description="This run did not produce a durable routing decision." />}</Card></TabsContent>

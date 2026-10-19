@@ -3,7 +3,7 @@
 Date: 2026-09-10
 Status: inventory only. Not a work queue.
 
-This file holds designs that used to live in `.agent/architecture/`,
+This file holds designs extracted from `.agent/architecture/`,
 `.agent/modules/`, `.agent/ROADMAP.md`, `.agent/ARCHITECTURE.md`,
 `.agent/GLOSSARY.md`, and `docs/` as if they were current product state.
 They are not implemented. Current-state guides now record only what the
@@ -220,8 +220,6 @@ not OS-sandboxed.
 
 **Extracted design**
 - Credential rotation/deletion UI; UI for creating or editing handlers.
-- Reuse the namespace `sandboxRunner` (see
-  [platform-reuse-cleanup.md](platform-reuse-cleanup.md)).
 - Broader generated-code execution only with a real isolated
   runner/container, instance-admin enablement, proposal review for
   permission deltas, strict resource limits, Sources-only materialization,
@@ -236,8 +234,9 @@ not OS-sandboxed.
 
 Extracted from `CAPABILITY_WORKFLOW_SKILL_SYSTEM.md`.
 
-**Current fact:** file-defined registry, packs, GitHub
-`blob`/`tree` / `raw.githubusercontent.com` `SKILL.md` import preview.
+**Current fact:** built-in definitions in `capabilities/registry.ts`;
+catalog YAML is diagnostic and is not executed; packs and GitHub
+`blob`/`tree` / `raw.githubusercontent.com` `SKILL.md` import preview exist.
 Binary assets are inventory metadata only.
 
 **Extracted design**
@@ -259,8 +258,10 @@ Extracted from `CREDENTIAL_STORAGE.md`, `docs/FUTURE_ROADMAP.md`,
 **Current fact:** ModelProvider keys use AES-256-GCM + disk master key.
 CLI login lives on the execution host (ADR 0016); the control plane does
 not broker CLI credentials. Persisted API-key product storage is
-feature-gated (no `api_keys` table). Active persisted policy classes
-include `memory.private_placement` and `run.user_private_scope`.
+feature-gated (no `api_keys` table). There is no generic persisted-policy
+proposal (`policy_change` is closed, with no applier), and no server path
+writes or reads `policies`. `memory.private_placement` and
+`run.user_private_scope` are not enforcement domains.
 
 **Extracted design**
 - KMS/HSM envelope encryption; per-space derived subkeys.
@@ -315,8 +316,9 @@ caps).
 
 Extracted from `ROADMAP_AND_FUTURE_RISKS.md` and ADR 0005.
 
-**Current fact:** `opencode` RuntimeAdapterSpec exists. `one_shot_docker`
-is not the product CLI path (host daemon is). Verification Engine
+**Current fact:** `opencode` RuntimeAdapterSpec exists. A critical vendor CLI
+run is labeled `one_shot_docker`; that label maps to a worktree scope and does
+not start a container. The host daemon is the CLI path. Verification Engine
 `manual_review` / `model_judge` return deferred (see backlog A2.1).
 
 **Extracted design**
@@ -426,10 +428,10 @@ Policy rows are domain-specific. Deployment jobs do not use the reserved
 `deployment.propose` / `deployment.execute` actions.
 
 **Extracted design**
-- Wire reserved actions to real `PolicyGateway.enforce()` call sites
-  (`capability.*`, `tool_binding.enable`, `context.use_personal_grant`,
-  `workspace.*`, `artifact.export`, `proposal.approve`,
-  `memory.read_private`, `memory.promote_shared`).
+- Wire reserved actions to real `enforce()` (`policy/service.ts`) call sites
+  (`tool_binding.enable`, `context.use_personal_grant`, `artifact.export`,
+  `proposal.approve`, `memory.read_private`, `memory.promote_shared`,
+  `runtime_skill.execute`, `evidence.export`, `note.link.create`).
 - Per-user / per-project approval capabilities.
 - Space-level policy row overrides.
 - `RunDelegation.status` following child-run terminal states.

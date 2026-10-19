@@ -254,10 +254,8 @@ describe('FocusResearchWorkbench operation progress', () => {
 })
 
 /**
- * The failure that motivated this: arXiv never imported, screening saw only the
- * other provider's three items, and the run reported "no relevant evidence" —
- * advising the reader to broaden a query that had never actually been run in
- * full. A conclusion drawn over a partial corpus has to say so.
+ * A conclusion drawn over a partial corpus has to say so. Do not report
+ * "no relevant evidence" when a source never contributed.
  */
 describe('completion wording when a source never contributed', () => {
   const emptyOutcome = {

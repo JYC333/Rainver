@@ -1,3 +1,4 @@
+import { providerDeployment } from "./deployment.js";
 /**
  * Provider DB read port.
  *
@@ -43,7 +44,8 @@ export interface ProviderRow {
   updated_at: Date;
 }
 
-function availableModels(capabilities: unknown): string[] {
+/** A Provider's listed models, as `capabilities_json` stores them. */
+export function availableModels(capabilities: unknown): string[] {
   if (Array.isArray(capabilities)) {
     return capabilities.filter((m): m is string => typeof m === "string");
   }
@@ -93,6 +95,7 @@ export function mapProviderRowToDto(row: ProviderRow): Record<string, unknown> {
     name: row.name,
     provider_type: providerType,
     base_url: row.base_url ?? defaultBaseUrlFor(providerType) ?? "",
+    deployment: providerDeployment(row.config_json),
     network_profile_id: row.network_profile_id ?? null,
     claude_compatible_base_url: stringConfig(row.config_json, "claude_compatible_base_url"),
     openai_compatible_base_url: stringConfig(row.config_json, "openai_compatible_base_url"),
@@ -170,8 +173,9 @@ class PgProvidersDbPort implements ProvidersDbPort {
          JOIN "${table}" p ON p.id = g.provider_id
          LEFT JOIN credentials c ON c.id = p.credential_id
         WHERE g.space_id = $1
-          AND g.enabled = true
-          AND p.enabled = true
+          -- A disabled Provider stays listed for its owner, who can enable it
+          -- again; nobody else sees it, and selectors filter on enabled.
+          AND ((g.enabled = true AND p.enabled = true) OR p.owner_user_id = $2)
           AND (c.credential_type IS DISTINCT FROM 'subscription_oauth' OR p.owner_user_id = $2)
         ORDER BY g.is_default DESC, p.created_at DESC`,
       [spaceId, userId],
@@ -205,8 +209,9 @@ class PgProvidersDbPort implements ProvidersDbPort {
          LEFT JOIN credentials c ON c.id = p.credential_id
         WHERE g.space_id = $1
           AND g.provider_id = $2
-          AND g.enabled = true
-          AND p.enabled = true
+          -- The owner can read their disabled Provider; a runtime read (no
+          -- person) and everyone else read only an enabled one.
+          AND ((g.enabled = true AND p.enabled = true) OR p.owner_user_id = $3)
           AND (c.credential_type IS DISTINCT FROM 'subscription_oauth' OR p.owner_user_id = $3)
         LIMIT 1`,
       [spaceId, configId, userId],

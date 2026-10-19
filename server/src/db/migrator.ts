@@ -32,7 +32,7 @@ const MIGRATION_LOCK_KEY = 7263123498012n;
 
 const MIGRATIONS_TABLE = "public.server_schema_migrations";
 
-export interface MigrationFile {
+interface MigrationFile {
   /** Numeric-ish prefix used for ordering + identity, e.g. `0001`. */
   version: string;
   /** Human label after the first underscore, e.g. `baseline`. */
@@ -43,14 +43,14 @@ export interface MigrationFile {
   checksum: string;
 }
 
-export interface MigrateResult {
+interface MigrateResult {
   /** Versions applied by this call (empty if already up to date). */
   applied: string[];
   /** Every known migration version, in order. */
   all: string[];
 }
 
-export interface MigrationStatus {
+interface MigrationStatus {
   version: string;
   name: string;
   applied: boolean;
@@ -67,7 +67,7 @@ export interface MigrationStatus {
  * server, so it is applied only by the offline maintenance path (ADR 0016 §10). The distinction is compatibility with the running version, not
  * whether a database changes.
  */
-export const MAINTENANCE_MARKER = "-- rainver:maintenance";
+const MAINTENANCE_MARKER = "-- rainver:maintenance";
 
 export function requiresMaintenance(sql: string): boolean {
   return sql.split("\n", 20).some((line) => line.trim() === MAINTENANCE_MARKER);
@@ -146,9 +146,9 @@ export async function migrate(
     const done = await appliedMap(client);
 
     for (const file of files) {
-      // A test or an explicitly staged rollout may need the still-running
-      // release's schema without applying an offline cutover. Production
-      // migration commands leave this false and apply every pending file.
+      // skipMaintenance keeps the release that is still running and skips
+      // maintenance migrations. Production migration commands leave this false
+      // and apply every pending file.
       if (opts.skipMaintenance && requiresMaintenance(file.sql)) continue;
       const prev = done.get(file.version);
       if (prev) {

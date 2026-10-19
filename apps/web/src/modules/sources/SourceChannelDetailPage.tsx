@@ -11,6 +11,7 @@ import { errMsg } from '../../lib/utils'
 import { SourceMonitorDialog } from './SourceMonitorDialog'
 import { sourceQueryText } from './sourceQueryText'
 import type { SourceChannel, SourceProvider, SourceProviderCategoryGroup } from '../../types/api'
+import { useAppTranslation } from '../../i18n'
 
 function sourceIcon(channel: Pick<SourceChannel, 'channel_type'>) {
   switch (channel.channel_type) {
@@ -47,10 +48,15 @@ export default function SourceChannelDetailPage() {
   const [editingMonitor, setEditingMonitor] = useState<SourceChannel | null>(null)
   const [busyMonitorId, setBusyMonitorId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  // Kept apart from "not found": a request that failed says nothing about
+  // whether the source exists.
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const { t } = useAppTranslation()
 
   const load = useCallback(async () => {
     if (!sourceId) return
     setLoading(true)
+    setLoadError(null)
     try {
       const [channelRows, providerRows] = await Promise.all([
         sourcesApi.channels(),
@@ -61,7 +67,7 @@ export default function SourceChannelDetailPage() {
       setProviders(providerRows)
       setCategoryGroups(providerRows.find(provider => provider.provider_key === 'arxiv')?.setup_schema?.category_groups ?? [])
     } catch (error) {
-      toast.error(errMsg(error))
+      setLoadError(errMsg(error))
     } finally {
       setLoading(false)
     }
@@ -104,12 +110,30 @@ export default function SourceChannelDetailPage() {
     }
   }
 
+  if (loadError && !source) {
+    return (
+      <div className="p-6">
+        <EmptyState
+          title={t('sources_ui.detail.load_failed_title')}
+          description={loadError}
+          action={<Button variant="outline" onClick={() => void load()} disabled={loading}>{t('sources_ui.detail.retry')}</Button>}
+        />
+      </div>
+    )
+  }
   if (!activeSpaceId || (!loading && !source)) return <div className="p-6"><EmptyState title="Source not found" description="This source may have been archived or is unavailable." /></div>
   if (!source) return <div className="p-6"><EmptyState title="Loading source" description="Loading source monitors…" /></div>
 
   return (
     <div className="p-6 space-y-6 max-w-4xl">
       <Button variant="ghost" asChild><Link to=".."><ArrowLeft className="size-4 mr-2" />Back to sources</Link></Button>
+      {loadError && (
+        // A later refresh failed while the source is on screen: say so, keep what is shown.
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm" role="alert">
+          <span>{t('sources_ui.detail.refresh_failed', { message: loadError })}</span>
+          <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>{t('sources_ui.detail.retry')}</Button>
+        </div>
+      )}
 
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="flex min-w-0 items-start gap-3">
@@ -171,6 +195,7 @@ export default function SourceChannelDetailPage() {
         categoryGroups={categoryGroups}
         sourceName={source.source_name}
         providerKey={source.provider.key ?? undefined}
+        sourceConnectionId={sourceId}
         onOpenChange={setAddMonitorOpen}
         onSaved={load}
       />

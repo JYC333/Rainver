@@ -12,8 +12,8 @@ import type {
 /**
  * Pure, stateless helpers for the retrieval search pipeline: RRF fusion, the
  * over-fetch bound, visibility collection, result shaping, and evidence mapping.
- * Extracted from `searchService` so the service file stays focused on the
- * orchestration + the arm SQL. Nothing here touches the database or `this`.
+ * They live here so `searchService` stays on the orchestration and the arm SQL.
+ * Nothing here touches the database or `this`.
  */
 
 const RRF_K = 60;
@@ -28,7 +28,7 @@ export function armFetchLimit(maxResults: number): number {
   return Math.min(ARM_FETCH_MAX, Math.max(ARM_FETCH_MIN, maxResults * ARM_OVERFETCH));
 }
 
-// Embedding dimensions that have a `halfvec` HNSW ANN index in the schema (W5).
+// Embedding dimensions that have a `halfvec` HNSW ANN index in the schema.
 // The vector arm emits a constant-dimension halfvec cosine query for these so the
 // planner can use the partial index; other dimensions fall back to the exact
 // `vector` scan. MUST stay in sync with the ix_retrieval_chunks_embedding_hnsw_*
@@ -107,7 +107,7 @@ export function fuseCandidates(candidates: SearchCandidate[]): ScoredCandidate[]
       existing.evidence = candidate.evidence;
     }
     // Preserve the strongest vector similarity across the merged arms so the
-    // post-RRF cosine blend (§2.3) survives even when a higher-priority arm's
+    // post-RRF cosine blend survives even when a higher-priority arm's
     // evidence overwrites the vector evidence.
     if (typeof candidate.vectorSimilarity === "number") {
       existing.vectorSimilarity = Math.max(existing.vectorSimilarity ?? 0, candidate.vectorSimilarity);
@@ -118,7 +118,7 @@ export function fuseCandidates(candidates: SearchCandidate[]): ScoredCandidate[]
     .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
 }
 
-// Adaptive-return bounds (§2.4). Trim only — never grows the set. Keeps at least
+// Adaptive-return bounds. Trim only — never grows the set. Keeps at least
 // the first `MIN_KEEP` visible candidates, then cuts at the first sharp score
 // cliff (next score below `CLIFF_RATIO` of the previous one), so a precise answer
 // is not padded with a weak tail. Operates only on the already-visible set.
@@ -126,7 +126,7 @@ const ADAPTIVE_RETURN_MIN_KEEP = 3;
 const ADAPTIVE_RETURN_CLIFF_RATIO = 0.5;
 
 /**
- * Conservative adaptive return (§2.4): shrink the visible list at the first sharp
+ * Conservative adaptive return: shrink the visible list at the first sharp
  * score cliff. Access-safe — reads only the visible candidates' own scores, never
  * adds candidates, never reads hidden objects. Records aggregate trace only.
  */
@@ -305,36 +305,63 @@ function evidencePriority(evidence: EvidenceContract): number {
 }
 
 /**
- * Bound one rerank candidate's text by the per-item and remaining payload budget
- * (§2.6). Returns the (possibly truncated/empty) text plus whether it was cut.
- * Null in → null out (a redacted object keeps its null text). Truncates only
+ * Share the rerank payload budget across the whole window. Titles are always
+ * sent and count first; the rest of `payloadCap` is divided among the texts
+ * by water-filling — shortest first, each gets at most an equal share of what
+ * is left and at most `perItemCap` — so a few long texts early in the window
+ * cannot use up the budget and leave later candidates judged on their title
+ * alone. A cut text becomes an excerpt around the query, not just its head.
+ * Null in → null out (a redacted object keeps its null text). Bounds only
  * already-visible, already-revalidated text that was going to be sent anyway.
+ * A cap of 0 disables that bound.
  */
-export function boundRerankText(
-  text: string | null,
+export function boundRerankTexts(
+  entries: ReadonlyArray<{ title: string; text: string | null }>,
+  query: string,
   perItemCap: number,
   payloadCap: number,
-  used: number,
-): { text: string | null; truncated: boolean } {
-  if (text === null) return { text: null, truncated: false };
-  let bounded = text;
-  let truncated = false;
-  if (perItemCap > 0 && bounded.length > perItemCap) {
-    bounded = bounded.slice(0, perItemCap);
-    truncated = true;
-  }
-  if (payloadCap > 0) {
-    const remaining = Math.max(0, payloadCap - used);
-    if (bounded.length > remaining) {
-      bounded = bounded.slice(0, remaining);
-      truncated = true;
+): { texts: Array<string | null>; truncated: number; payloadChars: number } {
+  const itemCap = perItemCap > 0 ? perItemCap : Number.POSITIVE_INFINITY;
+  const titleChars = entries.reduce((sum, entry) => sum + entry.title.length, 0);
+  let remaining = payloadCap > 0 ? Math.max(0, payloadCap - titleChars) : Number.POSITIVE_INFINITY;
+  const order = entries
+    .map((entry, index) => ({ index, length: entry.text?.length ?? 0 }))
+    .filter((entry) => entries[entry.index]!.text !== null)
+    .sort((a, b) => a.length - b.length || a.index - b.index);
+  const allowance = new Map<number, number>();
+  order.forEach((entry, position) => {
+    const share = Math.floor(remaining / (order.length - position));
+    const allot = Math.min(entry.length, itemCap, share);
+    allowance.set(entry.index, allot);
+    remaining -= allot;
+  });
+  let truncated = 0;
+  let payloadChars = titleChars;
+  const texts = entries.map((entry, index) => {
+    if (entry.text === null) return null;
+    const allot = allowance.get(index)!;
+    if (entry.text.length <= allot) {
+      payloadChars += entry.text.length;
+      return entry.text;
     }
-  }
-  return { text: bounded, truncated };
+    truncated += 1;
+    const excerpt = excerptToLength(entry.text, query, allot);
+    payloadChars += excerpt.length;
+    return excerpt;
+  });
+  return { texts, truncated, payloadChars };
+}
+
+/** An excerpt around the query no longer than `length` (ellipses included). */
+function excerptToLength(text: string, query: string, length: number): string {
+  if (length <= 0) return "";
+  if (length <= 6) return text.slice(0, length);
+  const excerpt = excerptAroundQuery(text, query, length - 6);
+  return excerpt.length <= length ? excerpt : excerpt.slice(0, length);
 }
 
 /**
- * Aggregate-safe score histogram bucket label (§2.8). Reuses the same thresholds
+ * Aggregate-safe score histogram bucket label. Reuses the same thresholds
  * as the explain/diagnostics surfaces so telemetry is comparable across stages.
  */
 export function scoreBucket(score: number): string {

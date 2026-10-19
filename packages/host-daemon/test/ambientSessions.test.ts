@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_LIMITS, buildAmbientRecords, redactAmbientText, supportsAmbientImport } from "../src/ambientSessions.js";
 
 /**
- * The update shapes here are taken from a real replay of each runtime, run
- * against this machine's own installations on 2026-08-28: Claude and OpenCode
+ * The update shapes are a real replay of each runtime: Claude and OpenCode
  * split message text across chunks sharing a `messageId`, Codex numbers its
  * ids `item-N` per session, and all three send a `tool_call` followed by
  * `tool_call_update`s carrying the result in full.
@@ -37,6 +36,20 @@ describe("ambient record building", () => {
     // and the usual home of a leaked key.
     expect(Buffer.byteLength(record.tool_output!, "utf8")).toBeLessThanOrEqual(DEFAULT_LIMITS.tool_output_max_bytes);
     expect(record.truncated).toBe(true);
+  });
+
+  it("does not join anonymous message chunks across a tool call between them", () => {
+    const anonymous = (text: string) => ({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+    const { records } = buildAmbientRecords([
+      anonymous("Let me look first."),
+      { sessionUpdate: "tool_call", toolCallId: "call-1", title: "Read", status: "completed", rawInput: { path: "a.ts" } },
+      anonymous("Fixed it."),
+    ]);
+    expect(records.map((record) => [record.kind, record.text ?? null])).toEqual([
+      ["agent_message", "Let me look first."],
+      ["tool_call", null],
+      ["agent_message", "Fixed it."],
+    ]);
   });
 
   it("drops thoughts, which are reasoning rather than conclusion and the least stable part across runtimes", () => {
@@ -81,7 +94,7 @@ describe("ambient record building", () => {
   });
 
   it("gives Codex's per-session ids record keys that carry their session scope", () => {
-    // `item-1` repeats in every Codex session, which is why the server's
+    // `item-1` repeats in every Codex session. The server's
     // identity is (session, key) and never the key alone. The daemon's job is
     // only to report the key it was given, unchanged.
     const { records } = buildAmbientRecords([chunk("user_message_chunk", "item-1", "hello")]);

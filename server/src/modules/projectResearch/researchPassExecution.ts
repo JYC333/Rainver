@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { sha256Json } from "../evolution/hash.js";
 import type { ServerConfig } from "../../config.js";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import {
@@ -30,7 +31,7 @@ interface ResearchOperationForPass {
   progress_json: unknown;
 }
 
-export type ResearchPassEvent =
+type ResearchPassEvent =
   | { kind: "reconcile" }
   | { kind: "run_terminal"; runId: string }
   | {
@@ -263,8 +264,8 @@ async function findOrCreateResearchPassTemplateVersion(
   const inserted = await db.query<{ id: string }>(
     `INSERT INTO evolvable_asset_versions (
        id, asset_id, space_id, scope_type, scope_id, version, status,
-       source, content_json, created_at, updated_at
-     ) VALUES ($1,$2,$3,'space',$3,1,'approved','user_authored',$4::jsonb,$5,$5)
+       source, content_hash, content_json, created_at, updated_at
+     ) VALUES ($1,$2,$3,'space',$3,1,'approved','user_authored',$6,$4::jsonb,$5,$5)
      ON CONFLICT (asset_id, version) DO NOTHING
      RETURNING id`,
     [
@@ -273,6 +274,7 @@ async function findOrCreateResearchPassTemplateVersion(
       identity.spaceId,
       JSON.stringify(researchPassDefinition("", "resolved_per_pass")),
       now,
+      sha256Json(researchPassDefinition("", "resolved_per_pass")),
     ],
   );
   if (inserted.rows[0]) return inserted.rows[0].id;
@@ -296,7 +298,7 @@ actionNodeHandlerRegistry.register(RESEARCH_PASS_ACTION_KEY, async (context) => 
     await orchestrator.executeCompletedRunPass(
       context.identity.spaceId,
       optionalString(event.runId)!,
-      context.executionId,
+      context.container.id,
     );
   } else if (
     event.kind === "checkpoint_resume"
@@ -311,7 +313,7 @@ actionNodeHandlerRegistry.register(RESEARCH_PASS_ACTION_KEY, async (context) => 
       optionalString(event.projectId)!,
       optionalString(event.workflowId)!,
       optionalString(event.checkpointId)!,
-      context.executionId,
+      context.container.id,
     );
   } else if (
     event.kind === "retry"
@@ -322,7 +324,7 @@ actionNodeHandlerRegistry.register(RESEARCH_PASS_ACTION_KEY, async (context) => 
       { spaceId: context.identity.spaceId, userId: optionalString(event.userId)! },
       optionalString(event.projectId)!,
       operationId,
-      context.executionId,
+      context.container.id,
     );
   } else if (
     event.kind === "empty_scan"
@@ -340,13 +342,13 @@ actionNodeHandlerRegistry.register(RESEARCH_PASS_ACTION_KEY, async (context) => 
         newItemCount: typeof event.newItemCount === "number" ? event.newItemCount : 0,
       },
       operationId,
-      context.executionId,
+      context.container.id,
     );
   } else {
     await orchestrator.executeReconcilePass(
       context.identity.spaceId,
       operationId,
-      context.executionId,
+      context.container.id,
     );
   }
   const delegatedRunId = await delegatedRunForOperation(
@@ -383,7 +385,7 @@ actionNodeHandlerRegistry.register(RESEARCH_APPLY_RUN_ACTION_KEY, async (context
   await new ProjectResearchOrchestrator(context.db, context.config).executeCompletedRunPass(
     context.identity.spaceId,
     sourceRunId,
-    context.executionId,
+    context.container.id,
   );
   const delegatedRunId = await delegatedRunForOperation(
     context.db,
@@ -564,12 +566,7 @@ async function settleSynchronousNodes(
   // leaves no newly scheduled node and exits the loop until Run finalization
   // calls WorkflowExecution reconciliation again.
   for (let index = 0; index < 4; index += 1) {
-    const result = await service.reconcile(
-      db,
-      identity.spaceId,
-      executionId,
-      identity.userId,
-    );
+    const result = await service.reconcile(db, identity.spaceId, executionId);
     const status = optionalString(result.status);
     if (status === "completed" || status === "failed") return;
     const scheduled = Array.isArray(result.scheduled_node_ids)

@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import type {
   CanonicalToolCall,
   CanonicalToolDefinition,
@@ -41,8 +42,6 @@ export interface SystemActionDispatcherDeps extends RetrievalToolDeps {
   agentDelegationTools?: AgentDelegationToolDeps;
   actionEventSink?: (eventType: "action_invoked" | "action_completed", call: CanonicalToolCall, metadata?: Record<string, unknown>) => Promise<void>;
 }
-
-export type { SystemActionDispatchResult } from "./toolResult.js";
 
 const NOT_GRANTED_MESSAGE = "This system action is not granted to the Run.";
 
@@ -147,7 +146,7 @@ export class SystemActionDispatcher {
       for (const tool of delegation.toolDefinitions) {
         executors.set(tool.name as SystemActionId, async (input, context) =>
           runAgentRoomToolCall(
-            { id: tool.name, name: tool.name, arguments_json: JSON.stringify(input) },
+            { id: delegationCallId(context.idempotency_key), name: tool.name, arguments_json: JSON.stringify(input) },
             delegation,
             run,
             context.policy_decision?.details as never,
@@ -203,7 +202,7 @@ export class SystemActionDispatcher {
 
     const gateway = new SystemActionGateway(
       executors,
-      (definition, input) => enforcePolicyForAction(config, definition, input, run, retrieval, actor, delegation),
+      (definition, input, context) => enforcePolicyForAction(config, definition, input, run, retrieval, actor, delegation, context),
       {
         onValidated: (definition, _input, context) => emitActionEvent(definition, "action_invoked", context),
         onCompleted: (definition, result, context) =>
@@ -286,6 +285,17 @@ export class SystemActionDispatcher {
   }
 }
 
+/**
+ * The key a delegation is replayed by: this call's own idempotency key, so a
+ * retry of the call replays it and a second call makes a second delegation.
+ * The tool name would make every delegation of a Run replay its first. Bounded
+ * to the column (128) by hashing a longer key; with no key there is no replay.
+ */
+function delegationCallId(idempotencyKey: string | null | undefined): string {
+  if (!idempotencyKey) return randomUUID();
+  return idempotencyKey.length <= 128 ? idempotencyKey : createHash("sha256").update(idempotencyKey).digest("hex");
+}
+
 function triggeringMessageId(value: unknown): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const chatTurn = (value as Record<string, unknown>).chat_turn;
@@ -297,10 +307,10 @@ function triggeringMessageId(value: unknown): string | null {
 /**
  * `agent.delegate` and retrieval keep an explicit custom adapter — their
  * enforcement genuinely differs (group budget/lineage; domain enablement).
- * Every other agent-visible action declares `policy_resource` (D4): the
+ * Every other agent-visible action declares `policy_resource`: the
  * generic adapter below reads it declaratively instead of a hand-written
  * `if (definition.id === ...)` branch, so adding one more declarative
- * action means adding metadata to its definition, not a fifth branch here.
+ * action means adding metadata to its definition, not another branch here.
  */
 async function enforcePolicyForAction(
   config: ServerConfig,
@@ -310,9 +320,10 @@ async function enforcePolicyForAction(
   retrieval: ResolvedRetrievalToolBinding | null,
   actor: { spaceId: string; instructedByUserId: string; agentId: string; runId: string },
   delegation: Awaited<ReturnType<typeof resolveAgentDelegationToolBinding>>,
+  context: { idempotency_key?: string | null },
 ) {
   if (definition.policy_adapter === "agent_delegate" && delegation?.service.preflightSpawnChildRunPolicy) {
-    const call = { id: definition.id, name: definition.id, arguments_json: JSON.stringify(input) };
+    const call = { id: delegationCallId(context.idempotency_key), name: definition.id, arguments_json: JSON.stringify(input) };
     const prepared = agentDelegatePolicyInput(call, delegation, run);
     const decision = await delegation.service.preflightSpawnChildRunPolicy(prepared.identity, prepared.input);
     return {
@@ -328,8 +339,7 @@ async function enforcePolicyForAction(
       validateRetrievalToolInput(definition.id, input);
     } catch (error) {
       // Retrieval's `input_schema` in the registry stays the generic
-      // `objectInput` (its real, dynamic-per-binding schema is a documented
-      // exception — see the plan's "Remaining exceptions"), so this is the
+      // `objectInput`. Its real schema is dynamic per binding, so this is the
       // one action family whose input validation happens here instead of
       // the gateway's own `input_schema.safeParse`. Code it the same way
       // that check would, rather than falling through to a generic failure.
@@ -422,8 +432,8 @@ export async function enforceDeclaredResourcePolicy(
       instructed_by_user_id: run.instructed_by_user_id,
       // Who wanted this. `ruleUnattendedProjectWrite` distinguishes a write a
       // person asked for in a conversation from the same call made by an
-      // unattended wake-up, and without this key it read every dispatch as
-      // `manual` and never fired.
+      // unattended wake-up. Do not omit this key. Every dispatch would read as
+      // `manual` and the rule would never fire.
       trigger_origin: (await effectiveRunTrigger(getDbPool(databaseUrl), run)).origin,
       // What a memory write is, resolved by the module that owns the answer
       // rather than taken from the call: `ruleUnattendedProjectWrite`'s one
@@ -457,7 +467,7 @@ export function resolveDeclaredResourceId(
 
 function toolCallFailureResult(call: CanonicalToolCall, error: unknown): SystemActionDispatchResult {
   // A disabled retrieval domain and an unknown-retrieval-tool-call failure
-  // both normalize through here now: the gateway's own decision (D6/D7) is
+  // both normalize through here. The gateway's own decision is
   // the single enforcement point, so a disabled domain is an ordinary
   // `system_action_policy_denied`, and no other retrieval-specific error
   // code is fabricated by name-matching — every action gets the same

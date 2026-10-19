@@ -41,4 +41,3 @@ detail, Room sidecar) are owned by those pages.
 ## Related Modules
 - [product-shell.md](product-shell.md)
 
-Unimplemented multi-panel ideas: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §1.

@@ -159,9 +159,9 @@ async function requireTaskRuntimeProfile(
  * A Room is a visibility boundary, and `task_runs` is read through the Task.
  * Letting a dispatch name a Room's `session_id` would put a Room-scoped Run on
  * a Task that anyone with Task access can list — and would write the Run's
- * turn into a conversation the dispatcher may not even be in. Nothing writes
- * such a row today, which is what made the Task lists' missing Room term
- * latent rather than live; this is what keeps it that way.
+ * turn into a conversation the dispatcher may not even be in. Do not write
+ * such a row. The Room term on the Task lists is what keeps that from
+ * becoming a live leak. Do not drop it.
  */
 async function assertNotRoomConversationSession(
   db: Queryable,
@@ -259,9 +259,27 @@ export class PgTaskRepository {
   }
 
   async updateBoard(identity: SpaceUserIdentity, boardId: string, body: Record<string, unknown>) {
-    if (!(await this.getBoard(identity, boardId))) throw new HttpError(404, "Board not found");
+    await withDbTransaction(this.pool, async (client) => {
+      const board = await this.getBoardFrom(client, identity, boardId);
+      if (!board) throw new HttpError(404, "Board not found");
+      // The same gate as a Task: changing, deleting or moving a Project's Board
+      // takes write access to the Project it is in and to the one it moves to.
+      const targetProjectId = Object.hasOwn(body, "project_id")
+        ? optionalString(body.project_id)
+        : board.project_id ?? null;
+      for (const projectId of [...new Set([board.project_id ?? null, targetProjectId])].sort()) {
+        if (!projectId) continue;
+        await lockActiveProjectForMutation(client, identity.spaceId, projectId);
+        await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
+      }
+      await this.writeBoardUpdate(client, identity, boardId, body);
+    });
+    return (await this.getBoard(identity, boardId))!;
+  }
+
+  private async writeBoardUpdate(client: Queryable, identity: SpaceUserIdentity, boardId: string, body: Record<string, unknown>) {
     const now = new Date().toISOString();
-    await this.pool.query(
+    await client.query(
       `UPDATE boards SET
          name = COALESCE($3, name),
          description = CASE WHEN $4::boolean THEN $5 ELSE description END,
@@ -298,7 +316,6 @@ export class PgTaskRepository {
         now,
       ],
     );
-    return (await this.getBoard(identity, boardId))!;
   }
 
   async listBoardTasks(identity: SpaceUserIdentity, boardId: string, limit: number, offset: number) {
@@ -343,9 +360,9 @@ export class PgTaskRepository {
       "t.deleted_at IS NULL",
       contentReadSql("task", "t", "$1"),
       // Responsible-is-me, not "touched by me". A Task an Agent has claimed is
-      // the Agent's, even where a person is assigned or created it, so this is
-      // narrower than the previous OR — and it agrees with what the Board and
-      // Needs You show, which the OR did not.
+      // the Agent's, even where a person is assigned or created it. The filter
+      // is the responsible user. Do not OR in assignee and creator: that
+      // disagrees with what the Board and Needs You show.
       `${responsibleUserSql("t", "mp")} = $1`,
     ];
     if (filters.status) {
@@ -389,6 +406,10 @@ export class PgTaskRepository {
     if (taskRole !== "source" && taskRole !== "subtask") throw new HttpError(422, "task_role must be 'source' or 'subtask'");
     const parentTaskId = optionalString(body.parent_task_id);
     if (taskRole === "source" && parentTaskId) throw new HttpError(422, "Source tasks cannot have a parent task");
+    // Every entry (API, agent tool, batch) lands here: an archived Project
+    // takes no new work, and the row lock serializes this with archiving.
+    const projectId = optionalString(body.project_id);
+    if (projectId) await lockActiveProjectForMutation(db, identity.spaceId, projectId);
     if (taskRole === "subtask") {
       if (!parentTaskId) throw new HttpError(422, "Subtasks require a parent task");
       const parent = await db.query<{ id: string }>(
@@ -419,7 +440,7 @@ export class PgTaskRepository {
         randomUUID(),
         identity.spaceId,
         optionalString(body.project_folder_id),
-        optionalString(body.project_id),
+        projectId,
         optionalString(body.board_id),
         optionalString(body.column_id),
         parentTaskId,
@@ -495,15 +516,18 @@ export class PgTaskRepository {
       const currentTask = await getVisibleTaskRow(client, identity, taskId, { lock: true });
       if (!currentTask) throw new HttpError(404, "Task not found");
       // Reading a Task is not licence to change it. A Project `viewer` can see
-      // every shared Task; without this they could drag one to Done, move its
+      // every shared Task. Do not treat a viewer as a writer. They could drag one to Done, move its
       // Loop stage, or reassign it. The Project the Task is *moving to* is
       // gated too, or a viewer there could pull work into a Project they
-      // cannot write.
+      // cannot write. An archived Project is frozen for writers as well:
+      // closing a Task there would queue a merge on the host.
       const targetProjectId = Object.hasOwn(body, "project_id")
         ? optionalString(body.project_id)
         : currentTask.project_id;
-      for (const projectId of new Set([currentTask.project_id, targetProjectId])) {
-        if (projectId) await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
+      for (const projectId of [...new Set([currentTask.project_id, targetProjectId])].sort()) {
+        if (!projectId) continue;
+        await lockActiveProjectForMutation(client, identity.spaceId, projectId);
+        await assertProjectWriterForMutation(client, identity.spaceId, projectId, identity.userId);
       }
       if (Object.hasOwn(body, "parent_task_id")) {
         const parentTaskId = optionalString(body.parent_task_id);
@@ -519,7 +543,7 @@ export class PgTaskRepository {
       }
       const flowChanged = requestedStatus !== null && requestedStatus !== currentTask.status;
       // The Project the Task ends up in, so a move between Projects records the
-      // change in the stream that now owns it rather than the one it left.
+      // change in that Project's stream rather than the one it left.
       const effectiveProjectId = targetProjectId;
       const eventContext = {
         spaceId: identity.spaceId,
@@ -930,9 +954,9 @@ export class PgTaskRepository {
   }
 
   /**
-   * Both branches create a Run inside the admission transaction now, so there
-   * is nothing left to finish outside it. Kept as the single exit so callers
-   * do not have to know which branch ran.
+   * Returns the Run the admission already created, inside the admission
+   * transaction. Do not finish the Run outside that transaction. Callers
+   * share this exit.
    */
   private async finishTaskRunAdmission(
     admission: Awaited<ReturnType<PgTaskRepository["createTaskRunAdmission"]>>,
@@ -941,17 +965,10 @@ export class PgTaskRepository {
   }
 
   /**
-   * The remote-host half of the merged dispatch endpoint (D5).
-   *
-   * It creates one Run synchronously, exactly as the server branch above
-   * does. The Profile is the deployment authority; this path adds only the
-   * Host thread and vendor session continuity data.
-   *
-   * It used to enqueue a message on the Task's HostThread and let a queue
-   * create the Run once nothing blocked it. That queue existed for the
-   * Command Center's thread page, which paused it on any non-success and
-   * offered a Resume button; with the page gone nothing could resume one, so
-   * a remote Task run whose predecessor failed would have sat queued forever.
+   * The remote-host half of task-run dispatch. It creates one Run
+   * synchronously, exactly as the server branch above does. The Profile is
+   * the deployment authority; this path adds only the Host thread and vendor
+   * session continuity data.
    */
   private async prepareRemoteTaskRun(
     client: Queryable,
@@ -1060,10 +1077,9 @@ export class PgTaskRepository {
       resumeVendorSessionId = null;
     }
 
-    // A dispatch to someone's own machine runs under that machine's trust,
-    // not in a sandbox the control plane owns — and the read model reads this
-    // to decide whether the adapter actually consumed the provider it
-    // recorded. Only a server-side execution host is sandboxed.
+    // A paired machine is `trusted_host`. The built-in host is `sandboxed`.
+    // The read model uses this to decide whether the adapter consumed the
+    // provider it recorded.
     const trustMode = target.execution_host_kind === "server" ? "sandboxed" : "trusted_host";
     // What a dispatched agent may call back with: the allowance belongs to
     // the dispatch scenario rather than to whichever Agent the thread names.
@@ -1141,12 +1157,14 @@ export class PgTaskRepository {
 
   async requestPlanningRun(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
     return withDbTransaction(this.pool, async (client) => {
-      const taskResult = await client.query<TaskRow>(
-        `SELECT ${TASK_COLUMNS} FROM tasks t WHERE t.space_id = $1 AND t.id = $2 AND t.deleted_at IS NULL FOR UPDATE`,
-        [identity.spaceId, taskId],
-      );
-      const task = taskResult.rows[0];
+      const task = await getVisibleTaskRow(client, identity, taskId, { lock: true });
       if (!task) throw new HttpError(404, "Task not found");
+      if (task.project_id) {
+        // A planning Run is a Task-owned Run like any other: the same writer
+        // gate as createTaskRunAdmission.
+        await lockActiveProjectForMutation(client, identity.spaceId, task.project_id);
+        await assertProjectWriterForMutation(client, identity.spaceId, task.project_id, identity.userId);
+      }
       if (task.task_role !== "source") throw new HttpError(409, "Only source tasks can request Agent planning");
       const agentId = optionalString(body.agent_id) ?? task.assigned_agent_id;
       if (!agentId) throw new HttpError(422, "agent_id is required when the Task has no assigned agent");
@@ -1365,7 +1383,24 @@ export class PgTaskRepository {
   }
 
   async createTaskEvaluation(identity: SpaceUserIdentity, taskId: string, body: Record<string, unknown>) {
-    if (!(await getVisibleTaskRow(this.pool, identity, taskId))) throw new HttpError(404, "Task not found");
+    return withDbTransaction(this.pool, (client) => this.createTaskEvaluationIn(client, identity, taskId, body));
+  }
+
+  private async createTaskEvaluationIn(
+    client: Queryable,
+    identity: SpaceUserIdentity,
+    taskId: string,
+    body: Record<string, unknown>,
+  ) {
+    const task = await getVisibleTaskRow(client, identity, taskId);
+    if (!task) throw new HttpError(404, "Task not found");
+    // The newest evaluation decides the close gate for everyone, so recording
+    // one is a write to the Task: a Project viewer may read it, not judge it,
+    // and an archived Project takes no new judgements.
+    if (task.project_id) {
+      await lockActiveProjectForMutation(client, identity.spaceId, task.project_id);
+      await assertProjectWriterForMutation(client, identity.spaceId, task.project_id, identity.userId);
+    }
     const score = bounded01(body.score, "score");
     const confidence = bounded01(body.confidence, "confidence");
     const runId = optionalString(body.run_id);
@@ -1374,7 +1409,7 @@ export class PgTaskRepository {
       // 422-versus-201 is otherwise an existence oracle for Runs they cannot
       // see, and the evaluation they attach to it then decides the close gate
       // for everyone while `listTaskEvaluations` hides it from them.
-      const link = await this.pool.query<{ id: string }>(
+      const link = await client.query<{ id: string }>(
         `SELECT tr.id
            FROM task_runs tr
            JOIN runs r ON r.id = tr.run_id AND r.space_id = tr.space_id
@@ -1389,7 +1424,7 @@ export class PgTaskRepository {
       : null;
     if (evidenceArtifactIds?.length) {
       const distinct = [...new Set(evidenceArtifactIds)];
-      const linked = await this.pool.query<{ total: string }>(
+      const linked = await client.query<{ total: string }>(
         `SELECT count(DISTINCT ta.artifact_id)::text AS total
            FROM task_artifacts ta
            JOIN artifacts a ON a.id = ta.artifact_id AND a.space_id = ta.space_id
@@ -1403,7 +1438,7 @@ export class PgTaskRepository {
       }
     }
     const now = new Date().toISOString();
-    const result = await this.pool.query<TaskEvaluationRow>(
+    const result = await client.query<TaskEvaluationRow>(
       `INSERT INTO task_evaluations (
          id, space_id, task_id, run_id, evaluator_type, evaluator_user_id,
          score, confidence, summary, checklist_json, known_issues_json,
@@ -1494,9 +1529,8 @@ function buildTaskWhere(identity: SpaceUserIdentity, filters: { boardId: string 
   if (filters.projectFolderId) clauses.push(`t.project_folder_id = ${add(filters.projectFolderId)}`);
   if (filters.projectId) clauses.push(`t.project_id = ${add(filters.projectId)}`);
   if (filters.status) clauses.push(`t.status = ${add(filters.status)}`);
-  // The same chain the Board, Needs You and `/me/tasks` use. This was a third
-  // definition of "mine", and one that disagreed with the other two: it counted
-  // a Task an Agent had claimed as still yours.
+  // The same chain the Board, Needs You and `/me/tasks` use. Do not keep a
+  // third definition of "mine". A Task an Agent has claimed is the Agent's.
   if (filters.assignedToMe) clauses.push(`${responsibleUserSql("t", "fp")} = $2`);
   if (filters.q) clauses.push(`(t.title ILIKE ${add(`%${filters.q}%`)} OR t.description ILIKE $${params.length})`);
   return { where: `WHERE ${clauses.join(" AND ")}`, params };

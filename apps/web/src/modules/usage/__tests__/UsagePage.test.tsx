@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   UsageDimensionsResponse,
@@ -12,6 +12,7 @@ import type {
 } from '@rainver/protocol'
 import UsagePage from '../UsagePage'
 import { usageApi } from '../../../api/client'
+import i18n from '../../../i18n'
 
 vi.mock('sonner', () => ({
   toast: {
@@ -81,6 +82,9 @@ function summary(groupBy = 'provider'): UsageSummaryResponse {
       },
       last_seen_at: '2026-07-09T12:00:00.000Z',
     }],
+    total: 1,
+    limit: 100,
+    offset: 0,
   }
 }
 
@@ -135,6 +139,7 @@ const sessions: UsageSessionsResponse = {
     last_seen_at: '2026-07-09T12:00:00.000Z',
   }],
   total: 1,
+  totals,
 }
 
 const events: UsageEventsResponse = {
@@ -253,11 +258,67 @@ describe('UsagePage', () => {
     })
   })
 
+  it('keeps the latest filter answer when an earlier window answers later', async () => {
+    let answerEarlier: (value: UsageSummaryResponse) => void = () => {}
+    vi.mocked(usageApi.summary).mockImplementation(async (params = {}) => {
+      if (params.from?.startsWith('2025-01')) return new Promise(resolve => { answerEarlier = resolve })
+      if (params.from?.startsWith('2026-06')) return { ...summary(), items: [{ ...summary().items[0], group_label: 'June Provider' }] }
+      return summary()
+    })
+    render(<UsagePage />)
+    expect((await screen.findAllByText('OpenAI')).length).toBeGreaterThan(0)
+
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2025-01-01' } })
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-06-01' } })
+    expect((await screen.findAllByText('June Provider')).length).toBeGreaterThan(0)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh usage' })).toBeEnabled())
+
+    await act(async () => {
+      answerEarlier({ ...summary(), items: [{ ...summary().items[0], group_label: 'Year-Old Provider' }] })
+    })
+    expect(screen.queryByText('Year-Old Provider')).not.toBeInTheDocument()
+    expect(screen.getAllByText('June Provider').length).toBeGreaterThan(0)
+  })
+
+  it('averages per session over every matched session, from the sessions\' own totals', async () => {
+    // One session on the page, four matched: their 1670 tokens average to 418
+    // per session. The summary's larger total also counts usage seen only at
+    // summary level, which no session in the list stands for.
+    vi.mocked(usageApi.summary).mockResolvedValue({ ...summary(), totals: { ...totals, total_tokens: 99_999 } })
+    vi.mocked(usageApi.sessions).mockResolvedValue({ ...sessions, total: 4 })
+    render(<UsagePage />)
+
+    const row = (await screen.findByRole('cell', { name: 'Session' })).closest('tr')!
+    expect(within(row).getAllByRole('cell')[1]).toHaveTextContent('418')
+  })
+
+  it('pages through every matched group instead of stopping at the first page', async () => {
+    vi.mocked(usageApi.summary).mockResolvedValue({ ...summary(), total: 150, limit: 100, offset: 0 })
+    render(<UsagePage />)
+
+    expect(await screen.findByText('1–100 of 150')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
+    await waitFor(() => expect(usageApi.summary).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 100 })))
+
+    // Back to the first page reads it again, rather than keeping page 2's rows.
+    vi.mocked(usageApi.summary).mockClear()
+    fireEvent.click(await screen.findByRole('button', { name: 'Previous page' }))
+    await waitFor(() => expect(usageApi.summary).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0 })))
+
+    // Refresh starts again from the first page.
+    fireEvent.click(screen.getByRole('button', { name: 'Next page' }))
+    await waitFor(() => expect(usageApi.summary).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 100 })))
+    vi.mocked(usageApi.summary).mockClear()
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh usage' }))
+    await waitFor(() => expect(usageApi.summary).toHaveBeenCalledWith(expect.objectContaining({ offset: 0 })))
+    expect(await screen.findByText('1–100 of 150')).toBeInTheDocument()
+  })
+
   it('renders shared empty-state panels instead of empty tables when there is no usage', async () => {
     vi.mocked(usageApi.summary).mockResolvedValue({ ...summary(), totals: { ...totals, event_count: 0, request_count: 0, total_tokens: 0 }, items: [] })
     vi.mocked(usageApi.timeseries).mockResolvedValue({ ...timeseries, items: [] })
     vi.mocked(usageApi.dimensions).mockResolvedValue({ ...dimensions, execution_channels: [] })
-    vi.mocked(usageApi.sessions).mockResolvedValue({ items: [], total: 0 })
+    vi.mocked(usageApi.sessions).mockResolvedValue({ items: [], total: 0, totals: { ...totals, total_tokens: 0, event_count: 0, request_count: 0 } })
     vi.mocked(usageApi.events).mockResolvedValue({ items: [], total: 0, limit: 25, offset: 0 })
 
     render(<UsagePage />)
@@ -275,4 +336,35 @@ describe('UsagePage', () => {
     expect((await screen.findAllByText('Provider')).length).toBeGreaterThan(0)
   })
 
+  it('counts events, runs and the budget window in the right plural form', async () => {
+    render(<UsagePage />)
+
+    expect(await screen.findByText('2 events')).toBeInTheDocument()
+    expect(screen.getByText('1 run')).toBeInTheDocument()
+    expect(screen.getByText('30 days')).toBeInTheDocument()
+    expect(screen.getAllByText('50.0% observed').length).toBeGreaterThan(0)
+  })
+
+  it('reads in Chinese, with dates, numbers and costs in Chinese form', async () => {
+    await i18n.changeLanguage('zh-CN')
+    try {
+      render(<UsagePage />)
+
+      expect(await screen.findByRole('heading', { name: 'Token 用量' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '空间内共享' })).toBeInTheDocument()
+      expect(screen.getByText('2 个事件')).toBeInTheDocument()
+      expect(screen.getByText('1 次运行')).toBeInTheDocument()
+      expect(screen.getByText('30 天')).toBeInTheDocument()
+      expect(screen.getAllByText('已观测 50.0%').length).toBeGreaterThan(0)
+      // The timeseries day is the stored day, written the Chinese way.
+      expect(screen.getByText('7月9日')).toBeInTheDocument()
+      expect(screen.getAllByText(/7月9日 \d{2}:\d{2}/).length).toBeGreaterThan(0)
+      expect(screen.getAllByText('US$12.50').length).toBeGreaterThan(0)
+      // Provider names and model ids are data, not copy.
+      expect(screen.getAllByText('OpenAI').length).toBeGreaterThan(0)
+      expect(screen.getByRole('cell', { name: '每个会话' })).toBeInTheDocument()
+    } finally {
+      await i18n.changeLanguage('en')
+    }
+  })
 })

@@ -13,15 +13,15 @@ import { insertProposalRow } from "../proposals/reviewPackets.js";
 import { contentOwnerFilterSql, contentReadSql } from "../access/contentAccessSql.js";
 import { loadViewerSpaceRole } from "../retrieval/sourcePolicy.js";
 import type { CredentialSpendBasis } from "../policy/credentialSpend.js";
+import { localDayUtcBounds } from "../scheduler/localDay.js";
+import { withDedicatedSessionAdvisoryLock } from "../../db/advisoryLock.js";
 import {
   assertValidLocalDate,
   assertValidTimezone,
-  computeInitialNextRunAt,
-  localDayUtcBounds,
   PgDailyReportSettingsRepository,
 } from "./repository.js";
 
-export interface DailyReportResult {
+interface DailyReportResult {
   run_id: string | null;
   artifact_id: string | null;
   proposal_ids: string[];
@@ -112,7 +112,7 @@ const VALID_MEMORY_TYPES = new Set(["semantic", "episodic", "preference", "proce
 const SERVICE_VERSION = "1";
 
 /**
- * A report someone asked for now spends as them. A scheduled one spends on
+ * A report a person asked for spends as that person. A scheduled one spends on
  * their daily-report setting, re-read at spend time: switched off, or its
  * person no longer a member of the Space, it spends nothing.
  */
@@ -140,25 +140,40 @@ export function dailyReportSpend(
   };
 }
 
+interface DailyReportGenerationInput {
+  spaceId: string;
+  userId: string;
+  setting: SettingRow;
+  localDate: string;
+  triggerOrigin: string;
+  createExperienceProposalsOverride?: boolean | null;
+  createMemoryProposalsOverride?: boolean | null;
+}
+
 export class DailyCaptureReportService {
   constructor(
     private readonly db: Queryable,
     private readonly config: ServerConfig,
   ) {}
 
-  async generateForDate(input: {
-    spaceId: string;
-    userId: string;
-    setting: SettingRow;
-    localDate: string;
-    triggerOrigin: string;
-    force?: boolean;
-    createExperienceProposalsOverride?: boolean | null;
-    createMemoryProposalsOverride?: boolean | null;
-  }): Promise<DailyReportResult> {
+  async generateForDate(input: DailyReportGenerationInput): Promise<DailyReportResult> {
     assertValidLocalDate(input.localDate);
     assertValidTimezone(input.setting.timezone || "UTC");
-    if (!input.force) {
+    // One generation per person and day at a time, held across the Provider
+    // call: a manual run beside the scheduled one waits here and then finds
+    // the report this one stored, instead of paying the Provider again. The
+    // write still re-checks under its own lock (persistReport).
+    return withDedicatedSessionAdvisoryLock(
+      this.db,
+      `daily_capture_report_generation:${input.spaceId}:${input.userId}:${input.localDate}`,
+      () => this.generateLocked(input),
+    );
+  }
+
+  private async generateLocked(input: DailyReportGenerationInput): Promise<DailyReportResult> {
+    {
+      // One report per person and day, never rewritten: a second request for
+      // a day that has one answers with it.
       const existing = await this.findExistingArtifact(input.spaceId, input.userId, input.localDate);
       if (existing) {
         return {
@@ -209,11 +224,11 @@ export class DailyCaptureReportService {
       `Date: ${input.localDate}\nActivity IDs:\n${captureIds.map((id) => `  - ${id}`).join("\n")}\n\n` +
       `Captures:\n\n${bounded}\n\nGenerate the daily capture report JSON:`;
 
-    // One Run for this report, whatever the key pool does behind it. It used
-    // to be one Run per provider attempt, each failed on the spot, so a report
-    // that succeeded on the second key left a failed Run beside it claiming
-    // the same work.
+    // One Run for this report, whatever the key pool does behind it. Do not
+    // open a Run per provider attempt. A report that succeeds on a later key
+    // would otherwise sit beside a failed Run claiming the same work.
     const persisted: { value: PersistedDailyReport | null } = { value: null };
+    const duplicateOf: { value: { id: string; run_id: string | null } | null } = { value: null };
     const task = await runBoundedProviderTask(this.db, this.config, {
       completion: "text",
       spaceId: input.spaceId,
@@ -259,6 +274,10 @@ export class DailyCaptureReportService {
             runId,
           });
         } catch (error) {
+          if (error instanceof DailyReportAlreadyExistsError) {
+            duplicateOf.value = error.existing;
+            throw new BoundedProviderTaskError("daily_report_already_exists", error.message);
+          }
           throw new BoundedProviderTaskError(
             "daily_report_persistence_failed",
             error instanceof Error ? error.message : String(error),
@@ -269,6 +288,20 @@ export class DailyCaptureReportService {
     });
 
     const report = persisted.value;
+    if (duplicateOf.value) {
+      return {
+        run_id: duplicateOf.value.run_id,
+        artifact_id: duplicateOf.value.id,
+        proposal_ids: [],
+        experience_proposal_ids: [],
+        memory_proposal_ids: [],
+        capture_count: captures.length,
+        status: "skipped",
+        summary_preview: "Report already exists for this date.",
+        skipped: true,
+        existing_artifact_id: duplicateOf.value.id,
+      };
+    }
     if (!task.ok || !report) {
       return {
         run_id: task.runId,
@@ -344,6 +377,16 @@ export class DailyCaptureReportService {
     summaryPreview: string;
   }> {
     const { input, report, captureIds, captureCount, runId } = args;
+    // The existence check before the provider call does not cover the call
+    // itself: a second generation for the same day (a manual run beside the
+    // scheduled one, or a re-enqueued slot) passes it while this one is still
+    // at the provider. One report per person and day is settled here, under
+    // a lock on that key, by looking again before writing.
+    await db.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
+      `daily_capture_report:${input.spaceId}:${input.userId}:${input.localDate}`,
+    ]);
+    const existing = await this.findExistingArtifact(input.spaceId, input.userId, input.localDate, db);
+    if (existing) throw new DailyReportAlreadyExistsError(existing);
     const markdown = renderMarkdown(report, input.localDate);
     const artifactId = randomUUID();
     const endedAt = new Date().toISOString();
@@ -387,10 +430,10 @@ export class DailyCaptureReportService {
     const createExperienceProposals =
       input.createExperienceProposalsOverride ?? input.setting.create_experience_proposals;
     if (createExperienceProposals) {
-      for (const candidate of report.experience_candidates.slice(
-        0,
-        input.setting.max_experience_proposals_per_day,
-      )) {
+      // The cap bounds what is created, so a candidate the threshold or
+      // source check refuses does not use up a slot.
+      for (const candidate of report.experience_candidates) {
+        if (experienceProposalIds.length >= input.setting.max_experience_proposals_per_day) break;
         const id = await this.insertExperienceProposal(
           db,
           input,
@@ -406,10 +449,8 @@ export class DailyCaptureReportService {
     const createMemoryProposals =
       input.createMemoryProposalsOverride ?? input.setting.create_memory_proposals;
     if (createMemoryProposals) {
-      for (const candidate of report.memory_candidates.slice(
-        0,
-        input.setting.max_memory_proposals_per_day,
-      )) {
+      for (const candidate of report.memory_candidates) {
+        if (memoryProposalIds.length >= input.setting.max_memory_proposals_per_day) break;
         const id = await this.insertMemoryProposal(
           db,
           input,
@@ -438,12 +479,10 @@ export class DailyCaptureReportService {
       }),
       completed_at: endedAt,
     });
-    const nextRunAt = computeInitialNextRunAt(input.setting, new Date(endedAt));
     await new PgDailyReportSettingsRepository(db).recordReportCompleted(
       input.spaceId,
       input.userId,
       input.localDate,
-      nextRunAt,
       endedAt,
     );
 
@@ -460,8 +499,9 @@ export class DailyCaptureReportService {
     spaceId: string,
     userId: string,
     localDate: string,
+    db: Queryable = this.db,
   ): Promise<{ id: string; run_id: string | null } | null> {
-    const result = await this.db.query<{ id: string; run_id: string | null }>(
+    const result = await db.query<{ id: string; run_id: string | null }>(
       `SELECT id, run_id
          FROM artifacts a
         WHERE a.space_id = $1
@@ -592,6 +632,13 @@ export class DailyCaptureReportService {
       riskLevel: "low",
     });
     return row.id;
+  }
+}
+
+/** Thrown inside the persist transaction when the day already has a report. */
+class DailyReportAlreadyExistsError extends Error {
+  constructor(readonly existing: { id: string; run_id: string | null }) {
+    super("Report already exists for this date.");
   }
 }
 

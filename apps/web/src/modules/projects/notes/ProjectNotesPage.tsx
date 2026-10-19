@@ -11,18 +11,16 @@ import { NotebookChatPanel } from './NotebookChatPanel'
 import { ThreadOriginBar } from '../inquiryArea/ThreadOriginBar'
 
 /**
- * The Project's notes (U1). Notes are a Project-level surface, reachable from
+ * The Project's notes. Notes are a Project-level surface, reachable from
  * every Area — doing an experiment, weighing a decision or finishing a Task,
  * there is somewhere in the Project to write it down.
  *
- * It is the *same* page as `/knowledge/notes`, hoisted to the Project's folder
- * (U3). Not a second implementation: the Project's previous notebook was a
- * weaker copy of the note editor, and everything the shared editor grew —
- * promote to knowledge, raise as a question, link to evidence — never reached
- * it. One component, two scopes, is the structural answer to that.
+ * It is the *same* page as `/knowledge/notes`, hoisted to the Project's folder.
+ * Do not keep a second notebook. Promote to knowledge, raise as a question,
+ * and link to evidence live on this editor. One component, two scopes.
  *
  * Membership is by **placement**: the surface shows what is in the hoisted
- * subtree, not what matches `primary_project_id` (U6).
+ * subtree, not what matches `primary_project_id`.
  */
 export default function ProjectNotesPage() {
   const { projectId = '' } = useParams()
@@ -40,10 +38,10 @@ export default function ProjectNotesPage() {
     setProviders([])
     setError(null)
     // The folder is created on first visit rather than at project creation, so
-    // a Project made before this surface existed still has one when opened.
+    // opening a Project always has one.
     void Promise.all([
       notesCollectionsApi.ensureForProject(projectId),
-      providersApi.list().catch(() => [] as ModelProviderOut[]),
+      providersApi.usable().catch(() => [] as ModelProviderOut[]),
     ])
       .then(([collection, nextProviders]) => {
         if (cancelled) return

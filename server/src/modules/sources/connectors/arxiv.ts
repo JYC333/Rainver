@@ -7,10 +7,10 @@ import { HttpError } from "../../routeUtils/common.js";
  * feed parser on purpose.
  */
 
-export const ARXIV_API_BASE_URL = "https://export.arxiv.org/api/query";
+const ARXIV_API_BASE_URL = "https://export.arxiv.org/api/query";
 
-export const ARXIV_SORT_BY_VALUES = ["relevance", "lastUpdatedDate", "submittedDate"] as const;
-export const ARXIV_SORT_ORDER_VALUES = ["ascending", "descending"] as const;
+const ARXIV_SORT_BY_VALUES = ["relevance", "lastUpdatedDate", "submittedDate"] as const;
+const ARXIV_SORT_ORDER_VALUES = ["ascending", "descending"] as const;
 
 export type ArxivSortBy = (typeof ARXIV_SORT_BY_VALUES)[number];
 export type ArxivSortOrder = (typeof ARXIV_SORT_ORDER_VALUES)[number];
@@ -22,7 +22,7 @@ export interface ArxivQueryConfig {
   sort_order: ArxivSortOrder;
 }
 
-export interface ArxivReference {
+interface ArxivReference {
   baseId: string;
   version: string | null;
 }
@@ -56,7 +56,7 @@ export function buildArxivQueryUrl(config: ArxivQueryConfig): string {
   return `${ARXIV_API_BASE_URL}?${params.toString()}`;
 }
 
-export function arxivAbsUrl(baseId: string): string {
+function arxivAbsUrl(baseId: string): string {
   return `https://arxiv.org/abs/${baseId}`;
 }
 
@@ -68,7 +68,7 @@ export function arxivPdfUrl(baseId: string): string {
   return `https://arxiv.org/pdf/${baseId}`;
 }
 
-// New-style ids (2402.08954) and legacy slash ids (hep-th/9901001), with an
+// New-style ids (2402.08954) and slash ids (hep-th/9901001), with an
 // optional version suffix such as v2.
 const NEW_STYLE_ID = /^(\d{4}\.\d{4,5})(v\d+)?$/;
 const LEGACY_ID = /^([A-Za-z][A-Za-z0-9.-]*\/\d{7})(v\d+)?$/;
@@ -78,7 +78,7 @@ const ARXIV_URL_PATH_PREFIXES = ["/abs/", "/pdf/", "/html/"];
 
 /**
  * Parses arXiv ids out of abs/pdf/html URLs, `arXiv:<id>` references, and bare
- * ids (versioned, unversioned, and legacy slash ids). Returns null for
+ * ids (versioned, unversioned, and slash ids). Returns null for
  * anything that is not an arXiv reference.
  */
 export function parseArxivReference(value: string | null | undefined): ArxivReference | null {

@@ -8,7 +8,7 @@ import type { Queryable } from "../routeUtils/common.js";
 import { insertArtifactRow } from "../artifacts/reviewArtifactWriter.js";
 import { ContextOpsService } from "./service.js";
 
-export const CONTEXT_OBSERVATION_REPORT_ARTIFACT_TYPE = "context_observation_report";
+const CONTEXT_OBSERVATION_REPORT_ARTIFACT_TYPE = "context_observation_report";
 
 export async function runContextObservationScan(
   db: Queryable,

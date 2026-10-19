@@ -1,14 +1,14 @@
 /**
  * How much of a *managed subscription* is left.
  *
- * The in-process channel's half of quota reading, and all that remains of it
- * on the server. A managed subscription's OAuth credential is held here (ADR
- * 0008 — managed subscriptions stay the in-process channel), so the token is
- * already in memory and the vendor's endpoint is one HTTP call away.
+ * The in-process channel's half of quota reading. A managed subscription's
+ * OAuth credential is held here (ADR 0008 — managed subscriptions stay the
+ * in-process channel), so the token is already in memory and the vendor's
+ * endpoint is one HTTP call away.
  *
- * The CLI half moved to the host that holds the copy's login
- * (`packages/host-daemon/src/usageProbe.ts`, ADR 0016 §7). Nothing here reads
- * a filesystem profile any more, and nothing here launches a CLI.
+ * The CLI half is the host that holds the copy's login
+ * (`packages/host-daemon/src/usageProbe.ts`, ADR 0016 §7). This module does
+ * not read a filesystem profile and does not launch a CLI.
  */
 
 const CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";

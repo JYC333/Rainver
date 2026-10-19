@@ -8,7 +8,7 @@ const CUSTOM_SOURCE_SPACE_POLICY_SETTINGS_KEY = "source.custom_source.space_poli
  * The world every Custom Source / Source Recipe real-Postgres file starts
  * from: one user, one team Space they created, the fixed custom_source
  * connector → provider → mapping rows the services look up by id, and the
- * user's owner membership. Literals match what the files used to inline.
+ * user's owner membership. Literals are the ids the services look up.
  */
 export async function seedCustomSourceWorld(
   pool: Pool,

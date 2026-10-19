@@ -83,7 +83,7 @@ const importRe = /\b(?:from|import)\s+["']([^"']+)["']/g;
  * `import("pkg")` and the inline type form `typeof import("pkg")`. Both are
  * invisible to `importRe`, which requires whitespace before the quote, and
  * lazily loaded packages such as `@earendil-works/pi-ai` appear in
- * `src` in no other form. Without this pattern the file-scoped allowances
+ * `src` in no other form. Do not omit the pattern. The file-scoped allowances
  * below cannot fire for them at all, and a boundary violation lands with every
  * assertion green.
  */

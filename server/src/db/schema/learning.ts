@@ -29,13 +29,10 @@ export const learningObjectives = pgTable("learning_objectives", {
 	check("ck_learning_objectives_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('archived'::character varying)::text])`),
 ]);
 
-// A durable card/exercise anchored to one confirmed, versioned Knowledge
-// item (plan section 13.5: "durable cards/exercises should use stable,
-// versioned Knowledge anchors", distinct from temporary Note-derived
-// suggestions, which this Phase does not implement). `knowledgeItemVersion`
-// is captured at creation time for provenance/display only — unlike Phase
-// 7's pinned_source_ref, staleness revalidation against a later Knowledge
-// version is not implemented in this pass (see plan doc scoping notes).
+// A durable card or exercise anchored to one versioned Knowledge item.
+// `knowledgeItemVersion` is captured at creation for provenance and display.
+// It is not checked against a later Knowledge version. There are no
+// Note-derived suggestions.
 export const learningItems = pgTable("learning_items", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),
@@ -57,8 +54,8 @@ export const learningItems = pgTable("learning_items", {
 	// never SET NULL (the tenant reference integrity test forbids any SET
 	// NULL FK on the tenant column) — see inquiry_threads_primary_parent_fkey
 	// for the same rule applied to a self-referential composite FK.
-	// Objectives are never hard-deleted by this Phase's service, so this is
-	// a defensive constraint, not a path the app takes.
+	// Objectives are not hard-deleted, so this FK is defensive. The app does
+	// not take this path.
 	foreignKey({ columns: [table.objectiveId, table.spaceId], foreignColumns: [learningObjectives.id, learningObjectives.spaceId], name: "learning_items_objective_fkey" }),
 	foreignKey({ columns: [table.knowledgeItemId, table.spaceId], foreignColumns: [knowledgeItems.objectId, knowledgeItems.spaceId], name: "learning_items_knowledge_item_fkey" }),
 	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "learning_items_space_id_fkey" }),
@@ -67,9 +64,8 @@ export const learningItems = pgTable("learning_items", {
 ]);
 
 // Per-user mastery and scheduling, deliberately separate from the shared
-// Learning Item content above (plan section 13.5's completion gate: "global
-// Learning state remains per-user while shared Knowledge remains canonical
-// content").
+// Learning Item content above. Global Learning state stays per-user. Shared
+// Knowledge stays canonical content.
 export const learningItemMastery = pgTable("learning_item_mastery", {
 	id: varchar({ length: 36 }).primaryKey().notNull(),
 	spaceId: varchar("space_id", { length: 36 }).notNull(),

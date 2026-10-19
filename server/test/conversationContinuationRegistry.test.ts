@@ -6,10 +6,9 @@ import {
 import { registerProjectDefinitionContinuation } from "../src/modules/projects/projectDefinitionProposalApplier.js";
 import type { Queryable } from "../src/modules/proposals/repository.js";
 
-// Unit coverage for the registry's own dispatch logic (plan:
-// .agent/plans/room-advancement-reliability-plan.md, Phase 2) — the parts
-// that never touch the database. Domain handler behavior (sibling counting,
-// created-Thread lookup) is covered against real Postgres in roomsDb.test.ts.
+// Unit coverage for the registry's own dispatch logic — the parts that never
+// touch the database. Domain handler behavior (sibling counting, created-Thread
+// lookup) is covered against real Postgres in roomsDb.test.ts.
 
 const unusedDb = {
   query: async () => {

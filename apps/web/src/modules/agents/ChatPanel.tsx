@@ -19,6 +19,7 @@ import {
 import { readBackTurnState, settledTurn } from '../conversation/settledTurn'
 import { ActionPreviewCards } from '../conversation/ActionPreviewCard'
 import { errMsg } from '../../lib/utils'
+import { useAppTranslation } from '../../i18n'
 import { useSpace } from '../../contexts/SpaceContext'
 import { Button } from '../../components/ui/button'
 import { Select } from '../../components/ui/select'
@@ -33,7 +34,7 @@ import { ConversationRunControls } from '../conversation/ConversationRunControls
  *
  * Every read is a `loadRunTurn`, so this is what keeps opening a long
  * conversation from fanning out one request per reply. Older replies render
- * as prose, which is what they were before the fold existed.
+ * as prose.
  */
 const HISTORY_TURN_READS = 20
 
@@ -79,6 +80,7 @@ export default function ChatPanel({
   projectId?: string
 }) {
   const { userId } = useSpace()
+  const { t } = useAppTranslation()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sessionId, setSessionId] = useState<string | undefined>(initialSessionId ?? undefined)
   const [input, setInput] = useState('')
@@ -166,7 +168,7 @@ export default function ChatPanel({
           artifactRefs: Array.isArray(m.metadata_json?.artifact_refs) ? m.metadata_json.artifact_refs.filter((value): value is string => typeof value === 'string') : undefined,
           runId: m.run_id ?? undefined,
           runIds: uniqueRunIds(m.run_id, m.metadata_json?.retry_run_ids),
-          // The turn behind a saved reply, so D3's fold survives a reload
+          // The turn behind a saved reply, so the fold survives a reload
           // rather than existing only in the session that watched it stream.
           //
           // Through `settledTurn` like every other settle: the turn supplies
@@ -259,15 +261,15 @@ export default function ChatPanel({
     ? [{
       projectFolderId: selectedBackendOption.project_folder_id,
       workspaceLocationId: selectedBackendOption.workspace_location_id,
-      label: 'Primary · Workspace',
+      label: t('conversation_ui.chat.primary_workspace'),
     }]
     : []
   /**
    * A turn's request, from send until it resolves — including while it is
    * blocked, which is a stop rather than an end.
    *
-   * `sending` says the same thing and drives the spinner and the composer;
-   * this ref exists because `send` needs to read it synchronously, before a
+   * `sending` says the same thing and drives the spinner and the composer.
+   * `send` reads this ref synchronously, before a
    * state update could have landed.
    */
   const inFlight = useRef(false)
@@ -283,9 +285,9 @@ export default function ChatPanel({
     // `awaitingDecision` as well as `inFlight`, because the same stop is
     // reachable two ways: a turn blocked in this session, whose request is
     // still open, and one blocked before a reload, whose is not. The note
-    // above the composer is driven by `awaitingDecision`, so a guard that
-    // only knew about `inFlight` told the person their message was held and
-    // then sent it anyway.
+    // above the composer is driven by `awaitingDecision`. Guard on both: a
+    // guard that only sees `inFlight` tells the person their message is held
+    // and then sends it anyway.
     if ((!message && parts.length === 0) || inFlight.current || awaitingDecision || loadingHistory || loadingBackends || !backend || selectedBackendOption?.usable === false) return
     inFlight.current = true
     setHostError(null)
@@ -371,9 +373,7 @@ export default function ChatPanel({
             : [...current, completed]
         })
       } else {
-        const note = res.error_code === 'model_provider_required'
-          ? 'No model provider is configured for this space yet. Add one to enable chat.'
-          : (res.error ?? 'The assistant could not complete this turn.')
+        const note = res.error ?? t('conversation_ui.chat.turn_failed')
         setMessages(current => {
           const streamed = current.find(item => item.id === streamingMessageId)
           const failed: ChatMessage = {
@@ -398,10 +398,10 @@ export default function ChatPanel({
         ? rawNote
         : errorStatus !== null && [403, 409, 503].includes(errorStatus) && selectedBackendOption?.host_bound
         ? errorStatus === 403
-          ? 'This host-bound Agent can only be triggered by the Host owner.'
+          ? t('conversation_ui.chat.host_owner_only')
           : errorStatus === 503
-            ? 'The execution Host is offline. Reconnect it before sending this direct message.'
-            : 'The host-bound workspace is unavailable or belongs to a different conversation context.'
+            ? t('conversation_ui.chat.host_offline')
+            : t('conversation_ui.chat.workspace_unavailable')
         : rawNote
       if (errorStatus !== null && [403, 409, 503].includes(errorStatus) && selectedBackendOption?.host_bound) setHostError(note)
       toast.error(note)
@@ -437,7 +437,7 @@ export default function ChatPanel({
         ? { ...option, git: next.git ?? null }
         : option))
       setHostError(null)
-      toast.success('Git context refreshed')
+      toast.success(t('conversation_ui.chat.git_refreshed'))
     } catch (error) {
       const note = errMsg(error)
       setHostError(note)
@@ -503,7 +503,6 @@ export default function ChatPanel({
     }
   }, [backend, initialDraft, loadingBackends, loadingHistory, send])
 
-  const providerMissing = messages.some(m => m.error && m.content.includes('model provider'))
   const backendChoices = flattenBackendChoices(backendOptions)
   const selectedBackendKey = backend ? backendKey(backend) : ''
   const selectedHost = selectedBackendOption?.host_id ? hosts.find(host => host.id === selectedBackendOption.host_id) : null
@@ -517,7 +516,7 @@ export default function ChatPanel({
     try {
       await agentsApi.resetContext(agent.id)
       setRestoreWorkspace(false)
-      toast.success('Host context reset')
+      toast.success(t('conversation_ui.chat.context_reset'))
     } catch (error) {
       toast.error(errMsg(error))
     }
@@ -528,9 +527,9 @@ export default function ChatPanel({
       <ConfirmDialog
         open={resetConfirmOpen}
         onOpenChange={setResetConfirmOpen}
-        title="Reset this Agent's host context?"
-        description="The next direct message starts a fresh vendor session. Files in its workspace stay."
-        confirmLabel="Reset context"
+        title={t('conversation_ui.chat.reset_title')}
+        description={t('conversation_ui.chat.reset_description')}
+        confirmLabel={t('conversation_ui.chat.reset_confirm')}
         onConfirm={() => void resetContext()}
       />
       <div className="mb-2 flex items-center justify-between gap-3">
@@ -538,9 +537,9 @@ export default function ChatPanel({
             labelable element, so the wrapper gave the control no accessible
             name. `ariaLabel` is what names it. */}
         <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-          <span className="shrink-0">Backend</span>
+          <span className="shrink-0">{t('conversation_ui.chat.backend')}</span>
           <Select
-            ariaLabel="Conversation backend"
+            ariaLabel={t('conversation_ui.chat.backend_label')}
             size="sm"
             className="min-w-0 max-w-[22rem]"
             value={selectedBackendKey}
@@ -554,14 +553,14 @@ export default function ChatPanel({
               }
             }}
             options={[
-              ...(loadingBackends ? [{ value: '', label: 'Loading backends…' }] : []),
-              ...(!loadingBackends && backendChoices.length === 0 ? [{ value: '', label: 'No eligible backend' }] : []),
+              ...(loadingBackends ? [{ value: '', label: t('conversation_ui.chat.loading_backends') }] : []),
+              ...(!loadingBackends && backendChoices.length === 0 ? [{ value: '', label: t('conversation_ui.chat.no_backend') }] : []),
               ...(!loadingBackends && backendChoices.length > 0 && !backend
-                ? [{ value: '', label: 'Select backend…', disabled: true }]
+                ? [{ value: '', label: t('conversation_ui.chat.select_backend'), disabled: true }]
                 : []),
               ...backendChoices.map(choice => ({
                 value: choice.key,
-                label: `${choice.label}${choice.usable ? '' : ' · unavailable'}`,
+                label: `${choice.label}${choice.usable ? '' : t('conversation_ui.chat.unavailable_suffix')}`,
                 disabled: !choice.usable,
               })),
             ]}
@@ -569,35 +568,35 @@ export default function ChatPanel({
         </div>
         {sessionId && (
           <Link to={`/sessions?open=${sessionId}`} className="text-[12px] text-muted-foreground hover:text-foreground underline-offset-4 hover:underline">
-            Chat history
+            {t('conversation_ui.chat.history')}
           </Link>
         )}
       </div>
       {selectedBackendOption?.host_bound && (
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs" role="status">
           <span className={hostBlocked ? 'text-destructive' : 'text-muted-foreground'}>
-            {selectedBackendOption.workspace_mode === 'managed' ? 'Managed workspace' : 'Project Location'} on {selectedBackendOption.host_name ?? 'host'}
-            {hostBlocked ? ` · ${selectedBackendOption.reason ?? 'unavailable'}` : ' · owner-only'}
+            {t(selectedBackendOption.workspace_mode === 'managed' ? 'conversation_ui.chat.managed_on' : 'conversation_ui.chat.location_on', { host: selectedBackendOption.host_name ?? t('conversation_ui.chat.host_fallback') })}
+            {hostBlocked ? ` · ${selectedBackendOption.reason ?? t('conversation_ui.chat.unavailable')}` : t('conversation_ui.chat.owner_only_suffix')}
           </span>
           {selectedBackendOption.host_owner_is_me && selectedBackendOption.host_online && (
-            <Button type="button" size="sm" variant="outline" disabled={sending} onClick={() => setResetConfirmOpen(true)}>Reset context</Button>
+            <Button type="button" size="sm" variant="outline" disabled={sending} onClick={() => setResetConfirmOpen(true)}>{t('conversation_ui.chat.reset_confirm')}</Button>
           )}
         </div>
       )}
       {selectedBackendOption && <div className="mb-2 rounded-md border border-border bg-muted/20 px-3 py-2"><ConversationGitContext snapshot={selectedBackendOption.git ?? null} /></div>}
       {hostError && <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-destructive" role="alert">
         <span>{hostError}</span>
-        {sessionId && hostError.toLowerCase().includes('git branch or commit changed') && <Button type="button" size="sm" variant="outline" onClick={() => void refreshDirectGit()}>Refresh Git context</Button>}
+        {sessionId && hostError.toLowerCase().includes('git branch or commit changed') && <Button type="button" size="sm" variant="outline" onClick={() => void refreshDirectGit()}>{t('conversation_ui.chat.refresh_git')}</Button>}
       </div>}
       {archivedManagedWorkspace && !hostBlocked && (
         <label className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
           <input type="checkbox" checked={restoreWorkspace} onChange={event => setRestoreWorkspace(event.target.checked)} disabled={sending} />
-          Restore previous managed workspace for this Agent
+          {t('conversation_ui.chat.restore_workspace')}
         </label>
       )}
       {!loadingBackends && backendChoices.length === 0 && (
         <p className="mb-2 text-xs text-warning" role="alert">
-          No eligible conversation backend is configured. Add a model provider or grant one of your CLI login profiles to this space.
+          {t('conversation_ui.chat.no_eligible_backend')}
         </p>
       )}
       <ConversationView
@@ -614,13 +613,8 @@ export default function ChatPanel({
               <>
                 <ActionPreviewCards previews={m.actionPreviews ?? []} viewerUserId={userId} />
                 {m.artifactRefs?.length ? <div className="mt-2 flex flex-wrap gap-3 text-[11px]">
-                  {m.artifactRefs?.map((artifactId, index) => <Link key={artifactId} className="text-accent-foreground hover:underline" to={`/artifacts/${artifactId}`}>Produced artifact {index + 1}</Link>)}
+                  {m.artifactRefs?.map((artifactId, index) => <Link key={artifactId} className="text-accent-foreground hover:underline" to={`/artifacts/${artifactId}`}>{t('conversation_ui.chat.produced_artifact', { index: index + 1 })}</Link>)}
                 </div> : null}
-                {m.error && providerMissing && m.content.includes('model provider') && (
-                  <div className="mt-1.5">
-                    <Link to="/providers" className="text-[12px] underline text-accent-foreground">Configure a provider →</Link>
-                  </div>
-                )}
               </>
             ),
             runControls: runIds.length > 0 ? runIds.map(runId => <ConversationRunControls
@@ -637,9 +631,9 @@ export default function ChatPanel({
         onInputChange={setInput}
         onSend={() => void send(input)}
         runHref={entry => (entry.turn ? `/runs/${entry.turn.run_id}` : undefined)}
-        placeholder="Ask your assistant… (Enter to send, Shift+Enter for newline)"
-        emptyTitle="Ask your assistant"
-        emptyDescription="It is aware of your space — memory, projects, captures, runs, and proposals. Long-term changes are always proposals you approve."
+        placeholder={t('conversation_ui.chat.placeholder')}
+        emptyTitle={t('conversation_ui.chat.empty_title')}
+        emptyDescription={t('conversation_ui.chat.empty_description')}
         composerDisabled={loadingBackends || !backend || hostBlocked}
         composerControls={selectedBackendOption?.session_config_options?.length ? (
           <ConversationSessionConfig
@@ -650,7 +644,7 @@ export default function ChatPanel({
           />
         ) : undefined}
         composerNote={awaitingDecision
-          ? 'This turn is waiting for your decision. Review it to carry on.'
+          ? t('conversation_ui.chat.awaiting_decision')
           : undefined}
         inputParts={inputParts}
         onInputPartsChange={setInputParts}
@@ -665,9 +659,9 @@ export default function ChatPanel({
 }
 
 /**
- * One choice per runtime profile. A CLI backend used to fan out into one
- * choice per brokered credential profile; a CLI now runs on an execution host
- * with its own login, so the profile names the whole choice.
+ * One choice per runtime profile. A CLI runs on an execution host with its own
+ * login, so the profile names the whole choice. Do not fan one CLI out into a
+ * choice per credential profile.
  */
 function flattenBackendChoices(options: ConversationBackendOption[]): BackendChoice[] {
   return options.map<BackendChoice>(option => {

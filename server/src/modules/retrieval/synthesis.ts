@@ -9,11 +9,11 @@ import { candidateKey } from "./searchInternals.js";
 import type { RevalidatedObject, ScoredCandidate } from "./types.js";
 
 /**
- * Context Brief synthesis (W6 of the context-layer roadmap).
+ * Context Brief synthesis.
  *
- * Ask Space is the context layer over raw retrieval: a synthesized, CITED
- * answer plus a gap analysis ("what the compiled context does not cover"). rainver
- * mirrors that as a brief, with the same safety contracts as the reranker:
+ * Ask Space is the context layer over raw retrieval: a synthesized, cited
+ * answer plus a gap analysis ("what the compiled context does not cover").
+ * The brief uses the same safety contracts as the reranker:
  *
  *  - **revalidate-before-synthesis (invariant 1/2).** The synthesizer only ever
  *    sees candidates that already passed the adapter `revalidate` gate, and their
@@ -26,7 +26,7 @@ import type { RevalidatedObject, ScoredCandidate } from "./types.js";
  *    invents (out of range) is dropped — the brief never points at an object the
  *    viewer did not already receive.
  *  - **advisory only (invariant 6).** Gap findings are returned, not written:
- *    the context review cycle (W7) turns them into batched review candidates; the brief
+ *    the context review cycle turns them into batched review candidates; the brief
  *    never makes a canonical write.
  *
  * The engine owns the access-safe seam + the deterministic assembly; the provider

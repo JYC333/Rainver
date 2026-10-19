@@ -22,7 +22,8 @@ function task(overrides: Partial<ScheduledTaskStatus> = {}): ScheduledTaskStatus
     last_started_at: "2026-07-26T00:00:00.000Z",
     last_success_at: "2026-07-26T00:00:00.000Z",
     last_failure_at: null,
-    last_error: null,
+    last_error_kind: null,
+    last_error_reference: null,
     consecutive_failures: 0,
     timeouts_total: 0,
     seconds_since_completion: 1,
@@ -114,10 +115,10 @@ describe("buildStatusBody", () => {
       databaseOk: true,
       source: source({ workerId: () => null, queueDepth: async () => ({ pending: 4, running: 0 }) }),
     });
-    expect(component(backedUp, "jobs_worker")).toMatchObject({
-      status: "error",
-      detail: "No jobs worker running while 4 job(s) are pending",
-    });
+    expect(component(backedUp, "jobs_worker")).toMatchObject({ status: "error" });
+    // The detail says what is wrong and what to do about it.
+    expect(component(backedUp, "jobs_worker").detail).toContain("No jobs worker running while 4 job(s) are pending");
+    expect(component(backedUp, "jobs_worker").detail).toContain("restart the server service");
     expect(component(backedUp, "jobs_queue").status).toBe("error");
     expect(backedUp.overall).toBe("error");
   });

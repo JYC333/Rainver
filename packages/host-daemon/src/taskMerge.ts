@@ -129,7 +129,7 @@ const CONFLICT_MARKER = /^(?:<{7,}|>{7,})(?:[ \r]|$)/m;
 /** Merge state files git writes in a checkout's git directory, read at most this far. */
 const STATE_READ_LIMIT = 4096;
 
-export interface TaskMergeStepResult {
+interface TaskMergeStepResult {
   ok: boolean;
   outcome: "rebased" | "conflict" | "unresolved" | "no_changes" | null;
   main_branch: string | null;
@@ -139,12 +139,12 @@ export interface TaskMergeStepResult {
   error: string | null;
 }
 
-export interface TaskMergeAbortResult {
+interface TaskMergeAbortResult {
   ok: boolean;
   error: string | null;
 }
 
-export interface TaskMergeFinishResult {
+interface TaskMergeFinishResult {
   ok: boolean;
   outcome: "merged" | "main_moved" | "waiting_local_changes" | null;
   merged_commit: string | null;

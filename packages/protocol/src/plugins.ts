@@ -88,8 +88,9 @@ export interface OfficialPluginDescriptor {
    */
   default_enabled: boolean;
   /**
-   * Whether the gallery card / nav entry is shown by default, even when
-   * disabled. true = visible but grayed out when disabled.
+   * Visible value used when there is no enablement row. The Global Rail
+   * shows an official plugin only when `enabled`. It does not gray out a
+   * disabled plugin. Do not treat this as a gallery card.
    */
   default_visible: boolean;
   scope: OfficialPluginScope;
@@ -101,7 +102,7 @@ export interface OfficialPluginDescriptor {
    * These are informational; they do not affect route mounting.
    */
   backend_feature_ids: string[];
-  /** Declared sensitive integrations. Used in UI and future permission gates. */
+  /** Declared sensitive integrations. Shown in the UI. They are not a permission gate. */
   permissions: {
     /** Plugin creates ActivityRecord entries. */
     creates_activity?: boolean;
@@ -121,7 +122,7 @@ export interface OfficialPluginDescriptor {
   };
   /**
    * Default values for settings_json keys. Stored in the enablement row.
-   * Opaque JSON in MVP; a typed settings schema per plugin is future work.
+   * Opaque JSON. There is no typed settings schema per plugin.
    */
   settings_defaults: Record<string, unknown>;
 }
@@ -160,11 +161,13 @@ export interface OfficialPluginListItem {
   effective: OfficialPluginEffectiveState;
 }
 
-/**
- * Response for GET /api/v1/plugins/effective.
- * Maps plugin_id → effective state. Used by frontend overlay.
- */
+/** plugin_id → effective state, computed by the plugin service. */
 export type OfficialPluginEffectiveMap = Record<string, OfficialPluginEffectiveState>;
+
+/** Response for GET /api/v1/plugins/effective: the map, wrapped. Used by the frontend overlay. */
+export interface OfficialPluginEffectiveResponse {
+  plugins: OfficialPluginEffectiveMap;
+}
 
 // ── Request types ─────────────────────────────────────────────────────────────
 
@@ -180,7 +183,7 @@ export interface PluginDisabledError {
 // ── Plugin Host API ───────────────────────────────────────────────────────────
 //
 // These types define the contract between the plugin host and plugin code.
-// Official plugins (Level 1 built-in, Level 2 downloaded) use these interfaces
+// Official plugins use these interfaces
 // to contribute routes, jobs, scheduler tasks, proposal appliers, and context
 // providers to the running server. Activation is deliberately synchronous:
 // plugin routes and contribution registrations must complete before the host
@@ -317,8 +320,8 @@ export interface PluginProposalPort {
  * Full context passed to RainverPlugin.activate().
  *
  * Official plugins (trusted, same-process) receive the raw Fastify instance
- * and a Queryable DB wrapper. Third-party plugins (future) will receive a
- * restricted proxy. Plugins MUST NOT import server internals (server/src/**)
+ * and a Queryable DB wrapper. Third-party plugins are not loaded. Do not
+ * hand them this context. Plugins MUST NOT import server internals (server/src/**)
  * directly — use this context instead.
  */
 export interface PluginHostContext {
@@ -366,8 +369,7 @@ export interface PluginMigration {
  *
  * Bundled official plugins implement this interface and are compiled into
  * server/dist/official-plugins before the server loads them at startup.
- * Downloaded plugins (Level 2) will use the same startup-load contract from
- * {RAINVER_HOME}/plugins/{id}/server/dist/index.js.
+ * Remote package download is not implemented.
  */
 export interface RainverPlugin {
   /** Must match OfficialPluginDescriptor.id. */

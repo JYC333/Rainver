@@ -4,6 +4,8 @@ import { toast } from 'sonner'
 import { ROOM_DISCUSSION_DEFAULT_ROUND_CAP } from '@rainver/protocol'
 import { Button } from '../../components/ui/button'
 import { errMsg } from '../../lib/utils'
+import i18n, { useAppTranslation } from '../../i18n'
+import { formatDateTime, formatNumber, formatTime } from '../../i18n/format'
 import type {
   RoomDiscussion,
   RoomDiscussionDetail,
@@ -22,7 +24,7 @@ import type {
 
 type AgentLabel = { id: string; name: string }
 
-export type DiscussionTimelineItem =
+type DiscussionTimelineItem =
   | { kind: 'message'; message: RoomMessage }
   | { kind: 'discussion'; discussionId: string; segment: number; messages: RoomMessage[] }
 
@@ -40,7 +42,7 @@ export function discussionNoticeOf(message: RoomMessage): RoomDiscussionNotice |
  * emergent discussion, the person's message that started it — the row names it
  * as its origin, and the replies to it are what carry the id.
  */
-export function messageDiscussionId(message: RoomMessage, originIds: ReadonlyMap<string, string>): string | null {
+function messageDiscussionId(message: RoomMessage, originIds: ReadonlyMap<string, string>): string | null {
   return message.discussion_id ?? discussionNoticeOf(message)?.discussion_id ?? originIds.get(message.id) ?? null
 }
 
@@ -83,7 +85,7 @@ export function referencedDiscussionIds(messages: readonly RoomMessage[]): strin
 }
 
 /** How many rounds one "add rounds" action asks for: a fresh discussion's default for its shape. */
-export function discussionExtensionRounds(discussion: Pick<RoomDiscussion, 'shape'>): number {
+function discussionExtensionRounds(discussion: Pick<RoomDiscussion, 'shape'>): number {
   return ROOM_DISCUSSION_DEFAULT_ROUND_CAP[discussion.shape]
 }
 
@@ -91,10 +93,9 @@ export function discussionExtensionRounds(discussion: Pick<RoomDiscussion, 'shap
  * What the extend action is called. On an emergent discussion held at its cap
  * the same call upgrades it into an explicit one, so it says that.
  */
-export function discussionExtendLabel(discussion: Pick<RoomDiscussion, 'kind' | 'shape'>): string {
-  if (discussion.kind === 'emergent') return 'Open a discussion'
-  const rounds = discussionExtensionRounds(discussion)
-  return `Add ${rounds} ${rounds === 1 ? 'round' : 'rounds'}`
+function discussionExtendLabel(discussion: Pick<RoomDiscussion, 'kind' | 'shape'>): string {
+  if (discussion.kind === 'emergent') return i18n.t('conversation_ui.discussion.open')
+  return i18n.t('conversation_ui.discussion.add_rounds', { count: discussionExtensionRounds(discussion) })
 }
 
 /** A reset time as the reader's clock shows it: the time today, the date too when it is not today. */
@@ -102,60 +103,45 @@ export function resetLabel(iso: string | null | undefined, now: Date = new Date(
   if (!iso) return null
   const at = new Date(iso)
   if (Number.isNaN(at.getTime())) return null
-  const time = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  return at.toDateString() === now.toDateString()
-    ? time
-    : `${at.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`
+  return at.toDateString() === now.toDateString() ? formatTime(at) : formatDateTime(at)
 }
 
 /** "5-hour window" or "weekly window", at a percentage, with its reset. */
 export function quotaWindowText(window: SubscriptionQuotaWindow): string {
   const reset = resetLabel(window.resets_at)
-  return `${Math.round(window.utilization)}% of its ${window.kind === 'week' ? 'weekly' : '5-hour'} window${reset ? ` (resets ${reset})` : ''}`
-}
-
-/**
- * What the discussion cost, one line per funding source:
- * money on priced Runs; per subscription its tokens here and the account's
- * window, which is account-wide and cannot be charged to the discussion.
- */
-export function discussionCostLines(
-  usage: RoomDiscussionDetail['usage'],
-  discussion?: Pick<RoomDiscussion, 'spend_cap_usd'>,
-): string[] {
-  const priced = pricedCostLine(usage, discussion)
-  return [...(priced ? [priced] : []), ...usage.subscription.map(subscriptionCostLine)]
+  const text = i18n.t(window.kind === 'week' ? 'conversation_ui.discussion.window_week' : 'conversation_ui.discussion.window_5h', { percent: Math.round(window.utilization) })
+  return reset ? i18n.t('conversation_ui.discussion.window_resets', { window: text, reset }) : text
 }
 
 function pricedCostLine(usage: RoomDiscussionDetail['usage'], discussion?: Pick<RoomDiscussion, 'spend_cap_usd'>): string | null {
   if (usage.priced_usd <= 0 && !discussion?.spend_cap_usd) return null
-  const cap = discussion?.spend_cap_usd ? ` of $${discussion.spend_cap_usd.toFixed(2)}` : ''
-  return `Priced models · $${usage.priced_usd.toFixed(2)}${cap}`
+  const spent = usage.priced_usd.toFixed(2)
+  return discussion?.spend_cap_usd
+    ? i18n.t('conversation_ui.discussion.priced_capped', { spent, cap: discussion.spend_cap_usd.toFixed(2) })
+    : i18n.t('conversation_ui.discussion.priced', { spent })
 }
 
 function subscriptionCostLine(line: SubscriptionUsageLine): string {
-  return `${line.account_label} · ${line.tokens.toLocaleString()} tokens here${line.window ? ` · account at ${quotaWindowText(line.window)}` : ''}`
+  const tokens = formatNumber(line.tokens)
+  return line.window
+    ? i18n.t('conversation_ui.discussion.subscription_line_window', { account: line.account_label, tokens, window: quotaWindowText(line.window) })
+    : i18n.t('conversation_ui.discussion.subscription_line', { account: line.account_label, tokens })
 }
 
-const STATUS_LABEL: Record<RoomDiscussionStatus, string> = {
-  active: 'In progress',
-  converged: 'Converged',
-  cap_reached: 'Round cap reached',
-  stopped: 'Stopped',
-  closed: 'Concluded',
+function statusText(status: RoomDiscussionStatus): string {
+  return i18n.t(`conversation_ui.discussion.status.${status}`)
 }
 
 /** Which cap stopped a discussion, as the server records it in `stop_reason`. */
-const CAP_LABEL: Record<string, string> = {
-  round_cap: 'Round cap reached',
-  spend_cap: 'Spend cap reached',
-  fanout_budget: 'Turn budget reached',
-  quota_exhausted: 'Subscription limit reached',
+const CAP_REASONS = new Set(['round_cap', 'spend_cap', 'fanout_budget', 'quota_exhausted'])
+
+function capText(reason: string | null | undefined): string {
+  return reason && CAP_REASONS.has(reason) ? i18n.t(`conversation_ui.discussion.cap.${reason}`) : statusText('cap_reached')
 }
 
 function statusLabel(discussion: Pick<RoomDiscussion, 'status' | 'stop_reason'>): string {
-  if (discussion.status === 'cap_reached') return CAP_LABEL[discussion.stop_reason ?? ''] ?? STATUS_LABEL.cap_reached
-  return STATUS_LABEL[discussion.status]
+  if (discussion.status === 'cap_reached') return capText(discussion.stop_reason)
+  return statusText(discussion.status)
 }
 
 export function DiscussionGroup({
@@ -192,10 +178,12 @@ export function DiscussionGroup({
   onContinueAnyway?: () => Promise<void>
   children: ReactNode
 }) {
+  const { t } = useAppTranslation()
   const [busy, setBusy] = useState(false)
-  const topic = discussion?.topic?.trim() || (segment === 0 ? messages[0]?.content.trim() : null) || 'Discussion'
+  const namedTopic = discussion?.topic?.trim() || (segment === 0 ? messages[0]?.content.trim() : null) || null
+  const topic = namedTopic ?? t('conversation_ui.discussion.default_topic')
   const participants = (discussion?.participant_agent_ids ?? [])
-    .map(agentId => agents.find(agent => agent.id === agentId)?.name ?? 'Agent')
+    .map(agentId => agents.find(agent => agent.id === agentId)?.name ?? t('conversation_ui.discussion.fallback_agent'))
   const conclusion = discussion?.conclusion_message_id
     ? messages.find(message => message.id === discussion.conclusion_message_id)?.content.trim()
     : undefined
@@ -218,24 +206,24 @@ export function DiscussionGroup({
     <section
       className="w-full min-w-0 border-l-2 border-primary/35 pl-3"
       data-testid={`discussion-${discussionId}${segment ? `-${segment}` : ''}`}
-      aria-label={`Discussion: ${topic}`}
+      aria-label={t('conversation_ui.discussion.aria', { topic })}
     >
       <header className="flex flex-wrap items-start gap-2 py-1">
         <div className="flex min-w-0 flex-1 items-start gap-2">
           <MessagesSquare className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium">{segment ? `Discussion continues${topic === 'Discussion' ? '' : ` · ${topic}`}` : topic}</span>
+            <span className="block truncate text-sm font-medium">{segment ? (namedTopic ? t('conversation_ui.discussion.continues_topic', { topic: namedTopic }) : t('conversation_ui.discussion.continues')) : topic}</span>
             {discussion && (
               <span className="block text-[11px] text-muted-foreground">
                 {participants.length > 0 && <>{participants.join(', ')} · </>}
-                Round {discussion.rounds_used - discussion.round_base}/{discussion.round_cap} · {statusLabel(discussion)}
+                {t('conversation_ui.discussion.round', { used: discussion.rounds_used - discussion.round_base, cap: discussion.round_cap, status: statusLabel(discussion) })}
               </span>
             )}
           </span>
         </div>
         {latest && (discussion?.status === 'active' || discussion?.status === 'cap_reached') && (
           <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => void act(() => onStop(discussionId))}>
-            Stop
+            {t('conversation_ui.discussion.stop')}
           </Button>
         )}
         {latest && discussion?.status === 'cap_reached' && onExtend && canContinue(discussion) && (
@@ -265,8 +253,8 @@ export function DiscussionGroup({
         {latest && hold && (
           <p className="flex w-full flex-wrap items-center gap-1 pl-9 text-xs text-amber-700 dark:text-amber-400" data-testid={`discussion-quota-hold-${discussionId}`}>
             <span>
-              {hold.can_continue ? 'Waiting for the window' : `Waiting for ${hold.account_label}'s window`}
-              {holdReset ? ` (resets ${holdReset})` : ''}
+              {hold.can_continue ? t('conversation_ui.discussion.waiting_window') : t('conversation_ui.discussion.waiting_account_window', { account: hold.account_label })}
+              {holdReset ? t('conversation_ui.discussion.resets_suffix', { reset: holdReset }) : ''}
             </span>
             {/* Only whoever may spend the login is offered to spend its reserve. */}
             {onContinueAnyway && hold.can_continue && (
@@ -278,7 +266,7 @@ export function DiscussionGroup({
                   disabled={busy}
                   onClick={() => void act(onContinueAnyway)}
                 >
-                  continue anyway
+                  {t('conversation_ui.discussion.continue_anyway')}
                 </button>
               </>
             )}
@@ -286,7 +274,7 @@ export function DiscussionGroup({
         )}
         {latest && conclusion && (
           <p className="line-clamp-2 w-full pl-9 text-xs text-muted-foreground" data-testid={`discussion-conclusion-${discussionId}`}>
-            Conclusion: {conclusion}
+            {t('conversation_ui.discussion.conclusion', { conclusion })}
           </p>
         )}
       </header>
@@ -314,8 +302,9 @@ export function DiscussionNoticeCard({
   /** Absent for a reader who may not add rounds (not a Project writer). */
   onExtend?: (discussionId: string, rounds: number) => Promise<void>
 }) {
+  const { t } = useAppTranslation()
   const [busy, setBusy] = useState(false)
-  const names = notice.agent_ids.map(agentId => agents.find(agent => agent.id === agentId)?.name ?? 'Agent')
+  const names = notice.agent_ids.map(agentId => agents.find(agent => agent.id === agentId)?.name ?? t('conversation_ui.discussion.fallback_agent'))
   // Offered only while the discussion is still held at its cap; a notice read
   // after someone already continued it would otherwise offer a refused action.
   const actionable = notice.kind === 'cap_reached' && discussion?.status === 'cap_reached' && onExtend !== undefined
@@ -364,7 +353,7 @@ function canContinue(discussion: Pick<RoomDiscussion, 'shape' | 'held_mentions'>
 }
 
 function noticeTitle(notice: RoomDiscussionNotice): string {
-  if (notice.kind === 'quota_hold') return 'Waiting for the subscription window'
-  if (notice.kind === 'cap_reached') return CAP_LABEL[notice.reason] ?? STATUS_LABEL.cap_reached
-  return notice.kind === 'failed' ? 'Discussion ended' : 'Not admitted'
+  if (notice.kind === 'quota_hold') return i18n.t('conversation_ui.discussion.notice.quota_hold')
+  if (notice.kind === 'cap_reached') return capText(notice.reason)
+  return i18n.t(notice.kind === 'failed' ? 'conversation_ui.discussion.notice.failed' : 'conversation_ui.discussion.notice.not_admitted')
 }

@@ -1,4 +1,4 @@
-export const RUN_CONTRACT_VERSION = "run_contract.v1" as const;
+const RUN_CONTRACT_VERSION = "run_contract.v1" as const;
 
 export type RunContractSourceKind =
   | "direct"
@@ -35,14 +35,14 @@ export interface RunBudgetSource {
   max_duration_seconds?: number | null;
 }
 
-export interface EffectiveRunBudget {
+interface EffectiveRunBudget {
   max_runs: number | null;
   max_attempts: number | null;
   max_cost: number | null;
   max_duration_seconds: number | null;
 }
 
-export interface RunBudgetResolution {
+interface RunBudgetResolution {
   mode: "explicit_precedence" | "strictest_of_all" | "none";
   selected_source_by_dimension: Record<keyof EffectiveRunBudget, RunContractSource | null>;
   declared_precedence_by_source: Array<{
@@ -86,7 +86,7 @@ export interface RunContractSnapshotInput {
   task_merge_id?: string | null;
 }
 
-export interface RunContractSnapshot {
+interface RunContractSnapshot {
   contract_version: typeof RUN_CONTRACT_VERSION;
   source: RunContractSource;
   project_id: string | null;
@@ -246,9 +246,9 @@ function normalizeBudgetSources(
   const explicit = Array.isArray(input?.budget_sources)
     ? input!.budget_sources.map((item) => normalizeBudgetSource(item)).filter(Boolean) as RunBudgetSource[]
     : [];
-  // Legacy callers provide the source and flat budget fields. Treat those
-  // fields as one source so old task/automation/workflow creation paths get
-  // the same deterministic resolution and audit metadata.
+  // Callers may still provide the source and flat budget fields. Treat those
+  // fields as one source so task, automation, and workflow creation get the
+  // same deterministic resolution and audit metadata.
   const legacy: RunBudgetSource = {
     source: { kind: source.kind, id: source.id ?? null },
     precedence: finiteNumberOrNull(input?.budget_precedence),

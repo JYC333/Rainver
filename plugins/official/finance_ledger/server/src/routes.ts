@@ -10,7 +10,11 @@ import type {
   DirectiveType,
   FinanceBookRow,
 } from "./domain/directives.js";
-import { AccountNotFoundError, financeLedgerService } from "./domain/service.js";
+import type { FinanceImportSourceRow } from "./domain/directiveRepository.js";
+import type { FinanceImportEntryRow } from "./domain/importEntries.js";
+import type { ImportBatchResult } from "./domain/importExportService.js";
+import { AccountNotFoundError, FinanceRuleError, financeLedgerService } from "./domain/service.js";
+import { withLockedBook } from "./domain/transaction.js";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DIRECTIVE_STATUSES: readonly DirectiveStatus[] = ["draft", "proposed", "posted", "voided"];
@@ -52,6 +56,66 @@ function requireDate(body: Record<string, unknown>, key: string): string {
   const value = requireString(body, key);
   if (!DATE_RE.test(value)) throw new RequestError(400, `${key} must be YYYY-MM-DD`);
   return value;
+}
+
+/** Strict request shape: a field this route does not take is a refusal, not a no-op. */
+function rejectUnknownFields(body: Record<string, unknown>, allowed: readonly string[]): void {
+  const unknown = Object.keys(body).filter((key) => !allowed.includes(key));
+  if (unknown.length > 0) {
+    throw new RequestError(400, `unknown field${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}`);
+  }
+}
+
+/** A ledger-rule refusal about an import is 422; an unknown batch or entry is 404. */
+function mapImportError(err: unknown): never {
+  if (err instanceof RequestError) throw err;
+  if (err instanceof FinanceRuleError) {
+    throw new RequestError(/not found$/.test(err.message) ? 404 : 422, err.message);
+  }
+  throw err;
+}
+
+function importSourceOut(source: FinanceImportSourceRow) {
+  return {
+    id: source.id,
+    source_type: source.source_type,
+    source_name: source.source_name,
+    content_hash: source.content_hash,
+    created_at: source.created_at,
+  };
+}
+
+function importEntryOut(entry: FinanceImportEntryRow) {
+  return {
+    id: entry.id,
+    entry_key: entry.entry_key,
+    identity_kind: entry.identity_kind,
+    external_id: entry.external_id,
+    entry_type: entry.entry_type,
+    entry_date: entry.entry_date,
+    source_lineno: entry.source_lineno,
+    raw_text: entry.raw_text,
+    status: entry.status,
+    status_reason: entry.status_reason,
+    directive_id: entry.directive_id,
+    duplicate_of_entry_id: entry.duplicate_of_entry_id,
+    missing_accounts: entry.missing_accounts,
+    missing_commodities: entry.missing_commodities,
+    account_mapping: entry.account_mapping_json,
+    mapping_version: entry.mapping_version,
+    errors: entry.errors_json,
+  };
+}
+
+function importBatchOut(result: ImportBatchResult) {
+  return {
+    import_source: importSourceOut(result.importSource),
+    batch_existed: result.batchExisted,
+    created_directives: result.createdDirectives,
+    summary: result.summary,
+    entries: result.entries.map(importEntryOut),
+    errors: result.errors,
+  };
 }
 
 function param(request: FastifyRequest, name: string): string {
@@ -219,10 +283,8 @@ export function registerFinanceLedgerRoutes(
         if (err instanceof RequestError) throw err;
         // A unique violation on (book_id, name) says an account by that name
         // exists — including one hidden from this person, since the constraint
-        // is book-wide and visibility is not part of it. Answered as a plain
-        // conflict rather than by echoing the driver's message, which named the
-        // constraint and confirmed the row. The import path already did this;
-        // the direct create did not.
+        // is book-wide and visibility is not part of it. Answer 409. Do not
+        // echo the driver's message: it names the constraint and confirms the row.
         if (isUniqueViolation(err)) {
           throw new RequestError(409, "an account with that name already exists in this book");
         }
@@ -277,6 +339,7 @@ export function registerFinanceLedgerRoutes(
         // a missing account, and matching on the message meant rewording it
         // silently turned a deliberate 404 into a 500.
         if (err instanceof AccountNotFoundError) throw new RequestError(404, "Account not found");
+        if (err instanceof FinanceRuleError) throw new RequestError(422, err.message);
         throw err;
       });
       reply.send({ account });
@@ -298,15 +361,25 @@ export function registerFinanceLedgerRoutes(
       const book = await requireBook(request, identity);
       const body = ctx.http.parseJsonBody(request);
       const commodityType = optionalString(body, "commodity_type");
-      const commodity = await financeLedgerService.createCommodity(db, identity.spaceId, book.id, {
-        symbol: requireString(body, "symbol"),
-        commodityType:
-          commodityType === "currency" || commodityType === "security" || commodityType === "crypto"
-            ? commodityType
-            : "custom",
-        name: optionalString(body, "name"),
-      });
-      reply.code(201).send({ commodity });
+      try {
+        const commodity = await financeLedgerService.createCommodity(db, identity.spaceId, book.id, {
+          symbol: requireString(body, "symbol"),
+          commodityType:
+            commodityType === "currency" || commodityType === "security" || commodityType === "crypto"
+              ? commodityType
+              : "custom",
+          name: optionalString(body, "name"),
+        });
+        reply.code(201).send({ commodity });
+      } catch (err) {
+        if (err instanceof RequestError) throw err;
+        // (book_id, symbol) is unique: the book's own currency is registered
+        // when the book is made, so adding it again is the ordinary case.
+        if (isUniqueViolation(err)) {
+          throw new RequestError(409, "a commodity with that symbol already exists in this book");
+        }
+        throw new RequestError(422, err instanceof Error ? err.message : "invalid commodity");
+      }
     }),
   );
 
@@ -369,25 +442,30 @@ export function registerFinanceLedgerRoutes(
       });
 
       try {
-        const directive = await financeLedgerService.createTransactionDraft(
-          db,
-          identity.spaceId,
-          book.id,
-          identity.userId,
-          {
-            date: requireDate(body, "date"),
-            flag: optionalString(body, "flag") ?? "*",
-            payee: optionalString(body, "payee"),
-            narration: optionalString(body, "narration"),
-            tags: Array.isArray(body["tags"]) ? body["tags"].filter((tag): tag is string => typeof tag === "string") : [],
-            links: Array.isArray(body["links"]) ? body["links"].filter((link): link is string => typeof link === "string") : [],
-            postings,
-          },
-        );
-        const posted =
-          body["post"] === true
-            ? await financeLedgerService.postDirective(db, identity.spaceId, book.id, directive.id)
+        // One transaction. A posting refused part way, or a post that does not
+        // balance, must not leave a draft.
+        // Lock before allocating a directive sequence. Waiting for the book
+        // only at posting can deadlock an import on an uncommitted sequence.
+        const posted = await withLockedBook(db, identity.spaceId, book.id, async (tx) => {
+          const directive = await financeLedgerService.createTransactionDraft(
+            tx,
+            identity.spaceId,
+            book.id,
+            identity.userId,
+            {
+              date: requireDate(body, "date"),
+              flag: optionalString(body, "flag") ?? "*",
+              payee: optionalString(body, "payee"),
+              narration: optionalString(body, "narration"),
+              tags: Array.isArray(body["tags"]) ? body["tags"].filter((tag): tag is string => typeof tag === "string") : [],
+              links: Array.isArray(body["links"]) ? body["links"].filter((link): link is string => typeof link === "string") : [],
+              postings,
+            },
+          );
+          return body["post"] === true
+            ? financeLedgerService.postDirective(tx, identity.spaceId, book.id, directive.id)
             : directive;
+        });
         reply.code(201).send({ directive: posted });
       } catch (err) {
         if (err instanceof RequestError) throw err;
@@ -441,33 +519,111 @@ export function registerFinanceLedgerRoutes(
     }),
   );
 
+  // An import only ever lands entries as `proposed`. The request carries the
+  // file and nothing that could post it; a client that still sends a posting
+  // switch is refused rather than quietly ignored.
+  const IMPORT_FIELDS = ["text", "source_type"] as const;
+
   app.post(
     "/api/v1/finance/books/:bookId/import/beancount",
     financeRoute(async (request, reply, identity) => {
       const book = await requireBook(request, identity);
       const body = ctx.http.parseJsonBody(request);
-      try {
-        const result = await financeLedgerService.importBeancount(
-          db,
-          identity.spaceId,
-          book.id,
-          identity.userId,
-          {
-            text: requireString(body, "text"),
-            sourceType: optionalString(body, "source_type") ?? undefined,
-            status: body["post_directly"] === true ? "posted" : "proposed",
-          },
-        );
-        reply.send({
-          import_source_id: result.importSourceId,
-          deduplicated: result.deduplicated,
-          created_directives: result.createdDirectives,
-          errors: result.errors,
-        });
-      } catch (err) {
-        if (err instanceof RequestError) throw err;
-        throw new RequestError(422, err instanceof Error ? err.message : "import failed");
+      rejectUnknownFields(body, IMPORT_FIELDS);
+      const result = await financeLedgerService.importBeancount(
+        db,
+        identity.spaceId,
+        book.id,
+        identity.userId,
+        {
+          text: requireString(body, "text"),
+          sourceType: optionalString(body, "source_type") ?? undefined,
+        },
+      ).catch(mapImportError);
+      reply.send(importBatchOut(result));
+    }),
+  );
+
+  app.get(
+    "/api/v1/finance/books/:bookId/imports",
+    financeRoute(async (request, reply, identity) => {
+      const book = await requireBook(request, identity);
+      const batches = await financeLedgerService.listImportBatches(db, identity.spaceId, book.id, identity.userId);
+      reply.send({
+        imports: batches.map(({ importSource, summary }) => ({ ...importSourceOut(importSource), summary })),
+      });
+    }),
+  );
+
+  app.get(
+    "/api/v1/finance/books/:bookId/imports/:importSourceId",
+    financeRoute(async (request, reply, identity) => {
+      const book = await requireBook(request, identity);
+      const result = await financeLedgerService.getImportBatch(
+        db, identity.spaceId, book.id, identity.userId, param(request, "importSourceId"),
+      ).catch(mapImportError);
+      reply.send(importBatchOut(result));
+    }),
+  );
+
+  app.post(
+    "/api/v1/finance/books/:bookId/imports/:importSourceId/retry",
+    financeRoute(async (request, reply, identity) => {
+      const book = await requireBook(request, identity);
+      const result = await financeLedgerService.retryImportBatch(
+        db, identity.spaceId, book.id, identity.userId, param(request, "importSourceId"),
+      ).catch(mapImportError);
+      reply.send(importBatchOut(result));
+    }),
+  );
+
+  app.post(
+    "/api/v1/finance/books/:bookId/imports/:importSourceId/entries/:entryId/mapping",
+    financeRoute(async (request, reply, identity) => {
+      const book = await requireBook(request, identity);
+      const body = ctx.http.parseJsonBody(request);
+      rejectUnknownFields(body, ["account_mapping"]);
+      const mapping = body["account_mapping"];
+      if (typeof mapping !== "object" || mapping === null || Array.isArray(mapping)) {
+        throw new RequestError(400, "account_mapping must be an object of account name to account id");
       }
+      const accountMapping: Record<string, string> = {};
+      for (const [name, accountId] of Object.entries(mapping as Record<string, unknown>)) {
+        if (typeof accountId !== "string" || accountId.trim() === "") {
+          throw new RequestError(400, `account_mapping for ${name} must be an account id`);
+        }
+        accountMapping[name] = accountId.trim();
+      }
+      const result = await financeLedgerService.applyImportEntryMapping(
+        db, identity.spaceId, book.id, identity.userId,
+        param(request, "importSourceId"), param(request, "entryId"), accountMapping,
+      ).catch(mapImportError);
+      reply.send(importBatchOut(result));
+    }),
+  );
+
+  app.post(
+    "/api/v1/finance/books/:bookId/imports/:importSourceId/review",
+    financeRoute(async (request, reply, identity) => {
+      const book = await requireBook(request, identity);
+      const body = ctx.http.parseJsonBody(request);
+      rejectUnknownFields(body, ["decision", "entry_ids"]);
+      const decision = requireString(body, "decision");
+      if (decision !== "import" && decision !== "duplicate") {
+        throw new RequestError(400, "decision must be import or duplicate");
+      }
+      const rawIds = body["entry_ids"];
+      let entryIds: string[] | null = null;
+      if (rawIds !== undefined) {
+        if (!Array.isArray(rawIds) || !rawIds.every((id): id is string => typeof id === "string" && id.trim() !== "")) {
+          throw new RequestError(400, "entry_ids must be a list of entry ids");
+        }
+        entryIds = rawIds;
+      }
+      const result = await financeLedgerService.decideImportEntryReview(
+        db, identity.spaceId, book.id, identity.userId, param(request, "importSourceId"), decision, entryIds,
+      ).catch(mapImportError);
+      reply.send(importBatchOut(result));
     }),
   );
 

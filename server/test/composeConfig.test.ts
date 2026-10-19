@@ -252,11 +252,11 @@ describe("compose server config", () => {
       expect(runner).toContain("no-new-privileges=true");
       expect(runner).toContain("cap_drop:");
       expect(runner).toContain("read_only: true");
-      // No env file at all now. `.runner.env` existed to give the Runner
-      // `SANDBOX_RUNNER_TOKEN`, which is the control plane's internal token and
-      // unlocks the internal credential and execution routes from the network
-      // this container is on. With the Runner gone the token goes with it: the
-      // daemon holds a bearer token for its own Host row and nothing else.
+      // This service has no env file. Do not mount `.runner.env` or
+      // `.server.env`. `SANDBOX_RUNNER_TOKEN` is the control plane's internal
+      // token and would unlock the internal credential and execution routes
+      // from the network this container is on. The daemon holds a bearer
+      // token for its own Host row and nothing else.
       expect(runner).not.toContain(".runner.env");
       expect(runner).not.toContain(".server.env");
       expect(runner).not.toContain("SANDBOX_RUNNER_TOKEN");
@@ -264,9 +264,9 @@ describe("compose server config", () => {
       expect(runner).not.toContain("docker.sock");
       expect(runner).not.toContain("../../:/repo");
       expect(runner).not.toMatch(/\/cache:\/runner\//);
-      // The Runner's six authority roots went with it; what the daemon owns is
-      // the instance's workspace root plus its own config directory, and the
-      // credential the control plane publishes, which it only reads.
+      // The daemon container mounts the instance workspace root, its own
+      // config directory, and the credential the control plane publishes,
+      // which it only reads. Do not mount run-homes or runtime-tools.
       expect(runner).toContain("workspaces:/runner/workspaces");
       expect(runner).toContain("cache/host-daemon:/runner/host");
       expect(runner).toContain("cache/builtin-host:/runner/builtin-host:ro");
@@ -282,8 +282,8 @@ describe("compose server config", () => {
       // in; `runner-control` stays internal beside it.
       expect(runner).toContain("- host-egress");
       expect(composeText(mode)).toContain("  host-egress:");
-      // Any service joining it, not just the server: the whole point of the
-      // bridge is that the built-in host is alone on it.
+      // Any service joining it, not just the server. The built-in host is alone
+      // on the bridge.
       expect(composeText(mode).split("host-egress").length - 1).toBe(2);
     }
     expect(readFileSync(join(repoRoot, "sandbox", "Dockerfile"), "utf8"))

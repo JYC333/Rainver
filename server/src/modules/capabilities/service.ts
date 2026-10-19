@@ -49,8 +49,19 @@ export class CapabilitiesService {
     );
   }
 
+  /**
+   * Import re-fetches the source. The commit names the package hash the
+   * person previewed, and the snapshot is saved only when the bytes fetched
+   * now hash to it: approval of one preview never carries over to content
+   * that changed upstream in between.
+   */
   async importSkill(identity: SpaceUserIdentity, body: Record<string, unknown>) {
+    const previewedHash = requiredString(body.package_hash, "package_hash");
     const preview = await this.previewSkillImport(body);
+    if (preview.package_hash !== previewedHash) {
+      const detail = "The skill package changed since it was previewed; preview it again before importing";
+      throw new HttpError(409, detail, { detail, code: "skill_package_changed" });
+    }
     return this.repository.saveImportedSkill(identity, preview);
   }
 
@@ -143,16 +154,21 @@ export class CapabilitiesService {
 function assertNoEmbeddedOverlaySecrets(value: unknown): void {
   const record = optionalObject(value);
   if (!record) return;
-  const stack: Record<string, unknown>[] = [record];
+  const stack: unknown[] = [record];
   while (stack.length > 0) {
-    const current = stack.pop()!;
+    const current = stack.pop();
+    if (!current || typeof current !== "object") continue;
+    // Arrays are walked too: a key inside an array element is as embedded
+    // as one at the top of the object.
+    if (Array.isArray(current)) {
+      stack.push(...current);
+      continue;
+    }
     for (const [key, item] of Object.entries(current)) {
       if (/^(api[_-]?key|secret|password|access[_-]?token|refresh[_-]?token|auth[_-]?token|bearer[_-]?token)$/i.test(key)) {
         throw new HttpError(422, "skill overlay must reference credentials instead of embedding secrets");
       }
-      if (item && typeof item === "object" && !Array.isArray(item)) {
-        stack.push(item as Record<string, unknown>);
-      }
+      if (item && typeof item === "object") stack.push(item);
     }
   }
 }

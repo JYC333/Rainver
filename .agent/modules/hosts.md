@@ -1,21 +1,9 @@
 # Module: Hosts
 
 See [decisions/0016-control-plane-execution-hosts.md](../decisions/0016-control-plane-execution-hosts.md)
-for the design decision this module implements. The phase-1 rollout plan
-(`control-center-plan.md`) is retired — execution ledger in git history, as is
-phase 2's (`control-center-phase2-plan.md`, which shipped the conversational
-thread surface, normalized event pipeline, and setup simplification). So is the ACP runtime replatform plan (P1-P5, complete 2026-08-22, plan
-document retired 2026-08-23): every conversation runtime — `claude_code`,
-`codex_cli`, `opencode` — now speaks the Agent Client Protocol exclusively on
-both the server-host and remote-host execution paths; the self-maintained
-vendor CLI protocol implementations (stream-json argv, NDJSON-RPC) it
-replaced are deleted. So is the remote-host provider-binding plan
-(`remote-host-provider-binding-plan.md`, P1–P2 shipped in `404b1b87` and the
-commits that followed, retired 2026-08-28). So is the task-branch merge plan
-(`task-branch-merge-plan.md`, ADR 0016 §11: P1 in `bf27f3c5`, P2–P3 in
-`8353eaec`, retired 2026-09-24); its decisions and deviations are the Task
-worktree and "Merging a done Task" sections below. The later ACP runtime authority
-reset removed Host-wide ModelProvider defaults, their routes and UI. Current
+for the design decision this module implements. Every conversation runtime —
+`claude_code`, `codex_cli`, `opencode` — speaks the Agent Client Protocol.
+The process is a host daemon, on the built-in host or a paired machine. Current
 backend choice is Profile-owned; a selected Profile's authorized provider
 binding may be materialized into the Host launch frame, but Hosts do not
 select or default that binding. **This document describes the current system.**
@@ -49,11 +37,10 @@ host at each restart. The server keeps only a hash, so a lost file necessarily
 means a new token; the daemon re-reads the file on every reconnect and, unlike
 a revoked paired host, never disables itself over a rejected token.
 
-The row is `kind = 'server'`, `owner_user_id` NULL, and its status now follows
-the daemon connection like any other host's. It used to be reported
-permanently `online` because it was an in-process boundary with no heartbeat
-to be stale; that would now hide the one failure an operator most needs to
-see. It cannot be revoked (`revoke` is `kind = 'remote'`-only, and
+The row is `kind = 'server'`, `owner_user_id` NULL, and its status follows
+the daemon connection like any other host's. Do not report it permanently
+`online`: it has a heartbeat, and a standing online status hides the failure
+an operator most needs to see. It cannot be revoked (`revoke` is `kind = 'remote'`-only, and
 `/hosts/me/revoke` refuses an ownerless host), and the pairing flow never
 lists it — a pairing code always creates a `remote` row.
 
@@ -133,7 +120,7 @@ Workspace Location paths only after validating the launch's explicit access set;
 it never accepts an absolute path from the browser or launch payload. Current
 Files & Code attachments are database-backed immutable message resources, so
 they do not materialize as Host temporary files and do not enter this path
-resolver. Legacy live-folder links retain the existing containment checks: for
+resolver. Live-folder links use these containment checks: for
 the built-in Host, Location paths are relative to the shared instance workspace
 root and checked lexically and by canonical `realpath`; a paired Host uses only
 its registered local path map.
@@ -162,12 +149,8 @@ throws before any server-host local-filesystem operation runs against a Location
 (`server/src/modules/projectFolders/sandbox.ts`), code-patch proposal apply
 (`server/src/modules/projectFolders/codePatch.ts`), and code-patch rollback
 (`server/src/modules/proposals/applyService.ts`) — every code path capable of
-touching disk. The last two are unreachable for a remote-host row today (no
-Run can currently produce a `code_patch` proposal against one, since proposal
-creation only happens downstream of the already-guarded sandbox-prep path),
-but the guard is placed at the point of disk access rather than relied on as
-an emergent property of the call graph — a future P2/P3 change to how
-proposals get created cannot silently reopen this.
+touching disk. The guards sit on the disk access. Do not rely on the call
+graph to keep a non-server Location off those paths.
 
 ## REST surface (`server/src/modules/hosts/routes.ts`)
 
@@ -209,7 +192,9 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
   authenticating. Also closes the host's live WebSocket connection
   immediately if it has one (`HostConnectionRegistry.closeConnection`) — so
   revoke cuts off an already-connected daemon right away, not just its next
-  reconnect attempt.
+  reconnect attempt. A hello that authenticated just before the revoke and
+  reaches `registerConnection` after it is refused and closed the same way
+  (`forgetRevokedHost`), so the host never shows online again.
 
 Unauthenticated (the pairing code itself is the one-time credential):
 
@@ -222,8 +207,10 @@ user session — the daemon has no session to present):
   token. This is the server half of `rainver-host unregister`; the token has
   no authority over another Host.
 - `POST /api/v1/hosts/me/workspaces` — `{ project_id, name, display_path? }`,
-  requires the host owner to hold Project write access
-  (`PgProjectFolderRepository.createRemoteWorkspace`); creates a logical
+  requires the host owner to be an active member of the Project's Space and
+  to hold Project write access there
+  (`PgProjectFolderRepository.createRemoteWorkspace`; the token names no
+  request Space, so the membership check stands in for it); creates a logical
   Folder plus a remote Location whose server `root_path` is NULL.
 - `GET /api/v1/hosts/me/workspaces` — every Location registered under this
   Host.
@@ -231,13 +218,25 @@ user session — the daemon has no session to present):
   (never touches the daemon's disk; the daemon owns that).
 - `POST /api/v1/hosts/me/runs/:runId/diff` / `.../outputs` — daemon uploads a
   completed run's git diff and `RAINVER_OUTPUT_DIR` contents as read-only
-  artifacts (D7: never fed into code-patch proposal apply). Scoped by
-  `runOwnedByHost` — a host can only upload for a Run bound to its own
-  Location.
+  artifacts (never fed into code-patch proposal apply). Both bodies carry the
+  `launch_id` of the attempt they belong to, and the control plane accepts an
+  upload only for a Run bound to this host **and** against the attempt whose
+  `run_attempts.launch_id` matches, while that attempt is still the Run's
+  current one and still open (`queued`/`running`/`cancelling`). The check and
+  the artifact write happen in one transaction with the attempt row locked,
+  so finalization and a late upload serialize: an upload from a superseded
+  attempt answers 409 `attempt_superseded`, one for an attempt that already
+  ended answers 409 `attempt_ended`, and neither writes anything. A repeated
+  upload of the same delivery (the daemon retrying a lost acknowledgement)
+  answers with the artifact ids it already made and rewrites nothing — unique
+  partial indexes on `(run_id, metadata_json->>'launch_id'[, title])` back
+  that for `remote_diff` and `remote_output`. The launch nonce is written on
+  the attempt by `PgRunRepository.bindAttemptLaunch` before the launch frame
+  is sent (`remoteHostCliAdapter.ts`).
   Size-capped server-side (`MAX_DIFF_BYTES`, `MAX_OUTPUT_FILE_BYTES`,
   `MAX_OUTPUT_FILES` in `repository.ts`) regardless of what the daemon sends.
-  The diff body is `HostRunDiffUploadSchema` (`@rainver/protocol`): `diff`
-  (null when none could be captured) and optional `git_before` / `git_after
+  The diff body is `HostRunDiffUploadSchema` (`@rainver/protocol`): `launch_id`,
+  `diff` (null when none could be captured) and optional `git_before` / `git_after
   { branch, head }` — where the Run's checkout stood before and after it (see
   "Location lease, Task worktrees and `git_after`" below). `recordDiffArtifact`
   writes `git_after` to the Run's `output_json.workspace_after` (kept through
@@ -254,32 +253,21 @@ Host registry:
 
 It enforces Project write access, Location/Folder/Space scope, execution
 readiness, remote Host ownership, implemented ACP adapter and host capability
-checks, then creates one Run and enqueues the durable agent job. The former
-`POST /api/v1/hosts/dispatch` and `POST /api/v1/tasks/runs` routes are removed;
-no compatibility route is registered by the server.
+checks, then creates one Run and enqueues the durable agent job.
 
-A remote dispatch creates its Run synchronously, exactly as a server-host one
-does — the two differ in what they stamp on the Run (the thread, the adapter,
-the installation and the vendor session to resume), not in when the Run comes
-into being. It used to enqueue a message on the thread and let a per-thread
-queue turn it into a Run once nothing blocked it; that queue existed for the
-Command Center's thread page, which paused it on any non-success and offered a
-Resume button. With the page gone nothing could resume a paused queue, so a
-remote Task run whose predecessor failed would have sat queued forever. Deleted
-with it: `host_thread_messages`, `advanceThreadQueue`, `queue_paused_at`,
-`threadMessageRepository`, and the thread routes (withdraw, resume-queue,
-cancel, events read, messages read).
+Dispatch creates its Run synchronously. What it stamps differs (the thread,
+the adapter, the installation, and the vendor session to resume), not when
+the Run comes into being. The Run takes `body.agent_id`, else the Task's `assigned_agent_id`.
+A Task with neither returns 422.
 
-Cancelling a remote Run goes through `PATCH /api/v1/runs/:runId/stop` like any
-other Run — the deleted thread-cancel route was a thread-to-run lookup wrapping
-that same `orchestration.cancelRun`, not separate machinery.
+Cancelling a Run goes through `PATCH /api/v1/runs/:runId/stop`.
 
 ### Profile-owned backend selection and Host launch
 
 Hosts have no ModelProvider defaults, host×runtime binding table, or
 `runtime-provider-bindings` API. `AgentRuntimeProfile` is the only Agent
 backend authority: it pins `runtime_key`, `backend_mode`, and, when the
-selected runtime supports it, a same-Space ModelProvider and explicit model.
+selected runtime supports it, a ModelProvider granted to the Space and explicit model.
 Routing validates that Profile against the Agent Run's Space and the provider
 grant before the immutable Run snapshot is dispatched. A Host cannot choose a
 different provider or fall back to a Host-wide default.
@@ -318,8 +306,9 @@ boundary of). A Location thread's vendor session therefore lives in the
 profile of the Agent whose Run last used it, while the thread itself carries
 no Agent (`ck_host_threads_owner`). Task admission reads the latest Run's
 Agent beside its status: when the Agent dispatched now is a different one, the
-session is retired at admission (`retireLocationSessionForAgentChange`,
-recorded in `retired_vendor_session_ids`) and the Run starts a fresh session
+session is retired at admission (inline in `tasks/repository.ts`, which calls the
+thread repository's `resetLocationSession`; recorded in
+`retired_vendor_session_ids`) and the Run starts a fresh session
 in its own profile, rather than resuming into another Agent's profile and
 resetting mid-turn with "no such conversation". Switching a Task's Agent is
 thus a fresh session, by design.
@@ -331,13 +320,11 @@ the workspace would put two Rooms back into one directory.
 **Every host-bound Agent run carries a profile**, including a run with no
 ModelProvider binding — the frame then has empty `files`, empty `env`, and only
 `profile_env` plus `login_link`, and the provider segment is the literal
-`ambient`. This is what changed in the Agent identity work
-([ADR 0003](../decisions/0003-memory-proposal-flow.md) §6): the key used to be
-`<adapter_type>/<provider_id>`, shared by every run with that adapter and
-provider on the machine, and an unbound run had no profile at all and simply
-read the machine's own `~/.claude` or `~/.codex`. Both were the leak — two
-Agents on one machine, and one Agent in two Rooms, shared one login, one
-session store, and one pile of vendor auto-memory. The CLI's own working memory
+`ambient`. The profile key is Agent × container, not
+`<adapter_type>/<provider_id>` ([ADR 0003](../decisions/0003-memory-proposal-flow.md) §6).
+Keying by adapter and provider, or launching an unbound run on the machine's
+own `~/.claude` or `~/.codex`, shares one login, one session store, and one
+pile of vendor auto-memory across Agents and Rooms. The CLI's own working memory
 is still delegated scratch that Rainver never reads, syncs or promotes; what
 keeps it from crossing a boundary is this key.
 
@@ -374,9 +361,8 @@ rules applies, and they are deliberately different:
 
 - `provider_lease` — B67 in full. The machine contributes nothing to which
   backend, credential or upstream the runtime reaches, so the ambient
-  environment is rebuilt from `filterAmbientEnv`'s allowlist. Unchanged from
-  before this phase, including its stated cost: a bound run cannot see
-  `~/.gitconfig` or `~/.ssh`.
+  environment is rebuilt from `filterAmbientEnv`'s allowlist. A bound run
+  cannot see `~/.gitconfig` or `~/.ssh`.
 - `host_login` — B67's closing rule stands: a run with no binding is not
   affected. It keeps `HOME` and therefore `~/.gitconfig` and `~/.ssh/config`,
   the proxy variables, and the language toolchains a paired machine needs.
@@ -391,9 +377,9 @@ rules applies, and they are deliberately different:
   how gcloud and a GCS toolchain authenticate in a Task run, and Claude Code
   reads neither. The XDG set is named rather than prefixed on purpose:
   `XDG_RUNTIME_DIR` is how a git credential helper reaches the keyring and how
-  rootless podman finds its socket, so dropping it would break a Task run that
-  pushes or builds — the same class of regression as moving `HOME`. The
-  credential set matters as much as the state roots: this run exists to spend
+  rootless podman finds its socket. Do not drop it. A Task run that pushes or
+  builds would break, the same way moving `HOME` breaks them. The
+  credential set matters as much as the state roots. This run spends
   the owner's *subscription*, linked into its profile, and a runtime that
   prefers an ambient `ANTHROPIC_API_KEY` bills an API account instead — B67's
   own second named failure.
@@ -402,9 +388,9 @@ The daemon's own short-lived **helper** spawns take the same rule through one
 builder, `helperProcessEnv(ambient, adapterType, { keepStateRoots? })`: the
 machine's environment minus that runtime's vendor credentials. These are the
 version probe, the installer, the `login --help` capability check, the Codex
-usage probe and the ambient `session/list`. Each of them used to spread
-`process.env` whole or delete two named keys beside it — a denylist of length
-two, so a new vendor key was picked up by every one of them. `keepStateRoots`
+usage probe and the ambient `session/list`. One builder. Do not spread
+`process.env` or delete two named keys at a call site: a new vendor key is
+then picked up by every helper. `keepStateRoots`
 is the one deliberate exception: a helper that reads the machine's *own*
 history must be pointed at where that history is, and `CLAUDE_CONFIG_DIR` /
 `CODEX_HOME` / `OPENCODE_CONFIG` / `GEMINI_CONFIG_DIR` share a prefix with the
@@ -429,15 +415,15 @@ roots for OpenCode, whose data directory is `$XDG_DATA_HOME/opencode` before
 it falls back to `HOME/.local/share/opencode`. A **bound** run still gets
 `HOME: "."`, because B67 wants the machine contributing nothing at all, and
 pays for it by losing `~/.gitconfig` and `~/.ssh` — a cost recorded in the
-deferred register and unchanged by this phase.
+deferred register.
 
-Redirecting `HOME` for unbound runs too was considered and rejected: it would
-have broken `git commit` (no author identity) and `git push` (no ssh config)
-for every Task run on a paired machine, which is a price the memory boundary
-does not need to pay. OpenCode's XDG redirect is the one state root **not
+Redirecting `HOME` for unbound runs breaks `git commit` (no author identity)
+and `git push` (no ssh config). Do not redirect it. That price is one every
+Task run on a paired machine would pay, and the memory boundary does not need
+it. OpenCode's XDG redirect is the one state root **not
 verified on a real host** — if it ignores `XDG_DATA_HOME`, its state stays
-machine-global, which is no worse than before this phase but is not the
-isolation claimed here. See the deferred register.
+machine-global. That is not the isolation claimed here. See the deferred
+register.
 
 This granularity extends the HostThread's opaque `vendor_session_id` to the
 Runtime Context cursor. The HostThread and Runtime Context binding must resume
@@ -467,7 +453,7 @@ logins by Agents × Rooms. So the login stays where it was:
   closed with `runtime_profile_isolation_unsupported` until its registry entry
   can name the credential file and state-root variable; the host adapter
   catalog therefore exposes such a copy for installation/management but marks
-  it `remote_eligible: false`, and the default-adapter endpoint refuses it;
+  it `remote_eligible: false`;
 - a link, never a copy and never a token in the environment. Passing the
   credential through `CLAUDE_CODE_OAUTH_TOKEN` or its equivalents would mean
   Rainver read a credential and injected it into a subprocess, the shape
@@ -499,7 +485,7 @@ logins by Agents × Rooms. So the login stays where it was:
   Without that, a hard link would pin a profile to an orphaned inode silently
   and forever. A link that *fails* throws rather than leaving the run to
   discover it has no credential — a headless dispatch cannot answer a login
-  prompt. **Not yet verified on a paired host**: whether each runtime refreshes
+  prompt. **Unverified on a paired host**: whether each runtime refreshes
   in place or by temp-file rename, and whether a rotating refresh token would
   invalidate the siblings. See the deferred register;
 - provider-bound runs are unchanged: the profile carries the lease
@@ -521,29 +507,24 @@ follow, on the same 30-day sweep. Two things move, with different owners:
   daemon should move, computed by `listPendingManagedWorkspaceArchives` and
   `closeConversationAgentForRoom` rather than guessed on the host.
 
-The re-add offer and the restore itself now ask the same question — "is there
-a closed thread for this Agent in this Room on this host" — rather than two
-different ones. The candidate flag is `host_state_archive_available`; it used
-to require a managed workspace *and* a heartbeat entry reporting one archived,
-which was false for every Room specialist because a conversation heartbeat
-entry carries no `agent_id` by contract, so the offer never appeared at all.
+The re-add offer and the restore ask the same question: is there a closed
+thread for this Agent in this Room on this host. The candidate flag is
+`host_state_archive_available`. Do not also require a managed workspace and a
+heartbeat entry reporting one archived. A conversation heartbeat entry carries
+no `agent_id`, so that requirement is false for every Room specialist and the
+offer never appears.
 
-Restoring rides the existing "restore workspace" request, and its target query
-is deliberately **not** gated on an archived workspace being available: that
-gate was right when the workspace was the only thing archived, and now the
-common case — one Agent leaves while others stay — archives only the profile,
-so requiring a workspace archive would have made every one of those
-permanently unrestorable and swept after 30 days. The workspace half is a flag
+Restore is not gated on an archived workspace. One Agent leaving while others
+stay archives only the profile. Requiring a workspace archive would make every
+one of those unrestorable, then swept after 30 days. The workspace half is a flag
 on the same request. The daemon restores whichever archives exist and reports
 what moved; the workspace goes first, because a live shared cwd is a real
 conflict and a live profile only means this Agent has dispatched here since.
 
-The old `<configDir>/profiles/<adapter>/<provider>` tree — the shared logins,
-session stores and dead lease tokens the new key exists to end — is archived by
-the daemon on connect (`archiveLegacyProfileTree`, to `profiles.removed-<ts>`
-at the config root) and swept with every other archive after the retention
-window. Nothing reads it; it is moved aside rather than deleted, like every
-other retired directory here.
+The `<configDir>/profiles/<adapter>/<provider>` tree is archived by the daemon
+on connect (`archiveLegacyProfileTree`, to `profiles.removed-<ts>` at the
+config root) and swept with every other archive after the retention window.
+Nothing reads it. Do not delete it in place.
 
 `POST /api/v1/agents/:agentId/host-state/reset` is the **"clear this Agent's
 CLI memory on this host"** action: owner-only twice over (the caller must own
@@ -563,7 +544,7 @@ differently and only one is recoverable: a thread still claiming a
 `vendor_session_id` whose store has been archived resumes into nothing, while a
 thread reset without the archive happening starts a fresh session in a profile
 that still holds the old one — wasteful, visible in the error the caller gets,
-and fixed by running it again. There is no web surface for it yet.
+and fixed by running it again. There is no web surface for this reset.
 
 A remote run is given up on for two distinct reasons, and the failure says
 which: `runtime_timeout` when the whole run budget elapsed, and
@@ -571,17 +552,11 @@ which: `runtime_timeout` when the whole run budget elapsed, and
 budget. Both carry how long the runtime had been silent. The stall budget is
 one rule for both execution paths (`runs/stallTimeout.ts`): five minutes by
 default, `adapter_config.stall_timeout_seconds` per dispatch, never longer
-than the run budget. The remote path briefly used a third of the run budget
-instead — 100s for the default — which killed legitimate turns in the middle
-of a long tool call, since a runtime busy inside one emits nothing until it
-returns; the Run then retried from scratch on the same run id. The remote path
-originally accepted the option and never implemented it, so a runtime that went
-quiet — an OpenCode turn waiting on a free-tier model that never answered —
-burned the entire timeout and then reported only that it "timed out", which is
-equally true of a run that worked the whole time. Both codes are retryable.
-Their server-host twins `cli_adapter_timeout` and `cli_stall_timeout` went with
-the sandbox line (ADR 0016): nothing emits them, and the retry set no longer
-lists them.
+than the run budget. Do not derive the stall budget as a fraction of the run
+budget: a runtime busy inside one tool call emits nothing until it returns.
+Do not drop the stall timeout: a runtime that goes quiet must fail as
+`runtime_stall_timeout`, distinct from `runtime_timeout`. Both codes are
+retryable. Nothing emits `cli_adapter_timeout` or `cli_stall_timeout`.
 
 A bound run tells its runtime which model over ACP
 (`session/set_config_option`), and the value is the binding's resolved model
@@ -636,7 +611,7 @@ sends a heartbeat immediately after the ack rather than an interval later.
 A host can carry more than one copy of a runtime, and every ACP adapter is
 handled the same way — the builtin CLIs and enabled registry agents alike:
 
-- **`own`** — the machine's PATH install, driven as before (bundled
+- **`own`** — the machine's PATH install (bundled
   `claude-agent-acp`/`codex-acp` for Claude/Codex, the vendor binary for
   OpenCode). Detected by `--version`; never installed, upgraded, or
   reconfigured by the daemon. Its login state is the machine's.
@@ -688,9 +663,9 @@ session, without assuming every advertised model is anonymously callable.
 for display only.
 The shape is the protocol's (`packages/protocol/src/hosts.ts`:
 `HostCapabilitiesSchema`), so server and web share one definition and the
-server validates what it stores and serves. Daemon and server deploy together;
-`hosts/capabilities.ts` accepts only the current installations shape and does
-not translate obsolete heartbeat layouts.
+server validates what it stores and serves. `hosts/capabilities.ts` reads
+`runtimes`, `versions`, and `installations` only. An installation entry that
+does not parse is dropped. Do not translate another layout into this shape.
 
 Install (`POST /api/v1/hosts/:hostId/installations/:runtimeKey`, host owner)
 sends `install_tool { request_id, runtime_key, version, distribution, login,
@@ -702,6 +677,13 @@ staging rename, writes `manifest.json` (absolute command, args, env, `home`,
 the rendered `login_command`), answers `tool_result { installation }` and
 heartbeats. `DELETE .../installations/:runtimeKey/:installation` sends
 `uninstall_tool`; only a managed copy can be removed.
+
+`uvx` tools install at the final path because their launchers contain absolute
+paths. A same-version reinstall keeps the previous tree in `.replaced` until
+initialization, probes and the final manifest write all succeed; failure before
+that point restores the previous tree. Old-version pruning happens after the
+manifest is committed. A cleanup failure is logged and preserves the usable
+new installation.
 
 An install of a *different* version is an upgrade, and an upgrade replaces the
 runtime every Run of that Agent is talking to. So the daemon drains that
@@ -813,8 +795,8 @@ or a version behind would make routing guess at someone else's machine. The
 cost of that asymmetry is explicit — a Profile naming a `managed:x` copy the
 paired Host does not have passes admission and fails at launch, where the host
 itself answers.
-`GET /api/v1/hosts/runtime-adapters` also exposes each adapter's current
-registry version. The Host card compares it with the installed package and
+`GET /api/v1/hosts/runtime-definitions` also exposes each adapter's current
+registry version (`latest_managed_version`). The Host card compares it with the installed package and
 shows its compact CLI upgrade control only while they differ; neither internal
 package version is exposed in that UI.
 
@@ -824,7 +806,9 @@ read newer session formats.
 **Subscription quota.** `usage_probe { runtime_key, installation, login,
 timeout_seconds }` asks a host what one copy has left; the daemon reads that
 copy's own login and answers `usage_probe_result { quota }` — percentages,
-reset text, and a reason when it could not read one. Never the credential.
+reset text, and a reason when it could not read one. Never the credential, and
+never a path on the host: the reason passes `sanitizeFailure`, so vendor stderr
+or a spawn error names neither the copy nor its login file.
 Claude's is an OAuth call against `api.anthropic.com/api/oauth/usage`; Codex's
 runs `codex -s read-only -a untrusted app-server` and asks
 `account/rateLimits/read`, recovering the numbers from the refusal an
@@ -849,9 +833,7 @@ must show, and it carries no credential or account identity.
 What a dispatch may choose is decided where dispatch is validated — the
 admission resolves the backend and refuses an unusable one, so the caller
 finds out on the request it is waiting for rather than on someone's laptop
-minutes later. There is no longer a read endpoint for the option list: it
-existed for the Command Center's dispatch composer, which was deleted with
-that surface.
+minutes later. Admission does not publish a separate option-list endpoint.
 
 A thread pins its copy (`host_threads.runtime_installation`, default
 `own`) the way it pins its adapter: the vendor session lives in that copy's
@@ -861,7 +843,7 @@ against the host's `installations`, and stamps it into the Run's
 managed copy from its manifest with `HOME` set to that copy's home.
 
 **Login** follows the runtime's declared mechanism: `GET
-/api/v1/hosts/:hostId/installations/:adapterType/:installation/login/stream`
+/api/v1/hosts/:hostId/installations/:runtimeKey/:installation/login/stream`
 (host owner, SSE) opens `login_open` on the daemon. Built-ins with an explicit
 login spec continue to run that command. Otherwise every method returned by
 ACP `initialize.authMethods` is exposed without a vendor allowlist: missing
@@ -870,7 +852,7 @@ advertised method id; Terminal Auth appends the advertised args and env to
 the installed Agent's normal command and runs it to completion before the
 capability is probed again. The daemon advertises ACP Terminal Auth only when
 the host can actually provide the required PTY. Terminal commands use a PTY
-from `script(1)` (no native addon to build on the host; Windows unsupported for now), with `HOME`
+from `script(1)` (no native addon on the host; Windows does not provide that PTY), with `HOME`
 set to that copy's home and the same per-runtime vendor credential filter a
 Run uses (`clearVendorCredentialEnv`), so leftover `ANTHROPIC_*` / `CLAUDE_*`
 / `CODEX_*` keys cannot divert the login onto an API account. Output comes back as
@@ -892,7 +874,7 @@ Known limits: the grid is fixed at `LOGIN_TERMINAL_COLS × LOGIN_TERMINAL_ROWS`
 at both ends (no resize frame yet; `script(1)` gives the daemon no PTY fd to
 resize), so the browser scrolls sideways when the card is narrower; and input
 travels one authenticated request per batch of keystrokes rather than over a
-socket, which is why the daemon bounds it.
+socket. The daemon bounds it.
 None of that is an authorization boundary — stdin reaches only the fixed
 login program the adapter spec names, behind `exec`, so there is never a
 shell to type into — it bounds the channel to what a keyboard can produce;
@@ -916,10 +898,12 @@ advertised. The login request selects either an ACP method id or this
 Rainver-owned action, never a synthetic ACP method. It runs only that
 installation's fixed executable entry plus the
 `login` subcommand in the same isolated HOME; it accepts terminal input but
-does not expose a shell or a remotely supplied command. New manifests preserve
-the executable-entry prefix separately from ACP arguments, so this also works
-for package-backed Agents. Older binary manifests safely imply an empty prefix;
-older Node package manifests must be reinstalled. After five seconds without
+does not expose a shell or a remotely supplied command. A manifest keeps the
+executable-entry prefix separate from ACP arguments, so this also works
+for package-backed Agents. A manifest that omits `entry_args` is probed with
+no prefix when its command is not Node. A Node manifest that omits
+`entry_args` is not probed. Reinstall that copy so the manifest carries the
+prefix. Do not guess a Node prefix. After five seconds without
 an Agent Auth response, the stream points the user to CLI login instead of
 appearing silently stuck. When neither an explicit adapter login command nor a
 selected ACP method/CLI action exists, both the server route and daemon fail
@@ -1002,7 +986,7 @@ mode, thought level, model config, then unknown), and requires every
 `session/set_config_option` response to return the requested current value
 before prompting. Each response replaces the option snapshot because a model
 change may change available reasoning levels. There are no `set_model`,
-`set_effort`, legacy `modes`, or vendor-config compatibility paths.
+`set_effort`, `modes`, or vendor-config compatibility paths.
 
 **Which model a run is recorded as having used is the server's own answer, not
 the runtime's echo of it.** The controller takes `attributed_model` separately
@@ -1013,7 +997,7 @@ Reading the echo instead reports an alias (`default`) on a fresh session and
 the *previous* turn's model on a resumed one, which is precisely when the
 answer matters.
 
-The server-host and remote paths use this same generic controller. Provider-
+ACP conversation runtimes use this controller. Provider-
 bound Codex/OpenCode runs add their translated model as a normal model-category
 selection. Claude remains environment-controlled because provider model names
 do not share Claude ACP's alias namespace. Usage attribution remains the
@@ -1024,22 +1008,9 @@ rebuilds the environment from an **allowlist** rather than filtering a denylist
 — B67 states the rule positively for a reason, and a denylist of vendor
 prefixes lets `CLAUDE_CODE_OAUTH_TOKEN`, `XDG_DATA_HOME` (OpenCode's credential
 store) and `NODE_OPTIONS` (which injects code into the runtime process) through.
-The allowlist is the same shape the deleted server-host path used.
 A run on the machine's own login is governed by the other rule instead: it
 keeps the machine's environment apart from `clearStateRootEnv`'s two sets, and
 carries a runtime profile of its own — see "The runtime profile" above.
-
-- `GET /api/v1/hosts/runtime-adapters` (P3, C6) — catalog of remote-eligible
-  adapters (`implemented` + ACP protocol): the builtin specs plus dynamic
-  adapters for instance-enabled ACP registry entries, sourced from
-  `listRuntimeAdapterSpecs()`. Session-authenticated
-  only (`getCurrentUser`, no space scoping — the catalog carries no per-user
-  or per-space data). The single source of truth the frontend reads instead
-  of re-deriving the dispatch route's own ACP-only eligibility rule a third
-  time. Each entry's `capability_probe` is what a trusted host's capability
-  probe actually reports for that adapter when it differs from `command` (an
-  ACP adapter's own bundled executable, e.g. `codex-acp`, vs. the vendor CLI
-  binary a host reports, e.g. `codex`).
 
 ## WebSocket (`GET /internal/hosts/ws`, `@fastify/websocket`)
 
@@ -1055,10 +1026,9 @@ side and a field exists in exactly one place. The daemon depends on
 `@rainver/protocol` at runtime for this — it is wire contracts only, which is
 what the daemon is allowed to know. Objects are deliberately not strict, so a
 newer peer's extra field is dropped rather than fatal; what guards against a
-field being *lost* is that nothing names fields by hand any more. This is the
-repair for a class of defect that shipped three times — `provider_binding`,
-`server_url`, and `work_surface` each vanished at a hand-written mapping
-while the sender believed it delivered them. A frame that fails to parse is
+field being *lost* is that nothing names fields by hand. Do not map a frame
+field by field: `provider_binding`, `server_url`, and `work_surface` must
+leave the sender in the same change that drops them. A frame that fails to parse is
 answered with an `error` frame naming the path, never dropped silently; a
 `launch` that fails is answered with a `complete` so the run does not hang.
 
@@ -1078,8 +1048,7 @@ Two placeholders on the wire (`REMOTE_CWD_PLACEHOLDER`,
 executing machine knows; the daemon substitutes them in argv, the initial
 stdin, and every `stdin` frame, so a prompt can point at the Skill file by a
 path the server never had rather than an unexpanded `$RAINVER_SKILL_PATH`.
-No hand-written mapping is left anywhere on this wire: the Runner that held the
-last one is deleted, and every host speaks this contract.
+Every host speaks this contract.
 
 `hello` (the upgrade already authenticated the host bearer; hello records
 capabilities, applies the daemon's complete workspace Location reports, and
@@ -1090,12 +1059,11 @@ heartbeat is marked `execution_ready = false`. On socket close, the host is
 marked `offline` immediately; Host liveness remains distinct from Location
 readiness.
 A `hello` reporting a daemon older than `MIN_HOST_DAEMON_VERSION`
-(`hosts/daemonCompatibility.ts`, currently `0.4.0` — the release that merges a
-done Task's branch: the `task_merge_*` frames and a resolution Run launched
-into the Task worktree as a merge left it) is refused with
-`daemon_outdated`: the reported version is recorded and the host stays offline
-rather than accepting Runs an older daemon would fail one at a time, so a
-paired host must update before it can execute again. The refused daemon
+(`hosts/daemonCompatibility.ts`, `0.4.0`) is refused with `daemon_outdated`.
+An older daemon does not speak the `task_merge_*` frames and would launch a
+resolution Run as an ordinary Task Run. The reported version is recorded and
+the host stays offline rather than accepting Runs it would fail one at a time,
+so a paired host must update before it can execute again. The refused daemon
 recognises that close (`isOutdatedDaemonClose` in `commands/run.ts`), logs the
 update instruction once and retries on a 15-minute floor rather than the
 ordinary ≤30s backoff, so an un-updated host does not re-record its version
@@ -1119,24 +1087,18 @@ seconds while mounted; it does not reload the page or trigger unrelated module
 queries. This is a component-scoped read refresh, not a general browser
 real-time event layer (none exists).
 
-Job dispatch/execution frames (`RemoteHostExecutionAdapter` in
+Job dispatch/execution frames (`RemoteWsCliCommandExecutor` in
 `server/src/modules/runs/remoteHostCliAdapter.ts`): `launch` (server → daemon,
 rendered argv + timeout), `stdin` (server → daemon, one frame per ACP
-JSON-RPC message — the ACP runtime replatform's P2 duplex extension to this
-protocol; stdin is no longer written once and closed), `output`/`complete`
+JSON-RPC message. Stdin stays open across the session), `output`/`complete`
 (daemon → server, routed through `sharedHostConnectionRegistry`
 (`server/src/modules/hosts/connectionRegistry.ts`) to whichever
 `RemoteWsCliCommandExecutor` call is awaiting that run), `terminate` (server →
-daemon, cancel closures registered the same way `SandboxRunnerCliCommandExecutor`
-registers them for the server-host path). Every adapter (`claude_code`,
-`codex_cli`, `opencode`) can run remotely now — all three speak ACP, a
-bidirectional JSON-RPC protocol the duplex `stdin`/`output` frame pair
-carries natively.
-
-The daemon-supervised HTTP/SSE runtime endpoints sketched in 2026-08-21 were
-superseded 2026-08-22 before anything was built, in favor of the duplex-frame
-ACP extension above (the ACP runtime replatform plan, P1-P5, complete and
-retired 2026-08-23; ledger in git history).
+daemon). Cancel closures are registered on that daemon connection. Do not
+register an application-server process. Every `local_cli` adapter
+(`claude_code`, `codex_cli`, `opencode`) is a daemon run, on the built-in host
+or a paired machine. All three speak ACP, a bidirectional JSON-RPC protocol
+the duplex `stdin`/`output` frame pair carries natively.
 
 A `launch` the daemon queues behind another writer of its Location is
 answered with `waiting_for_workspace` (same nonce) before its `launched`; see
@@ -1157,9 +1119,9 @@ A Run that executed in its Task worktree also reports
 `complete.task_worktree { branch, start_commit }`. See "Location lease, Task
 worktrees and `git_after`".
 
-C5: the daemon also sends a live `stderr` frame per chunk (not only the
-`complete` frame's existing failure-tail), routed the same way as `output`
-through a new `HostConnectionRegistry.receiveStderr`/`onStderr` pair.
+The daemon also sends a live `stderr` frame per chunk, not only the
+`complete` frame's failure tail, routed the same way as `output` through
+`HostConnectionRegistry.receiveStderr` / `onStderr`.
 
 Workspace registration is reachable from the web UI through three owner-only
 frames the daemon answers: `list_dirs` (one level of subdirectory names for an
@@ -1178,7 +1140,10 @@ Files & Code uses a separate bounded pull on the same socket: `folder_read`
 `folder_read_result` (daemon → server, one `tree`, `file`, `git_status`, or
 `git_diff` result). The daemon resolves the registered root, applies
 `@rainver/folder-read` PathPolicy and size limits, and never sends an absolute
-path. The server authorizes the requested active Location for its registered owner,
+path. A `git_status` result always says whether its file list is complete
+(`truncated`): git's output is read up to a byte cap and the list up to the
+file cap, and a status cut by either is marked rather than passed off as the
+whole tree. The server refuses a `git_status` frame without it. The server authorizes the requested active Location for its registered owner,
 records `force_record` audit metadata including `host_id`, and maps offline,
 timeout, forbidden, and missing-location outcomes to structured HTTP errors.
 
@@ -1198,21 +1163,18 @@ silently leaving a UTF-8 replacement.
 A pending run survives a brief WS drop: `HostConnectionRegistry` tracks
 pending runs by `run_id` (not nested per-connection) and gives a reconnect
 `RECONNECT_GRACE_MS` (60s) to resume the same in-flight run before failing it
-as `host_disconnected`. This is a narrower reading of the retired phase-1
-plan §5's "interruption semantics" bullet than the plan's
-full wording — a disconnect that outlasts the grace window still resolves as
-an ordinary run failure, not a distinct `interrupted` run status with its own
-reconciliation-on-reconnect lifecycle (adding a new terminal run status would
-touch retry policy, the supervisor, and finalization across the whole run
-subsystem). See the deferred register.
+as `host_disconnected`. A disconnect past the grace window is an ordinary run
+failure. Do not add a distinct `interrupted` status: that would touch retry
+policy, the supervisor, and finalization across the run subsystem. See the
+deferred register.
 
-## Host threads (D14, `server/src/modules/hosts/threadRepository.ts`)
+## Host threads (`server/src/modules/hosts/threadRepository.ts`)
 
 A `host_threads` row pins a vendor-CLI conversation to one registered
 `workspace_location_id`, or to a daemon-derived managed Agent × container
 workspace, for session resume via ACP's own `session/resume` (the general
 `AcpController` in `server/src/modules/runs/cliConversationProtocol.ts` drives
-this for every adapter now) — not server-side Runtime Context continuity
+this for every adapter) — not server-side Runtime Context continuity
 (remote runs get none of that; see "No server-brokered Runtime Context" below).
 `getForLocation` is scoped by `workspace_location_id` so a thread from one
 physical checkout can never be resumed against another. Managed rows have a
@@ -1244,13 +1206,16 @@ stop, a runtime silent before it initialized) leaves the session in place. A
 Run that reports on a session the thread has since retired (dispatched before
 a rotation or reset, run after it — held for the subscription window, say)
 records only that it was the last Run: the retired session is never written
-back, nor its identity digest or occupancy. Clearing rather than preserving the id matters: retrying an
-already-broken vendor session id forever was a real P3 discovery-review bug,
-fixed before this landed. **Since the phase-2 event-pipeline work**, it is called
+back, nor its identity digest or occupancy. Clearing the id matters: retrying
+an already-broken vendor session id does not recover the session. It is called
 from `agentRunHandler.ts`'s `handleAgentRun` (via
 `server/src/modules/hosts/threadOutcome.ts`'s `recordHostThreadOutcome`)
-once the dispatched Run's `agent_run` job reaches terminal — not from the
-dispatch route itself, which no longer waits around for that. Every session id a thread moves on from — reset, close, or a degraded resume — is appended to `retired_vendor_session_ids`, and ambient session import excludes those alongside the live id; clearing the live id alone would let the Agent's old sessions come back as the owner's own history.
+once the dispatched Run's `agent_run` job reaches terminal. The dispatch route
+does not wait for that. A reset it
+concludes is said in the Room once per Run that proved it (the notice carries
+`host_thread_run_id`); the thread keeps its id across resets and the explicit
+reset writes the same `session_reset` event, so a thread-wide check would have
+silenced every reset after the first. Every session id a thread moves on from — reset, close, or a degraded resume — is appended to `retired_vendor_session_ids`, and ambient session import excludes those alongside the live id; clearing the live id alone would let the Agent's old sessions come back as the owner's own history.
 
 `recordRunOutcome` also keeps what the live vendor session holds.
 `identity_digest` / `identity_digest_run_id` name the standing context (identity
@@ -1318,13 +1283,14 @@ execution-context summary reports each pinned Agent's occupancy and links its
 handoff. Real-host acceptance is recorded in `tasks/deferred-register.md`.
 
 `vendor_session_id` is the thread's own resume target, deliberately distinct
-from the server-owned `runs.session_id`. No surface displays it any more — the
-Command Center thread page that did was deleted with the rest of that surface;
-what a remote Run produced is read as a turn, from the normalized event log
+from the server-owned `runs.session_id`. No surface displays it. What a
+remote Run produced is read as a turn, from the normalized event log
 below, through `modules/conversation`.
 
-Removing a managed Room specialist or deleting an owner's direct session
-closes its thread and sets `pending_archive_at`. The server asks the connected
+Removing a managed Room specialist or deleting the owner's last active direct
+session of an Agent (the thread is the Agent × person's, shared by all of their
+direct sessions of it) closes its thread and sets `pending_archive_at`. The
+server asks the connected
 daemon to rename the live directory to its timestamped `.removed-*` archive;
 if the daemon is offline, the pending row is replayed on the next hello or
 heartbeat. Re-adding a Room or sending the first direct message can request an
@@ -1332,7 +1298,7 @@ explicit restore when the heartbeat reports `archived_available`; restore
 never restores the vendor session. Archives older than 30 days are swept by
 the daemon on heartbeat.
 
-## Thread events (P1, `server/src/modules/hosts/threadEventRepository.ts` /
+## Thread events (`server/src/modules/hosts/threadEventRepository.ts` /
 `threadEventNormalization.ts`)
 
 `host_thread_events` is the normalized, per-thread conversation log —
@@ -1359,35 +1325,30 @@ cursor **per thread**, not per run, since the read model is the whole
 conversation across every run/turn dispatched into it; enforced by
 `uq_host_thread_events_thread_event_index`.
 
-This is a sibling table to `run_events`, not a new `run_events.event_type`
-value — that table's CHECK constraint is a closed vocabulary built for the
-server-host semantic-event stream (`tool_call_started`, etc.), has no
-`assistant_text`/`diagnostic` concept, and (before this phase) had no
-incremental-write path for a remote run at all.
+This is a sibling table to `run_events`. Do not store these as a
+`run_events.event_type` value. That table's CHECK constraint is a closed
+vocabulary (`tool_call_started` and the rest) and has no `assistant_text`
+or `diagnostic`. A daemon Run does not write that table incrementally.
 
-`RemoteHostExecutionAdapter` (`remoteHostCliAdapter.ts`) normalizes and
+`remoteHostCliAdapter.ts` normalizes and
 persists events as stdout/stderr chunks arrive — a `thread_event_sink`
-callback, distinct from the pre-existing `runtime_event_sink`/`run_events`
+callback, distinct from the `runtime_event_sink` / `run_events`
 callback, constructed per-run in `orchestrationService.ts` via
 `createSerializedThreadEventSink`. Per-chunk writes are fire-and-forget
 (`void`); the run's terminal status event is `await`ed, guaranteeing every
 earlier event has committed before the Run is reported terminal. Both this
-sink and the pre-existing `runtime_event_sink` are serialized (via the shared
+sink and the `runtime_event_sink` are serialized (via the shared
 `serializeCalls` in `routeUtils/common.ts`) for the same reason:
 `on_stdout_chunk`/`on_stderr_chunk` are synchronous, un-awaited callbacks,
 and a single stdout chunk can carry several JSONL lines that each normalize
 to an event — un-awaited concurrent appends would race `event_index`'s
-`COALESCE(MAX+1, 0)` read. The `runtime_event_sink` race was pre-existing
-(found via this phase's own test, the first to produce two
-`RuntimeSemanticEvent`s from one remote-run stdout chunk) and fixed
-alongside it; that fix needs only the in-process chain, since `run_events`'
-uniqueness is per-run and `tryAcquireExecutionLock` already guarantees one
-process per run. `host_thread_events`' cursor is per-**thread**, spanning
+`COALESCE(MAX+1, 0)` read. `run_events` uniqueness is per-run, and
+`tryAcquireExecutionLock` already guarantees one process per run, so that
+sink needs only the in-process chain. `host_thread_events`' cursor is per-**thread**, spanning
 every run dispatched into it, so the in-process chain alone is not enough —
 a `createSerializedThreadEventSink` instance is scoped to one Run, and two
-concurrently active Runs on the same thread (not currently prevented by
-anything in phase 1 — Phase P2's queue is what will make this scenario rare
-in practice) would each hold an independent chain and could still race.
+concurrently active Runs on the same thread (the dispatch does not prevent
+two) would each hold an independent chain and could still race.
 `PgHostThreadEventRepository.append()` closes that gap at the database
 level: the whole batch runs inside one transaction holding
 `pg_advisory_xact_lock(hashtext('host_thread_events:' || threadId))`, so its
@@ -1395,22 +1356,16 @@ constructor takes a real `Pool`, not the generic `Queryable` most repos in
 this module accept (same reasoning as `evolution/bundleRepository.ts`, which
 needs the identical connection control for its own advisory locks).
 
-`host_thread_events` carries no `data_exposure_level`/redaction-tier column
-the way `run_events` does — `tool_input_summary` is a 200-char-bounded raw
-`JSON.stringify` of a tool's input, readable by any Project member with read
-access via the events endpoint, not gated by host ownership. This is
-consistent with the already-accepted low-trust model for remote-host CLI
-runs (the daemon already uploads full unredacted diffs/output files today),
-not a new exposure category, but the asymmetry with `run_events` was found
-during P1 discovery review and is recorded here as a conscious, accepted gap
-rather than an oversight — a redaction-tier column is deferred, not built,
-since a real redaction system is disproportionate for what P1 needs.
+`host_thread_events` has no `data_exposure_level` column. `tool_input_summary`
+is a 200-char-bounded raw `JSON.stringify` of a tool's input, readable by any
+Project member with read access via the events endpoint, not gated by host
+ownership. A daemon CLI run uploads full unredacted diffs and output files.
 
 ## The work surface a dispatched Run reports back through
 
-A remote Run that carries tool grants is given a way to call Rainver back, and
-it is the same one a server-host Run gets: two files and a few environment
-variables, with no branch on which runtime is executing.
+A daemon Run that carries tool grants is given a way to call Rainver back:
+two files and a few environment variables. Do not add a second surface that
+depends on which runtime is executing.
 
 The launch frame gains `work_surface` — `{ env, files, dir_env }`, the same
 shape `provider_binding` uses and for the same reason (the control plane names
@@ -1449,9 +1404,8 @@ upstream credentials — are untouched by it.
 path, so a control plane behind a path prefix is not truncated) and the
 in-network address for the built-in host. It is configuration: neither the
 daemon's report nor the request that carried it can move where a Run's bearer
-token is sent. `hosts.daemon_server_url` is no longer read or written; the
-column drop waits in the deferred register. Production nginx forwards `/api/`
-and `/internal/hosts/ws` and nothing else, which is why the tool surface a
+token is sent; `hosts` stores no daemon-reported server address. Production nginx forwards `/api/`
+and `/internal/hosts/ws` and nothing else. The tool surface a
 paired host's children call lives at `/api/v1/runs/:runId/tools…`: it is gated
 by the Run's own bearer token, not by the instance token `/internal` carries,
 and a Run reaches the instance through `FRONTEND_URL` like any other client.
@@ -1499,13 +1453,12 @@ runtime launch, local paths and namespace construction. A daemon Run's tools
 are reached through the `rainver` work surface, separately from its prompt
 context; the daemon uploads diffs/output for Server-side materialization. The
 server-local CLI Run Exchange is not used by the current ACP Agent path.
-`hostKind` is left meaning only *which machine*. It decides where a Run's
-**ModelProvider** spend is checked, not whether: the Run executor checks a
-server-host Run's recorded provider before it starts, and a daemon Run on
-either kind of host is checked when its proxy lease is minted — no lease exists
-without a decided spend. The `cli_profile` credential check is gone with the
-server-host CLI branch that raised it — a daemon Run spends the copy's own
-login, which no server-side profile grants.
+`hostKind` means which machine. It decides where a Run's **ModelProvider**
+spend is checked: the executor checks a built-in-host Run's recorded provider
+before it starts, and a paired machine is checked when its proxy lease is
+minted. No lease exists without a decided spend. There is no `cli_profile`
+credential check. A daemon Run spends the copy's own login, which no
+server-side profile grants.
 
 `resolveExecutionPort` returns a `HostDaemonExecutionAdapter` for a CLI Run on
 either kind of host, and for a CLI Run with nothing bound only when its runtime
@@ -1544,7 +1497,7 @@ first. The built-in host's `medium` is its per-Run namespace, a different
 control for the same level. Neither reaches `high`, so `high`/`critical`-risk
 Agents have no candidate on either host. Owner trust says who bears the risk —
 it is not a containment claim, and a paired host still spawns natively with no
-namespace (B62, ADR 0016 §3 and its 2026-09-21 owner-trust amendment; the
+namespace (B62, ADR 0016 §3; the
 table is in `architecture/ROUTING.md`, "Effective trust").
 
 **Capacity.** `HostConnectionRegistry.dispatchLaunch` takes the built-in host's
@@ -1554,26 +1507,22 @@ window. An uncapped dispatch still sends its `launch` synchronously: awaiting
 unconditionally would push the send and its pending entry into a microtask, a
 window in which a frame for that run has no dispatch to route to.
 
-## Where the sandbox line went
+## Run Exchange and sandbox level
 
-`modules/sandbox.md` is retired. The dedicated Runner service, its private
-protocol (`server/src/modules/sandboxRunner/`), the server-side vendor CLI
-adapter and `sandbox/runner.mjs` are deleted: every CLI
-runtime is dispatched to a host daemon now, and the isolation that service
-provided is the strict-mode namespace documented above.
+Every CLI runtime is dispatched to a host daemon, and isolation is the
+strict-mode namespace documented above.
 
-Two things that document described still exist and moved here rather than
-disappearing. **Run Exchange** is server-host-only and no longer reachable from
-a CLI run at all — `HostDaemonExecutionAdapter`'s port throws, because the
-Exchange is a directory pair the server stages and reads back and there is none
-on another machine; a dispatched Run returns its work as a diff and as the
-files the daemon uploads from `$RAINVER_OUTPUT_DIR`, which
-`recordOutputArtifacts` matches against the Task's declared outputs.
-**`required_sandbox_level`** remains a routing and risk value on the Run, but it
-no longer selects an execution mechanism for a CLI run: the server escalates
-nothing it does not provision, and what the Run actually gets is the dispatch's
-`isolation` policy applied by the daemon. `projectFolders/sandbox.ts` and its
-B62 guard stay, because code-patch apply and rollback still touch server-host
+**Run Exchange** is not reachable from a CLI run.
+`HostDaemonExecutionAdapter`'s port throws. The Exchange is a directory pair
+the server stages and reads back, and a daemon Run has no such pair. A
+dispatched Run returns its work as a diff and as the files the daemon uploads
+from `$RAINVER_OUTPUT_DIR`, which `recordOutputArtifacts` matches against the
+Task's declared outputs. **`required_sandbox_level`** is a routing and risk
+value on the Run. It does not select an execution mechanism for a CLI run: the
+server escalates nothing it does not provision, and what the Run actually gets
+is the dispatch's `isolation` policy applied by the daemon.
+`projectFolders/sandbox.ts` and its B62 guard stay, because code-patch apply
+and rollback still touch server-host
 Locations.
 
 ## Host daemon (`packages/host-daemon`, binary `rainver-host`)
@@ -1583,8 +1532,8 @@ A deliberately thin bridge — no planner, no memory, no business logic (ADR
 `~/.rainver-host/config.json` (override root via
 `RAINVER_HOST_CONFIG_DIR`), mode 0600, the **only** place a workspace's
 real local path is ever written down. It also records the daemon's `trust`
-mode, written with the credential it registered with; a config that predates
-the field is a paired host, which is all a daemon could be then.
+mode, written with the credential it registered with. A config with no
+`trust` field is a paired host.
 
 ### Location lease, Task worktrees and `git_after`
 
@@ -2019,7 +1968,7 @@ through too), so its next send advances the baseline. Any other state there
 is someone else's move and still the person's to refresh; other conversations
 on the Location were not told and keep the gate.
 
-In strict mode the launch binds its cwd — now the Task worktree — by
+In strict mode the launch binds its cwd, the Task worktree, by
 `sandbox_mode` and the repository's git common directory as a write bind
 capped by the same mode; a `command_run` in a Task worktree binds both the
 same way.
@@ -2078,8 +2027,7 @@ branch as unknown too.
 ### Strict mode (`strictNamespace.ts`)
 
 In strict mode `execution.ts` does not spawn the runtime — it spawns `bwrap`
-around it. The namespace is ported from the Runner it replaces
-(`sandbox/runner.mjs`'s `buildNamespaceCommand`): `--die-with-parent
+around it. The namespace uses `--die-with-parent
 --new-session --unshare-pid`, a tmpfs root, `--proc`/`--dev`, a private
 `/tmp`, the system roots and the minimal `/etc` files bound read-only, and
 `--unshare-net` when the Run's egress profile is `none`. The child starts
@@ -2088,15 +2036,9 @@ through `sh -c` so it can report `ready` on fd 3 before `exec`ing the runtime:
 the same exit code otherwise, and the daemon says which in the `complete`
 frame's error.
 
-**One deliberate deviation from the Runner.** The Runner remapped every
-authority root onto a canonical target (`/workspace`, `/home/sandbox`,
-`/runtime-tool`) because the server addressed mounts by managed id and never
-knew a real path. The daemon is the opposite — it is the only component that
+Each path is bound **at its own path**. The daemon is the only component that
 resolves paths at all (B64), and everything it has already materialized for
-the Run is an absolute path on this machine — so each path is bound **at its
-own path**. The containment property is unchanged; what is dropped is a
-translation that would have to be undone again in every variable the daemon
-writes.
+the Run is an absolute path on this machine.
 
 What a Run sees, and nothing else: its workspace (read-only or read-write per
 `sandbox_mode`), any explicitly attached Workspace Location roots (each bound
@@ -2126,15 +2068,12 @@ applies to a provider-bound run) and adds only what the daemon itself built for
 the Run. `planStrictLaunch` is the one place that decides this, and it is
 unit-tested for exactly that reason.
 
-The container no longer receives the control plane's internal token at all.
-`.runner.env` existed to give the Runner `SANDBOX_RUNNER_TOKEN`, which unlocks
-the internal credential and execution routes from the network this container is
-on; with the Runner gone the file, the variable and that reachability go with
-it, and the daemon holds a bearer token for its own Host row and nothing else.
-(`SANDBOX_RUNNER_SERVER_HOST` survives under its old name: it is the server's
-own in-network hostname, which the built-in host's control-plane URL and the
-provider proxy address both derive from. Renaming it would silently break an
-instance whose `.env` still spells it the old way.)
+The container does not receive the control plane's internal token. The daemon
+holds a bearer token for its own Host row and nothing else.
+`SANDBOX_RUNNER_SERVER_HOST` is the server's own in-network hostname, which the
+built-in host's control-plane URL and the provider proxy address both derive
+from. Renaming it would silently break an instance whose `.env` still spells it
+that way.
 
 HOME is `runs/<run_id>/home`, never the container's and never a managed copy's
 shared login home. The runtime reaches its own state through the state-root
@@ -2211,31 +2150,28 @@ owner's machine, its Runs use the machine's own network, and it runs no proxy.
 for anything that needs to know it is inside one. Codex does not read it; the
 daemon consumes the same fact (`trust === "strict"`) by writing
 `sandbox_mode = "workspace-write"` into that copy's `config.toml` before spawn
-(`packages/host-daemon/src/codexStrictSandbox.ts`). That is the switch measured
-on 2026-09-08 to stop Codex's default read-only sandbox stacking on this
-namespace. Claude Code has no vendor sandbox to relax.
+(`packages/host-daemon/src/codexStrictSandbox.ts`). That switch stops Codex's
+default read-only sandbox from stacking on this namespace. Claude Code has no
+vendor sandbox to relax.
 
 It sets the **top-level** key and only that one. TOML scopes a key to the table
-above it, so rewriting `sandbox_mode` wherever it appeared changed the first one
-found — in a config with named profiles, `[profiles.x]`'s — which left the
-top-level default untouched (the Run still could not write) and silently altered
-a profile the owner configured for something else.
+above it. Do not rewrite `sandbox_mode` wherever it appears. In a config with
+named profiles that changes `[profiles.x]` and leaves the top-level default
+untouched. The Run still cannot write, and a profile the owner configured for
+something else changes.
 
-Finding where the top-level table ends took three conjuncts, each added after
-the previous one proved insufficient. A table header is a bracketed name
-**alone on its line** — a bare leading `[` also matched a multi-line array's
-continuation (`notify = [` … `  ["a"],`), which stopped the scan early and
-produced two top-level `sandbox_mode` keys, a duplicate-key error that stops
-Codex from starting. It must be at **bracket depth zero** — a final array
+Finding where the top-level table ends takes three conjuncts. A table header is a bracketed name
+**alone on its line**. A bare leading `[` also matches a multi-line array's
+continuation (`notify = [` … `  ["a"],`), which stops the scan early and
+produces two top-level `sandbox_mode` keys. A duplicate key stops Codex from
+starting. The header must be at **bracket depth zero**. A final array
 element carries no trailing comma, so `  ["a"]` reads exactly like a header.
-And the depth is counted over the line with **strings and comments removed** —
-one unbalanced `[` inside either pinned the depth above zero for the rest of
-the file, so no header was ever found and the scan fell back to rewriting the
-first named profile's key, which is the original bug reinstated by its own fix.
-The scan for an *existing* key carries the same string-awareness: without it a
-`sandbox_mode` line inside a multi-line string was rewritten instead of the
-real one, which leaves Codex starting cleanly and the Run silently unable to
-write — a failure with no error anywhere.
+Count depth over the line with **strings and comments removed**. One
+unbalanced `[` inside either pins the depth above zero for the rest of the
+file, so no header is found and the scan rewrites the first named profile's
+key. The scan for an existing key has the same string-awareness. Do not
+rewrite a `sandbox_mode` line inside a multi-line string: Codex starts, and
+the Run cannot write, with no error.
 
 - `rainver-host register --server <url> --code <pairing-code>` — exchanges
   the pairing code for a bearer token. `--server` must be `https://` or
@@ -2257,8 +2193,8 @@ write — a failure with no error anywhere.
   path map. `--local-only` skips remote revocation with an explicit warning.
 - `rainver-host workspace add <path> --project <project_id> [--name <name>]`
   — registers a pre-existing local directory (no mkdir/clone/scan, unlike the
-  server-host `create` flow). Requires an explicit `project_id` in phase 1 —
-  no cross-space "my projects" picker exists yet.
+  server-host `create` flow). Requires an explicit `project_id`. There is no
+  cross-space project picker.
 - `rainver-host workspace list` / `workspace remove <id>`.
 - The private `dist/daemon.js` systemd entrypoint opens the WS connection, sends
   `hello`, including workspace status reports, then `heartbeat` once on
@@ -2268,8 +2204,8 @@ write — a failure with no error anywhere.
   (`src/execution.ts`): spawns the rendered argv in the local workspace path
   (resolved from the daemon's own `config.workspaces` map by
   `workspace_location_id` — the server never sees the real path), injects
-  `RAINVER_OUTPUT_DIR` as a per-run directory outside the workspace
-  (phase-1 substitute for Run Exchange), streams stdout as `output` frames,
+  `RAINVER_OUTPUT_DIR` as a per-run directory outside the workspace,
+  streams stdout as `output` frames,
   and on exit uploads the Run's own git diff (`src/gitDiff.ts`: before the
   process starts the daemon writes the working tree — tracked and untracked,
   `.gitignore` respected — as a tree object through a private
@@ -2279,16 +2215,14 @@ write — a failure with no error anywhere.
   the dangling blobs are what `git stash create` leaves and `git gc` prunes
   them; a launch whose baseline capture failed falls back to tree-vs-HEAD) and
   the output directory's contents (`src/outputFiles.ts`, UTF-8 only — a
-  binary deliverable is a known phase-1 gap) before sending `complete`.
-  **`RAINVER_OUTPUT_DIR` is no longer nudged via the prompt** (real-usage
-  finding, 2026-08-22): every remote dispatch is workspace-bound, and the
-  intent-to-add diff capture above already gives a brand-new file's full
-  content, so `remoteHostCliAdapter.ts` stopped instructing the agent to
-  write deliverables there — it was misdirecting ordinary workspace writes.
-  The env var and upload path stay wired (dormant unless something writes
-  there unprompted); a real, structured "information for Rainver itself"
-  channel — distinct from workspace file changes — is a deferred design
-  question, not this fix (`tasks/deferred-register.md`).
+  binary file would come back corrupted) before sending `complete`.
+  The prompt does not mention `RAINVER_OUTPUT_DIR`. Every remote dispatch is
+  workspace-bound, and the intent-to-add diff capture above already records a
+  new file. Do not instruct the agent to write ordinary workspace files there:
+  that sends them into an upload path nothing consumes. The env var and upload
+  path stay wired. A structured channel for information meant for Rainver
+  itself, distinct from workspace file changes, is still an open design
+  (`tasks/deferred-register.md`).
   Termination uses `process.kill(-pid, signal)` against the whole process
   group (`detached: true` at spawn), escalating a graceful `SIGTERM` to
   `SIGKILL` after a 5s grace window if the process ignores it. A `terminate`
@@ -2307,7 +2241,9 @@ therefore needs neither a source checkout nor pnpm. A channel-neutral
 `host-installer` bootstrap published from `master` is the single public install
 URL; it validates the selected channel's installer before executing it, with
 `stable` as the default. The installer keeps immutable build directories below
-`~/.local/share/rainver-host/releases/`, atomically moves `current`, installs a
+`~/.local/share/rainver-host/releases/` (each placed by a same-filesystem
+rename from a staging directory beside it, and replaced when an existing one
+is not a complete release), atomically moves `current`, installs a
 systemd user unit, and captures the installing user's PATH for CLI discovery.
 The daemon launcher loads the owner-only `service.env` itself before Node
 starts; the unit does not rely on systemd `EnvironmentFile` parsing, whose
@@ -2321,7 +2257,9 @@ process start; this also makes the fresh WebSocket `hello_ack` deliver the
 complete runtime-probe catalog before capability detection. `--auto-update`
 optionally installs a six-hour systemd timer;
 updates request a daemon restart only when no Run is launching, executing, or
-uploading. Each channel also publishes its checksummed `BUILD_ID` as a small
+uploading. An install keeps the new build and the one it replaced, and while
+an earlier restart request is still pending (the running daemon may be on an
+older build than either) it removes no release at all. Each channel also publishes its checksummed `BUILD_ID` as a small
 standalone asset. An update compares it with the active build before fetching
 Node, daemon, or adapter archives and returns immediately on a match; changing
 the timer setting still takes effect on that no-op path. The archive's own
@@ -2352,7 +2290,12 @@ direct-chat container id. Conversation workspaces are shared at
 `managed_workspace_archive` renames a live directory to a timestamped
 `.removed-…` sibling, `managed_workspace_restore` brings back the newest
 archive when no live directory exists, and heartbeat sweeps archives older
-than 30 days. Heartbeats report only Agent/container ids and the boolean
+than 30 days. A direct chat turn sent with `restore_workspace` asks for the
+restore as the last step of its transaction, after everything that can refuse
+the turn and after its job is queued in the same transaction: a refused turn
+restores nothing, a failed restore rolls the turn back so it can be sent again,
+and the Run cannot start on a still-archived workspace. With nothing archived
+the restore is a no-op, not an error. Heartbeats report only Agent/container ids and the boolean
 `archived_available` flag.
 
 Capability discovery (`src/capabilities.ts`) probes PATH via `--version` for
@@ -2370,9 +2313,9 @@ copy, on either host kind, through `install_tool` (above).
   host selection is an explicit control-center choice. There is no scored
   multi-location router; the only scheduling across Runs is the daemon's
   per-Location execution lease (below) and the built-in host's run cap.
-- Worktrees and attempt records from the earlier per-Run Task worktree
-  scheme (`<location>/.rainver/worktrees/`, `<config>/worktrees/*.json`) are
-  neither migrated nor removed.
+- `<location>/.rainver/worktrees/` and `<config>/worktrees/*.json` are not
+  the Task worktree store (`<config>/task-worktrees/`). Do not read them as
+  live worktrees, and do not delete them while cleaning that store.
 - There is no automated daemon-process-to-live-server integration test.
   The wire contract is verified from the server side
   (`server/test/hostsRoutes.test.ts`); the daemon's `fetch`/`WebSocket`
@@ -2388,32 +2331,15 @@ copy, on either host kind, through `install_tool` (above).
   How a host Run's change lands is settled and built (ADR 0016 §11). Location `execution_ready` is persisted and
   heartbeat-driven; it is not inferred from Host liveness.
 
-Unimplemented host ideas: [unimplemented-from-guides.md](../plans/unimplemented-from-guides.md) §25.
 
-### Conformance probes: retired
-
-There were instance-admin C3 probes here, and they are gone (2026-09-09). They
-certified a vendor CLI by asking it five behavioural questions once — write
-only this file, do not print that secret, stop when told — and cached the
-verdict against `(adapter_type, runtime_version)`, which the router then
-required before any non-low-risk or file-shaped CLI work.
-
-Three things stopped holding at once. The behaviours are the *model's*, and the
-verdict carried no model, so a pass measured on one model spoke for every model
-that copy could select. One sample of a non-deterministic runtime is weak
-evidence for a permanent verdict. And the strongest question — will it write
-outside what it was given — cannot be answered by a behavioral probe. Only the
-built-in strict Host provides per-Run namespace containment; a trusted paired
-Host runs natively under its owner's OS permissions and has no namespace
-containment. Removing the probe does not imply filesystem confinement; the
-execution Host trust mode is the boundary (B62 and
-`SECURITY_AND_ACCESS_BOUNDARIES.md` §10).
-
-A vendor CLI's own interactive question (translated into an ordinary reply,
-`modules/runtime-adapters.md`) is therefore not certified by a probe either:
-the translation is covered by recorded-frame controller tests
-(`server/test/acpVendorQuestion.test.ts`), and each runtime's real question
-shape is a paired-host acceptance item in `tasks/deferred-register.md`.
+Filesystem containment follows the execution Host trust mode (B62 and
+`SECURITY_AND_ACCESS_BOUNDARIES.md` §10). Only the built-in strict Host
+provides per-Run namespace containment; a trusted paired Host runs natively
+under its owner's OS permissions. A vendor CLI's own interactive question
+(translated into an ordinary reply, `modules/runtime-adapters.md`) is covered
+by recorded-frame controller tests (`server/test/acpVendorQuestion.test.ts`),
+and each runtime's real question shape is a paired-host acceptance item in
+`tasks/deferred-register.md`.
 
 Filesystem containment follows the execution Host trust mode as described
 above. Provider-bound calls use their separately authorized egress profile

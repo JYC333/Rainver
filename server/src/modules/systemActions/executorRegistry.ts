@@ -17,10 +17,9 @@ import { registerAgentHandoffExecutors } from "../agentGroups/sessionHandoff.js"
 
 /**
  * Central import of per-module `registerXxxSystemActionExecutors` functions,
- * mirroring `proposals/applierRegistry.ts` (action authority consolidation
- * plan, D4). Owning modules register their own System Action executors here
- * instead of `SystemActionDispatcher` hand-maintaining them; adding an
- * executor means adding one call, not editing the dispatcher.
+ * the same shape as `proposals/applierRegistry.ts`. Owning modules register
+ * their own System Action executors here. Do not hand-maintain them on
+ * `SystemActionDispatcher`. Adding an executor is one call in this file.
  *
  * `granted` carries each family's own pre-check (mirroring what the
  * dispatcher already computed to decide whether it is worth resolving a

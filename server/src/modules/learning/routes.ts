@@ -6,7 +6,7 @@ import { LearningService } from "./service.js";
 export function registerRoutes(app: FastifyInstance, context: ModuleContext): void {
   const learning = () => new LearningService(dbPool(context.config));
 
-  // Global surface (plan section 13.5): no project scoping, optionally
+  // Global surface: no project scoping, optionally
   // filtered by ?project_id=. Project-contextual surfaces are the
   // /projects/:projectId/... routes below, which always scope to one Project.
   app.get("/api/v1/learning/objectives", async (request, reply) => {

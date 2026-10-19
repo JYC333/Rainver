@@ -30,7 +30,7 @@ function show(node: React.ReactElement) {
   return render(<MemoryRouter>{node}</MemoryRouter>)
 }
 
-describe('ConversationTurn — the states of D3', () => {
+describe('ConversationTurn states', () => {
   it('working: hides completed tools while keeping the live text visible', () => {
     show(<ConversationTurn turn={turn('working', [
       tool(0, 'search', 'succeeded'),
@@ -149,7 +149,7 @@ describe('ConversationTurn — the states of D3', () => {
     }
     const { container } = show(
       <ConversationTurn turn={turn('failed', [reported, { type: 'text', index: 1, text: 'Could not read.' }])} />)
-    // A failed tool call's detail is expandable, as D3 asks — so open it.
+    // A failed tool call's detail is expandable. Open it.
     fireEvent.click(screen.getByText('read'))
     // Shown as the runtime summarised it — the code block tokenizes, so this
     // reads the whole text. Serialising a summary as JSON would wrap it in

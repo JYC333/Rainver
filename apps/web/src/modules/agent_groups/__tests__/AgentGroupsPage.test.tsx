@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { toast } from 'sonner'
 import AgentGroupsPage from '../AgentGroupsPage'
 import {
   ApiRequestError,
@@ -12,8 +13,7 @@ import {
   roomsApi,
   runsApi,
   sessionsApi,
-  spacesApi,
-} from '../../../api/client'
+  spacesApi, runtimeContextApi } from '../../../api/client'
 import type { AgentOut, Project, Room, RoomConversation, RoomDetail, RoomDiscussion, Run, RunTurn, TurnPart } from '../../../types/api'
 
 /** A turn in progress, for the stream mock. */
@@ -41,6 +41,11 @@ vi.mock('../../../api/client', async () => {
   const { ApiRequestError } = await import('../../../test/apiClientMock')
   return {
   ApiRequestError,
+  // Each addressed Room recipient's knowledge retrieval switch, off.
+  runtimeContextApi: {
+    retrievalSwitch: vi.fn(async (scopeId: string) => ({ work_context_scope_id: scopeId, enabled: false, preferred_domains: [], setup_version: null })),
+    setRetrievalSwitch: vi.fn(),
+  },
   agentsApi: { list: vi.fn(), conversationBackends: vi.fn(), listRuntimeProfiles: vi.fn() },
   projectsApi: { list: vi.fn(), getOverview: vi.fn(), readers: vi.fn(), hostExecutionTargets: vi.fn() },
   hostsApi: { listRuntimeDefinitions: vi.fn() },
@@ -88,23 +93,40 @@ vi.mock('../../../api/client', async () => {
   }
 })
 
-// The editor itself is covered by `RoomMessageComposer.test.tsx`; jsdom cannot
-// type into TipTap, and without this nothing here could exercise a send.
-vi.mock('../RoomMessageComposer', () => ({
-  emptyRoomMessageComposerValue: () => ({ text: '', mentionIds: [], routingSegments: [] }),
-  // Reflects `value` as well as reporting changes: a seeded draft arrives
-  // through that prop, so a write-only stand-in could not see one.
-  RoomMessageComposer: ({ value, onChange }: {
-    value: { text: string }
-    onChange: (value: { text: string; mentionIds: string[]; routingSegments: unknown[] }) => void
-  }) => (
-    <textarea
-      aria-label="Room message"
-      value={value.text}
-      onChange={event => onChange({ text: event.target.value, mentionIds: [], routingSegments: [] })}
-    />
-  ),
-}))
+// The editor itself is covered by `RoomMessageComposer.test.tsx`. jsdom cannot
+// type into TipTap. This stand-in is what lets a send be exercised here.
+vi.mock('../RoomMessageComposer', async () => {
+  const { useEffect, useRef } = await import('react')
+  return {
+    emptyRoomMessageComposerValue: () => ({ text: '', mentionIds: [], routingSegments: [] }),
+    // Reflects `value` as well as reporting changes: a seeded draft arrives
+    // through that prop, so a write-only stand-in could not see one. Clears on
+    // a new `resetToken` and fills from `restore`, as the editor does.
+    RoomMessageComposer: ({ value, onChange, resetToken, restore }: {
+      value: { text: string }
+      onChange: (value: { text: string; mentionIds: string[]; routingSegments: unknown[] }) => void
+      resetToken: number
+      restore?: { token: number; text: string } | null
+    }) => {
+      const firstReset = useRef(resetToken)
+      useEffect(() => {
+        if (resetToken !== firstReset.current) onChange({ text: '', mentionIds: [], routingSegments: [] })
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [resetToken])
+      useEffect(() => {
+        if (restore) onChange({ text: restore.text, mentionIds: [], routingSegments: [] })
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [restore?.token])
+      return (
+        <textarea
+          aria-label="Room message"
+          value={value.text}
+          onChange={event => onChange({ text: event.target.value, mentionIds: [], routingSegments: [] })}
+        />
+      )
+    },
+  }
+})
 vi.mock('../../../contexts/SpaceContext', () => ({
   useSpace: () => ({ activeSpaceId: mockedSpaceContext.activeSpaceId, userId: mockedSpaceContext.userId }),
 }))
@@ -344,8 +366,8 @@ describe('Rooms page', () => {
     vi.mocked(spacesApi.members).mockResolvedValue([
       { user_id: 'user-1', display_name: 'Owner', email: 'owner@example.test' },
       { user_id: 'user-2', display_name: 'Member', email: 'member@example.test' },
-      // In the Space, not on this Project — what the old candidate source
-      // would have offered and the server would have refused.
+      // In the Space, not on this Project. Do not offer them: the server
+      // refuses a candidate who is not on the Project.
       { user_id: 'user-9', display_name: 'Outsider', email: 'outsider@example.test' },
     ] as Awaited<ReturnType<typeof spacesApi.members>>)
     vi.mocked(runsApi.streamTurn).mockResolvedValue(undefined)
@@ -450,6 +472,140 @@ describe('Rooms page', () => {
     expect(browserConfirm).not.toHaveBeenCalled()
   })
 
+  it('keeps the Room switched to when a roster change in the previous Room finishes late', async () => {
+    const secondRoom = { ...room, id: 'room-2', title: 'Second Room' }
+    vi.mocked(roomsApi.list).mockResolvedValue({ items: [room, secondRoom], total: 2, limit: 50, offset: 0 })
+    vi.mocked(roomsApi.get).mockImplementation(async id => (id === 'room-2'
+      ? { ...detail, room: secondRoom }
+      : {
+          ...detail,
+          agent_members: [
+            ...detail.agent_members,
+            { ...detail.agent_members[0]!, id: 'agent-member-2', agent_id: 'agent-2', agent_name: 'Critical Reviewer', agent_kind: 'standard', role: 'member' },
+          ],
+        }) as never)
+    let finishRemoval!: () => void
+    vi.mocked(roomsApi.removeAgent).mockImplementation(() => new Promise(resolve => { finishRemoval = () => resolve({} as never) }))
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Critical Reviewer' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove' }))
+    await waitFor(() => expect(roomsApi.removeAgent).toHaveBeenCalledWith('room-1', 'agent-2'))
+
+    fireEvent.click(screen.getAllByText('Second Room')[0]!)
+    await waitFor(() => expect(roomsApi.get).toHaveBeenCalledWith('room-2'))
+    await waitFor(() => expect(screen.queryByRole('link', { name: 'Configure Critical Reviewer' })).not.toBeInTheDocument())
+
+    await act(async () => { finishRemoval() })
+    for (let i = 0; i < 3; i += 1) await act(() => new Promise(resolve => setTimeout(resolve, 0)))
+    expect(screen.queryByRole('link', { name: 'Configure Critical Reviewer' })).not.toBeInTheDocument()
+    expect(roomsApi.get).toHaveBeenLastCalledWith('room-2')
+  })
+
+  it('does not bind a conversation from the previous Room when its send finishes late', async () => {
+    const secondRoom = { ...room, id: 'room-2', title: 'Second Room' }
+    const secondConversation = { ...initialConversation, id: 'session-2', room_id: 'room-2', title: 'Second thread' }
+    vi.mocked(roomsApi.list).mockResolvedValue({ items: [room, secondRoom], total: 2, limit: 50, offset: 0 })
+    vi.mocked(roomsApi.get).mockImplementation(async id => (id === 'room-2' ? { ...detail, room: secondRoom } : detail) as never)
+    vi.mocked(roomsApi.conversations).mockImplementation(async roomId => ({
+      items: [roomId === 'room-2' ? secondConversation : { ...initialConversation, title: 'Evidence review' }],
+      total: 1, limit: 50, offset: 0,
+    }) as never)
+    let finishSend!: () => void
+    vi.mocked(roomsApi.sendMessage).mockImplementation(() => new Promise(resolve => {
+      finishSend = () => resolve({
+        message: { id: 'm-late', session_id: 'session-1', role: 'user', content: 'late', metadata_json: {} },
+        conversation: initialConversation, task_group_ids: [], run_ids: [],
+      } as never)
+    }))
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'late' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1', expect.anything()))
+
+    fireEvent.click(screen.getAllByText('Second Room')[0]!)
+    await waitFor(() => expect(screen.getAllByText('Second thread').length).toBeGreaterThan(0))
+
+    await act(async () => { finishSend() })
+    for (let i = 0; i < 3; i += 1) await act(() => new Promise(resolve => setTimeout(resolve, 0)))
+    expect(screen.queryByText('Evidence review')).not.toBeInTheDocument()
+    expect(vi.mocked(roomsApi.messages).mock.calls.some(([roomId, conversationId]) => roomId === 'room-2' && conversationId === 'session-1')).toBe(false)
+  })
+
+  it('retries a preset add under the same idempotency key until the add is confirmed', async () => {
+    vi.mocked(roomsApi.agentCandidates).mockResolvedValue({
+      agents: [], presets: [{ preset_id: 'preset-reviewer', name: 'Reviewer', description: 'Reviews the work' }],
+      total: 0, limit: 100, offset: 0,
+    })
+    vi.mocked(roomsApi.addAgentPreset).mockResolvedValue(detailWithReviewer as never)
+    let failNextRoomRead = false
+    vi.mocked(roomsApi.get).mockImplementation(async () => {
+      if (failNextRoomRead) {
+        failNextRoomRead = false
+        throw new Error('room unavailable')
+      }
+      return detail
+    })
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    const preset = await screen.findByRole('button', { name: /Reviewer/ })
+
+    // The add lands, then the refresh after it fails: the person sees an error.
+    failNextRoomRead = true
+    fireEvent.click(preset)
+    await waitFor(() => expect(roomsApi.addAgentPreset).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Reviewer/ })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: /Reviewer/ }))
+    await waitFor(() => expect(roomsApi.addAgentPreset).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('button', { name: /Reviewer/ })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: /Reviewer/ }))
+    await waitFor(() => expect(roomsApi.addAgentPreset).toHaveBeenCalledTimes(3))
+
+    const keys = vi.mocked(roomsApi.addAgentPreset).mock.calls.map(call => call[2])
+    expect(keys[1]).toBe(keys[0])
+    expect(keys[2]).not.toBe(keys[0])
+  })
+
+  it('reports a failed retry of a Room that could not be loaded', async () => {
+    const toastError = vi.spyOn(toast, 'error')
+    vi.mocked(roomsApi.get).mockRejectedValue(new Error('room unavailable'))
+    renderRooms('/rooms?room=room-1')
+    expect(await screen.findByText(/Room details could not be loaded/)).toBeInTheDocument()
+    expect(toastError).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(roomsApi.get).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(toastError).toHaveBeenCalledTimes(2))
+    expect(screen.getByText(/Room details could not be loaded/)).toBeInTheDocument()
+    toastError.mockRestore()
+  })
+
+  it('says so when a re-added specialist\'s host state was not restored', async () => {
+    const toastError = vi.spyOn(toast, 'error')
+    vi.mocked(roomsApi.agentCandidates).mockResolvedValue({
+      agents: [{
+        agent_id: 'agent-2', name: 'Critical Reviewer', agent_kind: 'standard', visibility: 'space_shared',
+        in_room: false, member_status: 'removed', private: false, shared_with_user_ids: [], host_state_archive_available: true,
+      }],
+      presets: [], total: 1, limit: 100, offset: 0,
+    })
+    vi.mocked(roomsApi.addAgent).mockResolvedValue({
+      ...detailWithReviewer,
+      revoked_grant_count: 0,
+      managed_workspace_restore: { agent_id: 'agent-2', ok: false, changed: false, error: 'host_offline' },
+    })
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: /Critical Reviewer/ }))
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Re-add Critical Reviewer to this Room?')
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', { name: 'Add to Room' }))
+
+    await waitFor(() => expect(roomsApi.addAgent).toHaveBeenCalledWith('room-1', expect.objectContaining({ restore_workspace: true })))
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(expect.stringContaining('previous host state was not restored')))
+    toastError.mockRestore()
+  })
+
   it('shows host-bound specialist facts and lets the host owner reset context', async () => {
     vi.mocked(roomsApi.get).mockResolvedValue({
       ...detail,
@@ -538,6 +694,26 @@ describe('Rooms page', () => {
     expect(roomsApi.messages).not.toHaveBeenCalled()
   })
 
+  it('offers knowledge retrieval for the Room recipient the next message reaches', async () => {
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    // Nobody named: the manager answers, and its Room membership is the Work Context.
+    expect(await screen.findByRole('button', { name: 'Space Assistant · Knowledge: off' })).toBeInTheDocument()
+    expect(runtimeContextApi.retrievalSwitch).toHaveBeenCalledWith('agent-member-1')
+  })
+
+  it('puts an unsent message back when the conversation is opened again', async () => {
+    const destination = 'room:room-1:session-1'
+    sessionStorage.setItem(`rainver:conversation-draft:v1:${encodeURIComponent(destination)}`, JSON.stringify({
+      version: 1, destination, text: 'Unsent words', input_parts: [], saved_at: new Date().toISOString(),
+    }))
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+    const composer = await screen.findByLabelText('Room message')
+
+    await waitFor(() => expect(composer).toHaveValue('Unsent words'))
+    for (let i = 0; i < 3; i += 1) await act(() => new Promise(resolve => setTimeout(resolve, 0)))
+    expect(composer).toHaveValue('Unsent words')
+  })
+
   it('starts a separate thread by deselecting, and does not snap back to the newest', async () => {
     // "Nothing selected" is also what a fresh arrival looks like, so the
     // auto-select would otherwise reopen the newest conversation the moment
@@ -574,7 +750,7 @@ describe('Rooms page', () => {
     ]))
   })
 
-  it('presents the legacy generic Room title as a real project Room name', async () => {
+  it('shows a Room titled Project conversation as the project Room name', async () => {
     const legacyRoom = { ...room, title: 'Project conversation' }
     vi.mocked(roomsApi.list).mockResolvedValue({ items: [legacyRoom], total: 1, limit: 50, offset: 0 })
     vi.mocked(roomsApi.get).mockResolvedValue({ ...detail, room: legacyRoom })
@@ -677,11 +853,8 @@ describe('Rooms page', () => {
   })
 
   it('a poll delivers a newer reply without pulling back a reader scrolled up', async () => {
-    // What used to be waited for here was the conversation's five-second poll
-    // firing on real time — five seconds of sleep the hygiene test cannot see,
-    // dressed as a click on the page's Refresh button, which reloads the
-    // catalog and the Room and never the messages. The poll is the subject,
-    // so the clock is faked and advanced past it.
+    // The subject is the conversation poll, not a Refresh click and not a
+    // five-second real sleep. The clock is faked and advanced past it.
     let resolveMessages!: (value: Awaited<ReturnType<typeof roomsApi.messages>>) => void
     vi.mocked(roomsApi.messages).mockImplementationOnce(() =>
       new Promise(resolve => { resolveMessages = resolve }))
@@ -1083,9 +1256,8 @@ describe('Rooms page', () => {
     // The server writes an assistant row at the pause, not only at the end
     // (`chatTurnFinalizer` posts the waiting-for-review notice under the
     // Agent's name). So a paused Run reaches a steady state where a reply and
-    // a blocked turn coexist — and a surface that reads "there is a reply" as
-    // "the turn is over" silently drops the approval link, which is the one
-    // thing a paused turn exists to show.
+    // a blocked turn coexist. Do not read "there is a reply" as "the turn is
+    // over". That drops the approval link a paused turn shows.
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [
         {
@@ -1130,8 +1302,7 @@ describe('Rooms page', () => {
     //
     // What must NOT happen is the read-once path claiming it: a paused Run is
     // skipped there by design, so a turn released to it would be lost for
-    // good. (That the client no longer reports a blocked ending as a fault at
-    // all is covered directly in `chat-api.test.ts`.)
+    // good.
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [{
         id: 'message-notice', session_id: 'session-1', space_id: 'space-1',
@@ -1225,7 +1396,7 @@ describe('Rooms page', () => {
     // Running while the stream is alive — so the only turn on screen is the
     // streamed one, and the read-once effect cannot reach it. It goes
     // terminal once the stream has died, which is what makes recovery
-    // possible and what the stale hold used to prevent.
+    // possible. A stale hold must not keep the turn non-terminal.
     let streamDied = false
     vi.mocked(runsApi.get).mockImplementation(async () => ({
       id: 'run-stranded',
@@ -1313,9 +1484,9 @@ describe('Rooms page', () => {
   })
 
   it('reads a replied turn back on reload, so its work is still there', async () => {
-    // Nothing streams here: the Run was terminal before this surface existed,
-    // which is every reply on a reloaded page. The turn is still read for
-    // failure/diagnostic facts even though successful tools stay hidden.
+    // Nothing streams on a reloaded page: the Run is already terminal. The
+    // turn is still read for failure and diagnostic facts. Successful tools
+    // stay hidden.
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [{
         id: 'message-reply', session_id: 'session-1', space_id: 'space-1',
@@ -1426,8 +1597,7 @@ describe('Rooms page', () => {
   })
 
   it('loads older Room history, and a later poll does not refetch terminal Runs', async () => {
-    // Same repair as above: the third `messages` call this test counts is the
-    // poll, not the Refresh button it used to click.
+    // The third `messages` call this test counts is the poll.
     const recent = Array.from({ length: 50 }, (_, index) => ({
       id: `message-${index}`, session_id: 'session-1', space_id: 'space-1', user_id: 'user-1',
       sender_agent_id: null, role: 'user' as const, content: `Recent ${index}`,
@@ -1747,8 +1917,8 @@ describe('Rooms page', () => {
   })
 
   it('surfaces the canonical Host recovery link before the first message', async () => {
-    // A missing Host/CLI is a preflight state now. The composer stays blocked
-    // with its draft intact while the user gets the canonical Host recovery link.
+    // A missing Host or CLI blocks the composer and keeps the draft. The
+    // recovery link is the command center.
     vi.mocked(roomsApi.conversations).mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 } as never)
     renderRooms('/spaces/space-1/projects/project-1/rooms?room=room-1')
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Anyone there?' } })
@@ -2079,9 +2249,9 @@ describe('Rooms page', () => {
   })
 
   it('links a conversation reference back to the thread it came from', async () => {
-    // The branch `source_room_id` exists for, and the one that was broken:
-    // hand-building the path missed the Space prefix every route lives under,
-    // so "open the source" navigated to Home.
+    // `source_room_id` is what this link needs. Do not hand-build the path.
+    // It misses the Space prefix every route lives under, and "open the
+    // source" navigates to Home.
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [{
         id: 'm-ref', space_id: 'space-1', session_id: 'session-1', role: 'system',
@@ -2107,8 +2277,8 @@ describe('Rooms page', () => {
 
   it('carries a whole thread into a new one, shows the draft, and lets it be dropped', async () => {
     // The header action holds a `thread` pick for the next thread. A draft
-    // has to be visible to be a draft, and droppable: an invisible pick with
-    // no way out is the failure this exists to close.
+    // has to be visible to be a draft, and droppable. Do not leave the pick
+    // invisible or without a way to drop it.
     vi.mocked(roomsApi.messages).mockResolvedValue(polarsMessages as never)
     vi.mocked(roomsApi.sendMessage).mockResolvedValue({
       message: { id: 'm-2', session_id: 'session-new', role: 'user', content: 'Next', metadata_json: {} },
@@ -2158,10 +2328,9 @@ describe('Rooms page', () => {
   })
 
   it('renders a reference as its origin, not as somebody speaking', async () => {
-    // A reference is `role: 'system'` and has no speaker. Rendered as a
-    // bubble it would read as the Agent having said a colleague's words, or a
-    // vendor transcript's — which is exactly what the trust label exists to
-    // prevent anyone concluding.
+    // A reference is `role: 'system'` and has no speaker. Do not render it as
+    // a bubble. It would read as the Agent having said a colleague's words,
+    // or a vendor transcript's.
     vi.mocked(roomsApi.messages).mockResolvedValue({
       items: [{
         id: 'm-ref', space_id: 'space-1', session_id: 'session-1', role: 'system',
@@ -2649,7 +2818,7 @@ describe('Rooms page', () => {
     await waitFor(() => expect(screen.queryByText('Second Room')).not.toBeInTheDocument())
   })
 
-  it('renders the Project state panel beside the conversation, deep-linking into the owning Area (Phase B)', async () => {
+  it('renders the Project state panel beside the conversation, deep-linking into the owning Area', async () => {
     vi.mocked(projectsApi.getOverview).mockResolvedValue({
       project: { id: 'project-1', name: 'Project One', status: 'active' },
       brief: null,
@@ -2660,9 +2829,8 @@ describe('Rooms page', () => {
     renderRooms('/rooms?room=room-1&conversation=session-1')
 
     expect(await screen.findByText('Project initialized')).toBeInTheDocument()
-    // The panel shows the same attention list Pulse and the shell show, and
-    // nothing invented for it: the per-Mode "next actions" it used to carry
-    // all pointed at Areas the sidebar lists.
+    // The panel shows the same attention list Pulse and the shell show.
+    // Do not add a per-Mode "next actions" list: those Areas are in the sidebar.
     expect(screen.queryByText('Next')).toBeNull()
     const attentionItem = await screen.findByRole('link', { name: 'Candidate awaiting review' })
     expect(attentionItem).toHaveAttribute('href', expect.stringContaining('candidate=candidate-1'))

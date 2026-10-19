@@ -29,17 +29,16 @@ export const PROVIDER_TASK_RUN_JOB_TYPE = "provider_task_run";
  *
  * The counterpart of `agent_run` for the other `execution_kind`: the request
  * path admits the Run, makes it durable `queued` and enqueues this job, and
- * the worker performs the bounded call. Doing it on the request path instead
- * — which is what the Research ad-hoc analysis used to do — gives the task no
- * worker retry, no drain admission, and no recovery: a crash between the
- * provider answering and its output being applied left a Run nobody would
- * ever finish.
+ * the worker performs the bounded call. Doing it on the request path gives
+ * the task no worker retry, no drain admission, and no recovery: a crash
+ * between the provider answering and its output being applied leaves a Run
+ * nobody will finish.
  *
  * The handler knows nothing about any domain's prompt. It loads the Run and
  * its frozen contract and asks the owning domain, through this registry, to
  * rebuild the bounded request from them.
  */
-export interface ProviderTaskRunContext {
+interface ProviderTaskRunContext {
   db: Queryable;
   config: ServerConfig;
   run: RunRecord;
@@ -52,7 +51,7 @@ export interface ProviderTaskRunContext {
  * payload carries the Run id and nothing else, so a replayed or reclaimed job
  * cannot change what the task does.
  */
-export type ProviderTaskRunPreparer = (
+type ProviderTaskRunPreparer = (
   context: ProviderTaskRunContext,
 ) => Promise<Omit<BoundedProviderTaskInput, "runId" | "failRunOnError">>;
 
@@ -125,9 +124,9 @@ async function handleProviderTaskRun(
   // has already been called off.
   if (isTerminalRun(run.status) || run.status === "cancelling") {
     // The terminal reconcilers are enqueued here too, not only after this
-    // handler settles the Run: a retry that finds the Run already terminal
-    // used to return before reaching them, so a nudge lost to a failed
-    // enqueue was never retried. They are idempotent on the Run.
+    // handler settles the Run. A retry that finds the Run already terminal
+    // must still reach them: they are idempotent on the Run, and a nudge lost
+    // to a failed enqueue is otherwise never retried.
     if (isTerminalRun(run.status)) {
       await enqueueRunTerminalReconcilers(db, {
         space_id: job.space_id,
@@ -163,8 +162,9 @@ async function handleProviderTaskRun(
   // `agent_run` uses: `runBoundedProviderTask` settles the Run for a provider
   // or contract failure, but the preparer itself can throw — a Run missing the
   // provider binding its contract froze can never be rebuilt — and so can the
-  // database calls around it. Without this the Run stayed `queued` forever
-  // after the last attempt, and kept spending its domain's daily budget.
+  // database calls around it. Do not let that throw escape the guard. The Run
+  // would stay `queued` after the last attempt and keep spending its domain's
+  // daily budget.
   try {
     const request = await preparer({ db, config, run, job });
     const result = await runBoundedProviderTask(db, config, {

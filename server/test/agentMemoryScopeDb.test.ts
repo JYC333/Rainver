@@ -23,6 +23,7 @@ import {
   MemoryProposalUpdateCommandSchema,
 } from "@rainver/protocol";
 import { ensureDefaultRuntimeProfile } from "./support/domainSeeds.js";
+import { memoryProposalDecider } from "../src/modules/memory/memoryProposalDecider.js";
 
 /**
  * The `agent` Memory scope: what an Agent knows about itself and about a Room
@@ -174,6 +175,15 @@ async function agentRows() {
   )).rows;
 }
 
+/** Who alone decides the (single) pending proposal, as the accept path derives it. */
+async function deciderOf() {
+  const row = (await db.pool.query<{ space_id: string; proposal_type: string; payload_json: Record<string, unknown>; created_by_agent_id: string | null }>(
+    `SELECT space_id, proposal_type, payload_json, created_by_agent_id FROM proposals WHERE space_id = $1 ORDER BY created_at DESC LIMIT 1`,
+    [SPACE],
+  )).rows[0]!;
+  return memoryProposalDecider(db.pool, row);
+}
+
 describe("what an Agent records about itself and its Room", () => {
   it("enforces the Agent scope shape and same-Space reference in Postgres", async () => {
     if (!db.available) return;
@@ -262,13 +272,10 @@ describe("who may change what an Agent has become", () => {
     const proposals = await db.pool.query<{ payload_json: Record<string, unknown>; created_by_user_id: string }>(
       `SELECT payload_json, created_by_user_id FROM proposals WHERE space_id = $1`, [SPACE],
     );
-    expect(proposals.rows[0]?.payload_json).toMatchObject({
-      target_scope: "agent",
-      agent_id: AGENT_ID,
-      // Only this person decides it — by identity, not by role, because a
-      // Space owner or admin satisfies any role it could require.
-      required_owner_user_id: OWNER,
-    });
+    expect(proposals.rows[0]?.payload_json).toMatchObject({ target_scope: "agent", agent_id: AGENT_ID });
+    // Only this person decides it — by identity, not by role, because a
+    // Space owner or admin satisfies any role it could require.
+    await expect(deciderOf()).resolves.toEqual({ required: true, userId: OWNER });
   });
 
   it("allows only one pending persona change from a manual Run", async () => {
@@ -348,11 +355,8 @@ describe("who may change what an Agent has become", () => {
     expect(result.modelResult, JSON.stringify(result.modelResult)).toMatchObject({ ok: true, outcome: "proposed" });
     expect(JSON.stringify(result.modelResult)).toMatch(/owner/i);
     expect(await agentRows()).toEqual([]);
-    const proposal = await db.pool.query<{ payload_json: Record<string, unknown> }>(
-      `SELECT payload_json FROM proposals WHERE space_id = $1`, [SPACE],
-    );
     // Still the owner's to decide, though someone else asked for it.
-    expect(proposal.rows[0]?.payload_json).toMatchObject({ required_owner_user_id: OWNER });
+    await expect(deciderOf()).resolves.toEqual({ required: true, userId: OWNER });
   });
 
   it("applies what the Agent concluded during its owner's own unattended work", async () => {
@@ -394,11 +398,8 @@ describe("who may change what an Agent has become", () => {
     const proposal = await db.pool.query<{ payload_json: Record<string, unknown> }>(
       `SELECT payload_json FROM proposals WHERE space_id = $1`, [SPACE],
     );
-    expect(proposal.rows[0]?.payload_json).toMatchObject({
-      target_scope: "agent",
-      agent_id: AGENT_ID,
-      required_owner_user_id: OWNER,
-    });
+    expect(proposal.rows[0]?.payload_json).toMatchObject({ target_scope: "agent", agent_id: AGENT_ID });
+    await expect(deciderOf()).resolves.toEqual({ required: true, userId: OWNER });
   });
 
   it("applies the same automation when it is the Agent owner's own", async () => {
@@ -547,8 +548,8 @@ describe("revising what the Agent already knows", () => {
 
   it("will not revise a note learned somewhere else into this conversation", async () => {
     if (!db.available) return;
-    // The audience filter guards delivery; without this the write path walks
-    // past it — this Room's content in a note whose origin Room says
+    // The audience filter guards delivery. Do not revise from another Room.
+    // This Room's content would land in a note whose origin Room says
     // otherwise, delivered to that Room's audience.
     const elsewhere = await makeRoom("Elsewhere", [OWNER]);
     await db.pool.query(
@@ -657,11 +658,11 @@ describe("one Agent's memory is not another's, even under the same owner", () =>
 
   it("refuses one Agent's revision of another's persona on every route, applied or proposed", async () => {
     if (!db.available) return;
-    // Both Agents are the owner's, and the owner is the person in the turn —
-    // which is exactly what made the second Agent's revision look like the
-    // owner revising their own entry. It is not: the entry is the first
-    // Agent's, and a version chain that crossed Agents would let the second
-    // supersede the first's persona and leave it with none.
+    // Both Agents are the owner's, and the owner is the person in the turn.
+    // That does not make the second Agent's revision the owner revising their
+    // own entry. The entry is the first Agent's, and a version chain that
+    // crossed Agents would let the second supersede the first's persona and
+    // leave it with none.
     await seedOtherAgent();
     const personaId = await seedPersona(AGENT_ID, "I am the first specialist");
 
@@ -799,9 +800,9 @@ describe("the boundaries around an Agent's own memory", () => {
 
   it("keeps a persona revision the owner's alone, and records who asked", async () => {
     if (!db.available) return;
-    // The blocker this repair closed: setting the owner-only marker on creates
-    // alone left every *revision* — the common path once a persona exists —
-    // decidable by any Space owner or admin, including the member who asked.
+    // The owner-only marker applies to revisions, not only creates. A
+    // revision must not be decidable by any Space owner or admin, including
+    // the member who asked.
     const personaId = randomUUID();
     await db.pool.query(
       `INSERT INTO memory_entries (id, space_id, scope_type, memory_type, content, status, created_at, updated_at,
@@ -822,14 +823,14 @@ describe("the boundaries around an Agent's own memory", () => {
     const proposal = (await db.pool.query<{ payload_json: Record<string, unknown>; created_by_user_id: string }>(
       `SELECT payload_json, created_by_user_id FROM proposals WHERE space_id = $1`, [SPACE],
     )).rows[0]!;
+    await expect(deciderOf()).resolves.toEqual({ required: true, userId: OWNER });
     expect(proposal.payload_json).toMatchObject({
-      required_owner_user_id: OWNER,
       // Who asked, since the proposal is attributed to who decides.
       requested_by_user_id: MEMBER,
     });
-    // And the member who asked cannot decide it, whatever their Space role —
-    // which is the whole point: role is what proposal apply normally
-    // arbitrates on, and a Space admin satisfies any role this could require.
+    // And the member who asked cannot decide it, whatever their Space role.
+    // Role is what proposal apply arbitrates on, and a Space admin satisfies
+    // any role this could require.
     const proposalId = (await db.pool.query<{ id: string }>(
       `SELECT id FROM proposals WHERE space_id = $1`, [SPACE],
     )).rows[0]!.id;
@@ -853,18 +854,18 @@ describe("the boundaries around an Agent's own memory", () => {
     if (!db.available) return;
     // A delegated Run carries `delegation`, but the question is whether a
     // person asked — and for a delegated Run the answer is on its root.
-    // Reading the raw column let Alice's turn apply a persona change directly
-    // by asking one Agent to ask another.
+    // Do not read the raw column. One turn could apply a persona change by
+    // asking one Agent to ask another.
     const delegated = randomUUID();
     await db.pool.query(
-      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, project_id, root_run_id, instructed_by_user_id, permission_snapshot_json, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
-       VALUES ($1, $2, $3, $4, 'agent', 'delegation', 'running', 'live', now(), now(), $5, 'private', $6, $7, $5, $8::jsonb, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
+      `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, created_at, updated_at, owner_user_id, visibility, project_id, root_run_id, parent_run_id, instructed_by_user_id, permission_snapshot_json, execution_kind, runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+       VALUES ($1, $2, $3, $4, 'agent', 'delegation', 'running', 'live', now(), now(), $5, 'private', $6, $7, $7, $5, $8::jsonb, 'agent', (SELECT p.id FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), 'default', (SELECT p.runtime_key FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE), (SELECT jsonb_build_object('id', p.id, 'runtime_key', p.runtime_key, 'backend_mode', p.backend_mode, 'model_provider_id', p.model_provider_id, 'model_name', p.model_name, 'runtime_config_json', p.runtime_config_json, 'runtime_policy_json', p.runtime_policy_json) FROM agent_runtime_profiles p WHERE p.space_id = $2::varchar(36) AND p.agent_id = $3::varchar(36) AND p.is_default = TRUE))`,
       [delegated, SPACE, AGENT_ID, AGENT_VERSION_ID, OWNER, PROJECT, RUN_ID,
         JSON.stringify({ tool_grants: [{ action_id: "memory.remember" }, { action_id: "memory.revise" }] })],
     );
 
     const result = await (await dispatcher({
-      id: delegated, trigger_origin: "delegation", root_run_id: RUN_ID, session_id: null,
+      id: delegated, trigger_origin: "delegation", root_run_id: RUN_ID, parent_run_id: RUN_ID, session_id: null,
     })).dispatch(remember({ memory_type: "persona", content: "what Alice asked for" }, "deleg"));
 
     // The root is `manual`, so this is a person's turn: proposed, not applied.
@@ -937,8 +938,8 @@ describe("telling the owner what changed while nobody was asking", () => {
       decidable_by_user_id: OWNER,
     });
 
-    // Even a row written by an older build with the private preview embedded
-    // is projected from current proposal authority: owner sees it, requester
+    // Project the preview from current proposal authority. Do not trust a
+    // private preview embedded in the row. The owner sees it, the requester
     // does not. Only assistant rows receive the Run's card.
     const messageId = randomUUID();
     await db.pool.query(
