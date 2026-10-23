@@ -141,6 +141,12 @@ product table; Context Events store ordered refs and typed continuity facts.
   session when scope, generation, cursor, replay authority, or a bounded delta
   overflow is detected. Overflow rotation bootstraps from the latest authorized
   checkpoint and transfers the execution lease to the replacement binding. Any
+  uncovered reconstruction tail and the authorized checkpoint share one
+  6,000 estimated-token replay budget (`CLI_REPLAY_TOKENS`; a checkpoint over
+  3,000 tokens is a labelled excerpt), with explicit omission/excerpt coverage
+  and complete audit refs; current input and fixed instructions remain intact. Healthy resumes omit a Run's own output only when an accepted
+  Delivery proves it belongs to that exact vendor binding. Generic progress
+  events stay in the audit ledger rather than the rendered history. Any
   other rotation waits while another Run holds the binding's live execution
   lease, so that Run keeps an active binding to acknowledge against. A
   successful bootstrap/delta phase advances that cursor before the current-user

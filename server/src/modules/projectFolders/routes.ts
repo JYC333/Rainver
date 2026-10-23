@@ -243,7 +243,10 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     try {
       const id = await identity(context, request, reply);
       if (!id) return reply;
-      return reply.send(await services(context).repository.getTree(id, projectId(request), folderId(request)));
+      const q = query(request);
+      const offset = q.offset === undefined ? 0 : Number(q.offset);
+      if (!Number.isSafeInteger(offset) || offset < 0) throw new HttpError(422, "Invalid directory offset");
+      return reply.send(await services(context).repository.getTree(id, projectId(request), folderId(request), { path: q.path || ".", offset }));
     } catch (error) {
       return sendRouteError(reply, error);
     }

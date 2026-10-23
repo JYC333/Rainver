@@ -72,7 +72,6 @@ export default function AgentFormPage() {
   const [systemPrompt, setSystemPrompt] = useState('')
   const [schedule, setSchedule] = useState<ScheduleEditorValue>(() => scheduleEditorFromConfig(null))
   const [riskLevel, setRiskLevel] = useState<'low' | 'medium' | 'high' | 'critical'>('medium')
-  const [maxRunTimeSeconds, setMaxRunTimeSeconds] = useState(300)
   const [inputs, setInputs] = useState<Record<string, boolean>>({})
   const [outputs, setOutputs] = useState<Record<string, boolean>>({})
   const [retrievalToolDomains, setRetrievalToolDomains] = useState<RetrievalToolDomainState>({
@@ -103,7 +102,6 @@ export default function AgentFormPage() {
         const v = await agentTemplatesApi.getVersion(t.id, t.current_version_id)
         setVersion(v)
         setRiskLevel(v.execution_constraints.risk_level)
-        setMaxRunTimeSeconds(v.execution_constraints.max_run_time_seconds)
         setSystemPrompt('')
         setSchedule(scheduleEditorFromConfig(v.schedule_defaults_json))
         const enabledCtx = new Set(defaultInputContexts(v))
@@ -142,7 +140,6 @@ export default function AgentFormPage() {
         tool_policy_json: toolPolicy,
         execution_constraints: {
           risk_level: riskLevel,
-          max_run_time_seconds: maxRunTimeSeconds,
         },
       }
       const created = templateId
@@ -172,7 +169,6 @@ export default function AgentFormPage() {
     memory_policy_json: version?.memory_policy_json ?? {},
     tool_policy_json: mergeRetrievalToolDomains(version?.tool_policy_json ?? {}, retrievalToolDomains),
     risk_level: riskLevel,
-    max_run_time_seconds: maxRunTimeSeconds,
   }
 
   return (
@@ -217,19 +213,6 @@ export default function AgentFormPage() {
                 High and critical risk require a high-trust execution target. Neither the Server Runtime nor a paired Host provides one yet, so an Agent set to either would never route.
               </p>
             </div>
-            <label className="space-y-1.5">
-              <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Maximum run time (seconds)</span>
-              <Input
-                aria-label="Maximum run time (seconds)"
-                type="number"
-                min={1}
-                max={3600}
-                step={1}
-                value={maxRunTimeSeconds}
-                onChange={event => setMaxRunTimeSeconds(Number(event.target.value))}
-                required
-              />
-            </label>
           </div>
           <div className="space-y-1.5">
             <label className="text-[11px] font-medium text-muted-foreground uppercase">Description</label>

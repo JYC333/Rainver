@@ -47,6 +47,8 @@ const SECRET_VALUE_PATTERNS = [
   /\bsk-[A-Za-z0-9_-]{12,}/g,
   /\bAIza[A-Za-z0-9_-]{20,}/g,
   /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
+  // An npm automation/publish token, as `.npmrc` stores it.
+  /\bnpm_[A-Za-z0-9]{36}\b/g,
   // A JSON Web Token: three base64url segments. Its payload is the identity.
   /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g,
   // `Bearer` is a scheme name: in a log the next word is the credential.

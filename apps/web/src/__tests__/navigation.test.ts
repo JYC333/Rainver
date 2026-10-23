@@ -1,11 +1,20 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest'
+import { MODULE_REGISTRY } from '../modules/registry'
 import {
   routeScopeForPath, sceneForPath, spacePath, stripSpacePrefix,
   RAIL_ITEMS, MOBILE_TAB_ITEMS,
 } from '../core/navigation'
 
 describe('navigation model', () => {
+  it('registers Agent Work as a user-level personal route and rail entry without a mobile tab', () => {
+    const entry = MODULE_REGISTRY.find(item => item.id === 'agent-work')
+    expect(entry).toMatchObject({ path: '/agent-work', perspectiveType: 'personal', source: 'built_in' })
+    expect(RAIL_ITEMS.find(item => item.id === 'agent-work')).toMatchObject({ to: '/agent-work', scope: 'home' })
+    expect(spacePath('space-a', '/agent-work')).toBe('/agent-work')
+    expect(routeScopeForPath('/agent-work')).toBe('home')
+    expect(MOBILE_TAB_ITEMS.some(item => item.id === 'agent-work')).toBe(false)
+  })
   it('treats Home/neutral surfaces as user-scoped and /spaces/:id routes as space-scoped', () => {
     expect(routeScopeForPath('/home')).toBe('home')
     expect(routeScopeForPath('/')).toBe('home')
@@ -55,10 +64,6 @@ describe('navigation model', () => {
     expect(spaceSettings?.activePaths).not.toContain('/usage')
   })
 
-  it('keeps Home as the first mobile tab', () => {
-    expect(MOBILE_TAB_ITEMS[0].id).toBe('home')
-  })
-
   it('keeps the mobile tab bar to five short daily destinations', () => {
     expect(MOBILE_TAB_ITEMS.map(i => i.id)).toEqual([
       'home', 'inbox', 'library', 'review', 'tasks',
@@ -74,6 +79,7 @@ describe('navigation model', () => {
     expect(sceneForPath('/spaces/x/sessions')?.id).toBe('agents')
     // Every destination the Agents sidebar offers keeps that sidebar.
     expect(sceneForPath('/spaces/x/plans')?.id).toBe('agents')
+    expect(sceneForPath('/spaces/x/skills')?.id).toBe('agents')
     expect(sceneForPath('/spaces/x/artifacts')?.id).toBe('artifacts')
     // Knowledge intentionally has no scene sidebar — it uses an in-header breadcrumb switcher.
     expect(sceneForPath('/spaces/x/knowledge')).toBeNull()
@@ -108,7 +114,6 @@ describe('spacePath / stripSpacePrefix', () => {
   it('leaves user-scoped, already-scoped, and missing-space paths untouched', () => {
     expect(spacePath('team-1', '/home')).toBe('/home')
     expect(spacePath('team-1', '/settings')).toBe('/settings')
-    expect(spacePath('team-1', '/instance-settings')).toBe('/instance-settings')
     expect(spacePath('team-1', '/instance-settings')).toBe('/instance-settings')
     expect(spacePath('team-1', '/evolution')).toBe('/evolution')
     expect(spacePath('team-1', '/spaces/other/today')).toBe('/spaces/other/today')

@@ -115,8 +115,20 @@ export class RuntimeContextContinuityService {
       if (!row) throw new HttpError(404, "Context capture gap not found");
       if (row.status !== "open") throw new HttpError(409, "Context capture gap is already recovered");
       if (row.invocation_id !== input.event.invocation_id) throw new HttpError(409, "Buffered event does not match its capture gap");
-      const authority = await this.resolveInvocation(db, input.event.invocation_id, row.space_id);
-      if (authority.work_context_scope_id !== row.work_context_scope_id) throw new HttpError(409, "Capture gap scope changed");
+      let authority = await this.resolveInvocation(db, input.event.invocation_id, row.space_id);
+      if (authority.work_context_scope_id !== row.work_context_scope_id) {
+        // A gap moved with its Run's events into the Conversation scope split
+        // from the recipient scope that Run's audit snapshot still names.
+        const split = await db.query(
+          `SELECT 1 FROM room_conversation_recipients split
+             JOIN runs run ON run.id=$4 AND run.space_id=split.space_id
+            WHERE split.id=$2 AND split.space_id=$1 AND split.room_agent_member_id=$3
+              AND split.session_id=run.session_id`,
+          [row.space_id, row.work_context_scope_id, authority.work_context_scope_id, authority.invocation_id],
+        );
+        if (!split.rows[0]) throw new HttpError(409, "Capture gap scope changed");
+        authority = { ...authority, work_context_scope_id: row.work_context_scope_id };
+      }
       const event = await this.appendCanonicalEvent(db, authority, input.event, "recovered");
       const now = new Date().toISOString();
       await db.query(`UPDATE context_capture_gaps SET status='recovered',resolved_at=$2 WHERE id=$1`, [input.gapId, now]);
@@ -342,7 +354,7 @@ export class RuntimeContextContinuityService {
       const terminalGap = await db.query<{ id: string }>(
         `SELECT snapshot.id FROM invocation_snapshots snapshot
           JOIN execution_control_snapshots control ON control.run_id=snapshot.invocation_id AND control.space_id=snapshot.space_id
-         WHERE snapshot.space_id=$1 AND control.snapshot_json->>'work_context_scope_id'=$2
+         WHERE snapshot.space_id=$1 AND ${controlInScope("control", "$2")}
            AND snapshot.status='finalized'
            AND NOT EXISTS (
              SELECT 1 FROM context_events event
@@ -371,6 +383,14 @@ export class RuntimeContextContinuityService {
         await this.setCaptureStatus(db, authority, "partial");
         return "partial";
       }
+      // A mismatch gap is this scan's own finding, re-derived in full from
+      // durable rows each time, so a clean rescan resolves it. Capture gaps
+      // close only through their replay.
+      await db.query(
+        `UPDATE context_capture_gaps SET status='recovered',resolved_at=$3
+          WHERE space_id=$1 AND work_context_scope_id=$2 AND status='open' AND code='reconciliation_mismatch'`,
+        [spaceId, workContextScopeId, new Date().toISOString()],
+      );
       const open = await db.query(`SELECT 1 FROM context_capture_gaps WHERE space_id=$1 AND work_context_scope_id=$2 AND status='open' LIMIT 1`, [spaceId, workContextScopeId]);
       const status = open.rows.length > 0 ? "partial" : scope.capture_status === "partial" ? "recovered" : scope.capture_status;
       await this.setCaptureStatus(db, authority, status);
@@ -563,7 +583,7 @@ export class RuntimeContextContinuityService {
               JOIN execution_control_snapshots control
                 ON control.run_id=run.id AND control.space_id=run.space_id
              WHERE run.space_id=message.space_id AND run.session_id=message.session_id
-               AND control.snapshot_json->>'work_context_scope_id'=$3
+               AND ${controlInScope("control", "$3")}
             )`,
         [ref.id, authority.space_id, authority.work_context_scope_id],
       );
@@ -579,7 +599,7 @@ export class RuntimeContextContinuityService {
             AND EXISTS (
               SELECT 1 FROM execution_control_snapshots control
                WHERE control.run_id=event.run_id AND control.space_id=event.space_id
-                 AND control.snapshot_json->>'work_context_scope_id'=$3
+                 AND ${controlInScope("control", "$3")}
             )`,
         [ref.id, authority.space_id, authority.work_context_scope_id],
       );
@@ -597,7 +617,7 @@ export class RuntimeContextContinuityService {
             AND EXISTS (
               SELECT 1 FROM execution_control_snapshots control
                WHERE control.run_id=policy.run_id AND control.space_id=policy.space_id
-                 AND control.snapshot_json->>'work_context_scope_id'=$3
+                 AND ${controlInScope("control", "$3")}
             )`,
         [ref.id, authority.space_id, authority.work_context_scope_id],
       );
@@ -618,13 +638,13 @@ export class RuntimeContextContinuityService {
     }
     const scopedQuery = ref.type === "run" || ref.type === "run_request"
       ? `SELECT 1 FROM runs value WHERE value.id=$1 AND value.space_id=$2 AND EXISTS
-          (SELECT 1 FROM execution_control_snapshots control WHERE control.run_id=value.id AND control.space_id=value.space_id AND control.snapshot_json->>'work_context_scope_id'=$3)`
+          (SELECT 1 FROM execution_control_snapshots control WHERE control.run_id=value.id AND control.space_id=value.space_id AND ${controlInScope("control", "$3")})`
       : ref.type === "invocation_snapshot"
         ? `SELECT 1 FROM invocation_snapshots value WHERE value.id=$1 AND value.space_id=$2 AND EXISTS
-            (SELECT 1 FROM execution_control_snapshots control WHERE control.run_id=value.invocation_id AND control.space_id=value.space_id AND control.snapshot_json->>'work_context_scope_id'=$3)`
+            (SELECT 1 FROM execution_control_snapshots control WHERE control.run_id=value.invocation_id AND control.space_id=value.space_id AND ${controlInScope("control", "$3")})`
         : ref.type === "artifact"
           ? `SELECT 1 FROM artifacts value WHERE value.id=$1 AND value.space_id=$2 AND value.run_id IS NOT NULL AND EXISTS
-              (SELECT 1 FROM execution_control_snapshots control WHERE control.run_id=value.run_id AND control.space_id=value.space_id AND control.snapshot_json->>'work_context_scope_id'=$3)`
+              (SELECT 1 FROM execution_control_snapshots control WHERE control.run_id=value.run_id AND control.space_id=value.space_id AND ${controlInScope("control", "$3")})`
           : null;
     if (!scopedQuery) throw new HttpError(422, `Unsupported Context Event canonical ref type '${ref.type}'`);
     const result = await db.query(scopedQuery, [ref.id, authority.space_id, authority.work_context_scope_id]);
@@ -705,7 +725,7 @@ export class RuntimeContextContinuityService {
       `SELECT count(*)::int AS control_count,
               COALESCE(bool_and((control.snapshot_json->'egress'->>'external_egress_allowed')::boolean),false) AS external_allowed
          FROM execution_control_snapshots control
-        WHERE control.space_id=$1 AND control.snapshot_json->>'work_context_scope_id'=$2`,
+        WHERE control.space_id=$1 AND ${controlInScope("control", "$2")}`,
       [spaceId, scopeId],
     );
     return {
@@ -737,6 +757,24 @@ export class RuntimeContextContinuityService {
         : "none" as const };
     }));
   }
+}
+
+/**
+ * SQL predicate: the Run of an execution control snapshot (`alias`) belongs to
+ * the scope bound to `scope`. Either the snapshot names that scope, or the
+ * scope is a Room Conversation scope split from the recipient scope the
+ * snapshot names and the Run belongs to that Conversation. Snapshots are audit
+ * records and keep naming the recipient scope their Run executed under; the
+ * split (the repair part of `0002_skill_library_and_upgrade_repairs`) moved those Runs' events by exactly
+ * this Conversation relation.
+ */
+function controlInScope(alias: string, scope: string): string {
+  return `(${alias}.snapshot_json->>'work_context_scope_id'=${scope}
+    OR EXISTS (SELECT 1 FROM room_conversation_recipients split
+                 JOIN runs split_run ON split_run.id=${alias}.run_id AND split_run.space_id=${alias}.space_id
+                WHERE split.id=${scope} AND split.space_id=${alias}.space_id
+                  AND split.session_id=split_run.session_id
+                  AND split.room_agent_member_id=${alias}.snapshot_json->>'work_context_scope_id'))`;
 }
 
 function refKey(ref: Ref): string { return `${ref.type}\u001f${ref.id}\u001f${ref.version ?? ""}`; }

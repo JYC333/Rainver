@@ -45,3 +45,5 @@ export const projectWorkModule: ServerModule = {
     registerRoutes(app, context);
   },
 };
+
+export { responsibleUserSql, responsibleAgentSql, responsibleActorOf, PERSON_ONLY_STATUSES } from "./responsibility.js";

@@ -140,6 +140,17 @@ describe("turn projection", () => {
     expect(finished.state).toBe("done");
   });
 
+  it("reports a quiet runtime as a coded notice that keeps the turn working", () => {
+    const quiet = projectHostThreadTurn([
+      hostRow({ event_index: 0, event_type: "status", status: "run_started" }),
+      hostRow({ event_index: 1, event_type: "status", status: "run_quiet" }),
+    ]);
+    expect(quiet.state).toBe("working");
+    expect(quiet.parts).toEqual([
+      expect.objectContaining({ type: "diagnostic", level: "info", error_code: "run_quiet" }),
+    ]);
+  });
+
   it("upserts repeated tool calls with the same id, as ACP defines", () => {
     const duplicated = projectHostThreadTurn([
       hostRow({ event_index: 0, event_type: "tool_activity_started", tool_call_id: "c1", tool_name: "one" }),

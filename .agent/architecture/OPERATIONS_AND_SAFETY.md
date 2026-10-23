@@ -16,6 +16,7 @@ RAINVER_HOME/
   .env         Deployment settings and secrets (sensitive recovery archive only)
   db/postgres/ Live PostgreSQL data directory (bind-mounted into the postgres container; never archived)
   db/dumps/    pg_dump custom-format dump files (written by ops/scripts/db/dump.sh)
+  db/migration-archives/ Frozen source/target migration pairs with recovery dependencies
   storage/     Artifact storage files
   secrets/     Encrypted provider key files (AES key, CLI credentials)
   config/      Runtime configuration
@@ -86,7 +87,7 @@ read-only-context staging directory or generated vendor context file exists.
 
 **Manifest version metadata:** every manifest records `backup_format`, `app_version`, `git_commit`, `schema_migration_version`, `schema_migration_checksum`, `postgres_server_version`, and `pg_dump_version` (best-effort, `null` when undeterminable). `ops/scripts/system/restore.sh` reads these during preflight and **fails** on an incompatible `backup_format`, a PostgreSQL major-version mismatch, a `schema_migration_version` this build's `server/migrations/` chain does not contain (the archive came from a newer build), or a `schema_migration_checksum` that differs from this build's copy of that file, unless `--force-incompatible-backup` is supplied — the metadata is never silently ignored. A mismatch can also mean the archive belongs to the prior schema epoch: restoring it would produce a database the migration runner refuses to start against. An archive from an older build within this same epoch is compatible: append-only migrations (`server/migrations/README.md`) let the normal migrate step at the next `start.sh` bring it forward. A prior-epoch archive has no upgrade path; do not bypass preflight with `--force-incompatible-backup` to cross the epoch. Recreate the instance from the new baseline instead.
 
-**Pre-migration backup:** `ops/scripts/db/migrate.sh --mode prod` takes a `pg_dump` custom-format dump to `$RAINVER_ROOT/<mode>/db/dumps/pre-migrate-<ts>.dump` before server migrations run and aborts if it fails; non-prod opts in via `PRE_MIGRATION_BACKUP=1` / `--pre-migration-backup`.
+**Pre-migration backup:** `ops/scripts/db/migrate.sh --mode prod` takes a `pg_dump` custom-format dump to `$RAINVER_ROOT/<mode>/db/dumps/pre-migrate-<ts>-from-<applied version>.dump` before server migrations run whenever the runner's `pending` check reports a pending migration (an unanswered check still dumps, without the version suffix), and aborts if it fails; non-prod opts in via `PRE_MIGRATION_BACKUP=1` / `--pre-migration-backup`.
 
 **Archive naming:**
 - Auto: `$RAINVER_ROOT/<mode>/backups/auto-YYYYMMDD-HHMMSS.tar.gz`
@@ -97,6 +98,38 @@ read-only-context staging directory or generated vendor context file exists.
 
 **Retention:** The configured number of latest auto archives are kept; older
 ones are pruned. Manual archives are never pruned automatically.
+
+The hourly `migration_artifact_retention` task also applies the same retained
+count to generated `db/dumps/pre-migrate-*.dump` and `pre-squash-*.dump` files,
+independently of `BACKUP_ENABLED`. It counts recovery points: pre-migrate dumps
+naming the same applied version (`-from-NNNN`) collapse to the newest.
+Manual `dump-*.dump` files remain operator-owned.
+Migration and cutover dumps are published from a hidden partial file after
+successful dump/validation, so retention and dependency records never count a
+dump still being written.
+The task removes resolved, registered `db/migration-archives/<checksum>/` pairs
+only after all locally recorded dependent dumps and full-system backups have
+gone. A retained manual backup may therefore pin an old chain indefinitely.
+Managed preparation also seeds pending copies into other already configured
+local modes, so an idle test/dev instance keeps its own upgrade path after
+the source instance's backups rotate out. A pending pair resolves when its
+cutover completes or when this instance's database already carries the
+target chain (read from `server_schema_migrations`, e.g. after normal `up`
+in prod); a database still on the source history keeps it pinned, as do
+interrupted cutovers.
+Unregistered external archives (including the legacy parent `migration-archives/`
+catalog) are read-only discovery sources and are never recursively deleted.
+
+Cutover and retention share `db/.migration-artifacts.lock` (exclusive directory).
+Cutover leaves `db/.migration-cutover.active` after a post-stop failure, pinning
+recovery files until a successful retry; its `apps` file records the services
+the cutover stopped (running or restarting), which the retry restarts. Normal
+failures release the mutex; SIGKILL can leave it behind. While either blocks
+retention the scheduler logs a warning, marked probably stale after 24 hours,
+with the recovery step. Inspect the owning processes (`migration-cutover.lock`
+flock), conversion/backup and container state before manually removing a
+stale mutex; never remove an active marker merely to force cleanup of a failed
+conversion.
 
 **Every BackupService archive contains `backup_manifest.json`** with format version, kind, timestamp, source root, included/excluded paths, db snapshot method, and warnings.
 

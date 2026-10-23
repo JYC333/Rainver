@@ -64,7 +64,6 @@ export function acpAgentRuntimeAdapterSpec(agent: EnabledAcpAgent): RuntimeAdapt
     permissions: { supports_permission_bypass: false },
     usage: { usage_accuracy: "unknown", supports_usage_probe: false },
     output: { patch_strategy: "git_diff", artifact_path_strategy: "none" },
-    limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
   };
 }
 

@@ -8,6 +8,7 @@ import {
   FolderReadError,
   ensureGitRepository,
   isWireRelativePath,
+  listFolderDirectory,
   looksSecretLikePath,
   readFolderFile,
   restoreFolderFile,
@@ -645,18 +646,19 @@ export class PgProjectFolderRepository {
     identity: SpaceUserIdentity,
     projectId: string,
     folderId: string,
-    options: { workspaceLocationId?: string; signal?: AbortSignal } = {},
+    options: { workspaceLocationId?: string; signal?: AbortSignal; path?: string; offset?: number } = {},
   ): Promise<FileNode> {
     const folder = await this.requireReadableActiveFolder(identity, projectId, folderId);
     const location = options.workspaceLocationId
       ? await resolveLocationWithHost(this.db, identity.spaceId, folderId, options.workspaceLocationId)
       : await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
     if (location.execution_host_kind === "remote") {
-      return this.readRemote(folder, identity.userId, location, "tree", undefined, options.signal);
+      return this.readRemote(folder, identity.userId, location, "tree", options.path, options.signal, { treeOffset: options.offset });
     }
     const root = locationAbsoluteRoot(location, this.config.workspaceRoot);
-    await this.enforceFolderRead(folder, identity.userId, "tree");
+    await this.enforceFolderRead(folder, identity.userId, "tree", options.path);
     try {
+      if (options.path !== undefined) return await listFolderDirectory(root, options.path, { offset: options.offset, protectedFolder: folder.protected, signal: options.signal });
       return await buildTree(root, options.signal);
     } catch (error) {
       if (options.signal?.aborted) throw error;
@@ -664,9 +666,11 @@ export class PgProjectFolderRepository {
     }
   }
 
-  async getFile(identity: SpaceUserIdentity, projectId: string, folderId: string, requestedPath: string, options: { includeUtf16Preview?: boolean } = {}): Promise<FileContent> {
+  async getFile(identity: SpaceUserIdentity, projectId: string, folderId: string, requestedPath: string, options: { includeUtf16Preview?: boolean; includeOriginalBytes?: boolean; workspaceLocationId?: string } = {}): Promise<FileContent> {
     const folder = await this.requireReadableActiveFolder(identity, projectId, folderId);
-    const location = await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
+    const location = options.workspaceLocationId
+      ? await resolveLocationWithHost(this.db, identity.spaceId, folderId, options.workspaceLocationId)
+      : await resolveActiveLocationWithHost(this.db, identity.spaceId, folderId);
     if (location.execution_host_kind === "remote") {
       return this.readRemote(folder, identity.userId, location, "file", requestedPath, undefined, options);
     }
@@ -674,7 +678,7 @@ export class PgProjectFolderRepository {
     const relPath = resolveRelativePath(root, requestedPath, { protectedFolder: folder.protected }).relative;
     await this.enforceFolderRead(folder, identity.userId, "file", relPath);
     try {
-      const content = await readFolderFile(root, requestedPath, { protectedFolder: folder.protected, includeUtf16Preview: options.includeUtf16Preview });
+      const content = await readFolderFile(root, requestedPath, { protectedFolder: folder.protected, includeUtf16Preview: options.includeUtf16Preview, includeOriginalBytes: options.includeOriginalBytes });
       return { ...content, path: requestedPath };
     } catch (error) {
       throw mapFolderReadError(error);
@@ -1317,7 +1321,7 @@ export class PgProjectFolderRepository {
     kind: K,
     requestedPath?: string,
     signal?: AbortSignal,
-    options: { includeUtf16Preview?: boolean } = {},
+    options: { includeUtf16Preview?: boolean; includeOriginalBytes?: boolean; treeOffset?: number } = {},
   ): Promise<FolderReadPayload[K]> {
     if (requestedPath !== undefined && !isWireRelativePath(requestedPath)) {
       const detail = "folder_read paths must be relative";
@@ -1339,7 +1343,9 @@ export class PgProjectFolderRepository {
       kind,
       ...(requestedPath === undefined ? {} : { path: requestedPath }),
       protected: Boolean(folder.protected),
+      ...(options.includeOriginalBytes === true ? { include_original_bytes: true } : {}),
       ...(options.includeUtf16Preview === true ? { include_utf16_preview: true } : {}),
+      ...(options.treeOffset === undefined ? {} : { tree_offset: options.treeOffset }),
     }, signal);
     if (result.ok) return result.result;
     throw mapRemoteFolderReadError(result, location.host_name);

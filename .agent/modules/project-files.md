@@ -51,7 +51,7 @@ GET        /api/v1/projects/{projectId}/folders/{folderId}/locations
 POST       /api/v1/projects/{projectId}/folders/{folderId}/locations/{locationId}/activate
 POST       /api/v1/projects/{projectId}/folders/{folderId}/unregister
 POST       /api/v1/projects/{projectId}/folders/scan
-GET        /api/v1/projects/{projectId}/folders/{folderId}/tree?path=...
+GET        /api/v1/projects/{projectId}/folders/{folderId}/tree?path=...&offset=...
 GET        /api/v1/projects/{projectId}/folders/{folderId}/file?path=...
 GET        /api/v1/projects/{projectId}/folders/{folderId}/file?path=...&convert=utf8 (explicit UTF-16 preview)
 GET/PUT    /api/v1/projects/{projectId}/folders/{folderId}/file/draft?path=...
@@ -68,6 +68,20 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
 ```
 
 ## Invariants
+- The Files & Code browser loads only the root's direct entries initially;
+  child directories start collapsed and load on expansion. Each directory is
+  independently paged at 500 entries, with an explicit Load more control when
+  `next_offset` is present. A nested subtree never spends its parent's listing
+  budget. Loaded children are reused until the tree is refreshed; failures can
+  be retried. Browse refreshes and Folder switches discard the loaded tree.
+- Tree visibility uses exclusions, not a dotfile allowlist: ordinary dotfiles
+  and directories such as `.agent` are visible. Dependency/build/Git internals
+  in `IGNORE_DIRS`, symbolic links, and PathPolicy-forbidden paths are omitted.
+  Directory enumeration holds a safely opened directory handle throughout the
+  read. PathPolicy and Project/Host authorization still apply to each expansion.
+  The host `tree` request with `path` (including `.`) and optional `tree_offset`
+  returns one directory page. Internal conversation file search omits `path`
+  and continues to use the bounded recursive tree (500 entries, five levels).
 - One Project owns zero or more Project Folders; one Folder belongs to exactly one Project
   (`project_folders.project_id` is a direct, non-null, single-owner FK — no link table, no
   Folder role vocabulary).

@@ -38,10 +38,18 @@ function rank(runtimeKey: string): number {
 const ROOM_MANAGER_POLICY = `
 
 When you are acting as a Room manager, follow the Room coordination policy:
-answer ordinary conversation and simple work directly; honor explicit @Agent
-mentions by routing to that specialist; delegate only when you can explain the
-demonstrated need, visibly, to no more than two roster specialists and never
-more than one delegation level. Do not delegate merely because a task is broad.
+answer ordinary conversation and simple work directly. A person who opens a
+message or line with @Agent addresses that Agent, and it receives the message
+directly, not you. When a message reaches you with a "[The person asked you to
+arrange this with]" block, the person mentioned those Agents in passing and
+wants you to arrange the work: delegate it to them unless that is clearly
+unnecessary, and say why when you do not. Otherwise delegate only when you can
+explain the demonstrated need, visibly, to no more than two roster specialists
+and never more than one delegation level. For explicitly requested sustained task work,
+declare a task-scoped collaboration budget on the first delegation, keep the
+same participants, and continue implementation/review handoffs within that
+shared budget without waiting for another user message. Ordinary ad-hoc work
+keeps its small per-turn budget. Do not delegate merely because a task is broad.
 Room delegation is bounded by the server and remains auditable.
 
 Project work is recorded, not described. Listing a decomposition in a reply

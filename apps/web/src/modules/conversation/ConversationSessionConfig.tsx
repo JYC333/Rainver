@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { SlidersHorizontal, Zap } from 'lucide-react'
 import type { RuntimeSessionConfigOption, RuntimeSessionConfigSelection } from '../../types/api'
 import { Select } from '../../components/ui/select'
@@ -78,6 +79,66 @@ type AgentSessionConfiguration = {
   options: RuntimeSessionConfigOption[]
   value: SessionConfigSelection[]
   onChange: (value: SessionConfigSelection[]) => void
+  onSave?: (value: SessionConfigSelection[]) => Promise<void>
+  persistedValue?: SessionConfigSelection[]
+}
+
+export function SavedConversationSessionConfig({ options, value, onChange, onSave, persistedValue, disabled }: {
+  options: RuntimeSessionConfigOption[]
+  value: SessionConfigSelection[]
+  onChange: (value: SessionConfigSelection[]) => void
+  onSave?: (value: SessionConfigSelection[]) => Promise<void>
+  persistedValue?: SessionConfigSelection[]
+  disabled?: boolean
+}) {
+  const { t } = useAppTranslation()
+  const persisted = JSON.stringify(persistedValue ?? null)
+  const [saved, setSaved] = useState(persisted)
+  const [progress, setStatus] = useState<'idle' | 'saving' | 'failed'>('idle')
+  useEffect(() => { setSaved(persisted); setStatus('idle') }, [persisted])
+  const status = progress !== 'idle' ? progress : JSON.stringify(value) === saved ? 'saved' : 'unsaved'
+  const [error, setError] = useState('')
+  const stale = withdrawnSelections(options, persistedValue ?? [])
+  return <div className="flex flex-wrap items-center gap-2">
+    <ConversationSessionConfig options={options} value={value} disabled={disabled || status === 'saving'}
+      onChange={next => { setStatus('idle'); setError(''); onChange(next) }} />
+    <Button type="button" size="sm" variant="outline" disabled={disabled || !onSave || status === 'saving' || status === 'saved'}
+      onClick={async () => {
+        if (!onSave) return
+        setStatus('saving'); setError('')
+        try { await onSave(value); setSaved(JSON.stringify(value)); setStatus('idle') }
+        catch (failure) { setStatus('failed'); setError(failure instanceof Error ? failure.message : String(failure)) }
+      }}>
+      {t(status === 'saving' ? 'conversation_ui.session_config.saving' : 'conversation_ui.session_config.save')}
+    </Button>
+    <span role="status" className="text-xs text-muted-foreground">
+      {t(`conversation_ui.session_config.${status}`)}
+    </span>
+    {error && <span role="alert" className="text-xs text-destructive">{error}</span>}
+    {stale.map(selection => (
+      <span key={selection.id} role="note" className="basis-full text-xs text-warning">
+        {t('conversation_ui.session_config.stale', { option: selection.category ?? selection.id, value: String(selection.value) })}
+      </span>
+    ))}
+  </div>
+}
+
+/**
+ * Saved choices the runtime no longer offers. The server leaves them at the
+ * runtime default on every turn instead of failing it, so the settings say so
+ * until a new choice is saved.
+ */
+function withdrawnSelections(
+  options: RuntimeSessionConfigOption[],
+  persisted: SessionConfigSelection[],
+): SessionConfigSelection[] {
+  return persisted.filter(saved => {
+    const option = options.find(candidate => candidate.id === saved.id
+      && candidate.type === saved.type && candidate.category === saved.category)
+    if (!option) return true
+    if (option.type === 'boolean') return typeof saved.value !== 'boolean'
+    return typeof saved.value !== 'string' || !option.options.some(choice => choice.value === saved.value)
+  })
 }
 
 /**
@@ -99,10 +160,12 @@ export function ConversationAgentSessionConfigs({
   if (agents.length === 1) {
     const agent = configurable[0]!
     return (
-      <ConversationSessionConfig
+      <SavedConversationSessionConfig
         options={agent.options}
         value={agent.value}
         onChange={agent.onChange}
+        onSave={agent.onSave}
+        persistedValue={agent.persistedValue}
         disabled={disabled}
       />
     )
@@ -133,10 +196,12 @@ export function ConversationAgentSessionConfigs({
             <section key={agent.id} className="rounded-lg border border-border p-3">
               <h3 className="mb-2 text-sm font-medium">{agent.name}</h3>
               <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                <ConversationSessionConfig
+                <SavedConversationSessionConfig
                   options={agent.options}
                   value={agent.value}
                   onChange={agent.onChange}
+                  onSave={agent.onSave}
+                  persistedValue={agent.persistedValue}
                   disabled={disabled}
                 />
               </div>

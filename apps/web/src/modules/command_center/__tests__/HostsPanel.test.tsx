@@ -167,23 +167,6 @@ describe('HostsPanel', () => {
     await waitFor(() => expect(vi.mocked(hostsApi.list).mock.calls.length).toBeGreaterThan(callsBeforeRevoke))
   })
 
-  it('refreshes only the mounted hosts panel while it is open', async () => {
-    vi.useFakeTimers()
-    try {
-      render(<HostsPanel />)
-      await act(async () => { await Promise.resolve() })
-      // The host card and the agents panel below it both name the host.
-      expect(screen.getAllByText('Laptop').length).toBeGreaterThan(0)
-      const callsBeforePolling = vi.mocked(hostsApi.list).mock.calls.length
-
-      await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
-
-      expect(vi.mocked(hostsApi.list).mock.calls.length).toBeGreaterThan(callsBeforePolling)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
   it('keeps the newer hosts list when an earlier poll answers later', async () => {
     vi.useFakeTimers()
     try {

@@ -43,6 +43,7 @@ import { useSpace } from '../../contexts/SpaceContext'
 import { cn, errMsg } from '../../lib/utils'
 import { Pagination } from '../../components/ui/pagination'
 import i18n, { useAppTranslation } from '../../i18n'
+import { requestCountLabel, UsageEventDiagnostics } from './UsageEventDiagnostics'
 import { formatCalendarDay, formatDateParts, formatNumber as formatLocaleNumber } from '../../i18n/format'
 
 type AccuracyFilter = UsageAccuracy | 'all'
@@ -729,8 +730,10 @@ export default function UsagePage() {
             />
             <KpiTile
               label={t('workspace_ui.usage.kpi.requests')}
-              value={formatNumber(selectedTotals.request_count)}
-              detail={t('workspace_ui.usage.observed', { percent: formatPercent(selectedTotals.observed_event_percentage) })}
+              value={requestCountLabel(selectedTotals)}
+              detail={selectedTotals.unknown_request_count_events
+                ? t('workspace_ui.usage.diagnostics.unreported_events', { count: selectedTotals.unknown_request_count_events })
+                : t('workspace_ui.usage.observed', { percent: formatPercent(selectedTotals.observed_event_percentage) })}
               icon={<CheckCircle2 className="size-4" />}
             />
           </section>
@@ -795,7 +798,7 @@ export default function UsagePage() {
                           </TableCell>
                           <TableCell className="text-right font-mono">{formatTokens(item.totals.total_tokens)}</TableCell>
                           <TableCell className="text-right font-mono">{formatCost(item.totals.estimated_cost_usd)}</TableCell>
-                          <TableCell className="text-right font-mono">{formatNumber(item.totals.request_count)}</TableCell>
+                          <TableCell className="text-right font-mono">{requestCountLabel(item.totals)}</TableCell>
                           <TableCell className="min-w-36"><AccuracyMix item={item} /></TableCell>
                           <TableCell className="text-xs text-muted-foreground">{formatDateTime(item.last_seen_at)}</TableCell>
                         </TableRow>
@@ -840,7 +843,7 @@ export default function UsagePage() {
                             <div className="max-w-[180px] truncate font-mono text-[11px] text-muted-foreground">{event.meter_subject_id}</div>
                           </TableCell>
                           <TableCell className="text-right font-mono">{formatTokens(eventTotalTokens(event))}</TableCell>
-                          <TableCell><Badge variant="outline">{labelForAccuracy(event.usage_accuracy)}</Badge></TableCell>
+                          <TableCell><Badge variant="outline">{labelForAccuracy(event.usage_accuracy)}</Badge><UsageEventDiagnostics event={event} /></TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -918,7 +921,7 @@ export default function UsagePage() {
                   </TableHeader>
                   <TableBody>
                     {[
-                      { label: t('workspace_ui.usage.unit.request'), totals: selectedTotals, divisor: selectedTotals.request_count },
+                      { label: t('workspace_ui.usage.unit.request'), totals: selectedTotals, divisor: selectedTotals.unknown_request_count_events ? 0 : selectedTotals.request_count },
                       { label: t('workspace_ui.usage.unit.event'), totals: selectedTotals, divisor: selectedTotals.event_count },
                       // Sessions are listed only at full access, so their
                       // average divides their own totals, not the summary's.

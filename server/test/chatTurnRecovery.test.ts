@@ -1,11 +1,17 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
+import { resolveAgentActorId } from "../src/db/actorResolver.js";
 import { reconcileTerminalChatRuns } from "../src/modules/jobs/workerRuntime.js";
-import type {
+import { MAX_CHAT_FINALIZATION_ATTEMPTS } from "../src/modules/runs/chatTurnFinalizer.js";
+import {
   PgRunRepository,
-  RunEventInput,
-  RunRecord,
+  type RunEventInput,
+  type RunRecord,
 } from "../src/modules/runs/repository.js";
+import { conversationTurnTaken } from "../src/modules/sessions/conversationRuntimeSessionRepository.js";
+import { seedRun, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("terminal Chat Run reconciliation", () => {
   it("publishes chat_completed for a recovered orphaned Run", async () => {
@@ -424,5 +430,79 @@ describe("terminal Chat Run reconciliation", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]).toContain("need your decision before retrying");
     expect(messages[0]).toContain("Conversation context loading failed.");
+  });
+});
+
+describe("terminal Chat Run whose finalization keeps failing", () => {
+  const db = useTestDatabase(import.meta.filename);
+
+  it("releases the conversation with a visible failed completion once the retry bound is reached", async () => {
+    const space = randomUUID();
+    const owner = randomUUID();
+    const agent = randomUUID();
+    const runId = randomUUID();
+    const session = randomUUID();
+    await seedSpaceOwnerProject(db.pool, { space, owner, project: randomUUID() });
+    await seedRun(db.pool, { id: runId, space, owner, agent, version: randomUUID() });
+    await db.pool.query(
+      `INSERT INTO sessions (id, space_id, user_id, agent_id, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'active', now(), now())`,
+      [session, space, owner, agent],
+    );
+    await db.pool.query(
+      `UPDATE runs SET session_id = $2, model_override_json = $3::jsonb, output_json = $4::jsonb WHERE id = $1`,
+      [runId, session, JSON.stringify({
+        chat_turn: {
+          schema_version: "chat_turn.v1",
+          session_id: session,
+          user_id: owner,
+          user_message_id: randomUUID(),
+          agent_id: agent,
+          agent_version_id: "unused",
+          project_id: null,
+        },
+      }), JSON.stringify({ schema_version: "run_output.v1", status: "succeeded", summary: "Done." })],
+    );
+    const runs = new PgRunRepository(db.pool);
+    const sweep = () => reconcileTerminalChatRuns(
+      loadConfig({ SERVER_DATABASE_URL: "postgresql://unused/test" }),
+      runs,
+      undefined,
+      { async finalizeRun() { return { kind: "activity", status: "succeeded", activity_id: "finalization-1", metadata_json: {} }; } },
+      {
+        loadActionPreviews: async () => [],
+        resolveAgentActorId: (spaceId, agentId) => resolveAgentActorId(db.pool, spaceId, agentId),
+        sessions: {
+          async addAssistantMessageForRun() {
+            throw new Error("message store rejected the reply");
+          },
+        },
+      },
+    );
+    const events = async () => (await db.pool.query<{ event_type: string; status: string; error_code: string | null; error_message: string | null }>(
+      `SELECT event_type, status, error_code, error_message FROM run_events WHERE run_id = $1 ORDER BY event_index`,
+      [runId],
+    )).rows;
+
+    expect(await conversationTurnTaken(db.pool, space, session)).toBe(true);
+    for (let attempt = 1; attempt < MAX_CHAT_FINALIZATION_ATTEMPTS; attempt += 1) {
+      await sweep();
+      expect(await conversationTurnTaken(db.pool, space, session)).toBe(true);
+    }
+    expect(await events()).toEqual(Array.from({ length: MAX_CHAT_FINALIZATION_ATTEMPTS - 1 }, () => expect.objectContaining({
+      event_type: "warning",
+      error_code: "chat_finalization_failed",
+      error_message: "message store rejected the reply",
+    })));
+
+    await sweep();
+    expect(await conversationTurnTaken(db.pool, space, session)).toBe(false);
+    expect((await events()).at(-1)).toMatchObject({
+      event_type: "chat_completed",
+      status: "failed",
+      error_code: "chat_finalization_failed",
+      error_message: expect.stringContaining("message store rejected the reply"),
+    });
+    expect(await runs.listTerminalChatRunsAwaitingCompletion()).toEqual([]);
   });
 });

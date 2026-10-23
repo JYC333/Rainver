@@ -3,8 +3,8 @@
 # Build context: repo root
 # Run via docker-compose in ops/compose/ — the compose file selects a stage
 # with `build.target`:
-#   - dev / test  → target: dev   (Vite dev server, hot reload, source mounted)
-#   - prod        → target: prod  (static `dist` built by Vite, served by nginx)
+#   - dev         → target: dev   (Vite dev server, hot reload, source mounted)
+#   - test / prod → target: prod  (static `dist` built by Vite, served by nginx)
 #
 # The default (last) stage is `prod`, so any build that forgets `target:` gets the
 # production image rather than a dev server.
@@ -46,7 +46,7 @@ RUN mkdir -p node_modules/.cache/rainver \
 # ---- dev: Vite dev server -------------------------------------------------
 # Source is bind-mounted by docker-compose, so we don't COPY it here. The PWA
 # service worker is intentionally disabled in this stage (vite-plugin-pwa dev
-# default), matching how the dev/test environments run.
+# default), matching how the dev environment runs.
 FROM base AS dev
 
 COPY apps/web/docker/dev-entrypoint.sh /usr/local/bin/web-dev-entrypoint

@@ -141,21 +141,51 @@ describe("host subscription quota cache (real Postgres)", () => {
     expect(row!.quota.week_resets).toBe("Resets later");
   });
 
-  it("ignores a window name it does not recognise rather than guessing which one moved", async (ctx) => {
+  it("updates the overall week from an explicitly named seven-day reading", async (ctx) => {
     if (!db.available) return ctx.skip();
     await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({
-      claude_code: { available: true, session_pct: 10, session_resets: null, week_pct: 40, week_resets: null, error: null },
+      claude_code: { available: true, session_pct: 10, session_resets: "Resets soon", week_pct: 40, week_resets: null, error: null },
     }));
 
     await mergeRunQuota(db.pool, {
-      hostId: "host-1",
-      runtimeKey: "claude_code",
-      installation: "own",
-      quota: { rate_limit_type: "some_new_window", utilization: 0.99, resets_at: 1 },
+      hostId: "host-1", runtimeKey: "claude_code", installation: "own",
+      quota: { rate_limit_type: "seven_day", utilization: 0.72, resets_at: 1_800_000_000 },
     });
 
     const [row] = await readHostUsage(db.pool, "host-1");
-    expect(row!.quota).toMatchObject({ session_pct: 10, week_pct: 40 });
+    expect(row!.quota).toMatchObject({
+      session_pct: 10, session_resets: "Resets soon", week_pct: 72,
+      week_resets: `Resets ${new Date(1_800_000_000_000).toISOString()}`,
+    });
+  });
+
+  it.for(["seven_day_fable", "seven_day_sonnet", "seven_day_opus", "seven_day_oauth_apps", "weekly", "some_new_window"])(
+    "does not overwrite the account reading or its freshness with %s", async (rateLimitType, ctx) => {
+      if (!db.available) return ctx.skip();
+      await refreshHostUsage(db.pool, "host-1", "claude_code", "own", registry({
+        claude_code: { available: true, session_pct: 10, session_resets: null, week_pct: 40, week_resets: null, error: null },
+      }));
+      const [before] = await readHostUsage(db.pool, "host-1");
+
+      await mergeRunQuota(db.pool, {
+        hostId: "host-1",
+        runtimeKey: "claude_code",
+        installation: "own",
+        quota: { rate_limit_type: rateLimitType, utilization: 0.99, resets_at: 1 },
+      });
+
+      const [row] = await readHostUsage(db.pool, "host-1");
+      expect(row).toEqual(before);
+    },
+  );
+
+  it("does not create an overall reading from a model-specific week", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    await mergeRunQuota(db.pool, {
+      hostId: "host-1", runtimeKey: "claude_code", installation: "own",
+      quota: { rate_limit_type: "seven_day_fable", utilization: 0.99, resets_at: 1_800_000_000 },
+    });
+    expect(await readHostUsage(db.pool, "host-1")).toEqual([]);
   });
 });
 

@@ -466,6 +466,9 @@ export const RoomMessageFocusRefSchema = z.object({
 }).strict();
 export type RoomMessageFocusRef = z.infer<typeof RoomMessageFocusRefSchema>;
 
+/** Agents one message may ask the manager to arrange work with. */
+export const ROOM_MESSAGE_MAX_COORDINATION_TARGETS = 20;
+
 export const SendRoomMessageRequestSchema = z.object({
   content: z.string().trim().max(8000).default(""),
   input_parts: ConversationInputPartsSchema.default([]),
@@ -481,6 +484,12 @@ export const SendRoomMessageRequestSchema = z.object({
   queue: z.boolean().default(false),
   routing_mode: AgentRunMessageRoutingModeSchema.default("direct"),
   recipient_segments: z.array(AgentRunMessageRecipientSegmentSchema).min(1).nullish(),
+  /**
+   * Under `agent_coordination`: the Agents the person referred to, whom the
+   * manager is asked to arrange the work with. Each must be an active Agent
+   * member of the Room.
+   */
+  coordination_target_agent_ids: z.array(IdSchema).max(ROOM_MESSAGE_MAX_COORDINATION_TARGETS).nullish(),
   backends: z.array(z.object({
     agent_id: IdSchema,
     runtime_profile_id: IdSchema,
@@ -489,6 +498,13 @@ export const SendRoomMessageRequestSchema = z.object({
 }).strict().superRefine((value, ctx) => {
   if (!value.content && value.input_parts.length === 0) {
     ctx.addIssue({ code: "custom", path: ["content"], message: "content or an input part is required" });
+  }
+  if (value.coordination_target_agent_ids?.length && value.routing_mode !== "agent_coordination") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["coordination_target_agent_ids"],
+      message: "coordination targets require routing_mode agent_coordination",
+    });
   }
 });
 export type SendRoomMessageRequest = z.infer<typeof SendRoomMessageRequestSchema>;

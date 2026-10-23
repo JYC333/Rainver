@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -44,6 +44,14 @@ describe("dbMigrationOps", () => {
       expect(start).toContain('"${COMPOSE[@]}" pull');
       expect(start).toContain('"${COMPOSE[@]}" build server');
       expect(start).not.toContain("docker build");
+      // Fixed test/prod images omit the schema authoring tools; their image
+      // build performs the check. Only dev mounts source for a live check.
+      const schemaCheck = migrate.slice(
+        migrate.indexOf("run_drizzle_schema_check_docker()"),
+        migrate.indexOf("run_drizzle_schema_check_host()"),
+      );
+      expect(schemaCheck).toContain('if [[ "$MODE" != "dev" ]]; then');
+      expect(schemaCheck).toContain('return 0');
     });
 
     it("verifies the pre-migration dump by streaming it, never by a path inside the container", () => {
@@ -91,6 +99,48 @@ describe("dbMigrationOps", () => {
         expect(result.status).not.toBe(0);
         expect(result.stdout).not.toContain("MIGRATING");
         expect(result.stdout).not.toContain("pre-migration backup written");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it.skipIf(process.platform === "win32").for([
+      { exit: 0, dump: null },
+      { exit: 10, dump: /^pre-migrate-\d{8}-\d{6}-from-0002\.dump$/ },
+      { exit: 2, dump: /^pre-migrate-\d{8}-\d{6}\.dump$/ },
+    ])("takes the pre-migration dump only when the runner reports pending migrations (exit $exit)", ({ exit, dump }) => {
+      // A start with nothing pending must not add a dump that rotates the one
+      // taken before a real schema change out of retention. An unanswered
+      // check still dumps: not knowing is not a reason to migrate unprotected.
+      const dir = mkdtempSync(join(tmpdir(), "rainver-migrate-pending-"));
+      try {
+        const bin = join(dir, "bin");
+        mkdirSync(bin);
+        mkdirSync(join(dir, "server"));
+        writeFileSync(join(bin, "node"), `#!/bin/sh\nprintf '0002\\n0003_next\\n'\nexit ${exit}\n`, { mode: 0o755 });
+        writeFileSync(join(bin, "pg_dump"), "#!/bin/sh\nprintf 'PGDMP archive'\n", { mode: 0o755 });
+        writeFileSync(join(bin, "pg_restore"), "#!/bin/sh\ncat >/dev/null 2>&1 || true\nexit 0\n", { mode: 0o755 });
+        const script = join(repoRoot, "ops/scripts/db/migrate.sh");
+        const harness = [
+          "set -euo pipefail",
+          `eval "$(sed -n '/^migration_backup_needed() {/,/^}/p; /^pre_migration_backup_host() {/,/^}/p; /^ensure_pre_migration_backup() {/,/^}/p' '${script}')"`,
+          "resolve_host_database_url() { MIGRATION_DATABASE_URL=postgresql://unused; }",
+          'BACKUP_FROM_VERSION=""',
+          "if migration_backup_needed; then ensure_pre_migration_backup; else echo SKIPPED; fi",
+        ].join("\n");
+        const result = spawnSync("bash", ["-c", harness], {
+          env: { PATH: `${bin}:${process.env.PATH ?? ""}`, MODE_ROOT: dir, REPO_ROOT: dir, RUN_MODE: "host", MODE: "prod" },
+          encoding: "utf8",
+        });
+        expect(result.status, result.stderr).toBe(0);
+        if (dump === null) {
+          expect(result.stdout).toContain("SKIPPED");
+          expect(existsSync(join(dir, "db", "dumps"))).toBe(false);
+        } else {
+          const dumps = readdirSync(join(dir, "db", "dumps"));
+          expect(dumps).toHaveLength(1);
+          expect(dumps[0]).toMatch(dump);
+        }
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }

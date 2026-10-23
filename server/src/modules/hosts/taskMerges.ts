@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { HostTaskWorkspace } from "@rainver/protocol";
+import type { HostTaskWorkspace, TaskMergeBlockedOutcome, TaskMergeOutcome } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool } from "../../db/pool.js";
 import { resolveServiceActorId } from "../../db/actorResolver.js";
@@ -47,7 +47,7 @@ export const TASK_MERGE_JOB = "task_merge";
  */
 export const UNDER_WAY_MERGE_STATUSES = ["queued", "rebasing", "verifying", "resolving", "waiting_local_changes"] as const;
 /** Stopped on something a person has to see; tried again when the main branch moves. */
-const STOPPED_MERGE_STATUSES = ["conflict", "verification_failed", "failed"] as const;
+export const STOPPED_MERGE_STATUSES = ["conflict", "verification_failed", "failed"] as const;
 const FINISHED = new Set(["merged", "no_changes", "superseded"]);
 const BUSY_RETRY_MS = 30_000;
 const WAITING_RETRY_MS = 5 * 60_000;
@@ -929,7 +929,7 @@ async function block(
 async function announce(
   db: Queryable,
   context: MergeSubject,
-  outcome: "merged" | "waiting_local_changes" | "conflict" | "verification_failed" | "failed",
+  outcome: TaskMergeOutcome,
   detail: Record<string, unknown>,
 ): Promise<void> {
   const { merge, task } = context;
@@ -982,7 +982,7 @@ async function originSessionId(db: Queryable, { merge, task }: MergeSubject): Pr
  * again, the main branch moving underneath included: a person committing on
  * main while a Task's conflict waits for them is not told again each time.
  */
-function blockedKey(outcome: string, detail: Record<string, unknown>): string {
+function blockedKey(outcome: TaskMergeBlockedOutcome, detail: Record<string, unknown>): string {
   const facts = JSON.stringify([
     stringArray(detail.conflicted_files ?? detail.overlapping_files).slice().sort(),
     typeof detail.error === "string" ? detail.error : null,
@@ -1007,7 +1007,7 @@ function pickDetail(detail: Record<string, unknown>): Record<string, unknown> {
 
 function noticeText(
   title: string,
-  outcome: "merged" | "waiting_local_changes" | "conflict" | "verification_failed" | "failed",
+  outcome: TaskMergeOutcome,
   mainBranch: string | null,
   detail: Record<string, unknown>,
 ): string {

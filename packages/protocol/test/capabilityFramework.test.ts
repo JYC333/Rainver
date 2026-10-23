@@ -10,6 +10,7 @@ import {
   SkillImportPreviewResponseSchema,
   SkillImportRequestSchema,
   SkillPackageSchema,
+  SkillReviewProposalRequestSchema,
   SkillSourceSchema,
 } from "../src";
 
@@ -108,8 +109,8 @@ describe("capability/open-skill protocol schemas", () => {
     expect(
       SkillImportPreviewRequestSchema.parse({
         url: "https://github.com/org/repo/blob/main/SKILL.md",
-      }).url,
-    ).toContain("SKILL.md");
+      }),
+    ).toMatchObject({ url: "https://github.com/org/repo/blob/main/SKILL.md" });
 
     expect(
       SkillImportPreviewResponseSchema.parse({
@@ -196,5 +197,12 @@ describe("capability/open-skill protocol schemas", () => {
         proposal_type: "capability_install",
       }).proposal_type,
     ).toBe("capability_install");
+  });
+
+  it("lets a review enable only a non-Project scope", () => {
+    expect(SkillReviewProposalRequestSchema.parse({})).toEqual({});
+    expect(SkillReviewProposalRequestSchema.parse({ binding: { scope_type: "space", enabled: true } }).binding?.scope_type).toBe("space");
+    expect(SkillReviewProposalRequestSchema.safeParse({ binding: { scope_type: "project", scope_id: "project-1", enabled: true } }).success).toBe(false);
+    expect(SkillReviewProposalRequestSchema.safeParse({ binding: { scope_type: "space", enabled: false } }).success).toBe(false);
   });
 });

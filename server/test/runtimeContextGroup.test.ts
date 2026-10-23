@@ -8,19 +8,112 @@ import { buildModuleServer } from "./support/moduleServer.js";
 import { assertPolicyDoesNotWiden, assertPolicyPreferencesWithinConstraints, resolveRuntimeContextPolicies } from "../src/modules/policy/runtimeContextPolicyResolver.js";
 import { ContextWindowReconciliationRepository } from "../src/modules/runtimeContext/reconciliationRepository.js";
 import { InvocationSnapshotService } from "../src/modules/runtimeContext/invocationSnapshotService.js";
+import { PgInvocationDeliveryAuthorizer } from "../src/modules/runtimeContext/gateway.js";
 import { managedAdapterRequest, managedProviderMessages, renderManagedDelivery } from "../src/modules/runtimeContext/managedRenderer.js";
 import { normalizeContextItem } from "../src/modules/runtimeContext/itemNormalizer.js";
 import { RuntimeContextCliContinuityService } from "../src/modules/runtimeContext/continuity/cliContinuity.js";
+import { authorizeCliDeltaItem } from "../src/modules/runtimeContext/continuity/cliContinuity.js";
+import { CLI_CHECKPOINT_TOKENS, CLI_REPLAY_TOKENS, renderCliReconstruction, renderCliEventDelta, type CliDeltaEvent } from "../src/modules/runtimeContext/continuity/cliHistory.js";
+import { historicalRunRequest, RUN_REQUEST_INCLUDES_INSTRUCTION } from "../src/modules/runtimeContext/runRequest.js";
+import { estimateModelTokens } from "../src/modules/usage/modelCatalog.js";
 import { RuntimeContextContinuityService } from "../src/modules/runtimeContext/continuity/service.js";
 import { checkpointMetering } from "../src/modules/runtimeContext/continuity/semanticExtractor.js";
 import { resolveUsageAttribution } from "../src/modules/usage/attribution.js";
 import { RuntimeContextPlanner } from "../src/modules/runtimeContext/planner.js";
 import { SealedPayloadCipher } from "../src/modules/runtimeContext/sealedPayloadCrypto.js";
-import { createProductionRetrievalAuthorization, revalidateExecutionDestination } from "../src/modules/runtimeContext/productionAcquisition.js";
+import { createProductionRetrievalAuthorization, revalidateExecutionDestination, roomRoutingInstruction } from "../src/modules/runtimeContext/productionAcquisition.js";
 import { persistRunContextTaint } from "../src/modules/runs/contextTaint.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { hostThreadDispatchInputs } from "../src/modules/hosts/threadDispatchInputs.js";
 import { resetTables } from "./support/resetTables.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { ensureDefaultRuntimeProfile, seedConversationMessages } from "./support/domainSeeds.js";
+
+describe("CLI history selection", () => {
+  function event(sequence: number, eventType: string, content: string): CliDeltaEvent {
+    return { id: randomUUID(), scope_sequence: sequence, event_type: eventType,
+      canonical_type: "message", canonical_id: randomUUID(), content };
+  }
+
+  it("keeps failures and meaningful outcomes while omitting generic progress", () => {
+    const text = renderCliEventDelta([
+      event(1, "tool_call_started", "Tool call started."),
+      event(2, "tool_call_completed", "Tool call completed."),
+      event(3, "tool_call_failed", "Access denied"),
+      event(4, "tool_call_completed", "Review approved by the owner"),
+    ]);
+    expect(text).toContain("Access denied");
+    expect(text).toContain("Review approved by the owner");
+    expect(text).not.toContain("Tool call");
+  });
+
+  it("says a failed attempt's notice once, as an outcome, and drops repeats", () => {
+    const failed = (sequence: number) => ({ ...event(sequence, "assistant_message_completed", "Room task failed (runtime_nonzero_exit): Claude Code ACP RPC failed: Internal error"), run_status: "failed" });
+    const text = renderCliEventDelta([failed(1), failed(2), event(3, "user_message_received", "Please retry"), failed(4),
+      { ...event(5, "assistant_message_completed", "Done."), run_status: "succeeded" }])!;
+    expect(text.match(/Internal error/g)).toHaveLength(1);
+    expect(text).toContain("- earlier attempt failed: Room task failed (runtime_nonzero_exit)");
+    expect(text).not.toContain("- assistant_message_completed: Room task failed");
+    expect(text).toContain("- assistant_message_completed: Done.");
+    expect(text).toContain("- user_message_received: Please retry");
+  });
+
+  it("routes nothing for a single segment and names the assigned task for this run's segment", () => {
+    const base = { schema_version: "room_turn_routing.v1", routing_mode: "direct", current_segment_index: 0, current_recipient_agent_id: "agent-1" };
+    expect(roomRoutingInstruction({ room_turn_routing: { ...base, recipient_segments: [{ recipient_agent_ids: ["agent-1", "agent-2"], task: "Both of you, please." }] } })).toBeNull();
+    const text = roomRoutingInstruction({ room_turn_routing: { ...base, recipient_segments: [
+      { recipient_agent_ids: ["agent-1"], recipient_labels: ["Reviewer"], task: "Review the plan." },
+      { recipient_agent_ids: ["agent-2"], recipient_labels: ["Builder"], task: "Build it." },
+    ] } })!;
+    expect(text).toContain("1. Reviewer (this run)\n   Task: see [Assigned task for this Room turn]");
+    expect(text).toContain("2. Builder\n   Task: Build it.");
+    expect(text).not.toContain("Review the plan.");
+  });
+
+  it("labels a large historical excerpt with its source and preserves the checkpoint", () => {
+    const latest = event(1, "assistant_message_completed", "earlier ".repeat(9_000) + "LATEST FINDING");
+    const checkpoint = { decisions: [{ text: "Never deploy without approval" }] };
+    const text = renderCliReconstruction(checkpoint, [latest])!;
+    expect(text).toContain(JSON.stringify(checkpoint));
+    expect(text).toContain(`message:${latest.canonical_id}`);
+    expect(text).toContain("beginning omitted");
+    expect(text).toContain("LATEST FINDING");
+    expect(estimateModelTokens(text)).toBeLessThanOrEqual(CLI_REPLAY_TOKENS);
+  });
+
+  it("bounds an oversized checkpoint inside the one replay budget and labels it as an excerpt", () => {
+    const checkpoint = { decisions: Array.from({ length: 400 }, (_, index) => ({ text: `Decision ${index} ` + "detail ".repeat(20) })) };
+    expect(estimateModelTokens(JSON.stringify(checkpoint))).toBeGreaterThan(CLI_REPLAY_TOKENS);
+    const latest = event(1, "assistant_message_completed", "earlier ".repeat(9_000) + "LATEST FINDING");
+    const text = renderCliReconstruction(checkpoint, [latest])!;
+    expect(estimateModelTokens(text)).toBeLessThanOrEqual(CLI_REPLAY_TOKENS);
+    expect(text).toContain("Validated semantic checkpoint (excerpt");
+    const excerpt = text.split("\n\n")[2]!;
+    expect(estimateModelTokens(excerpt)).toBeLessThanOrEqual(CLI_CHECKPOINT_TOKENS);
+    expect(text).toContain("Decision 0 ");
+    expect(text).not.toContain("Decision 399 ");
+    // History keeps what the capped checkpoint leaves, newest first.
+    expect(text).toContain("LATEST FINDING");
+    const small = { decisions: [{ text: "Keep" }] };
+    const smallText = renderCliReconstruction(small, [latest])!;
+    expect(smallText).toContain(`Validated semantic checkpoint:\n\n${JSON.stringify(small)}`);
+  });
+
+  it("deduplicates exact tasks and server-assembled delegated requests without losing distinct instructions", () => {
+    expect(historicalRunRequest({ prompt: "Review this change", instruction: "Review this change" }))
+      .toBe("Review this change");
+    expect(historicalRunRequest({
+      prompt: "Standing context\n\nReview this change",
+      instruction: "Review this change",
+      model_override_json: { [RUN_REQUEST_INCLUDES_INSTRUCTION]: true },
+    })).toBe("Standing context\n\nReview this change");
+    // Text that merely ends the same way is not evidence of assembly.
+    expect(historicalRunRequest({ prompt: "Do it\n\nCheck the logs", instruction: "Check the logs" }))
+      .toBe("Do it\n\nCheck the logs\n\nCheck the logs");
+    expect(historicalRunRequest({ prompt: "User input", instruction: "An independent requirement" }))
+      .toBe("User input\n\nAn independent requirement");
+  });
+});
 
 describe("runtimeContextCliContinuityDb", () => {
   const SPACE = "71000000-0000-4000-8000-000000000001";
@@ -106,6 +199,7 @@ describe("runtimeContextCliContinuityDb", () => {
       })).toBe(true);
       const delivery = await cli.prepareDelivery({
         bindingId: binding.id,
+        leaseGeneration: binding.lease_generation,
         spaceId: SPACE,
         workContextScopeId: RUN,
         invocationId: RUN,
@@ -157,9 +251,10 @@ describe("runtimeContextCliContinuityDb", () => {
           JSON.stringify({ decisions: [{ text: "Bounded checkpoint" }] }),
           JSON.stringify({ type: "provider_task", id: randomUUID(), version: "test.v1" })],
       );
-      const lease = (await cli.acquireExecutionLease(binding.id, { runId: RUN })).leaseId;
+      const lease = await cli.acquireExecutionLease(binding.id, { runId: RUN });
       const delivery = await cli.prepareDelivery({
         bindingId: binding.id,
+        leaseGeneration: lease.generation,
         spaceId: SPACE,
         workContextScopeId: RUN,
         invocationId: RUN,
@@ -169,7 +264,7 @@ describe("runtimeContextCliContinuityDb", () => {
       });
       // The turn releases the lease it took on the old binding; the rotation
       // carried it to the replacement, which must not stay held.
-      await cli.releaseExecutionLease(lease);
+      await cli.releaseExecutionLease(lease.leaseId);
       await expect(db.pool.query(
         `SELECT execution_lease_id FROM runtime_context_cli_bindings WHERE id=$1`,
         [delivery.id],
@@ -182,6 +277,126 @@ describe("runtimeContextCliContinuityDb", () => {
         `SELECT status FROM runtime_context_cli_bindings WHERE id=$1`,
         [binding.id],
       )).resolves.toMatchObject({ rows: [{ status: "rotated" }] });
+    });
+
+    it.each(["draft", "failed"] as const)("retains replies when the prior Delivery is %s", async (status) => {
+      if (!db.available) return;
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const continuity = new RuntimeContextContinuityService(db.pool);
+      const binding = await cli.prepareBinding(bindingInput(control()));
+      await cli.recordVendorSession({
+        bindingId: binding.id, runtimeStateKey: binding.runtime_state_key,
+        vendorSessionId: "unconfirmed-session", leaseGeneration: binding.lease_generation,
+      });
+      const initial = await message("initial", "Start the task.", "user");
+      const snapshots = new InvocationSnapshotService(db.pool);
+      const attempt = await snapshots.createAttempt({
+        spaceId: SPACE, invocationId: RUN, envelope: envelope(initial), control: control(),
+        runtimeKey: "codex_cli", providerId: null, model: "gpt-4o", usageSourceId: `prior-${status}`, mode: "delta",
+        cliSession: {
+          binding_ref: { type: "runtime_context_cli_binding", id: binding.id, version: "1" },
+          runtime_state_key: binding.runtime_state_key, vendor_session_id: "unconfirmed-session",
+          cursor_from: 0, cursor_through: 0, generation: 1, rotation_reason: "new_scope",
+          lease_generation: binding.lease_generation,
+        },
+      });
+      if (status === "failed") await snapshots.acknowledge({ spaceId: SPACE, deliveryId: attempt.delivery.id, status: "failed" });
+      const reply = await message("reply", "An outcome not confirmed by the runtime.", "assistant");
+      await continuity.ingest({
+        invocation_id: RUN, event_type: "assistant_message_completed",
+        canonical_ref: { type: "message", id: reply }, semantic_role: "reference_data", token_estimate: 12,
+      });
+      const delivery = await cli.prepareDelivery({
+        bindingId: binding.id, spaceId: SPACE, workContextScopeId: RUN, invocationId: RUN,
+        leaseGeneration: binding.lease_generation,
+        currentMessageRef: { type: "run_request", id: RUN }, ownerUserId: USER,
+        authorizedSourceRefs: [{ type: "run_request", id: RUN }],
+      });
+      expect(delivery.mode).toBe("delta");
+      expect(delivery.delta_item?.payload.text).toContain("An outcome not confirmed by the runtime.");
+    });
+
+    it("replays a server-assembled delegated request once, from the Run's recorded flag rather than its text", async () => {
+      if (!db.available) return;
+      const assembled = "71000000-0000-4000-8000-000000000041";
+      const coincidental = "71000000-0000-4000-8000-000000000042";
+      for (const [id, prompt, instruction, override] of [
+        [assembled, "Standing notes\n\nAudit the schema", "Audit the schema", { [RUN_REQUEST_INCLUDES_INSTRUCTION]: true }],
+        [coincidental, "Fix the bug\n\nRun the tests", "Run the tests", {}],
+      ] as const) {
+        await db.pool.query(
+          `INSERT INTO runs (id, space_id, agent_id, agent_version_id, run_type, trigger_origin, status, mode, required_sandbox_level,
+             instructed_by_user_id, owner_user_id, session_id, created_at, updated_at, execution_kind, prompt, instruction, model_override_json,
+             runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json)
+           SELECT $1, space_id, agent_id, agent_version_id, run_type, trigger_origin, 'succeeded', mode, required_sandbox_level,
+                  instructed_by_user_id, owner_user_id, session_id, now(), now(), execution_kind, $3, $4, $5::jsonb,
+                  runtime_profile_id, runtime_profile_selection_source, runtime_key, runtime_profile_snapshot_json
+             FROM runs WHERE id = $2`,
+          [id, RUN, prompt, instruction, JSON.stringify(override)],
+        );
+        await db.pool.query(
+          `INSERT INTO execution_control_snapshots (id,space_id,run_id,snapshot_json,created_at)
+           VALUES (gen_random_uuid()::text,$1,$2,$3::jsonb,now())`,
+          [SPACE, id, JSON.stringify(control())],
+        );
+      }
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const continuity = new RuntimeContextContinuityService(db.pool);
+      const binding = await cli.prepareBinding(bindingInput(control()));
+      for (const id of [assembled, coincidental]) {
+        await continuity.ingest({
+          invocation_id: id, event_type: "run_request_received",
+          canonical_ref: { type: "run_request", id }, semantic_role: "user_input", token_estimate: 10,
+        });
+      }
+      const delivery = await cli.prepareDelivery({
+        bindingId: binding.id, spaceId: SPACE, workContextScopeId: RUN, invocationId: RUN,
+        leaseGeneration: binding.lease_generation,
+        currentMessageRef: { type: "run_request", id: RUN }, ownerUserId: USER,
+        authorizedSourceRefs: [{ type: "run_request", id: RUN }],
+      });
+      const text = String(delivery.delta_item?.payload.text);
+      expect(text.split("Audit the schema")).toHaveLength(2);
+      // Without the recorded flag, a matching suffix is not proof of assembly.
+      expect(text.split("Run the tests")).toHaveLength(3);
+    });
+
+    it("bounds reconstruction without a summary and revalidates its canonical history", async () => {
+      if (!db.available) return;
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const continuity = new RuntimeContextContinuityService(db.pool);
+      const binding = await cli.prepareBinding(bindingInput(control()));
+      let last = "";
+      for (let index = 0; index < 8; index += 1) {
+        last = await message(`history-${index}`, `History ${index}: ` + "x".repeat(5_000), "user");
+        await continuity.ingest({
+          invocation_id: RUN, event_type: "user_message_received",
+          canonical_ref: { type: "message", id: last }, semantic_role: "user_input", token_estimate: 1_300,
+        });
+      }
+      const input = {
+        bindingId: binding.id, spaceId: SPACE, workContextScopeId: RUN, invocationId: RUN,
+        leaseGeneration: binding.lease_generation,
+        currentMessageRef: { type: "run_request", id: RUN }, ownerUserId: USER,
+        authorizedSourceRefs: [{ type: "run_request", id: RUN }],
+      };
+      const delivery = await cli.prepareDelivery(input);
+      const text = String(delivery.delta_item?.payload.text);
+      expect(delivery.mode).toBe("full");
+      expect(estimateModelTokens(text)).toBeLessThanOrEqual(CLI_REPLAY_TOKENS);
+      expect(text).toContain("History coverage:");
+      expect(text).toContain("History 7:");
+      expect(text).not.toContain("History 0:");
+      // Audit refs retain even the history not rendered into the prompt.
+      expect(delivery.delta_item?.payload.event_refs).toHaveLength(8);
+      const authority = {
+        item: delivery.delta_item!, spaceId: SPACE, workContextScopeId: RUN,
+        viewerUserId: USER, agentId: AGENT, currentMessageRef: input.currentMessageRef,
+        authorizedSourceRefs: input.authorizedSourceRefs,
+      };
+      await expect(authorizeCliDeltaItem(db.pool, authority)).resolves.toBeUndefined();
+      await db.pool.query(`UPDATE messages SET content='Changed latest history' WHERE id=$1`, [last]);
+      await expect(authorizeCliDeltaItem(db.pool, authority)).rejects.toMatchObject({ statusCode: 409 });
     });
 
     it("leaves a checkpoint the viewer may not read out of an overflow reconstruction, as a first full delivery does", async () => {
@@ -223,6 +438,7 @@ describe("runtimeContextCliContinuityDb", () => {
       );
       const delivery = await cli.prepareDelivery({
         bindingId: binding.id,
+        leaseGeneration: binding.lease_generation,
         spaceId: SPACE,
         workContextScopeId: RUN,
         invocationId: RUN,
@@ -258,6 +474,7 @@ describe("runtimeContextCliContinuityDb", () => {
       });
       const first = await cli.prepareDelivery({
         bindingId: binding.id,
+        leaseGeneration: binding.lease_generation,
         spaceId: SPACE,
         workContextScopeId: RUN,
         invocationId: RUN,
@@ -352,10 +569,16 @@ describe("runtimeContextCliContinuityDb", () => {
         semantic_role: "reference_data",
         token_estimate: 6,
       });
+      const external = await message("external", "New requirement from another participant.", "user");
+      await continuity.ingest({
+        invocation_id: RUN, event_type: "user_message_received",
+        canonical_ref: { type: "message", id: external }, semantic_role: "user_input", token_estimate: 10,
+      });
       binding = await cli.prepareBinding(bindingInput(control()));
       expect(binding).toMatchObject({ vendor_session_id: "thread-1", generation: 1, rotation_reason: "new_scope" });
       const delta = await cli.prepareDelivery({
         bindingId: binding.id,
+        leaseGeneration: binding.lease_generation,
         spaceId: SPACE,
         workContextScopeId: RUN,
         invocationId: RUN,
@@ -364,20 +587,36 @@ describe("runtimeContextCliContinuityDb", () => {
         authorizedSourceRefs: [{ type: "message", id: current }],
       });
       expect(delta.mode).toBe("delta");
-      expect(delta.target_cursor).toBe(4);
-      expect(delta.delta_item?.payload.text).toContain("Use the scoped delivery.");
-      expect(delta.delta_item?.payload.text).toContain("Actual final CLI response.");
-      expect(delta.delta_item?.payload.text).not.toContain("Assistant message completed.");
-      expect(delta.delta_item?.payload.text).not.toContain("Continue.");
+      expect(delta.target_cursor).toBe(5);
+      // Both replies already exist in this accepted vendor session. Rotation
+      // below must recover them, but resuming must not inject them again.
+      expect(delta.delta_item?.payload.text).not.toContain("Use the scoped delivery.");
+      expect(delta.delta_item?.payload.text).not.toContain("Actual final CLI response.");
+      expect(delta.delta_item?.payload.text).toContain("New requirement from another participant.");
+      await expect(authorizeCliDeltaItem(db.pool, {
+        item: delta.delta_item!, spaceId: SPACE, workContextScopeId: RUN,
+        viewerUserId: USER, agentId: AGENT, currentMessageRef: { type: "message", id: current },
+        authorizedSourceRefs: [{ type: "message", id: current }],
+      })).resolves.toBeUndefined();
       expect(await cursor(binding.id)).toBe(1);
-      await acknowledge(cli, binding.id, 1, 4, [delta.delta_item!.id, "current-item"]);
-      expect(await cursor(binding.id)).toBe(4);
+      await acknowledge(cli, binding.id, 1, 5, [delta.delta_item!.id, "current-item"]);
+      expect(await cursor(binding.id)).toBe(5);
       const scopeCursor = await db.pool.query<{ cli_known_cursor: number | null }>(
         `SELECT cli_known_cursor FROM context_event_scopes
           WHERE space_id=$1 AND work_context_scope_id=$2`,
         [SPACE, RUN],
       );
       expect(scopeCursor.rows[0]?.cli_known_cursor).toBeNull();
+
+      // The input-resource tools come and go with a turn's attachments; they
+      // do not rotate the session either way.
+      const withAttachment = control();
+      withAttachment.tool_grant_refs = [
+        { type: "tool_grant", id: "input_resource.read" },
+        { type: "tool_grant", id: "input_resource.search" },
+      ];
+      await expect(cli.prepareBinding(bindingInput(withAttachment))).resolves.toMatchObject({ id: binding.id, generation: 1 });
+      await expect(cli.prepareBinding(bindingInput(control()))).resolves.toMatchObject({ id: binding.id, generation: 1 });
 
       const toolChanged = control();
       toolChanged.tool_grant_refs = [{ type: "tool_grant", id: "71000000-0000-4000-8000-000000000099" }];
@@ -394,6 +633,13 @@ describe("runtimeContextCliContinuityDb", () => {
         vendorSessionId: "thread-2",
         leaseGeneration: rotated.lease_generation,
       });
+      const otherBindingDelta = await cli.prepareDelivery({
+        bindingId: rotated.id, spaceId: SPACE, workContextScopeId: RUN, invocationId: RUN,
+        leaseGeneration: rotated.lease_generation,
+        currentMessageRef: { type: "message", id: current }, ownerUserId: USER,
+        authorizedSourceRefs: [{ type: "message", id: current }],
+      });
+      expect(otherBindingDelta.delta_item?.payload.text).toContain("Actual final CLI response.");
       const checkpointId = randomUUID();
       await db.pool.query(
         `INSERT INTO context_semantic_checkpoints (
@@ -417,6 +663,7 @@ describe("runtimeContextCliContinuityDb", () => {
       });
       const reconstructed = await cli.prepareDelivery({
         bindingId: missing.id,
+        leaseGeneration: missing.lease_generation,
         spaceId: SPACE,
         workContextScopeId: RUN,
         invocationId: RUN,
@@ -424,7 +671,7 @@ describe("runtimeContextCliContinuityDb", () => {
         ownerUserId: USER,
         authorizedSourceRefs: [{ type: "message", id: current }],
       });
-      expect(reconstructed).toMatchObject({ mode: "full", target_cursor: 4 });
+      expect(reconstructed).toMatchObject({ mode: "full", target_cursor: 5 });
       expect(reconstructed.delta_item?.payload.text).toContain("Keep canonical scope continuity.");
       expect(reconstructed.delta_item?.payload.text).toContain("Use the scoped delivery.");
       expect(reconstructed.delta_item?.payload.text).toContain("Actual final CLI response.");
@@ -520,6 +767,85 @@ describe("runtimeContextCliContinuityDb", () => {
       )).resolves.toMatchObject({ rows: [{ status: "rotated" }] });
     });
 
+    it("keeps one binding per Host thread, so Conversations sharing a scope do not rotate each other", async () => {
+      if (!db.available) return;
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const otherSession = randomUUID();
+      await db.pool.query(
+        `INSERT INTO sessions (id,space_id,user_id,agent_id,status,created_at,updated_at)
+         VALUES ($1,$2,$3,$4,'active',now(),now())`,
+        [otherSession, SPACE, USER, AGENT],
+      );
+      const threads = await insertHostThreads([SESSION, otherSession]);
+      const record = async (binding: { id: string; runtime_state_key: string; lease_generation: number }, session: string) => {
+        await cli.recordVendorSession({
+          bindingId: binding.id,
+          runtimeStateKey: binding.runtime_state_key,
+          vendorSessionId: session,
+          leaseGeneration: binding.lease_generation,
+        });
+      };
+      const first = await cli.prepareBinding({ ...bindingInput(control()), hostThreadId: threads[0], expectedVendorSessionId: null });
+      await record(first, "session-a");
+      const second = await cli.prepareBinding({ ...bindingInput(control()), hostThreadId: threads[1], expectedVendorSessionId: null });
+      await record(second, "session-b");
+      expect(second.id).not.toBe(first.id);
+      expect(second.rotation_reason).toBe("new_scope");
+
+      // Alternating Conversations resumes each one's own binding.
+      await expect(cli.prepareBinding({ ...bindingInput(control()), hostThreadId: threads[0], expectedVendorSessionId: "session-a" }))
+        .resolves.toMatchObject({ id: first.id, vendor_session_id: "session-a" });
+      await expect(cli.prepareBinding({ ...bindingInput(control()), hostThreadId: threads[1], expectedVendorSessionId: "session-b" }))
+        .resolves.toMatchObject({ id: second.id, vendor_session_id: "session-b" });
+      await expect(db.pool.query(
+        `SELECT count(*)::int AS active FROM runtime_context_cli_bindings WHERE work_context_scope_id=$1 AND status='active'`,
+        [RUN],
+      )).resolves.toMatchObject({ rows: [{ active: 2 }] });
+
+      // A thread's own session change still rotates only that thread's binding.
+      await expect(cli.prepareBinding({ ...bindingInput(control()), hostThreadId: threads[0], expectedVendorSessionId: "session-reset" }))
+        .resolves.toMatchObject({ rotation_reason: "vendor_session_mismatch", generation: first.generation + 1 });
+      await expect(db.pool.query(`SELECT status FROM runtime_context_cli_bindings WHERE id=$1`, [second.id]))
+        .resolves.toMatchObject({ rows: [{ status: "active" }] });
+    });
+
+    it("resumes a parked Run's attempt in the session it parked in", async () => {
+      if (!db.available) return;
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const [thread] = await insertHostThreads([SESSION]);
+      // Created with the thread's earlier session; this Run's first attempt
+      // found it gone and started a new one.
+      await db.pool.query(
+        `UPDATE runs SET host_task_thread_id=$2,
+                model_override_json=$3::jsonb WHERE id=$1`,
+        [RUN, thread, JSON.stringify({ host_thread: { schema_version: "host_thread.v1", thread_id: thread, runtime_session_id: "creation-session" } })],
+      );
+      const binding = await cli.prepareBinding({ ...bindingInput(control()), hostThreadId: thread, expectedVendorSessionId: "creation-session" });
+      const lease = await cli.acquireExecutionLease(binding.id, { runId: RUN });
+      await cli.recordVendorSession({
+        bindingId: binding.id,
+        runtimeStateKey: binding.runtime_state_key,
+        vendorSessionId: "parked-session",
+        leaseGeneration: lease.generation,
+      });
+      await expect(cli.vendorSessionUnderLease(binding.id, lease.generation - 1)).resolves.toBeNull();
+      const parked = await cli.vendorSessionUnderLease(binding.id, lease.generation);
+      expect(parked).toBe("parked-session");
+      await db.pool.query(`UPDATE runs SET status='waiting_for_dependency' WHERE id=$1`, [RUN]);
+      await new PgRunRepository(db.pool).recordParkedHostThreadSession({ run_id: RUN, space_id: SPACE, vendor_session_id: parked! });
+      await cli.releaseExecutionLease(lease.leaseId);
+
+      const resumedRun = (await db.pool.query(
+        `SELECT host_task_thread_id, model_override_json FROM runs WHERE id=$1`,
+        [RUN],
+      )).rows[0];
+      const dispatch = hostThreadDispatchInputs(resumedRun);
+      expect(dispatch).toMatchObject({ resume_session_id: "parked-session", resume_attempted: true });
+      await db.pool.query(`UPDATE runs SET status='queued' WHERE id=$1`, [RUN]);
+      await expect(cli.prepareBinding({ ...bindingInput(control()), hostThreadId: thread, expectedVendorSessionId: dispatch.resume_session_id }))
+        .resolves.toMatchObject({ id: binding.id, vendor_session_id: "parked-session" });
+    });
+
     it("waits for a Run's execution lease before rotating the binding under it", async () => {
       if (!db.available) return;
       const cli = new RuntimeContextCliContinuityService(db.pool);
@@ -592,6 +918,28 @@ describe("runtimeContextCliContinuityDb", () => {
       await cli.releaseExecutionLease(held.leaseId);
     });
 
+    it.each(["cancelling", "cancelled", "orphaned"])("does not acquire a free execution lease for a %s Run", async (status) => {
+      if (!db.available) return;
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const binding = await cli.prepareBinding(bindingInput(control()));
+      await db.pool.query(`UPDATE runs SET status=$2 WHERE id=$1`, [RUN, status]);
+      await expect(cli.acquireExecutionLease(binding.id, { runId: RUN, maxWaitMs: 0 }))
+        .rejects.toMatchObject({ statusCode: 409, responseBody: { code: "cli_execution_lease_unavailable" } });
+      await expect(db.pool.query(`SELECT execution_lease_id FROM runtime_context_cli_bindings WHERE id=$1`, [binding.id]))
+        .resolves.toMatchObject({ rows: [{ execution_lease_id: null }] });
+    });
+
+    it.each(["new", "existing"])("does not create or rotate a %s binding for a cancelled Run", async (state) => {
+      if (!db.available) return;
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const existing = state === "existing" ? await cli.prepareBinding(bindingInput(control())) : null;
+      await db.pool.query(`UPDATE runs SET status='cancelled' WHERE id=$1`, [RUN]);
+      await expect(cli.prepareBinding({ ...bindingInput(control()), expectedVendorSessionId: "changed-session", maxWaitMs: 0 }))
+        .rejects.toMatchObject({ statusCode: 409, responseBody: { code: "cli_execution_lease_unavailable" } });
+      const bindings = await db.pool.query(`SELECT id,status FROM runtime_context_cli_bindings WHERE work_context_scope_id=$1`, [RUN]);
+      expect(bindings.rows).toEqual(existing ? [{ id: existing.id, status: "active" }] : []);
+    });
+
     it("lets a restarted attempt of the holder Run take its own lease back after an overflow rotation", async () => {
       if (!db.available) return;
       const cli = new RuntimeContextCliContinuityService(db.pool);
@@ -614,6 +962,7 @@ describe("runtimeContextCliContinuityDb", () => {
       }
       const delivery = await cli.prepareDelivery({
         bindingId: binding.id, spaceId: SPACE, workContextScopeId: RUN, invocationId: RUN,
+        leaseGeneration: lease.generation,
         currentMessageRef: { type: "message", id: current }, ownerUserId: USER,
         authorizedSourceRefs: [{ type: "message", id: current }],
       });
@@ -628,6 +977,87 @@ describe("runtimeContextCliContinuityDb", () => {
       // The dead attempt's rotation request now resolves to nothing it holds.
       await expect(cli.rotateMissingVendorState(binding.id, lease.leaseId)).rejects.toMatchObject({ statusCode: 409 });
       await cli.releaseExecutionLease(restarted.leaseId);
+    });
+
+    it.each(["restarted", "orphaned"])("retains the lease holder when missing vendor state is replaced and the holder is %s", async (state) => {
+      if (!db.available) return;
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const binding = await cli.prepareBinding(bindingInput(control()));
+      const lease = await cli.acquireExecutionLease(binding.id, { runId: RUN });
+      const replacement = await cli.rotateMissingVendorState(binding.id, lease.leaseId);
+      expect(replacement.lease_generation).toBe(lease.generation);
+      await expect(cli.bindingForExecutionLease(replacement.id, lease.leaseId))
+        .resolves.toMatchObject({ id: replacement.id });
+
+      // Replacement must not turn a Run-owned lease into an anonymous one:
+      // neither its next attempt nor a successor to a dead Run waits for TTL.
+      const successor = state === "restarted" ? RUN : await insertRun("running");
+      if (state === "orphaned") await db.pool.query(`UPDATE runs SET status='orphaned' WHERE id=$1`, [RUN]);
+      const acquired = await cli.acquireExecutionLease(replacement.id, { runId: successor, maxWaitMs: 0 });
+      expect(acquired.generation).toBe(lease.generation + 1);
+      await expect(cli.heartbeatExecutionLease(lease.leaseId)).resolves.toBe(false);
+      await cli.releaseExecutionLease(acquired.leaseId);
+    });
+
+    it("refuses to plan under a replacement execution lease's fencing generation", async () => {
+      if (!db.available) return;
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const binding = await cli.prepareBinding(bindingInput(control()));
+      const previous = await cli.acquireExecutionLease(binding.id, { runId: RUN });
+      const replacement = await cli.acquireExecutionLease(binding.id, { runId: RUN });
+      const input = {
+        bindingId: binding.id, spaceId: SPACE, workContextScopeId: RUN, invocationId: RUN,
+        currentMessageRef: { type: "run_request", id: RUN }, ownerUserId: USER,
+        authorizedSourceRefs: [], leaseGeneration: previous.generation,
+      };
+      await expect(cli.prepareDelivery(input)).rejects.toMatchObject({ statusCode: 409 });
+      await expect(cli.prepareDelivery({ ...input, leaseGeneration: replacement.generation }))
+        .resolves.toMatchObject({ lease_generation: replacement.generation });
+      await cli.releaseExecutionLease(replacement.leaseId);
+    });
+
+    it("rejects persistence when the execution lease changes after Delivery planning", async () => {
+      if (!db.available) return;
+      await db.pool.query(
+        `INSERT INTO space_memberships (id,space_id,user_id,role,status,created_at,updated_at)
+         VALUES ($1,$2,$3,'owner','active',now(),now())`, [randomUUID(), SPACE, USER],
+      );
+      await db.pool.query(`UPDATE runs SET prompt='Start the task.' WHERE id=$1`, [RUN]);
+      const cli = new RuntimeContextCliContinuityService(db.pool);
+      const binding = await cli.prepareBinding(bindingInput(control()));
+      const lease = await cli.acquireExecutionLease(binding.id, { runId: RUN });
+      const planned = new RuntimeContextPlanner().plan({
+        executionControlSnapshotId: CONTROL,
+        setupRef: control().work_context_setup_ref,
+        turn: { work_context_scope_id: RUN, expected_setup_version: 1,
+          current_message_ref: { type: "run_request", id: RUN }, one_off_refs: [], invocation_purpose: "agent_task" },
+        model: "gpt-4o",
+        directItems: [normalizeContextItem({
+          sourceRef: { type: "run_request", id: RUN }, acquisition: "direct", selection: "required",
+          semanticRole: "user_input", trust: "user_confirmed", sensitivity: "normal", visibility: "private",
+          ownerUserId: USER, spaceId: SPACE, egressEligible: true, text: "Start the task.",
+          revalidation: { status: "live", checked_at: new Date().toISOString() },
+        })],
+      });
+      const snapshots = new InvocationSnapshotService(db.pool, undefined, new PgInvocationDeliveryAuthorizer());
+      const create = (leaseGeneration: number) => snapshots.createAttempt({
+        spaceId: SPACE, invocationId: RUN, envelope: planned, control: control(),
+        runtimeKey: "codex_cli", providerId: null, model: "gpt-4o", usageSourceId: `lease:${leaseGeneration}`,
+        viewerUserId: USER, requireLiveAuthorization: true,
+        cliSession: {
+          binding_ref: { type: "runtime_context_cli_binding", id: binding.id, version: String(binding.generation) },
+          runtime_state_key: binding.runtime_state_key, vendor_session_id: null,
+          cursor_from: 0, cursor_through: 0, generation: binding.generation,
+          rotation_reason: binding.rotation_reason, lease_generation: leaseGeneration,
+        },
+      });
+      await expect(create(lease.generation)).resolves.toBeDefined();
+      const replacement = await cli.acquireExecutionLease(binding.id, { runId: RUN });
+      await expect(create(lease.generation)).rejects.toMatchObject({ statusCode: 409 });
+      await expect(create(replacement.generation)).resolves.toBeDefined();
+      await expect(db.pool.query(`SELECT count(*)::int AS count FROM invocation_deliveries WHERE invocation_id=$1`, [RUN]))
+        .resolves.toMatchObject({ rows: [{ count: 2 }] });
+      await cli.releaseExecutionLease(replacement.leaseId);
     });
 
     async function insertRun(status: string): Promise<string> {
@@ -737,6 +1167,32 @@ describe("runtimeContextCliContinuityDb", () => {
       return Number(result.rows[0]?.cli_known_cursor ?? -1);
     }
   });
+
+  async function insertHostThreads(sessions: string[]): Promise<string[]> {
+    const host = randomUUID();
+    await db.pool.query(
+      `INSERT INTO machines (id,owner_user_id,display_name,device_kind,created_at,updated_at)
+       VALUES ($1,NULL,'Instance','server',now(),now())`,
+      [host],
+    );
+    await db.pool.query(
+      `INSERT INTO hosts (id,owner_user_id,machine_id,name,kind,environment_kind,status,capabilities_json,created_at,updated_at)
+       VALUES ($1,NULL,$1,'Server','server','server','online','{}'::jsonb,now(),now())`,
+      [host],
+    );
+    const threads: string[] = [];
+    for (const session of sessions) {
+      const thread = randomUUID();
+      await db.pool.query(
+        `INSERT INTO host_threads (id,space_id,execution_host_id,workspace_mode,session_id,agent_id,
+           container_kind,runtime_key,runtime_installation,status,created_by_user_id,created_at,updated_at)
+         VALUES ($1,$2,$6,'managed',$3,$4,'conversation','codex_cli','own','active',$5,now(),now())`,
+        [thread, SPACE, session, AGENT, USER, host],
+      );
+      threads.push(thread);
+    }
+    return threads;
+  }
 
   function bindingInput(snapshot: ExecutionControlSnapshot) {
     return {

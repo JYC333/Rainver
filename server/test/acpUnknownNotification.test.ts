@@ -1,6 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { createCliConversationController } from "../src/modules/runs/cliConversationProtocol.js";
 
+describe("Run-local tool directory negotiation", () => {
+  for (const resumed of [false, true]) {
+    it(`requests Host-local access only when the Agent advertises directory support (${resumed ? "resume" : "new"})`, () => {
+      for (const supported of [false, true]) {
+        const sent: Record<string, unknown>[] = [];
+        const acp = createCliConversationController({ runtime_key: "codex_cli", prompt: "hello", cwd: "/workspace",
+          local_tool_directory: true, runtime_session_id: resumed ? "existing-session" : null })!;
+        acp.start((m) => sent.push(m));
+        acp.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1,
+          agentCapabilities: { sessionCapabilities: supported ? { additionalDirectories: {} } : {} } } }, (m) => sent.push(m), () => {});
+        const setup = sent.find((m) => m.id === 2)!;
+        expect(setup.method).toBe(resumed ? "session/resume" : "session/new");
+        if (supported) expect(setup.params).toHaveProperty("additionalDirectories", []);
+        else expect(setup.params).not.toHaveProperty("additionalDirectories");
+        expect(setup.params).toHaveProperty("mcpServers", []);
+      }
+    });
+  }
+});
+
 /**
  * `codex-acp` announces `_auth/status_update` immediately after `initialize`.
  * An inbound shape this controller does not list is ignored. Do not fail the
@@ -155,6 +175,79 @@ describe("the vendor session a failed turn leaves behind", () => {
 });
 
 describe("ACP session updates between Delivery phases", () => {
+  it.each([
+    { sessionUpdate: "available_commands_update", availableCommands: [] },
+    { sessionUpdate: "config_option_update", configOptions: [] },
+    { sessionUpdate: "current_mode_update", currentModeId: "default" },
+    { sessionUpdate: "session_info_update", title: "Resumed session" },
+    { sessionUpdate: "usage_update", used: 100, size: 200_000 },
+  ])("accepts $sessionUpdate before resume is acknowledged and completes the turn", async (update) => {
+    const sent: Record<string, unknown>[] = [];
+    const projected: Record<string, unknown>[] = [];
+    let closed = false;
+    const close = () => { closed = true; };
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    const acp = createCliConversationController({
+      runtime_key: "claude_code", cwd: "/workspace", prompt: "continue",
+      runtime_session_id: "session-1",
+      on_protocol_event: (event) => projected.push(event),
+    })!;
+    acp.start(send);
+    await acp.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, close);
+    expect(sent.at(-1)?.method).toBe("session/resume");
+    await acp.receive({ jsonrpc: "2.0", method: "session/update", params: {
+      sessionId: "session-1", update,
+    } }, send, close);
+    expect(acp.result().error).toBeNull();
+    expect(closed).toBe(false);
+    expect(sent.some((message) => message.method === "session/prompt")).toBe(false);
+    expect(projected).toHaveLength(1); // Initialization only, no prior-turn output.
+
+    await acp.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1", configOptions: [] } }, send, close);
+    expect(sent.at(-1)?.method).toBe("session/prompt");
+    await acp.receive({ jsonrpc: "2.0", method: "session/update", params: {
+      sessionId: "session-1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } },
+    } }, send, close);
+    await acp.receive({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } }, send, close);
+    expect(acp.result()).toMatchObject({ completed: true, error: null, text: "done", external_session_id: "session-1" });
+    expect(closed).toBe(true);
+  });
+
+  it.each([
+    { sessionId: "another-session", update: { sessionUpdate: "available_commands_update", availableCommands: [] }, error: "out-of-scope session update" },
+    { sessionId: "session-1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "stale answer" } }, error: "out-of-order agent-message chunk" },
+    { sessionId: "session-1", update: { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "stale thought" } }, error: "out-of-order agent-thought chunk" },
+  ])("rejects $error during resume", async ({ sessionId, update, error }) => {
+    let closed = false;
+    const close = () => { closed = true; };
+    const acp = createCliConversationController({
+      runtime_key: "claude_code", cwd: "/workspace", prompt: "continue", runtime_session_id: "session-1",
+    })!;
+    acp.start(() => {});
+    await acp.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, () => {}, close);
+    await acp.receive({ jsonrpc: "2.0", method: "session/update", params: { sessionId, update } }, () => {}, close);
+    expect(acp.result()).toMatchObject({ completed: false, text: "" });
+    expect(acp.result().error).toContain(error);
+    expect(closed).toBe(true);
+  });
+
+  it("still reports a refused resume after receiving session metadata", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const send = (message: Record<string, unknown>) => sent.push(message);
+    const acp = createCliConversationController({
+      runtime_key: "claude_code", cwd: "/workspace", prompt: "continue", runtime_session_id: "session-1",
+    })!;
+    acp.start(send);
+    await acp.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, () => {});
+    await acp.receive({ jsonrpc: "2.0", method: "session/update", params: {
+      sessionId: "session-1", update: { sessionUpdate: "available_commands_update", availableCommands: [] },
+    } }, send, () => {});
+    await acp.receive({ jsonrpc: "2.0", id: 2, error: { code: -32603, message: "Session not found" } }, send, () => {});
+    expect(acp.result()).toMatchObject({ completed: false, resume_handshake_failed: true });
+    expect(acp.result().error).toContain("Session not found");
+    expect(sent.some((message) => message.method === "session/prompt")).toBe(false);
+  });
+
   it("accepts session metadata while acknowledging a prompt and after the final response", async () => {
     const sent: Record<string, unknown>[] = [];
     const projected: Record<string, unknown>[] = [];

@@ -72,7 +72,6 @@ import { resolveSandboxLevelForRuntime } from "./runRepositoryHelpers.js";
 import { authorizeCredentialSpend, CredentialSpendDeniedError } from "../policy/credentialSpend.js";
 import {
   adapterFailureEnvelope,
-  adapterTimeoutEnvelope,
   canonicalRunOutput,
   semanticFailureErrorJson,
   semanticRunFailure,
@@ -87,13 +86,14 @@ import {
   summarizeOutput,
   terminalStatusFromAdapter,
   toRunPreparationError,
-  withTimeout,
 } from "./orchestrationResults.js";
+import { explicitRunTimeLimit, invokeWithinTimeLimit, type RuntimeStopOutcome } from "./runTimeLimit.js";
 import type {
   VerificationEnginePort,
   VerificationResultRecord,
 } from "./verification/index.js";
 import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
+import { withCliUsageDiagnostics } from "./cliUsageDiagnostics.js";
 import {
   createRunInvocationAttemptLifecycle,
   type RunInvocationAttemptLifecycle,
@@ -175,6 +175,12 @@ export interface RunExecutionRepositoryPort {
     requested_by_user_id?: string | null;
   }): Promise<RunRecord | null>;
   appendRunEvent(input: RunEventInput): Promise<unknown>;
+  /** Optional: only a Host-thread Run that parks mid-turn needs it. */
+  recordParkedHostThreadSession?(input: {
+    run_id: string;
+    space_id: string;
+    vendor_session_id: string;
+  }): Promise<void>;
   /**
    * The Run's own event history. Optional because only the terminal-status
    * degradation check reads it back; a port that omits it simply reports no
@@ -389,7 +395,12 @@ export interface RunExecutionInput extends RunExecuteRequest {
   sandbox_cwd?: string | null;
   adapter_config?: Record<string, unknown>;
   risk_level?: string | null;
+  /** An explicit time limit for this dispatch; there is no default (`runTimeLimit.ts`). */
   timeout_ms?: number | null;
+  /** Aborted when an explicit time limit is reached, before the runtime is stopped. */
+  deadline_signal?: AbortSignal;
+  /** Aborted when the Run is stopped, including before its process exists. */
+  cancel_signal?: AbortSignal;
   runtime_event_sink?: (event: RuntimeSemanticEvent) => Promise<void> | void;
   /** The Run attempt this execution is; events it produces are tagged with it. */
   run_attempt_number?: number | null;
@@ -655,6 +666,9 @@ export class RunOrchestrationService {
         skipped: true,
         skip_reason: "run_already_terminal",
       };
+    }
+    if (run.status === "queued" && recordValue(run.output_json).waiting_for_quota) {
+      return { run_id: run.id, status: "queued", skipped: true, skip_reason: "run_waiting_for_quota" };
     }
     if (run.status === "waiting_for_dependency") {
       return {
@@ -1084,6 +1098,7 @@ export class RunOrchestrationService {
         }
         throw error;
       }
+      adapterResult = withCliUsageDiagnostics(adapterResult, preparedRuntime.invocation_delivery);
       if (preparedRuntime.invocation_delivery && preparedRuntime.invocation_attempts) {
         await preparedRuntime.invocation_attempts.acknowledge(preparedRuntime.invocation_delivery, adapterResult);
         await preparedRuntime.invocation_attempts.finalize(
@@ -1158,7 +1173,25 @@ export class RunOrchestrationService {
         currentAfterAdapter?.status === "waiting_for_review"
         || currentAfterAdapter?.status === "waiting_for_dependency"
       ) {
-        await this.recordLocalCliUsageBestEffort(effectiveRun, adapterResult, executionIdentity);
+        await this.recordLocalCliUsageBestEffort(effectiveRun, adapterResult, executionIdentity, runAttemptNumber);
+        // The next attempt resumes the session this one parked in, which
+        // its binding recorded when the Host accepted the prompt. The Run's
+        // creation-time session would no longer match the binding, and the
+        // next attempt would start yet another session.
+        const cliSession = preparedRuntime.invocation_delivery?.cli_session;
+        if (cliSession && running.host_task_thread_id && this.cliContinuity) {
+          const parkedSession = await this.cliContinuity.vendorSessionUnderLease(
+            cliSession.binding_ref.id,
+            cliSession.lease_generation,
+          );
+          if (parkedSession) {
+            await this.repository.recordParkedHostThreadSession?.({
+              run_id: running.id,
+              space_id: running.space_id,
+              vendor_session_id: parkedSession,
+            });
+          }
+        }
       }
       // A tool call mid-run (e.g. `authorization.request`) can pause the Run
       // to `waiting_for_review` transactionally, independent of the adapter's
@@ -1287,6 +1320,7 @@ export class RunOrchestrationService {
         effectiveRun,
         adapterResult,
         executionIdentity,
+        runAttemptNumber,
       );
       const configuredMaxCost = recordValue(
         effectiveRun.contract_snapshot_json,
@@ -1697,24 +1731,13 @@ export class RunOrchestrationService {
     // cancelling until the child process has confirmed exit or escalation has
     // been attempted, so a late adapter result cannot be mistaken for a clean
     // cancellation.
-    let processTerminated = false;
-    let confirmedExit = true;
-    let forceKillEscalated = false;
-    if (input.terminate_process !== false && this.adapters.processRegistry) {
-      try {
-        processTerminated = this.adapters.processRegistry.terminate(run.id);
-        if (processTerminated && this.adapters.processRegistry.waitForExit) {
-          confirmedExit = await this.adapters.processRegistry.waitForExit(run.id, 5_000);
-          if (!confirmedExit) {
-            forceKillEscalated = this.adapters.processRegistry.forceTerminate?.(run.id) ?? false;
-            confirmedExit = await this.adapters.processRegistry.waitForExit(run.id, 2_000);
-          }
-        }
-      } catch {
-        processTerminated = false;
-        confirmedExit = false;
-      }
-    }
+    const {
+      process_terminated: processTerminated,
+      confirmed_exit: confirmedExit,
+      force_kill_escalated: forceKillEscalated,
+    } = input.terminate_process !== false
+      ? await this.stopRuntimeProcess(run.id)
+      : { process_terminated: false, confirmed_exit: true, force_kill_escalated: false };
 
     if (!confirmedExit) {
       return {
@@ -2250,7 +2273,7 @@ export class RunOrchestrationService {
           runtimeInstallation: stringConfigValue(prepared.adapter_config.runtime_installation),
           control,
           runId: run.id,
-          ...(daemonRun ? { expectedVendorSessionId: hostThreadSessionId } : {}),
+          ...(daemonRun ? { expectedVendorSessionId: hostThreadSessionId, hostThreadId: run.host_task_thread_id ?? null } : {}),
         });
         const cliLease = await this.cliContinuity.acquireExecutionLease(cliBinding.id, { runId: run.id });
         const continuity = this.cliContinuity;
@@ -2511,46 +2534,63 @@ export class RunOrchestrationService {
     });
   }
 
+  /**
+   * Stop a Run's runtime process the way an explicit stop does: ask it to
+   * exit, wait, escalate to a forced stop, wait again.
+   */
+  private async stopRuntimeProcess(runId: string): Promise<RuntimeStopOutcome> {
+    const registry = this.adapters.processRegistry;
+    if (!registry) return { process_terminated: false, confirmed_exit: true, force_kill_escalated: false };
+    let processTerminated = false;
+    let confirmedExit = true;
+    let forceKillEscalated = false;
+    try {
+      processTerminated = registry.terminate(runId);
+      if (processTerminated && registry.waitForExit) {
+        confirmedExit = await registry.waitForExit(runId, 5_000);
+        if (!confirmedExit) {
+          forceKillEscalated = registry.forceTerminate?.(runId) ?? false;
+          confirmedExit = await registry.waitForExit(runId, 2_000);
+        }
+      }
+    } catch {
+      processTerminated = false;
+      confirmedExit = false;
+    }
+    return {
+      process_terminated: processTerminated,
+      confirmed_exit: confirmedExit,
+      force_kill_escalated: forceKillEscalated,
+    };
+  }
+
   private async invokeAdapter(
     run: AgentRunRecord,
     input: RunExecutionInput,
   ): Promise<RunAdapterResultEnvelope> {
-    const contract = recordValue(run.contract_snapshot_json);
-    const declaredDurationSeconds = positiveNumber(contract.max_duration_seconds);
-    const contractTimeoutMs = declaredDurationSeconds === null
-      ? null
-      : declaredDurationSeconds * 1000;
-    const requestedTimeoutMs = input.timeout_ms && input.timeout_ms > 0 ? input.timeout_ms : null;
-    const timeoutMs = contractTimeoutMs === null
-      ? requestedTimeoutMs
-      : requestedTimeoutMs === null
-        ? contractTimeoutMs
-        : Math.min(requestedTimeoutMs, contractTimeoutMs);
-    const spec = getRuntimeAdapterSpec(run.runtime_key);
-    const timeoutSeconds = timeoutMs === null ? null : Math.max(1, Math.ceil(timeoutMs / 1000));
-    const adapterInput: RunExecutionInput = {
-      ...input,
-      ...(timeoutSeconds ? {
-        adapter_config: {
-          ...(input.adapter_config ?? {}),
-          timeout: Math.min(
-            positiveNumber(input.adapter_config?.timeout) ?? timeoutSeconds,
-            timeoutSeconds,
-          ),
-        },
-      } : {}),
-    };
-    const promise = this.invokeAdapterUnbounded(run, adapterInput);
-    if (!timeoutMs || timeoutMs <= 0) return promise;
-    // A `local_cli` adapter's deadline belongs to the daemon. It stops the
-    // process and waits for exit. Do not race a server timeout against that:
-    // the Job would be released while the child was still alive.
-    if (spec?.executor_family === "local_cli") return promise;
-    return withTimeout(
-      promise,
-      timeoutMs,
-      adapterTimeoutEnvelope(run, timeoutMs),
-    );
+    // No default time limit: execution ends on completion, explicit stop, or
+    // runtime/transport failure. A limit someone explicitly set (the Run
+    // contract's `max_duration_seconds`, a dispatch's `timeout_ms`) is
+    // enforced for every adapter family. AgentVersion `max_run_time_seconds`
+    // stays legacy metadata.
+    //
+    // A stop can land while the adapter is still preparing the dispatch, with
+    // no process registered for it to reach; the invocation's own cancel
+    // signal is what keeps that dispatch from launching afterwards.
+    const invocation = this.adapters.processRegistry?.openInvocation?.(run.id);
+    const cancellable = { ...input, cancel_signal: invocation?.signal };
+    try {
+      const limit = explicitRunTimeLimit(run.contract_snapshot_json, input.timeout_ms);
+      if (!limit) return await this.invokeAdapterUnbounded(run, cancellable);
+      return await invokeWithinTimeLimit({
+        run,
+        limit,
+        invoke: (deadline) => this.invokeAdapterUnbounded(run, { ...cancellable, deadline_signal: deadline }),
+        stop: () => this.stopRuntimeProcess(run.id),
+      });
+    } finally {
+      invocation?.close();
+    }
   }
 
   private async invokeAdapterUnbounded(
@@ -2581,7 +2621,8 @@ export class RunOrchestrationService {
           resume_session_id: stringConfigValue(input.adapter_config?.remote_resume_session_id),
           adapter_config: input.adapter_config,
           invocation_delivery: input.invocation_delivery,
-          timeout_seconds: input.timeout_ms && input.timeout_ms > 0 ? Math.ceil(input.timeout_ms / 1000) : null,
+          deadline_signal: input.deadline_signal,
+          cancel_signal: input.cancel_signal,
           runtime_event_sink: input.runtime_event_sink,
           // Persisted as frames arrive, not batched. The thread's live read model.
           // Serialized per run (see createSerializedThreadEventSink) since stdout
@@ -2828,6 +2869,7 @@ export class RunOrchestrationService {
     run: RunRecord,
     adapterResult: RunAdapterResultEnvelope,
     executionIdentity: string,
+    attemptNumber: number | null,
   ): Promise<void> {
     if (
       !this.usageRecorder
@@ -2903,9 +2945,19 @@ export class RunOrchestrationService {
         idempotency_key: usageSourceId
           ? `${usageSourceId}:${index}`
           : `local-cli:${executionIdentity}:${index}`,
-        metadata: usageSourceId ? { runtime_context_audit_refs: auditRefs } : {},
+        metadata: {
+          ...(usageSourceId ? { runtime_context_audit_refs: auditRefs } : {}),
+          cli_usage: recordValue(metadata.cli_usage),
+        },
         dimensions: {
           runtime_profile_id: run.runtime_profile_id ?? null,
+          run_attempt_id: executionIdentity,
+          ...(attemptNumber !== null ? { run_attempt_number: attemptNumber, execution_phase: attemptNumber > 1 ? "retry" : "initial" } : {}),
+          run_outcome: adapterResult.success ? "succeeded" : "failed",
+          run_purpose: recordValue(recordValue(run.model_override_json).chat_turn).kind === "handoff"
+            ? "handoff" : run.delegation_id ? "delegation" : "task",
+          delivery_mode: recordValue(metadata.cli_usage).delivery_mode,
+          rotation_reason: recordValue(metadata.cli_usage).rotation_reason,
           ...(usageSourceId
             ? {
                 delivery_id: stringConfigValue(auditRefs.delivery_id),
@@ -2966,11 +3018,12 @@ export class RunOrchestrationService {
     run: RunRecord,
     adapterResult: RunAdapterResultEnvelope,
     executionIdentity: string,
+    attemptNumber: number | null,
   ): Promise<boolean> {
     await this.mergeRunSubscriptionQuotaBestEffort(run, adapterResult);
     await this.recordEgressRefusalsBestEffort(run, adapterResult);
     try {
-      await this.recordLocalCliUsage(run, adapterResult, executionIdentity);
+      await this.recordLocalCliUsage(run, adapterResult, executionIdentity, attemptNumber);
       return true;
     } catch {
       return false;
@@ -3294,13 +3347,18 @@ function isChatTurnRun(run: RunRecord): boolean {
   return recordValue(recordValue(run.model_override_json).chat_turn).schema_version === "chat_turn.v1";
 }
 
-function currentRuntimeContextInputRef(run: RunRecord): TurnContextRequest["current_message_ref"] {
+export function currentRuntimeContextInputRef(run: RunRecord): TurnContextRequest["current_message_ref"] {
   const chatTurn = recordValue(recordValue(run.model_override_json).chat_turn);
   const messageId = stringConfigValue(chatTurn.user_message_id);
   // A session handoff turn is not an answer to the message it precedes: its
   // input is its own request, or it would read — and could start acting on —
-  // the person's turn it is only preparing the session for.
-  if (chatTurn.schema_version === "chat_turn.v1" && messageId && chatTurn.kind !== "handoff") {
+  // the person's turn it is only preparing the session for. A delegated child
+  // inherits its parent's turn record so it can post into the same
+  // conversation, but the person's message is the parent's input, not the
+  // child's: the child answers its delegation instruction (its Run prompt),
+  // or it would act as a second coordinator on the message its parent is
+  // already answering.
+  if (chatTurn.schema_version === "chat_turn.v1" && messageId && chatTurn.kind !== "handoff" && !run.delegation_id) {
     return { type: "message", id: messageId };
   }
   return { type: "run_request", id: run.id };
@@ -3445,10 +3503,6 @@ function workspaceAccessFromSnapshot(
       access_mode: accessMode,
     };
   });
-}
-
-function positiveNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function cliVendor(runtimeKey: string): string {

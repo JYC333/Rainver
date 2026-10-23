@@ -149,6 +149,7 @@ export const skillPackages = pgTable("skill_packages", {
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
+	unique("uq_skill_packages_id_space").on(table.id, table.spaceId),
 	index("ix_skill_packages_risk_level").using("btree", table.riskLevel.asc().nullsLast()),
 	index("ix_skill_packages_source_id").using("btree", table.sourceId.asc().nullsLast()),
 	index("ix_skill_packages_space_id").using("btree", table.spaceId.asc().nullsLast()),
@@ -210,6 +211,8 @@ export const skillPackageFiles = pgTable("skill_package_files", {
 	contentType: varchar("content_type", { length: 256 }),
 	byteLength: integer("byte_length"),
 	storageRef: text("storage_ref"),
+	/** Exact imported bytes; null for historical inventory-only imports. */
+	contentBase64: text("content_base64"),
 	included: boolean().default(true).notNull(),
 	executable: boolean().default(false).notNull(),
 	riskFlagsJson: jsonb("risk_flags_json").default({}).notNull(),
@@ -226,4 +229,28 @@ export const skillPackageFiles = pgTable("skill_package_files", {
 	check("ck_skill_package_files_byte_length", sql`(byte_length IS NULL) OR (byte_length >= 0)`),
 	check("ck_skill_package_files_path_nonempty", sql`length(path) > 0`),
 	check("ck_skill_package_files_risk_flags_object", sql`jsonb_typeof(risk_flags_json) = 'object'::text`),
+]);
+
+/** A binding always pins one immutable, reviewed package in one Space. */
+export const skillBindings = pgTable("skill_bindings", {
+	id: varchar({ length: 36 }).primaryKey().notNull(),
+	spaceId: varchar("space_id", { length: 36 }).notNull(),
+	skillPackageId: varchar("skill_package_id", { length: 36 }).notNull(),
+	projectId: varchar("project_id", { length: 36 }),
+	agentId: varchar("agent_id", { length: 36 }),
+	userId: varchar("user_id", { length: 36 }),
+	enabled: boolean().notNull(),
+	proposalId: varchar("proposal_id", { length: 36 }).notNull(),
+	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
+}, table => [
+	uniqueIndex("uq_skill_bindings_scope").on(table.spaceId, table.skillPackageId,
+		sql`COALESCE(project_id, '')`, sql`COALESCE(agent_id, '')`, sql`COALESCE(user_id, '')`),
+	foreignKey({ columns: [table.skillPackageId, table.spaceId], foreignColumns: [skillPackages.id, skillPackages.spaceId] }),
+	foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id] }).onDelete("cascade"),
+	foreignKey({ columns: [table.projectId, table.spaceId], foreignColumns: [projects.id, projects.spaceId] }).onDelete("cascade"),
+	foreignKey({ columns: [table.agentId, table.spaceId], foreignColumns: [agents.id, agents.spaceId] }).onDelete("cascade"),
+	foreignKey({ columns: [table.spaceId, table.userId], foreignColumns: [spaceMemberships.spaceId, spaceMemberships.userId] }).onDelete("cascade"),
+	foreignKey({ columns: [table.proposalId, table.spaceId], foreignColumns: [proposals.id, proposals.spaceId] }),
+	check("ck_skill_bindings_single_scope", sql`num_nonnulls(project_id, agent_id, user_id) <= 1`),
 ]);

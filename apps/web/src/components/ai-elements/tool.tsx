@@ -67,6 +67,7 @@ export type ToolHeaderProps = {
   toolName?: string;
   kind?: string | null;
   expandable?: boolean;
+  statusIndicator?: ReactNode;
 };
 
 const statusLabels: Record<ToolPart["state"], string> = {
@@ -120,6 +121,7 @@ export const ToolHeader = ({
   toolName,
   kind,
   expandable = true,
+  statusIndicator,
   ...props
 }: ToolHeaderProps) => {
   const derivedName =
@@ -129,7 +131,7 @@ export const ToolHeader = ({
       <div className="flex min-w-0 items-center gap-1.5">
         {toolIcon(kind)}
         <span className="truncate text-xs text-muted-foreground">{title ?? derivedName}</span>
-        {getStatusIndicator(state)}
+        {statusIndicator ?? getStatusIndicator(state)}
       </div>
       {expandable && (
         <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
@@ -192,6 +194,7 @@ export const ToolInput = ({ className, input, ...props }: ToolInputProps) => (
 );
 
 export type ToolOutputProps = ComponentProps<"div"> & {
+  label?: string;
   output: ToolPart["output"];
   errorText: ToolPart["errorText"];
 };
@@ -200,6 +203,7 @@ export const ToolOutput = ({
   className,
   output,
   errorText,
+  label,
   ...props
 }: ToolOutputProps) => {
   if (!(output || errorText)) {
@@ -224,7 +228,7 @@ export const ToolOutput = ({
   return (
     <div className={cn("space-y-2", className)} {...props}>
       <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-        {errorText ? "Error" : "Result"}
+        {label ?? (errorText ? "Error" : "Result")}
       </h4>
       <div
         className={cn(

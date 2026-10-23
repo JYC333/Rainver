@@ -2017,6 +2017,7 @@ export interface Run {
   capability_id?: string | null
   capabilities_json?: string[]
   selected_model_provider_id?: string | null
+  model_selection?: import("@rainver/protocol").RunModelSelection
   resolved_model?: RunResolvedModel | null
   visibility?: ObjectVisibility
   access_level?: ContentAccessLevel
@@ -2272,6 +2273,7 @@ export interface EvolutionBundle {
 }
 
 export interface RunStatusOut {
+  model_selection?: import("@rainver/protocol").RunModelSelection
   id: string
   status: string
   mode: string
@@ -3223,6 +3225,8 @@ export interface HostRuntimeDefinitionOption {
   registry_id?: string | null
   /** Current ACP package version available for a managed install. */
   latest_managed_version?: string | null
+  /** Latest stable vendor CLI release, independent of the ACP adapter. */
+  latest_own_version?: string | null
   /** Whether a managed copy reports a distinct bundled vendor CLI version. */
   reports_managed_cli_version?: boolean
   /** Whether the runtime contract admits `runtime_native` — the copy's own login. */
@@ -3651,6 +3655,7 @@ export interface FileNode {
   type: 'file' | 'dir'
   size?: number
   children?: FileNode[]
+  next_offset?: number
 }
 
 export interface FileContent {

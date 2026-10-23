@@ -116,6 +116,15 @@ $RAINVER_CLI call <action> '<json>'    # invoke it; prints the JSON result
 argument, which is what to use when the payload contains quotes or newlines.
 It exits non-zero and prints the reason when an action is refused or fails.
 
+When \`RAINVER_TOOL_BRIDGE\` is set, this command uses a Run-local file channel;
+the Host calls the control plane. Run it inside the ordinary command sandbox:
+it does not need command networking or escalation. Do not change or reuse the
+bridge directory from another Run. If the bridge is unavailable, report that
+failure rather than retrying with broader permissions.
+Older Hosts without this channel use direct HTTP and may need their command
+tool's approved network access. Updating the Host enables the local channel.
+A DNS or connection failure alone does not mean the Host daemon is offline.
+
 **Start by running \`list\`.** It is authoritative: an action absent from it is
 not available to you in this run, whatever this document mentions. Run
 \`describe\` before the first call of any action rather than guessing its
@@ -162,6 +171,13 @@ ask for confirmation, and do not describe it as pending. Every one of them is
 visible to the person afterwards with a one-click undo. Keep any fan-out to at
 most five per turn, and never raise a limit an action documents on your own
 initiative.
+For explicitly requested sustained collaboration, declare the task and fixed
+participants through \`agent.delegate\`'s collaboration budget before the first
+delegation. Bind the Task covering the entire authorized workflow, not just
+its current stage. All rounds share that bounded budget; do not reopen it on a
+completion turn. Stop when the task finishes, needs the person, or the server
+refuses further work. Keep the ordinary five-object write ceiling separate
+from this task's repeated implementation/review handoffs.
 `;
 }
 
@@ -203,6 +219,15 @@ export function workSkillPromptPointer(
           "and `task.request_review` to hand a decision back.",
           "Your reply text reaches nobody; only these calls do.",
         ]),
+  ].join("\n");
+}
+
+/** The pointer for a continued session that already read the full one. */
+export function workSkillPromptReminder(skillPath: string): string {
+  return [
+    "## Reporting back to Rainver",
+    "",
+    `Same contract as this session's first turn: \`${skillPath}\`, and \`$RAINVER_CLI list|describe|call\` for the actions you may call.`,
   ].join("\n");
 }
 

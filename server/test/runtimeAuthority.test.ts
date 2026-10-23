@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { acpRuntimeProbe } from "../src/modules/hosts/runtimeProbes.js";
 import {
   getAgentRuntimeDefinition,
   isRunnableAgentRuntime,
@@ -7,6 +8,12 @@ import {
 } from "../src/modules/runtimeAdapters/runtimeDefinitions.js";
 
 describe("ACP runtime authority registry", () => {
+  it("declares Claude login as a non-updating process with a runnable-program check", () => {
+    expect(acpRuntimeProbe("claude_code")?.login).toMatchObject({
+      env: { DISABLE_AUTOUPDATER: "1" }, verification_command: ["claude", "--version"],
+      managed_verification_command: [expect.stringContaining("{tree}"), "--version"],
+    });
+  });
   it("exposes OpenCode, Claude and Codex as ACP definitions", () => {
     expect(getAgentRuntimeDefinition("opencode")).toMatchObject({ runtime_key: "opencode", protocol: "acp" });
     expect(getAgentRuntimeDefinition("claude_code")).toMatchObject({ runtime_key: "claude_code", protocol: "acp" });

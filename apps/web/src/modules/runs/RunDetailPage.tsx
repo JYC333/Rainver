@@ -1,9 +1,13 @@
+import { RunModelLabel } from '../conversation/RunModelLabel'
+import { ConversationScope, useConversationScope } from '../conversation/ConversationScope'
+import { hasRunAuthorizationPause, useRunActions } from './useRunActions'
+import { RunQuotaRecoveryControls } from './RunQuotaRecoveryControls'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { SpaceLink as Link } from '../../core/spaceNav'
 import { ArrowLeft, ExternalLink, FileCode2, FlaskConical, Loader2, Save, ShieldCheck, UserRoundCheck, XCircle } from 'lucide-react'
 import { toast } from 'sonner'
-import { artifactsApi, authorizationRequestsApi, evolutionApi, runsApi } from '../../api/client'
+import { artifactsApi, evolutionApi, runsApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
 import type { ActivityInboxRecord, Artifact, AuthorizationRequest, Proposal, Run, RunAttempt, RunEvaluation, RunFinalization, RunLogicalIO, RunSupervisorDecision, RunVerificationResult } from '../../types/api'
 import { Card } from '../../components/ui/card'
@@ -84,20 +88,25 @@ function promptRefsForRun(run: Run): PromptRef[] {
 }
 
 export default function RunDetailPage() {
+  const { runId = '' } = useParams()
+  const { activeSpaceId } = useSpace()
+  return <ConversationScope key={`${activeSpaceId ?? ''}:${runId}`} spaceId={activeSpaceId ?? undefined}><RunDetailPageContent /></ConversationScope>
+}
+
+function RunDetailPageContent() {
   const { t } = useAppTranslation()
   const { runId = '' } = useParams()
   const { spaces, activeSpaceId, activeSpaceName, personalSpaceId, userId } = useSpace()
+  const commandScope = useConversationScope()
   const [reloadKey, setReloadKey] = useState(0)
   const [executingRun, setExecutingRun] = useState(false)
-  const [recoveryBusy, setRecoveryBusy] = useState(false)
   const [abandonOpen, setAbandonOpen] = useState(false)
   const [abandonReason, setAbandonReason] = useState('')
-  const { run: polled, loading, error } = useRun(runId && activeSpaceId ? runId : null, reloadKey)
+  const { run: polled, loading, error } = useRun(runId && activeSpaceId ? runId : null, reloadKey, activeSpaceId ?? undefined)
   const [activities, setActivities] = useState<ActivityInboxRecord[]>([])
   const [artifacts, setArtifacts] = useState<Artifact[]>([])
   const [proposals, setProposals] = useState<Proposal[]>([])
   const [authorizationRequests, setAuthorizationRequests] = useState<AuthorizationRequest[]>([])
-  const [authorizationBusyId, setAuthorizationBusyId] = useState<string | null>(null)
   const [attempts, setAttempts] = useState<RunAttempt[]>([])
   const [supervisorDecisions, setSupervisorDecisions] = useState<RunSupervisorDecision[]>([])
   const [evaluations, setEvaluations] = useState<RunEvaluation[]>([])
@@ -146,7 +155,7 @@ export default function RunDetailPage() {
     const generation = loadGeneration.current + 1
     loadGeneration.current = generation
     const requestScopeKey = `${activeSpaceId ?? 'none'}:${runId}`
-    const isCurrentRequest = () => loadGeneration.current === generation
+    const isCurrentRequest = () => !commandScope.signal?.aborted && loadGeneration.current === generation
 
     if (!runId) {
       setResourceScopeKey(requestScopeKey)
@@ -188,16 +197,16 @@ export default function RunDetailPage() {
     setTabLoading(true)
     try {
       const [io, a, ar, pr, authRequests, attemptResult, nextEvaluations, nextVerifications, nextFinalizations, nextRoute] = await Promise.all([
-        loadOptionalRunResource(Promise.resolve().then(() => runsApi.logicalIO(runId)), null),
-        loadOptionalRunResource(runsApi.activities(runId, { limit: '100' }), { items: [], total: 0, limit: 100, offset: 0 }),
-        loadOptionalRunResource(runsApi.artifacts(runId, { limit: '100' }), { items: [], total: 0, limit: 100, offset: 0 }),
-        loadOptionalRunResource(runsApi.proposals(runId, { limit: '100' }), { items: [], total: 0, limit: 100, offset: 0 }),
-        loadOptionalRunResource(runsApi.authorizationRequests(runId), []),
-        loadOptionalRunResource(runsApi.attempts(runId), { attempts: [], supervisor_decisions: [] }),
-        loadOptionalRunResource(runsApi.evaluations(runId), []),
-        loadOptionalRunResource(runsApi.verifications(runId), []),
-        loadOptionalRunResource(runsApi.finalizations(runId), []),
-        runsApi.routeDecision(runId)
+        loadOptionalRunResource(Promise.resolve().then(() => runsApi.logicalIO(runId, commandScope)), null),
+        loadOptionalRunResource(runsApi.activities(runId, { limit: '100' }, commandScope), { items: [], total: 0, limit: 100, offset: 0 }),
+        loadOptionalRunResource(runsApi.artifacts(runId, { limit: '100' }, commandScope), { items: [], total: 0, limit: 100, offset: 0 }),
+        loadOptionalRunResource(runsApi.proposals(runId, { limit: '100' }, commandScope), { items: [], total: 0, limit: 100, offset: 0 }),
+        loadOptionalRunResource(runsApi.authorizationRequests(runId, commandScope), []),
+        loadOptionalRunResource(runsApi.attempts(runId, commandScope), { attempts: [], supervisor_decisions: [] }),
+        loadOptionalRunResource(runsApi.evaluations(runId, commandScope), []),
+        loadOptionalRunResource(runsApi.verifications(runId, commandScope), []),
+        loadOptionalRunResource(runsApi.finalizations(runId, commandScope), []),
+        runsApi.routeDecision(runId, commandScope)
           .then(value => ({ value, error: null as string | null }))
           .catch(error => ({ value: null, error: errMsg(error) })),
       ])
@@ -246,7 +255,7 @@ export default function RunDetailPage() {
     } finally {
       if (isCurrentRequest()) setTabLoading(false)
     }
-  }, [runId, activeSpaceId])
+  }, [runId, activeSpaceId, commandScope])
 
   useEffect(() => {
     void loadSubs()
@@ -280,7 +289,7 @@ export default function RunDetailPage() {
 
   async function exportArt(id: string) {
     try {
-      await artifactsApi.export(id)
+      await artifactsApi.export(id, undefined, commandScope)
       toast.success('Download started')
     } catch (e) {
       toast.error(errMsg(e))
@@ -291,7 +300,7 @@ export default function RunDetailPage() {
     if (!runId) return
     setExecutingRun(true)
     try {
-      await runsApi.executeQueuedRun(runId)
+      await runsApi.executeQueuedRun(runId, commandScope)
       toast.success('Run finished — status should be terminal (e.g. succeeded).')
       setReloadKey(k => k + 1)
       await loadSubs()
@@ -302,52 +311,26 @@ export default function RunDetailPage() {
     }
   }
 
-  async function resumeWaitingRun() {
-    if (!runId) return
-    setRecoveryBusy(true)
-    try {
-      await runsApi.resume(runId)
-      toast.success('Run resumed and queued')
-      setReloadKey(k => k + 1)
-      await loadSubs()
-    } catch (e) {
-      toast.error(errMsg(e))
-    } finally {
-      setRecoveryBusy(false)
-    }
-  }
+  const actions = useRunActions(runId, commandScope, async () => {
+    setReloadKey(key => key + 1)
+    await loadSubs()
+  })
+  const recoveryBusy = actions.busy !== null
+  const authorizationBusyId = actions.busy && 'requestId' in actions.busy ? actions.busy.requestId : null
 
+  async function resumeWaitingRun() {
+    if (await actions.perform({ kind: 'resume' })) toast.success('Run resumed and queued')
+  }
   async function abandonWaitingRun() {
-    if (!runId) return
-    setRecoveryBusy(true)
-    try {
-      await runsApi.abandon(runId, { reason: abandonReason.trim() || undefined })
+    if (await actions.perform({ kind: 'abandon', reason: abandonReason.trim() || undefined })) {
       toast.success('Run abandoned')
       setAbandonOpen(false)
       setAbandonReason('')
-      setReloadKey(k => k + 1)
-      await loadSubs()
-    } catch (e) {
-      toast.error(errMsg(e))
-    } finally {
-      setRecoveryBusy(false)
     }
   }
-
   async function decideAuthorization(requestId: string, decision: 'approve' | 'reject') {
-    setAuthorizationBusyId(requestId)
-    try {
-      const updated = decision === 'approve'
-        ? await authorizationRequestsApi.approve(requestId)
-        : await authorizationRequestsApi.reject(requestId)
-      setAuthorizationRequests(current => current.map(item => item.id === updated.id ? updated : item))
+    if (await actions.perform({ kind: decision, requestId })) {
       toast.success(decision === 'approve' ? 'Authorization granted' : 'Authorization request rejected')
-      setReloadKey(key => key + 1)
-      await loadSubs()
-    } catch (e) {
-      toast.error(errMsg(e))
-    } finally {
-      setAuthorizationBusyId(null)
     }
   }
 
@@ -464,11 +447,7 @@ export default function RunDetailPage() {
       ? 'Agent'
       : '—'
   const promptRefs = promptRefsForRun(r)
-  const runAuthorizationId = stringOrNull(r.error_json?.authorization_request_id)
-  const runAuthorization = runAuthorizationId
-    ? authorizationRequests.find(request => request.id === runAuthorizationId)
-    : authorizationRequests.find(request => request.status === 'pending')
-  const hasAuthorizationPause = Boolean(runAuthorizationId || runAuthorization)
+  const hasAuthorizationPause = hasRunAuthorizationPause(r, authorizationRequests)
 
   return (
     <>
@@ -478,9 +457,10 @@ export default function RunDetailPage() {
       </Button>
 
       <div className="space-y-3 border-b border-border pb-4">
+        <RunQuotaRecoveryControls run={r} scope={commandScope} canControl={r.owner_user_id === userId || r.instructed_by_user_id === userId} onChanged={() => setReloadKey(key => key + 1)} />
         <div className="flex flex-wrap items-start justify-between gap-3">
           <h1 className="text-xl font-semibold tracking-tight">{r.instruction ?? r.prompt ?? `${r.run_type} Run`}</h1>
-          <div className="flex flex-wrap items-center gap-2"><ContentAccessControl resourceType="run" resourceId={r.id} ownerUserId={r.owner_user_id ?? null} />{r.status === 'waiting_for_review' && !hasAuthorizationPause && <><Button size="sm" onClick={() => void resumeWaitingRun()} disabled={recoveryBusy}><UserRoundCheck className="size-3.5" /> Resume</Button><Button size="sm" variant="destructive" onClick={() => setAbandonOpen(true)} disabled={recoveryBusy}><XCircle className="size-3.5" /> Abandon</Button></>}{(r.status === 'succeeded' || r.status === 'degraded') && <Button size="sm" variant="outline" onClick={() => setWorkflowOpen(true)}><Save className="size-3.5" /> Save as workflow</Button>}</div>
+          <div className="flex flex-wrap items-center gap-2">{actions.error && <span role="alert" className="text-sm text-destructive">{actions.error}</span>}{actions.refreshError && <span role="status" className="text-sm text-muted-foreground">{t('conversation_ui.run.refresh_failed', { message: actions.refreshError })}</span>}<ContentAccessControl resourceType="run" resourceId={r.id} ownerUserId={r.owner_user_id ?? null} />{r.status === 'waiting_for_review' && !hasAuthorizationPause && <><Button size="sm" onClick={() => void resumeWaitingRun()} disabled={recoveryBusy}><UserRoundCheck className="size-3.5" /> Resume</Button><Button size="sm" variant="destructive" onClick={() => setAbandonOpen(true)} disabled={recoveryBusy}><XCircle className="size-3.5" /> Abandon</Button></>}{(r.status === 'succeeded' || r.status === 'degraded') && <Button size="sm" variant="outline" onClick={() => setWorkflowOpen(true)}><Save className="size-3.5" /> Save as workflow</Button>}</div>
         </div>
         <p className="text-xs text-muted-foreground">Viewing: {activeSpaceName ?? activeSpaceId ?? 'No operational space selected'}</p>
         <div className="flex flex-wrap gap-1.5 items-center">
@@ -527,6 +507,7 @@ export default function RunDetailPage() {
             <div>Separate approval is required before anything is written to a shared space.</div>
           </div>
         </Card>
+        <RunModelLabel model={r.model_selection} />
         {(r.resolved_model?.provider_id || r.resolved_model?.model) && (
           <Card className="p-4 space-y-2">
             <h2 className="text-sm font-semibold">Model configuration</h2>

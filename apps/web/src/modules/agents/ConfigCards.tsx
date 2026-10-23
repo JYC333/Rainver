@@ -93,7 +93,7 @@ export function SafetyView({ version }: { version: VersionLike }) {
       <div className="flex items-center gap-2 mb-2 text-sm font-medium"><ShieldCheck className="size-4" /> Review &amp; safety</div>
       <p className="text-xs text-muted-foreground mb-3">Review posture: <Badge variant="secondary">{s.posture}</Badge></p>
       <p className="text-xs text-muted-foreground mb-3">
-        Run constraints: risk <span className="font-medium text-foreground">{version.risk_level ?? 'medium'}</span> · maximum duration <span className="font-medium text-foreground">{version.max_run_time_seconds ?? 300}s</span>.
+        Run constraints: risk <span className="font-medium text-foreground">{version.risk_level ?? 'medium'}</span>.
       </p>
       <p className="text-xs font-medium text-foreground">This agent can</p>
       <ul className="mt-1 mb-3 space-y-0.5">

@@ -47,6 +47,10 @@ export type RuntimeDistribution =
 export interface RuntimeLoginSpec {
   command: string[];
   managed_command?: string[];
+  /** Fixed login-subprocess settings; not a provider credential channel. */
+  env?: Record<string, string>;
+  verification_command?: string[];
+  managed_verification_command?: string[];
   /** The vendor's logout in the same two forms; absent when the CLI has none. */
   logout_command?: string[];
   managed_logout_command?: string[];
@@ -157,6 +161,8 @@ export interface RuntimeAdapterSpec {
   }>;
   model: {
     supports_model_override: boolean;
+    /** ACP accepts model aliases outside the picker and returns the canonical selection. */
+    acp_model_aliases?: boolean;
     model_arg_template?: string[];
     model_config_behavior: "uses_model" | "not_applicable" | "unsupported";
     /**
@@ -211,18 +217,16 @@ export interface RuntimeAdapterSpec {
      * How this runtime says it refused because the subscription's window is
      * used up: case-insensitive regular expressions over a failed Run's error
      * text. A match is classified `subscription_quota_exhausted`
-     * (`runs/retryPolicy.ts`) — not retried, and a discussion stops at it as
-     * at a cap (`modules/rooms.md`, "Quota exhaustion is a cap").
+     * (`runs/retryPolicy.ts`). The Supervisor can park a bounded successor
+     * at the quota gate; an unrecovered refusal ends a discussion at its cap.
      */
     quota_exhausted_patterns?: readonly string[];
+    /** Named captures: epoch, or hour/minute/period/zone for a local reset clock. */
+    quota_reset_patterns?: readonly string[];
   };
   output: {
     patch_strategy: "none" | "git_diff";
     artifact_path_strategy: "none";
-  };
-  limits: {
-    default_timeout_seconds: number;
-    max_timeout_seconds: number;
   };
 }
 
@@ -295,7 +299,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       patch_strategy: "none",
       artifact_path_strategy: "none",
     },
-    limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
   },
   claude_code: {
     runtime_key: "claude_code",
@@ -333,6 +336,11 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     credentials: {
       login: {
         command: ["claude", "/login"],
+        // Exiting the login PTY can interrupt npm after it has retired the
+        // existing CLI. Login must never start a background CLI replacement.
+        env: { DISABLE_AUTOUPDATER: "1" },
+        verification_command: ["claude", "--version"],
+        managed_verification_command: ["{tree}/node_modules/@anthropic-ai/claude-agent-sdk-{node_platform}/claude", "--version"],
         logout_command: ["claude", "/logout"],
         // The bundled SDK ships the vendor binary per platform.
         managed_command: ["{tree}/node_modules/@anthropic-ai/claude-agent-sdk-{node_platform}/claude", "/login"],
@@ -352,6 +360,7 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     model: {
       supports_model_override: true,
       model_arg_template: ["--model", "{model}"],
+      acp_model_aliases: true,
       model_config_behavior: "uses_model",
       provider_api: "claude_compatible",
     },
@@ -383,14 +392,17 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
         "usage limit reached",
         // Not the Opus limit: that one falls back to another model, it does not refuse.
         "(5-hour|five-hour|weekly) limit reached",
-        "you['’]ve hit your (usage )?limit",
+        "you['’]ve hit your (usage |session )?limit",
+      ],
+      quota_reset_patterns: [
+        "usage limit reached\\|(?<epoch>\\d{10})",
+        "resets\\s+(?<hour>\\d{1,2})(?::(?<minute>\\d{2}))?\\s*(?<period>am|pm)\\s*\\((?<zone>[^)]+)\\)",
       ],
     },
     output: {
       patch_strategy: "git_diff",
       artifact_path_strategy: "none",
     },
-    limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
   },
   codex_cli: {
     runtime_key: "codex_cli",
@@ -475,7 +487,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       patch_strategy: "git_diff",
       artifact_path_strategy: "none",
     },
-    limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
   },
   opencode: {
     runtime_key: "opencode",
@@ -556,7 +567,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       patch_strategy: "git_diff",
       artifact_path_strategy: "none",
     },
-    limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
   },
   gemini_cli: {
     runtime_key: "gemini_cli",
@@ -597,7 +607,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       patch_strategy: "git_diff",
       artifact_path_strategy: "none",
     },
-    limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
   },
   custom: {
     runtime_key: "custom",
@@ -637,7 +646,6 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
       patch_strategy: "git_diff",
       artifact_path_strategy: "none",
     },
-    limits: { default_timeout_seconds: 300, max_timeout_seconds: 3600 },
   },
 };
 

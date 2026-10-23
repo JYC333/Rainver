@@ -16,6 +16,13 @@ function renderMarkdown(source: string) {
 }
 
 describe('chat markdown images', () => {
+  it('blocks javascript links while retaining a safe external link', () => {
+    const container = renderMarkdown('[click](javascript:alert(1))\n\n[ok](https://example.com/a)')
+    expect(container.querySelector('a[href^="javascript:"]')).toBeNull()
+    expect(container.textContent).toMatch(/blocked/i)
+    expect(container.querySelector('button')).toHaveTextContent('ok')
+  })
+
   it('never loads an external image, from markdown or from raw HTML', () => {
     // A cross-origin `<img>` is fetched with no click, and the URL it fetches
     // can carry whatever the model was induced to put in it.

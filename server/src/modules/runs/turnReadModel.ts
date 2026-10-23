@@ -1,3 +1,4 @@
+import { runModelSelection } from "./runModelSelection.js";
 import type { RunTurn } from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
 import { loadProjectChatActionPreviews } from "../agents/projectChatActionPreviews.js";
@@ -32,16 +33,19 @@ export async function loadRunTurn(
     host_task_thread_id: string | null;
     status: string;
     is_chat_turn: boolean;
+    model_override_json: unknown;
     error_message: string | null;
     error_code: string | null;
     authorization_request_id: string | null;
     supervisor_review: boolean | null;
+    quota_wait: boolean | null;
     updated_at: string | Date | null;
   }>(
-    `SELECT id, host_task_thread_id, status, updated_at, error_message,
+    `SELECT id, host_task_thread_id, status, updated_at, error_message, model_override_json,
             error_json->>'error_code' AS error_code,
             error_json->>'authorization_request_id' AS authorization_request_id,
             (error_json->>'supervisor_review' = 'true') AS supervisor_review,
+            (status = 'queued' AND output_json ? 'waiting_for_quota') AS quota_wait,
             (model_override_json->'chat_turn'->>'schema_version' = 'chat_turn.v1') AS is_chat_turn
        FROM runs WHERE id = $1 AND space_id = $2`,
     [input.runId, input.spaceId],
@@ -82,7 +86,7 @@ export async function loadRunTurn(
   // so the reader sees why nothing is happening; it clears on its own once
   // the host lets it in.
   const workspaceWait = statusState === "working" && row.status === "running" && waitingForWorkspace(row.id);
-  const state = workspaceWait ? "blocked" as const : statusState;
+  const state = workspaceWait || row.quota_wait ? "blocked" as const : statusState;
   // A paused turn is waiting on a person, and the reader needs to know which
   // kind of waiting: an authorization they can grant, or a review somebody
   // else owes it. Saying only "working" hides that anything is expected of
@@ -92,7 +96,7 @@ export async function loadRunTurn(
   // (which sets the id), a supervisor hold (which sets this flag), and a
   // policy that requires approval on a run action — and that third one sets
   // neither. It is an approval, so the flag is what tells the three apart.
-  const blockedOn = workspaceWait
+  const blockedOn = row.quota_wait ? "quota" as const : workspaceWait
     ? "workspace" as const
     : state === "blocked"
       ? (row.supervisor_review === true ? "run_decision" as const : "authorization" as const)
@@ -134,6 +138,7 @@ export async function loadRunTurn(
   return {
     schema_version: "run_turn.v1",
     run_id: row.id,
+    model_selection: runModelSelection(row.model_override_json, row.status),
     state,
     source: withPreviews.source,
     parts: withPreviews.parts,
@@ -243,7 +248,7 @@ async function loadReplyText(db: Queryable, spaceId: string, runId: string): Pro
  * Reporting `done` any earlier tells a client to go and read a reply that is
  * not there yet.
  */
-function turnState(
+export function turnState(
   status: string,
   chatCompleted: "succeeded" | "failed" | null,
   isChatTurn: boolean,

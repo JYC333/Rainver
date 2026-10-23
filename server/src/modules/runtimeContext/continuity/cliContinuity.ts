@@ -7,8 +7,10 @@ import type { Queryable } from "../../routeUtils/common.js";
 import { HttpError, withQueryableTransaction } from "../../routeUtils/common.js";
 import { contextItemText, normalizeContextItem } from "../itemNormalizer.js";
 import { estimateModelTokens } from "../../usage/modelCatalog.js";
-
-const MAX_CLI_DELTA_TOKENS = 6_000;
+import { historicalRunRequest, RUN_REQUEST_INCLUDES_INSTRUCTION } from "../runRequest.js";
+import { INPUT_RESOURCE_TOOL_ALLOWANCE } from "../../systemActions/scenarioToolAllowance.js";
+import { CLI_REPLAY_TOKENS, renderCliEventDelta, renderCliReconstruction, type CliDeltaEvent } from "./cliHistory.js";
+export { renderCliEventDelta } from "./cliHistory.js";
 
 /**
  * An execution lease lives this long without a heartbeat. The holder renews
@@ -153,6 +155,12 @@ export class RuntimeContextCliContinuityService {
     control: ExecutionControlSnapshot;
     /** Present for HostThread dispatches; the context cursor must follow this exact ACP session. */
     expectedVendorSessionId?: string | null;
+    /**
+     * The Host thread whose ACP session the cursor follows. Each thread keeps
+     * its own active binding: one scope's cursor must never follow two
+     * independent vendor sessions, even if they share the same Work Context.
+     */
+    hostThreadId?: string | null;
     /** The Run preparing the binding; its own earlier attempt's lease does not hold it off. */
     runId: string;
     maxWaitMs?: number;
@@ -192,7 +200,7 @@ export class RuntimeContextCliContinuityService {
   ): Promise<PreparedCliBinding | null> {
     return withQueryableTransaction(this.db, async (db) => {
       await db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
-        `cli-binding:${input.spaceId}:${input.workContextScopeId}:${input.userId}:${input.agentId}`,
+        `cli-binding:${input.spaceId}:${input.workContextScopeId}:${input.userId}:${input.agentId}:${input.hostThreadId ?? ""}`,
       ]);
       const setup = await db.query<{ scope_kind: string }>(
         `SELECT scope_kind FROM work_context_setups
@@ -208,6 +216,16 @@ export class RuntimeContextCliContinuityService {
       const authorityFingerprint = hash(fingerprint.authority);
       const runtimeFingerprint = hash(fingerprint.runtime);
       const existing = await this.activeBinding(db, input, input.runId);
+      // Lock after the binding: a Delivery transaction can hold the binding
+      // while upgrading its Run lock to persist taint. Taking the Run first
+      // here would hold that upgrade off while waiting for the binding.
+      const acquiring = await db.query<{ status: string }>(
+        `SELECT status FROM runs WHERE id=$1 AND space_id=$2 FOR SHARE`,
+        [input.runId, input.spaceId],
+      );
+      if (!["queued", "running"].includes(acquiring.rows[0]?.status ?? "")) {
+        throw new CliExecutionLeaseUnavailableError("The Run stopped before preparing its conversation's CLI binding.");
+      }
       const vendorSessionMismatch = existing !== null
         && input.expectedVendorSessionId !== undefined
         && existing.vendor_session_id !== input.expectedVendorSessionId;
@@ -235,17 +253,17 @@ export class RuntimeContextCliContinuityService {
         `INSERT INTO runtime_context_cli_bindings (
            id,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
            runtime_profile_id,runtime_key,provider_id,model,
-           runtime_state_key,vendor_session_id,authority_fingerprint,runtime_fingerprint,
+           runtime_state_key,vendor_session_id,host_thread_id,authority_fingerprint,runtime_fingerprint,
            fingerprint_json,cli_known_cursor,acknowledged_item_ids_json,generation,
            status,rotation_reason,created_at,updated_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,$12,$13,$14::jsonb,
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULL,$17,$12,$13,$14::jsonb,
                    0,'[]'::jsonb,$15,'active',$16,now(),now())
          RETURNING ${BINDING_COLUMNS}`,
         [randomUUID(), input.spaceId, input.workContextScopeId, scopeKind,
           input.userId, input.agentId, input.runtimeProfileId,
           input.runtimeKey, input.providerId, input.model,
           randomUUID(), authorityFingerprint, runtimeFingerprint,
-          JSON.stringify(fingerprint), (existing?.generation ?? 0) + 1, reason],
+          JSON.stringify(fingerprint), (existing?.generation ?? 0) + 1, reason, input.hostThreadId ?? null],
       );
       if (!created.rows[0]) throw new Error("CLI continuity binding was not persisted");
       return bindingOut(created.rows[0]);
@@ -261,8 +279,11 @@ export class RuntimeContextCliContinuityService {
    */
   async rotateMissingVendorState(bindingId: string, leaseId: string): Promise<PreparedCliBinding> {
     return withQueryableTransaction(this.db, async (db) => {
-      const current = await db.query<{ id: string; status: string; execution_lease_id: string | null }>(
-        `SELECT id,status,execution_lease_id FROM runtime_context_cli_bindings WHERE id=$1 FOR UPDATE`,
+      const current = await db.query<{
+        id: string; status: string; execution_lease_id: string | null; execution_lease_run_id: string | null;
+      }>(
+        `SELECT id,status,execution_lease_id,execution_lease_run_id
+           FROM runtime_context_cli_bindings WHERE id=$1 FOR UPDATE`,
         [bindingId],
       );
       const row = current.rows[0];
@@ -288,19 +309,19 @@ export class RuntimeContextCliContinuityService {
         `INSERT INTO runtime_context_cli_bindings (
            id,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
            runtime_profile_id,runtime_key,provider_id,model,
-           runtime_state_key,vendor_session_id,authority_fingerprint,runtime_fingerprint,
+           runtime_state_key,vendor_session_id,host_thread_id,authority_fingerprint,runtime_fingerprint,
            fingerprint_json,cli_known_cursor,acknowledged_item_ids_json,generation,
            status,rotation_reason,execution_lease_id,execution_lease_expires_at,
            execution_lease_run_id,execution_lease_generation,created_at,updated_at
          ) SELECT $2,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
                   runtime_profile_id,runtime_key,provider_id,model,
-                  $3,NULL,authority_fingerprint,runtime_fingerprint,fingerprint_json,
+                  $3,NULL,host_thread_id,authority_fingerprint,runtime_fingerprint,fingerprint_json,
                   0,'[]'::jsonb,generation+1,'active','vendor_state_missing',
                   $4,now() + make_interval(secs => ${EXECUTION_LEASE_TTL_SECONDS}),
-                  execution_lease_run_id,execution_lease_generation,now(),now()
+                  $5,execution_lease_generation,now(),now()
              FROM runtime_context_cli_bindings WHERE id=$1
          RETURNING ${BINDING_COLUMNS}`,
-        [bindingId, randomUUID(), randomUUID(), leaseId],
+        [bindingId, randomUUID(), randomUUID(), leaseId, row.execution_lease_run_id],
       );
       if (!created.rows[0]) throw new Error("Replacement CLI continuity binding was not persisted");
       return bindingOut(created.rows[0]);
@@ -327,6 +348,9 @@ export class RuntimeContextCliContinuityService {
                 execution_lease_expires_at=now() + make_interval(secs => ${EXECUTION_LEASE_TTL_SECONDS}),
                 updated_at=now()
           WHERE binding.id=$1 AND binding.status='active'
+            AND EXISTS (SELECT 1 FROM runs acquiring
+                         WHERE acquiring.id=$3 AND acquiring.space_id=binding.space_id
+                           AND acquiring.status IN ('queued','running'))
             AND NOT ${leaseHeldSql("binding", "$3")}
           RETURNING binding.execution_lease_generation`,
         [bindingId, leaseId, holder.runId],
@@ -383,6 +407,8 @@ export class RuntimeContextCliContinuityService {
 
   async prepareDelivery(input: {
     bindingId: string;
+    /** The caller's acquired fencing token, never replaced by the current holder's. */
+    leaseGeneration: number;
     spaceId: string;
     workContextScopeId: string;
     invocationId: string;
@@ -404,6 +430,9 @@ export class RuntimeContextCliContinuityService {
         || binding.space_id !== input.spaceId
         || binding.work_context_scope_id !== input.workContextScopeId) {
         throw new HttpError(409, "CLI Delivery binding is no longer active for this work scope");
+      }
+      if (Number(binding.execution_lease_generation) !== input.leaseGeneration) {
+        throw new HttpError(409, "CLI Delivery execution lease was taken over before planning");
       }
       const scope = await db.query<{ event_head_cursor: number }>(
         `SELECT event_head_cursor FROM context_event_scopes
@@ -431,6 +460,7 @@ export class RuntimeContextCliContinuityService {
             afterCursor: binding.cli_known_cursor,
             throughCursor: targetCursor,
             currentMessageRef: input.currentMessageRef,
+            knownBindingId: binding.id,
           })
         : await loadCliReconstructionEvents(db, {
             spaceId: input.spaceId,
@@ -442,7 +472,7 @@ export class RuntimeContextCliContinuityService {
       let deltaText = mode === "full"
         ? renderCliReconstruction(checkpoint?.checkpoint_json ?? null, events)
         : renderCliEventDelta(events);
-      if (mode === "delta" && deltaText && estimateModelTokens(deltaText) > MAX_CLI_DELTA_TOKENS) {
+      if (mode === "delta" && deltaText && estimateModelTokens(deltaText) > CLI_REPLAY_TOKENS) {
         // A stale vendor cursor must never turn into an unbounded prompt. Rotate
         // to a fresh vendor session and reconstruct from the bounded checkpoint.
         await db.query(
@@ -457,13 +487,13 @@ export class RuntimeContextCliContinuityService {
           `INSERT INTO runtime_context_cli_bindings (
              id,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
              runtime_profile_id,runtime_key,provider_id,model,
-             runtime_state_key,vendor_session_id,authority_fingerprint,runtime_fingerprint,
+             runtime_state_key,vendor_session_id,host_thread_id,authority_fingerprint,runtime_fingerprint,
              fingerprint_json,cli_known_cursor,acknowledged_item_ids_json,generation,
              status,rotation_reason,execution_lease_id,execution_lease_expires_at,
              execution_lease_run_id,execution_lease_generation,created_at,updated_at
            ) SELECT $2,space_id,work_context_scope_id,scope_kind,user_id,agent_id,
                     runtime_profile_id,runtime_key,provider_id,model,
-                    $3,NULL,authority_fingerprint,runtime_fingerprint,fingerprint_json,
+                    $3,NULL,host_thread_id,authority_fingerprint,runtime_fingerprint,fingerprint_json,
                     0,'[]'::jsonb,generation+1,'active','overflow_reconstruction',$4,$5,$6,$7,now(),now()
                FROM runtime_context_cli_bindings
               WHERE id=$1
@@ -593,31 +623,37 @@ export class RuntimeContextCliContinuityService {
     return (result.rowCount ?? 0) === 1;
   }
 
+  /**
+   * The vendor session an active binding names, while the given lease
+   * generation still holds it; null once another Run has taken it over.
+   */
+  async vendorSessionUnderLease(bindingId: string, leaseGeneration: number): Promise<string | null> {
+    const result = await this.db.query<{ vendor_session_id: string | null }>(
+      `SELECT vendor_session_id FROM runtime_context_cli_bindings
+        WHERE id=$1 AND status='active' AND execution_lease_generation=$2`,
+      [bindingId, leaseGeneration],
+    );
+    return result.rows[0]?.vendor_session_id ?? null;
+  }
+
   private async activeBinding(db: Queryable, input: {
     spaceId: string;
     workContextScopeId: string;
     userId: string;
     agentId: string;
+    hostThreadId?: string | null;
   }, runId: string): Promise<BindingRow | null> {
     const result = await db.query<BindingRow>(
       `SELECT ${BINDING_COLUMNS},
               ${leaseHeldSql("binding", "$5")} AS leased
          FROM runtime_context_cli_bindings binding
         WHERE space_id=$1 AND work_context_scope_id=$2 AND user_id=$3 AND agent_id=$4
+          AND host_thread_id IS NOT DISTINCT FROM $6
           AND status='active' FOR UPDATE OF binding`,
-      [input.spaceId, input.workContextScopeId, input.userId, input.agentId, runId],
+      [input.spaceId, input.workContextScopeId, input.userId, input.agentId, runId, input.hostThreadId ?? null],
     );
     return result.rows[0] ?? null;
   }
-}
-
-interface CliDeltaEvent {
-  id: string;
-  scope_sequence: number;
-  event_type: string;
-  canonical_type: string;
-  canonical_id: string;
-  content: string | null;
 }
 
 interface CliCheckpointRow {
@@ -633,15 +669,20 @@ async function loadCliDeltaEvents(db: Queryable, input: {
   afterCursor: number;
   throughCursor: number;
   currentMessageRef: { type: string; id: string };
+  knownBindingId?: string;
 }): Promise<CliDeltaEvent[]> {
-  const result = await db.query<CliDeltaEvent>(
+  const result = await db.query<CliDeltaEvent & {
+    run_prompt: string | null; run_instruction: string | null; run_request_includes_instruction: boolean | null;
+  }>(
     `SELECT event.id,event.scope_sequence,event.event_type,
             event.canonical_ref_json->>'type' AS canonical_type,
             event.canonical_ref_json->>'id' AS canonical_id,
+            run.prompt AS run_prompt,run.instruction AS run_instruction,
+            (run.model_override_json->'${RUN_REQUEST_INCLUDES_INSTRUCTION}')='true'::jsonb AS run_request_includes_instruction,
+            run.status AS run_status,
             CASE
               WHEN event.canonical_ref_json->>'type'='message' THEN message.content
-              WHEN event.canonical_ref_json->>'type'='run_request' THEN
-                concat_ws(E'\n\n', run.prompt, run.instruction)
+              WHEN event.canonical_ref_json->>'type'='run_request' THEN NULL
               WHEN event.canonical_ref_json->>'type'='run_event'
                 AND run_event.event_type='assistant_message_completed' THEN
                 COALESCE(NULLIF(run.output_json->>'summary',''),run_event.summary)
@@ -661,15 +702,36 @@ async function loadCliDeltaEvents(db: Queryable, input: {
              AND run.id=event.canonical_ref_json->>'id')
            OR (event.canonical_ref_json->>'type'='run_event'
              AND run.id=run_event.run_id)
+           OR (event.canonical_ref_json->>'type'='message'
+             AND run.id=message.run_id)
          )
       WHERE event.space_id=$1 AND event.work_context_scope_id=$2
         AND event.scope_sequence>$3 AND event.scope_sequence<=$4
         AND NOT (event.canonical_ref_json->>'type'=$5 AND event.canonical_ref_json->>'id'=$6)
+        AND NOT ($7::varchar IS NOT NULL
+          AND event.event_type IN ('assistant_message_completed','run_request_received','tool_call_completed','tool_call_failed','run_terminal')
+          AND EXISTS (
+            SELECT 1 FROM invocation_deliveries delivery
+              JOIN invocation_snapshots snapshot ON snapshot.delivery_id=delivery.id AND snapshot.space_id=delivery.space_id
+             WHERE delivery.space_id=event.space_id AND delivery.invocation_id=event.invocation_id
+               AND delivery.delivery_metadata_json->'cli_session'->'binding_ref'->>'id'=$7
+               AND snapshot.safe_snapshot_json->'acknowledgement'->>'status'='accepted'
+          ))
       ORDER BY event.scope_sequence`,
     [input.spaceId, input.workContextScopeId, input.afterCursor, input.throughCursor,
-      input.currentMessageRef.type, input.currentMessageRef.id],
+      input.currentMessageRef.type, input.currentMessageRef.id, input.knownBindingId ?? null],
   );
-  return result.rows.map((row) => ({ ...row, scope_sequence: Number(row.scope_sequence) }));
+  return result.rows.map((row) => ({
+    ...row,
+    scope_sequence: Number(row.scope_sequence),
+    content: row.canonical_type === "run_request"
+      ? historicalRunRequest({
+        prompt: row.run_prompt,
+        instruction: row.run_instruction,
+        model_override_json: { [RUN_REQUEST_INCLUDES_INSTRUCTION]: row.run_request_includes_instruction === true },
+      })
+      : row.content,
+  }));
 }
 
 async function loadCliReconstructionEvents(db: Queryable, input: {
@@ -762,6 +824,7 @@ export async function authorizeCliDeltaItem(db: Queryable, input: {
         afterCursor,
         throughCursor,
         currentMessageRef: input.currentMessageRef,
+        knownBindingId: input.item.source_ref.id,
       });
   const rendered = full
     ? renderCliReconstruction(checkpoint?.checkpoint_json ?? null, events)
@@ -769,33 +832,6 @@ export async function authorizeCliDeltaItem(db: Queryable, input: {
   if (!rendered || contextItemText(input.item) !== rendered) {
     throw new HttpError(409, "CLI Delivery event delta changed after planning");
   }
-}
-
-export function renderCliEventDelta(events: CliDeltaEvent[]): string | null {
-  const meaningful = events.filter((event) => event.event_type !== "model.text_delta"
-    && event.event_type !== "model.tool_call_delta");
-  if (meaningful.length === 0) return null;
-  return [
-    "Rainver context changes since the last acknowledged CLI delivery:",
-    ...meaningful.map((event) => {
-      const content = event.content?.trim();
-      return content
-        ? `- ${event.event_type}: ${content}`
-        : `- ${event.event_type} (${event.canonical_type})`;
-    }),
-  ].join("\n");
-}
-
-function renderCliReconstruction(checkpoint: unknown, events: CliDeltaEvent[]): string | null {
-  const delta = renderCliEventDelta(events);
-  if (!checkpoint && !delta) return null;
-  return [
-    "Rainver canonical continuity reconstruction:",
-    ...(checkpoint
-      ? ["Validated semantic checkpoint:", stableJson(checkpoint)]
-      : []),
-    ...(delta ? [delta] : []),
-  ].join("\n\n");
 }
 
 function bindingFingerprint(input: {
@@ -824,7 +860,7 @@ function bindingFingerprint(input: {
       project_instruction_ref: input.control.project_instruction_ref,
       governing_policy_version_refs: input.control.governing_policy_version_refs,
       readable_sensitivity_ceiling: input.control.readable_scope.sensitivity_ceiling,
-      tool_grant_refs: input.control.tool_grant_refs,
+      tool_grant_refs: sessionToolGrantRefs(input.control.tool_grant_refs),
       egress: input.control.egress,
       egress_generation: generations.egress,
       agent_version_id: input.agentVersionId,
@@ -840,6 +876,17 @@ function bindingFingerprint(input: {
       provider_generation: generations.provider,
     },
   };
+}
+
+/**
+ * The tool grants a vendor session is bound to. The input-resource tools are
+ * granted only for a turn whose message carries resources, so they come and
+ * go with attachments; counting them would rotate the session twice per
+ * attached message. The server still checks every call against that turn's
+ * own grants, so a session that remembers them cannot use them later.
+ */
+function sessionToolGrantRefs(refs: ExecutionControlSnapshot["tool_grant_refs"]): ExecutionControlSnapshot["tool_grant_refs"] {
+  return refs.filter((ref) => !(INPUT_RESOURCE_TOOL_ALLOWANCE as readonly string[]).includes(ref.id));
 }
 
 function rotationReason(previous: unknown, next: BindingFingerprint): CliRotationReason {

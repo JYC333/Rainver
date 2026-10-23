@@ -41,3 +41,7 @@ detail, Room sidecar) are owned by those pages.
 ## Related Modules
 - [product-shell.md](product-shell.md)
 
+
+Agent Work owns a list/detail grid at user-level `/agent-work`. Below `md`, opening
+a detail hides the mounted list, and Back preserves local filters and list scroll.
+It adds no app-level inspector or mobile primary destination.

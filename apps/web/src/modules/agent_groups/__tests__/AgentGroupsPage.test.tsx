@@ -43,10 +43,10 @@ vi.mock('../../../api/client', async () => {
   ApiRequestError,
   // Each addressed Room recipient's knowledge retrieval switch, off.
   runtimeContextApi: {
-    retrievalSwitch: vi.fn(async (scopeId: string) => ({ work_context_scope_id: scopeId, enabled: false, preferred_domains: [], setup_version: null })),
+    retrievalSwitch: vi.fn(async () => ({ work_context_scope_id: 'scope-1', enabled: false, preferred_domains: [], setup_version: null })),
     setRetrievalSwitch: vi.fn(),
   },
-  agentsApi: { list: vi.fn(), conversationBackends: vi.fn(), listRuntimeProfiles: vi.fn() },
+  agentsApi: { saveConversationSessionConfig: vi.fn(async (_agent, data) => ({ session_config: data.session_config })), list: vi.fn(), conversationBackends: vi.fn(), listRuntimeProfiles: vi.fn() },
   projectsApi: { list: vi.fn(), getOverview: vi.fn(), readers: vi.fn(), hostExecutionTargets: vi.fn() },
   hostsApi: { listRuntimeDefinitions: vi.fn() },
   projectFoldersApi: { list: vi.fn(), listExecutionReady: vi.fn() },
@@ -87,7 +87,7 @@ vi.mock('../../../api/client', async () => {
     initializeExecution: vi.fn(),
     mutateExecutionAttachments: vi.fn(),
   },
-  runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn() },
+  runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn(), authorizationRequests: vi.fn().mockResolvedValue([]) },
   spacesApi: { members: vi.fn() },
   proposalsApi: { get: vi.fn(), accept: vi.fn(), reject: vi.fn() },
   }
@@ -97,31 +97,37 @@ vi.mock('../../../api/client', async () => {
 // type into TipTap. This stand-in is what lets a send be exercised here.
 vi.mock('../RoomMessageComposer', async () => {
   const { useEffect, useRef } = await import('react')
+  // The real value shape and route helpers; only the editor is stood in for.
+  const actual = await vi.importActual<typeof import('../RoomMessageComposer')>('../RoomMessageComposer')
+  type Value = ReturnType<typeof actual.emptyRoomMessageComposerValue>
+  const textValue = (text: string): Value => ({ ...actual.emptyRoomMessageComposerValue(), text })
   return {
-    emptyRoomMessageComposerValue: () => ({ text: '', mentionIds: [], routingSegments: [] }),
+    emptyRoomMessageComposerValue: actual.emptyRoomMessageComposerValue,
+    roomMessageRoute: actual.roomMessageRoute,
+    roomMessageRecipientIds: actual.roomMessageRecipientIds,
     // Reflects `value` as well as reporting changes: a seeded draft arrives
     // through that prop, so a write-only stand-in could not see one. Clears on
     // a new `resetToken` and fills from `restore`, as the editor does.
     RoomMessageComposer: ({ value, onChange, resetToken, restore }: {
       value: { text: string }
-      onChange: (value: { text: string; mentionIds: string[]; routingSegments: unknown[] }) => void
+      onChange: (value: Value) => void
       resetToken: number
       restore?: { token: number; text: string } | null
     }) => {
       const firstReset = useRef(resetToken)
       useEffect(() => {
-        if (resetToken !== firstReset.current) onChange({ text: '', mentionIds: [], routingSegments: [] })
+        if (resetToken !== firstReset.current) onChange(actual.emptyRoomMessageComposerValue())
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [resetToken])
       useEffect(() => {
-        if (restore) onChange({ text: restore.text, mentionIds: [], routingSegments: [] })
+        if (restore) onChange(textValue(restore.text))
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [restore?.token])
       return (
         <textarea
           aria-label="Room message"
           value={value.text}
-          onChange={event => onChange({ text: event.target.value, mentionIds: [], routingSegments: [] })}
+          onChange={event => onChange(textValue(event.target.value))}
         />
       )
     },
@@ -274,6 +280,7 @@ describe('Rooms page', () => {
     // catalog race tests intentionally install response sequences, and a
     // leftover sequence must not change the next test's page state.
     vi.resetAllMocks()
+    vi.mocked(runsApi.authorizationRequests).mockResolvedValue([])
     sessionStorage.clear()
     mockedSpaceContext.activeSpaceId = 'space-1'
     mockedSpaceContext.userId = 'user-1'
@@ -522,7 +529,7 @@ describe('Rooms page', () => {
 
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'late' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1', expect.anything()))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1', expect.anything(), expect.any(Object)))
 
     fireEvent.click(screen.getAllByText('Second Room')[0]!)
     await waitFor(() => expect(screen.getAllByText('Second thread').length).toBeGreaterThan(0))
@@ -671,7 +678,7 @@ describe('Rooms page', () => {
     await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith(
       'room-1',
       'session-1',
-      expect.any(Object),
+      expect.any(Object), expect.any(Object),
     ))
     expect(screen.getByRole('main', { name: 'Conversation' })).toBeInTheDocument()
     await act(async () => resolveProjects({
@@ -696,9 +703,12 @@ describe('Rooms page', () => {
 
   it('offers knowledge retrieval for the Room recipient the next message reaches', async () => {
     renderRooms('/rooms?room=room-1&conversation=session-1')
-    // Nobody named: the manager answers, and its Room membership is the Work Context.
+    // Nobody named: the manager answers, in its Work Context for this Conversation.
     expect(await screen.findByRole('button', { name: 'Space Assistant · Knowledge: off' })).toBeInTheDocument()
-    expect(runtimeContextApi.retrievalSwitch).toHaveBeenCalledWith('agent-member-1')
+    expect(runtimeContextApi.retrievalSwitch).toHaveBeenCalledWith(
+      { sessionId: 'session-1', roomAgentMemberId: 'agent-member-1' },
+      expect.any(Object),
+    )
   })
 
   it('puts an unsent message back when the conversation is opened again', async () => {
@@ -719,7 +729,7 @@ describe('Rooms page', () => {
     // auto-select would otherwise reopen the newest conversation the moment
     // this button cleared it.
     renderRooms('/rooms?room=room-1&conversation=session-1')
-    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'session-1', expect.anything()))
+    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'session-1', expect.anything(), expect.any(Object)))
 
     fireEvent.click(screen.getByRole('button', { name: 'New conversation' }))
     // The transcript header names the unwritten conversation, not the one
@@ -1077,7 +1087,8 @@ describe('Rooms page', () => {
     expect(await screen.findByText('No credential profile is available for this runtime.')).toBeInTheDocument()
   })
 
-  it('removes the superseded failure from the visible Room history after Retry', async () => {
+  it.each([true, false])('removes the superseded failure after Retry regardless of Project writer status (%s)', async writable => {
+    vi.mocked(roomsApi.get).mockResolvedValue({ ...detail, viewer_can_write: writable })
     let retried = false
     vi.mocked(roomsApi.messages).mockImplementation(async () => retried ? {
       items: [{
@@ -1130,7 +1141,7 @@ describe('Rooms page', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Retry turn' }))
 
     await waitFor(() => expect(roomsApi.retryMessage).toHaveBeenCalledWith(
-      'room-1', 'session-1', 'run-old',
+      'room-1', 'session-1', 'run-old', expect.any(Object),
     ))
     await waitFor(() => expect(screen.queryByText('Room task failed: upstream refused.')).not.toBeInTheDocument())
     expect(screen.queryByTestId('conversation-run-controls-run-old')).not.toBeInTheDocument()
@@ -1341,7 +1352,7 @@ describe('Rooms page', () => {
       expect(screen.getByText('approval needed')).toBeInTheDocument()
       expect(screen.getByRole('link', { name: 'Review request' })).toBeInTheDocument()
       // Never handed to the read-once path, which skips a paused Run.
-      expect(vi.mocked(runsApi.turn)).not.toHaveBeenCalledWith('run-timeout')
+      expect(vi.mocked(runsApi.turn)).not.toHaveBeenCalledWith('run-timeout', expect.any(Object))
     } finally {
       vi.useRealTimers()
     }
@@ -1445,7 +1456,7 @@ describe('Rooms page', () => {
       expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
       expect(screen.queryByText('search')).not.toBeInTheDocument()
       expect(screen.queryByText('Working…')).not.toBeInTheDocument()
-      expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-stranded')
+      expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-stranded', expect.any(Object))
     } finally {
       vi.useRealTimers()
     }
@@ -1508,11 +1519,11 @@ describe('Rooms page', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Found three.')).toBeInTheDocument()
-      expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-old')
+      expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-old', expect.any(Object))
     })
     expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
     expect(screen.queryByText('search')).not.toBeInTheDocument()
-    expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-old')
+    expect(vi.mocked(runsApi.turn)).toHaveBeenCalledWith('run-old', expect.any(Object))
   })
 
   it('a Run that failed after writing its reply still says so, with its steps', async () => {
@@ -1620,7 +1631,7 @@ describe('Rooms page', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Load older' }))
       await act(async () => { await Promise.resolve() })
       expect(screen.getByText('Oldest message')).toBeInTheDocument()
-      expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'session-1', { limit: 50, offset: 50 })
+      expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'session-1', { limit: 50, offset: 50 }, expect.any(Object))
 
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
       expect(roomsApi.messages).toHaveBeenCalledTimes(3)
@@ -1681,16 +1692,16 @@ describe('Rooms page', () => {
 
     expect(await screen.findByText('Record conclusion: Does caching help?')).toBeInTheDocument()
     expect(await screen.findByText('Needs confirmation')).toBeInTheDocument()
-    expect(proposalsApi.get).toHaveBeenCalledWith('proposal-1')
+    expect(proposalsApi.get).toHaveBeenCalledWith('proposal-1', expect.any(Object))
 
     fireEvent.click(screen.getByRole('button', { name: 'Accept' }))
-    await waitFor(() => expect(proposalsApi.accept).toHaveBeenCalledWith('proposal-1'))
+    await waitFor(() => expect(proposalsApi.accept).toHaveBeenCalledWith('proposal-1', expect.any(Object)))
     await waitFor(() => expect(roomsApi.continueAfterProposal).toHaveBeenCalledWith(
       'room-1',
       'session-1',
       expect.objectContaining({
         proposal_id: 'proposal-1',
-      }),
+      }), expect.any(Object),
     ))
     expect(screen.queryByText('I accepted “Record conclusion: Does caching help?”. Continue now: confirm what was completed in one sentence, then begin the next step.')).not.toBeInTheDocument()
     expect(await screen.findByText('Accepted')).toBeInTheDocument()
@@ -1887,7 +1898,7 @@ describe('Rooms page', () => {
       'session-1',
       expect.objectContaining({
         proposal_id: 'proposal-definition',
-      }),
+      }), expect.any(Object),
     ))
     await act(async () => resolveContinuation(continuationResult))
     expect(screen.queryByText('I accepted the definition. Continue.')).not.toBeInTheDocument()
@@ -1929,7 +1940,7 @@ describe('Rooms page', () => {
     expect(screen.getByLabelText('Room message')).toHaveValue('Anyone there?')
   })
 
-  it('renders ACP controls in the shared composer and sends them with the Room backend', async () => {
+  it('explicitly saves ACP controls before sending with the Room backend', async () => {
     vi.mocked(agentsApi.conversationBackends).mockResolvedValue({
       options: [{
         runtime_profile_id: 'runtime-cli', name: 'Codex', runtime_key: 'codex_cli', model_name: null,
@@ -1956,18 +1967,23 @@ describe('Rooms page', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Model' }))
     fireEvent.click(screen.getByRole('option', { name: 'GPT-5.1' }))
     fireEvent.click(screen.getByRole('switch', { name: 'Fast mode' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(agentsApi.saveConversationSessionConfig).toHaveBeenCalledWith('agent-1', {
+      session_id: 'session-1', runtime_profile_id: 'runtime-cli', session_config: [
+        { id: 'model', type: 'select', value: 'gpt-5.1', category: 'model' },
+        { id: 'fast', type: 'boolean', value: true, category: 'model_config' },
+      ],
+    }, expect.any(Object)))
+    await screen.findByText('Saved · applies to future runs')
     fireEvent.change(screen.getByLabelText('Room message'), { target: { value: 'Use this model' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
     await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1', expect.objectContaining({
       backends: [{
         agent_id: 'agent-1', runtime_profile_id: 'runtime-cli',
-        session_config: [
-          { id: 'model', type: 'select', value: 'gpt-5.1', category: 'model' },
-          { id: 'fast', type: 'boolean', value: true, category: 'model_config' },
-        ],
+
       }],
-    })))
+    }), expect.any(Object)))
   })
 
   it('keeps multi-Agent model controls behind one labelled settings entry', async () => {
@@ -2108,13 +2124,13 @@ describe('Rooms page', () => {
 
     fireEvent.change(composer, { target: { value: 'Picking this up' } })
     fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
-    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1'))
+    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1', expect.any(Object)))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(roomsApi.attachReferences).toHaveBeenCalledWith('room-1', 'session-new', {
       references: [{ kind: 'imported_session', id: 'imported-1' }],
-    }))
-    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-new', expect.not.objectContaining({ references: expect.anything() })))
+    }, expect.any(Object)))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-new', expect.not.objectContaining({ references: expect.anything() }), expect.any(Object)))
   })
 
   it('forwards disclosure confirmation when attaching a picked reference to a new draft', async () => {
@@ -2147,7 +2163,7 @@ describe('Rooms page', () => {
     await waitFor(() => expect(roomsApi.attachReferences).toHaveBeenLastCalledWith('room-1', 'session-new', {
       references: [{ kind: 'imported_session', id: 'imported-1' }],
       confirm_disclosure: ['user-2'],
-    }))
+    }, expect.any(Object)))
   })
 
   it('picks messages at the source and attaches them to another thread', async () => {
@@ -2170,7 +2186,7 @@ describe('Rooms page', () => {
 
     await waitFor(() => expect(roomsApi.attachReferences).toHaveBeenCalledWith('room-1', 'session-2', {
       references: [{ kind: 'messages', id: 'session-1', item_ids: [expect.any(String)] }],
-    }))
+    }, expect.any(Object)))
   })
 
   it('holds a pick until explicit conversation setup', async () => {
@@ -2193,13 +2209,13 @@ describe('Rooms page', () => {
 
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Following up' } })
     fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
-    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1'))
+    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1', expect.any(Object)))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(roomsApi.attachReferences).toHaveBeenCalledWith('room-1', 'session-new', {
       references: [{ kind: 'messages', id: 'session-1', item_ids: ['m-1'] }],
-    }))
-    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-new', expect.anything()))
+    }, expect.any(Object)))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-new', expect.anything(), expect.any(Object)))
   })
 
   it('does not send a picked draft until execution is configured', async () => {
@@ -2245,7 +2261,7 @@ describe('Rooms page', () => {
     await waitFor(() => expect(roomsApi.attachReferences).toHaveBeenLastCalledWith('room-1', 'session-2', {
       references: [{ kind: 'messages', id: 'session-1', item_ids: [expect.any(String)] }],
       confirm_disclosure: ['user-2'],
-    }))
+    }, expect.any(Object)))
   })
 
   it('links a conversation reference back to the thread it came from', async () => {
@@ -2295,7 +2311,7 @@ describe('Rooms page', () => {
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Next' } })
     vi.mocked(roomsApi.createConversation).mockResolvedValue({ ...initialConversation, id: 'session-new' } as never)
     fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
-    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1'))
+    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1', expect.any(Object)))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledTimes(1))
@@ -2392,10 +2408,10 @@ describe('Rooms page', () => {
     // A message outside the discussion stays where it was, outside the group.
     expect(within(group).queryByText('Before the discussion')).not.toBeInTheDocument()
     expect(screen.getByText('Before the discussion')).toBeInTheDocument()
-    expect(roomsApi.discussions).toHaveBeenCalledWith('room-1', 'session-1')
+    expect(roomsApi.discussions).toHaveBeenCalledWith('room-1', 'session-1', expect.any(Object))
 
     fireEvent.click(within(group).getByRole('button', { name: 'Stop' }))
-    await waitFor(() => expect(roomsApi.stopDiscussion).toHaveBeenCalledWith('room-1', 'session-1', 'disc-1'))
+    await waitFor(() => expect(roomsApi.stopDiscussion).toHaveBeenCalledWith('room-1', 'session-1', 'disc-1', expect.any(Object)))
     expect(await within(group).findByText(/Round 1\/3 · Stopped/)).toBeInTheDocument()
   })
 
@@ -2541,7 +2557,7 @@ describe('Rooms page', () => {
     expect(notice).toHaveTextContent('Turn budget reached')
     expect(notice).toHaveTextContent('This turn has used its Agent turns.')
     fireEvent.click(await within(notice).findByRole('button', { name: 'Open a discussion' }))
-    await waitFor(() => expect(roomsApi.extendDiscussion).toHaveBeenCalledWith('room-1', 'session-1', 'disc-1', { rounds: 3 }))
+    await waitFor(() => expect(roomsApi.extendDiscussion).toHaveBeenCalledWith('room-1', 'session-1', 'disc-1', { rounds: 3 }, expect.any(Object)))
     await waitFor(() => expect(within(notice).queryByRole('button')).not.toBeInTheDocument())
   })
 
@@ -2579,6 +2595,77 @@ describe('Rooms page', () => {
     expect(roomsApi.discussions).not.toHaveBeenCalled()
   })
 
+  it.each([
+    { childStatus: 'succeeded', childState: 'done', awaitingAnswer: false, folded: true },
+    { childStatus: 'failed', childState: 'failed', awaitingAnswer: false, folded: false },
+    { childStatus: 'failed', childState: 'done', awaitingAnswer: false, folded: false },
+    { childStatus: 'cancelled', childState: 'done', awaitingAnswer: false, folded: false },
+    { childStatus: 'waiting_for_review', childState: 'blocked', awaitingAnswer: false, folded: false },
+    { childStatus: 'running', childState: 'working', awaitingAnswer: false, folded: false },
+    { childStatus: 'queued', childState: 'working', awaitingAnswer: false, folded: false },
+    { childStatus: 'waiting_for_dependency', childState: 'working', awaitingAnswer: false, folded: false },
+    { childStatus: 'cancelling', childState: 'working', awaitingAnswer: false, folded: false },
+    { childStatus: 'succeeded', childState: 'done', awaitingAnswer: true, folded: false },
+  ] as const)('keeps activity below delegated replies ($childStatus, question=$awaitingAnswer)', async ({ childStatus, childState, awaitingAnswer, folded }) => {
+    vi.mocked(roomsApi.get).mockResolvedValue(detailWithReviewer)
+    vi.mocked(roomsApi.messages).mockResolvedValue({
+      items: [{
+        id: 'm-ask', space_id: 'space-1', session_id: 'session-1', user_id: 'user-1', sender_agent_id: null,
+        role: 'user', content: 'Review the schema',
+        metadata_json: { run_ids: ['run-manager'], delegated_run_ids: ['run-child'] },
+        created_at: '2026-09-24T10:00:00.000Z',
+      }, {
+        id: 'm-child', space_id: 'space-1', session_id: 'session-1', user_id: null, sender_agent_id: 'agent-2',
+        role: 'assistant', content: 'Specialist findings', run_id: 'run-child',
+        metadata_json: { awaiting_answer: awaitingAnswer }, created_at: '2026-09-24T10:01:00.000Z',
+      }], task_group_ids: [], limit: 50, offset: 0,
+    })
+    vi.mocked(runsApi.get).mockImplementation(async runId => ({
+      id: runId, status: runId === 'run-child' ? childStatus : 'running',
+      agent_id: runId === 'run-child' ? 'agent-2' : 'agent-1',
+      parent_run_id: runId === 'run-child' ? 'run-manager' : null,
+    }) as Run)
+    const childTurn: RunTurn = { ...workingTurn('run-child', []), state: childState,
+      blocked_on: childState === 'blocked' ? 'authorization' : null }
+    vi.mocked(runsApi.turn).mockResolvedValue(childTurn)
+    let updateManager: ((turn: RunTurn) => void) | undefined
+    vi.mocked(runsApi.streamTurn).mockImplementation((runId, options) => {
+      if (runId === 'run-manager') updateManager = options.onTurn
+      options.onTurn(runId === 'run-child' ? childTurn : workingTurn(runId, []))
+      return new Promise(() => {})
+    })
+
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    const activity = await screen.findByRole('status', { name: 'Current activity' })
+    await waitFor(() => expect(activity).toHaveTextContent('Space Assistant · Working…'))
+    const transcript = screen.getByRole('log', { name: 'Conversation messages' })
+    expect(transcript).not.toContainElement(activity)
+    expect(transcript.compareDocumentPosition(activity) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const findings = await screen.findByText('Specialist findings')
+    await waitFor(() => expect(Boolean(findings.closest('details'))).toBe(folded))
+    if (folded) {
+      const disclosure = findings.closest('details')!
+      expect(disclosure.open).toBe(false)
+      fireEvent.click(within(disclosure).getByText('Delegated result · expand to read'))
+      expect(disclosure.open).toBe(true)
+      expect(activity).not.toHaveTextContent('Critical Reviewer')
+    }
+    if (childState === 'blocked') expect(activity).toHaveTextContent('Critical Reviewer · approval needed')
+    if (childStatus === 'queued') expect(activity).toHaveTextContent('Critical Reviewer · Queued…')
+    if (childStatus === 'waiting_for_dependency') expect(activity).toHaveTextContent('Critical Reviewer · Waiting for other Agents…')
+    if (childStatus === 'cancelling') expect(activity).toHaveTextContent('Critical Reviewer · Stopping…')
+    act(() => updateManager?.(doneTurn('run-manager', [])))
+    await waitFor(() => {
+      const remaining = screen.queryByRole('status', { name: 'Current activity' })
+      if (childState === 'done' || childState === 'failed') expect(remaining).not.toBeInTheDocument()
+      else {
+        expect(remaining).toHaveTextContent('Critical Reviewer')
+        expect(remaining).not.toHaveTextContent('Space Assistant')
+      }
+    })
+  })
+
   it('lets a message wait for the running turn, and takes it back on Cancel', async () => {
     vi.mocked(roomsApi.sendMessage).mockResolvedValue({
       queued: {
@@ -2592,12 +2679,12 @@ describe('Rooms page', () => {
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Also check the indexes' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
-    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1', expect.objectContaining({ queue: true })))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1', expect.objectContaining({ queue: true }), expect.any(Object)))
     const waiting = await screen.findByTestId('queued-q-1')
     expect(waiting).toHaveTextContent('Also check the indexes')
     expect(waiting).toHaveTextContent('will be sent when the current turn ends')
     fireEvent.click(within(waiting).getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(roomsApi.withdrawQueuedMessage).toHaveBeenCalledWith('room-1', 'session-1', 'q-1'))
+    await waitFor(() => expect(roomsApi.withdrawQueuedMessage).toHaveBeenCalledWith('room-1', 'session-1', 'q-1', expect.any(Object)))
     await waitFor(() => expect(screen.queryByTestId('queued-q-1')).not.toBeInTheDocument())
   })
 
@@ -2618,7 +2705,7 @@ describe('Rooms page', () => {
     const failed = await screen.findByTestId('queued-q-2')
     expect(failed).toHaveTextContent('could not be sent: Host is offline')
     fireEvent.click(within(failed).getByRole('button', { name: 'Dismiss' }))
-    await waitFor(() => expect(roomsApi.withdrawQueuedMessage).toHaveBeenCalledWith('room-1', 'session-1', 'q-2'))
+    await waitFor(() => expect(roomsApi.withdrawQueuedMessage).toHaveBeenCalledWith('room-1', 'session-1', 'q-2', expect.any(Object)))
   })
 
   it('offers opening a discussion only to a Project writer', async () => {
@@ -2656,7 +2743,7 @@ describe('Rooms page', () => {
 
     await waitFor(() => expect(roomsApi.openDiscussion).toHaveBeenCalledWith('room-1', 'session-1', {
       topic: 'Pick a database', participant_agent_ids: ['agent-1', 'agent-2'], shape: 'open', round_cap: 3,
-    }))
+    }, expect.any(Object)))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     const group = await screen.findByTestId('discussion-disc-1')
     expect(within(group).getByText(/Round 1\/3 · In progress/)).toBeInTheDocument()
@@ -2682,7 +2769,7 @@ describe('Rooms page', () => {
     fireEvent.change(screen.getByLabelText('Room message'), { target: { value: 'Reply to the discussion' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-1',
-      expect.objectContaining({ discussion_id: 'disc-1', content: 'Reply to the discussion' })))
+      expect.objectContaining({ discussion_id: 'disc-1', content: 'Reply to the discussion' }), expect.any(Object)))
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled())
     fireEvent.click(within(destination).getByRole('button', { name: 'Ordinary message' }))
@@ -2736,13 +2823,13 @@ describe('Rooms page', () => {
     renderRooms('/rooms?room=room-1&new=1&reference=1')
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'First' } })
     fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
-    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1'))
+    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1', expect.any(Object)))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled())
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await waitFor(() => expect(roomsApi.attachReferences).toHaveBeenCalledWith('room-1', 'session-new', {
       references: [{ kind: 'imported_session', id: 'imported-1' }],
-    }))
-    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-new', expect.not.objectContaining({ references: expect.anything() })))
+    }, expect.any(Object)))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'session-new', expect.not.objectContaining({ references: expect.anything() }), expect.any(Object)))
 
     fireEvent.click(screen.getByRole('button', { name: 'New conversation' }))
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Second' } })
@@ -2769,7 +2856,7 @@ describe('Rooms page', () => {
     // The server refuses references on an addressed send, so the client must
     // not offer them there either.
     await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith(
-      'room-1', 'session-1', expect.not.objectContaining({ references: expect.anything() }),
+      'room-1', 'session-1', expect.not.objectContaining({ references: expect.anything() }), expect.any(Object),
     ))
   })
 

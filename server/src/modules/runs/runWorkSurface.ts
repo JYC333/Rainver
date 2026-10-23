@@ -1,5 +1,6 @@
 import type { ServerConfig } from "../../config.js";
 import { hostControlPlaneUrl } from "../hosts/controlPlaneUrl.js";
+import { normalizeHostCapabilities } from "../hosts/capabilities.js";
 import type { Queryable } from "../routeUtils/common.js";
 import {
   WORK_SKILL_RELATIVE_PATH,
@@ -22,7 +23,7 @@ import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
  */
 export interface RunWorkSurfaceFrame {
   env: Record<string, string>;
-  files: Array<{ relative_path: string; contents: string }>;
+  files: Array<{ relative_path: string; contents: string; encoding?: "utf8" | "base64"; content_hash?: string }>;
   /**
    * Environment whose value is a path inside the run directory the host
    * creates, keyed by variable name. The server cannot name that directory —
@@ -63,18 +64,40 @@ const WORK_SURFACE_SKILL_PATH_ENV = "RAINVER_SKILL_PATH";
  * a control plane behind a prefix is not truncated) for a paired host.
  */
 export async function resolveHostApiBaseUrl(db: Queryable, config: ServerConfig, hostId: string): Promise<string | null> {
-  const row = await db.query<{ kind: string }>(`SELECT kind FROM hosts WHERE id = $1 LIMIT 1`, [hostId]);
-  const host = row.rows[0];
+  const host = await workSurfaceHost(db, hostId);
   return host ? hostControlPlaneUrl(config, host.kind) : null;
+}
+
+interface WorkSurfaceHost { kind: string; platform: string | null; capabilities_json: unknown }
+
+async function workSurfaceHost(db: Queryable, hostId: string): Promise<WorkSurfaceHost | null> {
+  const row = await db.query<WorkSurfaceHost>(
+    `SELECT kind, platform, capabilities_json FROM hosts WHERE id = $1 LIMIT 1`,
+    [hostId],
+  );
+  return row.rows[0] ?? null;
+}
+
+/**
+ * The tool channel this Host can actually serve. `file-v1` keeps the Run
+ * bearer in the Host process; a Host that cannot pin the bridge directory
+ * (Windows) gets no protocol and so keeps the direct-HTTP path, where the
+ * Run bearer — never a provider credential (ADR 0008) — is in the Run's
+ * environment as before. Daemons predating the report implemented `file-v1`
+ * on Linux only.
+ */
+export function selectToolBridgeProtocol(host: Pick<WorkSurfaceHost, "platform" | "capabilities_json">): "file-v1" | null {
+  const advertised = normalizeHostCapabilities(host.capabilities_json).tool_bridge_protocols;
+  if (advertised) return advertised.includes("file-v1") ? "file-v1" : null;
+  return host.platform === "linux" ? "file-v1" : null;
 }
 
 /**
  * Issues the run's identity and assembles what the host must materialize.
  *
- * The token lives as long as the caller says the run can (`lifetimeSeconds`,
- * which includes any wait before launch and a margin): an identity that
- * expires while its run is still working takes the agent's tool surface away
- * mid-task.
+ * The caller renews this short-lived identity while execution remains active
+ * and revokes it on completion. `lifetimeSeconds` is a renewable lease, not
+ * a limit on how long the Run can execute.
  */
 export async function buildRunWorkSurface(input: {
   db: Queryable;
@@ -83,8 +106,10 @@ export async function buildRunWorkSurface(input: {
   hostId: string;
   lifetimeSeconds: number;
 }): Promise<RunWorkSurface | null> {
-  const apiBaseUrl = await resolveHostApiBaseUrl(input.db, input.config, input.hostId);
-  if (!apiBaseUrl) return null;
+  const host = await workSurfaceHost(input.db, input.hostId);
+  if (!host) return null;
+  const apiBaseUrl = hostControlPlaneUrl(input.config, host.kind);
+  const bridgeProtocol = selectToolBridgeProtocol(host);
   const options = workSkillOptionsForRun(input.run);
   const skill = renderWorkSkill(options);
   const skillContentHash = workSkillContentHash(skill);
@@ -96,6 +121,7 @@ export async function buildRunWorkSurface(input: {
   return {
     frame: {
       env: {
+        ...(bridgeProtocol ? { RAINVER_TOOL_BRIDGE_PROTOCOL: bridgeProtocol } : {}),
         RAINVER_API_URL: apiBaseUrl,
         RAINVER_RUN_ID: input.run.id,
         RAINVER_TOOL_TOKEN: token,

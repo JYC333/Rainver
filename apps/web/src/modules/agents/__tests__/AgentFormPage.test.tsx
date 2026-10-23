@@ -42,10 +42,11 @@ describe('AgentFormPage default runtime provisioning', () => {
 
     expect(await screen.findByText(/release-pinned OpenCode installation/)).toBeInTheDocument()
     expect(screen.queryByLabelText('Execution host')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Maximum run time (seconds)')).not.toBeInTheDocument()
     fireEvent.change(screen.getAllByRole('textbox')[0]!, { target: { value: 'Prefilled reviewer' } })
     fireEvent.click(screen.getByRole('button', { name: 'Create agent' }))
     await waitFor(() => expect(mockedApi.createAgent).toHaveBeenCalledWith(expect.objectContaining({
-      execution_constraints: { risk_level: 'medium', max_run_time_seconds: 300 },
+      execution_constraints: { risk_level: 'medium' },
     })))
     expect(mockedApi.createAgent.mock.calls[0]?.[0]).not.toHaveProperty('execution_host_id')
     expect(mockedApi.createAgent.mock.calls[0]?.[0]).not.toHaveProperty('runtime_key')
@@ -84,7 +85,7 @@ describe('AgentFormPage default runtime provisioning', () => {
       runtime_key: expect.anything(),
     })))
     expect(mockedApi.createAgent).toHaveBeenCalledWith(expect.objectContaining({
-      execution_constraints: { risk_level: 'medium', max_run_time_seconds: 300 },
+      execution_constraints: { risk_level: 'medium' },
     }))
   })
 

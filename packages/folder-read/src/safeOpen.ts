@@ -114,16 +114,17 @@ async function probeWith(opener: (root: string, relative: readonly string[]) => 
  * is trusted — it is the registered directory — and is canonicalised first so
  * that a root reached through a link (`/tmp` on macOS) still opens.
  *
- * The caller owns the returned handle and every later check runs on it.
+ * An empty relative path opens the trusted root directory itself. The caller
+ * owns the returned handle and every later check runs on it.
  */
 export async function openFileBeneathRoot(root: string, relative: readonly string[]): Promise<FileHandle> {
-  if (relative.length === 0) throw new SafeOpenError("not_found", "A file path is required");
   const capability = await safeOpenCapability();
   if (capability.kind === "unsupported") throw new SafeOpenError("unsupported_platform", capability.reason);
   const canonicalRoot = await realpath(root).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT" || error.code === "ENOTDIR") throw new SafeOpenError("not_found", "Project Folder directory not found on disk");
     throw error;
   });
+  if (relative.length === 0) return open(canonicalRoot, DIRECTORY_FLAGS).catch(rethrowAsSafeOpen);
   return capability.kind === "linux_fd_paths"
     ? openLinuxFdPath(canonicalRoot, relative)
     : openDarwinNoFollowAny(canonicalRoot, relative);

@@ -1,3 +1,5 @@
+import type { ConversationInputSkillPart } from "@rainver/protocol";
+import { loadSkillPackageContent } from "../capabilities/skillPackageContent.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
@@ -81,7 +83,7 @@ export interface PreparedConversationResource {
   selection: InputResourceSelection | undefined;
 }
 
-export type PreparedConversationInputPart = PreparedConversationImage | PreparedConversationFile | PreparedConversationResource;
+export type PreparedConversationInputPart = PreparedConversationImage | PreparedConversationFile | PreparedConversationResource | ConversationInputSkillPart;
 
 interface InputResourceDescriptorRow {
   resource_id: string;
@@ -120,6 +122,23 @@ export async function loadConversationInputResourceDescriptors(
     [input.spaceId, input.messageId],
   );
   return result.rows.map(inputResourceDescriptor);
+}
+
+/** Canonical current-message text shared by context planning and live authorization. */
+export function renderConversationInputMessage(
+  content: string,
+  descriptors: readonly ConversationInputResourceDescriptor[],
+  skills: readonly ConversationInputSkillPart[] = [],
+): string {
+  const resources = renderConversationInputResourceDescriptors(descriptors);
+  const selected = skills.length ? `[Explicitly selected Skills]\n${skills.map(skill => JSON.stringify(skill)).join("\n")}` : "";
+  return [content, resources, selected].filter(Boolean).join("\n\n").trim();
+}
+
+export async function loadConversationSkillDescriptors(db: Queryable, input: { spaceId: string; messageId: string }): Promise<ConversationInputSkillPart[]> {
+  return (await db.query<ConversationInputSkillPart>(`SELECT 'skill' AS kind,skill_package_id,
+    sha256 AS package_hash,display_name FROM message_input_parts
+    WHERE space_id=$1 AND message_id=$2 AND kind='skill' ORDER BY position`, [input.spaceId, input.messageId])).rows;
 }
 
 export function renderConversationInputResourceDescriptors(
@@ -327,6 +346,8 @@ export class ConversationInputService {
     userId: string;
     sessionId: string;
     parts: ConversationInputPart[];
+    /** Packages turn admission already verified in this transaction; others are verified here. */
+    verifiedSkills?: ReadonlyMap<string, { skill_package_id: string; package_hash: string; package_name: string }>;
   }): Promise<PreparedConversationInputPart[]> {
     if (input.parts.length === 0) return [];
     const prepared: PreparedConversationInputPart[] = [];
@@ -335,6 +356,13 @@ export class ConversationInputService {
     let totalFileReferences = 0;
     const mediaIds = new Set<string>();
     for (const part of input.parts) {
+      if (part.kind === "skill") {
+        const pkg = input.verifiedSkills?.get(part.skill_package_id)
+          ?? await loadSkillPackageContent(this.db, input.spaceId, part.skill_package_id);
+        if (pkg.package_hash !== part.package_hash) throw new ConversationInputError(409, "Skill package version changed");
+        prepared.push({ kind: "skill", skill_package_id: pkg.skill_package_id, package_hash: pkg.package_hash, display_name: pkg.package_name });
+        continue;
+      }
       if (part.kind === "image") {
         if (mediaIds.has(part.media_id)) throw new ConversationInputError(422, "an image may only appear once in a message");
         mediaIds.add(part.media_id);
@@ -602,6 +630,13 @@ export class ConversationInputService {
   }): Promise<void> {
     for (let position = 0; position < input.parts.length; position += 1) {
       const part = input.parts[position]!;
+      if (part.kind === "skill") {
+        await this.db.query(`INSERT INTO message_input_parts
+          (id,space_id,session_id,message_id,position,kind,skill_package_id,display_name,media_type,byte_size,sha256)
+          VALUES ($1,$2,$3,$4,$5,'skill',$6,$7,'application/vnd.rainver.skill',0,$8)`,
+          [randomUUID(), input.spaceId, input.sessionId, input.messageId, position, part.skill_package_id, part.display_name, part.package_hash]);
+        continue;
+      }
       if (part.kind === "image") {
         const result = await this.db.query(
           `UPDATE conversation_input_media
@@ -850,7 +885,7 @@ export class ConversationInputService {
   }> {
     const result = await this.db.query<{
       part_id: string;
-      kind: "image" | "file_reference" | "input_resource";
+      kind: "image" | "file_reference" | "input_resource" | "skill";
       media_id: string | null;
       resource_id: string | null;
       display_name: string;
@@ -910,6 +945,7 @@ export class ConversationInputService {
     const blocks: Array<Record<string, unknown>> = [];
     const resources: ConversationInputResource[] = [];
     for (const part of result.rows) {
+      if (part.kind === "skill") continue; // Original files arrive exclusively through accepted Delivery.
       const uri = `rainver:conversation-input:${part.part_id}`;
       if (part.kind === "image") {
         if (!part.storage_path) throw new ConversationInputError(500, `image '${part.part_id}' has no storage record`);

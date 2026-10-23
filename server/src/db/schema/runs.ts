@@ -102,6 +102,8 @@ export const runs = pgTable("runs", {
 	workflowVersionId: varchar("workflow_version_id", { length: 36 }),
 	activeRouteDecisionId: varchar("route_decision_id", { length: 36 }),
 }, (table): PgTableExtraConfigValue[] => [
+	index("ix_runs_space_session_id").on(table.spaceId, table.sessionId),
+	index("ix_runs_space_retry_predecessor").on(table.spaceId, sql`(${table.modelOverrideJson}->'chat_turn'->>'retry_of_run_id')`),
 	index("ix_runs_agent_id").using("btree", table.agentId.asc().nullsLast()),
 	index("ix_runs_agent_version_id").using("btree", table.agentVersionId.asc().nullsLast()),
 	index("ix_runs_execution_kind").using("btree", table.executionKind.asc().nullsLast()),

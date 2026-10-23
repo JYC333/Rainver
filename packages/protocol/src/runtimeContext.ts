@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 import { RuntimeKeySchema } from "./runtimeAuthority.js";
+import { SkillPackageContentSchema } from "./skills.js";
 
 const JsonObjectSchema = z.record(z.unknown());
 const RefSchema = z.object({
@@ -318,7 +319,11 @@ export type WorkRetrievalSwitchRequest = z.infer<typeof WorkRetrievalSwitchReque
 
 /** What the conversation's switch says now. */
 export const WorkRetrievalSwitchSchema = z.object({
-  work_context_scope_id: IdSchema,
+  /**
+   * Null only for a Room recipient whose Conversation scope does not exist
+   * yet: reading the switch never creates it.
+   */
+  work_context_scope_id: IdSchema.nullable(),
   enabled: z.boolean(),
   preferred_domains: z.array(WorkRetrievalDomainSchema),
   setup_version: z.number().int().positive().nullable(),
@@ -654,6 +659,9 @@ export const InvocationDeliverySchema = z.object({
     source_item_ids: z.array(z.string().min(1)).min(1),
     delivery_phase: z.enum(["bootstrap_context", "context_delta", "current_user"]).optional(),
   }).strict()),
+  skill_packages: z.array(z.object({
+    source_item_id: z.string().min(1), content: SkillPackageContentSchema,
+  }).strict()).max(4).optional(),
   cli_session: z.object({
     binding_ref: RefSchema,
     runtime_state_key: IdSchema,
@@ -670,11 +678,22 @@ export const InvocationDeliverySchema = z.object({
   tool_grant_refs: z.array(RefSchema),
   output_contract_ref: RefSchema.nullable(),
   expected_prompt_tokens: z.number().int().nonnegative(),
+  /** Diagnostic projection of the accepted window plan, never a second budget. */
+  context_estimate: ContextWindowAllocationsSchema.optional(),
   max_output_tokens: z.number().int().nonnegative().nullable(),
   snapshot_draft_ref: RefSchema,
   audit_refs: InvocationAuditRefsSchema,
 }).strict().superRefine((delivery, context) => {
   const planned = new Map(delivery.planned_items.map((item) => [item.item_id, item]));
+  const packageIds = new Set<string>();
+  for (const skill of delivery.skill_packages ?? []) {
+    const item = planned.get(skill.source_item_id);
+    if (!item || item.semantic_role !== "delegated_instruction" || !item.required
+      || packageIds.has(skill.content.skill_package_id)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: "Skill files require a distinct mandatory delegated instruction", path: ["skill_packages"] });
+    }
+    packageIds.add(skill.content.skill_package_id);
+  }
   if (planned.size !== delivery.planned_items.length) {
     context.addIssue({
       code: z.ZodIssueCode.custom,

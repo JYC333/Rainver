@@ -129,9 +129,10 @@ reviewed against. A lease pins the upstream **base URL**, the route family
 (`anthropic` / `openai`), and attribution metadata. It does **not** pin the
 model (`lease.model` is attribution only; the proxy forwards the body
 verbatim), the path under the base URL, or request count or spend. Its TTL is
-twice the Run timeout plus 300 s (the launch may first wait up to one timeout
-budget), and every CLI spec's `max_timeout_seconds` is 3600, so a worst-case
-lease lives about 125 minutes. A holder of a live token
+15 minutes, renewed every minute while the Run is active and revoked when the
+Run ends; a Run has no default time budget, so a lease lives as long as the
+Run does (bounded by an explicitly set Run time limit, when there is one) plus
+at most one unrenewed TTL. A holder of a live token
 can spend the Space's provider credential against any model and endpoint at
 that upstream until the Run ends or the lease is revoked.
 

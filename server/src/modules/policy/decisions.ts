@@ -10,6 +10,7 @@ import type {
   PolicyDecisionValue,
   PolicyRiskLevel,
 } from "@rainver/protocol";
+import { POLICY_APPROVER_MAX_RISK } from "@rainver/protocol";
 
 export type Decision = PolicyDecisionValue; // "allow" | "deny" | "require_approval"
 export type RiskLevel = PolicyRiskLevel; // "low" | "medium" | "high" | "critical"
@@ -66,14 +67,8 @@ export const RISK_RANK: Record<RiskLevel, number> = {
  * The highest risk each role may approve. One table for every approval: a
  * proposal apply and a paused Run's approval alike.
  */
-const APPROVER_MAX_RISK: Readonly<Record<string, RiskLevel>> = {
-  owner: "critical",
-  admin: "high",
-  reviewer: "medium",
-};
-
 export function roleMayApproveRisk(role: string | null, risk: RiskLevel): boolean {
-  const ceiling = role ? APPROVER_MAX_RISK[role] : undefined;
+  const ceiling = role ? POLICY_APPROVER_MAX_RISK[role] : undefined;
   return ceiling !== undefined && RISK_RANK[risk] <= RISK_RANK[ceiling];
 }
 

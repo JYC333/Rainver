@@ -1,6 +1,8 @@
 import type { HostThreadEventType } from "./threadEventRepository.js";
 import { createAcpToolCallLifecycle } from "../runtimeAdapters/acpToolCallLifecycle.js";
 import { normalizeToolName } from "../runtimeAdapters/toolName.js";
+import { isRuntimeMetadataDiagnostic } from "../runtimeAdapters/runtimeDiagnostic.js";
+import { redactSecretPatterns } from "../runs/evidenceRedaction.js";
 
 export interface ThreadEventDraft {
   event_type: HostThreadEventType;
@@ -13,7 +15,7 @@ export interface ThreadEventDraft {
   status?: string | null;
 }
 
-const MAX_TOOL_RESULT_SUMMARY_CHARS = 200;
+const MAX_TOOL_RESULT_SUMMARY_CHARS = 4_000;
 const MAX_TOOL_INPUT_SUMMARY_CHARS = 200;
 
 /**
@@ -25,7 +27,7 @@ const MAX_TOOL_INPUT_SUMMARY_CHARS = 200;
  * replaces an entry and ToolCallUpdate carries patch fields for that same id.
  * It never infers reasoning from message text.
  */
-export function createThreadEventNormalizer(): {
+export function createThreadEventNormalizer(runtimeKey?: string): {
   pushStderr(chunk: string): ThreadEventDraft[];
   pushAcpTextDelta(delta: string): ThreadEventDraft[];
   pushAcpThoughtDelta(delta: string): ThreadEventDraft[];
@@ -97,12 +99,11 @@ export function createThreadEventNormalizer(): {
           event_type: "tool_activity_started",
           tool_call_id: lifecycle.callId,
           tool_name: toolName,
-          tool_input_summary: summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS),
+          tool_input_summary: summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS, "head"),
           // The 9-category kind is what
           // makes claude/codex/opencode tool rows comparable in the UI.
           tool_kind: stringValue(update.kind),
-          tool_result_summary: summarizeToolResultContent(update.content)
-            ?? summarizeJson(update.rawOutput ?? update.raw_output, MAX_TOOL_RESULT_SUMMARY_CHARS),
+          tool_result_summary: summarizeToolOutput(update),
           status,
         },
       ];
@@ -112,9 +113,8 @@ export function createThreadEventNormalizer(): {
       if (status !== null && !["pending", "in_progress", "completed", "failed"].includes(status)) return [];
       const toolName = normalizeToolName(stringValue(update.title ?? update.name));
       const toolKind = stringValue(update.kind);
-      const toolInput = summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS);
-      const toolOutput = summarizeToolResultContent(update.content)
-        ?? summarizeJson(update.rawOutput ?? update.raw_output, MAX_TOOL_RESULT_SUMMARY_CHARS);
+      const toolInput = summarizeJson(update.rawInput ?? update.raw_input, MAX_TOOL_INPUT_SUMMARY_CHARS, "head");
+      const toolOutput = summarizeToolOutput(update);
       const lifecycle = toolCalls.updated({ callId, name: toolName, status });
       const start: ThreadEventDraft[] = lifecycle.missingStart
         ? [{
@@ -164,13 +164,16 @@ export function createThreadEventNormalizer(): {
     return lines
       .map((line) => line.trim())
       .filter(Boolean)
+      .filter((line) => !isRuntimeMetadataDiagnostic(runtimeKey, line))
       .map((line): ThreadEventDraft => ({ event_type: "diagnostic", text: line }));
   }
 
   function finish(): ThreadEventDraft[] {
     const drafts: ThreadEventDraft[] = [];
     drafts.push(...flushTextSegment());
-    if (stderrBuffer.trim()) drafts.push({ event_type: "diagnostic", text: stderrBuffer.trim() });
+    if (stderrBuffer.trim() && !isRuntimeMetadataDiagnostic(runtimeKey, stderrBuffer.trim())) {
+      drafts.push({ event_type: "diagnostic", text: stderrBuffer.trim() });
+    }
     stderrBuffer = "";
     return drafts;
   }
@@ -186,7 +189,10 @@ function acpToolStatus(status: string | null): string | null {
   return "in_progress";
 }
 
-function summarizeJson(value: unknown, maxChars: number): string | null {
+/** `head` keeps the start (a call's input); `middle` keeps both ends (its output). */
+type SummaryShape = "head" | "middle";
+
+function summarizeJson(value: unknown, maxChars: number, shape: SummaryShape): string | null {
   if (value === undefined || value === null) return null;
   let text: string;
   try {
@@ -194,7 +200,51 @@ function summarizeJson(value: unknown, maxChars: number): string | null {
   } catch {
     return null;
   }
-  return text.length > maxChars ? `${text.slice(0, maxChars)}…` : text;
+  return boundedSummary(text, maxChars, shape);
+}
+
+/**
+ * How far past what is kept the redaction still reads. Far beyond any secret
+ * shape, so a credential straddling a cut is matched whole before the cut,
+ * while a multi-megabyte output is never scanned in full.
+ */
+const REDACTION_WINDOW_FACTOR = 16;
+
+/**
+ * Persisted tool summaries are redacted with the canonical evidence rule
+ * before they are bounded: a command's output is exactly where an agent
+ * prints a token it just read.
+ */
+function boundedSummary(text: string, limit: number, shape: SummaryShape = "middle"): string {
+  const window = limit * REDACTION_WINDOW_FACTOR;
+  if (shape === "head") {
+    const redacted = redactSecretPatterns(text.slice(0, window));
+    return redacted.length > limit || text.length > window ? `${redacted.slice(0, limit)}…` : redacted;
+  }
+  const marker = "\n… [output truncated; middle omitted] …\n";
+  const redacted = text.length > window * 2
+    ? `${redactSecretPatterns(text.slice(0, window))}${marker}${redactSecretPatterns(text.slice(-window))}`
+    : redactSecretPatterns(text);
+  if (redacted.length <= limit) return redacted;
+  const half = Math.floor((limit - marker.length) / 2);
+  return `${redacted.slice(0, half)}${marker}${redacted.slice(-(limit - marker.length - half))}`;
+}
+
+function summarizeToolOutput(update: Record<string, unknown>): string | null {
+  const raw = update.rawOutput ?? update.raw_output;
+  const result = recordValue(raw);
+  if (typeof result.formatted_output === "string") {
+    const code = typeof result.exit_code === "number" ? result.exit_code
+      : typeof result.exit_code === "string" && /^-?\d+$/.test(result.exit_code) ? Number(result.exit_code) : null;
+    // Preserve execution metadata outside the bounded text. A warning-heavy
+    // prefix must not consume the exit code or the end of the command output.
+    return JSON.stringify({
+      exit_code: code !== null && Number.isSafeInteger(code) ? code : null,
+      formatted_output: boundedSummary(result.formatted_output, MAX_TOOL_RESULT_SUMMARY_CHARS),
+      truncated: result.formatted_output.length > MAX_TOOL_RESULT_SUMMARY_CHARS,
+    });
+  }
+  return summarizeToolResultContent(update.content) ?? summarizeJson(raw, MAX_TOOL_RESULT_SUMMARY_CHARS, "middle");
 }
 
 /**
@@ -214,9 +264,7 @@ function summarizeToolResultContent(content: unknown): string | null {
     .filter((text): text is string => text !== null);
   if (texts.length === 0) return null;
   const joined = texts.join("\n");
-  return joined.length > MAX_TOOL_RESULT_SUMMARY_CHARS
-    ? `${joined.slice(0, MAX_TOOL_RESULT_SUMMARY_CHARS)}…`
-    : joined;
+  return boundedSummary(joined, MAX_TOOL_RESULT_SUMMARY_CHARS);
 }
 
 function recordValue(value: unknown): Record<string, unknown> {

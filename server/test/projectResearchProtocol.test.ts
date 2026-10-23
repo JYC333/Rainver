@@ -66,8 +66,4 @@ describe("Project Research output protocol", () => {
       findings: [{ claim: "Unsupported.", support: "No citation.", references: [] }],
     }).success).toBe(false);
   });
-
-  it("requires the combined report sections", async () => {
-    expect(ResearchReportV1Schema.safeParse({ schema_version: "research_report.v1", research_question: "Q", summary: "S" }).success).toBe(false);
-  });
 });

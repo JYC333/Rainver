@@ -27,6 +27,18 @@ function optionalNumber(value: string): number | undefined {
   return parsed
 }
 
+/**
+ * A Task has no default time limit, so an empty field means "no limit". The
+ * update API leaves an omitted field unchanged; clearing a stored limit must
+ * therefore send an explicit `null`, or the old limit keeps stopping Runs.
+ */
+/** A cleared stored limit is sent as null (no limit); an untouched empty field is omitted (unchanged). */
+function clearableLimit(value: string, stored: number | null | undefined): number | null | undefined {
+  const parsed = optionalNumber(value)
+  if (parsed !== undefined) return parsed
+  return stored == null ? undefined : null
+}
+
 export default function TaskContractEditor({ task, boards, agents, submitLabel, busy = false, onSubmit, onCancel }: TaskContractEditorProps) {
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -73,9 +85,9 @@ export default function TaskContractEditor({ task, boards, agents, submitLabel, 
         board_id: boardId || null,
         assigned_agent_id: agentId || null,
         definition_of_done: definitionOfDone.trim() || null,
-        max_runs: optionalNumber(maxRuns),
-        max_cost: optionalNumber(maxCost),
-        max_duration_seconds: optionalNumber(maxDuration),
+        max_runs: clearableLimit(maxRuns, task.max_runs),
+        max_cost: clearableLimit(maxCost, task.max_cost),
+        max_duration_seconds: clearableLimit(maxDuration, task.max_duration_seconds),
         tags: tags.split(',').map(tag => tag.trim()).filter(Boolean),
       })
     } catch (error) {
@@ -108,9 +120,9 @@ export default function TaskContractEditor({ task, boards, agents, submitLabel, 
           <ChevronDown className={advancedOpen ? 'size-4 rotate-180 transition-transform' : 'size-4 transition-transform'} />
         </button>
         {advancedOpen && <div className="grid gap-3 border-t border-border p-3 sm:grid-cols-3">
-          <div className="space-y-1.5"><Label>Max runs</Label><Input type="number" min="1" step="1" value={maxRuns} onChange={event => setMaxRuns(event.target.value)} placeholder="Use default" /></div>
-          <div className="space-y-1.5"><Label>Max cost</Label><Input type="number" min="0" step="0.01" value={maxCost} onChange={event => setMaxCost(event.target.value)} placeholder="Use default" /></div>
-          <div className="space-y-1.5"><Label>Max duration (seconds)</Label><Input type="number" min="1" step="1" value={maxDuration} onChange={event => setMaxDuration(event.target.value)} placeholder="Use default" /></div>
+          <div className="space-y-1.5"><Label htmlFor="task-edit-max-runs">Max runs</Label><Input id="task-edit-max-runs" type="number" min="1" step="1" value={maxRuns} onChange={event => setMaxRuns(event.target.value)} placeholder="No limit" /></div>
+          <div className="space-y-1.5"><Label htmlFor="task-edit-max-cost">Max cost</Label><Input id="task-edit-max-cost" type="number" min="0" step="0.01" value={maxCost} onChange={event => setMaxCost(event.target.value)} placeholder="No limit" /></div>
+          <div className="space-y-1.5"><Label htmlFor="task-edit-max-duration">Max duration (seconds)</Label><Input id="task-edit-max-duration" type="number" min="1" step="1" value={maxDuration} onChange={event => setMaxDuration(event.target.value)} placeholder="No time limit" /></div>
         </div>}
       </div>
 

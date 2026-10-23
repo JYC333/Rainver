@@ -34,6 +34,16 @@ export const POLICY_RISK_LEVEL_VALUES = [
 export type PolicyRiskLevel = (typeof POLICY_RISK_LEVEL_VALUES)[number];
 export const PolicyRiskLevelEnum = z.enum(POLICY_RISK_LEVEL_VALUES);
 
+/**
+ * Shared role ceilings, sourced from server policy/decisions.ts. These values
+ * support UI eligibility; the server still authorizes each approval.
+ */
+export const POLICY_APPROVER_MAX_RISK: Readonly<Record<string, PolicyRiskLevel>> = {
+  owner: "critical",
+  admin: "high",
+  reviewer: "medium",
+};
+
 export const POLICY_ACTION_LIFECYCLE_VALUES = [
   "wired_direct",
   "wired_via_proposal",

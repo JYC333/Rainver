@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunRecord } from "../src/modules/runs/repository.js";
-import type { InvocationDelivery, RuntimeSemanticEvent } from "@rainver/protocol";
-import { executeRemoteHostCliAdapter } from "../src/modules/runs/remoteHostCliAdapter.js";
+import type { InvocationDelivery, RunAdapterResultEnvelope, RuntimeSemanticEvent } from "@rainver/protocol";
+import { executeRemoteHostCliAdapter, RemoteWsCliCommandExecutor, skillWorkSurface } from "../src/modules/runs/remoteHostCliAdapter.js";
+import { invokeWithinTimeLimit } from "../src/modules/runs/runTimeLimit.js";
 import { stallTimeoutSeconds } from "../src/modules/runs/stallTimeout.js";
 import { loadConfig } from "../src/config.js";
 import { __setProvidersDbPortForTests } from "../src/modules/providers/dbReader.js";
@@ -14,7 +15,7 @@ import { getRuntimeAdapterSpec } from "../src/modules/runtimeAdapters/specs.js";
 import { setDynamicRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/dynamicSpecs.js";
 import { buildUnboundRuntimeProfile } from "../src/modules/runs/remoteProviderBinding.js";
 import { HostConnectionRegistry, type HostFrameSink } from "../src/modules/hosts/connectionRegistry.js";
-import type { CliProcessRegistry } from "../src/modules/runs/localCliExecution.js";
+import { LocalCliProcessRegistry, type CliProcessRegistry } from "../src/modules/runs/localCliExecution.js";
 import type { ThreadEventDraft } from "../src/modules/hosts/threadEventNormalization.js";
 import type { Queryable } from "../src/modules/routeUtils/common.js";
 import { renderConversationInputResourceDescriptors } from "../src/modules/sessions/conversationInputService.js";
@@ -102,6 +103,23 @@ afterEach(() => {
   __setProvidersDbPortForTests(null);
 });
 
+describe("selected Skill work-surface transport", () => {
+  it("transports only accepted package bytes and works without a tool-grant surface", () => {
+    const delivery = runtimeContextDelivery("Read selected Skill");
+    delivery.skill_packages = [{ source_item_id: "skill-item", content: {
+      skill_package_id: "package-1", package_hash: "a".repeat(64), package_name: "Audit",
+      files: [{ path: "assets/data.bin", content_base64: "AP+A", content_hash: "b".repeat(64), executable: false }],
+    } }];
+    expect(skillWorkSurface(delivery, null)).toEqual({ env: {}, dir_env: { RAINVER_SKILL_ROOT: "rainver/skills" },
+      files: [{ relative_path: "rainver/skills/package-1/assets/data.bin", contents: "AP+A", encoding: "base64", content_hash: "b".repeat(64) }],
+    });
+    expect(skillWorkSurface(undefined, null)).toBeNull();
+    const base = { env: { EXISTING: "yes" }, files: [], dir_env: {} };
+    expect(skillWorkSurface(delivery, base)?.env).toEqual(base.env);
+    expect(base.files).toEqual([]);
+  });
+});
+
 describe("executeRemoteHostCliAdapter", () => {
   it("rejects an unimplemented adapter (gemini_cli) before ever dispatching a frame, but still emits a terminal thread event", async () => {
     const registry = new HostConnectionRegistry();
@@ -156,6 +174,38 @@ describe("executeRemoteHostCliAdapter", () => {
     );
     // No database was provided: the handoff must not try to hydrate the
     // following person's message before it reaches that person's own Run.
+    expect(runCommand).toHaveBeenCalledOnce();
+    expect(result.error_code).not.toBe("conversation_input_unavailable");
+  });
+
+  it("keeps the parent's message attachments out of a delegated child's own request", async () => {
+    const runCommand = vi.fn(async () => ({
+      returncode: 0, stdout: "", stderr: "", timed_out: false,
+    }));
+    const result = await executeRemoteHostCliAdapter(
+      {
+        run: run({
+          runtime_key: "opencode",
+          delegation_id: "delegation-1",
+          prompt: "Review only the assigned change",
+          model_override_json: {
+            chat_turn: {
+              schema_version: "chat_turn.v1",
+              user_message_id: "parent-message-with-attachments",
+            },
+          },
+        }),
+        prompt: "Review only the assigned change",
+        invocation_delivery: runtimeContextDelivery("Review only the assigned change"),
+        model: null,
+        resume_session_id: null,
+      },
+      "host-1",
+      "folder-1",
+      { executor: { runCommand }, bindings: NO_PROVIDER_BINDINGS },
+    );
+    // The child's Delivery names its delegation request. Inherited chat-turn
+    // metadata must not trigger an extra fetch of the parent's current input.
     expect(runCommand).toHaveBeenCalledOnce();
     expect(result.error_code).not.toBe("conversation_input_unavailable");
   });
@@ -552,7 +602,7 @@ describe("executeRemoteHostCliAdapter", () => {
     expect(result.success).toBe(false);
   });
 
-  it("drives Claude Code ACP resume over duplex stdin and reports success on a clean exit", async () => {
+  it("drives Claude Code ACP resume with early session metadata over duplex stdin and reports success on a clean exit", async () => {
     const registry = new HostConnectionRegistry();
     const sink = new FakeSink();
     registry.registerConnection("host-1", sink);
@@ -594,6 +644,18 @@ describe("executeRemoteHostCliAdapter", () => {
       params: { sessionId: "vendor-session-abc", cwd: "rainver:remote-workspace-cwd" },
     });
 
+    // A session-scoped notification may precede the resume response. It must
+    // not close the transport or be mistaken for a completed handshake.
+    registry.receiveOutput("host-1", "run-1", `${JSON.stringify({
+      jsonrpc: "2.0", method: "session/update", params: {
+        sessionId: "vendor-session-abc",
+        update: { sessionUpdate: "available_commands_update", availableCommands: [] },
+      },
+    })}\n`, launchIdOf(sink, "run-1"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(sink.sent).toHaveLength(3);
+
     registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 2, result: { sessionId: "vendor-session-abc" } })}\n`, launchIdOf(sink, "run-1"));
     await Promise.resolve();
     await Promise.resolve();
@@ -609,6 +671,8 @@ describe("executeRemoteHostCliAdapter", () => {
         sessionId: "vendor-session-abc",
         update: {
           sessionUpdate: "usage_update",
+          used: 9_000,
+          size: 1_000_000,
           _meta: {
             "_claude/rateLimit": {
               status: "allowed_warning",
@@ -644,6 +708,7 @@ describe("executeRemoteHostCliAdapter", () => {
       runtime_key: "claude_code",
       output_text: "done",
       metadata_json: {
+        cli_usage: { acp_turns: 1, occupancy_used: 9_000, occupancy_size: 1_000_000 },
         subscription_quota: {
           rate_limit_type: "seven_day",
           utilization: 0.42,
@@ -961,13 +1026,11 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
     }
   });
 
-  it("issues the provider lease for the longest the run can live, a full launch wait plus its budget", async () => {
-    // The run budget starts at `launched`, and a launch the host or this server
-    // queued may wait up to one budget first. A lease sized to the budget alone
-    // expired mid-run after a long queue, and every provider call then failed
-    // authentication.
+  it("renews a short-lived provider lease while a run remains active", async () => {
+    // Runtime duration is unbounded; credentials remain short-lived and renewable.
     const leases = new ProviderProxyLeaseRegistry();
     const issue = vi.spyOn(leases, "create");
+    const renew = vi.spyOn(leases, "renew");
     setProviderProxyBaseUrlForProcess("http://server:8021", null);
     const sink = new FakeSink();
     const connections = new HostConnectionRegistry();
@@ -978,8 +1041,9 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       },
     } as never);
     try {
+      vi.useFakeTimers();
       const execution = executeRemoteHostCliAdapter(
-        { run: run({ runtime_key: "claude_code" }), prompt: "hi", model: null, resume_session_id: null, timeout_seconds: 600 },
+        { run: run({ runtime_key: "claude_code" }), prompt: "hi", model: null, resume_session_id: null },
         "host-1",
         "folder-1",
         {
@@ -997,7 +1061,9 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       );
       await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
       expect(issue).toHaveBeenCalledTimes(1);
-      expect(issue.mock.calls[0]![1].ttl_ms).toBeGreaterThanOrEqual(2 * 600 * 1000);
+      expect(issue.mock.calls[0]![1].ttl_ms).toBe(900_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(renew).toHaveBeenCalled();
       connections.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchIdOf(sink, "run-1"));
       await execution;
     } finally {
@@ -1205,17 +1271,15 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
   });
 
   describe("a runtime that stops saying anything", () => {
-    // A silent runtime is a stall, not a run that worked until the budget.
-    // Honor `stall_timeout_seconds`. Do not report only "Remote Run timed out".
+    // Quiet work is not evidence of failure.
 
-    async function launched(sink: FakeSink, registry: HostConnectionRegistry, timeoutSeconds: number) {
+    async function launched(sink: FakeSink, registry: HostConnectionRegistry) {
       const execution = executeRemoteHostCliAdapter(
         {
           run: run({ runtime_key: "opencode" }),
           prompt: "hi",
           model: null,
           resume_session_id: null,
-          timeout_seconds: timeoutSeconds,
           // Dispatch setting. The default is five minutes, which no test wants
           // to wait for.
           adapter_config: { stall_timeout_seconds: 5 },
@@ -1231,76 +1295,242 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       return { execution };
     }
 
-    it("uses a 300s silence budget for a 900s run", () => {
+    it("defaults to a 300s informational silence notice", () => {
       // A third of the run budget (100s by default) would kill a legitimate
       // turn in the middle of a long tool call, which emits nothing until it
       // returns. The default is 300s of a 900s run.
-      expect(stallTimeoutSeconds(undefined, 900)).toBe(300);
-      expect(stallTimeoutSeconds({ stall_timeout_seconds: 60 }, 900)).toBe(60);
-      // Never larger than the deadline it lives inside.
-      expect(stallTimeoutSeconds(undefined, 30)).toBe(29);
-      expect(stallTimeoutSeconds({ stall_timeout_seconds: 5 }, 3)).toBe(2);
+      expect(stallTimeoutSeconds(undefined)).toBe(300);
+      expect(stallTimeoutSeconds({ stall_timeout_seconds: 60 })).toBe(60);
+      expect(stallTimeoutSeconds({ stall_timeout_seconds: 5 })).toBe(5);
     });
 
-    it("gives up on a silent run well before the run timeout, and says how long it was silent", async () => {
+    it("notifies once during silence, keeps running, and accepts eventual success", async () => {
       vi.useFakeTimers();
       const registry = new HostConnectionRegistry();
       const sink = new FakeSink();
       registry.registerConnection("host-1", sink);
-      // 5s of silence allowed, 15s before the run's own deadline.
-      const { execution } = await launched(sink, registry, 15);
-      await vi.advanceTimersByTimeAsync(5_000);
+      const notices: string[] = [];
+      const execution = executeRemoteHostCliAdapter({
+        run: run({ runtime_key: "opencode" }), prompt: "hi", model: null,
+        resume_session_id: null, adapter_config: { stall_timeout_seconds: 5 },
+        thread_event_sink: async events => {
+          // A code the reader's client words, never server-side prose.
+          for (const event of events) if (event.event_type === "status" && event.status === "run_quiet") notices.push(event.status);
+          expect(events.some(event => event.event_type === "diagnostic" && /暂未收到|No new output/.test(event.text ?? ""))).toBe(false);
+        },
+      }, "host-1", "folder-1", { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS });
+      let settled = false;
+      void execution.then(() => { settled = true; });
+      await vi.waitUntil(() => sink.sent.some(frame => frame.type === "launch"));
+      const launchId = launchIdOf(sink, "run-1");
+      registry.receiveLaunched("host-1", "run-1", launchId);
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(settled).toBe(false);
+      expect(notices).toHaveLength(1);
+      expect(sink.sent.some(frame => frame.type === "terminate")).toBe(false);
+      for (const frame of [
+        { jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } },
+        { jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } },
+        { jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } },
+      ]) {
+        registry.receiveOutput("host-1", "run-1", `${JSON.stringify(frame)}\n`, launchId);
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchId);
+      expect((await execution).success).toBe(true);
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(notices).toHaveLength(1);
+    });
+
+    it("gives a Run up at its explicit time limit when the host never confirms the stop", async () => {
+      vi.useFakeTimers();
+      const registry = new HostConnectionRegistry();
+      const sink = new FakeSink();
+      registry.registerConnection("host-1", sink);
+      const statuses: string[] = [];
+      const deadline = new AbortController();
+      const execution = executeRemoteHostCliAdapter({
+        run: run({ runtime_key: "opencode" }), prompt: "hi", model: null, resume_session_id: null,
+        deadline_signal: deadline.signal,
+        thread_event_sink: async events => {
+          for (const event of events) if (event.event_type === "status" && event.status) statuses.push(event.status);
+        },
+      }, "host-1", "folder-1", { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS });
+      let settled = false;
+      void execution.then(() => { settled = true; });
+      await vi.waitUntil(() => sink.sent.some(frame => frame.type === "launch"));
+      const launchId = launchIdOf(sink, "run-1");
+      registry.receiveLaunched("host-1", "run-1", launchId);
+      deadline.abort();
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
       const result = await execution;
+      expect(result).toMatchObject({ success: false, error_code: "run_timed_out" });
+      expect(sink.sent).toContainEqual(expect.objectContaining({ type: "terminate", run_id: "run-1", force: true, launch_id: launchId }));
+      expect(statuses.at(-1)).toBe("run_timeout");
+      // The dispatch is settled: the daemon's late completion matches nothing.
+      registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchId);
+    });
 
-      expect(result).toMatchObject({ success: false, error_code: "runtime_stall_timeout" });
-      expect(result.error_message).toMatch(/produced no output for \d+s/);
-      expect(sink.sent.some((f) => f.type === "terminate")).toBe(true);
-    }, 20_000);
+    it("never dispatches a launch once the time limit passed during preparation, even after the Run settled", async () => {
+      const registry = new HostConnectionRegistry();
+      const sink = new FakeSink();
+      registry.registerConnection("host-1", sink);
+      const processes = new LocalCliProcessRegistry();
+      let releasePreparation!: () => void;
+      const preparation = new Promise<void>((resolve) => { releasePreparation = resolve; });
+      let adapter: Promise<RunAdapterResultEnvelope> | undefined;
+      const wrapper = await invokeWithinTimeLimit({
+        run: { runtime_key: "opencode" },
+        limit: { ms: 20, seconds: 1, source: "run_contract" },
+        invoke: (deadline) => {
+          adapter = executeRemoteHostCliAdapter({
+            run: run({ runtime_key: "opencode" }), prompt: "hi", model: null, resume_session_id: null,
+            deadline_signal: deadline, process_registry: processes,
+          }, "host-1", "folder-1", {
+            connectionRegistry: registry,
+            // Preparation outlasts the settle grace below.
+            bindings: { ...NO_PROVIDER_BINDINGS, observeModel: () => preparation },
+          });
+          return adapter;
+        },
+        stop: async () => ({ process_terminated: processes.terminate("run-1"), confirmed_exit: true, force_kill_escalated: false }),
+        settleMs: 20,
+      });
+      expect(wrapper).toMatchObject({ success: false, error_code: "run_timed_out", metadata_json: { time_limit: { adapter_settled: false } } });
 
-    it("gives up a stored session the runtime never answered the resume of, and only that", async () => {
+      releasePreparation();
+      await expect(adapter!).resolves.toMatchObject({ success: false, error_code: "run_timed_out" });
+      expect(sink.sent.some((frame) => frame.type === "launch")).toBe(false);
+    });
+
+    it("never dispatches a launch for a Run stopped while its dispatch was being prepared", async () => {
+      const registry = new HostConnectionRegistry();
+      const sink = new FakeSink();
+      registry.registerConnection("host-1", sink);
+      const processes = new LocalCliProcessRegistry();
+      const invocation = processes.openInvocation("run-1");
+      const statuses: string[] = [];
+      let releasePreparation!: () => void;
+      const preparation = new Promise<void>((resolve) => { releasePreparation = resolve; });
+      let preparing = false;
+      const execution = executeRemoteHostCliAdapter({
+        run: run({ runtime_key: "opencode" }), prompt: "hi", model: null, resume_session_id: null,
+        cancel_signal: invocation.signal, process_registry: processes,
+        thread_event_sink: async (events) => {
+          for (const event of events) if (event.event_type === "status" && event.status) statuses.push(event.status);
+        },
+      }, "host-1", "folder-1", {
+        connectionRegistry: registry,
+        bindings: { ...NO_PROVIDER_BINDINGS, observeModel: () => { preparing = true; return preparation; } },
+      });
+      await vi.waitUntil(() => preparing);
+      // The normal stop path: nothing is registered yet, so no process is reached.
+      expect(processes.terminate("run-1")).toBe(false);
+      releasePreparation();
+
+      await expect(execution).resolves.toMatchObject({ success: false, error_code: "run_cancelled" });
+      expect(sink.sent.some((frame) => frame.type === "launch")).toBe(false);
+      expect(statuses.at(-1)).toBe("run_failed");
+      invocation.close();
+    });
+
+    it("refuses to dispatch through the executor when the Run was already stopped", async () => {
+      const registry = new HostConnectionRegistry();
+      const sink = new FakeSink();
+      registry.registerConnection("host-1", sink);
+      const stop = new AbortController();
+      stop.abort();
+      const result = await new RemoteWsCliCommandExecutor("host-1", "folder-1", registry).runCommand({
+        command: ["opencode", "acp"], cwd: null, timeout_seconds: 0, env: {}, run_id: "run-1", stdin: null,
+        cancel_signal: stop.signal,
+      });
+      expect(result).toMatchObject({ timed_out: false, returncode: 1 });
+      expect(sink.sent).toEqual([]);
+    });
+
+    it("refuses to dispatch through the executor when the deadline has already passed", async () => {
+      const registry = new HostConnectionRegistry();
+      const sink = new FakeSink();
+      registry.registerConnection("host-1", sink);
+      const processes = new LocalCliProcessRegistry();
+      const deadline = new AbortController();
+      deadline.abort();
+      const result = await new RemoteWsCliCommandExecutor("host-1", "folder-1", registry).runCommand({
+        command: ["opencode", "acp"], cwd: null, timeout_seconds: 0, env: {}, run_id: "run-1", stdin: null,
+        deadline_signal: deadline.signal, process_registry: processes,
+      });
+      expect(result).toMatchObject({ timed_out: true, returncode: 1 });
+      expect(sink.sent).toEqual([]);
+      expect(processes.terminate("run-1")).toBe(false);
+    });
+
+    it("keeps the usage and host completion metadata collected before the time limit", async () => {
+      const registry = new HostConnectionRegistry();
+      const sink = new FakeSink();
+      registry.registerConnection("host-1", sink);
+      const deadline = new AbortController();
+      const execution = executeRemoteHostCliAdapter({
+        run: run({ runtime_key: "opencode" }), prompt: "hi", model: null, resume_session_id: null,
+        deadline_signal: deadline.signal,
+      }, "host-1", "folder-1", { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS });
+      await vi.waitUntil(() => sink.sent.some((frame) => frame.type === "launch"));
+      const launchId = launchIdOf(sink, "run-1");
+      registry.receiveLaunched("host-1", "run-1", launchId);
+      for (const [index, frame] of [
+        { jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } },
+        { jsonrpc: "2.0", id: 2, result: { sessionId: "session-1" } },
+        { jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn", usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 } } },
+      ].entries()) {
+        await vi.waitUntil(() => sink.sent.filter((sent) => sent.type === "stdin").length > index);
+        registry.receiveOutput("host-1", "run-1", `${JSON.stringify(frame)}\n`, launchId);
+      }
+      // The limit lands after the turn reported its usage, while the host is
+      // still capturing the diff; the host then confirms the stop.
+      deadline.abort();
+      registry.receiveComplete("host-1", "run-1", {
+        exit_code: 143, timed_out: false, error: null,
+        task_worktree: { branch: "rainver/task-1", start_commit: "abc123" },
+      }, launchId);
+
+      const result = await execution;
+      expect(result).toMatchObject({
+        success: false,
+        error_code: "run_timed_out",
+        usage: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
+        metadata_json: {
+          runtime_installation: "own",
+          task_worktree: { branch: "rainver/task-1", start_commit: "abc123" },
+          cli_usage: { acp_turns: 1 },
+        },
+      });
+    });
+
+    it("does not invalidate a stored session merely because resume is quiet", async () => {
       vi.useFakeTimers();
       const registry = new HostConnectionRegistry();
       const sink = new FakeSink();
       registry.registerConnection("host-1", sink);
-      const resumed = () => {
-        const execution = executeRemoteHostCliAdapter(
-          {
-            run: run({ prompt: "continue" }),
-            prompt: "continue",
-            model: null,
-            resume_session_id: "vendor-session-abc",
-            timeout_seconds: 15,
-            adapter_config: { stall_timeout_seconds: 5 },
-          },
-          "host-1",
-          "folder-1",
-          { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS },
-        );
-        return { execution };
-      };
+      const execution = executeRemoteHostCliAdapter({
+        run: run({ prompt: "continue" }), prompt: "continue", model: null,
+        resume_session_id: "vendor-session-abc", adapter_config: { stall_timeout_seconds: 5 },
+      }, "host-1", "folder-1", { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS });
+      let settled = false;
+      void execution.then(() => { settled = true; });
+      await vi.waitUntil(() => sink.sent.some(frame => frame.type === "launch"));
+      const launchId = launchIdOf(sink, "run-1");
+      registry.receiveLaunched("host-1", "run-1", launchId);
+      registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`, launchId);
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(settled).toBe(false);
+      expect(sink.sent.some(frame => frame.type === "terminate")).toBe(false);
+      // A real process failure still settles the run and clears observation.
+      registry.receiveComplete("host-1", "run-1", { exit_code: 1, timed_out: false, error: "process failed" }, launchId);
+      expect((await execution).success).toBe(false);
+    });
 
-      // `session/resume` sent, nothing back: the session is what hung.
-      const hung = resumed();
-      await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-      registry.receiveLaunched("host-1", "run-1", launchIdOf(sink, "run-1"));
-      await vi.advanceTimersByTimeAsync(0);
-      registry.receiveOutput("host-1", "run-1", `${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } })}\n`, launchIdOf(sink, "run-1"));
-      await vi.advanceTimersByTimeAsync(0);
-      expect(sink.sent.some((f) => typeof (f as { value?: unknown }).value === "string"
-        && JSON.parse((f as { value: string }).value).method === "session/resume")).toBe(true);
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(await hung.execution).toMatchObject({ success: false, error_code: "runtime_session_invalid" });
-
-      // Silent before it even initialized: nothing says the session is bad.
-      sink.sent.length = 0;
-      const silent = resumed();
-      await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-      registry.receiveLaunched("host-1", "run-1", launchIdOf(sink, "run-1"));
-      await vi.advanceTimersByTimeAsync(5_000);
-      expect(await silent.execution).toMatchObject({ success: false, error_code: "runtime_stall_timeout" });
-    }, 20_000);
-
-    it("does not spend a launch's run budget while the host has it queued for its directory, but bounds the wait", async () => {
+    it("allows a queued run to outlive legacy duration settings", async () => {
       vi.useFakeTimers();
       const registry = new HostConnectionRegistry();
       const sink = new FakeSink();
@@ -1311,7 +1541,6 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
           prompt: "hi",
           model: null,
           resume_session_id: null,
-          timeout_seconds: 15,
           adapter_config: { stall_timeout_seconds: 5 },
         },
         "host-1",
@@ -1324,7 +1553,7 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       const launchId = launchIdOf(sink, "run-1");
       registry.receiveWaitingForWorkspace("host-1", "run-1", launchId);
       // Queued for 12s: past the stall budget and most of the run budget.
-      await vi.advanceTimersByTimeAsync(12_000);
+      await vi.advanceTimersByTimeAsync(120_000);
       expect(settled).toBe(false);
       registry.receiveLaunched("host-1", "run-1", launchId);
       // Then a 12s turn: 24s after dispatch, 12s after launch.
@@ -1342,54 +1571,6 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       registry.receiveComplete("host-1", "run-1", { exit_code: 0, timed_out: false, error: null }, launchId);
       expect((await execution).success).toBe(true);
 
-      // A launch that is never let in still ends, one budget after dispatch.
-      const queuedForever = executeRemoteHostCliAdapter(
-        { run: run({ id: "run-2", runtime_key: "opencode" }), prompt: "hi", model: null, resume_session_id: null, timeout_seconds: 15, adapter_config: { stall_timeout_seconds: 5 } },
-        "host-1",
-        "folder-1",
-        { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS },
-      );
-      await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch" && f.run_id === "run-2"));
-      registry.receiveWaitingForWorkspace("host-1", "run-2", launchIdOf(sink, "run-2"));
-      await vi.advanceTimersByTimeAsync(15_000);
-      const gaveUp = await queuedForever;
-      expect(gaveUp.success).toBe(false);
-      expect(sink.sent).toContainEqual(expect.objectContaining({ type: "terminate", run_id: "run-2", launch_id: launchIdOf(sink, "run-2") }));
-    }, 30_000);
-
-    it("says a run the host never started was never started, not that it ran out of time", async () => {
-      vi.useFakeTimers();
-      const registry = new HostConnectionRegistry();
-      const sink = new FakeSink();
-      registry.registerConnection("host-1", sink);
-      const diagnostics: string[] = [];
-      const execution = executeRemoteHostCliAdapter(
-        {
-          run: run({ runtime_key: "opencode" }),
-          prompt: "hi",
-          model: null,
-          resume_session_id: null,
-          timeout_seconds: 15,
-          adapter_config: { stall_timeout_seconds: 5 },
-          thread_event_sink: async (events: ThreadEventDraft[]) => {
-            for (const event of events) if (event.event_type === "diagnostic" && event.text) diagnostics.push(event.text);
-          },
-        },
-        "host-1",
-        "folder-1",
-        { connectionRegistry: registry, bindings: NO_PROVIDER_BINDINGS },
-      );
-      await vi.waitUntil(() => sink.sent.some((f) => f.type === "launch"));
-      registry.receiveWaitingForWorkspace("host-1", "run-1", launchIdOf(sink, "run-1"));
-      await vi.advanceTimersByTimeAsync(15_000);
-      const gaveUp = await execution;
-
-      expect(gaveUp).toMatchObject({ success: false, error_code: "runtime_timeout" });
-      // The executor wrote down why; the person reading the thread gets that
-      // reason, not an idle count measured against a process that never ran.
-      expect(gaveUp.error_message).toMatch(/did not start this run within its time budget/);
-      expect(gaveUp.error_message).not.toMatch(/last output/);
-      expect(diagnostics.join("\n")).toMatch(/did not start this run within its time budget/);
     }, 30_000);
 
     it("lets a slow but talking run keep going past the stall budget", async () => {
@@ -1397,8 +1578,16 @@ describe("executeRemoteHostCliAdapter with a bound run", () => {
       const registry = new HostConnectionRegistry();
       const sink = new FakeSink();
       registry.registerConnection("host-1", sink);
-      const { execution } = await launched(sink, registry, 15);
+      const { execution } = await launched(sink, registry);
 
+      let settled = false;
+      void execution.then(() => { settled = true; });
+      for (let i = 0; i < 20; i++) {
+        await vi.advanceTimersByTimeAsync(3_000);
+        registry.receiveOutput("host-1", "run-1", "\n", launchIdOf(sink, "run-1"));
+      }
+      expect(settled).toBe(false);
+      expect(sink.sent.find(frame => frame.type === "launch")).toMatchObject({ timeout_seconds: null });
       // A real turn, paced at 3s a step across 12s: every gap is inside the
       // 5s budget while the total is well past it. A deadline measured from
       // launch rather than from the last output would kill this run.

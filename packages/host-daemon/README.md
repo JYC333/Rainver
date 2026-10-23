@@ -20,6 +20,15 @@ code, and wraps every Run in its own bubblewrap namespace. Nothing below
 applies to it — it is deployed with the instance, not installed on a machine.
 See the [Hosts guide](../../.agent/modules/hosts.md).
 
+Agent calls to Rainver use a private file channel on updated Linux and macOS Hosts:
+the `rainver` CLI needs no shell network permission, while the Host forwards
+only that Run's tool requests to the control plane. Update both the server and
+Host to enable it; older combinations, and Hosts that do not advertise the
+channel (Windows), keep direct HTTP. No user-specific DNS
+or vendor CLI configuration is required. The Host itself must still be able to
+reach its paired server. This channel does not enable arbitrary command
+network access or introduce MCP. See the Hosts guide for lifecycle and bounds.
+
 ## Install and pair
 
 Install the CLI on the Linux host:
@@ -106,6 +115,19 @@ curl -fsSL https://github.com/JYC333/Rainver/releases/download/host-installer/in
 ```
 
 Useful commands:
+
+Host owners can update their own Claude Code and Codex CLI from the Host card.
+The daemon waits for that runtime's active work to
+finish and uses a fixed native updater or the original npm global prefix. It
+reports the CLI version before and after; an already-current CLI is not
+recorded as an upgrade.
+For npm installations, the new package is installed and checked in a temporary
+prefix first, so the working CLI stays available during download. Failed
+installation or validation retains the old copy; failed promotion restores it.
+Claude's Live login disables background self-updates for that subprocess and
+checks that the program still runs before reporting a successful login.
+Unsupported installation methods return an explanation rather than creating a
+managed copy or using sudo. The ACP adapter pack remains separately versioned.
 
 ```bash
 rainver-host --version

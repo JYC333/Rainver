@@ -257,11 +257,10 @@ being present, and attended consent does not stand in for unattended spending
   There is no live wiring that re-resolves a reference every turn. A reference
   is not that shape. Do not re-resolve it on each turn.
 
-  Carrying a session into a thread is what a thread reference is for; a
-  per-conversation Work Context Setup, which would pin one, stays on the
-  backlog as R1.5 — a Room conversation's scope is `(Room, agent)`, so pinning
-  there would reach every conversation that person has with that agent in that
-  Room.
+  Carrying a session into a thread is what a thread reference is for. A Room
+  conversation has its own Work Context scope (Conversation × recipient), so a
+  pin there would stay in that conversation, but nothing pins an imported
+  session automatically.
 
 Server-host Locations show none of this: server-side CLIs run under managed
 profiles and have no ambient history.

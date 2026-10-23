@@ -83,6 +83,7 @@ describe('agentsApi.chat', () => {
             part: { type: 'text', index: 1, text: 'Live reply' },
           },
         },
+        { event: 'turn.model_changed', data: { type: 'turn.model_changed', run_id: 'run-1', model_selection: { requested: 'ops', reported: 'canonical-ops', status: 'reported' } } },
         { event: 'turn.state_changed', data: { type: 'turn.state_changed', run_id: 'run-1', state: 'done', blocked_on: null } },
       ]))
       .mockResolvedValueOnce(jsonResponse([{
@@ -125,8 +126,9 @@ describe('agentsApi.chat', () => {
       ['tool_call'],
       ['tool_call', 'text'],
       ['tool_call', 'text'],
+      ['tool_call', 'text'],
     ])
-    expect(turns[turns.length - 1]).toMatchObject({ state: 'done' })
+    expect(turns[turns.length - 1]).toMatchObject({ state: 'done', model_selection: { requested: 'ops', reported: 'canonical-ops', status: 'reported' } })
     expect(turns[1]!.parts[0]).toMatchObject({ status: 'succeeded' })
   })
 

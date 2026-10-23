@@ -60,6 +60,16 @@ const DELIVERY: InvocationDelivery = {
 };
 
 describe("ACP Runtime Context prompt projection", () => {
+  it("projects accepted Skill files as resource links for both Claude and Codex", () => {
+    for (const runtime_key of ["claude_code", "codex_cli"] as const) {
+      const delivery: InvocationDelivery = { ...DELIVERY, runtime_key, skill_packages: [{
+        source_item_id: "agent-instructions", content: { skill_package_id: "50000000-0000-4000-8000-000000000001",
+          package_name: "portable", package_hash: "a".repeat(64), files: [{ path: "SKILL.md", content_base64: "aGVsbG8=", content_hash: "b".repeat(64), executable: false }] },
+      }] };
+      expect(acpRuntimeContextPromptBlocks(delivery)).toContainEqual({ type: "resource_link",
+        uri: "rainver:skill-root/50000000-0000-4000-8000-000000000001/SKILL.md", name: "portable", mimeType: "text/markdown" });
+    }
+  });
   it("preserves delivery order and labels instructions, reference data, and current input", () => {
     const blocks = acpRuntimeContextPromptBlocks(DELIVERY);
     const text = blocks.map((block) => block.type === "text" ? block.text : "").join("\n");
@@ -133,5 +143,15 @@ describe("ACP Runtime Context prompt projection", () => {
     expect(blocks.at(-2)).toEqual({ type: "text", text: "Read the Rainver work-surface guide." });
     expect(blocks.filter((block) => block.type === "text").map((block) => block.text).join("\n"))
       .toContain("Read the Rainver work-surface guide.");
+  });
+});
+
+describe("delta delivery notice", () => {
+  it("replaces the full channel notice with a one-line continuation on a delta delivery", () => {
+    const full = acpRuntimeContextPromptBlocks(DELIVERY);
+    const delta = acpRuntimeContextPromptBlocks({ ...DELIVERY, mode: "delta" });
+    expect(full[0]).toMatchObject({ type: "text", text: expect.stringContaining("ACP has one user-prompt channel") });
+    expect(delta[0]).toMatchObject({ type: "text", text: "Rainver context continuation for this Agent Run; the section rules of this session's first delivery still apply." });
+    expect(delta.slice(1)).toEqual(full.slice(1));
   });
 });

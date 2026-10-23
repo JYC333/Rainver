@@ -187,7 +187,9 @@ Load only the module docs relevant to your task.
 | Task area | Module doc |
 |---|---|
 | Space / user / Project Folder data model | [modules/space.md](modules/space.md) |
-| Agent profiles, runs, adapters | [modules/agents.md](modules/agents.md) |
+| Shared conversation panels, explicit Space and Run controls (`conversation` bundle) | [architecture/CONVERSATION.md](architecture/CONVERSATION.md), [architecture/RUNS_AND_OUTPUTS.md](architecture/RUNS_AND_OUTPUTS.md), [modules/client-server-protocol.md](modules/client-server-protocol.md) |
+| Agent profiles, runs, adapters, work projection contracts | [modules/agents.md](modules/agents.md) |
+| Agent Work personal route (`apps/web/src/modules/agent_work/`), aggregation/SSE, Shell provider, browser delivery, reading state, history and pagination | [modules/agent-attention.md](modules/agent-attention.md) |
 | Rooms (project-bound multi-party conversation, agent dispatch) | [modules/rooms.md](modules/rooms.md) |
 | Automations (manual/schedule/event triggers, project binding) | [modules/automations.md](modules/automations.md) |
 | Always-on candidate discovery and autonomous execution | [modules/autonomy.md](modules/autonomy.md) |
@@ -260,6 +262,7 @@ when shortening a decision; do not delete an ADR merely because it is old.
 | [0022](decisions/0022-acp-runtime-authority-and-schema-epoch.md) | AgentRuntimeProfile is the mutable Agent deployment/backend authority; Agent loops use the single ACP adapter, bounded provider work has explicit execution shape, and the pre-release schema epoch is reset once after cutover |
 | [0023](decisions/0023-authentication-foundation-schema-epoch.md) | The completed authentication foundation replaced the provisional auth migrations with a Drizzle-generated baseline; earlier databases had no upgrade path or compatibility shim |
 | [0024](decisions/0024-access-reading-and-execution-integrity-schema-epoch.md) | This release's schema changes were folded into a new Drizzle-generated baseline with the contract steps applied directly; earlier databases are recreated, not upgraded |
+| [0025](decisions/0025-unpublished-migration-squash.md) | Unpublished plan migrations may be squashed into one formal migration, with explicit data-preserving history conversion for existing databases |
 
 ---
 
@@ -349,3 +352,17 @@ vendor files as implicit runtime authority. See
 [ADR 0004](decisions/0004-context-wrapper.md). Runtime-only vendor control files
 or Skill artifacts are owned by their product subsystems, not by this
 development index. Repository guides are maintained independently of runtime delivery artifacts.
+
+Conversation request cancellation uses
+`apps/web/src/lib/mergeAbortSignals.ts`; Room file-reference input is owned by
+`apps/web/src/modules/agent_groups/RoomMessageComposer.tsx`, under the conversation bundle.
+
+Agent Work frontend and API/display tests live in
+`apps/web/src/modules/agent_work/` (`AgentWorkPage.test.tsx`,
+`SharedConversation.test.tsx`, `agentAttentionApi.test.ts`,
+`AgentAttentionProvider.test.tsx`, `attentionDelivery.test.ts`); Shell integration
+is covered by `apps/web/src/__tests__/shell.test.tsx`. Server aggregate stream and
+real-PG snapshot coverage live in `server/test/agentAttentionStream.test.ts` and
+`server/test/agentAttentionSnapshotDb.test.ts`; navigation registration
+is protected by `apps/web/src/__tests__/navigation.test.ts`. Route through the
+agents and conversation bundles and [Agent Attention](modules/agent-attention.md).

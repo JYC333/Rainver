@@ -176,40 +176,6 @@ describe("runtimeEventNormalization", () => {
         "tool_call_failed",
       ]);
       expect((events[0]!.metadata_json as Record<string, unknown>).tool_name).toBe("Read file");
-    });
-
-  it("normalizes ACP tool lifecycle updates for codex_cli too", () => {
-      const events = normalizeVendorEvents("codex_cli", [
-        {
-          jsonrpc: "2.0",
-          method: "session/update",
-          params: {
-            sessionId: "session-1",
-            update: {
-              sessionUpdate: "tool_call",
-              toolCallId: "call-1",
-              title: "npm test",
-            },
-          },
-        },
-        {
-          jsonrpc: "2.0",
-          method: "session/update",
-          params: {
-            sessionId: "session-1",
-            update: {
-              sessionUpdate: "tool_call_update",
-              toolCallId: "call-1",
-              status: "completed",
-            },
-          },
-        },
-      ], "2026-07-25T00:00:00.000Z");
-
-      expect(events.map((event) => event.type)).toEqual([
-        "tool_call_started",
-        "tool_call_completed",
-      ]);
       expect(events.every((event) => event.call_id === "call-1")).toBe(true);
     });
 

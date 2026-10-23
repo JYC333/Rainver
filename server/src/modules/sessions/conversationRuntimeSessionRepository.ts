@@ -26,12 +26,20 @@ interface RuntimeSessionRow {
  * waiting on it (transitively), and — since a group runs one Run at a time —
  * every Run of its group that is parked on a dependency or queued with no
  * job. A person's turn is never held behind any of them. Any other Run still
- * holds the turn.
+ * holds the turn. As in `turnReadModel.turnState`, a successful/degraded
+ * chat turn still holds it until `chat_completed`: the Run goes terminal
+ * before its reply and continuity are published. Failed/cancelled/orphaned
+ * Runs release it even without that event, so recovery never strands a
+ * conversation behind a failed turn.
  *
  * `admitting` asks on behalf of one Run about to be admitted: its own
  * group's Runs that cannot run yet — itself, those parked on a dependency,
  * those queued with no job — do not count against it, while one already
- * running, or queued with its job enqueued, does. Callers hold
+ * running, or queued with its job enqueued, does. Its terminal predecessors
+ * also do not block it: their results are passed by the group's lifecycle
+ * projector before chat completion (including an internal handoff that has
+ * no visible reply). A new human turn still waits for chat completion.
+ * Callers hold
  * `lockConversation`.
  */
 export async function conversationTurnTaken(
@@ -71,9 +79,19 @@ export async function conversationTurnTaken(
         WHERE run.space_id = $1
           AND run.session_id = $2
           AND run.model_override_json->'chat_turn'->>'schema_version' = 'chat_turn.v1'
-          AND run.status IN (
-            'queued', 'running', 'cancelling',
-            'waiting_for_review', 'waiting_for_dependency'
+          AND (
+            run.status IN (
+              'queued', 'running', 'cancelling',
+              'waiting_for_review', 'waiting_for_dependency'
+            )
+            OR (
+              run.status IN ('succeeded', 'degraded')
+              AND NOT EXISTS (
+                SELECT 1 FROM run_events event
+                 WHERE event.space_id = run.space_id AND event.run_id = run.id
+                   AND event.event_type = 'chat_completed'
+              )
+            )
           )
           AND run.id NOT IN (SELECT id FROM blocked)
           AND NOT (
@@ -84,6 +102,7 @@ export async function conversationTurnTaken(
             $4::varchar IS NOT NULL AND run.run_group_id = $4::varchar AND (
               run.id = $3::varchar
               OR run.status = 'waiting_for_dependency'
+              OR run.status IN ('succeeded', 'degraded')
               OR run.id IN (SELECT id FROM jobless)
             )
           )

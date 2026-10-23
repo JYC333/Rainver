@@ -99,11 +99,17 @@ export async function renderManagedDelivery(input: ManagedDeliveryRenderInput): 
         : {}),
     })),
     cli_session: input.cliSession ?? null,
+    ...(accepted.some(item => item.source_ref.type === "skill_package_binding") ? {
+      skill_packages: accepted.filter(item => item.source_ref.type === "skill_package_binding").map(item => ({
+        source_item_id: item.id, content: protocol.SkillPackageContentSchema.parse(item.payload.skill_package),
+      })),
+    } : {}),
     control_ref: { type: "execution_control_snapshot", id: control.id },
     sandbox_ref: control.sandbox_profile_ref,
     tool_grant_refs: control.tool_grant_refs,
     output_contract_ref: control.output_contract.schema_ref,
     expected_prompt_tokens: envelope.window_plan.planned_prompt_tokens,
+    context_estimate: envelope.window_plan.allocations,
     max_output_tokens: envelope.window_plan.reserved_output_tokens,
     snapshot_draft_ref: { type: "invocation_snapshot", id: snapshotId },
     audit_refs: {

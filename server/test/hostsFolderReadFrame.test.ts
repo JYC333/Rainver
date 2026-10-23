@@ -4,6 +4,11 @@ import { MAX_FILES } from "@rainver/folder-read";
 import { parseFolderReadResultFrame } from "../src/modules/hosts/folderReadFrames.js";
 
 describe("folder_read_result host frame validation", () => {
+  it("preserves a directory continuation and rejects invalid offsets", () => {
+    const result = { name: ".agent", path: ".agent", type: "dir", children: [], next_offset: 500 };
+    expect(parseFolderReadResultFrame({ ok: true, kind: "tree", result })).toMatchObject({ result: { next_offset: 500 } });
+    expect(parseFolderReadResultFrame({ ok: true, kind: "tree", result: { ...result, next_offset: -1 } })).toBeNull();
+  });
   it("accepts bounded success shapes for each read kind", () => {
     expect(parseFolderReadResultFrame({ ok: true, kind: "tree", result: { name: "root", path: ".", type: "dir" } }))
       .toMatchObject({ ok: true, kind: "tree" });

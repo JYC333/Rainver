@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { platform } from "node:os";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -24,6 +25,55 @@ afterEach(async () => {
 const hasScript = platform() !== "win32" && spawnSync("script", ["--version"], { encoding: "utf8" }).status !== null;
 
 describe("login sessions", () => {
+  it("applies the declared update guard only to the login process and still strips provider credentials", () => {
+    const before = process.env.DISABLE_AUTOUPDATER;
+    const login = { ...LOGIN, env: { DISABLE_AUTOUPDATER: "1", ANTHROPIC_API_KEY: "must-not-reach-login" } };
+    const resolved = resolveLoginCommand({ session_id: "guard", runtime_key: "claude_code", installation: "own", login });
+    expect(resolved.env.DISABLE_AUTOUPDATER).toBe("1");
+    expect(resolved.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(process.env.DISABLE_AUTOUPDATER).toBe(before);
+  });
+  it.skipIf(!hasScript).each([false, true])("keeps the CLI intact during login and checks it before reporting success (damaged=%s)", async damaged => {
+    const frames: Record<string, unknown>[] = [];
+    const dir = join(toolsDir(), "claude_code", "login-guard");
+    const home = managedToolHome("claude_code");
+    await mkdir(dir, { recursive: true });
+    await mkdir(home, { recursive: true });
+    const command = join(dir, "fake-claude");
+    await writeFile(command, `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo checking > "$HOME/verification-started"
+  while [ ! -e "$HOME/verification-allowed" ]; do sleep 0.05; done
+  echo '1.2.3 (Test CLI)'; exit 0
+fi
+mkdir -p "$HOME/.fake"; echo credential > "$HOME/.fake/auth.json"
+if [ "$DISABLE_AUTOUPDATER" != "1" ] || [ "${damaged}" = "true" ]; then rm "$0"; fi
+exit 1
+`, { mode: 0o755 });
+    const login = { ...LOGIN, managed_command: ["{tree}/fake-claude", "login"], home_subdir: ".fake", credential_file: "auth.json",
+      env: { DISABLE_AUTOUPDATER: "1" }, managed_verification_command: ["{tree}/fake-claude", "--version"] };
+    // An existing installation predates the guard; the current server spec applies without reinstalling it.
+    await writeFile(join(dir, "manifest.json"), JSON.stringify({ runtime_key: "claude_code", version: "login-guard", command, args: [], env: { DISABLE_AUTOUPDATER: "0" }, home,
+      login_command: [command, "login"], login: { ...login, env: undefined }, installed_at: "" }));
+    openLoginSession({ session_id: "guarded", runtime_key: "claude_code", installation: "managed:login-guard", login }, frame => frames.push(frame), () => {});
+    if (!damaged) {
+      await waitFor(() => existsSync(join(home, "verification-started")));
+      try {
+        expect(frames.some(frame => frame.type === "login_exit")).toBe(false);
+        await expect(withRuntimeKeyDrained("claude_code", 0, async () => "replaced")).rejects.toThrow(/still using claude_code/);
+      } finally { await writeFile(join(home, "verification-allowed"), "ready"); }
+    }
+    await waitFor(() => frames.some(frame => frame.type === "login_exit"));
+    const exit = frames.find(frame => frame.type === "login_exit");
+    if (damaged) {
+      expect(exit).toMatchObject({ logged_in: null, exit_code: 1 });
+      expect(frames).toContainEqual(expect.objectContaining({ type: "login_output", data: expect.stringContaining("runtime program is unavailable") }));
+    } else {
+      // Claude's interactive login can exit nonzero even after saving credentials.
+      expect(exit).toMatchObject({ logged_in: true, exit_code: 1 });
+    }
+    await expect(withRuntimeKeyDrained("claude_code", 0, async () => "released")).resolves.toBe("released");
+  });
   it("logs the machine's own copy in as the machine, and a managed copy inside its own HOME", async () => {
     const own = resolveLoginCommand({ session_id: "s", runtime_key: "acp_goose", installation: "own", login: LOGIN });
     expect(own.command).toEqual(["goose", "login"]);

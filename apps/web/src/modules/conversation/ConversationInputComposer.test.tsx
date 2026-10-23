@@ -1,3 +1,4 @@
+import { ConversationScope } from './ConversationScope'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { sha256Utf8 } from '../project_files/draftController'
@@ -63,6 +64,14 @@ function imageFile(name = 'diagram.png') {
 }
 
 describe('shared conversation input composer', () => {
+  it('keeps historical Skill chips but avoids duplicating references already in the message text', () => {
+    const parts: ConversationInputPart[] = [{ kind: 'skill', skill_package_id: 'skill-1', package_hash: 'a'.repeat(64), display_name: 'Audit' }]
+    const { rerender } = render(<ConversationInputPartsView parts={parts} />)
+    expect(screen.getByText('/Audit')).toBeInTheDocument()
+    rerender(<ConversationInputPartsView parts={parts} text="Please use /Audit here" />)
+    expect(screen.queryByText('/Audit')).not.toBeInTheDocument()
+  })
+
   it('uploads a pasted image, renders its thumbnail, and permits image-only send', async () => {
     render(<Harness />)
     const editor = screen.getByLabelText('Message')
@@ -71,7 +80,6 @@ describe('shared conversation input composer', () => {
     expect(conversationInputApi.uploadImage).toHaveBeenCalled()
     await waitFor(() => expect(JSON.parse(screen.getByTestId('parts').textContent ?? '[]')).toMatchObject([{ kind: 'image', media_id: 'media-1' }]))
     expect(screen.getByAltText('diagram.png')).toBeInTheDocument()
-    expect(JSON.parse(screen.getByTestId('parts').textContent ?? '[]')).toMatchObject([{ kind: 'image', media_id: 'media-1' }])
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     expect(screen.getByTestId('sent')).toHaveTextContent('1')
   })
@@ -114,7 +122,7 @@ describe('shared conversation input composer', () => {
     const remove = await screen.findByRole('button', { name: 'Remove cancel.png' })
     fireEvent.click(remove)
     finish({ media_id: 'media-cancelled', filename: 'cancel.png', media_type: 'image/png', byte_size: 4, sha256: 'b'.repeat(64), expires_at: new Date().toISOString() })
-    await waitFor(() => expect(conversationInputApi.deletePendingImage).toHaveBeenCalledWith('media-cancelled'))
+    await waitFor(() => expect(conversationInputApi.deletePendingImage).toHaveBeenCalledWith('media-cancelled', expect.any(Object)))
     expect(JSON.parse(screen.getByTestId('parts').textContent ?? '[]')).toEqual([])
     expect(screen.getByTestId('sent')).toHaveTextContent('0')
   })
@@ -135,7 +143,7 @@ describe('shared conversation input composer', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Remove diagram.png' })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: 'Remove diagram.png' }))
     await waitFor(() => expect(JSON.parse(screen.getByTestId('parts').textContent ?? '[]')).toEqual([]))
-    expect(conversationInputApi.deletePendingImage).toHaveBeenCalledWith('media-1')
+    expect(conversationInputApi.deletePendingImage).toHaveBeenCalledWith('media-1', expect.any(Object))
   })
 
   it('explains an image capability mismatch and blocks send without dropping the image', async () => {
@@ -184,7 +192,7 @@ describe('shared conversation input composer', () => {
     render(<Harness projectId="project-1" projectFolderId="folder-1" sessionId="session-1" />)
     fireEvent.click(screen.getByRole('button', { name: 'Reference file' }))
     expect(await screen.findByRole('option', { name: /App\.tsx/ })).toBeInTheDocument()
-    expect(conversationInputApi.searchFiles).toHaveBeenCalledWith('session-1', '', expect.any(AbortSignal))
+    expect(conversationInputApi.searchFiles).toHaveBeenCalledWith('session-1', '', expect.any(AbortSignal), expect.any(Object))
     expect(projectFoldersApi.tree).not.toHaveBeenCalled()
   })
 
@@ -195,7 +203,7 @@ describe('shared conversation input composer', () => {
     }]} />)
     await waitFor(() => expect(screen.getByAltText('history.png')).toBeInTheDocument())
     expect(screen.getByAltText('history.png')).toHaveClass('h-24', 'w-full', 'object-contain')
-    expect(conversationInputApi.imageBlob).toHaveBeenCalledWith('media-history')
+    expect(conversationInputApi.imageBlob).toHaveBeenCalledWith('media-history', expect.any(Object))
   })
 
   it('shows an accessible fallback when a historical image cannot be loaded', async () => {
@@ -205,4 +213,13 @@ describe('shared conversation input composer', () => {
     }]} />)
     await waitFor(() => expect(screen.getByRole('img', { name: 'gone.png unavailable' })).toHaveTextContent('Image unavailable'))
   })
+  it('keeps image upload and pending-image deletion in the panel source Space', async () => {
+    render(<ConversationScope spaceId="source-b"><Harness /></ConversationScope>)
+    fireEvent.paste(screen.getByLabelText('Message'), { clipboardData: { files: [imageFile()], types: ['Files'], getData: () => '' } })
+    await screen.findByRole('button', { name: 'Remove diagram.png' })
+    expect(conversationInputApi.uploadImage).toHaveBeenCalledWith(expect.any(File), expect.any(Function), expect.objectContaining({ spaceId: 'source-b' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove diagram.png' }))
+    expect(conversationInputApi.deletePendingImage).toHaveBeenCalledWith('media-1', expect.objectContaining({ spaceId: 'source-b' }))
+  })
+
 })

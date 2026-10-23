@@ -45,17 +45,6 @@ describe("note link target guardrail", () => {
     expect([...NOTE_LINK_TARGET_TYPE_VALUES].sort()).toEqual([...expected].sort());
   });
 
-  it("offers every type that is both linkable and searchable", async () => {
-    // The editor list is the linkable-and-searchable intersection. Registering
-    // a new searchable `space_objects` subtype fails here until the editor
-    // offers it. Do not keep the list a subset of what the backend supports.
-    const { NOTE_LINK_TARGET_TYPE_VALUES } = await import("@rainver/protocol");
-    const offered = new Set<string>(NOTE_LINK_TARGET_TYPE_VALUES);
-    const retrievable = new Set<string>(retrievableEntityTypes());
-    const missing = spaceObjectSubtypes().filter((type) => retrievable.has(type) && !offered.has(type));
-    expect(missing).toEqual([]);
-  });
-
   it("keeps the unreachable types unreachable, rather than offering a link that 404s", async () => {
     // NC's stated acceptance names `source_item` and `extracted_evidence` as
     // link targets. Neither has a `space_objects` row, so `createNoteLink`

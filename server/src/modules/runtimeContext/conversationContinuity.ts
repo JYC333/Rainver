@@ -29,21 +29,25 @@ export async function loadConversationContinuityThroughMessage(
 ): Promise<{ messages: MessageOut[]; checkpoint: SemanticCheckpoint | null; room_summary: RoomSummaryCoverage | null; room_conversation: boolean }> {
   const limit = Math.max(1, Math.floor(input.limit ?? 80));
   const checkpointResult = await db.query<{ checkpoint_json: unknown; covered_cursor: number; watermark: number }>(
-    `WITH watermark AS (
-       SELECT COALESCE(max(event.scope_sequence),0)::int AS cursor
+    `WITH message_window AS (
+       SELECT event.scope_sequence, EXISTS (
+         SELECT 1 FROM messages source, messages boundary
+          WHERE source.id=event.canonical_ref_json->>'id' AND source.space_id=event.space_id
+            AND boundary.id=$3 AND boundary.space_id=$1 AND boundary.session_id=$4
+            AND source.session_id=boundary.session_id
+            AND source.path_depth<=boundary.path_depth
+            AND ${visibleMessagePathSql({ alias: "source", spaceParam: "$1", sessionParam: "$4" })}
+       ) AS in_window
          FROM context_events event
         WHERE event.space_id=$1 AND event.work_context_scope_id=$2
           AND event.canonical_ref_json->>'type'='message'
-          AND EXISTS (
-            SELECT 1 FROM messages source, messages boundary
-             WHERE source.id=event.canonical_ref_json->>'id' AND source.space_id=event.space_id
-               AND boundary.id=$3 AND boundary.space_id=$1 AND boundary.session_id=$4
-               AND source.session_id=boundary.session_id
-               AND (
-                 source.created_at < boundary.created_at
-                 OR (source.created_at = boundary.created_at AND source.id <= boundary.id)
-               )
-          )
+     ), watermark AS (
+       -- Recovery can append an earlier message after a later one. A
+       -- checkpoint covers a ledger prefix, so it must stop before the first
+       -- message outside this trigger's canonical path, even in that case.
+       SELECT LEAST(COALESCE(max(scope_sequence) FILTER (WHERE in_window),0),
+                    min(scope_sequence) FILTER (WHERE NOT in_window)-1)::int AS cursor
+         FROM message_window
      )
      SELECT checkpoint.checkpoint_json,checkpoint.covered_cursor,watermark.cursor AS watermark
        FROM watermark LEFT JOIN LATERAL (
@@ -54,7 +58,6 @@ export async function loadConversationContinuityThroughMessage(
        ) checkpoint ON true`,
     [input.spaceId, input.workContextScopeId, input.currentMessageId, input.sessionId],
   );
-  const watermark = Number(checkpointResult.rows[0]?.watermark ?? 0);
   const coveredCursor = Number(checkpointResult.rows[0]?.covered_cursor ?? 0);
   const roomResult = await db.query<{ room_id: string | null }>(
     `SELECT room_id FROM sessions WHERE id=$1 AND space_id=$2 LIMIT 1`,
@@ -83,21 +86,6 @@ export async function loadConversationContinuityThroughMessage(
         currentMessageId: input.currentMessageId,
         summary: roomSummary,
       })
-    : watermark > 0
-    ? await db.query<MessageRow>(
-      `SELECT id,session_id,space_id,user_id,sender_agent_id,role,content,metadata_json,created_at FROM (
-         SELECT message.id,message.session_id,message.space_id,message.user_id,message.sender_agent_id,
-                message.role,message.content,message.metadata_json,message.created_at,event.scope_sequence
-           FROM context_events event
-           JOIN messages message ON message.id=event.canonical_ref_json->>'id' AND message.space_id=event.space_id
-          WHERE event.space_id=$1 AND event.work_context_scope_id=$2
-            AND event.canonical_ref_json->>'type'='message'
-            AND event.scope_sequence>$3 AND event.scope_sequence<=$4
-            AND message.session_id=$5
-          ORDER BY event.scope_sequence DESC LIMIT $6
-       ) bounded ORDER BY scope_sequence`,
-      [input.spaceId, input.workContextScopeId, coveredCursor, watermark, input.sessionId, limit],
-    )
     : await db.query<MessageRow>(
       // The window is the visible path up to the triggering message, in path
       // order. Ordering and bounding by `path_depth` rather than `created_at`
@@ -107,13 +95,25 @@ export async function loadConversationContinuityThroughMessage(
        SELECT * FROM (SELECT m.id,m.session_id,m.space_id,m.user_id,m.sender_agent_id,m.role,m.content,m.metadata_json,m.path_depth,m.created_at
          FROM messages m CROSS JOIN boundary b WHERE m.space_id=$2 AND m.session_id=$3
           AND ${visibleMessagePathSql({ alias: "m", spaceParam: "$2", sessionParam: "$3" })}
+          AND ${nonSupersededMessageSql("m")}
           AND (
             m.path_depth < b.path_depth
             OR (m.path_depth = b.path_depth AND m.id <= b.id)
           )
+          -- Capture may be partial or late. Canonical messages still belong
+          -- in the tail unless this checkpoint actually captured them. The
+          -- current input always remains available to the current-message
+          -- renderer, which excludes it from historical text.
+          AND (m.id=b.id OR NOT EXISTS (
+            SELECT 1 FROM context_events covered
+             WHERE covered.space_id=$2 AND covered.work_context_scope_id=$5
+               AND covered.scope_sequence<=$6
+               AND covered.canonical_ref_json->>'type'='message'
+               AND covered.canonical_ref_json->>'id'=m.id
+          ))
          ORDER BY m.path_depth DESC,m.id DESC LIMIT $4) bounded
        ORDER BY bounded.path_depth ASC,bounded.id ASC`,
-      [input.currentMessageId, input.spaceId, input.sessionId, limit],
+      [input.currentMessageId, input.spaceId, input.sessionId, limit, input.workContextScopeId, coveredCursor],
     );
   return {
     messages: messagesResult.rows.map(messageOut),

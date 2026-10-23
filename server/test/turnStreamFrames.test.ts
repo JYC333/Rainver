@@ -74,7 +74,7 @@ describe("turn stream frames", () => {
           frame.turn.parts.forEach((part) => { held[part.index] = part.type; });
           continue;
         }
-        if (frame.type === "turn.state_changed") continue;
+        if (frame.type === "turn.state_changed" || frame.type === "turn.model_changed") continue;
         const before = held[frame.part.index];
         expect(before === undefined || before === frame.part.type).toBe(true);
         held[frame.part.index] = frame.part.type;

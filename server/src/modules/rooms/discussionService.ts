@@ -18,6 +18,7 @@ import { PgSessionRepository } from "../sessions/repository.js";
 import { discussionOut, PgRoomDiscussionRepository, type DiscussionRecord } from "./discussionRepository.js";
 import { PgRoomRepository, roomConversationOut, type RoomAgentMemberRecord } from "./repository.js";
 import { PgAgentGroupRepository } from "../agentGroups/repository.js";
+import { collaborationActive, collaborationContainer } from "../agentGroups/collaborationBudgetRepository.js";
 import { RoomService, type ContinuationCause, type RoomDelegationBudget, type RoomDispatchDiscussion, type RoomIdentity } from "./service.js";
 import { hasQueuedRoomMessage, isTransientDatabaseError, lockRoomConversationQueue, RoomMessageQueue } from "./messageQueue.js";
 import { admitTurnParkedRuns, discussionQuotaHold } from "./quotaGate.js";
@@ -973,7 +974,22 @@ export async function agentOriginContinuation(
     };
   }
   const containerGroupId = containerGroupOf(sourceGroupId, source?.budget_json);
+  const group = await new PgAgentGroupRepository(client).getGroup(spaceId, sourceGroupId);
+  const collaboration = group ? await collaborationContainer(client, group) : null;
   const turns = await chargeContainer(client, spaceId, containerGroupId);
+  if (collaboration?.collaboration) {
+    // The container row was read before this turn's charge; judge the
+    // collaboration on the charged count. Keep the original human cause
+    // instead of building an unbounded cause chain.
+    const active = await collaborationActive(client, collaboration, turns);
+    // One completion turn may reach each declared participant at most once.
+    const fanout = collaboration.collaboration.participant_agent_ids.length;
+    return {
+      discussion: null,
+      delegation_budget: { max_depth: 1, max_fanout: active ? fanout : 0, container_group_id: containerGroupId },
+      cause: { run_id: collaboration.root_run_id, within_budget: active },
+    };
+  }
   return {
     discussion: null,
     delegation_budget: { ...delegationBudget(turns), container_group_id: containerGroupId },

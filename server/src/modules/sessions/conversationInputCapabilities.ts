@@ -13,7 +13,7 @@ export class ConversationInputCapabilityError extends Error {
  * dispatch calls it for every recipient before it fans out any Run.
  */
 export function assertConversationInputCapabilities(
-  parts: readonly { kind: "image" | "file_reference" | "input_resource" }[],
+  parts: readonly { kind: "image" | "file_reference" | "input_resource" | "skill" }[],
   capabilities: RuntimePromptCapabilities | null | undefined,
 ): void {
   if (parts.some((part) => part.kind === "image")) {
@@ -36,7 +36,7 @@ export function assertConversationInputCapabilities(
  * managed API and CLI adapters; an arbitrary custom executor cannot receive
  * the descriptor or call the canonical dispatcher safely. */
 export function assertConversationInputResourceTools(
-  parts: readonly { kind: "image" | "file_reference" | "input_resource" }[],
+  parts: readonly { kind: "image" | "file_reference" | "input_resource" | "skill" }[],
   runtimeKey: string | null | undefined,
 ): void {
   if (!parts.some((part) => part.kind === "input_resource")) return;

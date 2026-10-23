@@ -1,13 +1,27 @@
 {
-  "version": "7",
-  "dialect": "postgresql",
   "entries": [
     {
       "idx": 0,
+      "tag": "0000_baseline",
       "version": "7",
       "when": 1792083845919,
-      "tag": "0000_baseline",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "tag": "0001_agent_workbench",
+      "version": "7",
+      "when": 1792684360053,
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "tag": "0002_skill_library_and_upgrade_repairs",
+      "version": "7",
+      "when": 1792708198694,
       "breakpoints": true
     }
-  ]
+  ],
+  "version": "7",
+  "dialect": "postgresql"
 }

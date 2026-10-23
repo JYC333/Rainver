@@ -8,6 +8,8 @@
  */
 
 import { z } from "zod";
+
+
 import {
   IdSchema,
   ISODateTimeSchema,
@@ -33,6 +35,19 @@ export {
   TraceSafeJsonSchema,
 } from "./jsonSafety.js";
 export type { JsonValue, SecretFreeJson, TraceSafeJson } from "./jsonSafety.js";
+
+/** Immutable Run contract provenance, shared with the server contract writer. */
+export const RunContractSourceKindSchema = z.enum([
+  "direct",
+  "space",
+  "task",
+  "automation",
+  "workflow",
+  "delegation",
+  "plan",
+  "agent_version",
+]);
+export type RunContractSourceKind = z.infer<typeof RunContractSourceKindSchema>;
 
 export const RUN_EXECUTION_SHAPE_VALUES = [
   "conversational",
@@ -240,6 +255,8 @@ export const RUN_EXECUTION_ERROR_CODES = [
   "produced_artifact_ingestion_error",
   "run_cancelled",
   "run_abandoned",
+  // Stopped at an explicitly set time limit; Runs have no default one.
+  "run_timed_out",
   "cancel_confirmation_timeout",
   "orphaned",
   "runtime_removed",

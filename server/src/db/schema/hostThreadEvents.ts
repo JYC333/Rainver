@@ -59,7 +59,8 @@ export const hostThreadEvents = pgTable("host_thread_events", {
 	// tool activity: 'pending' | 'succeeded' | 'failed' | 'in_progress' (ACP's
 	// non-terminal status, absorbed as a same-shaped update — not a new
 	// event type). status: run lifecycle state ('run_started' |
-	// 'run_succeeded' | 'run_failed' | 'run_timeout').
+	// 'run_succeeded' | 'run_failed' | 'run_timeout'), or the informational
+	// 'run_quiet' silence notice.
 	status: varchar({ length: 32 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [

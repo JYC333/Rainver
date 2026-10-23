@@ -30,6 +30,7 @@ import {
 import { LaunchWorkspaceSchema, LocationLaunchWorkspaceSchema, ManagedWorkspaceHeartbeatSchema, RuntimeAuthMethodSchema } from "./hosts.js";
 import { ConversationInputResourceSchema } from "./conversationInput.js";
 import { RuntimeKeySchema } from "./runtimeAuthority.js";
+import { HostSkillScanSchema, HostSkillFilesSchema, HostSkillCandidateSchema } from "./skills.js";
 
 /**
  * The most a single `login_input` frame may carry. Keystrokes are bytes; a
@@ -71,6 +72,11 @@ export const WORK_SKILL_PATH_PLACEHOLDER = "rainver:work-skill-path";
 export const RuntimeLoginSpecSchema = z.object({
   command: z.array(z.string()),
   managed_command: z.array(z.string()).optional(),
+  /** Fixed subprocess-only settings from the runtime spec, never provider credentials. */
+  env: z.record(z.string()).optional(),
+  /** Bounded post-login program checks, separate from native credential presence. */
+  verification_command: z.array(z.string()).min(1).optional(),
+  managed_verification_command: z.array(z.string()).min(1).optional(),
   /** The vendor's logout, in the same two forms; absent when the CLI has none. */
   logout_command: z.array(z.string()).optional(),
   managed_logout_command: z.array(z.string()).optional(),
@@ -214,7 +220,9 @@ export type HostLaunchProviderBinding = z.infer<typeof HostLaunchProviderBinding
 export const HostLaunchWorkSurfaceSchema = z.object({
   /** Literal values: the API base URL, the run id, and the run's tool token. */
   env: z.record(z.string()),
-  files: z.array(z.object({ relative_path: z.string().min(1), contents: z.string() })),
+  files: z.array(z.object({ relative_path: z.string().min(1), contents: z.string(),
+    encoding: z.enum(["utf8", "base64"]).optional(), content_hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  })),
   /** Variable → path relative to the run directory, resolved on the host. */
   dir_env: z.record(z.string()),
 });
@@ -331,6 +339,7 @@ export const HostLaunchFrameSchema = z.object({
   input_resources: z.array(ConversationInputResourceSchema).max(8).optional(),
   argv: z.array(z.string()),
   stdin: z.string().nullable().optional(),
+  /** Legacy field accepted for older control planes; Run duration is unlimited. */
   timeout_seconds: z.number().nullable().optional(),
   /** A bidirectional-protocol run streams `stdin` frames over its lifetime; the daemon must not close stdin after launch. */
   keep_stdin_open: z.boolean().optional(),
@@ -594,6 +603,29 @@ export const HostRollbackToolFrameSchema = z.object({
   request_id: IdSchema,
   runtime_key: RuntimeKeySchema,
 });
+/**
+ * Vendor CLIs whose machine-own install a paired Host can update, with the npm
+ * package whose `latest` release names the newest version. The one list: the
+ * daemon's recipes, the control plane's release lookup and route, and the host
+ * card all read it.
+ */
+export const OWN_CLI_UPDATE_PACKAGES = {
+  claude_code: "@anthropic-ai/claude-code",
+  codex_cli: "@openai/codex",
+} as const;
+export type OwnCliUpdateRuntimeKey = keyof typeof OWN_CLI_UPDATE_PACKAGES;
+export function isOwnCliUpdateRuntimeKey(runtimeKey: string): runtimeKey is OwnCliUpdateRuntimeKey {
+  return Object.prototype.hasOwnProperty.call(OWN_CLI_UPDATE_PACKAGES, runtimeKey);
+}
+export const OwnCliUpdateRuntimeKeySchema = z.enum(
+  Object.keys(OWN_CLI_UPDATE_PACKAGES) as [OwnCliUpdateRuntimeKey, ...OwnCliUpdateRuntimeKey[]],
+);
+
+export const HostUpdateOwnToolFrameSchema = z.object({
+  type: z.literal("update_own_tool"),
+  request_id: IdSchema,
+  runtime_key: OwnCliUpdateRuntimeKeySchema,
+});
 
 export const HostInstallToolFrameSchema = z.object({
   type: z.literal("install_tool"),
@@ -649,10 +681,13 @@ export const HostFolderReadFrameSchema = z.object({
   request_id: IdSchema,
   workspace_location_id: IdSchema,
   kind: FolderReadKindSchema,
+  /** For tree reads, a path selects a paged direct-directory listing; absent means bounded recursive search. */
   path: z.string().optional(),
+  tree_offset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   protected: z.boolean(),
   /** Explicit user action may request a decoded UTF-16 conversion preview. */
   include_utf16_preview: z.boolean().optional(),
+  include_original_bytes: z.boolean().optional(),
 });
 export const HostFolderReadCancelFrameSchema = z.object({
   type: z.literal("folder_read_cancel"),
@@ -711,6 +746,8 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("stdin"), run_id: IdSchema, value: z.string() }),
   z.object({ type: z.literal("stdin_close"), run_id: IdSchema }),
   z.object({ type: z.literal("list_dirs"), request_id: IdSchema, path: z.string().nullable() }),
+  z.object({ type: z.literal("skill_scan"), request_id: IdSchema }),
+  z.object({ type: z.literal("skill_read"), request_id: IdSchema, skill_id: z.string().regex(/^[a-f0-9]{64}$/) }),
   z.object({ type: z.literal("workspace_register"), request_id: IdSchema, path: z.string(), project_id: IdSchema, name: z.string() }),
   z.object({ type: z.literal("workspace_forget"), request_id: IdSchema, workspace_id: z.string() }),
   z.object({ type: z.literal("managed_workspace_archive"), ...managedWorkspaceActionFields }),
@@ -726,6 +763,7 @@ export const HostServerFrameSchema = z.discriminatedUnion("type", [
   HostCommandRunFrameSchema,
   HostUsageProbeFrameSchema,
   HostRollbackToolFrameSchema,
+  HostUpdateOwnToolFrameSchema,
   HostInstallToolFrameSchema,
   HostUninstallToolFrameSchema,
   HostLoginOpenFrameSchema,
@@ -888,6 +926,14 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
     message: z.string().optional(),
   }),
   z.object({
+    type: z.literal("skill_scan_result"), request_id: IdSchema, ok: z.boolean(),
+    result: HostSkillScanSchema.nullable(), error: z.string().max(256).nullable(),
+  }),
+  z.object({
+    type: z.literal("skill_read_result"), request_id: IdSchema, ok: z.boolean(),
+    files: HostSkillFilesSchema.nullable(), candidate: HostSkillCandidateSchema.nullable(), error: z.string().max(256).nullable(),
+  }),
+  z.object({
     type: z.literal("list_dirs_result"),
     request_id: IdSchema,
     ok: z.boolean(),
@@ -926,6 +972,12 @@ export const HostDaemonFrameSchema = z.discriminatedUnion("type", [
     ok: z.boolean(),
     error: z.string().nullable(),
     installation: z.string().nullable(),
+    /**
+     * `update_own_tool` only: the CLI's version before and after. Equal means
+     * it was already current. Absent from daemons that predate the report.
+     */
+    from_version: z.string().max(200).nullable().optional(),
+    to_version: z.string().max(200).nullable().optional(),
   }),
 ]);
 export type HostDaemonFrame = z.infer<typeof HostDaemonFrameSchema>;

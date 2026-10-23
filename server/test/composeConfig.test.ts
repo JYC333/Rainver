@@ -67,26 +67,25 @@ describe("compose server config", () => {
     }
   });
 
-  it("bind-mounts live server migrations for dev and test one-shot migration runs", () => {
-    for (const mode of ["dev", "test"] as const) {
-      const block = serverServiceBlock(mode);
-      expect(block).toContain(
+  it("mounts live migrations only in dev and bundles them in fixed builds", () => {
+    expect(serverServiceBlock("dev")).toContain(
+      "../../server/migrations:/app/server/migrations:ro",
+    );
+    for (const mode of ["test", "prod"] as const) {
+      expect(serverServiceBlock(mode)).not.toContain(
         "../../server/migrations:/app/server/migrations:ro",
       );
     }
-    expect(serverServiceBlock("prod")).not.toContain(
-      "../../server/migrations:/app/server/migrations:ro",
-    );
     expect(readFileSync(join(repoRoot, "server", "Dockerfile"), "utf8")).toContain(
       "COPY server/migrations ./migrations",
     );
   });
 
-  it("keeps official plugin source out of the production server container", () => {
-    for (const mode of ["dev", "test"] as const) {
-      expect(serverServiceBlock(mode)).toContain("../../plugins:/app/plugins:ro");
+  it("keeps official plugin source out of fixed server builds", () => {
+    expect(serverServiceBlock("dev")).toContain("../../plugins:/app/plugins:ro");
+    for (const mode of ["test", "prod"] as const) {
+      expect(serverServiceBlock(mode)).not.toContain("../../plugins:");
     }
-    expect(serverServiceBlock("prod")).not.toContain("../../plugins:");
     expect(readFileSync(join(repoRoot, "server", "Dockerfile"), "utf8")).toContain(
       "COPY plugins /app/plugins",
     );
@@ -97,9 +96,26 @@ describe("compose server config", () => {
       const block = frontendServiceBlock(mode);
       expect(block).toContain("context: ../../");
       expect(block).toContain("dockerfile: apps/web/Dockerfile");
-      expect(block).toContain("../../apps/web:/repo/apps/web");
-      expect(block).toContain("../../plugins:/repo/plugins:ro");
     }
+    expect(frontendServiceBlock("dev")).toContain("../../apps/web:/repo/apps/web");
+    expect(frontendServiceBlock("dev")).toContain("../../plugins:/repo/plugins:ro");
+  });
+
+  it("runs test from local compiled snapshots without live source or watchers", () => {
+    const server = serverServiceBlock("test");
+    const frontend = frontendServiceBlock("test");
+    expect(server).toContain("target: runtime");
+    expect(frontend).toContain("target: prod");
+    expect(frontend).toContain('"3100:80"');
+    for (const block of [server, frontend]) {
+      expect(block).not.toContain("- ../../");
+      expect(block).not.toContain("command:");
+      expect(block).not.toContain("--watch");
+      expect(block).not.toContain("CHOKIDAR_USEPOLLING");
+    }
+    expect(server).toContain("${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}:/rainver");
+    const template = readFileSync(join(repoRoot, "ops/env/.env.test.example"), "utf8");
+    expect(template).toMatch(/^FRONTEND_URL=http:\/\/localhost:3100$/m);
   });
 
   it("runs production from the CI-published images and never builds on the host", () => {

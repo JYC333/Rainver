@@ -259,18 +259,7 @@ export async function finalizeChatTurn(
     },
   });
   const roomId = isRoomConversationRun(run) ? metadata.room_id ?? null : null;
-  if (isRoomConversationRun(run) && roomId && config.databaseUrl) {
-    // The turn is complete; if it was the last of its wave, the wave's
-    // replies decide the next one (a discussion, or its conclusion). Never a
-    // reason to fail the turn itself: a busy conversation is retried by a
-    // job, and anything else is logged and left to the next turn.
-    try {
-      await (deps.discussions ?? new RoomDiscussionService(config, getDbPool(config.databaseUrl)))
-        .afterTurnFinalized(run);
-    } catch (error) {
-      process.stderr.write(`[rooms] discussion advance after run ${run.id} failed: ${String((error as Error)?.message ?? error)}\n`);
-    }
-  }
+  await advanceRoomDiscussion(config, run, roomId, deps);
   if (isRoomConversationRun(run) && outcome.ok && roomId && terminalMessageId && terminalMessageCreatedAt) {
     try {
       await requestRoomConversationSummary(getDbPool(config.databaseUrl!), {
@@ -286,6 +275,99 @@ export async function finalizeChatTurn(
     }
   }
   return completion;
+}
+
+/**
+ * How many times a terminal chat turn's finalization may fail before the
+ * turn is completed as failed. A successful or degraded chat Run holds its
+ * conversation until `chat_completed` (`conversationTurnTaken`), so a
+ * finalization that can never succeed would otherwise block the
+ * conversation for good while the worker sweep retries it every pass.
+ */
+export const MAX_CHAT_FINALIZATION_ATTEMPTS = 5;
+const CHAT_FINALIZATION_FAILED = "chat_finalization_failed";
+
+/**
+ * Records one failed `finalizeChatTurn` for a terminal chat Run, as a
+ * `warning` on the Run that the turn shows. The attempt that reaches
+ * `MAX_CHAT_FINALIZATION_ATTEMPTS` completes the turn as failed instead,
+ * which releases the conversation and shows the reason in the turn. The
+ * attempts are counted from those durable warnings, so the bound holds
+ * across worker restarts; a failure to record one leaves the count where it
+ * was and the next pass tries again.
+ */
+export async function recordChatTurnFinalizationFailure(
+  config: ServerConfig,
+  repository: Pick<PgRunRepository, "appendRunEvent" | "listRunEventsPage">,
+  run: RunRecord,
+  error: unknown,
+  deps: Pick<ChatTurnFinalizerDeps, "resolveAgentActorId" | "discussions"> = {},
+): Promise<{ attempts: number; completed: boolean }> {
+  if (run.execution_kind !== "agent" || !TERMINAL_STATUSES.has(run.status)) return { attempts: 0, completed: false };
+  const metadata = chatTurnMetadata(run.model_override_json);
+  if (!metadata) return { attempts: 0, completed: false };
+  const reason = (error instanceof Error ? error.message : String(error)).slice(0, 1_000);
+  const warnings = await repository.listRunEventsPage(run.space_id, run.id, {
+    from_event_index: 0,
+    limit: 1_000,
+    event_type: "warning",
+    status: null,
+  });
+  const attempts = warnings.items.filter((event) => event.error_code === CHAT_FINALIZATION_FAILED).length + 1;
+  if (attempts < MAX_CHAT_FINALIZATION_ATTEMPTS) {
+    await repository.appendRunEvent({
+      run_id: run.id,
+      space_id: run.space_id,
+      event_type: "warning",
+      status: "warning",
+      summary: `Publishing this reply failed (attempt ${attempts} of ${MAX_CHAT_FINALIZATION_ATTEMPTS}); it will be retried.`,
+      error_code: CHAT_FINALIZATION_FAILED,
+      error_message: reason,
+      metadata_json: { session_id: metadata.session_id, attempt: attempts },
+    });
+    return { attempts, completed: false };
+  }
+  const resolveActor = deps.resolveAgentActorId
+    ?? ((spaceId: string, agentId: string) => resolveAgentActorId(getDbPool(config.databaseUrl!), spaceId, agentId));
+  await repository.appendRunEvent({
+    run_id: run.id,
+    space_id: run.space_id,
+    event_type: "chat_completed",
+    status: "failed",
+    actor_id: await resolveActor(run.space_id, run.agent_id),
+    summary: "Chat turn completed without publishing its reply.",
+    error_code: CHAT_FINALIZATION_FAILED,
+    error_message: `Publishing this reply failed ${attempts} times: ${reason}`,
+    metadata_json: {
+      session_id: metadata.session_id,
+      user_message_id: metadata.user_message_id,
+      assistant_message_id: null,
+      finalization_attempts: attempts,
+    },
+  });
+  await advanceRoomDiscussion(config, run, isRoomConversationRun(run) ? metadata.room_id ?? null : null, deps);
+  return { attempts, completed: true };
+}
+
+/**
+ * The turn is complete; if it was the last of its wave, the wave's replies
+ * decide the next one (a discussion, or its conclusion). Never a reason to
+ * fail the turn itself: a busy conversation is retried by a job, and
+ * anything else is logged and left to the next turn.
+ */
+async function advanceRoomDiscussion(
+  config: ServerConfig,
+  run: AgentRunRecord,
+  roomId: string | null,
+  deps: Pick<ChatTurnFinalizerDeps, "discussions">,
+): Promise<void> {
+  if (!isRoomConversationRun(run) || !roomId || !config.databaseUrl) return;
+  try {
+    await (deps.discussions ?? new RoomDiscussionService(config, getDbPool(config.databaseUrl)))
+      .afterTurnFinalized(run);
+  } catch (error) {
+    process.stderr.write(`[rooms] discussion advance after run ${run.id} failed: ${String((error as Error)?.message ?? error)}\n`);
+  }
 }
 
 function productionContinuity(config: ServerConfig): RuntimeContextContinuityService {

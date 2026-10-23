@@ -24,7 +24,7 @@ quick capture, and account controls.
 
 ## Current navigation
 
-Rail (from `navigation.tsx`): Home · Command Center · Inbox · Library ·
+Rail (from `navigation.tsx`): Home · Agent Work · Command Center · Inbox · Library ·
 Sources · Review · Knowledge · Shared · Tasks · Projects · Agents ·
 Evolution · Instance Settings (instance admin) · Space Settings (space
 admin) · Settings.
@@ -33,6 +33,12 @@ The mobile tab bar is the short daily subset: Home · Inbox · Library ·
 Review · Tasks. Command Center remains a rail destination. Static shell and
 navigation labels are translated through `apps/web/src/i18n/`; route IDs, Space
 scope, and permission gates remain language-independent.
+
+The Agents scene includes a distinct Skills link (`/skills`, “技能库” in
+Chinese), alongside the legacy Capabilities link. Both desktop sidebar and
+mobile scene tabs use `SCENES` in `navigation.tsx`; registering a module in
+`registry.ts` alone does not add it to this navigation. The Skills route keeps
+the Agents scene active after navigation.
 
 Knowledge has no scene sidebar; sub-areas switch via
 `KnowledgeSectionHeader`. There is no `CommandPalette`, Project Folder
@@ -57,3 +63,22 @@ user surface inside the shell, with the Settings rail entry remaining available;
 `/instance-settings` contains the instance-admin Users & Security
 panel. A protected route always redirects unauthenticated users to `/login` and
 does not render product data while auth context is loading.
+
+Agent Work is a personal module at `/agent-work`, under RequireAuth, with a Global
+Rail entry and an explicit Home button. It never registers a Space-prefixed route
+or a mobile primary tab. Its page owns selection, expansion, scroll and drafts. Shell mounts the account-keyed
+`AgentAttentionProvider`, which owns the authorized personal aggregate stream and
+mounted filter windows. Global Rail/Home expose needs-you/unread-work counts;
+Agent Work exposes freshness and explicit, default-off sound/desktop controls.
+Sound/system delivery uses per-user Web Locks/BroadcastChannel. A visible in-app
+toast broadcasts its revision identity to other same-account tabs, clearing their
+pending copy and suppressing later duplicate display. Near-simultaneous arrivals
+in two visible windows remain best-effort until that broadcast arrives. Foreground
+replay skips only works known as read in a settled single-page shared-store window;
+multipage/unstable windows intentionally retain pending reminders. Hidden arrivals remain pending until
+visible unless already toasted elsewhere; a hidden leader does not consume them.
+Without coordination, in-app deduplication is local to one tab. Background desktop
+notifications and later in-app toasts remain two explicit channels.
+A live connection is retained on foreground return. Capability degradation and
+logout cleanup remain explicit; see [Agent Attention](agent-attention.md#global-aggregation-and-delivery).
+The provider owns no message store, per-Run content stream or execution path.

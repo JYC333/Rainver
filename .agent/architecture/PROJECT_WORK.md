@@ -101,6 +101,10 @@ agent.persona_restored`
 change on an execution host: on a Location's main branch, or stopped on
 something a person has to see (`reason`: `waiting_local_changes`,
 `conflict`, `verification_failed`, `failed`, with the files or failed checks).
+`TaskMergeOutcomeSchema` in `packages/protocol/src/projectWork.ts` is the shared
+outcome vocabulary used by the merge owner; `TaskMergeBlockedOutcomeSchema`
+excludes `merged` for an open attention reason. The event's `outcome:hash`
+deduplication key identifies repeated notices, not an additional reason code.
 The service actor `task_merge` writes them (ADR 0016 §11;
 [modules/hosts.md](../modules/hosts.md), "Merging a done Task").
 

@@ -1,7 +1,11 @@
-import { HttpError, optionalObject, optionalString, requiredString, type SpaceUserIdentity } from "../routeUtils/common.js";
+import { HttpError, optionalObject, optionalString, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { getBuiltInCapabilityPack, listBuiltInCapabilityPacks } from "./packRegistry.js";
 import { getBuiltInCapabilityDefinition, listBuiltInCapabilityDefinitions } from "./registry.js";
-import { previewSkillImport, type SkillFetcher, type SkillImportOptions } from "./skillImporter.js";
+import { previewSkillImport, previewSkillFiles, type SkillFetcher, type SkillImportOptions } from "./skillImporter.js";
+import { SkillImportPreviewRequestSchema, SkillImportRequestSchema, SkillReviewProposalRequestSchema } from "@rainver/protocol";
+import { readSkillArchive } from "./skillArchive.js";
+import { previewHostSkillSource } from "./skillHostImport.js";
+import type { ServerConfig } from "../../config.js";
 import type { PgCapabilitiesRepository } from "./repository.js";
 import type { CapabilityDefinition } from "./types.js";
 
@@ -9,6 +13,7 @@ export class CapabilitiesService {
   constructor(
     private readonly repository: PgCapabilitiesRepository,
     private readonly importOptions?: SkillFetcher | SkillImportOptions,
+    private readonly config?: ServerConfig,
   ) {}
 
   async listCapabilityDefinitions(identity: SpaceUserIdentity): Promise<CapabilityDefinition[]> {
@@ -39,14 +44,8 @@ export class CapabilitiesService {
     return getBuiltInCapabilityPack(packId);
   }
 
-  async previewSkillImport(body: Record<string, unknown>) {
-    return previewSkillImport(
-      {
-        url: requiredString(body.url, "url"),
-        source_type: optionalString(body.source_type) as never,
-      },
-      this.importOptions,
-    );
+  async previewSkillImport(body: Record<string, unknown>, identity?: SpaceUserIdentity) {
+    return resolveSkillImportPreview(body, this.importOptions, identity, this.config);
   }
 
   /**
@@ -56,8 +55,10 @@ export class CapabilitiesService {
    * that changed upstream in between.
    */
   async importSkill(identity: SpaceUserIdentity, body: Record<string, unknown>) {
-    const previewedHash = requiredString(body.package_hash, "package_hash");
-    const preview = await this.previewSkillImport(body);
+    const parsed = SkillImportRequestSchema.safeParse(body);
+    if (!parsed.success) throw new HttpError(422, "Invalid Skill import request");
+    const { package_hash: previewedHash, ...source } = parsed.data;
+    const preview = await this.previewSkillImport(source, identity);
     if (preview.package_hash !== previewedHash) {
       const detail = "The skill package changed since it was previewed; preview it again before importing";
       throw new HttpError(409, detail, { detail, code: "skill_package_changed" });
@@ -68,10 +69,14 @@ export class CapabilitiesService {
   async createSkillReviewProposal(
     identity: SpaceUserIdentity,
     skillPackageId: string,
+    body: Record<string, unknown> = {},
   ) {
+    const parsed = SkillReviewProposalRequestSchema.safeParse(body);
+    if (!parsed.success) throw new HttpError(422, "Invalid Skill review request");
     return this.repository.createSkillImportApprovalProposal({
       identity,
       skillPackageId,
+      binding: parsed.data.binding,
     });
   }
 
@@ -171,4 +176,19 @@ function assertNoEmbeddedOverlaySecrets(value: unknown): void {
       if (item && typeof item === "object") stack.push(item);
     }
   }
+}
+
+export async function resolveSkillImportPreview(body: Record<string, unknown>, importOptions?: SkillFetcher | SkillImportOptions,
+  identity?: SpaceUserIdentity, config?: ServerConfig) {
+    const parsed = SkillImportPreviewRequestSchema.safeParse(body);
+    if (!parsed.success) throw new HttpError(422, "Invalid Skill import source");
+    const source = parsed.data;
+    if (source.source_type === "local_workspace") {
+      if (!identity || !config) throw new HttpError(503, "Global Skill import is unavailable");
+      return previewHostSkillSource(config, identity, source);
+    }
+    if (source.source_type === "upload") {
+      return previewSkillFiles({ files: "files" in source ? source.files : readSkillArchive(source.archive_base64) });
+    }
+    return previewSkillImport(source, importOptions);
 }

@@ -1,11 +1,30 @@
 import { relative, resolve, sep } from "node:path";
 
-const FORBIDDEN_DIR_NAMES = new Set([".ssh", ".aws", ".gcp", ".azure", "credentials"]);
+const FORBIDDEN_DIR_NAMES = new Set([".ssh", ".aws", ".gcp", ".azure", ".gnupg", "credentials"]);
 const FORBIDDEN_DIR_SEQUENCES = [
   ["instance", "secrets"],
   ["config", "secrets"],
+  [".config", "gcloud"],
 ] as const;
-const FORBIDDEN_FILE_NAMES = new Set([".env", "id_rsa", "id_ed25519"]);
+/**
+ * File reads are not redacted, so a credential store must not be readable at
+ * all. These are the files a CLI or package manager keeps a login token in:
+ * a Folder that is (or contains) a home directory would otherwise hand every
+ * Project reader the owner's npm, git, database, registry or agent login.
+ */
+const FORBIDDEN_FILE_NAMES = new Set([
+  ".env", "id_rsa", "id_dsa", "id_ecdsa", "id_ecdsa_sk", "id_ed25519", "id_ed25519_sk",
+  ".npmrc", ".netrc", "_netrc", ".git-credentials", ".pgpass", ".pypirc", ".my.cnf",
+  ".vault-token", ".htpasswd", ".s3cfg", ".boto",
+]);
+/** Credential files whose name alone is ordinary, matched with their parent directory. */
+const FORBIDDEN_PATH_ENDINGS = [
+  [".docker", "config.json"],
+  [".kube", "config"],
+  [".claude", ".credentials.json"],
+  [".codex", "auth.json"],
+  [".config", "gh", "hosts.yml"],
+] as const;
 const ALLOWED_ENV_TEMPLATE_NAMES = new Set([
   ".env.example",
   ".env.sample",
@@ -14,7 +33,7 @@ const ALLOWED_ENV_TEMPLATE_NAMES = new Set([
   ".env.test.example",
   ".env.prod.example",
 ]);
-const FORBIDDEN_FILE_SUFFIXES = new Set([".pem", ".key"]);
+const FORBIDDEN_FILE_SUFFIXES = new Set([".pem", ".key", ".p12", ".pfx", ".jks", ".keystore"]);
 const FORBIDDEN_WRITE_SUFFIXES = new Set([".py", ".sh", ".bash", ".zsh", ".fish"]);
 
 export class PathPolicyError extends Error {
@@ -68,13 +87,8 @@ export function validatePath(input: PathPolicyInput): string {
       throw new PathPolicyError(`Access to '${part}' is forbidden`);
     }
   }
-  for (const sequence of FORBIDDEN_DIR_SEQUENCES) {
-    for (let i = 0; i <= lowerParts.length - sequence.length; i += 1) {
-      if (sequence.every((part, offset) => lowerParts[i + offset] === part)) {
-        throw new PathPolicyError(`Access to '${sequence.join("/")}' is forbidden`);
-      }
-    }
-  }
+  const sequence = forbiddenSequence(lowerParts);
+  if (sequence) throw new PathPolicyError(`Access to '${sequence}' is forbidden`);
   if (
     lowerParts.length >= 2
     && lowerParts[lowerParts.length - 2] === ".git"
@@ -117,10 +131,30 @@ export function isInside(candidate: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !rel.startsWith(sep) && !rel.startsWith("/"));
 }
 
+/** A forbidden multi-segment location (`config/secrets`, `.docker/config.json`), if any. */
+function forbiddenSequence(lowerParts: readonly string[]): string | null {
+  for (const sequence of FORBIDDEN_DIR_SEQUENCES) {
+    for (let i = 0; i <= lowerParts.length - sequence.length; i += 1) {
+      if (sequence.every((part, offset) => lowerParts[i + offset] === part)) return sequence.join("/");
+    }
+  }
+  for (const ending of FORBIDDEN_PATH_ENDINGS) {
+    const start = lowerParts.length - ending.length;
+    if (start >= 0 && ending.every((part, offset) => lowerParts[start + offset] === part)) return ending.join("/");
+  }
+  return null;
+}
+
+/** Audit hint for a relative path; covers every credential store `validatePath` refuses. */
 export function looksSecretLikePath(path: string | null | undefined): boolean {
   if (!path) return false;
-  return /(^|\/)(\.env($|\.)|id_rsa$|id_ed25519$|secrets?\.[^/]+$|[^/]+\.(pem|key)$|\.ssh\/|\.aws\/|config\/secrets\/)/i
-    .test(path);
+  if (/(^|\/)(\.env($|\.)|secrets?\.[^/]+$|\.ssh\/|\.aws\/|config\/secrets\/)/i.test(path)) return true;
+  const lowerParts = path.split(/[\\/]+/).filter(Boolean).map((part) => part.toLowerCase());
+  const filename = lowerParts[lowerParts.length - 1] ?? "";
+  return lowerParts.some((part) => FORBIDDEN_DIR_NAMES.has(part))
+    || FORBIDDEN_FILE_NAMES.has(filename)
+    || FORBIDDEN_FILE_SUFFIXES.has(fileSuffix(filename))
+    || forbiddenSequence(lowerParts) !== null;
 }
 
 /**
@@ -206,6 +240,8 @@ const SECRET_SHAPES = [
   /\bsk-[A-Za-z0-9_-]{12,}/g,
   /\bAIza[A-Za-z0-9_-]{20,}/g,
   /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
+  // An npm automation/publish token, as `.npmrc` stores it.
+  /\bnpm_[A-Za-z0-9]{36}\b/g,
   // A JSON Web Token: three base64url segments. Its payload is the identity.
   /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g,
 ];

@@ -24,12 +24,10 @@ import type {
 } from '../../types/api'
 import { Button } from '../../components/ui/button'
 import { Card, CardTitle } from '../../components/ui/card'
-import { Label } from '../../components/ui/label'
-import { Select } from '../../components/ui/select'
 import { LimitedRoomDialog } from './LimitedRoomDialog'
 import { RoomRosterPanel } from './RoomRosterPanel'
 import { audienceLabel } from './audience'
-import { ConversationSurface, type RoutingMode } from '../conversation/ConversationSurface'
+import { ConversationSurface } from '../conversation/ConversationSurface'
 import { ConversationExecutionPreflight } from '../conversation/ConversationExecutionPreflight'
 import { conversationInputSourcesFromExecutionSummary } from '../conversation/ConversationInputComposer'
 
@@ -98,7 +96,6 @@ export default function AgentGroupsPage() {
   const [roomLoadError, setRoomLoadError] = useState<string | null>(null)
   /** A retry of the catalog load is in flight; the empty state's button waits on it. */
   const [retrying, setRetrying] = useState(false)
-  const [routingMode, setRoutingMode] = useState<RoutingMode>('direct')
   const loadCatalog = useCallback(async () => {
     if (!activeSpaceId) return
     const requestSequence = ++catalogRequestSequence.current
@@ -601,8 +598,10 @@ export default function AgentGroupsPage() {
                   </div>
                   {/* The conversation itself is the shared module the Project
                       chat panel also renders; this page adds only what is the
-                      page's — routing and per-agent backends. */}
+                      page's — run settings and per-agent backends. Where a
+                      message goes is shown and chosen in the composer. */}
                   <ConversationSurface
+                    spaceId={detail?.room.space_id}
                     roomId={detail.room.id}
                     // Null while the user is choosing the execution context
                     // for a new Conversation. The explicit setup action binds
@@ -630,7 +629,6 @@ export default function AgentGroupsPage() {
                     variant="full"
                     agents={agents}
                     humans={spaceMembers}
-                    routingMode={routingMode}
                     isOwner={detail.user_members.some(member => member.user_id === userId && member.role === 'owner')}
                     references={referencesForThisThread}
                     onReferencesRejected={() => setPendingReferences(null)}
@@ -656,19 +654,6 @@ export default function AgentGroupsPage() {
                       <details>
                         <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">Run settings</summary>
                         <div className="mt-3 space-y-3 rounded-md bg-muted/30 p-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Label htmlFor="routing">Routing</Label>
-                            <Select
-                              className="w-48"
-                              ariaLabel="Routing"
-                              value={routingMode}
-                              onChange={value => setRoutingMode(value as RoutingMode)}
-                              options={[
-                                { value: 'direct', label: 'Direct mentions' },
-                                { value: 'agent_coordination', label: 'Agent coordination' },
-                              ]}
-                            />
-                          </div>
                           {/* Each Agent's runtime is chosen in the conversation's
                               execution preflight, before its first message, and
                               pinned there; there is no second chooser here. */}

@@ -166,10 +166,13 @@ the authorized `agent.delegate` runtime tool and can pause on
 other room results through `agent.wait_for_results`; frontend room
 messages remain natural-language instructions, but the Tiptap composer resolves
 structured `@agent` tokens into traceable recipient segments. No structured
-mention defaults to the manager, adjacent mentions can fan out one segment to
-multiple agents, separated mention groups create separate prompts, and the user
-can explicitly choose Agent coordination to route the full turn to the manager
-for decomposition/delegation instead of direct fan-out.
+mention defaults to the manager; a mention opening the message or a line
+addresses that agent directly, adjacent mentions can fan out one segment to
+multiple agents, and separate address groups create separate prompts. Mentions
+only inside sentences route the full turn to the manager (`agent_coordination`)
+with those agents as coordination targets to delegate to; the person can
+switch either route in the composer (`modules/rooms.md`, "Addressing and
+routing a message").
 
 **Artifact** — durable output produced by a run. Stored under `artifact_storage_root`. Exportable within the owning space. `storage_path` is always relative to `artifact_storage_root`.
 
@@ -228,8 +231,14 @@ overlap, creation-time explicit precedence selects the highest-precedence cap;
 without precedence the strictest cap wins. The snapshot records both the
 declared carriers and the effective budget plus its resolution trace.
 
-The enforcement boundary is deliberately narrow: `max_duration_seconds` caps
-the adapter timeout, `max_runs` is resolved from the immutable budget source
+Agent Runs have no default wall-clock execution budget. An explicitly set
+`max_duration_seconds` (Space run budget, Task, Plan node, automation or
+workflow target, experiment `timeout_seconds`) resolves into the contract like
+any other cap and is enforced per execution attempt, as is a dispatch's
+`timeout_ms`; the shorter applies, and a Run that reaches it is stopped
+through the normal stop path and fails with the non-retryable `run_timed_out`
+(`runs/runTimeLimit.ts`). A new Task sets none by default. AgentVersion
+`max_run_time_seconds` remains historical metadata and never caps execution. `max_runs` is resolved from the immutable budget source
 precedence and enforced for Task, Automation, and Workflow/plan coordinator
 admissions before dispatch. Plan child Runs carry `root_run_id`, so one
 workflow fire is counted once rather than once per child; historical source
@@ -249,6 +258,27 @@ duplicate the accuracy classification. Anthropic's
 `cache_creation_1h_input_tokens` is retained as a
 priced subset of `cache_creation_input_tokens`; it is never added a second time
 when deriving total tokens. `usage_accuracy` describes token evidence only.
+CLI Run observations aggregate internal model calls. If the runtime does not
+report a call count, the writer records zero as the numeric placeholder plus
+`metadata_json.request_count_known=false`. Reads treat old `local_cli` rows
+without affirmative count evidence as unknown too; no historical rows are
+rewritten. The usage API's `request_count` sums only confirmed calls and
+`unknown_request_count_events` reports incomplete coverage. Event DTOs carry
+`request_count_known`, and the UI shows unknown or a lower bound and withholds
+per-call averages while coverage is incomplete. Managed per-call observations
+and transcript observations retain their existing counting contract.
+
+CLI observations attach numeric diagnostics and generic attempt dimensions to
+the same usage ledger: ACP requests sent (not internal model calls), runtime
+occupancy/capacity, the accepted Delivery estimate and allocation buckets,
+full/delta mode, and the reason for a full reconstruction. Attempt id, outcome,
+and task/delegation/handoff purpose are filterable dimensions. When the canonical
+Run attempt number is available, its number and initial/retry classification
+are retained too; a missing number is not guessed. Provider-backed
+CLI calls remain metered at the proxy only. These diagnostics do not change
+pricing, quotas or authorization and contain no prompt or transcript bodies.
+The Usage page expands these details separately from cumulative reported token
+buckets. Cache creation's one-hour bucket remains a subset, not extra input.
 Unknown custom models and CLI, embedding, or rerank paths remain uncosted rather
 than falling back to a second local pricing engine.
 
@@ -521,6 +551,17 @@ fan-out ceiling and bounded defaults). The implementation is
   and past 5 Agent-triggered turns (`ROOM_DISCUSSION_MAX_PARTICIPANTS`, the
   ADR 0017 ceiling) an addressed Agent is held with a notice, not run. Only a
   person adding rounds grants another budget of the same size.
+- **Explicit task collaboration.** An original manual Room root turn can
+  declare `agent.delegate`'s task-scoped collaboration bounds before its first
+  delegation. One coordinator, one open Project Task and at most two fixed
+  specialists share a finite declared count (up to 128 children), plus at most
+  twice that many charged Agent turns (`collaborationTurnCeiling`); a
+  completion turn's fan-out is the number of declared participants.
+  Completion does not refill it. Three
+  consecutive child failures/cancellations, task holds/completion, access
+  revocation and explicit stop prevent further admission. See
+  [rooms.md](../modules/rooms.md) for the authority and audit details. Ordinary
+  delegation and discussion budgets remain unchanged.
 - **An explicit discussion's caps.** A discussion a person opens is bounded by
   its round cap (default 3 open, 2 debate; one turn per Agent per round, at
   most 5 participants), and on priced Runs by a spend cap (default USD 2);
@@ -770,7 +811,14 @@ summary in `RunEvaluation.evidence_json`; failed/error results map to the
 
 ### Idempotency
 
-Repeated calls to `POST /finalize` for the same `(run_id, attempt_number, finalizer_version)` return the existing completed `RunFinalization` without creating additional `RunEvaluation`, `TaskEvaluation`, or `run_finalized` event rows. A pass that wrote its `RunEvaluation` and then failed before the `RunFinalization` row is retried by reusing that attempt's evaluation (`getRunEvaluationForAttempt`) rather than appending a second one. Under the lock, the repeated path re-reads the Run before asking whether a failure is left to supervise, and the Supervisor itself re-reads and locks the Run's status in its transaction and rolls back a decision whose hold did not take effect — a stale terminal snapshot must not write a decision against the next attempt. A later physical attempt has a different attempt number and is finalized independently.
+Repeated calls to `POST /finalize` for the same `(run_id, attempt_number, finalizer_version)` return the existing completed `RunFinalization` without creating additional `RunEvaluation`, `TaskEvaluation`, or `run_finalized` event rows. A pass that wrote its `RunEvaluation` and then failed before the `RunFinalization` row is retried by reusing that attempt's evaluation (`getRunEvaluationForAttempt`) rather than appending a second one. Under the lock, every path re-reads the Run and checks the current physical attempt before writing evidence or resuming supervision. A queued successor cannot inherit the prior attempt's terminal snapshot; an earlier finalization replay returns its existing record without settling a newer attempt. The Supervisor carries the evaluated attempt number and compares it again under the Run row lock, including when a later attempt has also failed. It rolls back a decision whose hold did not take effect. A later physical attempt has a different attempt number and is finalized independently.
+
+Settlement checks the attempt again after Supervisor handling. If supervision
+has already committed a successor, the older finalization performs no domain
+reconciliation; the successor's own finalization settles its outcome. This
+also covers a successor that finishes before the earlier finalizer returns.
+The superseded finalization still closes its own completion gate, with no
+remaining domain reconciliation owed by that attempt.
 
 ### Non-terminal rejection
 

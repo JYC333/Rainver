@@ -3,6 +3,7 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { RetrievalProjectionService } from "../src/modules/retrieval/projectionService.js";
 import { RetrievalSearchService } from "../src/modules/retrieval/searchService.js";
+import { toVectorLiteral } from "../src/modules/retrieval/embeddingStore.js";
 import { type QueryEmbedder } from "../src/modules/retrieval/types.js";
 import { knowledgeRetrievalRegistry } from "../src/modules/knowledge/retrievalAdapter.js";
 import {
@@ -193,4 +194,54 @@ describe("Vector recall arm (real Postgres + pgvector)", () => {
       evidence: { kind: "vector_match" },
     });
   });
+});
+
+describe("Retrieval ANN halfvec index (real Postgres + pgvector)", () => {
+  it("ships the default-dimension halfvec HNSW index in the baseline", async () => {
+    if (!db.available) return;
+    const idx = await db.pool.query<{ indexdef: string }>(
+      `SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_retrieval_chunks_embedding_hnsw_2560'`,
+    );
+    expect(idx.rows).toHaveLength(1);
+    expect(idx.rows[0]!.indexdef).toMatch(/USING hnsw/i);
+    expect(idx.rows[0]!.indexdef).toMatch(/halfvec/i);
+  });
+
+  it(
+    "the planner uses the HNSW index for the arm's constant-dimension halfvec query",
+    async () => {
+      if (!db.available) return;
+      for (let i = 0; i < 40; i++) {
+        await seedKnowledge({ id: `noise-${i}`, title: `Noise ${i}`, content: `noise chunk ${i}` });
+      }
+      await seedKnowledge({ id: "target", title: "Target doc", content: "target marker bbb" });
+      await reindexAndEmbed();
+
+      // EXPLAIN the exact halfvec query shape the vector arm emits at the default
+      // dim. SET + EXPLAIN must run on the SAME connection (a GUC set via the db.pool
+      // could otherwise land on a different pooled connection under load), so use a
+      // dedicated client.
+      const client = await db.pool.connect();
+      let planText: string;
+      try {
+        await client.query("SET enable_seqscan = off");
+        const plan = await client.query<{ "QUERY PLAN": string }>(
+          `EXPLAIN (FORMAT TEXT)
+             SELECT rc.object_id, rc.embedding::halfvec(2560) <=> $1::halfvec(2560) AS distance
+               FROM retrieval_chunks rc
+              WHERE rc.space_id = $2
+                AND rc.embedding IS NOT NULL
+                AND rc.embedding_dimensions = 2560
+              ORDER BY rc.embedding::halfvec(2560) <=> $1::halfvec(2560)
+              LIMIT 10`,
+          [toVectorLiteral(oneHot(1)), SPACE],
+        );
+        planText = plan.rows.map((r) => r["QUERY PLAN"]).join("\n");
+      } finally {
+        client.release();
+      }
+      expect(planText).toMatch(/ix_retrieval_chunks_embedding_hnsw_2560/);
+    },
+    15_000,
+  );
 });

@@ -104,6 +104,7 @@ export const sessionConversationBackends = pgTable("session_conversation_backend
 	modelProviderIdSnapshot: varchar("model_provider_id_snapshot", { length: 36 }),
 	runtimeConfigSnapshotJson: jsonb("runtime_config_snapshot_json").default({}).notNull(),
 	runtimePolicySnapshotJson: jsonb("runtime_policy_snapshot_json").default({}).notNull(),
+	sessionConfigJson: jsonb("session_config_json"),
 	runtimeStateKey: varchar("runtime_state_key", { length: 36 }).notNull(),
 	runtimeSessionId: varchar("runtime_session_id", { length: 512 }),
 	runtimeContextFingerprint: varchar("runtime_context_fingerprint", { length: 64 }),

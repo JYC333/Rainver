@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import SourceChannelsPage from '../SourceChannelsPage'
-import { projectsApi, sourcesApi } from '../../../api/client'
+import { sourcesApi } from '../../../api/client'
 import i18n from '../../../i18n'
 
 vi.mock('sonner', () => ({
@@ -15,9 +15,6 @@ vi.mock('../../../contexts/SpaceContext', () => ({
 }))
 
 vi.mock('../../../api/client', () => ({
-  projectsApi: {
-    createSourceBinding: vi.fn(),
-  },
   sourcesApi: {
     providers: vi.fn(),
     channels: vi.fn(),
@@ -110,7 +107,6 @@ describe('Sources page', () => {
       provider_key: 'arxiv', compiled_query: 'all:"agent memory"', approximate_hit_count: 42,
       samples: [{ title: 'Agent memory systems', source_uri: 'https://arxiv.org/abs/1', occurred_at: '2026-07-18T00:00:00Z' }],
     })
-    vi.mocked(projectsApi.createSourceBinding).mockResolvedValue({} as never)
   })
 
   it('presents sources instead of exposing the internal channel model', async () => {
@@ -228,20 +224,6 @@ describe('Sources page', () => {
       provider_key: 'arxiv',
       query: { mode: 'recent_by_category', categories: ['cs.AI', 'cs.LG'] },
     })))
-  })
-
-  it('creates a reusable source without binding it to a project', async () => {
-    const user = userEvent.setup({ delay: null })
-    const created = source({ id: 'channel-new', source_connection_id: 'connection-new' })
-    vi.mocked(sourcesApi.createChannel).mockResolvedValueOnce(created)
-    renderPage()
-
-    await user.click(await screen.findByRole('button', { name: /add source/i }))
-    await user.type(screen.getByPlaceholderText('e.g. all:"agent memory"'), 'all:"planning"')
-    await user.click(screen.getByRole('button', { name: 'Create source' }))
-
-    await waitFor(() => expect(sourcesApi.createChannel).toHaveBeenCalled())
-    expect(projectsApi.createSourceBinding).not.toHaveBeenCalled()
   })
 
   it('calls a source whose monitors are all stopped Paused, whatever order they come in', async () => {

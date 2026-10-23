@@ -11,3 +11,7 @@ export {
   __setSessionIdentityForTests,
   __setSessionServicesFactoryForTests,
 } from "./routes.js";
+
+export { visibleRoomTranscriptSql, visibleMessagePathSql } from "./messagePath.js";
+export { openHumanQuestionSql } from "./messagePath.js";
+export { attentionSessionReadSql } from "./attentionRead.js";

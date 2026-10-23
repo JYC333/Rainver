@@ -42,6 +42,7 @@ interface QueuedRow {
 interface QueuedSendRequest {
   routing_mode: "direct" | "agent_coordination";
   recipient_segments: AgentGroupMessageRecipientSegment[] | null;
+  coordination_target_agent_ids?: string[] | null;
   focus_refs: Array<{ type: "task"; id: string }> | null;
   backends: Array<{ agent_id: string; runtime_profile_id: string; session_config?: unknown[] }>;
   discussion_id?: string | null;
@@ -185,6 +186,7 @@ export class RoomMessageQueue {
         discussion_id: request.discussion_id ?? null,
         recipient_segments: request.recipient_segments ?? null,
         routing_mode: request.routing_mode ?? "direct",
+        coordination_target_agent_ids: request.coordination_target_agent_ids ?? null,
         focus_refs: request.focus_refs ?? null,
         backends: request.backends as never ?? [],
       },

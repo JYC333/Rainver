@@ -12,7 +12,6 @@ import {
 } from "./evidenceRedaction.js";
 import { RunPreparationError } from "./orchestrationErrors.js";
 import type { RunRecord } from "./repository.js";
-import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 
 interface PreparedRuntimeInput {
   prompt: string | null;
@@ -196,54 +195,6 @@ export function adapterFailureEnvelope(
       runtime_key: run.runtime_key ?? "unknown",
     },
   };
-}
-
-export function adapterTimeoutEnvelope(
-  run: RunRecord,
-  timeoutMs: number,
-): RunAdapterResultEnvelope {
-  const now = new Date().toISOString();
-  return {
-    runtime_key: run.runtime_key ?? "unknown",
-    adapter_kind: isVendorCliAdapter(run.runtime_key) ? "local_cli" : "managed_api",
-    success: false,
-    output_text: "",
-    output_json: { runtime_key: run.runtime_key ?? "unknown" },
-    exit_code: 1,
-    error_code: "adapter_timeout",
-    error_message: `Runtime adapter timed out after ${timeoutMs}ms.`,
-    started_at: now,
-    completed_at: now,
-    usage: null,
-    metadata_json: {
-      runtime_key: run.runtime_key ?? "unknown",
-      timeout_ms: timeoutMs,
-    },
-  };
-}
-
-export function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  timeoutValue: T,
-  onTimeout?: () => void,
-): Promise<T> {
-  return new Promise((resolveValue, reject) => {
-    const timer = setTimeout(() => {
-      onTimeout?.();
-      resolveValue(timeoutValue);
-    }, timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolveValue(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
 }
 
 export function inputWithPreparedRuntime<T extends {

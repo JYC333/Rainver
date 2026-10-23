@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useConversationScope } from './ConversationScope'
+import { useEffect, useMemo, useState } from 'react'
 import { BookOpen, ChevronDown } from 'lucide-react'
 import { WORK_RETRIEVAL_DOMAINS, type WorkRetrievalDomain, type WorkRetrievalSwitch } from '@rainver/protocol'
 import { Button } from '../../components/ui/button'
@@ -9,7 +10,7 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '../../components/ui/dropdown-menu'
-import { runtimeContextApi } from '../../api/client'
+import { runtimeContextApi, type RetrievalSwitchTarget } from '../../api/client'
 import { useAppTranslation } from '../../i18n'
 
 /**
@@ -18,16 +19,27 @@ import { useAppTranslation } from '../../i18n'
  * whether turns search the knowledge base on their own. What the person
  * attaches reaches the turn either way.
  */
-export function KnowledgeRetrievalToggle({ scopeId, disabled = false, agentName = null }: {
-  /**
-   * The Work Context: a direct conversation, or a Room recipient (one Agent
-   * in a Room). Null before a conversation exists, when nothing can be kept.
-   */
+export function KnowledgeRetrievalToggle({ disabled = false, agentName = null, ...owner }: ({
+  /** A direct conversation's Work Context. Null before the conversation exists. */
   scopeId: string | null
+} | {
+  /** One Room recipient in this Conversation. Null before the Conversation exists. */
+  sessionId: string | null
+  roomAgentMemberId: string
+}) & {
   disabled?: boolean
   /** Names the Agent when the switch belongs to one Room recipient. */
   agentName?: string | null
 }) {
+  const scopeId = 'scopeId' in owner ? owner.scopeId : null
+  const sessionId = 'sessionId' in owner ? owner.sessionId : null
+  const roomAgentMemberId = 'roomAgentMemberId' in owner ? owner.roomAgentMemberId : null
+  const target = useMemo<RetrievalSwitchTarget | null>(() => (
+    scopeId ? { scopeId }
+      : sessionId && roomAgentMemberId ? { sessionId, roomAgentMemberId }
+        : null
+  ), [scopeId, sessionId, roomAgentMemberId])
+  const scope = useConversationScope()
   const { t } = useAppTranslation()
   const [state, setState] = useState<WorkRetrievalSwitch | null>(null)
   const [saving, setSaving] = useState(false)
@@ -39,23 +51,23 @@ export function KnowledgeRetrievalToggle({ scopeId, disabled = false, agentName 
     setState(null)
     setFailed(false)
     setLoadFailed(false)
-    if (!scopeId) return
+    if (!target) return
     let active = true
-    runtimeContextApi.retrievalSwitch(scopeId)
+    runtimeContextApi.retrievalSwitch(target, scope)
       .then(next => { if (active) setState(next) })
       .catch(() => { if (active) setLoadFailed(true) })
     return () => { active = false }
-  }, [scopeId, loadAttempt])
+  }, [target, loadAttempt, scope])
 
   const save = async (enabled: boolean, domains?: WorkRetrievalDomain[]) => {
-    if (!scopeId) return
+    if (!target) return
     setSaving(true)
     setFailed(false)
     try {
-      setState(await runtimeContextApi.setRetrievalSwitch(scopeId, {
+      setState(await runtimeContextApi.setRetrievalSwitch(target, {
         enabled,
         ...(domains ? { preferred_domains: domains } : {}),
-      }))
+      }, scope))
     } catch {
       setFailed(true)
     } finally {
@@ -65,7 +77,7 @@ export function KnowledgeRetrievalToggle({ scopeId, disabled = false, agentName 
 
   const enabled = state?.enabled === true
   const domains = state?.preferred_domains ?? []
-  const unavailable = !scopeId || !state || disabled || saving
+  const unavailable = !target || !state || disabled || saving
   // No choice yet means every domain the conversation may search.
   const chosen: WorkRetrievalDomain[] = domains.length === 0 ? [...WORK_RETRIEVAL_DOMAINS] : domains
   const toggleDomain = (domain: WorkRetrievalDomain) => {
@@ -99,7 +111,7 @@ export function KnowledgeRetrievalToggle({ scopeId, disabled = false, agentName 
         className="h-7 gap-1 px-2 text-xs"
         aria-pressed={enabled}
         disabled={unavailable}
-        title={!scopeId ? t('conversation_retrieval.unavailable_until_started') : failed ? t('conversation_retrieval.failed') : hint}
+        title={!target ? t('conversation_retrieval.unavailable_until_started') : failed ? t('conversation_retrieval.failed') : hint}
         onClick={() => void save(!enabled)}
       >
         <BookOpen className="size-3.5" />

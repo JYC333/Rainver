@@ -7,6 +7,9 @@ import { WorkContextService, runRetrievalChoice, workContextRetrievalSwitchedOn 
 import { PgRetrievalIntentProvider } from "../src/modules/runtimeContext/productionAcquisition.js";
 import type { RuntimeContextAuthoritySnapshot } from "../src/modules/runtimeContext/acquisitionComposition.js";
 import type { RuntimeContextPlanningRequest } from "../src/modules/runtimeContext/planningService.js";
+import { ExecutionControlSnapshotRepository } from "../src/modules/policy/executionControlSnapshots.js";
+import type { RunRecord } from "../src/modules/runs/repository.js";
+import { seedRoomManager } from "./support/domainSeeds.js";
 
 // The conversation knowledge-retrieval switch: off for a new conversation,
 // kept per person and conversation as Work Context Setup versions, and
@@ -119,6 +122,76 @@ describe("conversation knowledge-retrieval switch (real Postgres)", () => {
     // Someone else's conversation is not theirs to switch.
     await expect(service.setRetrievalSwitch({ spaceId: SPACE, userId: OTHER }, session, { enabled: true })).rejects.toBeTruthy();
     await expect(service.setRetrievalSwitch(identity, session, { enabled: "yes" })).rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  it("gives a Room recipient one Work Context per Conversation", async () => {
+    if (!db.available) return;
+    const service = new WorkContextService(db.pool);
+    const identity = { spaceId: SPACE, userId: USER };
+    const project = randomUUID();
+    const room = randomUUID();
+    await db.pool.query(
+      `INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at)
+       VALUES ($1,$2,$3,'Project','active',now(),now())`,
+      [project, SPACE, USER],
+    );
+    await db.pool.query(
+      `INSERT INTO rooms (id,space_id,project_id,created_by_user_id,title,status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'Room','active',now(),now())`,
+      [room, SPACE, project, USER],
+    );
+    const { memberId } = await seedRoomManager(db.pool, { space: SPACE, room, agent: AGENT });
+    await db.pool.query(
+      `INSERT INTO room_user_members (id,space_id,room_id,user_id,role,status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'owner','active',now(),now())`,
+      [randomUUID(), SPACE, room, USER],
+    );
+    const conversations = [randomUUID(), randomUUID()];
+    for (const conversation of conversations) {
+      await db.pool.query(
+        `INSERT INTO sessions (id,space_id,project_id,room_id,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'active',now(),now())`,
+        [conversation, SPACE, project, room],
+      );
+    }
+
+    // Reading the switch is read-only: no scope row is created for it, and a
+    // recipient nobody has set reads as a new conversation's default.
+    await expect(service.getRoomConversationRetrievalSwitch(identity, conversations[0]!, memberId))
+      .resolves.toEqual({ work_context_scope_id: null, enabled: false, preferred_domains: [], setup_version: null });
+    await expect(service.getRoomConversationRetrievalSwitch({ spaceId: SPACE, userId: OTHER }, conversations[0]!, memberId))
+      .rejects.toMatchObject({ statusCode: 404 });
+    const scopeRows = async () => Number((await db.pool.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM room_conversation_recipients WHERE session_id = ANY($1::text[])`,
+      [conversations],
+    )).rows[0]!.count);
+    expect(await scopeRows()).toBe(0);
+
+    const first = await service.roomConversationScopeId(identity, conversations[0]!, memberId);
+    const second = await service.roomConversationScopeId(identity, conversations[1]!, memberId);
+    expect(second).not.toBe(first);
+    await expect(service.roomConversationScopeId(identity, conversations[0]!, memberId)).resolves.toBe(first);
+
+    // A Run in each Conversation works in that Conversation's scope, the
+    // one its ledger, checkpoints and CLI continuity are keyed by.
+    const snapshots = new ExecutionControlSnapshotRepository(db.pool);
+    const runIn = (conversation: string) => ({
+      id: randomUUID(), space_id: SPACE, session_id: conversation, agent_id: AGENT, root_run_id: null,
+      instructed_by_user_id: USER, owner_user_id: USER, project_id: null, project_folder_id: null,
+    }) as unknown as RunRecord;
+    await expect(snapshots.resolveEffectiveBindingsForRun(runIn(conversations[0]!))).resolves.toMatchObject({ workContextScopeId: first });
+    await expect(snapshots.resolveEffectiveBindingsForRun(runIn(conversations[1]!))).resolves.toMatchObject({ workContextScopeId: second });
+
+    // Turning retrieval on in one Conversation leaves the other off.
+    await expect(service.setRetrievalSwitch(identity, first, { enabled: true })).resolves.toMatchObject({ enabled: true, setup_version: 1 });
+    await expect(service.getRetrievalSwitch(identity, second)).resolves.toMatchObject({ enabled: false, setup_version: null });
+    // Once the scope exists, the read path reports it and its setting.
+    await expect(service.getRoomConversationRetrievalSwitch(identity, conversations[0]!, memberId))
+      .resolves.toEqual({ work_context_scope_id: first, enabled: true, preferred_domains: [], setup_version: 1 });
+    expect(await scopeRows()).toBe(2);
+
+    // Someone who is not in the Room gets no scope there.
+    await expect(service.roomConversationScopeId({ spaceId: SPACE, userId: OTHER }, conversations[0]!, memberId))
+      .rejects.toMatchObject({ statusCode: 404 });
   });
 
   it("gives a conversation Run planned without any setup version no retrieval tools, and keeps them for other Runs", async () => {

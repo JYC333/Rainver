@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isWireRelativePath, redactLocalPaths, redactSecretLikeDiff, validatePath } from "../src/pathPolicy.js";
+import { isWireRelativePath, looksSecretLikePath, redactLocalPaths, redactSecretLikeDiff, validatePath } from "../src/pathPolicy.js";
 
 describe("folder-read path policy", () => {
   it("keeps absolute paths off the server-daemon wire while leaving traversal to root policy", () => {
@@ -17,6 +17,25 @@ describe("folder-read path policy", () => {
       .toThrow(/forbidden/);
     expect(() => validatePath({ path: "/workspace/config/secrets/token.txt", allowedRoot: "/workspace" }))
       .toThrow(/config\/secrets/);
+  });
+
+  // File reads are not redacted: a Folder that contains a home directory must
+  // not hand Project readers the owner's CLI and package-manager logins.
+  it("refuses credential stores that CLIs and package managers keep logins in", () => {
+    for (const path of [
+      ".npmrc", "home/.netrc", "_netrc", ".git-credentials", ".pgpass", ".pypirc", ".my.cnf", ".vault-token",
+      ".docker/config.json", ".kube/config", ".claude/.credentials.json", ".codex/auth.json",
+      ".config/gh/hosts.yml", ".config/gcloud/application_default_credentials.json", ".gnupg/pubring.kbx",
+      ".ssh/id_ecdsa", "keys/id_ed25519_sk", "certs/client.p12", "android/release.keystore",
+    ]) {
+      expect(() => validatePath({ path: `/workspace/${path}`, allowedRoot: "/workspace" }), path).toThrow(/forbidden/);
+      expect(looksSecretLikePath(path), path).toBe(true);
+    }
+    // The same names as ordinary project files stay readable.
+    for (const path of ["docker/config.json", ".docker/compose.yml", "kube/config", ".claude/settings.json", ".codex/config.toml", "src/auth.json"]) {
+      expect(validatePath({ path: `/workspace/${path}`, allowedRoot: "/workspace" })).toBe(`/workspace/${path}`);
+      expect(looksSecretLikePath(path), path).toBe(false);
+    }
   });
 
   it("allows env templates and requires code_patch for direct script writes", () => {
@@ -122,6 +141,11 @@ describe("folder-read path policy", () => {
     for (const empty of ['+  credentials: []', '+  token: {}', '+  secrets: [ ]']) {
       expect(redactSecretLikeDiff(empty).diff, empty).toBe(empty);
     }
+  });
+
+  it("redacts an npm token, as .npmrc stores it", () => {
+    const token = `npm_${"a1B2".repeat(9)}`;
+    expect(redactSecretLikeDiff(`+registry=https://example.test/ ${token}`).diff).not.toContain(token);
   });
 
   it("leaves ordinary code and usage counts alone", () => {

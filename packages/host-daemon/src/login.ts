@@ -8,6 +8,7 @@ import { parseAcpAuthMethods } from "./acpProbe.js";
 import { holdRuntimeKey, resolveAcpLaunch, substituteCwd } from "./execution.js";
 import { terminalAuthAvailable } from "./terminalAuth.js";
 import { clearVendorCredentialEnv } from "./providerBinding.js";
+import { probeVersion } from "./capabilities.js";
 
 /**
  * An interactive login for one installation of a runtime, run on this
@@ -48,7 +49,7 @@ function loginAmbient(runtimeKey: string): Record<string, string> {
 }
 
 /** What fixed login program to run for one copy. */
-export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[]; env: Record<string, string>; home: string; login: ToolLoginSpec | null } {
+export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[]; env: Record<string, string>; home: string; login: ToolLoginSpec | null; verification_command?: string[] | null } {
   const ambient = loginAmbient(frame.runtime_key);
   if (frame.auth_method && frame.login_action) throw new Error("Choose either ACP authentication or CLI login");
   if (frame.login_action === "logout") return resolveLogoutCommand(frame, ambient);
@@ -77,16 +78,19 @@ export function resolveLoginCommand(frame: LoginOpenFrame): { command: string[];
   if (frame.installation === OWN_INSTALLATION) {
     const command = frame.login?.command;
     if (!command) throw new Error("This installation does not declare a supported login method");
-    return { command, env: ambient, home: homedir(), login: frame.login };
+    return { command, env: sanitizedEnv(frame.login?.env ?? {}, homedir(), frame.runtime_key), home: homedir(), login: frame.login,
+      verification_command: frame.login?.verification_command };
   }
   const manifest = readToolManifestSync(frame.runtime_key, frame.installation);
   if (!manifest) throw new Error(`This daemon does not have ${frame.runtime_key} ${frame.installation} installed.`);
   // Rendered now rather than trusted from the manifest: the template's
   // placeholders can gain meanings after a copy was installed.
   const tree = join(toolsDir(), manifest.runtime_key, manifest.version);
-  const command = renderManagedLoginCommand(tree, manifest.login ?? frame.login) ?? manifest.login_command;
+  const login = frame.login ?? manifest.login;
+  const command = renderManagedLoginCommand(tree, login) ?? manifest.login_command;
   if (!command) throw new Error("This installation does not declare a supported login method");
-  return { command, env: { ...ambient, ...manifest.env, HOME: manifest.home }, home: manifest.home, login: manifest.login ?? frame.login };
+  return { command, env: sanitizedEnv({ ...manifest.env, ...login?.env }, manifest.home, frame.runtime_key), home: manifest.home, login,
+    verification_command: renderManagedCommand(tree, login?.managed_verification_command) };
 }
 
 /**
@@ -103,15 +107,15 @@ function resolveLogoutCommand(
   if (frame.installation === OWN_INSTALLATION) {
     const command = frame.login?.logout_command;
     if (!command) throw new Error("This installation does not declare a logout command");
-    return { command, env: ambient, home: homedir(), login: frame.login };
+    return { command, env: sanitizedEnv(frame.login?.env ?? {}, homedir(), frame.runtime_key), home: homedir(), login: frame.login };
   }
   const manifest = readToolManifestSync(frame.runtime_key, frame.installation);
   if (!manifest) throw new Error(`This daemon does not have ${frame.runtime_key} ${frame.installation} installed.`);
-  const login = manifest.login ?? frame.login;
+  const login = frame.login ?? manifest.login;
   const tree = join(toolsDir(), manifest.runtime_key, manifest.version);
   const specCommand = renderManagedCommand(tree, login?.managed_logout_command);
   if (specCommand) {
-    return { command: specCommand, env: { ...ambient, ...manifest.env, HOME: manifest.home }, home: manifest.home, login };
+    return { command: specCommand, env: sanitizedEnv({ ...manifest.env, ...login?.env }, manifest.home, frame.runtime_key), home: manifest.home, login };
   }
   if (login) throw new Error("This installation does not declare a logout command");
   const entryArgs = manifest.entry_args ?? (manifest.command === process.execPath ? null : []);
@@ -125,7 +129,7 @@ function resolveLogoutCommand(
 }
 
 function sanitizedEnv(extra: Record<string, string>, home: string, runtimeKey: string): Record<string, string> {
-  return { ...loginAmbient(runtimeKey), ...extra, HOME: home };
+  return { ...clearVendorCredentialEnv({ ...process.env, ...extra }, runtimeKey), HOME: home };
 }
 
 function acpErrorText(value: unknown): string {
@@ -320,18 +324,33 @@ export function openLoginSession(
   child.stdin?.on("error", () => { /* the exit that follows is the report */ });
   let exited = false;
   let closing = false;
-  const finish = (code: number | null) => {
+  const finish = async (code: number | null, launchFailed = false) => {
     if (exited) return;
     exited = true;
-    releaseLogin();
-    sessions.delete(frame.session_id);
+    let exitCode = code ?? -1;
+    let loginState = launchFailed ? null : frame.login_action === "logout"
+      ? (resolved.login ? loggedIn(resolved.home, resolved.login) : code === 0 ? false : null)
+      : frame.auth_method?.type === "terminal" || frame.login_action === "cli" ? code === 0 : loggedIn(resolved.home, resolved.login);
+    try {
+      if (loginState === true && frame.login_action !== "logout" && resolved.verification_command?.length) {
+        const [command, ...args] = resolved.verification_command;
+        const version = await probeVersion(command!, 4000, { args, env, cwd: resolved.home });
+        if (!version) {
+          loginState = null;
+          exitCode = 1;
+          send({ type: "login_output", session_id: frame.session_id,
+            data: "\r\n[rainver] Login credentials are present, but the runtime program is unavailable or failed its version check. Repair the CLI installation on this Host; signing in again will not repair it.\r\n" });
+        }
+      }
+    } finally {
+      releaseLogin();
+      if (sessions.get(frame.session_id) === session) sessions.delete(frame.session_id);
+    }
     send({
       type: "login_exit",
       session_id: frame.session_id,
-      exit_code: code ?? -1,
-      logged_in: frame.login_action === "logout"
-        ? (resolved.login ? loggedIn(resolved.home, resolved.login) : code === 0 ? false : null)
-        : frame.auth_method?.type === "terminal" || frame.login_action === "cli" ? code === 0 : loggedIn(resolved.home, resolved.login),
+      exit_code: exitCode,
+      logged_in: loginState,
     });
   };
   child.stdout?.setEncoding("utf8");
@@ -340,9 +359,9 @@ export function openLoginSession(
   child.stderr?.on("data", (chunk: string) => send({ type: "login_output", session_id: frame.session_id, data: chunk }));
   child.on("error", (error) => {
     send({ type: "login_output", session_id: frame.session_id, data: `${error.message}\n` });
-    finish(-1);
+    void finish(-1, true);
   });
-  child.on("close", (code) => finish(code));
+  child.on("close", (code) => { void finish(code) });
   const admit = createLoginInputGovernor();
   let lastRefusal: string | null = null;
   const session: LoginSession = {

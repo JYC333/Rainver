@@ -1,3 +1,4 @@
+import { recordDroppedSessionConfig, recordRuntimeReportedModel } from "../src/modules/runs/remoteProviderBinding.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildModuleServer } from "./support/moduleServer.js";
@@ -77,6 +78,55 @@ async function appendRunEvent(runId: string, index: number, type: string, extra:
 }
 
 describe("run turn", () => {
+  it("exposes requested and runtime-reported model independently, and clears stale attempt observations", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    await seedManagedRun("model-run");
+    await db.pool.query(`UPDATE runs SET status = 'queued', model_override_json = $2::jsonb WHERE id = $1`, ["model-run", JSON.stringify({
+      acp_session_config: [{ id: "model", type: "select", category: "model", value: "ops" }],
+    })]);
+    const read = async () => (await app!.inject({ method: "GET", url: "/api/v1/runs/model-run/turn" })).json();
+    expect((await read()).model_selection).toEqual({ requested: "ops", reported: null, status: "pending" });
+    await db.pool.query("UPDATE runs SET status = 'running' WHERE id = 'model-run'");
+    await recordRuntimeReportedModel(db.pool, "model-run", SPACE, "claude-ops-test");
+    expect((await read()).model_selection).toEqual({ requested: "ops", reported: "claude-ops-test", status: "reported" });
+    const detail = await app.inject({ method: "GET", url: "/api/v1/runs/model-run" });
+    expect(detail.json().model_selection.reported).toBe("claude-ops-test");
+    await recordRuntimeReportedModel(db.pool, "model-run", "other-space", "wrong-model");
+    expect((await read()).model_selection.reported).toBe("claude-ops-test");
+    await db.pool.query("UPDATE runs SET status = 'queued' WHERE id = 'model-run'");
+    expect((await read()).model_selection).toEqual({ requested: "ops", reported: null, status: "pending" });
+    await recordRuntimeReportedModel(db.pool, "model-run", SPACE);
+    await db.pool.query("UPDATE runs SET status = 'running' WHERE id = 'model-run'");
+    expect((await read()).model_selection.status).toBe("pending");
+    await recordRuntimeReportedModel(db.pool, "model-run", SPACE, null);
+    expect((await read()).model_selection).toEqual({ requested: "ops", reported: null, status: "unknown" });
+  });
+
+  it("shows a saved option the live session dropped on the turn, keeping the server's own drops", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    await seedManagedRun("dropped-run");
+    await db.pool.query(`UPDATE runs SET status = 'running', model_override_json = $2::jsonb WHERE id = $1`, ["dropped-run", JSON.stringify({
+      chat_turn: { message_id: "m-1" },
+      acp_session_config_source: "saved",
+      acp_session_config_dropped: [{ id: "mode", category: "mode", value: "plan", reason: "option_unavailable" }],
+    })]);
+    await recordDroppedSessionConfig(db.pool, "dropped-run", SPACE, [
+      { id: "model", category: "model", value: "retired-model", reason: "value_unavailable" },
+    ]);
+    await recordDroppedSessionConfig(db.pool, "dropped-run", "other-space", [
+      { id: "effort", category: null, value: "high", reason: "not_applied" },
+    ]);
+    const turn = (await app.inject({ method: "GET", url: "/api/v1/runs/dropped-run/turn" })).json();
+    expect(turn.model_selection.dropped).toEqual([
+      { id: "mode", category: "mode", value: "plan", reason: "option_unavailable" },
+      { id: "model", category: "model", value: "retired-model", reason: "value_unavailable" },
+    ]);
+    const stored = await db.pool.query<{ chat_turn: unknown }>(
+      "SELECT model_override_json->'chat_turn' AS chat_turn FROM runs WHERE id = 'dropped-run'",
+    );
+    expect(stored.rows[0]!.chat_turn).toEqual({ message_id: "m-1" });
+  });
+
   it("serves a managed Run's turn as parts, with the reply as its prose", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     await seedManagedRun("run-1");
@@ -183,6 +233,7 @@ describe("run turn", () => {
     // a second tool call lands after it. The streamed text must move aside
     // rather than fight the appended part for one index.
     publishChatTextDelta("run-4", "Found it.");
+    await recordRuntimeReportedModel(db.pool, "run-4", SPACE, "live-model");
     await appendRunEvent("run-4", 1, "tool_call_started", { status: "running", metadata: { call_id: "d", tool_name: "read" } });
     await tick(3);
     await appendRunEvent("run-4", 2, "tool_call_completed", { metadata: { call_id: "c", tool_name: "grep" } });
@@ -202,6 +253,7 @@ describe("run turn", () => {
       .map((frame) => JSON.parse(frame.split("data:")[1]!.trim()) as TurnStreamFrame);
 
     expect(frames.some((frame) => frame.type === "turn.snapshot")).toBe(true);
+    expect(frames.some((frame) => frame.type === "turn.model_changed" && frame.model_selection.reported === "live-model")).toBe(true);
 
     // Replay the frames the way the client does. No part may ever be
     // overwritten by one of a different type: that is the index collision.

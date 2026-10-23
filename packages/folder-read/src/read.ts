@@ -19,7 +19,6 @@ import {
   MAX_FILE_BYTES,
   MAX_FILES,
   MAX_STATUS_OUTPUT_BYTES,
-  SHOW_HIDDEN,
 } from "./limits.js";
 import { isGitRepo, parsePorcelain, runLocationGit } from "./git.js";
 import { openFileBeneathRoot, SafeOpenError } from "./safeOpen.js";
@@ -41,10 +40,72 @@ export async function buildTree(root: string, signal?: AbortSignal): Promise<Fil
   return buildTreeNode(root, root, 0, { count: 0 }, signal);
 }
 
+/** One directory at a time; nested directories have no children until opened. */
+export async function listFolderDirectory(
+  root: string,
+  path = ".",
+  opts: { offset?: number; protectedFolder?: boolean; signal?: AbortSignal } = {},
+): Promise<FileNode> {
+  throwIfAborted(opts.signal);
+  const offset = opts.offset ?? 0;
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new PathPolicyError("Invalid directory offset");
+  const resolved = resolveRelativePath(root, path, opts);
+  if (resolved.relative.split("/").some((name) => IGNORE_DIRS.has(name))) {
+    throw new PathPolicyError("Directory is excluded from file browsing");
+  }
+  // Hold the directory throughout readdir/lstat, including when an ancestor
+  // is renamed. Never enumerate through a caller-controlled symlink.
+  const directory = await openFileBeneathRoot(root, resolved.relative ? resolved.relative.split("/") : [])
+    .catch((error: unknown) => {
+      if (error instanceof SafeOpenError) throw folderReadErrorFromSafeOpen(error);
+      throw error;
+    });
+  try {
+    if (!(await directory.stat()).isDirectory()) throw new FolderReadError("not_found", "Directory not found");
+    const heldPath = `${process.platform === "linux" ? "/proc/self/fd" : "/dev/fd"}/${directory.fd}`;
+    const entries = (await readdir(heldPath, { withFileTypes: true }))
+      .filter((entry) => !entry.isSymbolicLink() && treePathAllowed(root, join(resolved.absolute, entry.name), entry.isDirectory(), opts))
+      .sort((a, b) => Number(a.isFile()) - Number(b.isFile()) || a.name.localeCompare(b.name));
+    const children: FileNode[] = [];
+    let index = offset;
+    for (; index < entries.length && children.length < MAX_FILES; index += 1) {
+      throwIfAborted(opts.signal);
+      const entry = entries[index]!;
+      const info = await lstat(join(heldPath, entry.name)).catch((error: NodeJS.ErrnoException) => {
+        if (["ENOENT", "EACCES", "EPERM"].includes(error.code ?? "")) return null;
+        throw error;
+      });
+      if (!info || (!info.isFile() && !info.isDirectory())) continue;
+      const childPath = resolved.relative ? `${resolved.relative}/${entry.name}` : entry.name;
+      children.push({ name: entry.name, path: childPath, type: info.isDirectory() ? "dir" : "file", ...(info.isFile() ? { size: info.size } : {}) });
+    }
+    return {
+      name: resolved.relative ? resolved.relative.split("/").pop()! : root.split(/[\\/]/).pop() || root,
+      path: resolved.relative || ".",
+      type: "dir",
+      children,
+      ...(index < entries.length ? { next_offset: index } : {}),
+    };
+  } finally {
+    await directory.close();
+  }
+}
+
+function treePathAllowed(root: string, path: string, directory: boolean, opts: Pick<PathPolicyInput, "protectedFolder"> = {}): boolean {
+  if (directory && IGNORE_DIRS.has(path.split(/[\\/]/).pop()!)) return false;
+  try {
+    validatePath({ path, allowedRoot: root, mode: "read", ...opts });
+    return true;
+  } catch (error) {
+    if (error instanceof PathPolicyError) return false;
+    throw error;
+  }
+}
+
 export async function readFolderFile(
   root: string,
   relPath: string,
-  opts: { protectedFolder?: boolean; signal?: AbortSignal; includeUtf16Preview?: boolean } = {},
+  opts: { protectedFolder?: boolean; signal?: AbortSignal; includeUtf16Preview?: boolean; includeOriginalBytes?: boolean } = {},
 ): Promise<FileContent> {
   throwIfAborted(opts.signal);
   const resolved = resolveRelativePath(root, relPath, opts);
@@ -66,6 +127,7 @@ export async function readFolderFile(
     const decoded = decodeFileBytes(bytes, { includeUtf16Preview: opts.includeUtf16Preview === true });
     return {
       path: resolved.relative,
+      ...(opts.includeOriginalBytes ? { content_base64: bytes.toString("base64") } : {}),
       content: decoded.content,
       size: bytes.byteLength,
       line_count: decoded.line_count,
@@ -337,9 +399,8 @@ async function buildTreeNodeFrom(info: Stats, root: string, nodePath: string, de
   for (const entry of entries.sort((a, b) => Number(a.isFile()) - Number(b.isFile()) || a.name.localeCompare(b.name))) {
     throwIfAborted(signal);
     if (entry.isSymbolicLink()) continue;
-    if (entry.isDirectory() && IGNORE_DIRS.has(entry.name)) continue;
-    if (entry.name.startsWith(".") && !SHOW_HIDDEN.has(entry.name)) continue;
     const childPath = join(nodePath, entry.name);
+    if (!treePathAllowed(root, childPath, entry.isDirectory())) continue;
     // Listed a moment ago, gone or unreadable now: an editor's or a Run's
     // temporary file that was removed between readdir and stat, or an entry
     // the process may not look at. The walk leaves it out; it does not fail

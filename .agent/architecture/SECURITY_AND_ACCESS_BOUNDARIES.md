@@ -732,6 +732,18 @@ join in `server/src/modules/frontendSupport/`).
 Visibility filters are applied to tasks and proposals. No raw
 artifact payloads or full memory content is returned — pointer metadata only in timeline.
 
+`GET /me/agent-attention` and `/me/agent-attention/item` are also intentional
+user-level cross-Space readers, as are `GET /me/agent-attention/stream` and
+`GET /me/agent-attention/snapshot`. Stream/snapshot windows may include authorized
+work titles and use the same source visibility gates below.
+`PATCH /me/agent-attention/read-state` writes only
+the session user's personal reading row for a currently authorized source.
+Each source requires its own active Space membership and live Run/Task/Project/
+Room read gate; a direct Session also requires its owning user. Filtering cannot
+supply authority. Summary-only members cannot expose messages or human questions;
+counts never include hidden members. Reading rows do not restore revoked access
+and grant no business write authority. See [Agent Attention](../modules/agent-attention.md).
+
 ### 8c. Targeted Publications
 
 `/publications` never resolves a live source resource for a target Space. Publishing
@@ -939,10 +951,17 @@ flow.
   Folder.
 - Protected-Folder, external-root, protected/restricted, full-diff, and secret-like
   path reads force a durable `PolicyDecisionRecord`.
-- Forbidden path patterns include `.ssh`, `.aws`, `.gcp`, `.azure`,
-  `credentials`, `instance/secrets`, `config/secrets`, `.git/config`,
-  `.env`, `.env.*` except template examples, private key filenames, and
-  `*.pem` / `*.key`.
+- Forbidden path patterns include `.ssh`, `.aws`, `.gcp`, `.azure`, `.gnupg`,
+  `credentials`, `instance/secrets`, `config/secrets`, `.config/gcloud`,
+  `.git/config`, `.env`, `.env.*` except template examples, private key
+  filenames, `*.pem` / `*.key` / `*.p12` / `*.pfx` / `*.jks` / `*.keystore`,
+  and CLI/package-manager credential stores: `.npmrc`, `.netrc`/`_netrc`,
+  `.git-credentials`, `.pgpass`, `.pypirc`, `.my.cnf`, `.vault-token`,
+  `.htpasswd`, `.s3cfg`, `.boto`, `.docker/config.json`, `.kube/config`,
+  `.claude/.credentials.json`, `.codex/auth.json`, `.config/gh/hosts.yml`.
+  File reads are not redacted, so these are hidden from listings and refused
+  rather than shown; `looksSecretLikePath` (the audit reason) covers the same
+  set.
 - Full git diff output is bounded; secret-like diff paths are denied, a
   whole-Folder diff is denied when any file it shows fails PathPolicy, and
   secret-like key/value lines are redacted.
@@ -1073,12 +1092,11 @@ paths, the extract/snapshot paths, and the declarative interpreters'
 - A blocked address and a name that resolves nowhere answer with the same
   message and the same persisted diagnostics, so the refusal is not an oracle
   for which internal names exist.
-- This guard does not cover these. The Open Skill importer
-  (`capabilities/skillImporter.ts`) is bounded by a host allowlist rather than
-  by this guard: it follows redirects itself and re-checks the final URL after
-  the transfer, so a redirect off `raw.githubusercontent.com` would be dialled
-  before being refused, and it reads the whole body before applying its own size
-  limit rather than reading under a ceiling. The host daemon's egress proxy resolves without a DNS
+- The Open Skill importer uses this same guard through
+  `capabilities/skillSourceFetch.ts`, adding a same-host GitHub allowlist on every
+  hop before connecting. File bodies have a 256 KiB read ceiling and GitHub
+  metadata an 8 MiB ceiling; excess and unsuccessful bodies are cancelled.
+  The host daemon's egress proxy resolves without a DNS
   timeout of its own; a hung resolver stalls that one CONNECT, which the Run's
   own budget still bounds.
 - Provider (ModelProvider) calls are deliberately **outside** this boundary: a
@@ -1473,12 +1491,6 @@ Revalidation redacts the returned text, and the row still comes back as a hit.
 A summary-level reader can probe candidate substrings and reconstruct a
 withheld body a piece at a time. Do not treat that redaction as closing the
 oracle.
-
-**The Open Skill importer reads a response body before the byte limit**
-(`capabilities/skillImporter.ts`). `await response.text()` runs first, across
-up to 200 package files, so a member pointing it at large files in a repository
-they control can exhaust server memory. The fetch is bounded by a host
-allowlist and sits outside the outbound guard.
 
 Finance ledger transaction create posts inside `withLockedBook`. A refused
 posting does not leave a draft. `completeTask` judges completion in the asking

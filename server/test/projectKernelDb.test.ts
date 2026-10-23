@@ -509,15 +509,17 @@ describe("Project Kernel (real Postgres)", () => {
     await seedRoomManager(db.pool, { id: roomAgentMemberId, space: SPACE, room: roomId, agent: roomAgentId, now });
     await db.pool.query(`INSERT INTO room_user_members (id,space_id,room_id,user_id,role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'owner','active',$7,$7),($5,$2,$3,$6,'member','active',$7,$7)`, [randomUUID(), SPACE, roomId, OWNER, randomUUID(), VIEWER, now]);
     await db.pool.query(`INSERT INTO sessions (id,space_id,project_id,room_id,status,created_at,updated_at) VALUES ($1,$2,$3,$4,'active',$5,$5)`, [roomSessionId, SPACE, project.id, roomId, now]);
+    // A Room recipient's Work Context is its scope in this one Conversation.
+    const roomScopeId = await work.roomConversationScopeId(ownerIdentity, roomSessionId, roomAgentMemberId);
     const roomInput = {
       base_version: null, reason: "test room setup",
-      work_context_scope_id: roomAgentMemberId, scope_kind: "room_recipient" as const, project_id: project.id as string,
+      work_context_scope_id: roomScopeId, scope_kind: "room_recipient" as const, project_id: project.id as string,
       project_folder_id: null, agent_id: roomAgentId, runtime_ref: null, pinned_refs: [], excluded_refs: [],
       retrieval_preferences: {}, continuity_preferences: {},
     };
     await expect(work.ensureForInvocation(
       ownerIdentity,
-      roomAgentMemberId,
+      roomScopeId,
       { agentId: roomAgentId, runtimeProfileId: null },
     )).resolves.toMatchObject({
       version: 1,
@@ -528,17 +530,17 @@ describe("Project Kernel (real Postgres)", () => {
     });
     const viewerRoomSetup = await work.create(viewerIdentity, roomInput);
     expect(viewerRoomSetup).toMatchObject({ version: 1, user_id: VIEWER });
-    await expect(work.getActive(viewerIdentity, roomAgentMemberId)).resolves.toMatchObject({ user_id: VIEWER, agent_id: roomAgentId });
+    await expect(work.getActive(viewerIdentity, roomScopeId)).resolves.toMatchObject({ user_id: VIEWER, agent_id: roomAgentId });
     const otherProject = await repo.create(ownerIdentity, { name: "Other Runtime Context Project" });
     await expect(work.create(ownerIdentity, { ...roomInput, project_id: otherProject.id as string }))
       .rejects.toMatchObject({ statusCode: 422 });
     await db.pool.query(`UPDATE project_members SET status='revoked', updated_at=$4 WHERE project_id=$1 AND space_id=$2 AND user_id=$3`, [project.id, SPACE, VIEWER, new Date().toISOString()]);
-    await expect(work.getActive(viewerIdentity, roomAgentMemberId)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(work.getActive(viewerIdentity, roomScopeId)).rejects.toMatchObject({ statusCode: 404 });
     await db.pool.query(`UPDATE project_members SET status='active', updated_at=$4 WHERE project_id=$1 AND space_id=$2 AND user_id=$3`, [project.id, SPACE, VIEWER, new Date().toISOString()]);
     await db.pool.query(`UPDATE room_user_members SET status='removed', updated_at=$4 WHERE room_id=$1 AND space_id=$2 AND user_id=$3`, [roomId, SPACE, VIEWER, new Date().toISOString()]);
-    await expect(work.getActive(viewerIdentity, roomAgentMemberId)).rejects.toMatchObject({ statusCode: 404 });
+    await expect(work.getActive(viewerIdentity, roomScopeId)).rejects.toMatchObject({ statusCode: 404 });
     await expect(new PgRuntimeContextAcquisitionRepository(db.pool).loadPublishedProjectContext(
-      SPACE, project.id as string, roomAgentMemberId, VIEWER,
+      SPACE, project.id as string, roomScopeId, VIEWER,
       { type: "work_context_setup", id: viewerRoomSetup.id as string, version: String(viewerRoomSetup.version) },
       { brief: null, instruction: null },
     )).rejects.toMatchObject({ statusCode: 404 });

@@ -16,23 +16,18 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # Official server (test stack). The frontend reaches it through the compose network.
+  # Locally built snapshot: source edits take effect only after --test --build.
+  # The frontend reaches the server through the compose network.
   server:
     build:
       context: ../../
       dockerfile: server/Dockerfile
-      target: dev-runtime
+      target: runtime
       network: host
     container_name: rainver-test-server
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      - ../../server/src:/app/server/src:ro
-      - ../../server/scripts:/app/server/scripts:ro
-      - ../../server/migrations:/app/server/migrations:ro
-      - ../../server/tsconfig.json:/app/server/tsconfig.json:ro
-      - ../../packages/protocol/src:/app/packages/protocol/src:ro
-      - ../../plugins:/app/plugins:ro
       - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}:/rainver
     env_file:
       - ${RAINVER_MODE_ROOT:-$HOME/.rainver-data/test}/.server.env
@@ -41,7 +36,7 @@ services:
       - RAINVER_ENV=test
       - BACKUP_DATABASE_URL=${BACKUP_DATABASE_URL:-postgresql://${POSTGRES_USER:-rainver}:${POSTGRES_PASSWORD:-rainver_dev_password}@postgres:5432/${POSTGRES_DB:-rainver}}
       - SANDBOX_RUNNER_SERVER_HOST=server
-      # The only peer whose X-Forwarded-* the server believes (the Vite proxy).
+      # The only peer whose X-Forwarded-* the server believes (nginx).
       - SERVER_TRUSTED_PROXY_HOST=frontend
       - PROVIDER_PROXY_LISTEN_HOST=0.0.0.0
     depends_on:
@@ -56,9 +51,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-    command: >
-      sh -c "node scripts/watch-typescript.mjs &
-             node --watch dist/index.js"
     restart: unless-stopped
     networks:
       - default
@@ -106,20 +98,9 @@ services:
       context: ../../
       dockerfile: apps/web/Dockerfile
       network: host
-      target: dev
+      target: prod
     ports:
-      - "3100:5173"
-    volumes:
-      - ../../package.json:/repo/package.json:ro
-      - ../../pnpm-workspace.yaml:/repo/pnpm-workspace.yaml:ro
-      - ../../pnpm-lock.yaml:/repo/pnpm-lock.yaml:ro
-      - ../../packages/protocol/package.json:/repo/packages/protocol/package.json:ro
-      - ../../server/package.json:/repo/server/package.json:ro
-      - ../../apps/web:/repo/apps/web
-      - ../../plugins:/repo/plugins:ro
-      - /repo/apps/web/node_modules
-    environment:
-      - CHOKIDAR_USEPOLLING=true
+      - "3100:80"
     depends_on:
       server:
         condition: service_healthy

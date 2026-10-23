@@ -15,6 +15,8 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   /\bsk-proj-[A-Za-z0-9_-]{8,}/g,
   /\bsk-[A-Za-z0-9]{20,}/g,
   /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
+  // An npm automation/publish token, as `.npmrc` stores it.
+  /\bnpm_[A-Za-z0-9]{36}\b/g,
   /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
   /\bAKIA[0-9A-Z]{16}\b/g,
   /\bAIza[0-9A-Za-z_-]{20,}/g,

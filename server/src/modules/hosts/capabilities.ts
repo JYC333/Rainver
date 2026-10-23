@@ -180,7 +180,11 @@ export function normalizeHostCapabilities(raw: unknown): HostCapabilities {
       : [];
     if (parsed.length > 0) installations[runtimeKey] = parsed;
   }
-  return HostCapabilitiesSchema.parse({ runtimes, versions, installations });
+  const toolBridges = Array.isArray(source.tool_bridge_protocols) ? strings(source.tool_bridge_protocols) : undefined;
+  return HostCapabilitiesSchema.parse({
+    runtimes, versions, installations,
+    ...(toolBridges ? { tool_bridge_protocols: toolBridges } : {}),
+  });
 }
 
 /** The copies of a runtime a host reports, by id. */

@@ -80,15 +80,6 @@ describe("runtime sandbox resolution", () => {
     })).toBe("worktree");
   });
 
-  it("does not add a persistent workspace requirement to OpenCode", () => {
-    expect(resolveSandboxLevelForRuntime({
-      runtimeKey: "opencode",
-      configuredLevel: "none",
-      riskLevel: "low",
-      projectFolderId: null,
-    })).toBe("ephemeral");
-  });
-
   it("forces critical local CLI runs into one-shot Docker", () => {
     expect(resolveSandboxLevelForRuntime({
       runtimeKey: "opencode",

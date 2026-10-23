@@ -1,3 +1,4 @@
+import { ConversationScope } from './ConversationScope'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -110,11 +111,20 @@ describe('ConversationExecutionPreflight', () => {
     vi.mocked(sessionsApi.mutateExecutionAttachments).mockResolvedValue({} as never)
   })
 
-  it('opens an explicit draft and visibly preselects a sole managed Host/CLI', async () => {
-    vi.mocked(roomsApi.createConversation).mockResolvedValue({ id: 'session-1' } as never)
-    renderPanel(null)
-    fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
-    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1'))
+  it('initializes in source Space B while the URL belongs to A', async () => {
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue(draftResponse() as never)
+    render(<MemoryRouter initialEntries={['/spaces/space-a/projects/project-1']}>
+      <ConversationScope spaceId="space-b"><ConversationExecutionPreflight
+        projectId="project-1" roomId="room-1" sessionId="session-1" detail={detail}
+      /></ConversationScope>
+    </MemoryRouter>)
+    await screen.findByText('Review before the first Run.')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'CLI installation' })).toHaveTextContent('Claude on Laptop'))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm execution context' }))
+    await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith(
+      'session-1', expect.any(Object), expect.objectContaining({ spaceId: 'space-b', signal: expect.any(AbortSignal) }),
+    ))
+    expect(sessionsApi.executionContext).toHaveBeenCalledWith('session-1', expect.objectContaining({ spaceId: 'space-b' }))
   })
 
   it('initializes a draft with the visible Host, managed Primary and CLI', async () => {
@@ -144,7 +154,7 @@ describe('ConversationExecutionPreflight', () => {
         agent_id: 'agent-1', runtime_profile_id: 'runtime-1',
         runtime_key: 'claude_cli', runtime_installation: 'claude',
       },
-    }))
+    }, expect.any(Object)))
   })
 
   it('uses a CLI detected on the selected Host without requiring a pre-created runtime profile', async () => {
@@ -173,7 +183,7 @@ describe('ConversationExecutionPreflight', () => {
         agent_id: 'agent-1', runtime_profile_id: null,
         runtime_key: 'claude_cli', runtime_installation: 'claude',
       },
-    }))
+    }, expect.any(Object)))
   })
 
   it('uses the current Files Folder as the draft Primary when several Folders are available', async () => {
@@ -197,7 +207,7 @@ describe('ConversationExecutionPreflight', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm execution context' }))
     await waitFor(() => expect(sessionsApi.initializeExecution).toHaveBeenCalledWith('session-1', expect.objectContaining({
       selection: { execution_host_id: 'host-1', primary: { kind: 'location', workspace_location_id: 'location-b' } },
-    })))
+    }), expect.any(Object)))
   })
 
   it('updates an untouched draft when Files publishes its selection after preflight loads', async () => {
@@ -268,7 +278,7 @@ describe('ConversationExecutionPreflight', () => {
         agent_id: 'agent-2', runtime_profile_id: 'runtime-research-backup',
         runtime_key: 'codex_cli', runtime_installation: 'codex',
       }],
-    })))
+    }), expect.any(Object)))
   })
 
   it('reports an Agent with several CLIs as ready once one is chosen', async () => {
@@ -365,7 +375,7 @@ describe('ConversationExecutionPreflight', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Attach' }))
     await waitFor(() => expect(sessionsApi.mutateExecutionAttachments).toHaveBeenCalledWith('session-1', expect.objectContaining({
       action: 'attach', project_folder_id: 'folder-2', workspace_location_id: 'location-2', access_mode: 'write',
-    })))
+    }), expect.any(Object)))
     expect(screen.getByText('Primary cwd')).toBeInTheDocument()
   })
 

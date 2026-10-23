@@ -28,11 +28,19 @@ export interface AcpSessionConfigSelection {
   type: "select" | "boolean";
   value: string | boolean;
   category: string | null;
+  /**
+   * A saved or inherited selection, not one asked for in this turn's request.
+   * When the live session no longer offers it, or does not apply it, the
+   * runtime keeps its default and the Run goes on; an explicit selection
+   * fails the Run instead (`sessions/sessionConfig.ts`).
+   */
+  fallback_to_default?: boolean;
 }
 
 export function acpSessionConfigFromRunOverride(value: unknown): AcpSessionConfigSelection[] {
   const candidate = record(value).acp_session_config;
   if (!Array.isArray(candidate)) return [];
+  const saved = record(value).acp_session_config_source === "saved";
   return candidate.flatMap((entry) => {
     const item = record(entry);
     const id = stringField(item, "id");
@@ -40,7 +48,7 @@ export function acpSessionConfigFromRunOverride(value: unknown): AcpSessionConfi
     const category = typeof item.category === "string" ? item.category : item.category === null ? null : undefined;
     const validValue = type === "select" ? typeof item.value === "string" : typeof item.value === "boolean";
     return id && type && category !== undefined && validValue
-      ? [{ id, type, value: item.value as string | boolean, category }]
+      ? [{ id, type, value: item.value as string | boolean, category, ...(saved ? { fallback_to_default: true } : {}) }]
       : [];
   });
 }
@@ -81,6 +89,8 @@ export function createCliConversationController(input: {
   prompts?: string[];
   prompt_blocks?: ContentBlock[][];
   cwd: string;
+  /** Ask a capable runtime to admit its Host-local tool directory, resolved by the Host. */
+  local_tool_directory?: boolean;
   session_config?: AcpSessionConfigSelection[];
   runtime_session_id?: string | null;
   before_next_prompt?: (sessionId: string) => Promise<void>;
@@ -103,6 +113,7 @@ export function createCliConversationController(input: {
    */
   attributed_model?: string | null;
   on_protocol_event?: (event: Record<string, unknown>) => void;
+  on_model_selected?: (model: string | null) => void;
   /**
    * Fired once per permission request, whatever the outcome, so a caller with
    * a durable event stream can record that this Run was pre-authorized. A
@@ -151,8 +162,14 @@ export class AcpController implements CliStdioController {
    */
   private agentAuthMethodId: string | null = null;
   private authenticated = false;
+  private supportsAdditionalDirectories = false;
   private configIndex = 0;
   private activeConfigRequestId: number | null = null;
+  private activeModelAlias = false;
+  /** The model the session was on before an alias was sent; an unchanged echo does not prove the alias was honoured. */
+  private aliasPreviousValue: unknown = null;
+  /** Saved selections the live session did not offer or apply; the runtime kept its default. */
+  private droppedConfig: Array<{ id: string; category: string | null; value: string | boolean; reason: "option_unavailable" | "value_unavailable" | "not_applied" }> = [];
   private advertisedConfigOptions: Record<string, unknown>[] = [];
   private sessionId: string | null = null;
   private text = "";
@@ -169,6 +186,7 @@ export class AcpController implements CliStdioController {
   /** The runtime's last report of how full its session context is (ACP `usage_update`). */
   private contextWindow: { used: number; size: number } | null = null;
   private promptIndex = 0;
+  private sentPromptCount = 0;
   /**
    * The runtime's own question, once it asked one (`modules/runtime-adapters.md`,
    * "Interactive requests from the runtime"). From then on
@@ -181,6 +199,7 @@ export class AcpController implements CliStdioController {
     prompts: string[];
     prompt_blocks?: ContentBlock[][];
     cwd: string;
+    local_tool_directory?: boolean;
     session_config?: AcpSessionConfigSelection[];
     runtime_session_id?: string | null;
     before_next_prompt?: (sessionId: string) => Promise<void>;
@@ -188,6 +207,7 @@ export class AcpController implements CliStdioController {
     on_thought_delta?: (delta: string) => void;
     attributed_model?: string | null;
     on_protocol_event?: (event: Record<string, unknown>) => void;
+  on_model_selected?: (model: string | null) => void;
     on_permission_decision?: (record: PermissionDecisionRecord) => void;
   }) {
     this.selectedModel = input.attributed_model ?? null;
@@ -324,6 +344,8 @@ export class AcpController implements CliStdioController {
       }
       this.input.on_protocol_event?.(message);
       this.agentAuthMethodId = acpAgentAuthMethodId(message.result);
+      const directoryCapability = record(record(record(message.result).agentCapabilities).sessionCapabilities).additionalDirectories;
+      this.supportsAdditionalDirectories = directoryCapability !== null && typeof directoryCapability === "object" && !Array.isArray(directoryCapability);
       this.phase = "session_new";
       if (this.input.runtime_session_id) this.sessionId = this.input.runtime_session_id;
       this.captureSelectedModel(record(message.result));
@@ -360,7 +382,31 @@ export class AcpController implements CliStdioController {
       }
       this.captureConfigOptions(record(message.result));
       const appliedOption = this.advertisedConfigOptions.find((option) => option.id === selection.id);
-      if (!appliedOption || appliedOption.currentValue !== selection.value) {
+      // Some adapters resolve model aliases in set_config_option itself. The
+      // successful response supplies the canonical picker value; Rainver must
+      // neither guess that mapping nor keep attributing usage to the alias.
+      // A picker value alone is not proof: an adapter that ignores an alias
+      // it does not know echoes the unchanged default, which is also a picker
+      // value. The alias counts as resolved only when the session moved to
+      // another model, or the model it is on is the one the alias names.
+      const resolvedAlias = this.activeModelAlias && appliedOption
+        && typeof appliedOption.currentValue === "string"
+        && configChoiceValues(appliedOption).includes(appliedOption.currentValue)
+        && (appliedOption.currentValue !== this.aliasPreviousValue
+          || aliasNamesChoice(appliedOption, appliedOption.currentValue, String(selection.value)));
+      if (!appliedOption || appliedOption.type !== selection.type
+        || appliedOption.category !== selection.category
+        || (appliedOption.currentValue !== selection.value && !resolvedAlias)) {
+        if (selection.fallback_to_default) {
+          // The session stays on whatever it was on; the turn goes ahead.
+          this.dropConfig(selection, "not_applied");
+          this.configIndex += 1;
+          if (!this.sendNextConfig(send, closeStdin)) {
+            this.phase = "prompt";
+            this.prompt(send);
+          }
+          return;
+        }
         this.fail(
           `${this.label()} ACP did not apply session option '${selection.id}' `
             + `(asked for '${String(selection.value)}', runtime is on `
@@ -370,7 +416,7 @@ export class AcpController implements CliStdioController {
         return;
       }
       if (selection.category === "model" && !this.input.attributed_model) {
-        this.selectedModel = String(selection.value);
+        this.selectedModel = String(appliedOption.currentValue);
       }
       this.configIndex += 1;
       if (!this.sendNextConfig(send, closeStdin)) {
@@ -463,13 +509,17 @@ export class AcpController implements CliStdioController {
       }
       if (update.sessionUpdate === "config_option_update") {
         this.captureConfigOptions(update);
+        if (this.phase === "prompt") this.reportModel();
       }
       // Session metadata notifications are not scoped to a prompt turn. An
-      // Agent may publish them while we acknowledge one prompt before sending
-      // the next, or just after its final prompt response. Message chunks
-      // remain turn-scoped and are rejected above outside `prompt`.
+      // Agent may publish them while restoring a known session, while we
+      // acknowledge one prompt before sending the next, or just after its
+      // final prompt response. During resume the session id is already known
+      // and checked above; a new session must first return its id. Message
+      // chunks remain turn-scoped and are rejected above outside `prompt`.
       if (this.phase !== "set_config" && this.phase !== "prompt"
-        && this.phase !== "phase_acknowledge" && this.phase !== "terminal") {
+        && this.phase !== "phase_acknowledge" && this.phase !== "terminal"
+        && !(this.phase === "session_new" && this.input.runtime_session_id)) {
         this.fail(`${this.label()} ACP returned an out-of-order session update`, closeStdin);
         return;
       }
@@ -510,8 +560,14 @@ export class AcpController implements CliStdioController {
       model_usage: this.modelUsage,
       subscription_quota: this.subscriptionQuota,
       context_window: this.contextWindow,
+      acp_prompt_count: this.sentPromptCount,
       asked_user: this.askedUser,
+      ...(this.droppedConfig.length ? { dropped_session_config: [...this.droppedConfig] } : {}),
     };
+  }
+
+  private dropConfig(selection: AcpSessionConfigSelection, reason: "option_unavailable" | "value_unavailable" | "not_applied"): void {
+    this.droppedConfig.push({ id: selection.id, category: selection.category, value: selection.value, reason });
   }
 
   reject(message: string): void {
@@ -543,17 +599,48 @@ export class AcpController implements CliStdioController {
     // still fails: that is the runtime and the snapshot disagreeing about an
     // option both still have.
     if (!option) {
+      if (selection.category === "model" && selection.fallback_to_default) {
+        this.dropConfig(selection, "option_unavailable");
+        this.configIndex += 1;
+        return this.sendNextConfig(send, closeStdin);
+      }
+      if (selection.category === "model") {
+        this.fail(`${this.label()} ACP did not advertise the requested model option`, closeStdin);
+        return true;
+      }
       this.configIndex += 1;
       return this.sendNextConfig(send, closeStdin);
     }
     if (option.type !== selection.type || option.category !== selection.category) {
+      if (selection.fallback_to_default) {
+        this.dropConfig(selection, "option_unavailable");
+        this.configIndex += 1;
+        return this.sendNextConfig(send, closeStdin);
+      }
       this.fail(
         `${this.label()} ACP advertised session option '${selection.id}' with a different shape`,
         closeStdin,
       );
       return true;
     }
-    if (selection.type === "select" && !configChoiceValues(option).includes(selection.value as string)) {
+    if (option.currentValue === selection.value) {
+      if (selection.category === "model" && !this.input.attributed_model) {
+        this.selectedModel = String(selection.value);
+      }
+      this.configIndex += 1;
+      return this.sendNextConfig(send, closeStdin);
+    }
+    this.activeModelAlias = selection.type === "select" && selection.category === "model"
+      && !configChoiceValues(option).includes(selection.value as string)
+      && getRuntimeAdapterSpec(this.input.runtime_key)?.model.acp_model_aliases === true;
+    this.aliasPreviousValue = option.currentValue;
+    if (selection.type === "select" && !configChoiceValues(option).includes(selection.value as string)
+      && !this.activeModelAlias) {
+      if (selection.fallback_to_default) {
+        this.dropConfig(selection, "value_unavailable");
+        this.configIndex += 1;
+        return this.sendNextConfig(send, closeStdin);
+      }
       this.fail(
         `${this.label()} ACP did not advertise value '${String(selection.value)}' for session option '${selection.id}'`,
         closeStdin,
@@ -564,20 +651,23 @@ export class AcpController implements CliStdioController {
       this.fail(`${this.label()} ACP received an invalid boolean for session option '${selection.id}'`, closeStdin);
       return true;
     }
-    if (option.currentValue === selection.value) {
-      if (selection.category === "model" && !this.input.attributed_model) {
-        this.selectedModel = String(selection.value);
-      }
-      this.configIndex += 1;
-      return this.sendNextConfig(send, closeStdin);
-    }
     this.phase = "set_config";
     this.activeConfigRequestId = 3 + this.configIndex / 100;
     send({
       jsonrpc: "2.0",
       id: this.activeConfigRequestId,
       method: "session/set_config_option",
-      params: { sessionId: this.sessionId, configId: selection.id, value: selection.value },
+      // A boolean value is only valid with the discriminator: the protocol's
+      // request is `{ type: "boolean", value: boolean } | { value: string }`,
+      // and an adapter validating it (Codex) rejects a bare boolean as
+      // invalid params. The option is boolean because `initialize` opted into
+      // boolean options, so this is the shape the runtime itself advertised.
+      params: {
+        sessionId: this.sessionId,
+        configId: selection.id,
+        ...(selection.type === "boolean" ? { type: "boolean" as const } : {}),
+        value: selection.value,
+      },
     });
     return true;
   }
@@ -593,12 +683,14 @@ export class AcpController implements CliStdioController {
           ? { sessionId: this.input.runtime_session_id }
           : {}),
         cwd: this.input.cwd,
+        ...(this.input.local_tool_directory && this.supportsAdditionalDirectories ? { additionalDirectories: [] } : {}),
         mcpServers: [],
       },
     });
   }
 
   private prompt(send: Send): void {
+    this.reportModel();
     this.prompted = true;
     send({
       jsonrpc: "2.0",
@@ -610,6 +702,7 @@ export class AcpController implements CliStdioController {
           ?? [{ type: "text", text: this.input.prompts[this.promptIndex]! }],
       },
     });
+    this.sentPromptCount += 1;
   }
 
   private promptCount(): number {
@@ -704,6 +797,13 @@ export class AcpController implements CliStdioController {
     return getRuntimeAdapterSpec(this.input.runtime_key)?.display_name ?? this.input.runtime_key;
   }
 
+  private reportModel(): void {
+    const option = this.advertisedConfigOptions.find((candidate) => candidate.category === "model");
+    const model = stringField(option ?? {}, "currentValue");
+    // `default` names a selection policy, not a model identity.
+    this.input.on_model_selected?.(model && model !== "default" ? model : null);
+  }
+
   private captureSelectedModel(result: Record<string, unknown>): void {
     // A caller that already knows the model has the better answer, and this
     // must not overwrite it: the runtime's echo is an alias on a fresh session
@@ -790,6 +890,26 @@ function configChoiceValues(option: Record<string, unknown>): string[] {
     const value = stringField(candidate, "value");
     return value ? [value] : [];
   });
+}
+
+/**
+ * Whether an alias names the picker choice the session reports, by the
+ * choice's display name or as one of the dash/dot-separated words of its
+ * canonical id (`fable` → `claude-fable-5-1`). Only confirms a resolution the
+ * adapter made; Rainver still keeps no alias map of its own.
+ */
+function aliasNamesChoice(option: Record<string, unknown>, value: string, alias: string): boolean {
+  const wanted = alias.trim().toLowerCase();
+  if (!wanted) return false;
+  const choices = Array.isArray(option.options)
+    ? option.options.flatMap((entry) => {
+      const candidate = record(entry);
+      return Array.isArray(candidate.options) ? candidate.options.map(record) : [candidate];
+    })
+    : [];
+  const choice = choices.find((candidate) => stringField(candidate, "value") === value);
+  const name = stringField(choice ?? {}, "name")?.trim().toLowerCase();
+  return name === wanted || value.toLowerCase().split(/[-_.\s/:]+/).includes(wanted);
 }
 
 function isString(value: string | null): value is string {

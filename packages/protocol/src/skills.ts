@@ -207,10 +207,37 @@ export const SkillLibraryIndexResponseSchema = z
   .passthrough();
 export type SkillLibraryIndexResponse = z.infer<typeof SkillLibraryIndexResponseSchema>;
 
-export const SkillImportPreviewRequestSchema = z.object({
-  url: z.string().min(1),
-  source_type: SkillSourceTypeSchema.optional(),
+export const HostSkillCandidateSchema = z.object({
+  id: z.string().regex(/^[a-f0-9]{64}$/), name: z.string().min(1).max(256),
+  runtime_key: z.enum(["claude_code", "codex_cli", "opencode"]),
+  installation: z.string().min(1).max(128), display_path: z.string().max(2048),
+}).strict();
+export type HostSkillCandidate = z.infer<typeof HostSkillCandidateSchema>;
+export const HostSkillScanSchema = z.object({
+  items: z.array(HostSkillCandidateSchema).max(200), truncated: z.boolean(),
+  warnings: z.array(z.string().max(256)).max(100),
+}).strict();
+export type HostSkillScan = z.infer<typeof HostSkillScanSchema>;
+export const HostSkillFilesSchema = z.array(z.object({
+  path: z.string().min(1).max(1024), content_base64: z.string().max(349528),
+}).strict()).min(1).max(200).superRefine((files, context) => {
+  if (files.reduce((size, file) => size + file.content_base64.length, 0) > Math.ceil(2 * 1024 * 1024 / 3) * 4 + 200 * 4) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "Skill package exceeds the total byte limit" });
+  }
 });
+
+const SkillImportSourceSchema = z.union([
+  z.object({ url: z.string().min(1), source_type: z.literal("github").optional() }).strict(),
+  z.object({ source_type: z.literal("upload"), files: z.array(z.object({
+    path: z.string().min(1).max(1024), content_base64: z.string().max(349528),
+  }).strict()).min(1).max(200) }).strict(),
+  z.object({ source_type: z.literal("upload"), archive_base64: z.string().min(1).max(4194304) }).strict(),
+  z.object({ source_type: z.literal("local_workspace"), host_id: IdSchema,
+    skill_id: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict(),
+]);
+export const SkillImportPreviewRequestSchema = SkillImportSourceSchema;
+export type SkillImportPreviewRequest = z.infer<typeof SkillImportPreviewRequestSchema>;
 
 export const SkillImportPreviewResponseSchema = z
   .object({
@@ -233,15 +260,42 @@ export type SkillImportPreviewResponse = z.infer<
   typeof SkillImportPreviewResponseSchema
 >;
 
-export const SkillImportRequestSchema = z.object({
-  url: z.string().min(1),
-  source_type: SkillSourceTypeSchema.optional(),
-  // The `package_hash` of the preview being approved. Import re-fetches the
-  // source and answers 409 `skill_package_changed` when the fetched bytes no
-  // longer hash to it.
-  package_hash: z.string().min(1),
-});
+const previewHash = { package_hash: z.string().min(1) };
+export const SkillImportRequestSchema = z.union([
+  SkillImportSourceSchema.options[0].extend(previewHash),
+  SkillImportSourceSchema.options[1].extend(previewHash),
+  SkillImportSourceSchema.options[2].extend(previewHash),
+  SkillImportSourceSchema.options[3].extend(previewHash),
+]);
 export type SkillImportRequest = z.infer<typeof SkillImportRequestSchema>;
+
+export const SkillBindingRequestSchema = z.object({
+  scope_type: z.enum(["space", "project", "agent", "user"]),
+  scope_id: IdSchema.nullable().optional(),
+  enabled: z.boolean(),
+}).strict().superRefine((value, ctx) => {
+  if ((value.scope_type === "space") !== !value.scope_id) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Scope id must match the binding scope" });
+  }
+});
+export type SkillBindingRequest = z.infer<typeof SkillBindingRequestSchema>;
+
+export const SkillBindingSchema = z.object({
+  id: IdSchema, space_id: IdSchema, skill_package_id: IdSchema,
+  project_id: IdSchema.nullable(), agent_id: IdSchema.nullable(), user_id: IdSchema.nullable(),
+  enabled: z.boolean(), proposal_id: IdSchema,
+});
+export type SkillBinding = z.infer<typeof SkillBindingSchema>;
+
+export const SkillPackageContentSchema = z.object({
+  skill_package_id: IdSchema, package_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  package_name: z.string().min(1),
+  files: z.array(z.object({
+    path: z.string().min(1).max(1024), content_base64: z.string().max(349528),
+    content_hash: z.string().regex(/^[a-f0-9]{64}$/), executable: z.boolean(),
+  }).strict()).min(1).max(200),
+}).strict();
+export type SkillPackageContent = z.infer<typeof SkillPackageContentSchema>;
 
 export const SkillConvertToCapabilityRequestSchema = z.object({
   capability_id: z.string().min(1).optional(),
@@ -251,6 +305,21 @@ export const SkillConvertToCapabilityRequestSchema = z.object({
   enable_for_project_id: IdSchema.nullish(),
   create_runtime_bindings: z.boolean().default(true),
 });
+
+/**
+ * Review request body. An optional enabling `binding` folds the first scope
+ * binding into the review, so one approval reviews and enables the package.
+ * Project scope is not offered here: a review changes the Space, so it is
+ * decided at Space level, while a Project binding is its Project's to decide.
+ */
+export const SkillReviewProposalRequestSchema = z.object({
+  binding: SkillBindingRequestSchema.optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.binding && (!value.binding.enabled || value.binding.scope_type === "project")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["binding"], message: "Review can only enable the Space, user or Agent scope" });
+  }
+});
+export type SkillReviewProposalRequest = z.infer<typeof SkillReviewProposalRequestSchema>;
 
 export const SkillImportApprovalProposalResponseSchema = ProposalOutSchema;
 export type SkillImportApprovalProposalResponse = z.infer<

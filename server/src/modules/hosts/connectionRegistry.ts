@@ -50,11 +50,13 @@ function failedTaskBranchRequest(type: TaskBranchRequestType, error: string): An
  */
 const TASK_BRANCH_REQUEST_TIMEOUT_MS = 15 * 60_000;
 /** A `list_dirs` / `workspace_register` / `workspace_forget` reply, whole. */
-type HostActionType = "list_dirs" | "workspace_register" | "workspace_forget";
+type HostActionType = "list_dirs" | "workspace_register" | "workspace_forget" | "skill_scan" | "skill_read";
 type HostActionResult<T extends HostActionType> = Omit<HostDaemonFrameOf<`${T}_result`>, "type" | "request_id">;
-type AnyHostActionResult = HostActionResult<"list_dirs"> | HostActionResult<"workspace_register"> | HostActionResult<"workspace_forget">;
+type AnyHostActionResult = { [T in HostActionType]: HostActionResult<T> }[HostActionType];
 /** A transport failure, reported in the reply's own shape. */
 function failedHostAction(type: HostActionType, error: string): AnyHostActionResult {
+  if (type === "skill_scan") return { ok: false, result: null, error };
+  if (type === "skill_read") return { ok: false, files: null, candidate: null, error };
   return type === "list_dirs"
     ? { ok: false, path: null, parent: null, dirs: [], truncated: false, error }
     : type === "workspace_register"
@@ -157,6 +159,9 @@ interface ToolInstallResult {
   error: string | null;
   /** The installation id (`managed:<version>`) the action produced or removed. */
   installation: string | null;
+  /** `update_own_tool` only, from daemons that report it: the CLI version before and after. */
+  from_version?: string | null;
+  to_version?: string | null;
 }
 
 export type FolderReadKind = "tree" | "file" | "git_status" | "git_diff";
@@ -625,7 +630,7 @@ export class HostConnectionRegistry {
    * grace: a daemon that drops mid-install starts over on the next request,
    * and the operator sees the failure now rather than after a grace period.
    */
-  requestToolAction<T extends "install_tool" | "uninstall_tool" | "rollback_tool">(hostId: string, type: T, frame: HostRequestPayload<T>): Promise<ToolInstallResult> {
+  requestToolAction<T extends "install_tool" | "uninstall_tool" | "rollback_tool" | "update_own_tool">(hostId: string, type: T, frame: HostRequestPayload<T>): Promise<ToolInstallResult> {
     const connection = this.connections.get(hostId);
     if (!connection?.sink) return Promise.resolve({ ok: false, error: "host_offline", installation: null });
     const requestId = randomUUID();
@@ -857,6 +862,16 @@ export class HostConnectionRegistry {
       this.pendingManagedWorkspaces.set(requestId, { hostId, resolve, timer });
       connection.sink!.send({ type: "agent_profiles_reset", request_id: requestId, agent_id: agentId });
     });
+  }
+
+  /** Global CLI Skill candidates the owned host's daemon discovers in its own Skill roots. */
+  scanHostSkills(hostId: string): Promise<HostActionResult<"skill_scan">> {
+    return this.requestHostAction(hostId, "skill_scan", {});
+  }
+
+  /** Original files of one discovered Skill, which the daemon rediscovers by its opaque id. */
+  readHostSkill(hostId: string, skillId: string): Promise<HostActionResult<"skill_read">> {
+    return this.requestHostAction(hostId, "skill_read", { skill_id: skillId });
   }
 
   /** One level of an owned host's directory tree, answered by its daemon. */

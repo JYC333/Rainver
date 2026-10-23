@@ -77,31 +77,52 @@ export function resetsAtOf(text: string | null | undefined): string | null {
 }
 
 /**
- * The fuller of a login's windows — the one that decides. On a tie the
- * weekly one, whose reset is the later.
+ * The fuller of a login's windows. On a tie the later (or unknown) reset
+ * decides. Admission supplies its clock to ignore windows already reset;
+ * the cached display and refusal evidence retain the original reading.
  */
-export function fullerWindow(quota: HostUsageQuota | null | undefined): SubscriptionQuotaWindow | null {
+export function fullerWindow(quota: HostUsageQuota | null | undefined, now?: Date): SubscriptionQuotaWindow | null {
   if (!quota?.available) return null;
-  const session = quota.session_pct === null
+  let session = quota.session_pct === null
     ? null
     : { kind: "session" as const, utilization: clampPct(quota.session_pct), resets_at: resetsAtOf(quota.session_resets) };
-  const week = quota.week_pct === null
+  let week = quota.week_pct === null
     ? null
     : { kind: "week" as const, utilization: clampPct(quota.week_pct), resets_at: resetsAtOf(quota.week_resets) };
+  if (now) {
+    if (session?.resets_at && Date.parse(session.resets_at) <= now.getTime()) session = null;
+    if (week?.resets_at && Date.parse(week.resets_at) <= now.getTime()) week = null;
+  }
   if (!session) return week;
   if (!week) return session;
+  if (week.utilization === session.utilization) {
+    const resetTime = (window: SubscriptionQuotaWindow) => window.resets_at ? Date.parse(window.resets_at) : Infinity;
+    return resetTime(week) >= resetTime(session) ? week : session;
+  }
   return week.utilization >= session.utilization ? week : session;
 }
 
 /** The latest cached reading of a login; nothing is asked of the host. */
 export async function cachedQuotaReading(db: Queryable, login: SubscriptionLogin): Promise<QuotaReading> {
-  const row = (await db.query<{ quota_json: HostUsageQuota; checked_at: unknown }>(
+  return quotaReading(await cachedQuota(db, login));
+}
+
+interface CachedQuota {
+  quota_json: HostUsageQuota;
+  checked_at: unknown;
+}
+
+async function cachedQuota(db: Queryable, login: SubscriptionLogin): Promise<CachedQuota | undefined> {
+  return (await db.query<CachedQuota>(
     `SELECT quota_json, checked_at FROM host_runtime_usage
       WHERE host_id = $1 AND runtime_key = $2 AND installation = $3`,
     [login.host_id, login.runtime_key, login.installation],
   )).rows[0];
+}
+
+function quotaReading(row: CachedQuota | undefined, now?: Date): QuotaReading {
   if (!row) return { window: null, checked_at: null };
-  return { window: fullerWindow(row.quota_json), checked_at: iso(row.checked_at) };
+  return { window: fullerWindow(row.quota_json, now), checked_at: iso(row.checked_at) };
 }
 
 /** A vendor's shorter window: how long a refusal is taken to last when no reading says when it resets. */
@@ -113,13 +134,17 @@ const SESSION_WINDOW_MS = 5 * 3600_000;
  */
 async function latestRefusalAt(db: Queryable, login: SubscriptionLogin, since: string | null): Promise<string | null> {
   const row = (await db.query<{ refused_at: unknown }>(
-    `SELECT max(run.updated_at) AS refused_at
+    `SELECT max(COALESCE(refusal.refused_at, run.updated_at)) AS refused_at
        FROM host_threads thread
        JOIN runs run ON run.host_task_thread_id = thread.id
+       LEFT JOIN LATERAL (
+         SELECT max(attempt.ended_at) AS refused_at FROM run_attempts attempt
+          WHERE attempt.space_id = run.space_id AND attempt.run_id = run.id AND attempt.error_code = $4
+       ) refusal ON true
       WHERE thread.execution_host_id = $1 AND thread.runtime_key = $2 AND thread.runtime_installation = $3
-        AND run.status = 'failed' AND run.error_json->>'error_code' = $4
-        AND ($5::timestamptz IS NULL OR run.updated_at > $5::timestamptz)
-        AND run.updated_at > now() - interval '7 days'`,
+        AND ((run.status = 'failed' AND run.error_json->>'error_code' = $4) OR refusal.refused_at IS NOT NULL)
+        AND ($5::timestamptz IS NULL OR COALESCE(refusal.refused_at, run.updated_at) > $5::timestamptz)
+        AND COALESCE(refusal.refused_at, run.updated_at) > now() - interval '7 days'`,
     [login.host_id, login.runtime_key, login.installation, SUBSCRIPTION_QUOTA_EXHAUSTED, since],
   )).rows[0];
   return row?.refused_at ? iso(row.refused_at) : null;
@@ -147,7 +172,7 @@ export function refusedWindow(reading: QuotaReading, refusedAt: string, now: Dat
 
 /** What is known of one login's window at an admission. */
 export interface QuotaSource {
-  read(db: Queryable, login: SubscriptionLogin): Promise<QuotaReading>;
+  read(db: Queryable, login: SubscriptionLogin, now?: Date): Promise<QuotaReading>;
 }
 
 /**
@@ -159,24 +184,31 @@ export interface QuotaSource {
 export function liveQuotaSource(pool: Pool | null, options: { probeDeadlineMs?: number } = {}): QuotaSource {
   const deadline = options.probeDeadlineMs ?? PROBE_DEADLINE_MS;
   return {
-    async read(db, login) {
-      let reading = await cachedQuotaReading(db, login);
-      const age = reading.checked_at ? Date.now() - Date.parse(reading.checked_at) : Number.POSITIVE_INFINITY;
+    async read(db, login, now = new Date()) {
+      let cached = await cachedQuota(db, login);
+      let reading = quotaReading(cached);
+      const age = reading.checked_at ? now.getTime() - Date.parse(reading.checked_at) : Number.POSITIVE_INFINITY;
       if (pool && age > QUOTA_READING_MAX_AGE_MS) {
         const probe = refreshHostUsage(pool, login.host_id, login.runtime_key, login.installation, undefined, {
           keepReadingWhenUnreadable: true,
         })
-          .then((row) => ({ window: fullerWindow(row.quota), checked_at: row.checked_at }))
+          .then((row) => ({ quota_json: row.quota, checked_at: row.checked_at }))
           .catch(() => null);
         const probed = await Promise.race([probe, sleep(deadline).then(() => null)]);
         // A host that could not answer says nothing about the window; the
         // cached number stays the best one there is.
-        if (probed?.window) reading = probed;
+        if (probed && fullerWindow(probed.quota_json)) {
+          cached = probed;
+          reading = quotaReading(probed);
+        }
       }
       // Refusals after a readable reading overrule it; with nothing readable, any within the week counts.
       const refusedAt = await latestRefusalAt(db, login, reading.window ? reading.checked_at : null);
-      const refused = refusedAt ? refusedWindow(reading, refusedAt) : null;
-      return refused ? { window: refused, checked_at: reading.checked_at } : reading;
+      const refused = refusedAt ? refusedWindow(reading, refusedAt, now) : null;
+      // The refusal is the evidence behind this window. Keeping the older
+      // probe's timestamp would make recovery ignore a later refusal when
+      // deciding whether a previously reported reset is still trustworthy.
+      return refused ? { window: refused, checked_at: refusedAt } : quotaReading(cached, now);
     },
   };
 }

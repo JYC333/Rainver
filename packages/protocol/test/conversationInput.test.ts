@@ -15,6 +15,13 @@ const image = (mediaId: string, byteSize = 128) => ({
 });
 
 describe("conversation input contracts", () => {
+  it("pins Skill-only inputs and rejects duplicate, unversioned or excessive Skills", () => {
+    const skill = (id: string) => ({ kind: "skill", skill_package_id: id, package_hash: "a".repeat(64), display_name: "Audit" });
+    expect(MessageCreateRequestSchema.parse({ input_parts: [skill("one")] }).content).toBe("");
+    expect(ConversationInputPartsSchema.safeParse([skill("one"), skill("one")]).success).toBe(false);
+    expect(ConversationInputPartsSchema.safeParse([{ ...skill("one"), package_hash: "" }]).success).toBe(false);
+    expect(ConversationInputPartsSchema.safeParse(Array.from({ length: 5 }, (_, index) => skill(String(index)))).success).toBe(false);
+  });
   it("preserves text-only compatibility and accepts image-only and mixed messages", () => {
     expect(MessageCreateRequestSchema.parse({ content: "hello" })).toMatchObject({
       content: "hello",

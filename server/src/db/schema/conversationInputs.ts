@@ -15,6 +15,7 @@ import { sql } from "drizzle-orm";
 import { users } from "./auth.js";
 import { spaces } from "./spaces.js";
 import { sessions, messages } from "./sessions.js";
+import { skillPackages } from "./capabilities.js";
 import { runs } from "./runs.js";
 
 /** Short-lived upload rows. The file is not visible until a message claims it. */
@@ -213,6 +214,7 @@ export const messageInputParts = pgTable("message_input_parts", {
   mediaId: varchar("media_id", { length: 36 }),
   fileSnapshotId: varchar("file_snapshot_id", { length: 36 }),
   resourceId: varchar("resource_id", { length: 36 }),
+  skillPackageId: varchar("skill_package_id", { length: 36 }),
   projectFolderId: varchar("project_folder_id", { length: 36 }),
   workspaceLocationId: varchar("workspace_location_id", { length: 36 }),
   relativePath: text("relative_path"),
@@ -243,10 +245,15 @@ export const messageInputParts = pgTable("message_input_parts", {
     foreignColumns: [conversationInputResources.id, conversationInputResources.spaceId],
     name: "message_input_parts_resource_scope_fkey",
   }),
-  check("ck_message_input_parts_kind", sql`kind IN ('image', 'file_reference', 'input_resource')`),
+  foreignKey({ columns: [table.skillPackageId, table.spaceId], foreignColumns: [skillPackages.id, skillPackages.spaceId], name: "message_input_parts_skill_scope_fkey" }),
+  check("ck_message_input_parts_kind", sql`kind IN ('image', 'file_reference', 'input_resource', 'skill')`),
+  check("ck_message_input_parts_skill", sql`(kind = 'skill') = (skill_package_id IS NOT NULL)`),
   check("ck_message_input_parts_position", sql`position >= 0`),
   check("ck_message_input_parts_size", sql`byte_size >= 0`),
   check("ck_message_input_parts_reference", sql`
+    (kind = 'skill' AND media_id IS NULL AND file_snapshot_id IS NULL AND resource_id IS NULL
+      AND project_folder_id IS NULL AND workspace_location_id IS NULL AND relative_path IS NULL)
+    OR
     (kind = 'image'
       AND media_id IS NOT NULL
       AND file_snapshot_id IS NULL

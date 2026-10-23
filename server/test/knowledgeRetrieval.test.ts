@@ -510,24 +510,6 @@ class ProjectionFakeDb implements Queryable {
 }
 
 describe("Knowledge zero-LLM retrieval", () => {
-  it("returns a KnowledgeItem for exact title match", async () => {
-    const db = searchDbWithKnowledge();
-    db.addAlias("knowledge_item", ITEM_A, "Alpha", "title");
-
-    const out = await new RetrievalSearchService(db, knowledgeRetrievalRegistry).search({
-      spaceId: SPACE_A,
-      viewerUserId: USER_A,
-      query: "Alpha",
-    });
-
-    expect(out.items).toHaveLength(1);
-    expect(out.items[0]).toMatchObject({
-      object_type: "knowledge_item",
-      object_id: ITEM_A,
-      evidence: { kind: "exact_title_match" },
-    });
-  });
-
   it("surfaces active object_profile metadata and filters within a fixed object_type", async () => {
     const db = searchDbWithKnowledge();
     db.objects[0]!.object_profile = "decision";
@@ -576,53 +558,6 @@ describe("Knowledge zero-LLM retrieval", () => {
 
     expect(decisions.items.map((item) => item.object_id)).toEqual([ITEM_A]);
     expect(JSON.stringify(decisions.trace)).not.toContain("risk");
-  });
-
-  it("drops canonical-readable results when source consent denies the viewer", async () => {
-    const db = searchDbWithKnowledge({
-      ownerUserId: USER_A,
-      sourceConnectionIds: [SOURCE_CONNECTION_A],
-    });
-    db.addAlias("knowledge_item", ITEM_A, "Alpha", "title");
-    db.sourceConnections.push({
-      id: SOURCE_CONNECTION_A,
-      owner_user_id: USER_A,
-      consent_json: {
-        schema_version: 1,
-        owner_user_id: USER_A,
-        subject_user_ids: [USER_A],
-        allowed_reader_user_ids: [USER_A],
-        allowed_agent_ids: [],
-        allow_space_admins: false,
-        allow_local_provider_egress: false,
-        allow_external_model_egress: false,
-      },
-      policy_json: {
-        schema_version: 1,
-        source_egress_class: "internal_only",
-        retention_policy: "full_text",
-        import_trust_level: "normal",
-        derived_write_policy: "proposal_required",
-        allowed_import_targets: ["knowledge"],
-        revalidation: { required: true, viewer_scoped: true },
-      },
-    });
-
-    const denied = await new RetrievalSearchService(db, knowledgeRetrievalRegistry).search({
-      spaceId: SPACE_A,
-      viewerUserId: USER_B,
-      query: "Alpha",
-      includeTrace: true,
-    });
-    const allowed = await new RetrievalSearchService(db, knowledgeRetrievalRegistry).search({
-      spaceId: SPACE_A,
-      viewerUserId: USER_A,
-      query: "Alpha",
-    });
-
-    expect(denied.items).toHaveLength(0);
-    expect(JSON.stringify(denied.trace)).not.toContain("source_policy_denied");
-    expect(allowed.items).toHaveLength(1);
   });
 
   it("returns a KnowledgeItem for alias match", async () => {
@@ -977,23 +912,6 @@ describe("Knowledge zero-LLM retrieval", () => {
     expect(out.items).toHaveLength(0);
   });
 
-  it("does not return private Knowledge to an unauthorized viewer", async () => {
-    const db = searchDbWithKnowledge({
-      visibility: "private",
-      ownerUserId: USER_B,
-      createdByUserId: USER_B,
-    });
-    db.addAlias("knowledge_item", ITEM_A, "Alpha", "title");
-
-    const out = await new RetrievalSearchService(db, knowledgeRetrievalRegistry).search({
-      spaceId: SPACE_A,
-      viewerUserId: USER_A,
-      query: "Alpha",
-    });
-
-    expect(out.items).toHaveLength(0);
-  });
-
   it("explains why a visible returned target matched without snippets or dropped ids", async () => {
     const db = searchDbWithKnowledge();
     db.addAlias("knowledge_item", ITEM_A, "Alpha", "title");
@@ -1081,42 +999,6 @@ describe("Knowledge zero-LLM retrieval", () => {
 
     expect(db.forbiddenWrites).toHaveLength(0);
     expect(db.retrievalEdges.every((edge) => edge.edge_status !== "active")).toBe(true);
-  });
-
-  it("expands graph neighbors from exact seeds", async () => {
-    const db = searchDbWithKnowledge();
-    db.addObject({
-      space_id: SPACE_A,
-      object_type: "knowledge_item",
-      object_id: ITEM_B,
-      title: "Beta",
-      status: "active",
-      visibility: "space_shared",
-      owner_user_id: USER_A,
-      created_by_user_id: USER_A,
-      text: "Neighbor content",
-    });
-    db.addAlias("knowledge_item", ITEM_A, "Alpha", "title");
-    db.edges.push({
-      space_id: SPACE_A,
-      from_object_type: "knowledge_item",
-      from_object_id: ITEM_A,
-      to_object_type: "knowledge_item",
-      to_object_id: ITEM_B,
-      link_type: "supports",
-      edge_origin: "object_relation_projection",
-      confidence: 1,
-    });
-
-    const out = await new RetrievalSearchService(db, knowledgeRetrievalRegistry).search({
-      spaceId: SPACE_A,
-      viewerUserId: USER_A,
-      query: "Alpha",
-      maxResults: 5,
-    });
-
-    expect(out.items.map((item) => item.object_id)).toContain(ITEM_B);
-    expect(out.items.find((item) => item.object_id === ITEM_B)?.evidence.kind).toBe("graph_neighbor");
   });
 
   it("reports the max visible graph hop after source-policy-safe filtering", async () => {

@@ -1,7 +1,9 @@
+import { useAttentionViewing } from '../agent_work/AgentAttentionProvider'
+import { ConversationScope, useConversationScope } from '../conversation/ConversationScope'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { SpaceLink as Link } from '../../core/spaceNav'
-import { agentsApi, conversationInputApi, hostsApi, runsApi, sessionsApi } from '../../api/client'
+import { ConversationLink as Link } from '../conversation/ConversationScope'
+import { agentsApi, hostsApi, runsApi, sessionsApi } from '../../api/client'
 import type {
   AgentOut,
   ChatActionPreview,
@@ -12,7 +14,7 @@ import type {
 } from '../../types/api'
 import { ConversationView } from '../conversation/ConversationView'
 import {
-  ConversationSessionConfig,
+  SavedConversationSessionConfig,
   mergeSessionConfig,
   type SessionConfigSelection,
 } from '../conversation/ConversationSessionConfig'
@@ -26,7 +28,8 @@ import { Select } from '../../components/ui/select'
 import { ConfirmDialog } from '../../components/ui/dialog'
 import type { ConversationInputPart } from '@rainver/protocol'
 import { ConversationGitContext } from '../conversation/ConversationGitContext'
-import { clearConversationDraft, readConversationDraft, writeConversationDraft } from '../conversation/conversationDraft'
+import { clearConversationDraft, writeConversationDraft } from '../conversation/conversationDraft'
+import { useConversationDraft } from '../conversation/useConversationDraft'
 import { ConversationRunControls } from '../conversation/ConversationRunControls'
 
 /**
@@ -37,6 +40,14 @@ import { ConversationRunControls } from '../conversation/ConversationRunControls
  * as prose.
  */
 const HISTORY_TURN_READS = 20
+
+const emptyText = () => ''
+const sameText = (text: string) => text
+const replaceText = (_current: string, text: string) => text
+
+const STREAM_PLACEHOLDER_PREFIX = 'stream:'
+const RETRY_STREAM_PLACEHOLDER_PREFIX = 'retry-stream:'
+const isStreamPlaceholderId = (id: string) => id.startsWith(STREAM_PLACEHOLDER_PREFIX) || id.startsWith(RETRY_STREAM_PLACEHOLDER_PREFIX)
 
 interface ChatMessage {
   id?: string
@@ -66,31 +77,74 @@ interface BackendChoice {
  * session id is reflected in the URL by the parent
  * so a refresh can reload persisted messages through the sessions API.
  */
-export default function ChatPanel({
+export default function ChatPanel(props: Parameters<typeof ChatPanelContent>[0]) {
+  const [destination, setDestination] = useState({ requested: props.initialSessionId, accepted: undefined as string | undefined, epoch: 0 })
+  if (destination.requested !== props.initialSessionId) {
+    setDestination({ requested: props.initialSessionId, accepted: undefined, epoch: destination.epoch + (props.initialSessionId === destination.accepted ? 0 : 1) })
+  }
+  const sessionChanged = useCallback((sessionId: string) => {
+    setDestination(current => ({ ...current, accepted: sessionId }))
+    props.onSessionChange?.(sessionId)
+  }, [props.onSessionChange])
+  return <ConversationScope key={`${props.agent.space_id}:${props.agent.id}:${destination.epoch}`} spaceId={props.agent.space_id}>
+    <ChatPanelContent {...props} onSessionChange={sessionChanged} />
+  </ConversationScope>
+}
+
+function ChatPanelContent({
   agent,
   initialDraft,
   initialSessionId,
   onSessionChange,
   projectId,
+  onMessagesDisplayed,
+  onReadError,
 }: {
   agent: AgentOut
+  onMessagesDisplayed?: (ids: string[]) => void
+  onReadError?: (error: unknown) => void
   initialDraft?: string | null
   initialSessionId?: string | null
   onSessionChange?: (sessionId: string) => void
   projectId?: string
 }) {
+  const scope = useConversationScope()
   const { userId } = useSpace()
   const { t } = useAppTranslation()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sessionId, setSessionId] = useState<string | undefined>(initialSessionId ?? undefined)
-  const [input, setInput] = useState('')
-  const [inputParts, setInputParts] = useState<ConversationInputPart[]>([])
-  const [inputResetToken, setInputResetToken] = useState(0)
+  const draftDestination = `direct:${agent.id}:${projectId ?? ''}:${sessionId ?? 'new'}`
+  const {
+    value: input,
+    parts: inputParts,
+    setValue: changeInput,
+    setParts: changeInputParts,
+    draftRef: draftInputRef,
+    readyRef: draftReadyRef,
+  } = useConversationDraft({
+    destination: draftDestination,
+    initialValue: emptyText,
+    textOf: sameText,
+    withText: replaceText,
+    sessionId,
+  })
   const [sending, setSending] = useState(false)
+  const [savingSettings, setSavingSettings] = useState(false)
   const [loadingHistory, setLoadingHistory] = useState(Boolean(initialSessionId))
+  // A streaming placeholder has a client-only id; the stored reply reports itself once it arrives.
+  useAttentionViewing(agent.space_id, sessionId, {
+    messages: messages.flatMap(message => message.id && !isStreamPlaceholderId(message.id) ? [{ id: message.id, content: message.content }] : []),
+    ready: !loadingHistory,
+  })
+  useEffect(() => {
+    if (!loadingHistory && messages.length) onMessagesDisplayed?.(messages.flatMap(message => message.id ? [message.id] : []))
+  }, [loadingHistory, messages, onMessagesDisplayed])
+  const readErrorRef = useRef(onReadError)
+  readErrorRef.current = onReadError
   const [backendOptions, setBackendOptions] = useState<ConversationBackendOption[]>([])
   const [backend, setBackend] = useState<ConversationBackendBinding | null>(null)
   const [loadingBackends, setLoadingBackends] = useState(true)
+  const [savedSessionConfig, setSavedSessionConfig] = useState<SessionConfigSelection[]>([])
   const [sessionConfig, setSessionConfig] = useState<SessionConfigSelection[]>([])
   const [hosts, setHosts] = useState<Awaited<ReturnType<typeof hostsApi.list>>['items']>([])
   const [restoreWorkspace, setRestoreWorkspace] = useState(false)
@@ -100,13 +154,11 @@ export default function ChatPanel({
   // created during chat are already reflected in local state; re-fetching them
   // from the DB would wipe error messages that were never persisted.
   const externalSessionRef = useRef(initialSessionId)
-  const draftDestination = `direct:${agent.id}:${projectId ?? ''}:${sessionId ?? 'new'}`
-  const draftReadyRef = useRef<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
     setLoadingBackends(true)
-    agentsApi.conversationBackends(agent.id, {
+    agentsApi.conversationBackends(agent.id, { ...scope,
       spaceId: agent.space_id,
       sessionId: initialSessionId ?? undefined,
     })
@@ -116,6 +168,7 @@ export default function ChatPanel({
         setBackendOptions(catalog.options)
         setBackend(selected)
         const option = catalog.options.find(candidate => candidate.runtime_profile_id === selected?.runtime_profile_id)
+        setSavedSessionConfig(catalog.session_config ?? [])
         setSessionConfig(mergeSessionConfig(option?.session_config_options ?? [], catalog.session_config ?? []))
       })
       .catch(error => {
@@ -125,7 +178,7 @@ export default function ChatPanel({
         if (!cancelled) setLoadingBackends(false)
       })
     return () => { cancelled = true }
-  }, [agent.id, agent.space_id, initialSessionId])
+  }, [agent.id, agent.space_id, initialSessionId, scope])
 
   useEffect(() => {
     if (!backendOptions.some(option => option.host_bound)) {
@@ -136,8 +189,8 @@ export default function ChatPanel({
       setHosts([])
       return
     }
-    hostsApi.list().then(response => setHosts(response.items)).catch(() => setHosts([]))
-  }, [backendOptions])
+    hostsApi.list(scope).then(response => setHosts(response.items)).catch(() => setHosts([]))
+  }, [backendOptions, scope])
 
   useEffect(() => {
     const id = initialSessionId?.trim()
@@ -151,7 +204,7 @@ export default function ChatPanel({
     }
     let cancelled = false
     setLoadingHistory(true)
-    sessionsApi.messages(id)
+    sessionsApi.messages(id, scope)
       .then(async (rows: Message[]) => {
         if (cancelled) return
         // Turns are read for the tail only. The fold is a reading affordance
@@ -187,7 +240,7 @@ export default function ChatPanel({
           // further back than the tail — leaves the reply as prose, which is
           // what it was before.
           turn: m.role === 'assistant' && m.run_id && index >= foldFrom
-            ? await runsApi.turn(m.run_id)
+            ? await runsApi.turn(m.run_id, scope)
               .then(read => settledTurn(read, readBackTurnState(read.state, read.blocked_on), m.content))
               .catch(() => null)
             : null,
@@ -197,62 +250,13 @@ export default function ChatPanel({
         setMessages(history)
       })
       .catch(e => {
-        if (!cancelled) toast.error(errMsg(e))
+        if (!cancelled) { toast.error(errMsg(e)); readErrorRef.current?.(e) }
       })
       .finally(() => {
         if (!cancelled) setLoadingHistory(false)
       })
     return () => { cancelled = true }
-  }, [initialSessionId])
-
-  useEffect(() => {
-    let cancelled = false
-    if (draftReadyRef.current === draftDestination) return () => { cancelled = true }
-    draftReadyRef.current = null
-    const draft = readConversationDraft(draftDestination)
-    if (!draft) {
-      draftReadyRef.current = draftDestination
-      return
-    }
-    void (async () => {
-      const validated = await Promise.all(draft.input_parts.map(async part => {
-        try {
-          if (part.kind === 'image') {
-            await conversationInputApi.imageBlob(part.media_id)
-          } else if (part.kind === 'file_reference' && sessionId) {
-            const files = await conversationInputApi.searchFiles(sessionId, part.relative_path)
-            if (!files.items.some(file => file.relative_path === part.relative_path
-              && file.project_folder_id === part.project_folder_id
-              && file.workspace_location_id === part.workspace_location_id)) return null
-          } else if (part.kind === 'input_resource') {
-            // Resource parts are frozen by the server when the message is
-            // sent; a browser draft keeps the opaque request and lets the
-            // current-file producer revalidate it at send time.
-            return part
-          }
-          return part
-        } catch {
-          return null
-        }
-      }))
-      if (cancelled) return
-      setInput(draft.text)
-      setInputParts(validated.filter((part): part is ConversationInputPart => part !== null))
-      setInputResetToken(value => value + 1)
-      draftReadyRef.current = draftDestination
-    })()
-    return () => { cancelled = true }
-  }, [draftDestination, sessionId])
-
-  useEffect(() => {
-    if (draftReadyRef.current !== draftDestination || sending) return
-    const timer = window.setTimeout(() => writeConversationDraft({
-      destination: draftDestination,
-      text: input,
-      input_parts: inputParts,
-    }), 250)
-    return () => window.clearTimeout(timer)
-  }, [draftDestination, input, inputParts, sending])
+  }, [initialSessionId, scope])
 
   const selectedBackendOption = backendOptions.find(option => option.runtime_profile_id === backend?.runtime_profile_id) ?? null
   const directInputFileSources = selectedBackendOption?.workspace_mode === 'location'
@@ -273,8 +277,10 @@ export default function ChatPanel({
    * state update could have landed.
    */
   const inFlight = useRef(false)
+  const sendGeneration = useRef(0)
   // A turn waiting for its directory is still running, not waiting on a person.
-  const awaitingDecision = messages.some(message => message.turn?.state === 'blocked' && message.turn.blocked_on !== 'workspace')
+  const awaitingDecision = messages.some(message => message.turn?.state === 'blocked'
+    && message.turn.blocked_on !== 'workspace' && message.turn.blocked_on !== 'quota')
 
   const send = useCallback(async (text: string, parts: ConversationInputPart[] = inputParts) => {
     const message = text.trim()
@@ -288,12 +294,14 @@ export default function ChatPanel({
     // above the composer is driven by `awaitingDecision`. Guard on both: a
     // guard that only sees `inFlight` tells the person their message is held
     // and then sends it anyway.
-    if ((!message && parts.length === 0) || inFlight.current || awaitingDecision || loadingHistory || loadingBackends || !backend || selectedBackendOption?.usable === false) return
+    if ((!message && parts.length === 0) || inFlight.current || savingSettings || awaitingDecision || loadingHistory || loadingBackends || !backend || selectedBackendOption?.usable === false) return
     inFlight.current = true
+    const generation = ++sendGeneration.current
+    const submittedDraft = draftInputRef.current
     setHostError(null)
     setMessages(m => [...m, { role: 'user', content: message, inputParts: parts }])
     setSending(true)
-    const streamingMessageId = `stream:${crypto.randomUUID()}`
+    const streamingMessageId = `${STREAM_PLACEHOLDER_PREFIX}${crypto.randomUUID()}`
     let streamedContent = ''
     try {
       const res = await agentsApi.chat(
@@ -304,12 +312,27 @@ export default function ChatPanel({
           session_id: sessionId,
           ...(projectId ? { project_id: projectId } : {}),
           backend: { runtime_profile_id: backend.runtime_profile_id },
-          ...(sessionConfig.length ? { session_config: sessionConfig } : {}),
+          ...(!sessionId && sessionConfig.length ? { session_config: sessionConfig } : {}),
           ...(restoreWorkspace ? { restore_workspace: true } : {}),
         },
-        {
+        { ...scope,
           spaceId: agent.space_id,
           onAccepted: accepted => {
+            if (scope.signal?.aborted) return
+            // Acceptance consumes this submission, while the live response may
+            // outlast several edits to the next draft. Keep those edits and any
+            // attachments added since send, including uploads still in flight.
+            const currentDraft = draftInputRef.current
+            if (currentDraft.textVersion === submittedDraft.textVersion && submittedDraft.value === text) changeInput('')
+            changeInputParts(currentDraft.parts.filter(part => !parts.includes(part)))
+            const acceptedDestination = `direct:${agent.id}:${projectId ?? ''}:${accepted.session_id}`
+            draftReadyRef.current = acceptedDestination
+            if (draftDestination !== acceptedDestination) clearConversationDraft(draftDestination)
+            writeConversationDraft({
+              destination: acceptedDestination,
+              text: draftInputRef.current.value,
+              input_parts: draftInputRef.current.parts,
+            })
             setSessionId(accepted.session_id)
             onSessionChange?.(accepted.session_id)
             setMessages(current => {
@@ -329,6 +352,15 @@ export default function ChatPanel({
             })
           },
           onTurn: turn => {
+            if (scope.signal?.aborted) return
+            // A quota hold releases the server conversation turn. Keep its
+            // stream for eventual completion while allowing a new instruction.
+            // An older stream must never clear a newer send's guard or draft.
+            if (sendGeneration.current === generation) {
+              const waitingQuota = turn.state === 'blocked' && turn.blocked_on === 'quota'
+              inFlight.current = !waitingQuota
+              setSending(!waitingQuota)
+            }
 
             // The turn itself goes into the message, so the bubble shows the
             // steps as they happen rather than a status line beside them.
@@ -347,15 +379,11 @@ export default function ChatPanel({
           },
         },
       )
+      if (scope.signal?.aborted) return
       setSessionId(res.session_id)
       setRestoreWorkspace(false)
       onSessionChange?.(res.session_id)
       if (res.ok) {
-        setInput('')
-        setInputParts([])
-        clearConversationDraft(draftDestination)
-        clearConversationDraft(`direct:${agent.id}:${projectId ?? ''}:new`)
-        setInputResetToken(value => value + 1)
         setMessages(current => {
           const streamed = current.find(item => item.id === streamingMessageId)
           const completed: ChatMessage = {
@@ -424,15 +452,17 @@ export default function ChatPanel({
           : [...current, failed]
       })
     } finally {
-      inFlight.current = false
-      setSending(false)
+      if (sendGeneration.current === generation) {
+        inFlight.current = false
+        setSending(false)
+      }
     }
-  }, [agent.id, agent.space_id, awaitingDecision, backend, draftDestination, inputParts, loadingBackends, loadingHistory, onSessionChange, projectId, restoreWorkspace, selectedBackendOption?.usable, sessionConfig, sessionId])
+  }, [agent.id, agent.space_id, awaitingDecision, backend, changeInput, changeInputParts, draftDestination, inputParts, loadingBackends, loadingHistory, onSessionChange, projectId, restoreWorkspace, selectedBackendOption?.usable, sessionConfig, sessionId, scope, savingSettings])
 
   const refreshDirectGit = useCallback(async () => {
     if (!sessionId) return
     try {
-      const next = await sessionsApi.refreshGitContext(sessionId)
+      const next = await sessionsApi.refreshGitContext(sessionId, scope)
       setBackendOptions(current => current.map(option => option.runtime_profile_id === backend?.runtime_profile_id
         ? { ...option, git: next.git ?? null }
         : option))
@@ -443,11 +473,12 @@ export default function ChatPanel({
       setHostError(note)
       toast.error(note)
     }
-  }, [backend?.runtime_profile_id, sessionId])
+  }, [backend?.runtime_profile_id, sessionId, scope])
 
   const retryRun = useCallback(async (runId: string) => {
-    const retried = await agentsApi.retryConversation(agent.id, runId, { spaceId: agent.space_id })
-    const streamingMessageId = `retry-stream:${crypto.randomUUID()}`
+    const retried = await agentsApi.retryConversation(agent.id, runId, { ...scope, spaceId: agent.space_id })
+    if (scope.signal?.aborted) return
+    const streamingMessageId = `${RETRY_STREAM_PLACEHOLDER_PREFIX}${crypto.randomUUID()}`
     let streamedTurn: RunTurn | null = null
     setSessionId(retried.session_id)
     onSessionChange?.(retried.session_id)
@@ -462,9 +493,10 @@ export default function ChatPanel({
       turn: null,
     }])
     try {
-      await runsApi.streamTurn(retried.run_id, {
+      await runsApi.streamTurn(retried.run_id, { ...scope,
         spaceId: agent.space_id,
         onTurn: turn => {
+            if (scope.signal?.aborted) return
           streamedTurn = turn
           const text = turn.parts.filter(part => part.type === 'text').map(part => part.text).join('')
           setMessages(current => current.map(message => message.id === streamingMessageId
@@ -472,7 +504,7 @@ export default function ChatPanel({
             : message))
         },
       })
-      const rows = await sessionsApi.messages(retried.session_id)
+      const rows = await sessionsApi.messages(retried.session_id, scope)
       const assistant = rows.find(message => message.role === 'assistant' && message.run_id === retried.run_id)
       const finalTurn = streamedTurn as RunTurn | null
       const finalText = assistant?.content ?? finalTurn?.parts.filter(part => part.type === 'text').map(part => part.text).join('') ?? ''
@@ -486,7 +518,7 @@ export default function ChatPanel({
         : message))
       throw error
     }
-  }, [agent.id, agent.space_id, onSessionChange])
+  }, [agent.id, agent.space_id, onSessionChange, scope])
 
   // Auto-send a draft carried from Home's assistant entry (the user already hit "Open").
   useEffect(() => {
@@ -501,7 +533,7 @@ export default function ChatPanel({
       autoSentRef.current = true
       void send(initialDraft, [])
     }
-  }, [backend, initialDraft, loadingBackends, loadingHistory, send])
+  }, [backend, initialDraft, loadingBackends, loadingHistory, send, scope])
 
   const backendChoices = flattenBackendChoices(backendOptions)
   const selectedBackendKey = backend ? backendKey(backend) : ''
@@ -514,7 +546,7 @@ export default function ChatPanel({
   async function resetContext() {
     if (!selectedBackendOption?.host_bound || !selectedBackendOption.host_owner_is_me || !selectedBackendOption.host_online) return
     try {
-      await agentsApi.resetContext(agent.id)
+      await agentsApi.resetContext(agent.id, scope)
       setRestoreWorkspace(false)
       toast.success(t('conversation_ui.chat.context_reset'))
     } catch (error) {
@@ -628,30 +660,41 @@ export default function ChatPanel({
         sending={sending}
         loadingHistory={loadingHistory}
         input={input}
-        onInputChange={setInput}
+        onInputChange={changeInput}
         onSend={() => void send(input)}
         runHref={entry => (entry.turn ? `/runs/${entry.turn.run_id}` : undefined)}
         placeholder={t('conversation_ui.chat.placeholder')}
         emptyTitle={t('conversation_ui.chat.empty_title')}
         emptyDescription={t('conversation_ui.chat.empty_description')}
-        composerDisabled={loadingBackends || !backend || hostBlocked}
+        composerDisabled={savingSettings || loadingBackends || !backend || hostBlocked}
+        inputDisabled={savingSettings || loadingBackends || !backend || hostBlocked}
         composerControls={selectedBackendOption?.session_config_options?.length ? (
-          <ConversationSessionConfig
+          <SavedConversationSessionConfig key={`${agent.space_id}:${agent.id}:${sessionId}:${selectedBackendOption.runtime_profile_id}`}
             options={selectedBackendOption.session_config_options}
             value={sessionConfig}
+            persistedValue={savedSessionConfig}
             onChange={setSessionConfig}
+            onSave={sessionId && backend ? async value => {
+              setSavingSettings(true)
+              try {
+                await agentsApi.saveConversationSessionConfig(agent.id, {
+                  session_id: sessionId, runtime_profile_id: backend.runtime_profile_id, session_config: value,
+                }, scope)
+                if (!scope.signal?.aborted) setSavedSessionConfig(value)
+              } finally { setSavingSettings(false) }
+            } : undefined}
             disabled={sending || loadingBackends || hostBlocked}
           />
         ) : undefined}
-        composerNote={awaitingDecision
+        composerNote={!sessionId ? t('conversation_ui.session_config.first_send') : awaitingDecision
           ? t('conversation_ui.chat.awaiting_decision')
           : undefined}
         inputParts={inputParts}
-        onInputPartsChange={setInputParts}
+        skillAgentId={agent.id}
+        onInputPartsChange={changeInputParts}
         sessionId={sessionId}
         projectId={projectId}
         inputFileSources={directInputFileSources}
-        inputResetToken={inputResetToken}
         inputCapabilities={selectedBackendOption?.prompt_capabilities}
       />
     </div>

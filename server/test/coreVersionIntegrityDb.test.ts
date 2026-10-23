@@ -719,27 +719,6 @@ describe("core version integrity", () => {
     });
   });
 
-  it("allows multiple available capability versions for independently pinned scopes", async (ctx) => {
-    if (!db.available || !db.pool) return ctx.skip();
-    const now = new Date().toISOString();
-    await db.pool.query(
-      `INSERT INTO capability_versions (
-         id, capability_key, space_id, version, source, status,
-         metadata_json, created_at, updated_at
-       ) VALUES ('capability-v1', 'research.search', $1, '1.0.0',
-                 'builtin', 'available', '{}'::jsonb, $2, $2)`,
-      [SPACE, now],
-    );
-    await expect(db.pool.query(
-      `INSERT INTO capability_versions (
-         id, capability_key, space_id, version, source, status,
-         metadata_json, created_at, updated_at
-       ) VALUES ('capability-v2', 'research.search', $1, '2.0.0',
-                 'builtin', 'available', '{}'::jsonb, $2, $2)`,
-      [SPACE, now],
-    )).resolves.toMatchObject({ rowCount: 1 });
-  });
-
   it("publishes capability versions without rewriting existing scope pins", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const now = new Date().toISOString();

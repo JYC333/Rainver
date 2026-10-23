@@ -93,6 +93,16 @@ export class PgRunToolIdentityRepository implements RunToolIdentityPort {
     return result.rows[0] ?? null;
   }
 
+  /** Extend only this live attempt's identity; never revive a revoked token. */
+  async renew(runId: string, token: string, ttlMs: number): Promise<void> {
+    await this.db.query(
+      `UPDATE run_tool_identities SET expires_at = $3::timestamptz
+        WHERE run_id = $1 AND token_digest = $2
+          AND revoked_at IS NULL AND expires_at > now()`,
+      [runId, runToolTokenDigest(token), new Date(Date.now() + ttlMs).toISOString()],
+    );
+  }
+
   /** Revoked by Run rather than by token: the caller revoking holds the Run. */
   async revoke(runId: string): Promise<void> {
     await this.db.query(

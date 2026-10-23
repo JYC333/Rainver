@@ -278,6 +278,9 @@ export class PgSessionRepository {
                       CASE WHEN part.kind = 'image' THEN jsonb_build_object(
                         'kind', 'image', 'media_id', part.media_id, 'filename', part.display_name,
                         'media_type', part.media_type, 'byte_size', part.byte_size, 'sha256', part.sha256
+                      ) WHEN part.kind = 'skill' THEN jsonb_build_object(
+                        'kind', 'skill', 'skill_package_id', part.skill_package_id,
+                        'package_hash', part.sha256, 'display_name', part.display_name
                       ) WHEN part.kind = 'input_resource' THEN jsonb_strip_nulls(jsonb_build_object(
                         'kind', 'input_resource', 'id', part.id, 'resource_id', part.resource_id,
                         'source_state', resource.source_state, 'display_name', part.display_name,
@@ -457,6 +460,9 @@ export class PgSessionRepository {
                       CASE WHEN part.kind = 'image' THEN jsonb_build_object(
                         'kind', 'image', 'media_id', part.media_id, 'filename', part.display_name,
                         'media_type', part.media_type, 'byte_size', part.byte_size, 'sha256', part.sha256
+                      ) WHEN part.kind = 'skill' THEN jsonb_build_object(
+                        'kind', 'skill', 'skill_package_id', part.skill_package_id,
+                        'package_hash', part.sha256, 'display_name', part.display_name
                       ) WHEN part.kind = 'input_resource' THEN jsonb_strip_nulls(jsonb_build_object(
                         'kind', 'input_resource', 'id', part.id, 'resource_id', part.resource_id,
                         'source_state', resource.source_state, 'display_name', part.display_name,

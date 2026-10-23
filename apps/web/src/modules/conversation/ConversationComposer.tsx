@@ -6,11 +6,12 @@ import type { ConversationInputPart, RuntimePromptCapabilities } from '@rainver/
 import { ConversationInputSendGuardContext, useConversationInputDraft, type ConversationInputFileSource } from './ConversationInputComposer'
 
 /** One composer frame for direct chat, Rooms, and the Project sidecar. */
-export function ConversationComposer({ editor, controls, note, sending, sendDisabled, onSend, attachments, renderInputReferences = true, inputParts, onInputPartsChange, projectId, projectFolderId, fileSources, sessionId, inputResetToken, inputCapabilities, inputCapabilityMessage, onPaste, onDragOver, onDrop }: {
+export function ConversationComposer({ editor, controls, note, sending, inputDisabled = sending, sendDisabled, onSend, attachments, renderInputReferences = true, inputParts, onInputPartsChange, projectId, projectFolderId, fileSources, sessionId, inputResetToken, inputCapabilities, inputCapabilityMessage, onPaste, onDragOver, onDrop }: {
   editor: ReactNode
   controls?: ReactNode
   note?: ReactNode
   sending: boolean
+  inputDisabled?: boolean
   sendDisabled: boolean
   onSend: () => void
   attachments?: ReactNode
@@ -36,7 +37,7 @@ export function ConversationComposer({ editor, controls, note, sending, sendDisa
     projectFolderId,
     fileSources,
     sessionId,
-    disabled: sending,
+    disabled: inputDisabled,
     resetToken: inputResetToken,
   })
   const imageUnsupported = Boolean(inputParts?.some(part => part.kind === 'image') && (inputCapabilities?.image === false || inputCapabilityMessage))

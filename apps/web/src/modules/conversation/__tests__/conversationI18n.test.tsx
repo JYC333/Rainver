@@ -50,6 +50,20 @@ describe('conversation surfaces in Chinese', () => {
     expect(resetLabel('2026-10-20T09:30:00Z', now)).toMatch(/2026年10月20日/)
   })
 
+  it('words the quiet-runtime notice in the reader\'s language, not the server\'s', async () => {
+    const quiet: RunTurn = {
+      schema_version: 'run_turn.v1', run_id: 'run-1', state: 'working', source: 'host_thread_events',
+      blocked_on: null, cursor: 1, updated_at: null,
+      parts: [{ type: 'diagnostic', index: 0, level: 'info', text: 'server fallback', error_code: 'run_quiet' }],
+    } as RunTurn
+    const { rerender } = render(<MemoryRouter><ConversationTurn turn={quiet} /></MemoryRouter>)
+    expect(screen.getByText(/No new output yet/)).toBeInTheDocument()
+    expect(screen.queryByText('server fallback')).not.toBeInTheDocument()
+    await i18n.changeLanguage('zh-CN')
+    rerender(<MemoryRouter><ConversationTurn turn={{ ...quiet }} /></MemoryRouter>)
+    expect(screen.getByText(/暂未收到新输出/)).toBeInTheDocument()
+  })
+
   it('keeps English plurals distinct for one and several steps', () => {
     const { rerender } = render(<MemoryRouter><ConversationTurn turn={turnWithSteps(1)} /></MemoryRouter>)
     expect(screen.getByText('show work (1 step)')).toBeInTheDocument()

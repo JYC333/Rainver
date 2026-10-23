@@ -71,7 +71,8 @@ export function focusRefsFor(pathname: string): Array<{ type: 'task'; id: string
 }
 
 export default function ProjectChatSidecar() {
-  const { projectId = '' } = useParams()
+  const { projectId = '', spaceId } = useParams()
+  const requestScope = useMemo(() => ({ spaceId }), [spaceId])
   const { pathname } = useLocation()
   // The Rooms Area is already a Room, usually this one. Do not show two live
   // views of the same conversation side by side.
@@ -165,7 +166,7 @@ export default function ProjectChatSidecar() {
     void (async () => {
       try {
         setFailure(null)
-        const mainline = await projectsApi.mainlineRoom(projectId)
+        const mainline = await projectsApi.mainlineRoom(projectId, requestScope)
         if (!active) return
         // Opening the Project enrols the viewer in its mainline if they were
         // not yet; the server does that, so a member who joined the Project
@@ -173,7 +174,7 @@ export default function ProjectChatSidecar() {
         setRoom(mainline.room)
         setConversations([])
         setSessionId('')
-        const page = await roomsApi.conversations(mainline.room.id, { limit: 50 })
+        const page = await roomsApi.conversations(mainline.room.id, { limit: 50 }, requestScope)
         if (!active) return
         setConversations(page.items)
         if (page.items.length === 0) setRuntimeOpen(true)
@@ -195,7 +196,7 @@ export default function ProjectChatSidecar() {
       }
     })()
     return () => { active = false }
-  }, [projectId, open, onRoomsArea])
+  }, [projectId, requestScope, open, onRoomsArea])
 
   const focusRefs = useMemo(() => focusRefsFor(pathname), [pathname])
 
@@ -339,6 +340,7 @@ export default function ProjectChatSidecar() {
             />
           )}
           <ConversationSurface
+            spaceId={spaceId}
             // Picking works here too: the panel has the Room's other
             // threads, so a pick has somewhere to go. Starting a new thread is
             // not one of this surface's affordances, so that action is not

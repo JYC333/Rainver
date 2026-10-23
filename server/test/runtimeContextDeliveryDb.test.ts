@@ -1,5 +1,13 @@
-import { randomUUID } from "node:crypto";
-import { seedServerHost, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { assertSelectedSkillBindings } from "../src/modules/capabilities/selectedSkills.js";
+import { SkillPackageSchema } from "@rainver/protocol";
+import { previewSkillFiles } from "../src/modules/capabilities/skillImporter.js";
+import { applySkillPackageBinding } from "../src/modules/capabilities/skillBindings.js";
+import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
+import { loadConfig } from "../src/config.js";
+import { withTransaction } from "../src/db/tx.js";
+import { PgCapabilitiesRepository, approveSkillImportInTransaction } from "../src/modules/capabilities/repository.js";
+import { createHash, randomUUID } from "node:crypto";
+import { seedServerHost, seedMainlineRoomsForAllProjects, seedProjectMainlineRoom, seedRoomManager } from "./support/domainSeeds.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecutionControlSnapshot } from "@rainver/protocol";
 import { InvocationSnapshotService, SealedPayloadService } from "../src/modules/runtimeContext/invocationSnapshotService.js";
@@ -435,6 +443,108 @@ describe("Context Event continuity and checkpoints", () => {
     })).rejects.toMatchObject({ statusCode: 422 });
   });
 
+  it("reconciles a Conversation scope split from its Room recipient scope without rewriting audit snapshots", async () => {
+    if (!db.available) return;
+    // Before per-Conversation scopes, every Room Run's control snapshot named
+    // the recipient scope. The split moves those Runs' events, not their
+    // immutable snapshots.
+    const [room, member, conversationA, conversationB, runB] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    const [scopeA, scopeB, messageA] = [randomUUID(), randomUUID(), randomUUID()];
+    await db.pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Split','active',now(),now())`, [PROJECT, SPACE, USER]);
+    await seedProjectMainlineRoom(db.pool, { space: SPACE, project: PROJECT, owner: USER, roomId: room });
+    await seedRoomManager(db.pool, { space: SPACE, room, agent: AGENT, id: member });
+    await db.pool.query(
+      `INSERT INTO sessions (id,space_id,room_id,project_id,status,created_at,updated_at)
+       VALUES ($1,$3,$4,$5,'active',now(),now()), ($2,$3,$4,$5,'active',now(),now())`,
+      [conversationA, conversationB, SPACE, room, PROJECT],
+    );
+    await db.pool.query(
+      `INSERT INTO runs (id,space_id,session_id,agent_id,agent_version_id,run_type,trigger_origin,status,mode,
+         runtime_profile_id,runtime_profile_selection_source,runtime_key,runtime_profile_snapshot_json,
+         required_sandbox_level,instructed_by_user_id,owner_user_id,created_at,updated_at,execution_kind)
+       SELECT $1,space_id,$2,agent_id,agent_version_id,run_type,trigger_origin,status,mode,
+              runtime_profile_id,runtime_profile_selection_source,runtime_key,runtime_profile_snapshot_json,
+              required_sandbox_level,instructed_by_user_id,owner_user_id,now(),now(),execution_kind
+         FROM runs WHERE id=$3`,
+      [runB, conversationB, RUN],
+    );
+    await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, conversationA]);
+    const recipientControl = { ...control(), work_context_scope_id: member };
+    await db.pool.query(`UPDATE execution_control_snapshots SET snapshot_json=$2::jsonb WHERE id=$1`, [CONTROL, JSON.stringify(recipientControl)]);
+    await db.pool.query(
+      `INSERT INTO execution_control_snapshots (id,space_id,run_id,snapshot_json,created_at) VALUES ($1,$2,$3,$4::jsonb,now())`,
+      [randomUUID(), SPACE, runB, JSON.stringify({ ...recipientControl, id: randomUUID() })],
+    );
+    await seedConversationMessages(db.pool, {
+      space: SPACE, session: conversationA,
+      messages: [{ id: messageA, role: "user", content: "before the split", userId: USER }],
+    });
+    const continuity = new RuntimeContextContinuityService(db.pool);
+    const event = (invocation: string, type: string, ref: { type: string; id: string }) => ({
+      invocation_id: invocation, event_type: type, canonical_ref: ref, semantic_role: null, token_estimate: 0,
+    }) as const;
+    await continuity.ingest(event(RUN, "run_observed", { type: "run", id: RUN }));
+    await continuity.ingest(event(RUN, "user_message_received", { type: "message", id: messageA }));
+    await continuity.ingest(event(runB, "run_observed", { type: "run", id: runB }));
+    await continuity.recordCaptureGap({
+      invocationId: RUN, code: "adapter_event_missing",
+      event: event(RUN, "buffered_runtime_notice", { type: "run_request", id: RUN }),
+    });
+    // The split as 0003 performs it: events and the Run's replayable gap move
+    // to each Conversation's scope; the snapshots keep naming `member`.
+    await db.pool.query(
+      `INSERT INTO room_conversation_recipients (id,space_id,session_id,room_agent_member_id,created_at)
+       VALUES ($1,$3,$4,$6,now()), ($2,$3,$5,$6,now())`,
+      [scopeA, scopeB, SPACE, conversationA, conversationB, member],
+    );
+    await db.pool.query(
+      `UPDATE context_events SET work_context_scope_id = CASE WHEN invocation_id=$1 THEN $2 ELSE $3 END,
+              scope_sequence = CASE WHEN invocation_id=$1 THEN scope_sequence ELSE 1 END
+        WHERE work_context_scope_id=$4`,
+      [RUN, scopeA, scopeB, member],
+    );
+    await db.pool.query(
+      `INSERT INTO context_event_scopes (space_id,work_context_scope_id,event_head_cursor,capture_status,updated_at)
+       VALUES ($1,$2,2,'partial',now()), ($1,$3,1,'complete',now())`,
+      [SPACE, scopeA, scopeB],
+    );
+    await db.pool.query(`UPDATE context_capture_gaps SET work_context_scope_id=$1 WHERE work_context_scope_id=$2`, [scopeA, member]);
+
+    // Moved events whose Run belongs to that Conversation are in scope.
+    expect(await continuity.reconcileScope(SPACE, scopeB)).toBe("complete");
+    // The moved gap replays into the Conversation scope it now belongs to.
+    expect(await continuity.reconcileScope(SPACE, scopeA)).toBe("partial");
+    expect(await continuity.recoverOpenCaptureGaps(SPACE, scopeA)).toBe(1);
+    expect((await db.pool.query(
+      `SELECT scope_sequence,capture_status FROM context_events WHERE work_context_scope_id=$1 AND event_type='buffered_runtime_notice'`,
+      [scopeA],
+    )).rows).toEqual([{ scope_sequence: 3, capture_status: "recovered" }]);
+    expect(await continuity.reconcileScope(SPACE, scopeA)).toBe("recovered");
+
+    // A Run of another Conversation of the same recipient is still foreign.
+    await db.pool.query(
+      `INSERT INTO context_events (id,space_id,work_context_scope_id,scope_sequence,event_type,canonical_ref_json,
+         canonical_ref_key,trust,sensitivity,token_estimate,confirmation_state,source_refs_json,capture_status,created_at)
+       VALUES ($1,$2,$3,2,'run_observed',$4::jsonb,$5,'domain_approved','normal',0,'observed','[]','complete',now())`,
+      [randomUUID(), SPACE, scopeB, JSON.stringify({ type: "run", id: RUN }), `run\u001f${RUN}\u001f`],
+    );
+    await db.pool.query(`UPDATE context_event_scopes SET event_head_cursor=2 WHERE work_context_scope_id=$1`, [scopeB]);
+    expect(await continuity.reconcileScope(SPACE, scopeB)).toBe("partial");
+    const mismatch = await db.pool.query<{ status: string; detail: string }>(
+      `SELECT status,detail FROM context_capture_gaps WHERE work_context_scope_id=$1 AND code='reconciliation_mismatch'`, [scopeB],
+    );
+    expect(mismatch.rows).toEqual([expect.objectContaining({ status: "open", detail: expect.stringMatching(/bad_ref=(?!none)/) })]);
+    // Once the ledger is consistent again, a clean rescan resolves its own finding.
+    await db.pool.query(
+      `UPDATE context_events SET canonical_ref_json=$2::jsonb WHERE work_context_scope_id=$1 AND scope_sequence=2`,
+      [scopeB, JSON.stringify({ type: "run_request", id: runB })],
+    );
+    expect(await continuity.reconcileScope(SPACE, scopeB)).toBe("recovered");
+    expect((await db.pool.query(
+      `SELECT status FROM context_capture_gaps WHERE work_context_scope_id=$1`, [scopeB],
+    )).rows).toEqual([{ status: "recovered" }]);
+  });
+
   it("loads the checkpoint and raw tail at the triggering Message watermark", async () => {
     if (!db.available) return;
     const sessionId = randomUUID();
@@ -509,6 +619,72 @@ describe("Context Event continuity and checkpoints", () => {
     ]);
   });
 
+  it.each(["partial", "out-of-order", "complete"])("keeps canonical message order and the trigger boundary with %s ledger capture", async (capture) => {
+    if (!db.available) return;
+    const sessionId = randomUUID();
+    const earlierId = randomUUID();
+    const currentId = randomUUID();
+    const futureId = randomUUID();
+    await db.pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
+    await seedConversationMessages(db.pool, {
+      space: SPACE, session: sessionId,
+      messages: [
+        { id: earlierId, role: "user", content: "earlier on the path", userId: USER, createdAt: "2026-08-17T14:03:00.000Z" },
+        { id: currentId, role: "user", content: "current trigger", userId: USER, createdAt: "2026-08-17T14:02:00.000Z" },
+        { id: futureId, role: "user", content: "later on the path", userId: USER, createdAt: "2026-08-17T14:01:00.000Z" },
+      ],
+    });
+    await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
+    const continuity = new RuntimeContextContinuityService(db.pool);
+    const capturedIds = capture === "partial" ? [currentId]
+      : capture === "out-of-order" ? [futureId, currentId, earlierId]
+        : [earlierId, currentId, futureId];
+    for (const id of capturedIds) await continuity.ingest({
+      invocation_id: RUN, event_type: "user_message_received",
+      canonical_ref: { type: "message", id }, semantic_role: "user_input", token_estimate: 1,
+    });
+    const visible = await loadConversationContinuityThroughMessage(db.pool, {
+      spaceId: SPACE, sessionId, workContextScopeId: RUN, currentMessageId: currentId,
+    });
+    expect(visible.messages.map((message) => message.content)).toEqual(["earlier on the path", "current trigger"]);
+  });
+
+  it("does not use a checkpoint that captured a later message before the trigger's delayed event", async () => {
+    if (!db.available) return;
+    const sessionId = randomUUID();
+    const currentId = randomUUID();
+    const futureId = randomUUID();
+    await db.pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
+    await seedConversationMessages(db.pool, {
+      space: SPACE, session: sessionId,
+      messages: [
+        { id: currentId, role: "user", content: "current trigger", userId: USER },
+        { id: futureId, role: "user", content: "a later decision", userId: USER },
+      ],
+    });
+    await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
+    const continuity = new RuntimeContextContinuityService(db.pool, {
+      async extract() {
+        return {
+          extraction: { goals: [], user_intent: [], decisions: [], constraints: [], facts: [], open_questions: [], tasks: [], artifact_refs: [], tool_refs: [], correction_refs: [] },
+          extractorRef: { type: "provider_task", id: randomUUID(), version: "test.v1" },
+        };
+      },
+    });
+    const ingest = (id: string) => continuity.ingest({
+      invocation_id: RUN, event_type: "user_message_received",
+      canonical_ref: { type: "message", id }, semantic_role: "user_input", token_estimate: 1,
+    });
+    await ingest(futureId);
+    expect(await continuity.runSemanticExtraction({ spaceId: SPACE, workContextScopeId: RUN, force: true })).not.toBeNull();
+    await ingest(currentId);
+    const visible = await loadConversationContinuityThroughMessage(db.pool, {
+      spaceId: SPACE, sessionId, workContextScopeId: RUN, currentMessageId: currentId,
+    });
+    expect(visible.checkpoint).toBeNull();
+    expect(visible.messages.map((message) => message.content)).toEqual(["current trigger"]);
+  });
+
   it("rejects concurrent extraction output based on a superseded checkpoint", async () => {
     if (!db.available) return;
     const releases: Array<() => void> = [];
@@ -579,8 +755,9 @@ describe("Context Event continuity and checkpoints", () => {
 });
 
 describe("Invocation Delivery and Snapshot persistence", () => {
-  it("resolves direct Chat by invocation id and carries prior session turns behind the Gateway", async () => {
+  it.each(["none", "saved", "draft", "skill", "skill_project"] as const)("authorizes direct Chat with %s input resources and prior session turns", async (sourceState) => {
     if (!db.available) return;
+    const skillMode = sourceState === "skill" || sourceState === "skill_project";
     const sessionId = randomUUID();
     const priorMessageId = randomUUID();
     const priorReplyId = randomUUID();
@@ -606,6 +783,58 @@ describe("Invocation Delivery and Snapshot persistence", () => {
         { id: futureMessageId, role: "user", content: "This later turn must stay invisible.", userId: USER, metadata: {} },
       ],
     });
+    if (sourceState === "saved" || sourceState === "draft") {
+      const content = "Captured file body";
+      const hash = createHash("sha256").update(content).digest("hex");
+      const blobId = randomUUID();
+      const resourceId = randomUUID();
+      await db.pool.query(
+        `INSERT INTO conversation_input_resource_blobs
+           (id,space_id,owner_user_id,sha256,byte_size,line_count,content,created_at)
+         VALUES ($1,$2,$3,$4,$5,1,$6,now())`,
+        [blobId, SPACE, USER, hash, Buffer.byteLength(content), content],
+      );
+      await db.pool.query(
+        `INSERT INTO conversation_input_resources
+           (id,space_id,session_id,message_id,blob_id,source_kind,source_state,
+            relative_path,display_name,media_type,byte_size,sha256,draft_id,draft_version,captured_at)
+         VALUES ($1,$2,$3,$4,$5,CASE WHEN $6='draft' THEN 'project_file_draft' ELSE 'project_file' END,
+                 $6,'README.md','README.md','text/markdown',
+                 $7,$8,$9,$10,now())`,
+        [resourceId, SPACE, sessionId, MESSAGE, blobId, sourceState, Buffer.byteLength(content), hash,
+          sourceState === "draft" ? randomUUID() : null, sourceState === "draft" ? 1 : null],
+      );
+      await db.pool.query(
+        `INSERT INTO message_input_parts
+           (id,space_id,session_id,message_id,position,kind,resource_id,display_name,media_type,byte_size,sha256)
+         VALUES ($1,$2,$3,$4,0,'input_resource',$5,'README.md','text/markdown',$6,$7)`,
+        [randomUUID(), SPACE, sessionId, MESSAGE, resourceId, Buffer.byteLength(content), hash],
+      );
+    }
+    let skillPackageId: string | undefined;
+    const originalSkill = Buffer.from("\ufeff---\r\nname: delivery-skill\r\ndescription: Follow this original package.\r\n---\r\nRead references/note.bin.\r\n");
+    if (skillMode) {
+      if (sourceState === "skill_project") {
+        await db.pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Skill Project','active',now(),now())`, [PROJECT, SPACE, USER]);
+        await seedMainlineRoomsForAllProjects(db.pool);
+      }
+      const preview = previewSkillFiles({ files: [
+        { path: "SKILL.md", content_base64: originalSkill.toString("base64") },
+        { path: "references/note.bin", content_base64: "AP+A" },
+      ] });
+      const pkg = SkillPackageSchema.parse(await new PgCapabilitiesRepository(db.pool).saveImportedSkill({ spaceId: SPACE, userId: USER }, preview));
+      skillPackageId = pkg.id;
+      await approveSkillImportInTransaction({ db: db.pool, spaceId: SPACE, userId: USER, proposalId: randomUUID(), skillPackageId: pkg.id });
+      // Agent-bound selection must work even though a direct session has no agent_id.
+      const proposal = await new PgCapabilitiesRepository(db.pool).createSkillBindingProposal({ spaceId: SPACE, userId: USER }, pkg.id, { scope_type: sourceState === "skill_project" ? "project" : "agent", scope_id: sourceState === "skill_project" ? PROJECT : AGENT, enabled: true });
+      await withTransaction(db.pool, async client => {
+        const row = (await client.query<ApplyProposal>("SELECT * FROM proposals WHERE id=$1", [proposal.id])).rows[0]!;
+        await applySkillPackageBinding({ db: client, proposal: row, userId: USER, config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }) });
+        await client.query("UPDATE proposals SET status='accepted' WHERE id=$1", [proposal.id]);
+      });
+      await db.pool.query(`UPDATE messages SET content='' WHERE id=$1`, [MESSAGE]);
+      await db.pool.query(`INSERT INTO message_input_parts (id,space_id,session_id,message_id,position,kind,skill_package_id,display_name,media_type,byte_size,sha256) VALUES ($1,$2,$3,$4,0,'skill',$5,'delivery-skill','application/vnd.rainver.skill',0,$6)`, [randomUUID(), SPACE, sessionId, MESSAGE, pkg.id, preview.package_hash]);
+    }
     await db.pool.query(
       `INSERT INTO policy_decision_records (
          id,space_id,actor_type,actor_id,action,resource_type,resource_id,
@@ -627,6 +856,14 @@ describe("Invocation Delivery and Snapshot persistence", () => {
                  'test',$6,$4,now())`,
       [SETUP, SPACE, sessionId, USER, AGENT, decisionId],
     );
+    if (sourceState === "skill_project") {
+      await db.pool.query("UPDATE work_context_setups SET project_id=$2 WHERE id=$1", [SETUP, PROJECT]);
+    }
+    if (skillMode) {
+      const selections = [{ kind: "skill", skill_package_id: skillPackageId!, package_hash: String((await db.pool.query("SELECT manifest_json->>'package_hash' AS hash FROM skill_packages WHERE id=$1", [skillPackageId])).rows[0]!.hash), display_name: "delivery-skill" }];
+      await expect(assertSelectedSkillBindings(db.pool, { space_id: SPACE, user_id: USER, project_id: null, agent_id: AGENT, session_id: sessionId }, selections)).resolves.toBeUndefined();
+      expect(await new PgCapabilitiesRepository(db.pool).listAvailableSkills({ spaceId: SPACE, userId: USER }, { session_id: sessionId, agent_id: AGENT })).toEqual(selections);
+    }
     await db.pool.query(
       `INSERT INTO model_providers (
          id,space_id,owner_user_id,name,provider_type,base_url,enabled,
@@ -664,6 +901,9 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       })],
     );
     const authoritative = control();
+    if (sourceState === "skill_project") {
+      authoritative.project_id = PROJECT;
+    }
     authoritative.work_context_scope_id = sessionId;
     authoritative.work_context_setup_ref = {
       type: "work_context_setup",
@@ -691,8 +931,19 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     });
 
     expect(result.envelope.window_plan.total_window_tokens).toBe(128_000);
-    expect(result.envelope.items.find((item) => item.source_ref.id === MESSAGE)?.payload.text)
-      .toBe("What code did I choose?");
+    const messageText = result.envelope.items.find((item) => item.source_ref.id === MESSAGE)?.payload.text;
+    if (sourceState === "none") {
+      expect(messageText).toBe("What code did I choose?");
+    } else if (skillMode) {
+      expect(messageText).toContain("[Explicitly selected Skills]");
+      expect(messageText).toContain(skillPackageId);
+      expect(messageText).not.toContain("Follow this original package");
+    } else {
+      expect(messageText).toContain("What code did I choose?\n\n[Attached immutable input resources]");
+      expect(messageText).toContain(`"source_state":"${sourceState}"`);
+      expect(messageText).toContain('"relative_path":"README.md"');
+      expect(messageText).not.toContain("Captured file body");
+    }
     const continuity = result.envelope.items.find((item) => item.acquisition === "continuity");
     expect(continuity?.source_ref).toEqual({
       type: "session",
@@ -719,7 +970,26 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       viewerUserId: USER,
       requireLiveAuthorization: true,
     });
-    await expect(create()).resolves.toBeDefined();
+    const accepted = await create();
+    if (skillMode) {
+      expect(accepted.delivery.skill_packages?.[0]?.content.files).toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: "SKILL.md", content_base64: originalSkill.toString("base64") }),
+        expect.objectContaining({ path: "references/note.bin", content_base64: "AP+A" }),
+      ]));
+      const forged = structuredClone(result.envelope);
+      const skillItem = forged.items.find(item => item.source_ref.type === "skill_package_binding")!;
+      (skillItem.payload.skill_package as { files: Array<{ content_base64: string }> }).files[0]!.content_base64 = "Zm9yZ2Vk";
+      await expect(create(forged)).rejects.toMatchObject({ statusCode: 409 });
+    }
+    // Neither a forged body nor forged attachment metadata can reach the model.
+    for (const replacement of skillMode ? ["Forged selection"] : sourceState === "none" ? ["Forged question"] : ["Forged question", "OTHER.md"]) {
+      const tampered = structuredClone(result.envelope);
+      const messageItem = tampered.items.find((item) => item.source_ref.id === MESSAGE)!;
+      messageItem.payload.text = replacement === "OTHER.md"
+        ? String(messageItem.payload.text).replaceAll("README.md", replacement)
+        : skillMode ? "Forged selection" : String(messageItem.payload.text).replace("What code did I choose?", replacement);
+      await expect(create(tampered)).rejects.toMatchObject({ statusCode: 409 });
+    }
     await db.pool.query(
       `UPDATE runs
           SET model_override_json=jsonb_set(model_override_json,'{chat_turn,user_message_id}',$2::jsonb)
@@ -760,6 +1030,24 @@ describe("Invocation Delivery and Snapshot persistence", () => {
         planned_tokens: Math.floor(Math.ceil((requiredTokens + 12) / 0.9) * 0.9) - requiredTokens,
       });
     await expect(create(trimmedEnvelope)).resolves.toBeDefined();
+    if (sourceState === "saved" || sourceState === "draft") {
+      const missingAttachment = structuredClone(result.envelope);
+      missingAttachment.items.find((item) => item.source_ref.id === MESSAGE)!.payload.text = "What code did I choose?";
+      await expect(create(missingAttachment)).rejects.toMatchObject({ statusCode: 409 });
+      // Revalidation reads live canonical metadata, rather than trusting the plan.
+      await db.pool.query(
+        `UPDATE conversation_input_resources SET display_name='Changed.md' WHERE message_id=$1`, [MESSAGE],
+      );
+      await expect(create()).rejects.toMatchObject({ statusCode: 409 });
+    }
+    if (skillMode) {
+      await db.pool.query("UPDATE skill_bindings SET enabled=false WHERE skill_package_id=$1", [skillPackageId]);
+      await expect(create()).rejects.toMatchObject({ statusCode: 422 });
+      await db.pool.query("UPDATE skill_bindings SET enabled=true WHERE skill_package_id=$1", [skillPackageId]);
+      await db.pool.query("UPDATE skill_package_files SET content_base64='YQ==' WHERE skill_package_id=$1 AND path='SKILL.md'", [skillPackageId]);
+      await expect(create()).rejects.toMatchObject({ statusCode: 409 });
+      await db.pool.query("UPDATE skill_package_files SET content_base64=$2 WHERE skill_package_id=$1 AND path='SKILL.md'", [skillPackageId, originalSkill.toString("base64")]);
+    }
     await db.pool.query(`UPDATE sessions SET status='archived',updated_at=now() WHERE id=$1`, [sessionId]);
     await expect(create()).rejects.toMatchObject({ statusCode: 409 });
   });
@@ -921,7 +1209,11 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     expect((await db.pool.query("SELECT 1 FROM invocation_deliveries")).rows).toHaveLength(0);
   });
 
-  it("reauthorizes the persisted Run adapter and provider inside attempt creation", async () => {
+  it.each([
+    { setupProject: PROJECT, setupFolder: FOLDER },
+    { setupProject: PROJECT, setupFolder: null },
+    { setupProject: null, setupFolder: null },
+  ])("reauthorizes Run bindings with Setup project=$setupProject folder=$setupFolder", async ({ setupProject, setupFolder }) => {
     if (!db.available) return;
     const authoritative = control(0);
     authoritative.work_context_setup_ref = { type: "work_context_setup", id: SETUP, version: "1" };
@@ -989,7 +1281,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
          policy_decision_record_id,created_by_user_id,created_at
        ) VALUES ($1,$2,$3,'root_task',1,$4,$7,$8,$5,NULL,'[]','[]','{}','{}',
                  NULL,NULL,TRUE,'[]','delivery-authority',NULL,'{}','test',$6,$4,now())`,
-      [SETUP, SPACE, RUN, USER, AGENT, decision, PROJECT, FOLDER],
+      [SETUP, SPACE, RUN, USER, AGENT, decision, setupProject, setupFolder],
     );
     await db.pool.query(
       `INSERT INTO model_providers (
@@ -1071,6 +1363,16 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       requireLiveAuthorization: true,
     });
     await expect(create("opencode")).resolves.toBeDefined();
+    if (setupFolder === null) {
+      await db.pool.query(`UPDATE runs SET project_folder_id=NULL WHERE id=$1`, [RUN]);
+      await expect(create("opencode")).rejects.toMatchObject({ statusCode: 409 });
+      await db.pool.query(`UPDATE runs SET project_folder_id=$2 WHERE id=$1`, [RUN, FOLDER]);
+    }
+    if (setupProject === null) {
+      await db.pool.query(`UPDATE runs SET project_id=NULL WHERE id=$1`, [RUN]);
+      await expect(create("opencode")).rejects.toMatchObject({ statusCode: 409 });
+      await db.pool.query(`UPDATE runs SET project_id=$2 WHERE id=$1`, [RUN, PROJECT]);
+    }
     await expect(create("claude_code")).rejects.toMatchObject({ statusCode: 409 });
     await db.pool.query(
       `UPDATE model_provider_space_grants SET enabled=FALSE WHERE provider_id=$1 AND space_id=$2`,
@@ -1498,7 +1800,8 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     { selectedModel: "opencode/big-pickle" },
     { selectedModel: "opencode/mimo-v2.6-flash-free" },
     { selectedModel: "opencode/mimo-v2.5-free" },
-  ])("delegates the native ACP model $selectedModel window to its runtime", async ({ selectedModel }) => {
+    { selectedModel: null, instruction: "Keep this independent requirement." },
+  ])("delegates the native ACP model $selectedModel window to its runtime", async ({ selectedModel, instruction }) => {
     if (!db.available) return;
     const decisionId = randomUUID();
     await db.pool.query(
@@ -1522,7 +1825,8 @@ describe("Invocation Delivery and Snapshot persistence", () => {
                  'test',$6,$4,now())`,
       [SETUP, SPACE, RUN, USER, AGENT, decisionId],
     );
-    await db.pool.query(`UPDATE runs SET prompt=$2 WHERE id=$1`, [RUN, "x".repeat(80_000)]);
+    const prompt = "x".repeat(80_000);
+    await db.pool.query(`UPDATE runs SET prompt=$2,instruction=$3 WHERE id=$1`, [RUN, prompt, instruction ?? prompt]);
     if (selectedModel) {
       await db.pool.query(
         `UPDATE runs SET model_override_json=$2::jsonb WHERE id=$1`,
@@ -1562,6 +1866,9 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     });
 
     expect(delivery.model).toBe(selectedModel);
+    const deliveredText = delivery.message_blocks.map((block) => block.content).join("\n");
+    expect(deliveredText.split(prompt)).toHaveLength(2);
+    if (instruction) expect(deliveredText).toContain(instruction);
     expect((await db.pool.query<{ model: string | null }>(
       `SELECT model FROM context_window_reconciliations WHERE delivery_id=$1`,
       [delivery.id],
@@ -1578,6 +1885,135 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     );
     expect(window.rows[0]).toMatchObject({ total_window_tokens: null, model_catalog_version: "acp-runtime-managed.v1" });
     expect(window.rows[0]?.planned_prompt_tokens).toBeGreaterThanOrEqual(20_000);
+    if (selectedModel === null && !instruction) {
+      const plan = await createProductionRuntimeContextPlanningService(db.pool).planExecution({
+        identity: { spaceId: SPACE, userId: USER }, invocationId: RUN, deliveryId: randomUUID(),
+        turn: {
+          work_context_scope_id: RUN, expected_setup_version: 1,
+          current_message_ref: { type: "run_request", id: RUN }, one_off_refs: [], invocation_purpose: "agent_task",
+        },
+      });
+      await db.pool.query(`UPDATE runs SET instruction='A new independent constraint' WHERE id=$1`, [RUN]);
+      const snapshots = new InvocationSnapshotService(db.pool, undefined, new PgInvocationDeliveryAuthorizer());
+      await expect(snapshots.createAttempt({
+        spaceId: SPACE, invocationId: RUN, envelope: plan.envelope, control: authoritative,
+        runtimeKey: "opencode", providerId: null, model: null, usageSourceId: "deduplicated-race",
+        mode: "full", viewerUserId: USER, requireLiveAuthorization: true,
+      })).rejects.toMatchObject({ statusCode: 409 });
+    }
+  });
+
+  it("keeps a Room's standing goal and identity one item across Runs while each names its own Run", async () => {
+    if (!db.available) return;
+    const groupId = randomUUID();
+    const decisionId = randomUUID();
+    await db.pool.query(
+      `INSERT INTO agent_run_groups (id,space_id,root_run_id,manager_user_id,title,goal,status,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,'Room','Ship the release','active',now(),now())`,
+      [groupId, SPACE, RUN, USER],
+    );
+    await db.pool.query(
+      `UPDATE runs SET run_group_id=$2,prompt='Review the plan.',instruction='Ship the release' WHERE id=$1`,
+      [RUN, groupId],
+    );
+    await db.pool.query(
+      `INSERT INTO policy_decision_records (
+         id,space_id,actor_type,actor_id,action,resource_type,resource_id,
+         decision,risk_level,policy_source,metadata_json,created_at
+       ) VALUES ($1,$2,'user',$3,'work_context_setup.change','work_context_setup',$4,
+                 'allow','medium','test','{}',now())`,
+      [decisionId, SPACE, USER, SETUP],
+    );
+    await db.pool.query(
+      `INSERT INTO work_context_setups (
+         id,space_id,work_context_scope_id,scope_kind,version,user_id,
+         project_id,project_folder_id,agent_id,runtime_ref_json,pinned_refs_json,
+         excluded_refs_json,retrieval_preferences_json,continuity_preferences_json,
+         project_brief_version_id,project_instruction_version_id,project_instruction_enabled,
+         governing_policy_refs_json,setup_fingerprint,base_version,typed_diff_json,reason,
+         policy_decision_record_id,created_by_user_id,created_at
+       ) VALUES ($1,$2,$3,'root_task',1,$4,NULL,NULL,$5,NULL,'[]','[]',
+                 '{"enabled":false}','{}',NULL,NULL,TRUE,'[]','room-setup',NULL,'{}',
+                 'test',$6,$4,now())`,
+      [SETUP, SPACE, RUN, USER, AGENT, decisionId],
+    );
+    const authoritative = control();
+    authoritative.work_context_setup_ref = { type: "work_context_setup", id: SETUP, version: "1" };
+    authoritative.egress = {
+      destination_type: "local_cli",
+      destination_id: "opencode",
+      sensitivity_ceiling: "highly_restricted",
+      external_egress_allowed: true,
+      allowed_provider_ids: [],
+    };
+    authoritative.readable_scope.sensitivity_ceiling = "highly_restricted";
+    await db.pool.query(
+      `UPDATE execution_control_snapshots SET snapshot_json=$2::jsonb WHERE id=$1`,
+      [CONTROL, JSON.stringify(authoritative)],
+    );
+    const turn = {
+      work_context_scope_id: RUN,
+      expected_setup_version: 1,
+      current_message_ref: { type: "run_request" as const, id: RUN },
+      one_off_refs: [],
+      invocation_purpose: "agent_task" as const,
+    };
+
+    // A second Run of the same Agent in the same Room group.
+    const nextRun = randomUUID();
+    const nextControl = randomUUID();
+    await db.pool.query(
+      `INSERT INTO runs (
+         id,space_id,agent_id,agent_version_id,run_type,trigger_origin,status,mode,
+         runtime_profile_id,runtime_profile_selection_source,runtime_key,runtime_profile_snapshot_json,
+         required_sandbox_level,instructed_by_user_id,owner_user_id,created_at,updated_at,execution_kind,
+         run_group_id,prompt,instruction
+       ) SELECT $2,space_id,agent_id,agent_version_id,run_type,trigger_origin,status,mode,
+                runtime_profile_id,runtime_profile_selection_source,runtime_key,runtime_profile_snapshot_json,
+                required_sandbox_level,instructed_by_user_id,owner_user_id,now(),now(),execution_kind,
+                run_group_id,'Build it.',instruction
+           FROM runs WHERE id=$1`,
+      [RUN, nextRun],
+    );
+    await db.pool.query(
+      `INSERT INTO execution_control_snapshots (id,space_id,run_id,snapshot_json,created_at)
+       VALUES ($1,$2,$3,$4::jsonb,now())`,
+      [nextControl, SPACE, nextRun, JSON.stringify({ ...authoritative, id: nextControl })],
+    );
+    const planFor = async (invocationId: string) => (await createProductionRuntimeContextPlanningService(db.pool).planExecution({
+      identity: { spaceId: SPACE, userId: USER }, invocationId, deliveryId: randomUUID(),
+      turn: { ...turn, current_message_ref: { type: "run_request", id: invocationId } },
+    })).envelope;
+    const plan = { envelope: await planFor(RUN) };
+    const next = await planFor(nextRun);
+    for (const type of ["run_instruction", "run_group_agent_identity"]) {
+      const first = plan.envelope.items.find((item) => item.source_ref.type === type)!;
+      const second = next.items.find((item) => item.source_ref.type === type)!;
+      expect(first.source_ref.id).toBe(RUN);
+      expect(second.source_ref.id).toBe(nextRun);
+      expect(second.id).toBe(first.id);
+    }
+
+    const delivery = await createProductionRuntimeContextInvocationGateway(db.pool).prepareInvocation({
+      identity: { spaceId: SPACE, userId: USER },
+      invocationId: RUN,
+      executionControlSnapshotId: CONTROL,
+      runtimeKey: "opencode",
+      usageSourceId: `run:${RUN}:room`,
+      turn,
+    });
+    const deliveredText = delivery.message_blocks.map((block) => block.content).join("\n");
+    expect(deliveredText).toContain("Ship the release");
+    expect(deliveredText).toContain("- You are Agent for this run.");
+
+    // The identity is still revalidated against the live Agent.
+    await db.pool.query(`UPDATE agents SET name='Renamed' WHERE id=$1`, [AGENT]);
+    const snapshots = new InvocationSnapshotService(db.pool, undefined, new PgInvocationDeliveryAuthorizer());
+    await expect(snapshots.createAttempt({
+      spaceId: SPACE, invocationId: RUN, envelope: plan.envelope, control: authoritative,
+      runtimeKey: "opencode", providerId: null, model: null, usageSourceId: "renamed-agent",
+      mode: "full", viewerUserId: USER, requireLiveAuthorization: true,
+    })).rejects.toMatchObject({ statusCode: 409 });
   });
 
   it("fails closed when retention disables raw persistence and deletes expired ciphertext", async () => {

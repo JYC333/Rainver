@@ -1,7 +1,7 @@
 # Module: Client-Server Protocol
 
 ## Status
-**REST + turn SSE.** Agent-turn SSE:
+**REST + turn and user aggregate SSE.** Agent-turn SSE:
 `GET /api/v1/runs/{runId}/turn/stream`. Host pairing uses WebSocket on
 the hosts module. There is no general product event bus.
 
@@ -98,6 +98,28 @@ with a route-specific maximum.
 **Filtering:** query params matching model field names (e.g., `?scope=user&type=preference`).
 
 **Ordering:** fixed per route; there is no generic `order_by` / `desc` query parameter.
+
+## Conversation session options and model identity
+
+`PUT /api/v1/agents/{agentId}/conversation-session-config` accepts
+`{ session_id, runtime_profile_id, session_config }` and returns the saved
+`session_config`. A backend catalog GET reads the saved member selection, so
+refresh does not depend on sending another message. Editors keep unsaved
+choices separate from execution; Save affects future runs only. Save and a
+selection sent with a message are validated strictly; a saved or inherited
+selection the backend has since withdrawn is dropped at Run creation instead
+of refusing the turn, and `RunTurn.model_selection.dropped` lists it
+(`{ id, category, value, reason }`) so the turn says the runtime default was
+used. A direct chat
+without a Session yet carries its initial selection on the first message and
+persists it in that creation transaction.
+
+Run detail/status and `RunTurn.model_selection` distinguish `requested` from
+`reported`, with `pending`, `reported`, or `unknown` observation state. The
+reported model comes from ACP after option application, never from the request
+or router prediction. An adapter's `default` is a policy rather than a concrete
+model and displays as unknown. The existing Turn stream carries
+`turn.model_changed` metadata without replacing streamed text or tool parts.
 
 ## Run read model (`runs/runReadModel.ts`, `runToOut`)
 
@@ -198,3 +220,72 @@ request URL. Session-management DTOs contain a server-owned session id and
 metadata, not a cookie token or database digest. Password recovery returns no
 raw link to an unauthenticated caller; an instance admin or the local sole-admin
 CLI retrieves a manual link exactly once.
+
+
+## Agent Attention read API
+
+The session-authenticated `/api/v1/me/agent-attention` list, `/item` reader and
+`PATCH /read-state` use the shared protocol DTOs; see
+[Agent Attention](agent-attention.md) for query fields, child cursors, complete
+counts, retention and 409 reading conflicts. Each selected Space is reauthorized;
+no body user identity or operation descriptor grants authority.
+
+`GET /api/v1/me/agent-attention/stream` uses the existing streaming edge and
+SSE headers. Shared `AgentAttentionStreamFrameSchema` describes snapshot,
+invalidation, resync, heartbeat and denied frames. Each carries a connection-local
+`seq`, opaque equality-only `version`, complete unread-work count, optional
+replacement 50-work personal page and at most 100 content-free revision notices.
+`counts` carries the complete five group totals even when `page` is null
+(optional on the wire for compatibility with older frames). Invalidation omits
+an unchanged personal window; snapshot/resync includes it. Count changes and
+as_of alone do not resend the window. Backpressure waits for drain with at most
+one pending frame; it does not signal disconnection. Non-2xx stream responses
+raise ApiRequestError with the actual HTTP status. `GET /snapshot` returns one
+silent authorized snapshot as JSON for failed-connection fallback. These user
+reads set `includeSpaceContext: false`; every source is independently authorized.
+No Last-Event-ID replay, global sequence, Turn body subscription or new event log
+is implied. Reconnect and sequence gaps require a new snapshot. The browser
+client reuses `readServerSentEvents`, including multiline data/chunked CRLF,
+and forwards AbortSignal; no parallel SSE parser exists.
+See [Agent Attention](agent-attention.md#global-aggregation-and-delivery) for the
+connection-owned two-second reread, visibility checks, bounded notices and
+browser delivery/freshness behavior.
+
+## Conversation source-Space options
+
+The Room/Session conversation, Run command/read, Proposal, input-media/file and
+retrieval-switch clients accept optional request options carrying `spaceId` and
+`signal`. Existing signatures remain callable without them, defaulting to URL
+active Space through the original request helper. Conversation surfaces pass an
+explicit source through the entire subtree; no code switches the global Space
+for an operation and switches it back. Image XHR upload and authenticated Blob
+reads, Artifact export, accepted direct-chat streaming and persisted-message
+readback preserve the same explicit scope and cancellation. Retry retains the
+existing Idempotency-Key behavior. No automatic network resend was introduced.
+See [Conversation](../architecture/CONVERSATION.md) for component ownership and
+request lifetimes, and [Runs and outputs](../architecture/RUNS_AND_OUTPUTS.md) for
+shared web Run commands.
+
+Both Room file-reference and generic input composers pass explicit scope to
+searchFiles and Folder tree/locations/file reads. Independent search and panel
+signals are combined with `lib/mergeAbortSignals.ts` (AbortController listeners),
+without requiring AbortSignal.any or throwIfAborted at runtime.
+
+Room streams and Run commands release merged-signal listeners on normal completion
+by aborting their own request controller; they leave the source panel signal live.
+
+### Web Agent Attention consumer
+
+`agentAttentionApi` in `apps/web/src/api/client.ts` uses the shared protocol query,
+item, page and read-state contracts for list/item/PATCH. All three omit the active
+Space header and forward AbortSignal; a source Space is explicit in the typed
+query/body. `modules/agent_work/` consumes the server groups, complete counts and
+opaque list/child cursors. The optional Run summary `agent_name`, `runtime_key`
+and `started_at` fields provide bounded list display without per-row detail reads.
+No API accepts a composed work_key or operation-supplied URL. Reading conflicts
+preserve the returned current state and trigger an item refresh, not a retry that
+acknowledges newer unseen content. Selected conversation/Run APIs still carry
+their explicit source Space. The user-level aggregate stream above supplies only
+collection invalidation/summary, not conversation content. Replies and exact-source
+Run/authorization/Proposal commands retain their existing owning endpoints; no
+second sender or execution watcher is introduced.

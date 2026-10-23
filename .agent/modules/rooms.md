@@ -47,7 +47,7 @@ task/audit authority, not a second conversation UI.
   (`apps/web/src/modules/conversation/ConversationSurface.tsx`):
   messages, paging, sending, turn streaming, polling, scroll-follow and
   inline Proposal cards with continuation. The full Room page renders it as
-  `variant="full"` (adds routing, per-agent backends, the summary) and the
+  `variant="full"` (adds run settings, per-agent backends, the summary) and the
   Project chat sidecar (`projects/sidecar/ProjectChatSidecar.tsx`) as
   `variant="panel"` with focus refs. There is no second conversation
   implementation; a behaviour a conversation needs is added there once.
@@ -376,6 +376,10 @@ Project state plus that conversation's summary and uncovered messages,
 preceded by the conversation title. Later turns in the same conversation send
 only messages since that Agent's previous turn. Reset context clears the
 vendor session and marks the thread `session_reset`; the directory stays.
+Runtime Context keeps the same boundary: a Room recipient's Work Context scope
+is one Conversation with it, so its ledger, checkpoints, CLI continuity and
+knowledge-retrieval switch never carry another Conversation's (see
+[runtime-context](runtime-context.md#continuity)).
 
 A host-bound turn's `host_prompt_context` opens with the Agent's own identity
 block (`agentGroups/agentIdentityPrompt.ts`): the owner's `role_instruction`
@@ -434,6 +438,17 @@ its safe projection. The ACP adapter renders the Delivery and does not append
 the raw Run prompt again. The freshness and landed-outcome digest gates above
 still decide when standing context is included. Both server and remote Host
 Agent Runs pass through this Gateway.
+
+The person's message is delivered once, as the Delivery's current input. The
+Room conversation window and increment end before it, and when this Run's
+assigned task is that whole message the `[Assigned task for this Room turn]`
+section points at the current input instead of repeating it. A routed segment
+that differs from the message is stated in full. A Run without a Room
+conversation backend has no `chat_turn` message, so its current input is its
+own Run request and the task stays in the prompt. Routing context is omitted
+for a single-segment message, and names the current Run's segment by reference
+to the assigned-task section (`agentGroups/service.ts`,
+`roomRoutingInstruction`).
 
 The Agent's CLI state on that machine is scoped the same way. Its runtime
 profile — login, vendor sessions, and whatever the CLI remembers on its own —
@@ -510,6 +525,51 @@ viewer identity. It does not select or replace the Conversation's CLI runtime;
 all speakers use the same pinned Conversation × Agent runtime while retaining
 their own authorization and attribution (`modules/agents.md`, ADR 0008).
 
+## Addressing and routing a message
+
+One rule decides what an `@Agent` mention means, in the composer, the server
+and Agent replies alike (`agentMentionRoute` / `parseAgentMentions` in
+`packages/protocol/src/roomDiscussions.ts`). A mention cluster (adjacent
+mentions on one line; a line break always ends a cluster, so each line is
+judged on its own) that opens the message or a line — only whitespace and list
+markers (`-`, `*`, `+`, `1.`, `1)`) before it on that line — is an
+**address**. Any other mention is a **reference** to an Agent the text talks
+about, including one on a quoted (`>`) line, which reproduces someone's
+words. Code spans and fenced blocks never mention anyone; CJK text keeps its
+existing word-edge rule, so `派@Codex去查` is found, and is a reference.
+
+A person's message routes by default:
+
+- no mention — to the Room's manager;
+- an address — `direct` to the addressed Agents, one recipient segment per
+  address cluster (`@A do x` / `@B do y` on two lines are two segments, the
+  first also carrying any text before it);
+- only references (`你可以派 @Codex 去查`) — `agent_coordination`: the whole
+  message to the manager with the referenced Agents as
+  `coordination_target_agent_ids`.
+
+`RoomMessageComposer` shows the route as one line under the editor whenever
+the draft mentions anyone — "→ To the manager to arrange · with Codex · Send
+directly to Codex instead", or "→ Direct to Codex · Let the manager arrange it
+instead" — in both the full Room and the Project sidecar. The link switches the
+route for this draft; the choice holds while the draft's mentions are unchanged
+and is saved with a browser draft, and a send or clear drops it. A direct send
+of a reference-only message gives each mention cluster its segment.
+
+Delivered content keeps `@Name` as written, in the message and in every
+segment. The server checks every recipient and coordination target is an
+active Agent member of the Room (422 otherwise; targets on a direct send are
+refused), drops the manager from its own targets, records `routing_mode` and
+`coordination_target_agent_ids` on the person's message, and stores the
+targets in the manager Run's `model_override_json.room_coordination`. The
+manager's assigned-task section then names them in a "[The person asked you to
+arrange this with]" block, asking it to delegate to them with `agent.delegate`
+unless that is clearly unnecessary (`agentGroups/service.ts`,
+`roomCoordinationSection`). Retry and a queued message's later posting route
+the message the same way; a retry keeps the targets still in the Room. A
+selected Skill is checked against the effective recipients — the manager under
+coordination.
+
 ## Conversation backend
 
 Each initialized Project Conversation owns one immutable Host and Primary
@@ -548,6 +608,33 @@ visible as a removable `Current file` bar and is not a global attachment entry.
 The send freezes saved/draft bytes into an immutable message resource without
 putting the body in the prompt. The Agent reads that resource lazily through
 the Run-scoped `input_resource.read/search` tools.
+
+### Saved member session options
+
+The per-member settings dialog has an explicit Save action with pending, saved
+and failure feedback. `PUT /api/v1/agents/:agentId/conversation-session-config`
+validates the bounded selection array against the pinned backend and persists
+it on `session_conversation_backends.session_config_json`. Room changes require
+Project write authority and active roster membership. Direct changes require
+ownership of the Session. Saves do not start or alter a Run.
+
+Ordinary Room messages and delegated children load the target member's saved
+options when no explicit request snapshot is supplied. They never inherit a
+coordinator's model. Historical per-member Run selections are a read-only
+fallback until the first explicit save; an explicitly saved empty array resets
+to runtime defaults. Each created Run freezes its own selections. Retry keeps
+the original Run request; subsequent new runs read current saved settings.
+
+Only a selection sent with the request itself is strict (422 when the backend
+does not advertise it). A saved, inherited or retried selection the runtime
+has since withdrawn — a CLI or adapter update removed the option or value — is
+dropped and the runtime keeps its default, so later turns and delegations do
+not fail until someone re-saves (`sessions/sessionConfig.ts`
+`reconcileSavedSessionConfig`). The Run records what it dropped in
+`model_override_json.acp_session_config_dropped`, `RunTurn.model_selection.dropped`
+shows it on the turn, and the settings control marks a saved value its
+backend no longer offers. The saved value itself is kept, and applies again
+if the runtime offers it again.
 
 ## Project state context
 
@@ -774,6 +861,33 @@ idempotency-guarded `agent.delegate` / `agent.wait_for_results` and
 is bounded to one level and two specialists per turn (`max_depth: 1`,
 `max_fanout: 2`, prospective counts — the third request is refused and
 recorded as refused, and a refused request does not consume the budget).
+For sustained implementation/review work explicitly requested by the person,
+the first `agent.delegate` can declare `budget.collaboration`: an open
+`task_id` in this Room's Project, one or two fixed `participant_agent_ids`,
+and a total `max_delegations` (1–128, chosen and announced before work starts).
+For a phased plan, bind the Task covering the whole authorized workflow, so
+completing one stage does not terminate the remaining authorized stages.
+Only the original manual root turn of a Project writer can establish it,
+before any delegation is admitted. The server records the coordinator on the
+original container. Subsequent calls and completion turns reuse that one
+budget; they cannot reset it, change tasks, add participants, or delegate
+through another specialist. Failed/cancelled children count; policy refusals
+do not. Three consecutive children that produced nothing (failed, cancelled,
+orphaned) stop further admission; a degraded child — one that replied but
+had a governed call of its own refused — is a result for the coordinator
+to judge and does not count toward that stop.
+A task that is done, cancelled, blocked, awaiting review or no longer readable,
+revoked Project write access, or a paused/cancelled container also stops it.
+The container bounds completion turns to twice the declared delegation count.
+The coordinator must report the stopping reason and request the person's
+decision when needed; it must not silently substitute its own review.
+This is an exception to the ad-hoc delegation counts, not to tool permissions,
+the five-object write ceiling, subscription admission or filesystem serialization.
+
+Reuse / Dependency Check: this extends the existing group budget JSON,
+container counter, PostgreSQL row locks and spawn-policy audit. Validation uses
+the installed Zod dependency. No new scheduler, agent loop, transport or
+dependency is introduced; the behavior is Rainver-owned authorization semantics.
 There is no concurrency budget on a Room group: delegated children execute
 one at a time because the Conversation shares one directory, and a parent
 that delegates and then waits in the same turn admits its children when it
@@ -814,8 +928,9 @@ When a Room is open, conversation is the dominant surface: a compact left rail
 contains Room metadata, the conversation switcher, collapsed Room creation,
 and collapsed roster controls; the center column owns the available width and
 scrolls messages inside a viewport-height card; Project state remains a narrow
-supporting rail. Routing is collapsed under Run settings so it does not
-compete with the message history and composer. Each Agent's runtime is chosen
+supporting rail. Where a message goes is shown and chosen in the composer
+(see "Addressing and routing a message"); Run settings holds no routing
+control. Each Agent's runtime is chosen
 and pinned only in the conversation's execution preflight, before its first
 message; the Room page offers no second backend chooser.
 
@@ -962,9 +1077,11 @@ same gates that person's own turn would (memory writes under B10).
 container: by default the person's message that started the turn. When the
 last Run of a wave has completed its chat turn (`finalizeChatTurn` →
 `RoomDiscussionService.afterTurnFinalized`), its replies are parsed for
-`@Name` mentions of roster Agents with the same segmenting rule the composer
-uses (`parseAgentMentions` in `packages/protocol/src/roomDiscussions.ts`; code
-spans are never read as addressing anyone). Mentions of another Agent open an
+`@Name` mentions of roster Agents with the same rule the composer uses
+(`parseAgentMentions` in `packages/protocol/src/roomDiscussions.ts`; see
+"Addressing and routing a message"). Only an address — a mention opening the
+reply or a line — summons anyone; a mention inside a sentence (an explanation,
+a quote, an example) and code spans never do. Addresses to another Agent open an
 **emergent** discussion on that message (the group's trigger message; for a
 wave started by a delegation or research result that is the continuation's
 hidden instruction, not the person's message — kept so, because marking
@@ -991,6 +1108,15 @@ bounded by rounds); otherwise it is one counter on the task group of the
 person's message, `budget_json.container_turns_used`, which every branch of
 the chain charges through its `budget_json.container_group_id` pointer. A
 completion turn cannot delegate again with a fresh budget.
+An explicitly declared task collaboration instead shares its declared total
+across those containers; its continuation cause remains the original human
+Run, avoiding an ever-growing lineage chain. Its charged turns are capped at
+`collaborationTurnCeiling` — two per declared delegation, one for the child
+and one for the completion turn it causes
+(`agentGroups/collaborationBudgetRepository.ts`), judged on the count after
+the turn's own charge — and a completion turn may delegate to at most as
+many children as there are declared participants. The task and bounds are checked
+again at admission, including after policy preflight.
 A research acquisition an Agent starts (`research.start_acquisition`) carries
 its turn's group (`origin_group_id`, through the pipeline job and the
 Operation's progress), so its result and status turns are charged to that
@@ -1113,6 +1239,26 @@ messages, beside the page as `queued`. Without `queue`, a taken turn is the 409 
 (`conversation_turn_in_progress`; like every coded Room refusal, its body
 carries `detail` for the reader beside `code`).
 
+For a successful or degraded chat Run, releasing its Host dispatch claim is
+not yet the conversation's turn boundary. New sends and queue release wait
+for `chat_completed`, written after the reply and continuity have been
+published, so the next message's context cannot precede that reply. A partial
+chat finalization remains occupied until its retry completes; the worker's
+existing terminal-chat reconciliation supplies that retry after a restart.
+That retry is bounded (`MAX_CHAT_FINALIZATION_ATTEMPTS` in
+`runs/chatTurnFinalizer.ts`): each failed pass records a
+`chat_finalization_failed` warning on the Run, shown in its turn, and the pass
+that reaches the bound writes a failed `chat_completed` with the last error, so
+a finalization that can never succeed releases the conversation instead of
+holding it for good.
+This matches `turnReadModel.turnState`: failed, cancelled and orphaned Runs
+release the turn without requiring an event that a failed worker may never
+have written. Non-chat Runs do not acquire this completion requirement.
+Already serialized recipients of the same group may still advance from their
+predecessors' terminal results through the group's lifecycle projector,
+including internal handoff turns with no visible reply. Quota-held and
+jobless parked Runs retain their existing turn-release exceptions.
+
 **Cost lines, by funding source.** The two ways a Run is paid for are bounded
 differently because only one of them can be attributed: a priced Run has a
 money figure of its own, so a discussion's spend cap bounds priced Runs only;
@@ -1135,12 +1281,13 @@ line.
 
 **Subscription quota gate** (`rooms/quotaGate.ts`). The gate coordinates a
 shared subscription by trigger origin (ADR 0017): turns Agents set going
-spend the account unattended and stop at a reserve line, keeping the rest of
-the window for the person, while a person's own message is their decision in
-that moment and is never held — it proceeds until the CLI itself refuses. A
+spend the account unattended and, by default, wait only when its window is
+full (100%). A Space owner/admin may explicitly choose a lower reserve line
+to keep part of the window for manual use, while a person's own message is
+their decision in that moment and is never held — it proceeds until the CLI itself refuses. A
 held turn deliberately does not keep the conversation's turn (below), so a
 person is never queued behind Agents waiting for a window. The Space
-policy `subscription_quota` (`warn_pct` 70, `reserve_pct` 85; a
+policy `subscription_quota` (`warn_pct` 70, `reserve_pct` 100; a
 `ScopedSettingsStore` descriptor in `providers/subscriptionQuotaPolicy.ts`,
 edited on the Providers page) draws two lines. Every **Agent-triggered**
 admission — the first Run of a domain-event continuation (a discussion wave,
@@ -1232,14 +1379,19 @@ key, so such Runs are priced and bounded by the spend cap.
 **Quota exhaustion is a cap**, never a silent end. A CLI Run whose error text
 matches its runtime's `usage.quota_exhausted_patterns` (`RuntimeAdapterSpec`)
 fails with `subscription_quota_exhausted` (`runs/retryPolicy.ts`,
-`classifyRuntimeFailure`, applied in `remoteHostCliAdapter.ts`), which is never
-retried; only the error the turn ended on (or, with none, the last lines of
-stderr) is matched, never a notice logged earlier in the Run. A later refusal
+`classifyRuntimeFailure`, applied in `remoteHostCliAdapter.ts`). The Supervisor
+may park a bounded successor at the quota gate, with an explicit continuation
+choice; it never retries that refusal immediately. See
+[Runs and outputs](../architecture/RUNS_AND_OUTPUTS.md#attempts-cancellation-and-supervision)
+for defaults, cancellation and recovery checks. Only the error the turn ended on (or, with none, the last lines of
+stderr) is matched, never a notice logged earlier in the Run. Recovery holds
+use per-Run controls rather than the conversation's reserve override. A later refusal
 on a login overrules an older reading (`refusedWindow` in
 `rooms/subscriptionLogins.ts`): the gate reads that login's window as full
 until the reading's reset time, or, when no reading says when, one 5-hour
 window from the refusal — and not at all once a newer reading shows the window
-below full. When a wave contains such a Run whose window has not reset since,
+below full. Failed physical attempts remain refusal evidence after their Run
+has been parked for recovery. When a wave contains an unrecovered terminal Run whose window has not reset since,
 the discussion ends `cap_reached` with `stop_reason = 'quota_exhausted'`,
 its "continue anyway" is cleared, the refused recipients are held beside the
 Agents the wave's other replies addressed (so adding rounds sets them working
@@ -1249,8 +1401,10 @@ window (or "continue anyway") on the exhausted one.
 
 Residual: two Agents that keep politely addressing each other converge only at
 the round cap; there is no earlier detector (deferred register). Residual:
-`agent.wait_for_results` has no timeout of its own; a wait ends with the
-child's Run timeout or orphan handling. Residual (quota): a gate probe is bounded to 5 s inside the
+`agent.wait_for_results` has no timeout of its own, and a delegated child Run
+has no time budget unless one was explicitly set; a wait ends when the child
+finishes, is stopped, times out at such a limit, or passes through orphan
+handling. Residual (quota): a gate probe is bounded to 5 s inside the
 admission's transaction and the minute re-check to 30 s per login; a host that
 is slow to answer is decided on the cached reading.
 
@@ -1307,7 +1461,8 @@ is slow to answer is decided on the cached reading.
   cursor, freshness/retry state, and owner-only provider/usage metadata
 - `POST /api/v1/rooms/:roomId/conversations/:sessionId/messages` — send a
   message; supports direct `@agent` recipient segmentation or manager
-  coordination, optional explicit per-recipient backend selection, and
+  coordination with optional `coordination_target_agent_ids` (active Agent
+  members of the Room), optional explicit per-recipient backend selection, and
   server-owned `input_parts` for images or authorized text-file snapshots
 - `DELETE /api/v1/rooms/:roomId/conversations/:sessionId/queued-messages/:id` —
   take back one's own message still waiting for the turn, or dismiss one that

@@ -1,3 +1,4 @@
+import { ownCliReleases } from "./ownCliReleases.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { stateChangingReadAllowed } from "../../gateway/csrfOrigin.js";
 import websocketPlugin from "@fastify/websocket";
@@ -5,7 +6,7 @@ import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
 import { REQUEST_ID_HEADER, resolveRequestId } from "../../gateway/requestContext.js";
 import { HostDaemonFrameSchema, HostHelloInfoSchema, HostRunDiffUploadSchema,
-  HostRunOutputsUploadSchema, type HostHelloInfo, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
+  HostRunOutputsUploadSchema, type HostHelloInfo, isOwnCliUpdateRuntimeKey, LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import { scheduleAmbientSyncs } from "../importedSessions/syncScheduler.js";
 import { authRepositoryFromConfig, sessionRefreshSink, sessionTokenFromRequest, introspectIdentity, type AuthFailure } from "../auth/identity.js";
 import { hostRepositoryFromConfig, type HostFailure, type DaemonHelloInfo, type HostRow, type HostUploadRefusal } from "./repository.js";
@@ -370,6 +371,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           registry_id: spec.distribution && "registry_id" in spec.distribution ? spec.distribution.registry_id : null,
           /** Current ACP package version available to install from the registry. */
           latest_managed_version: latestManagedVersions.get(spec.runtime_key) ?? null,
+          // Never awaited: answered from memory, refreshed in the background.
+          latest_own_version: ownCliReleases.peek(spec.runtime_key),
           /** Release pin used only by the built-in Server Host lifecycle. */
           server_supported_version: spec.runtime_key === "opencode" ? SERVER_OPENCODE_RELEASE.version : null,
           /** Whether this runtime bundles a distinct CLI whose version the host reports. */
@@ -425,6 +428,28 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     return reply.code(201).send({ workspace_id: registration.workspace_id, display_path: registration.display_path });
   });
 
+
+  app.post("/api/v1/hosts/:hostId/installations/:runtimeKey/own/update", async (request, reply) => {
+    const resolved = await resolveOwnedHost(context, request, reply);
+    if (!resolved) return reply;
+    const runtimeKey = params(request).runtimeKey;
+    if (!runtimeKey || !isOwnCliUpdateRuntimeKey(runtimeKey)) return reply.code(422).send({ detail: "Updating this own CLI is not supported yet" });
+    // No daemon-version check here: a daemon below MIN_HOST_DAEMON_VERSION is
+    // refused at hello (`daemonCompatibility.ts`), so it is never online to ask.
+    const result = await sharedHostConnectionRegistry.requestToolAction(resolved.hostId, "update_own_tool", { runtime_key: runtimeKey });
+    const fromVersion = result.from_version ?? null;
+    const toVersion = result.to_version ?? null;
+    // An updater that found the CLI already current changed nothing; the
+    // Updates page lists changes, not button presses.
+    const changed = !(fromVersion !== null && fromVersion === toVersion);
+    if (result.ok && changed) {
+      await recordHostRuntimeChange(resolved.pool, { hostId: resolved.hostId, runtimeKey, action: "upgrade", fromVersion, toVersion, actorUserId: resolved.userId });
+    }
+    return reply.code(result.ok ? 200 : 502).send({
+      host_id: resolved.hostId, runtime_key: runtimeKey, ...result,
+      ...(result.ok ? { changed } : { detail: result.error }),
+    });
+  });
 
   // A managed copy of a runtime on a host, installed and removed by its
   // daemon on the owner's request. Any ACP adapter with a distribution
@@ -1163,6 +1188,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               });
               return;
             }
+            case "skill_scan_result":
+            case "skill_read_result":
             case "list_dirs_result":
             case "workspace_register_result":
             case "workspace_forget_result": {
@@ -1182,6 +1209,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
                 ok: frame.ok,
                 error: frame.error,
                 installation: frame.installation,
+                from_version: frame.from_version,
+                to_version: frame.to_version,
               });
               return;
           }

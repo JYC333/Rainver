@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +33,16 @@ describe("folder_read frame validation", () => {
     expect(() => resolveFolderReadRequest({ request_id: "r", workspace_location_id: "missing", kind: "tree", protected: false }, {})).toThrow(/no registered directory/);
     expect(() => resolveFolderReadRequest({ request_id: "r", workspace_location_id: "loc", kind: "file", path: "/etc/passwd", protected: false }, { loc: root })).toThrow(/relative/);
     expect(() => resolveFolderReadRequest({ request_id: "r", workspace_location_id: "loc", kind: "file", protected: false }, { loc: root })).toThrow(/relative path/);
-    expect(() => resolveFolderReadRequest({ request_id: "r", workspace_location_id: "loc", kind: "tree", path: "/etc/passwd", protected: false }, { loc: root })).toThrow(/do not accept a path/);
+    expect(() => resolveFolderReadRequest({ request_id: "r", workspace_location_id: "loc", kind: "tree", path: "/etc/passwd", protected: false }, { loc: root })).toThrow(/relative/);
+  });
+
+  it("serves direct directory pages over the host channel", async () => {
+    await mkdir(join(root, ".agent"));
+    await writeFile(join(root, ".agent", "guide.md"), "guide");
+    const read = (path: string) => performFolderRead(resolveFolderReadRequest({ request_id: "page", workspace_location_id: "loc", kind: "tree", path, tree_offset: 0, protected: false }, { loc: root }));
+    expect(await read(".")).toMatchObject({ ok: true, result: { children: [{ name: ".agent", path: ".agent", type: "dir" }, { name: "README.md" }] } });
+    expect(await read(".agent")).toMatchObject({ ok: true, result: { path: ".agent", children: [{ path: ".agent/guide.md" }] } });
+    expect(await read("../outside")).toMatchObject({ ok: false, error: "path_forbidden" });
   });
 });
 

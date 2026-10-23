@@ -26,11 +26,18 @@ export interface ContextItemSource {
   conflictKey?: string | null;
   rank?: number | null;
   score?: number | null;
+  /**
+   * What the item is, when that outlives its source. A standing item that
+   * every Run repeats keeps one id across Runs, so a CLI session that
+   * acknowledged it is not sent it again; `sourceRef` still names this Run.
+   */
+  identityKey?: string;
 }
 
 export function normalizeContextItem(source: ContextItemSource): ContextItem {
   const text = source.text.trim();
-  const sourceKey = `${source.sourceRef.type}:${source.sourceRef.id}:${source.sourceRef.version ?? ""}`;
+  const sourceKey = source.identityKey
+    ?? `${source.sourceRef.type}:${source.sourceRef.id}:${source.sourceRef.version ?? ""}`;
   return {
     id: createHash("sha256")
       .update(`${source.acquisition}\0${sourceKey}\0${source.semanticRole}\0${text}`)

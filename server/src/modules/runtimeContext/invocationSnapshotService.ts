@@ -556,6 +556,7 @@ function safeDeliveryMetadata(delivery: InvocationDelivery): Record<string, unkn
     tool_grant_refs: delivery.tool_grant_refs,
     output_contract_ref: delivery.output_contract_ref,
     expected_prompt_tokens: delivery.expected_prompt_tokens,
+    context_estimate: delivery.context_estimate,
     max_output_tokens: delivery.max_output_tokens,
     snapshot_draft_ref: delivery.snapshot_draft_ref,
     audit_refs: delivery.audit_refs,

@@ -45,7 +45,7 @@ function usageBusyFor(busy: ReadonlySet<string>, runtimeKey: string): ReadonlySe
 
 /**
  * The agents on one host: those this machine has a copy of — its own
- * install (detected, never touched) and managed copies the daemon installed
+ * install (updated only on its owner's explicit request) and managed copies the daemon installed
  * — with log-in and remove, plus "Add agent…" for the rest of the enabled
  * catalog. Instance admins can also enable an ACP registry entry and install
  * it on this host in one flow; non-admin owners only see the enabled catalog.
@@ -218,6 +218,11 @@ export default function HostAgents({
     if (!result.ok) throw new Error(result.error ?? 'install failed')
     toast.success(`${adapter.display_name} ${result.installation ?? ''} installed on ${host.name}`)
   })
+  const updateOwn = (adapter: HostRuntimeDefinitionOption) => withBusy(`${adapter.runtime_key}:own-update`, async () => {
+    const result = await hostsApi.updateOwnRuntime(host.id, adapter.runtime_key)
+    if (!result.ok) throw new Error(result.error ?? 'Own CLI update failed')
+    toast.success(`${adapter.display_name} own installation updated on ${host.name}`)
+  })
 
   async function installFromRegistry(entry: AcpRegistryEntry) {
     const key = `registry:${entry.id}`
@@ -305,6 +310,7 @@ export default function HostAgents({
             usage={usageFor(usage, adapter.runtime_key)}
             usageBusy={usageBusyFor(usageBusy, adapter.runtime_key)}
             onInstall={() => { void install(adapter) }}
+            onUpdateOwn={() => { void updateOwn(adapter) }}
             onUninstall={entry => { void uninstall(adapter, entry) }}
             onRollback={() => { void rollback(adapter) }}
             onLogin={(installation, target) => {

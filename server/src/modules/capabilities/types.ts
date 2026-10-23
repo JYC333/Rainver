@@ -145,6 +145,8 @@ export interface SkillImportPreview {
   warnings: string[];
   persistable: boolean;
   raw_content: string;
+  /** Original package bytes, kept internal to preview/persistence. */
+  package_contents?: Record<string, string>;
 }
 
 export interface RuntimeRenderedFile {

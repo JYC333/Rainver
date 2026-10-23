@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   POLICY_ACTION_REGISTRY,
+  POLICY_APPROVER_MAX_RISK,
   PolicyActionDefinitionSchema,
   PolicyAuditEnvelopeSchema,
   PolicyCheckRequestSchema,
@@ -21,6 +22,9 @@ const fixturePath = fileURLToPath(
 const registryFixture = JSON.parse(readFileSync(fixturePath, "utf8"));
 
 describe("policy action registry", () => {
+  it("keeps the shared approval ceilings at owner critical, admin high and reviewer medium", () => {
+    expect(POLICY_APPROVER_MAX_RISK).toEqual({ owner: "critical", admin: "high", reviewer: "medium" });
+  });
   it("every registry entry validates against the definition schema", () => {
     for (const def of POLICY_ACTION_REGISTRY) {
       expect(() => PolicyActionDefinitionSchema.parse(def)).not.toThrow();

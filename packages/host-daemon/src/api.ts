@@ -10,6 +10,7 @@ import { collectWorkspaceStatus } from "./workspaceStatus.js";
 import { listManagedWorkspaces } from "./managedWorkspaces.js";
 import { daemonVersion } from "./version.js";
 import { ensurePackagedAdapter } from "./adapterInstallation.js";
+import { localToolBridgeSupported } from "@rainver/agent-cli/local-bridge";
 
 export class ApiError extends Error {
   constructor(
@@ -130,7 +131,8 @@ async function helloInfo(
     arch: arch(),
     daemon_version: daemonVersion(),
     environment_kind,
-    capabilities_json: { ...capabilities },
+    // The control plane offers the file tool bridge only where this daemon can pin it.
+    capabilities_json: { ...capabilities, tool_bridge_protocols: localToolBridgeSupported(currentPlatform) ? ["file-v1"] : [] },
     workspace_reports: await collectWorkspaceStatus(workspaces),
     managed_workspaces: await listManagedWorkspaces(),
     ambient_sessions: ambientSessionCounts(),

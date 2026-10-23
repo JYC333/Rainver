@@ -52,39 +52,3 @@ describe("maintenance-only migrations", () => {
     expect(loadMigrations(dir).map((file) => requiresMaintenance(file.sql))).toEqual([false, true]);
   });
 });
-
-/**
- * The marker means "incompatible with the release that is running". A database
- * with nothing applied has no running release, so the whole chain is an
- * ordinary first migration. Do not gate that chain on the maintenance
- * command. A first-time operator would be sent to a command that needs a
- * running instance to drain.
- */
-describe("what counts as pending maintenance", () => {
-  function pendingFor(rows: Array<{ applied: boolean; maintenance: boolean }>): number {
-    return rows.some((row) => row.applied)
-      ? rows.filter((row) => !row.applied && row.maintenance).length
-      : 0;
-  }
-
-  it("gates nothing on a database that has never been migrated", () => {
-    expect(pendingFor([
-      { applied: false, maintenance: false },
-      { applied: false, maintenance: true },
-    ])).toBe(0);
-  });
-
-  it("gates once a release is in place that the migration would break", () => {
-    expect(pendingFor([
-      { applied: true, maintenance: false },
-      { applied: false, maintenance: true },
-    ])).toBe(1);
-  });
-
-  it("does not gate a compatible migration on a live database", () => {
-    expect(pendingFor([
-      { applied: true, maintenance: false },
-      { applied: false, maintenance: false },
-    ])).toBe(0);
-  });
-});

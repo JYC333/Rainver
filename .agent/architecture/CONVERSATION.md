@@ -41,6 +41,33 @@ Room fan-out case, written only onto the dispatching message — a person's
 message, or the system row a continuation writes — when one send addressed
 several Agents.
 
+## Explicit Skill inputs
+
+Both direct and Room composers support `/` and `@` Skill selection. The typed
+input part stores `skill_package_id`, `package_hash` and an authoritative
+display name, with four distinct Skills per message. It is saved in
+`message_input_parts`. Selecting a Skill inserts `/display_name` at the current
+input position in both composers, rather than adding a separate attachment row.
+The Room composer holds it as an inline atom like an `@Agent` mention; the
+direct composer highlights it behind its textarea, and Backspace/Delete beside
+it removes the whole reference.
+Editing away that reference removes its typed selection; typing the name alone
+does not select or authorize a package. Restored older drafts append their
+previously separate selections to the text. Message history keeps the inline
+position, while older messages without inline references retain visible chips.
+A Skill-only turn is
+valid, including a Room segment that is only its `@Agent` address. Every
+recipient of the effective route — the addressed Agents, or the manager when
+the message is handed to it to arrange — is checked against the effective
+package binding before send.
+Retries reuse the original message selections and revalidate current authority.
+
+Browser drafts persist only opaque references; asynchronous attachment
+validation restores each untouched field without replacing new text or Skill
+selections. Runtime Context renders the canonical selection descriptors and
+separately authorizes original file delivery; files are not hydrated as normal
+image/file attachments or injected from client text.
+
 ## The turn projection
 
 A Run's work is recorded in one of two logs: `run_events` for a managed Run,
@@ -56,6 +83,13 @@ protocol order, while `tool_call` and every later `tool_call_update` upsert one
 entry by `tool_call_id`. Pending, running and terminal updates therefore never
 become separate rows. One pure fold, two sources.
 
+A notice the server itself raises reaches a turn as a code, not prose: the
+host `status: run_quiet` silence notice becomes an `info` diagnostic with
+`error_code: "run_quiet"` (an English `text` fallback for other clients), and
+`ConversationTurn` words a known code through i18n
+(`conversation_ui.turn.run_quiet`) in the reader's language. Any other
+diagnostic is the runtime's own text and renders verbatim.
+
 ACP tool lifecycles are correlated once at the adapter boundary by
 `runtimeAdapters/acpToolCallLifecycle.ts`, shared by the thread and semantic
 event normalizers. Every newly persisted tool event has a trace-local id, and
@@ -63,6 +97,19 @@ an update whose provider start was absent is preceded by an inferred start.
 The projection retains read compatibility for older rows with missing starts
 or null ids, but incomplete trace metadata is never presented as a tool
 failure; only a provider-reported failed status is one.
+
+Tool output is displayed separately from the provider-reported failure status;
+ordinary output and warnings do not become error messages just because a call
+failed. Host command summaries preserve a reported numeric exit code outside
+the bounded output text. New output summaries retain up to 4,000 characters,
+keeping the beginning and end with an explicit omitted-middle marker. Input
+and output summaries pass the canonical `redactSecretPatterns`
+(`runs/evidenceRedaction.ts`) before they are bounded and persisted. Command
+summaries carry a truncation flag; the browser also labels older summaries
+ending in an ellipsis as incomplete, without inventing lost output or exit codes.
+An empty command result is described as no reported output, not as the reason
+for failure. Existing stored command JSON summaries are rendered as readable
+output and exit metadata rather than as an error JSON blob.
 
 ### State is decided once, on the server
 
@@ -75,9 +122,23 @@ derivation needs facts a client does not have:
 - A chat Run reaches `succeeded` several steps *before* its reply is written,
   so only the log's own `chat_completed` event may say a chat turn is done.
   Reporting `done` earlier sends a reader to fetch a reply that does not exist.
+  The same successful/degraded chat also retains the conversation turn until
+  that marker, so a new human message or queue release cannot insert its
+  trigger before the earlier reply and continuity are published. Existing
+  same-group recipient/handoff progression keeps its lifecycle-owned admission;
+  failed, cancelled and orphaned Runs still release the turn without requiring
+  a marker that recovery may never have written. A finalization that keeps
+  failing is retried a bounded number of times, then completed as `failed`
+  with its error, so it cannot hold the conversation for good.
 - `waiting_for_review` is `blocked`: stopped, waiting on a person, resuming
   where it left off once they decide. Not `working` (nothing is happening) and
   not `failed` (nothing went wrong).
+- A queued `waiting_for_quota` hold is also `blocked`, with `blocked_on = quota`.
+  Execution-time recovery has persistent automatic/pause controls in the
+  transcript, fixed activity bar and Run detail. It leaves the conversation
+  turn free for new messages; a new user message pauses the old automatic
+  continuation until explicitly renewed. See the recovery contract in
+  [Runs and outputs](RUNS_AND_OUTPUTS.md#attempts-cancellation-and-supervision).
 - A turn that ended on the runtime's own question is `done`, not `blocked`
   (`modules/runtime-adapters.md`, interactive requests). The ACP controller cancels the vendor's
   interactive prompt, the Run succeeds with `output_json.asked_user`, and
@@ -97,10 +158,16 @@ Two clients need a settled turn from a saved reply, and both go through
 `modules/conversation/settledTurn.ts`:
 
 - `settledTurn(turn, state, text)` (`apps/web/src/modules/conversation/`)
-  replaces the streamed prose with what was
-  actually saved and leaves the work above it. The caller passes the state,
+  uses the saved prose as authority. A complete Host trace whose concatenated
+  text matches that message retains its text/tool boundaries; a partial trace,
+  changed finalizer reply or managed turn falls back to the saved text. The caller passes the state,
   because only the caller knows what settled — a reply row is not proof a turn
   is over, since the server writes one at the pause too.
+  Completed turns fold earlier prose followed by tools or plans into the existing
+  work disclosure. The last prose block always stays visible, including when no
+  closing reply followed the work. Active, failed and blocked turns keep progress
+  visible. This presentation never infers message boundaries from sentence text,
+  exposes reasoning, or changes the durable assistant message.
 - `readBackTurnState(state, blockedOn)` settles a `working` turn read from
   history to `done`, since the message is written before `chat_completed` lands
   and a read is not a stream: nothing else would ever correct it. A `blocked`
@@ -164,10 +231,19 @@ a discussion — and the Manager's own judgment decides whether to delegate.
 `apps/web/src/modules/conversation/` owns shared conversation presentation.
 `ConversationSurface` owns the durable transcript, composer and execution
 preflight used by both the Room page and Project sidecar; those callers pass
-Room audience, roster and routing context into it rather than owning another
-conversation renderer.
+Room audience and roster into it rather than owning another conversation
+renderer. Where a Room message goes is decided in the shared Room composer
+(`RoomMessageComposer`), so both callers show the same route line; see
+`modules/rooms.md`, "Addressing and routing a message".
 `ConversationTurn` renders one Agent turn in whichever of its four states it
-is in. `ConversationComposer` is the common input frame used by direct Agent
+is in. Room and Project surfaces keep a compact `ConversationActivity` strip
+outside the scrolling transcript, above the composer, so later specialist replies
+cannot push unfinished work out of view. It names queued, working, cancelling and
+blocked Agents using the existing Run/Turn facts; it adds no polling or execution
+state. Successful settled delegated reply bodies default to a native disclosure;
+failures, blocked/live turns, questions and action cards remain visible. Ordinary
+participant replies and discussion replies are not folded merely by author.
+`ConversationComposer` is the common input frame used by direct Agent
 chat, the Room page, and the Project sidecar; it owns runtime-control layout,
 focus treatment, and submission. Room injects its mention-capable editor while
 direct chat injects plain text. Both render the selected ACP installation's
@@ -326,6 +402,28 @@ message appears in place once the server posts it at the turn boundary
 (`modules/rooms.md`). One the server could not post stays there with "could
 not be sent" and the reason, and Dismiss for its sender.
 
+Direct Agent chat permits preparing the next message's text and attachments
+while the accepted turn runs, but does not submit a second active turn. The
+server's acceptance consumes only the submitted draft: text edited since the
+send, subsequently added attachments and uploads still in progress remain.
+New drafts continue to persist during the response, including when the first
+acceptance binds the draft to its new Session. Completion, quota waiting and
+stream failure do not clear that next draft. Restoring validated attachments
+does not issue the shared composer's full reset, which would erase them again.
+Slow attachment validation restores only fields that have not been edited
+meanwhile, and persists the resulting draft without overwriting those edits.
+Both surfaces share this through `conversation/useConversationDraft`: the
+stored draft and the per-field edit versions it is compared against are
+captured once per destination, a new request lifetime only re-validates, and
+parent re-renders (such as a freshly derived Folder source list) do not
+restart validation.
+
+Neither surface currently injects a message into an executing vendor turn.
+The pinned Claude and Codex ACP adapters support a steering extension, but
+Rainver's input, Run and controller lifecycle does not expose it and no
+configuration switch enables it. The fixed-version behavior and ended-turn
+differences are recorded in [runtime adapters](../modules/runtime-adapters.md).
+
 `action_preview` parts are deliberately not rendered. Both surfaces show a
 Proposal from the assistant message's own record instead, which is what
 survives a reload and what carries live reconciliation against the Proposal's
@@ -337,3 +435,80 @@ A remote Task run is admitted like a server one: one Run, created
 synchronously, carrying the thread, the adapter, the installation and the
 vendor session to resume in `model_override_json.host_thread`. There is no
 message queue. Do not add one for a remote Task run.
+
+## Explicit source Space and reusable Run commands
+
+`ConversationSurface` and `ConversationExecutionPreflight` accept an optional
+`spaceId`. The Room page supplies its Room's Space, the Project sidecar supplies
+its route Space, and direct `ChatPanel` binds to `agent.space_id`.
+`ConversationScope` carries that source Space and the panel's abort signal through
+message paging, discussions/quota, Run reads/turn streams, backend catalogs,
+preflight, file/image input, knowledge retrieval and live Proposal decisions.
+`ConversationLink` resolves logical links in that source Space without changing
+URL active Space or the global API context. Existing callers without an explicit
+source keep the API's active-Space default.
+
+Changing an existing destination remounts the request lifetime and aborts its reads, streams
+and pending commands. Late message pages and accepted Proposal callbacks cannot
+update the previous destination's parent. Binding an uninitialized Room draft to its first Session preserves its typed
+text and picked references. Direct chat preserves its live stream
+when its own accepted send supplies a new Session id; selecting another Session,
+Agent or Space creates a new lifetime. Drafts retain the existing store and destination keys (globally unique Room,
+Agent and Session identities), so previously unsent text remains recoverable.
+
+`runs/useRunActions` is shared by RunDetailPage and ConversationRunControls for
+review resume/abandon and authorization decisions; only ConversationRunControls
+exposes the shared stop command. RunDetailPage keeps its existing action entries. A command targets one
+explicit Run. Authorization approval/rejection uses its owning endpoint and never
+also calls resume; Proposal decisions still use the Proposal endpoint and the
+existing Room/direct continuation path. Commands reread the canonical Run before
+notifying their consumer, never synthesize Task completion. The existing Run
+status polling, cancellation polling, Room message refresh and Turn streams remain
+the only corresponding update paths; no second sender or execution watcher was
+added. Reading a missing execution context does not provision a conversation;
+preflight initialization remains an explicit user action.
+
+RoomMessageComposer and ConversationInputComposer both pass the source scope to
+session file search and Folder tree/location/snapshot reads. Search cancellation
+and panel cancellation combine through `lib/mergeAbortSignals.ts`, which uses
+AbortController listeners rather than AbortSignal.any. Direct chat consumes its
+self-accepted Session once; an external selection starts a new request lifetime,
+including when returning to that earlier Session.
+
+Settled/finished Room streams and completed Run commands abort their own request
+controller, releasing composed listeners without aborting the panel lifetime.
+ChatPanel keeps the requested and self-accepted Session in one state transition;
+StrictMode replay preserves a self-accepted stream while external selection still
+replaces its lifetime.
+
+Agent Work (`modules/agent_work/`) embeds these same Room and direct surfaces.
+Every mount of either surface, on any page, reports the message ids it rendered,
+with a fingerprint of each shown body so a reply updated in place is reported
+again, through `useAttentionViewing` to the Shell's attention provider, which records
+the personal reads server-side; the optional onMessagesDisplayed callback
+additionally tells Agent Work what this open showed, and initial read failures
+call onReadError instead. These are display evidence for personal reading
+decisions, not another fetch or send path. Room Surface's
+readOnly mode keeps its authorized transcript and existing update mechanisms,
+hides the composer and omits Proposal/discussion mutation callbacks. Nested
+ConversationScope lifetimes preserve the workbench's action user/membership hints;
+ConversationRunControls uses them to hide ineligible commands while owning APIs
+remain authoritative. Existing page callers keep their prior defaults.
+
+Room retry callbacks are omitted only for an explicitly `readOnly` surface or a
+delegated Run, independently of Run owner/instructor standing. Existing Room page
+and sidecar callers do not acquire a new `viewer_can_write` gate. Agent Work
+chooses `readOnly={!room.viewer_can_write}` for its own embedded transcript, so
+its reader mode still has no retry. The server retry service requires a visible
+Room, conversation and Run with its original visible user input; the boolean in
+`requireRoom(..., true)` requests a row lock, not write authorization. Workbench
+Run controls share protocol approval ceilings with server policy, explain insufficient
+or missing risk authority, and reserve standing reasons for active Runs. All
+command eligibility remains advisory to the server's owning authorizer.
+
+`ConversationSurface` and direct `ChatPanel` report displayed message ids with
+their source Space/Session through optional `useAttentionViewing`. The Shell
+provider records personal reads through the existing view endpoint; an open
+conversation does not suppress new-revision alerts. It is inert outside
+AgentAttentionProvider. Display evidence and reading revisions
+are described in [Agent Attention](../modules/agent-attention.md#web-workbench).

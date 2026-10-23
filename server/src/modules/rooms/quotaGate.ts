@@ -1,4 +1,6 @@
-import type { RoomConversationQuota, SubscriptionQuotaHold, SubscriptionQuotaWindow } from "@rainver/protocol";
+import type { QuotaRecovery, RoomConversationQuota, SubscriptionQuotaHold, SubscriptionQuotaWindow } from "@rainver/protocol";
+import type { RunRecord } from "../runs/repository.js";
+import { nextQuotaRecoveryCheck, quotaRecoveryAccountFree, quotaRecoveryPauseReason, quotaRecoveryReady } from "./quotaRecovery.js";
 import type { Pool, PoolClient } from "../../db/pool.js";
 import { PgJobQueueRepository } from "../jobs/repository.js";
 import { readSubscriptionQuotaPolicy } from "../providers/subscriptionQuotaPolicy.js";
@@ -28,7 +30,7 @@ import {
  * discussion wave or closing turn, a delegated child, any domain-event
  * continuation, and the serialized recipients inside those — is admitted only
  * while the login it runs on is below the Space's reserve line
- * (`subscription_quota.reserve_pct`, 85 % by default). Past it the Run stays
+ * (`subscription_quota.reserve_pct`, 100 % by default). Past it the Run stays
  * `queued` with `output_json.waiting_for_quota` and no job; a notice says so
  * once per window; a person may continue anyway (Project writer), which for a
  * discussion is recorded on it (`quota_override_by_user_id`) and holds for
@@ -51,7 +53,7 @@ interface AgentRunJob {
 }
 
 /** The marker a held Run carries. `window`/`resets_at` are what a reader shows; the rest re-admits it. */
-interface WaitingForQuota {
+export interface WaitingForQuota {
   window: SubscriptionQuotaWindow["kind"];
   resets_at: string | null;
   utilization: number;
@@ -61,6 +63,16 @@ interface WaitingForQuota {
   job: AgentRunJob;
   /** A person continued anyway while another turn held the conversation: admitted once it is free. */
   continued_by_user_id?: string;
+  recovery?: QuotaRecovery;
+}
+
+/** The Supervisor has already recorded the failed attempt and queued its successor. */
+export async function holdInterruptedRun(db: Queryable, spaceId: string, runId: string, marker: WaitingForQuota): Promise<void> {
+  await db.query(
+    `UPDATE runs SET output_json = COALESCE(output_json, '{}'::jsonb) || jsonb_build_object('waiting_for_quota', $3::jsonb), updated_at = now()
+      WHERE space_id = $1 AND id = $2 AND status = 'queued'`, [spaceId, runId, JSON.stringify(marker)],
+  );
+  await releaseDispatchLock(db, spaceId, runId);
 }
 
 type QuotaVerdict = { hold: false } | { hold: true; window: SubscriptionQuotaWindow };
@@ -91,6 +103,11 @@ export async function admitAgentOriginRun(
   client: PoolClient,
   input: { spaceId: string; runId: string; job: AgentRunJob; source: QuotaSource; now?: Date },
 ): Promise<"admitted" | "held"> {
+  // A failed physical attempt can still have its old job in flight. Neither
+  // that job nor a FIFO/"continue anyway" pass may erase the recovery choice.
+  const recovering = await client.query(`SELECT 1 FROM runs WHERE space_id = $1 AND id = $2
+    AND status = 'queued' AND output_json->'waiting_for_quota'->'recovery' IS NOT NULL`, [input.spaceId, input.runId]);
+  if (recovering.rows.length) return "held";
   // Already admitted (a FIFO re-evaluating its head): nothing to decide.
   const pending = await client.query(
     `SELECT 1 FROM jobs
@@ -119,7 +136,7 @@ export async function admitAgentOriginRun(
   if (!login) return admit();
   const context = await runContext(client, input.spaceId, input.runId);
   const policy = await readSubscriptionQuotaPolicy(client, input.spaceId);
-  const reading = await input.source.read(client, login);
+  const reading = await input.source.read(client, login, input.now);
   const verdict = quotaVerdict({
     window: reading.window,
     reservePct: policy.reserve_pct,
@@ -162,10 +179,11 @@ export async function enqueueWhenTurnFree(
   client: PoolClient,
   input: { spaceId: string; runId: string; job: AgentRunJob },
 ): Promise<"admitted" | "held"> {
-  const row = (await client.query<{ session_id: string | null; run_group_id: string | null }>(
-    `SELECT session_id, run_group_id FROM runs WHERE space_id = $1 AND id = $2`,
+  const row = (await client.query<{ session_id: string | null; run_group_id: string | null; recovering: boolean }>(
+    `SELECT session_id, run_group_id, output_json->'waiting_for_quota'->'recovery' IS NOT NULL AS recovering FROM runs WHERE space_id = $1 AND id = $2`,
     [input.spaceId, input.runId],
   )).rows[0];
+  if (row?.recovering) return "held";
   if (row?.session_id) {
     await new PgConversationRuntimeSessionRepository(client).lockConversation(input.spaceId, row.session_id);
     if (
@@ -271,8 +289,8 @@ export async function releaseHeldRuns(
   let released = 0;
   let after: { created_at: unknown; id: string } | null = null;
   for (;;) {
-    const held: Array<{ id: string; space_id: string; created_at: unknown }> = (await pool.query<{ id: string; space_id: string; created_at: unknown }>(
-      `SELECT id, space_id, created_at
+    const held: Array<{ id: string; space_id: string; created_at: unknown; marker: WaitingForQuota }> = (await pool.query<{ id: string; space_id: string; created_at: unknown; marker: WaitingForQuota }>(
+      `SELECT id, space_id, created_at, output_json->'waiting_for_quota' AS marker
          FROM runs
         WHERE status = 'queued' AND output_json ? 'waiting_for_quota'
           AND ($1::timestamptz IS NULL OR (created_at, id) > ($1::timestamptz, $2::varchar))
@@ -281,15 +299,18 @@ export async function releaseHeldRuns(
       [after?.created_at ?? null, after?.id ?? null, pageSize],
     )).rows;
     for (const run of held) {
+      // Disabled/future recoveries do not probe the account every scheduler tick.
+      if (run.marker.recovery && (!run.marker.recovery.auto_continue
+        || Date.parse(run.marker.recovery.next_check_at) > (options.now ?? new Date()).getTime())) continue;
       // One Run that cannot be decided never keeps the rest of the pass from theirs.
-      const readWindow = async (): Promise<SubscriptionQuotaWindow | null> => {
+      const readWindow = async (): Promise<QuotaReading> => {
         const login = await subscriptionLoginOfRun(pool, run.space_id, run.id);
-        if (!login) return null;
+        if (!login) return { window: null, checked_at: null };
         const key = loginKey(login);
-        if (!readings.has(key)) readings.set(key, await source.read(pool, login));
-        return readings.get(key)!.window;
+        if (!readings.has(key)) readings.set(key, await source.read(pool, login, options.now));
+        return readings.get(key)!;
       };
-      const admitted = await readWindow().then((window) => withDbTransaction(pool, async (client) => {
+      const admitted = await readWindow().then((reading) => withDbTransaction(pool, async (client) => {
         // The marker as it is now, under the locks an admission takes: a
         // person may have continued anyway since the page was read.
         const sessionId = (await client.query<{ session_id: string | null }>(
@@ -309,10 +330,32 @@ export async function releaseHeldRuns(
           [run.space_id, run.id],
         )).rows[0]?.marker;
         if (!marker) return false;
+        if (marker.recovery) {
+          const now = options.now ?? new Date();
+          if (!marker.recovery.auto_continue || Date.parse(marker.recovery.next_check_at) > now.getTime()) return false;
+          const runRow = (await client.query<RunRecord>(`SELECT * FROM runs WHERE space_id = $1 AND id = $2`, [run.space_id, run.id])).rows[0]!;
+          const policy = await readSubscriptionQuotaPolicy(client, run.space_id);
+          const reason = await quotaRecoveryPauseReason(client, runRow, marker.recovery, now);
+          if (reason) {
+            marker.recovery.auto_continue = false;
+            marker.recovery.pause_reason = reason;
+          } else if (quotaRecoveryReady(marker, reading, now, policy.reserve_pct)) {
+            if (!await quotaRecoveryAccountFree(client, marker, run.id)) return false;
+            return admitHeldRun(client, run.space_id, run.id, true);
+          }
+          marker.recovery.next_check_at = nextQuotaRecoveryCheck(reading, now);
+          if (reading.window && reading.checked_at && Date.parse(reading.checked_at) > Date.parse(marker.recovery.refused_at)) {
+            marker.resets_at = reading.window.resets_at;
+            marker.window = reading.window.kind;
+          }
+          await client.query(`UPDATE runs SET output_json = jsonb_set(output_json, '{waiting_for_quota}', $3::jsonb), updated_at = now()
+            WHERE space_id = $1 AND id = $2`, [run.space_id, run.id, JSON.stringify(marker)]);
+          return false;
+        }
         const context = await runContext(client, run.space_id, run.id);
         const policy = await readSubscriptionQuotaPolicy(client, run.space_id);
         const verdict = quotaVerdict({
-          window,
+          window: reading.window,
           reservePct: policy.reserve_pct,
           override: Boolean(marker.continued_by_user_id)
             || await continuedOnLogin(client, run.space_id, context?.override_user_id ?? null, marker.login.host_id),
@@ -380,7 +423,7 @@ export async function continueHeldRuns(client: PoolClient, input: { spaceId: str
   )).rows;
   const held = [];
   for (const run of candidates) {
-    if (await mayContinueLogin(client, input.spaceId, input.userId, run.marker.login.host_id)) held.push(run);
+    if (!run.marker.recovery && await mayContinueLogin(client, input.spaceId, input.userId, run.marker.login.host_id)) held.push(run);
   }
   for (const discussionId of new Set(held.flatMap((row) => row.discussion_id ? [row.discussion_id] : []))) {
     await client.query(
@@ -474,6 +517,8 @@ async function holdsOf(
 ): Promise<SubscriptionQuotaHold[]> {
   const holds = new Map<string, SubscriptionQuotaHold>();
   for (const row of rows) {
+    // Interrupted work has per-Run continuation controls, not a reserve override.
+    if (row.marker.recovery) continue;
     const key = `${row.marker.login.host_id}\u0000${row.marker.account_label}\u0000${row.marker.window}`;
     const hold = holds.get(key) ?? {
       account_label: row.marker.account_label,
@@ -493,7 +538,7 @@ async function holdsOf(
  * when it was not held, or another turn holds the conversation now (a
  * person spoke while it waited): it stays held until that turn is over.
  */
-async function admitHeldRun(client: PoolClient, spaceId: string, runId: string): Promise<boolean> {
+async function admitHeldRun(client: PoolClient, spaceId: string, runId: string, recoveryReady = false): Promise<boolean> {
   // The conversation's lock first, as a turn claim takes it.
   const sessionId = (await client.query<{ session_id: string | null }>(
     `SELECT session_id FROM runs WHERE space_id = $1 AND id = $2`,
@@ -508,13 +553,14 @@ async function admitHeldRun(client: PoolClient, spaceId: string, runId: string):
     [spaceId, runId],
   )).rows[0];
   if (!row) return false;
+  if (row.marker.recovery && (!recoveryReady || !row.marker.recovery.auto_continue)) return false;
   if (sessionId && await conversationTurnTaken(client, spaceId, sessionId, { admitting: { runId, groupId: row.run_group_id } })) return false;
   if (!await reclaimDispatchLock(client, spaceId, runId)) return false;
   await client.query(
     `UPDATE runs SET output_json = output_json - 'waiting_for_quota', updated_at = now() WHERE space_id = $1 AND id = $2`,
     [spaceId, runId],
   );
-  await enqueueRunJob(client, spaceId, row.marker.job);
+  await enqueueRunJob(client, spaceId, row.marker.job, Boolean(row.marker.recovery));
   await touchDiscussionOfGroup(client, spaceId, row.run_group_id);
   return true;
 }
@@ -599,7 +645,7 @@ async function touchDiscussionOfGroup(client: Queryable, spaceId: string, groupI
   );
 }
 
-async function enqueueRunJob(client: Queryable, spaceId: string, job: AgentRunJob): Promise<void> {
+async function enqueueRunJob(client: Queryable, spaceId: string, job: AgentRunJob, newAttempt = false): Promise<void> {
   // A Run with its job is about to run: it waits for nothing any longer, and
   // must not read as waiting (which would free the conversation's turn).
   if (typeof job.payload.run_id === "string") {
@@ -609,14 +655,21 @@ async function enqueueRunJob(client: Queryable, spaceId: string, job: AgentRunJo
       [spaceId, job.payload.run_id],
     );
   }
-  await new PgJobQueueRepository(client).ensureAgentRunJob({
-    job_type: "agent_run",
+  const queue = new PgJobQueueRepository(client);
+  const input = {
+    job_type: "agent_run" as const,
     space_id: spaceId,
     user_id: job.user_id,
     agent_id: job.agent_id,
     project_folder_id: job.project_folder_id,
     payload: job.payload,
-  });
+  };
+  // A recovery starts the Supervisor's next physical attempt. The failed
+  // attempt's job can still be unwinding, so run-level job deduplication
+  // would consume that old job and strand the admitted successor. The held
+  // Run's row lock and marker removal already make this enqueue idempotent.
+  if (newAttempt) await queue.enqueue(input);
+  else await queue.ensureAgentRunJob(input);
 }
 
 interface RunContext {

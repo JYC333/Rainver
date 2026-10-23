@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { RoomDiscussionDetailSchema, RoomDiscussionNoticeSchema } from "../src/roomDiscussions.js";
-import { SubscriptionQuotaPolicyUpdateSchema } from "../src/subscriptionQuota.js";
+import { QuotaRecoverySchema, QuotaRecoveryUpdateSchema, SUBSCRIPTION_QUOTA_POLICY_DEFAULTS, SubscriptionQuotaPolicyUpdateSchema } from "../src/subscriptionQuota.js";
 
 describe("subscription quota contracts", () => {
+  it("keeps the continuation choice explicit and rejects caller-supplied scheduling authority", () => {
+    expect(QuotaRecoveryUpdateSchema.parse({ auto_continue: false })).toEqual({ auto_continue: false });
+    expect(QuotaRecoveryUpdateSchema.safeParse({ auto_continue: true, next_check_at: "tomorrow" }).success).toBe(false);
+    expect(QuotaRecoveryUpdateSchema.safeParse({ auto_continue: "false" }).success).toBe(false);
+    expect(QuotaRecoverySchema.safeParse({ auto_continue: true }).success).toBe(false);
+  });
+  it("allows automation to use the full subscription window by default", () => {
+    expect(SUBSCRIPTION_QUOTA_POLICY_DEFAULTS.reserve_pct).toBe(100);
+    expect(SubscriptionQuotaPolicyUpdateSchema.parse(SUBSCRIPTION_QUOTA_POLICY_DEFAULTS).reserve_pct).toBe(100);
+  });
+
   it("keeps the warning line at or below the reserve line", () => {
     expect(SubscriptionQuotaPolicyUpdateSchema.safeParse({ warn_pct: 70, reserve_pct: 85 }).success).toBe(true);
     expect(SubscriptionQuotaPolicyUpdateSchema.safeParse({ warn_pct: 90, reserve_pct: 85 }).success).toBe(false);

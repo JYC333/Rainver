@@ -14,7 +14,9 @@ import { fileURLToPath } from "node:url";
  * that drizzle-kit diffs the TypeScript schema against. `0000_baseline.sql` is
  * the frozen starting point; every schema change after it is a new numbered
  * file. Files that any database has applied are never edited — the runner
- * records checksums and refuses a changed one.
+ * records checksums and refuses a changed one. The explicit unpublished-plan
+ * squash workflow (ADR 0025) prepares a separate directory and converts old
+ * database histories; generation/check never performs that conversion.
  *
  *   generate --name <name> [--custom]  append the next migration
  *   check                              no-write: chain, extensions, and drift

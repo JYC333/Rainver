@@ -127,6 +127,13 @@ export const ConversationMessageMetadataSchema = z.object({
   room_display: z.literal("conversation").nullish(),
   /** A person's choice when another discussion was active; never inferred from timing. */
   discussion_intent: z.enum(["join", "separate"]).nullish(),
+  /**
+   * How a person's message was routed: directly to the Agents it addressed,
+   * or to the manager to arrange — with the Agents it referred to as
+   * `coordination_target_agent_ids`. A retry routes it the same way.
+   */
+  routing_mode: z.enum(["direct", "agent_coordination"]).nullish(),
+  coordination_target_agent_ids: z.array(IdSchema).nullish(),
   ...CommonMessageMetadata,
 }).strict();
 
@@ -331,6 +338,12 @@ export const ConversationBackendOptionSchema = z.object({
 export type ConversationBackendOption = z.infer<
   typeof ConversationBackendOptionSchema
 >;
+
+export const ConversationSessionConfigSaveSchema = z.object({
+  session_id: IdSchema,
+  runtime_profile_id: IdSchema,
+  session_config: z.array(RuntimeSessionConfigSelectionSchema).max(32),
+}).strict();
 
 export const ConversationBackendCatalogSchema = z.object({
   options: z.array(ConversationBackendOptionSchema),

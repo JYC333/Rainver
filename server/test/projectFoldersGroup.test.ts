@@ -42,6 +42,11 @@ describe("projectFoldersRoutes", () => {
       await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/tree", {
         name: "folder", path: ".", type: "dir", children: [],
       });
+      await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/tree?path=.agent&offset=500", {
+        name: "folder", path: ".agent", type: "dir", children: [], next_offset: 1000,
+      });
+      const invalidOffset = await app.inject({ method: "GET", url: "/api/v1/projects/project-1/folders/folder-1/tree?offset=-1", headers: { "sec-fetch-site": "same-origin" } });
+      expect(invalidOffset.statusCode).toBe(422);
       await expectJson("GET", "/api/v1/projects/project-1/folders/folder-1/file?path=README.md", {
         path: "README.md",
         content: "hello",
@@ -137,8 +142,8 @@ describe("projectFoldersRoutes", () => {
       async activateLocation() {
         return { id: "location-2", status: "active" };
       },
-      async getTree() {
-        return { name: "folder", path: ".", type: "dir", children: [] };
+      async getTree(...[_identity, _project, _folder, options]: Parameters<PgProjectFolderRepository["getTree"]>) {
+        return { name: "folder", path: options?.path ?? ".", type: "dir", children: [], ...(options?.offset ? { next_offset: options.offset + 500 } : {}) };
       },
       async getFile(_identity: unknown, _projectId: unknown, _folderId: unknown, requestedPath: string) {
         return { path: requestedPath, content: "hello", size: 5, line_count: 1 };

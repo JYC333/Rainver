@@ -73,7 +73,7 @@ COPY --from=build /app/server/dist /app/server/dist
 WORKDIR /app/server
 
 # CLI login helper processes need a writable HOME before their state is synced
-# into the managed profile dir under RAINVER_HOME. Dev/test compose also
+# into the managed profile dir under RAINVER_HOME. Dev compose also
 # runs TypeScript watch builds, so the compiled dist trees must be writable by
 # the non-root runtime user.
 RUN mkdir -p /home/node/.claude \

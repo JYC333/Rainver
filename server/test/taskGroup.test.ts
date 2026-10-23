@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
+import { explicitRunTimeLimit } from "../src/modules/runs/runTimeLimit.js";
 import { resetTables } from "./support/resetTables.js";
+import { seedAgentWithVersion } from "./support/domainSeeds.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 
 describe("taskArtifactsRepository", () => {
@@ -152,6 +154,47 @@ describe("task contract persistence (real Postgres)", () => {
       expect(updated.policy_json).toEqual({ max_attempts: 3 });
       expect(updated.metadata_json).toEqual({ source: "ui", revision: 2 });
       expect(updated.tags).toEqual(["contract", "updated"]);
+    });
+
+    it("gives a new Task run and cost defaults but no default time limit", async () => {
+      if (!db.available) return;
+      const repository = new PgTaskRepository(db.pool);
+      const unlimited = await repository.createTask(identity, { title: "Long-running research" });
+      expect(unlimited).toMatchObject({ max_runs: 3, max_cost: 10, max_duration_seconds: null });
+      const limited = await repository.createTask(identity, { title: "Bounded check", max_duration_seconds: 600 });
+      expect(limited.max_duration_seconds).toBe(600);
+      const stored = await db.pool.query<{ id: string; max_duration_seconds: number | null }>(
+        "SELECT id, max_duration_seconds FROM tasks WHERE id = ANY($1::text[]) ORDER BY max_duration_seconds NULLS FIRST",
+        [[unlimited.id, limited.id]],
+      );
+      expect(stored.rows.map((row) => row.max_duration_seconds)).toEqual([null, 600]);
+    });
+
+    it("clears a stored time limit with null so the next Run has none", async () => {
+      if (!db.available) return;
+      const agent = randomUUID();
+      await seedAgentWithVersion(db.pool, { agent, version: randomUUID(), space: SPACE, owner: OWNER });
+      const repository = new PgTaskRepository(db.pool);
+      const task = await repository.createTask(identity, { title: "Bounded then open", max_duration_seconds: 3600 });
+
+      // Omitting the field keeps the stored limit.
+      expect((await repository.updateTask(identity, task.id, { title: "Still bounded" })).max_duration_seconds).toBe(3600);
+      // An explicit null is "no limit", not "unchanged".
+      expect((await repository.updateTask(identity, task.id, { max_duration_seconds: null })).max_duration_seconds).toBeNull();
+      const stored = await db.pool.query<{ max_duration_seconds: number | null }>(
+        "SELECT max_duration_seconds FROM tasks WHERE id = $1",
+        [task.id],
+      );
+      expect(stored.rows[0]?.max_duration_seconds).toBeNull();
+
+      const created = await repository.createTaskRun(identity, task.id, { agent_id: agent });
+      const runId = (created as { id: string }).id;
+      const run = await db.pool.query<{ contract_snapshot_json: Record<string, unknown> }>(
+        "SELECT contract_snapshot_json FROM runs WHERE id = $1",
+        [runId],
+      );
+      expect(run.rows[0]?.contract_snapshot_json.max_duration_seconds).toBeNull();
+      expect(explicitRunTimeLimit(run.rows[0]?.contract_snapshot_json, null)).toBeNull();
     });
 
     it("rejects task statuses outside the canonical lifecycle vocabulary", async () => {

@@ -20,6 +20,7 @@ export const CONVERSATION_MAX_IMAGES = 4;
 export const CONVERSATION_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const CONVERSATION_MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
 export const CONVERSATION_MAX_FILE_REFERENCES = 8;
+export const CONVERSATION_MAX_SKILLS = 4;
 export const CONVERSATION_MAX_FILE_SNAPSHOT_BYTES = 512 * 1024;
 export const CONVERSATION_MAX_TOTAL_FILE_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 
@@ -64,16 +65,28 @@ export const ConversationInputFileReferencePartSchema = z.object({
 }).strict();
 export type ConversationInputFileReferencePart = z.infer<typeof ConversationInputFileReferencePartSchema>;
 
+export const ConversationInputSkillPartSchema = z.object({
+  kind: z.literal("skill"), skill_package_id: IdSchema,
+  package_hash: z.string().regex(/^[a-f0-9]{64}$/u),
+  display_name: z.string().trim().min(1).max(256),
+}).strict();
+export type ConversationInputSkillPart = z.infer<typeof ConversationInputSkillPartSchema>;
+
 export const ConversationInputPartSchema = z.union([
   ConversationInputImagePartSchema,
   ConversationInputFileReferencePartSchema,
   ConversationInputResourcePartSchema,
+  ConversationInputSkillPartSchema,
 ]);
 export type ConversationInputPart = z.infer<typeof ConversationInputPartSchema>;
 
 export const ConversationInputPartsSchema = z.array(ConversationInputPartSchema)
-  .max(CONVERSATION_MAX_IMAGES + CONVERSATION_MAX_FILE_REFERENCES)
+  .max(CONVERSATION_MAX_IMAGES + CONVERSATION_MAX_FILE_REFERENCES + CONVERSATION_MAX_SKILLS)
   .superRefine((parts, ctx) => {
+    const skills = parts.filter(part => part.kind === "skill");
+    if (skills.length > CONVERSATION_MAX_SKILLS || new Set(skills.map(part => part.skill_package_id)).size !== skills.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Select at most four distinct Skills" });
+    }
     const images = parts.filter((part): part is ConversationInputImagePart => part.kind === "image");
     const files = parts.filter((part): part is ConversationInputFileReferencePart => part.kind === "file_reference");
     const resources = parts.filter((part): part is ConversationInputResourcePart => part.kind === "input_resource");

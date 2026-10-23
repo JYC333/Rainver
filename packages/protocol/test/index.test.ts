@@ -82,6 +82,7 @@ describe("type-level contracts (typecheck test)", () => {
   it("infers DTO and envelope types from schemas", () => {
     expectTypeOf<ActivityDTO>().toHaveProperty("space_id");
     expectTypeOf<ActivityDTO["space_id"]>().toEqualTypeOf<string>();
+    expectTypeOf<ModelProviderDTO>().toHaveProperty("space_id");
     expectTypeOf<ModelProviderDTO>().toHaveProperty("has_api_key");
     expectTypeOf<ModelProviderDTO["has_api_key"]>().toEqualTypeOf<boolean>();
     expectTypeOf<StartRunCommand["type"]>().toEqualTypeOf<"run.start">();

@@ -100,6 +100,33 @@ function renderPage(
 }
 
 describe('Project Files & Code Area', () => {
+  it('loads directories only when opened, retries failures and loads the next page', async () => {
+    vi.mocked(projectFoldersApi.list).mockResolvedValue({ items: [folder('folder-1', 'Source')], total: 1 } as never)
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
+    vi.mocked(projectFoldersApi.tree).mockImplementation(async (_project, _folder, path = '.', offset = 0) => {
+      if (path === '.') return { name: 'Source', path: '.', type: 'dir', children: [{ name: '.agent', path: '.agent', type: 'dir' }, { name: 'README.md', path: 'README.md', type: 'file' }] }
+      if (offset) return { name: '.agent', path, type: 'dir', children: [{ name: 'last.md', path: '.agent/last.md', type: 'file' }] }
+      return { name: '.agent', path, type: 'dir', children: [{ name: 'guide.md', path: '.agent/guide.md', type: 'file' }, { name: 'deep', path: '.agent/deep', type: 'dir' }], next_offset: 500 }
+    })
+    renderPage()
+    const directory = await screen.findByRole('button', { name: '.agent' })
+    expect(directory).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('README.md')).toBeInTheDocument()
+    expect(projectFoldersApi.tree).toHaveBeenCalledTimes(1)
+    vi.mocked(projectFoldersApi.tree).mockRejectedValueOnce(new Error('offline'))
+    fireEvent.click(directory)
+    fireEvent.click(await screen.findByRole('button', { name: /Could not load directory/ }))
+    expect(await screen.findByText('guide.md')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'deep' })).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }))
+    expect(await screen.findByText('last.md')).toBeInTheDocument()
+    expect(screen.getByText('guide.md')).toBeInTheDocument()
+    expect(screen.queryByText('Load more')).not.toBeInTheDocument()
+    const calls = vi.mocked(projectFoldersApi.tree).mock.calls.length
+    fireEvent.click(directory)
+    fireEvent.click(directory)
+    expect(projectFoldersApi.tree).toHaveBeenCalledTimes(calls)
+  })
   it('requires confirmation before saving a draft that normalizes mixed line endings', async () => {
     const draft = {
       id: 'draft-mixed', space_id: 'space-1', project_id: 'project-1', project_folder_id: 'folder-1',
@@ -332,6 +359,8 @@ describe('Project Files & Code Area', () => {
 
     renderPage()
 
+    fireEvent.click(await screen.findByRole('button', { name: /^src$/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^backups$/ }))
     const modified = await screen.findByTitle('app.ts · modified')
     expect(modified.className).toContain('text-amber-600')
     expect(within(modified).getByLabelText('modified')).toHaveTextContent('M')

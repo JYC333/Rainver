@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { normalizeUsageObservation } from "../src/modules/usage/normalizer.js";
-import { PgUsageRepository } from "../src/modules/usage/repository.js";
+import { eventToOut, PgUsageRepository } from "../src/modules/usage/repository.js";
 import type { OversightMode } from "../src/modules/access/contentAccessTypes.js";
 
 const SPACE = "77777777-7777-4777-8777-777777777777";
@@ -70,6 +70,31 @@ async function seed(mode: OversightMode): Promise<PgUsageRepository> {
 }
 
 describe("usage oversight visibility", () => {
+  it("counts known model calls separately from legacy and new CLI aggregates", async () => {
+    if (!db.available) return;
+    const repository = await seed("none");
+    for (const [key, calls] of [["unknown", undefined], ["known", 21], ["legacy", undefined]] as const) {
+      const event = normalizeUsageObservation({
+        space_id: SPACE, event_type: "llm.generation", source_type: "local_run", execution_channel: "local_cli",
+        request_count: calls, usage_details: { input: 42, input_cache_read: 1_000, output: 10 }, idempotency_key: key,
+      }, "instance-1", {
+        owner_user_id: MEMBER, visibility: "private", access_level: "full", source_resource_type: null,
+        source_resource_id: null, project_folder_id: null, project_id: null, grant_snapshots: [],
+      }, OCCURRED_AT);
+      if (key === "legacy") { event.request_count = 1; event.metadata_json = {}; }
+      await repository.appendEvent(event);
+    }
+    const filters = { activeSpaceId: SPACE, userId: MEMBER, view: "mine" as const,
+      from: "2026-07-01T00:00:00.000Z", to: "2026-08-01T00:00:00.000Z" };
+    expect((await repository.aggregate(filters)).totals).toMatchObject({
+      event_count: 4, request_count: 22, unknown_request_count_events: 2, cache_read_input_tokens: 3_000,
+    });
+    const events = await repository.listEvents(filters);
+    const cli = events.items.map(eventToOut).filter(event => event.execution_channel === "local_cli");
+    expect(cli.filter(event => event.request_count_known === false)).toHaveLength(2);
+    expect(cli.filter(event => event.request_count_known === false).every(event => event.request_count === 0)).toBe(true);
+    expect((await repository.aggregate({ ...filters, userId: OWNER })).totals.event_count).toBe(0);
+  });
   it("persists catalog zero separately from an unknown cost", async () => {
     if (!db.available) return;
     const repository = await seed("none");

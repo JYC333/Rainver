@@ -3,13 +3,15 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Artifact, Run } from '../../types/api'
 
-const { artifactsApiMock, runsApiMock } = vi.hoisted(() => ({
+const { artifactsApiMock, runsApiMock, authorizationApiMock } = vi.hoisted(() => ({
   artifactsApiMock: { get: vi.fn() },
-  runsApiMock: { artifacts: vi.fn(), get: vi.fn(), stop: vi.fn() },
+  authorizationApiMock: { approve: vi.fn(), reject: vi.fn() },
+  runsApiMock: { artifacts: vi.fn(), get: vi.fn(), stop: vi.fn(), resume: vi.fn(), authorizationRequests: vi.fn(), quotaRecovery: vi.fn() },
 }))
 
 vi.mock('../../api/client', () => ({
   artifactsApi: artifactsApiMock,
+  authorizationRequestsApi: authorizationApiMock,
   runsApi: runsApiMock,
 }))
 
@@ -18,6 +20,8 @@ vi.mock('../../core/spaceNav', () => ({
 }))
 
 import { ConversationRunControls } from './ConversationRunControls'
+import { ConversationScope } from './ConversationScope'
+import { ConversationActivity } from './ConversationActivity'
 
 function run(overrides: Partial<Run> = {}): Run {
   return {
@@ -79,6 +83,47 @@ describe('ConversationRunControls', () => {
     vi.clearAllMocks()
     runsApiMock.artifacts.mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 })
     runsApiMock.get.mockResolvedValue(run({ status: 'cancelled' }))
+    runsApiMock.authorizationRequests.mockResolvedValue([])
+  })
+
+  const quotaRun = (automatic = true) => run({ status: 'queued', owner_user_id: 'owner', output_json: {
+    waiting_for_quota: { resets_at: '2026-10-22T00:00:00Z', recovery: {
+      auto_continue: automatic, refused_at: '2026-10-21T22:00:00Z', intent_at: '2026-10-21T22:00:00Z',
+      next_check_at: '2026-10-22T00:00:00Z', expires_at: '2026-10-28T22:00:00Z', pause_reason: automatic ? null : 'user',
+    } },
+  } })
+
+  it('cancels automatic continuation in the source Space and shows the canonical paused choice', async () => {
+    runsApiMock.quotaRecovery.mockResolvedValue({})
+    runsApiMock.get.mockResolvedValue(quotaRun(false))
+    render(<MemoryRouter><ConversationScope spaceId="source" actionUserId="owner">
+      <ConversationRunControls runId="run-1" run={quotaRun()} spaceId="source" />
+    </ConversationScope></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel automatic continuation' }))
+    await waitFor(() => expect(runsApiMock.quotaRecovery).toHaveBeenCalledWith('run-1', false, expect.objectContaining({ spaceId: 'source' })))
+    expect(await screen.findByRole('button', { name: 'Continue automatically when quota recovers' })).toBeInTheDocument()
+    expect(runsApiMock.stop).not.toHaveBeenCalled()
+    expect(screen.getByText(/Paused · manual continuation required/)).toBeInTheDocument()
+  })
+
+  it('keeps the recovery control in the bottom activity bar and hides it from other viewers', () => {
+    const view = render(<MemoryRouter><ConversationScope actionUserId="owner">
+      <ConversationActivity runs={[quotaRun()]} turns={{}} agentName={() => 'Claude'} />
+    </ConversationScope></MemoryRouter>)
+    expect(screen.getByRole('button', { name: 'Cancel automatic continuation' })).toBeInTheDocument()
+    view.rerender(<MemoryRouter><ConversationScope actionUserId="viewer">
+      <ConversationActivity runs={[quotaRun()]} turns={{}} agentName={() => 'Claude'} />
+    </ConversationScope></MemoryRouter>)
+    expect(screen.queryByRole('button', { name: 'Cancel automatic continuation' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Waiting for quota/)).toBeInTheDocument()
+  })
+
+  it('reports an admission race without claiming automatic continuation was cancelled', async () => {
+    runsApiMock.quotaRecovery.mockRejectedValue(new Error('Already resumed; stop the current Run.'))
+    render(<MemoryRouter><ConversationRunControls runId="run-1" run={quotaRun()} /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel automatic continuation' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Already resumed')
+    expect(screen.getByRole('button', { name: 'Cancel automatic continuation' })).toBeInTheDocument()
   })
 
   it('loads the exact diff for a managed Host Run', async () => {
@@ -91,9 +136,9 @@ describe('ConversationRunControls', () => {
       </MemoryRouter>,
     )
 
-    await waitFor(() => expect(runsApiMock.artifacts).toHaveBeenCalledWith('run-1', { limit: '50' }))
-    expect(await screen.findByText('Open exact diff')).toHaveAttribute('href', '/artifacts/artifact-diff')
-    expect(screen.getByText('Files & Code')).toHaveAttribute('href', '/projects/project-1/files')
+    await waitFor(() => expect(runsApiMock.artifacts).toHaveBeenCalledWith('run-1', { limit: '50' }, expect.any(Object)))
+    expect(await screen.findByText('Open exact diff')).toHaveAttribute('href', '/spaces/space-1/artifacts/artifact-diff')
+    expect(screen.getByText('Files & Code')).toHaveAttribute('href', '/spaces/space-1/projects/project-1/files')
     expect(screen.getByTestId('changes-run-1')).toHaveClass('w-full', 'min-w-0', 'max-w-full')
   })
 
@@ -107,7 +152,7 @@ describe('ConversationRunControls', () => {
       </MemoryRouter>,
     )
 
-    await waitFor(() => expect(artifactsApiMock.get).toHaveBeenCalledWith('artifact-diff'))
+    await waitFor(() => expect(artifactsApiMock.get).toHaveBeenCalledWith('artifact-diff', undefined, expect.any(Object)))
     await waitFor(() => expect(screen.getByTestId('conversation-run-controls-run-1')).toBeEmptyDOMElement())
     expect(screen.queryByTestId('changes-run-1')).not.toBeInTheDocument()
     expect(screen.queryByText('Reviewer')).not.toBeInTheDocument()
@@ -163,7 +208,7 @@ describe('ConversationRunControls', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: /stop/i }))
-    expect(runsApiMock.stop).toHaveBeenCalledWith('run-1')
+    expect(runsApiMock.stop).toHaveBeenCalledWith('run-1', expect.any(Object))
     expect(await screen.findByText('Turn cancelled; partial output is retained.')).toBeInTheDocument()
   })
 
@@ -192,4 +237,75 @@ describe('ConversationRunControls', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('backend changed')
     expect(onRetry).toHaveBeenCalledWith('run-1')
   })
+  it('approves the exact authorization in its source Space without generic resume', async () => {
+    runsApiMock.authorizationRequests.mockResolvedValue([{ id: 'authorization-b', status: 'pending', reason: 'Allow this operation' }])
+    runsApiMock.get.mockResolvedValue(run({ status: 'running' }))
+    render(<MemoryRouter><ConversationRunControls spaceId="source-b" runId="run-1" run={run({ status: 'waiting_for_review', error_json: { authorization_request_id: 'authorization-b' } })} /></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Approve authorization' }))
+    await waitFor(() => expect(authorizationApiMock.approve).toHaveBeenCalledWith('authorization-b', expect.objectContaining({ spaceId: 'source-b' })))
+    expect(runsApiMock.resume).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
+  })
+  it('resumes supervisor review through the shared Run command and refreshes its caller', async () => {
+    runsApiMock.get.mockResolvedValue(run({ status: 'running' }))
+    const changed = vi.fn()
+    render(<MemoryRouter><ConversationRunControls spaceId="source-b" runId="run-1" run={run({ status: 'waiting_for_review', error_json: { supervisor_review: true } })} onChanged={changed} /></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume' }))
+    await waitFor(() => expect(changed).toHaveBeenCalledOnce())
+    expect(runsApiMock.resume).toHaveBeenCalledWith('run-1', expect.objectContaining({ spaceId: 'source-b' }))
+  })
+
+  it.each([
+    ['owner', 'low', true], ['owner', 'medium', true], ['owner', 'high', true], ['owner', 'critical', true], ['owner', undefined, false],
+    ['admin', 'low', true], ['admin', 'medium', true], ['admin', 'high', true], ['admin', 'critical', false], ['admin', undefined, false],
+    ['reviewer', 'low', true], ['reviewer', 'medium', true], ['reviewer', 'high', false], ['reviewer', 'critical', false], ['reviewer', undefined, false],
+    ['member', 'low', false], ['guest', 'low', false], ['owner', 'invalid', false],
+  ] as const)('offers policy resume for %s at %s only with approval authority (%s)', async (role, risk, allowed) => {
+    render(<MemoryRouter><ConversationScope spaceId="source-b" actionUserId="viewer" actionRole={role}>
+      <ConversationRunControls spaceId="source-b" runId="run-1" run={run({ status: 'waiting_for_review', owner_user_id: 'viewer', error_json: { risk_level: risk } })} />
+    </ConversationScope></MemoryRouter>)
+    await screen.findByRole('button', { name: 'Abandon Run' })
+    if (allowed) {
+      fireEvent.click(screen.getByRole('button', { name: 'Resume' }))
+      await waitFor(() => expect(runsApiMock.resume).toHaveBeenCalledWith('run-1', expect.objectContaining({ spaceId: 'source-b' })))
+    } else {
+      expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument()
+      expect(screen.getByText(risk === undefined || risk === 'invalid'
+        ? /no valid recorded risk/ : new RegExp(`approval authority for ${risk} risk`))).toBeVisible()
+      expect(runsApiMock.resume).not.toHaveBeenCalled()
+    }
+  })
+
+  it('allows a qualified policy approver to resume without Run standing, but cannot stop or abandon it', async () => {
+    render(<MemoryRouter><ConversationScope spaceId="source-b" actionUserId="viewer" actionRole="admin">
+      <ConversationRunControls spaceId="source-b" runId="run-1" run={run({ status: 'waiting_for_review', owner_user_id: 'other', error_json: { risk_level: 'high' } })} />
+    </ConversationScope></MemoryRouter>)
+    expect(await screen.findByRole('button', { name: 'Resume' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Abandon Run' })).not.toBeInTheDocument()
+  })
+
+  it.each([true, false])('uses the supplied retry callback independently of Run standing (available=%s)', async available => {
+    const onRetry = vi.fn().mockResolvedValue(undefined)
+    render(<MemoryRouter><ConversationScope spaceId="source-b" actionUserId="viewer" actionRole="member">
+      <ConversationRunControls spaceId="source-b" runId="run-1" run={run({ status: 'failed', owner_user_id: 'other', instructed_by_user_id: 'other' })} onRetry={available ? onRetry : undefined} />
+    </ConversationScope></MemoryRouter>)
+    if (available) {
+      fireEvent.click(screen.getByRole('button', { name: 'Retry turn' }))
+      await waitFor(() => expect(onRetry).toHaveBeenCalledWith('run-1'))
+    } else expect(screen.queryByRole('button', { name: 'Retry turn' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Only the Run owner/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument()
+  })
+
+  it('does not flash a Run authority reason before loading or on a completed Run', async () => {
+    runsApiMock.get.mockResolvedValue(run({ owner_user_id: 'other' }))
+    render(<MemoryRouter><ConversationScope spaceId="source-b" actionUserId="viewer" actionRole="member">
+      <ConversationRunControls runId="run-1" />
+    </ConversationScope></MemoryRouter>)
+    expect(screen.queryByText(/Only the Run owner/)).not.toBeInTheDocument()
+    await waitFor(() => expect(runsApiMock.get).toHaveBeenCalled())
+    expect(screen.queryByText(/Only the Run owner/)).not.toBeInTheDocument()
+  })
+
 })

@@ -17,6 +17,7 @@ import { moduleForPath } from '../modules/registry'
 import { useEffectiveModules } from '../modules/plugins/useEffectivePlugins'
 import { proposalsApi } from '../api/client'
 import { REVIEW_ATTENTION_CHANGED_EVENT } from './reviewAttention'
+import { AgentAttentionProvider } from '../modules/agent_work/AgentAttentionProvider'
 import { useAppTranslation } from '../i18n'
 
 const RAIL_KEY = 'rainver:rail-expanded'
@@ -150,6 +151,10 @@ function SceneHeader({
 
 /* ── Shell ─────────────────────────────────────────────────────────────────── */
 export default function Shell() {
+  const { currentUser } = useAuth()
+  return currentUser ? <AgentAttentionProvider userId={currentUser.id}><ShellContent /></AgentAttentionProvider> : <ShellContent />
+}
+function ShellContent() {
   const { t } = useAppTranslation()
   const { theme } = useTheme()
   const { currentUser } = useAuth()

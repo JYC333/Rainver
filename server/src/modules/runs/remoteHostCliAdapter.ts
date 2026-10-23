@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type InvocationDelivery, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent } from "@rainver/protocol";
+import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostEgressTransport, type HostLaunchIsolation, type InvocationDelivery, type LaunchWorkspace, type RunAdapterResultEnvelope, type RuntimeSemanticEvent, type RuntimeSessionConfigDroppedSelection as DroppedSessionConfigSelection } from "@rainver/protocol";
 import type { ContentBlock } from "./cliConversationProtocol.js";
 import type { CredentialSpendDeps } from "../policy/credentialSpend.js";
 import { getLocalCliRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
@@ -7,9 +7,10 @@ import { AcpRuntimeAdapter } from "../runtimeAdapters/acpRuntimeAdapter.js";
 import { PgRunRepository, type AgentRunRecord } from "./repository.js";
 import { buildRunWorkSurface, type RunWorkSurface, type RunWorkSurfaceFrame } from "./runWorkSurface.js";
 import { acpRuntimeContextPromptBlocks } from "./acpRuntimeContextPrompt.js";
-import { stallTimeoutSeconds } from "./stallTimeout.js";
+import { RUN_QUIET_STATUS, stallTimeoutSeconds } from "./stallTimeout.js";
+import { RUN_TIMED_OUT_ERROR_CODE } from "./runTimeLimit.js";
 import { classifyRuntimeFailure } from "./retryPolicy.js";
-import { workSkillPromptPointer } from "../capabilities/workSkill.js";
+import { workSkillPromptPointer, workSkillPromptReminder } from "../capabilities/workSkill.js";
 import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
 import { CliRenderError, renderCliCommand } from "./cliCommandRendering.js";
@@ -33,7 +34,9 @@ import {
   boundAcpModelId,
   buildRemoteProviderBinding,
   buildUnboundRuntimeProfile,
+  recordDroppedSessionConfig,
   recordRemoteRunBackend,
+  recordRuntimeReportedModel,
   resolveRemoteRunBinding,
   resolveRuntimeProfileScope,
   RemoteProviderBindingError,
@@ -80,7 +83,17 @@ interface RemoteHostCliAdapterInput {
   invocation_delivery?: InvocationDelivery;
   model: string | null;
   resume_session_id: string | null;
-  timeout_seconds?: number | null;
+  /**
+   * Aborted when the Run's explicitly set time limit is reached
+   * (`runTimeLimit.ts`); orchestration then stops the runtime. Absent when no
+   * limit was set — there is no default one.
+   */
+  deadline_signal?: AbortSignal;
+  /**
+   * Aborted when the Run is stopped. A stop that lands while this dispatch is
+   * still being prepared has no process to reach; this keeps it from launching.
+   */
+  cancel_signal?: AbortSignal;
   /** The dispatch's adapter settings; `stall_timeout_seconds` is read from it. */
   adapter_config?: Record<string, unknown>;
   runtime_event_sink?: (event: RuntimeSemanticEvent) => Promise<void> | void;
@@ -175,15 +188,6 @@ function chatTurnPromptCapabilities(value: unknown): {
 }
 
 
-function resolveTimeoutSeconds(input: RemoteHostCliAdapterInput, defaultSeconds: number, maxSeconds: number): number {
-  const requested = input.timeout_seconds && input.timeout_seconds > 0 ? Math.trunc(input.timeout_seconds) : defaultSeconds;
-  const contract = input.run.contract_snapshot_json as Record<string, unknown> | null | undefined;
-  const maxDuration = typeof contract?.max_duration_seconds === "number" && contract.max_duration_seconds > 0
-    ? Math.trunc(contract.max_duration_seconds)
-    : null;
-  return Math.min(requested, maxSeconds, maxDuration ?? Number.MAX_SAFE_INTEGER);
-}
-
 /**
  * The namespace and egress policy the control plane states for this Run.
  *
@@ -250,6 +254,9 @@ export interface RemoteHostCliAdapterDeps {
 }
 
 export interface RemoteBindingPort {
+  observeModel?(runId: string, spaceId: string, model?: string | null): Promise<void>;
+  /** Saved session options the live session did not offer or apply; the runtime kept its default. */
+  observeDroppedSessionConfig?(runId: string, spaceId: string, dropped: readonly DroppedSessionConfigSelection[]): Promise<void>;
   resolve(run: AgentRunRecord): Promise<ResolvedRemoteBinding | null>;
   record(runId: string, used: { provider_id: string; model: string | null } | null, spaceId: string): Promise<void>;
   /** Which Agent × container this run's CLI profile belongs to; never null — every host-bound run has one. */
@@ -283,6 +290,8 @@ function databaseBindingPort(config: ServerConfig): RemoteBindingPort | null {
   const db = getDbPool(config.databaseUrl);
   return {
     resolve: (run) => resolveRemoteRunBinding(db, run),
+    observeModel: (runId, spaceId, model) => recordRuntimeReportedModel(db, runId, spaceId, model),
+    observeDroppedSessionConfig: (runId, spaceId, dropped) => recordDroppedSessionConfig(db, runId, spaceId, dropped),
     record: (runId, used, spaceId) => recordRemoteRunBackend(db, runId, used, spaceId),
     profileScope: (run, workspaceLocationId) => resolveRuntimeProfileScope(db, run, workspaceLocationId),
   };
@@ -358,6 +367,24 @@ async function runRemoteHostCliAdapter(
   // from workspace file changes, is open in `tasks/deferred-register.md`.
   let prompt = input.prompt ?? input.run.prompt ?? "";
   const supplementalInstructions: string[] = [];
+  // Preparation awaits the database and the provider lease. The Run's time
+  // limit can pass, or a person can stop it, during any of it, and the stop
+  // then finds no process to reach. So each step checks both signals itself,
+  // and a Run stopped either way never launches — not even after
+  // orchestration has already settled it.
+  const stopRequested = () => input.deadline_signal?.aborted === true || input.cancel_signal?.aborted === true;
+  const stoppedBeforeLaunch = async (): Promise<RunAdapterResultEnvelope> => {
+    if (input.deadline_signal?.aborted) {
+      await input.thread_event_sink?.([{ event_type: "status", status: "run_timeout" }]);
+      return remoteFailure(
+        spec.runtime_key,
+        RUN_TIMED_OUT_ERROR_CODE,
+        "The Run reached its time limit before its command was launched.",
+        startedAt,
+      );
+    }
+    return remoteFailureWithEvent(input, spec.runtime_key, "run_cancelled", "The Run was stopped before its command was launched.", startedAt);
+  };
 
   let rendered;
   try {
@@ -396,6 +423,7 @@ async function runRemoteHostCliAdapter(
     );
   }
 
+  if (stopRequested()) return stoppedBeforeLaunch();
   const argv = [...rendered.argv];
   if (spec.permissions.supports_permission_bypass && spec.permissions.permission_bypass_arg_template) {
     // Headless execution has no person to answer a permission prompt, so
@@ -404,14 +432,11 @@ async function runRemoteHostCliAdapter(
   }
 
   const registry = deps.connectionRegistry ?? sharedHostConnectionRegistry;
-  const threadEvents = createThreadEventNormalizer();
+  const threadEvents = createThreadEventNormalizer(spec.runtime_key);
   const runtimeEvents = createVendorEventNormalizer(spec.runtime_key);
-  const timeoutSeconds = resolveTimeoutSeconds(input, spec.limits.default_timeout_seconds, spec.limits.max_timeout_seconds);
-  // Credentials this run carries must outlive it. Its budget starts when the
-  // host launches it, and the launch may first wait up to one budget (see
-  // `RemoteWsCliCommandExecutor`), so the longest it can live is two budgets;
-  // the margin keeps a request in flight at that boundary from being cut off.
-  const credentialLifetimeSeconds = 2 * timeoutSeconds + 300;
+  // A Run has no wall-clock deadline. Short-lived credentials are renewed
+  // while execution is active and revoked on every terminal path.
+  const credentialLifetimeSeconds = 900;
 
   // The control plane's choice of model backend for this run, if it made one.
   // Read the frozen Runtime Profile snapshot. Do not read
@@ -491,6 +516,8 @@ async function runRemoteHostCliAdapter(
     }
   }
 
+  if (stopRequested()) return stoppedBeforeLaunch();
+
   // How this run reports back. Offered whenever the Run was granted any tool.
   // A Run granted nothing gets no command rather than one that would refuse
   // everything.
@@ -519,13 +546,23 @@ async function runRemoteHostCliAdapter(
     }
   }
   if (workSurface) {
+    const identities = new PgRunToolIdentityRepository(deps.db ?? getDbPool(config!.databaseUrl!));
+    const renewal = setInterval(() => {
+      void identities.renew(input.run.id, workSurface!.frame.env.RAINVER_TOOL_TOKEN!, credentialLifetimeSeconds * 1000)
+        .catch(() => undefined);
+    }, 60_000);
+    renewal.unref?.();
+    leases.push(() => clearInterval(renewal));
     // An empty prompt stays empty. A pointer on its own would start a turn
     // nobody asked for.
     // The daemon substitutes the placeholder with the file's absolute path on
     // that machine (only it knows one); an unexpanded `$RAINVER_SKILL_PATH`
     // is a path a read_file tool cannot open.
     if (prompt) {
-      const pointer = workSkillPromptPointer(WORK_SKILL_PATH_PLACEHOLDER, workSurface.options);
+      // A delta Delivery continues a session that already holds the full pointer.
+      const pointer = input.invocation_delivery?.mode === "delta"
+        ? workSkillPromptReminder(WORK_SKILL_PATH_PLACEHOLDER)
+        : workSkillPromptPointer(WORK_SKILL_PATH_PLACEHOLDER, workSurface.options);
       if (input.invocation_delivery) supplementalInstructions.push(pointer);
       else prompt = `${prompt}\n\n${pointer}`;
     }
@@ -541,6 +578,8 @@ async function runRemoteHostCliAdapter(
     }]);
   }
 
+  if (stopRequested()) return stoppedBeforeLaunch();
+
   let promptBlocks: ContentBlock[][] | undefined;
   let hydratedBlocks: ContentBlock[] = [];
   let inputResources: Array<{
@@ -552,7 +591,9 @@ async function runRemoteHostCliAdapter(
     media_type: string;
     size_bytes: number;
   }> = [];
-  const messageId = chatTurnMessageId(input.run.model_override_json);
+  // A delegated child inherits the parent's chat-turn routing metadata, but
+  // its current input is its own Run request, including at the attachment edge.
+  const messageId = input.run.delegation_id ? null : chatTurnMessageId(input.run.model_override_json);
   if (messageId) {
     if (!config?.databaseUrl) {
       return remoteFailureWithEvent(
@@ -594,6 +635,8 @@ async function runRemoteHostCliAdapter(
     }
   }
 
+  if (stopRequested()) return stoppedBeforeLaunch();
+
   if (input.invocation_delivery) {
     promptBlocks = [acpRuntimeContextPromptBlocks(
       input.invocation_delivery,
@@ -623,14 +666,8 @@ async function runRemoteHostCliAdapter(
   const egressTransport = !deps.executor && strictHost && deps.config
     ? managedHostEgressTransport(await readInstanceOperationsPolicy(deps.config))
     : { mode: "direct" } satisfies HostEgressTransport;
-  // The launch nonce is written on the Run's attempt before the frame leaves,
-  // so the host's diff/output uploads — which name it — bind to this attempt
-  // and to no other (D45). A test with no database runs the protocol alone.
+  if (stopRequested()) return stoppedBeforeLaunch();
   const launchId = randomUUID();
-  if (deps.config?.databaseUrl) {
-    await new PgRunRepository(deps.db ?? getDbPool(deps.config.databaseUrl))
-      .bindAttemptLaunch({ space_id: input.run.space_id, run_id: input.run.id, launch_id: launchId });
-  }
   const executor = deps.executor ?? new RemoteWsCliCommandExecutor(
     hostId,
     workspaceLocationId,
@@ -638,7 +675,7 @@ async function runRemoteHostCliAdapter(
     profileFrame,
     installation,
     spec.runtime_key,
-    workSurface?.frame ?? null,
+    skillWorkSurface(input.invocation_delivery, workSurface?.frame ?? null),
     withTaskWorktree(
       launchWorkspace(input.workspace, workspaceLocationId, input.workspace_relative_path ?? null),
       workspaceLocationId,
@@ -666,7 +703,28 @@ async function runRemoteHostCliAdapter(
   const runtimeModel = providerBinding
     ? boundAcpModelId(spec.runtime_key as VendorCliRuntimeKey, requestedModel)
     : null;
+  // Clear the previous attempt's observation before launch; never present it as this attempt's model.
+  await bindings?.observeModel?.(input.run.id, input.run.space_id);
+  // The launch nonce is written on the Run's attempt before the frame leaves,
+  // so the host's diff/output uploads — which name it — bind to this attempt
+  // and to no other (D45). It is the last step before launch on purpose: the
+  // bind requires an open attempt, so a Run already stopped (`cancelling`) or
+  // settled — on this server process or another — refuses here. A test with
+  // no database runs the protocol alone.
+  if (deps.config?.databaseUrl) {
+    const bound = await new PgRunRepository(deps.db ?? getDbPool(deps.config.databaseUrl))
+      .bindAttemptLaunch({ space_id: input.run.space_id, run_id: input.run.id, launch_id: launchId });
+    if (!bound && !input.deadline_signal?.aborted) {
+      return remoteFailureWithEvent(input, spec.runtime_key, "run_cancelled", "The Run's attempt was closed before its command was launched.", startedAt);
+    }
+  }
+  // Nothing below awaits before the executor dispatches, so neither signal
+  // can be aborted unseen between this check and the launch.
+  if (stopRequested()) return stoppedBeforeLaunch();
+  let modelWrites = Promise.resolve();
+  let modelWriteError: unknown;
   const stdioController = new AcpRuntimeAdapter(spec.runtime_key).createController({
+    local_tool_directory: Boolean(workSurface),
     // A Delivery already contains the authoritative current input. Retaining
     // the pre-Gateway prompt as a fallback here would send it twice.
     prompt: input.invocation_delivery ? "" : prompt,
@@ -692,6 +750,10 @@ async function runRemoteHostCliAdapter(
     on_text_delta: (delta) => {
       const drafts = threadEvents.pushAcpTextDelta(delta);
       if (drafts.length > 0) void input.thread_event_sink?.(drafts);
+    },
+    on_model_selected: (model) => {
+      modelWrites = modelWrites.then(() => bindings?.observeModel?.(input.run.id, input.run.space_id, model))
+        .catch(error => { modelWriteError = error; });
     },
     on_protocol_event: (event) => {
       for (const semanticEvent of runtimeEvents.push(event, new Date().toISOString())) {
@@ -719,10 +781,16 @@ async function runRemoteHostCliAdapter(
   const result = await executor.runCommand({
     command: argv,
     cwd: null,
-    timeout_seconds: timeoutSeconds,
-    // A long tool call emits nothing until it returns. Do not use a third of
-    // the run budget.
-    stall_timeout_seconds: stallTimeoutSeconds(input.adapter_config, timeoutSeconds),
+    timeout_seconds: 0,
+    deadline_signal: input.deadline_signal,
+    cancel_signal: input.cancel_signal,
+    // A quiet runtime may still be working. This only schedules a notice: a
+    // structured status the conversation renders in the reader's language
+    // (`turnProjection.ts`, `run_quiet`).
+    stall_timeout_seconds: stallTimeoutSeconds(input.adapter_config),
+    on_silence: async () => {
+      await input.thread_event_sink?.([{ event_type: "status", status: RUN_QUIET_STATUS }]);
+    },
     env: {},
     run_id: input.run.id,
     stdin: rendered.stdin,
@@ -737,6 +805,9 @@ async function runRemoteHostCliAdapter(
       const drafts = threadEvents.pushStderr(chunk);
       if (drafts.length > 0) void input.thread_event_sink?.(drafts);
     },
+  }).finally(async () => {
+    await modelWrites;
+    if (modelWriteError) throw modelWriteError;
   });
   const finalDrafts = threadEvents.finish();
   // Awaited (unlike the per-chunk pushes above): every event queued so far
@@ -771,6 +842,71 @@ async function runRemoteHostCliAdapter(
         subscription_quota: protocolResult.subscription_quota ?? null,
       }
     : { external_session_id: null, usage: null, model_usage: [], subscription_quota: null };
+  // A saved selection the live session no longer offered was left at the
+  // runtime's default; record it so the turn says so.
+  const droppedSessionConfig = protocolResult?.dropped_session_config ?? [];
+  if (droppedSessionConfig.length > 0) {
+    await bindings?.observeDroppedSessionConfig?.(input.run.id, input.run.space_id, droppedSessionConfig)
+      .catch(() => undefined);
+  }
+  const metadata = {
+    runtime_key: spec.runtime_key,
+    external_session_id: measurement.external_session_id,
+    // Which copy on the host actually ran it. The usage ledger records it as
+    // the runtime's version, and the quota a Run carries back is folded into
+    // that copy's cache — both need to know which copy, and only the
+    // dispatch does.
+    runtime_installation: installation,
+    // What this Run reached through the host's egress proxy, and what it was
+    // refused. Carried on the envelope so orchestration can turn it into a
+    // Run event: "why did the install fail" has no other answer, since the
+    // refusal happened on the host and the CLI only saw a 403.
+    ...(result.egress?.length ? { egress: result.egress } : {}),
+    // Where this Run's change is: its Task branch, and the commit its
+    // worktree stood at when it started — the base its verification diffs
+    // against and what the Run's settle squashes from (ADR 0016 §11).
+    ...(result.task_worktree ? { task_worktree: result.task_worktree } : {}),
+    // The provider this run actually executed against, or null when it ran
+    // on the copy's own subscription login. Reported rather than read off
+    // the Run row, because this path *overwrites* that row mid-execution
+    // (`bindings.record` above): a host-default binding resolved here is
+    // invisible to any snapshot taken before dispatch, and a conversation
+    // Run that unbinds leaves a stale stamp behind. Metering keys on this.
+    bound_model_provider_id: providerBinding ? boundProviderId : null,
+    subscription_quota: measurement.subscription_quota,
+    ...(protocolResult ? {
+      cli_usage: {
+        acp_turns: protocolResult.acp_prompt_count ?? null,
+        occupancy_used: protocolResult.context_window?.used ?? null,
+        occupancy_size: protocolResult.context_window?.size ?? null,
+      },
+    } : {}),
+    // Which Skill text this run was given. The Skill changes what an agent
+    // does the way a prompt does, so explaining the run later needs to name
+    // the exact text it saw; the content is code, so a hash identifies it
+    // without storing a copy per run.
+    ...(workSurface ? { work_skill_content_hash: workSurface.skill_content_hash } : {}),
+  };
+  if (input.deadline_signal?.aborted) {
+    // Orchestration stopped this Run at its explicit time limit; it owns the
+    // Run's error. The thread only records that the turn ended that way.
+    await input.thread_event_sink?.([{ event_type: "status", status: "run_timeout" }]);
+    // What the runtime measured before the stop was spent all the same, and
+    // what the host reported on exit (its Task worktree, egress) still
+    // describes this attempt: only the outcome is the time limit's.
+    return {
+      ...remoteFailure(
+        spec.runtime_key,
+        RUN_TIMED_OUT_ERROR_CODE,
+        "The Run reached its time limit and was stopped.",
+        startedAt,
+        completedAt,
+      ),
+      metadata_json: metadata,
+      usage: measurement.usage,
+      model_usage: measurement.model_usage,
+    };
+  }
   if (result.timed_out) {
     const stalled = result.failure_code === "stall_timeout";
     const neverLaunched = result.failure_code === "launch_wait_timeout";
@@ -782,12 +918,12 @@ async function runRemoteHostCliAdapter(
     // doing at all. The executor's stderr carries that third reason. Do not
     // read the idle count when no process started. It says nothing.
     const detail = neverLaunched
-      ? result.stderr || `The host did not start this run within its ${timeoutSeconds}s budget.`
+      ? result.stderr || `The host did not start this run before launch.`
       : stalled
         ? `Remote Run produced no output for ${idle ?? "?"}s and was stopped.`
         : idle !== null && idle > 0
-          ? `Remote Run timed out after ${timeoutSeconds}s (last output ${idle}s earlier).`
-          : `Remote Run timed out after ${timeoutSeconds}s.`;
+          ? `Remote runtime reported a timeout (last output ${idle}s earlier).`
+          : `Remote runtime reported a timeout.`;
     await input.thread_event_sink?.([
       { event_type: "diagnostic", text: detail },
       { event_type: "status", status: "run_timeout" },
@@ -823,37 +959,7 @@ async function runRemoteHostCliAdapter(
       // finalizer writes the question as the Agent's reply.
       ...(protocolResult?.asked_user ? { asked_user: protocolResult.asked_user } : {}),
     },
-    metadata_json: {
-      runtime_key: spec.runtime_key,
-      external_session_id: measurement.external_session_id,
-      // Which copy on the host actually ran it. The usage ledger records it as
-      // the runtime's version, and the quota a Run carries back is folded into
-      // that copy's cache — both need to know which copy, and only the
-      // dispatch does.
-      runtime_installation: installation,
-      // What this Run reached through the host's egress proxy, and what it was
-      // refused. Carried on the envelope so orchestration can turn it into a
-      // Run event: "why did the install fail" has no other answer, since the
-      // refusal happened on the host and the CLI only saw a 403.
-      ...(result.egress?.length ? { egress: result.egress } : {}),
-      // Where this Run's change is: its Task branch, and the commit its
-      // worktree stood at when it started — the base its verification diffs
-      // against and what the Run's settle squashes from (ADR 0016 §11).
-      ...(result.task_worktree ? { task_worktree: result.task_worktree } : {}),
-      // The provider this run actually executed against, or null when it ran
-      // on the copy's own subscription login. Reported rather than read off
-      // the Run row, because this path *overwrites* that row mid-execution
-      // (`bindings.record` above): a host-default binding resolved here is
-      // invisible to any snapshot taken before dispatch, and a conversation
-      // Run that unbinds leaves a stale stamp behind. Metering keys on this.
-      bound_model_provider_id: providerBinding ? boundProviderId : null,
-      subscription_quota: measurement.subscription_quota,
-      // Which Skill text this run was given. The Skill changes what an agent
-      // does the way a prompt does, so explaining the run later needs to name
-      // the exact text it saw; the content is code, so a hash identifies it
-      // without storing a copy per run.
-      ...(workSurface ? { work_skill_content_hash: workSurface.skill_content_hash } : {}),
-    },
+    metadata_json: metadata,
     exit_code: result.returncode,
     error_code: success
       ? null
@@ -1015,6 +1121,14 @@ function remoteFailure(
 }
 
 /**
+ * How long after a Run's time limit the remote executor waits for the host to
+ * confirm the stop before it gives the dispatch up. Longer than
+ * orchestration's own terminate-then-force sequence (7 s), shorter than its
+ * settle grace (`runTimeLimit.ts`).
+ */
+const REMOTE_TIME_LIMIT_ABANDON_MS = 10_000;
+
+/**
  * `CliCommandExecutor` for a daemon WebSocket. Do not open a TCP port to a
  * runner beside the server. Argv rendering and vendor event parsing stay
  * above this class.
@@ -1061,6 +1175,15 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
   ) {}
 
   async runCommand(input: Parameters<CliCommandExecutor["runCommand"]>[0]): Promise<CliExecutionResult> {
+    // A Run stopped, or past its time limit, before its launch has nothing
+    // running for the stop to reach. Sending the launch now would start a
+    // command the control plane already counts as stopped.
+    if (input.deadline_signal?.aborted) {
+      return { returncode: 1, stdout: "", stderr: "The Run reached its time limit before launch.", timed_out: true };
+    }
+    if (input.cancel_signal?.aborted) {
+      return { returncode: 1, stdout: "", stderr: "The Run was stopped before launch.", timed_out: false };
+    }
     if (!this.registry.isOnline(this.hostId)) {
       return { returncode: 1, stdout: "", stderr: "Host is offline.", timed_out: false, failure_code: "sandbox_runner_unavailable" };
     }
@@ -1074,10 +1197,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
       this.registry.sendStdinClose(this.hostId, input.run_id);
     };
     let protocolBuffer = "";
-    // Last sign of life from the runtime. A run whose ACP stream has gone
-    // quiet and one that is working look identical from here otherwise.
-    // Do not wait out the whole run timeout to tell them apart. A stalled
-    // turn would sit silent until that timeout.
+    // Silence is observation only: it cannot establish a runtime failure.
     let lastOutputAt = Date.now();
     const onOutput = (chunk: string) => {
       lastOutputAt = Date.now();
@@ -1115,15 +1235,13 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
     const launchedPromise = controller
       ? new Promise<void>((resolve) => { resolveLaunched = resolve; })
       : null;
-    // The stall clock starts when the process does: a launch the daemon
+    // The observation clock starts when the process does: a launch the daemon
     // queued behind another writer of its Location has said nothing because
     // nothing has run yet.
     let launchedAt: number | null = null;
-    let armExecutionDeadline: (() => void) | null = null;
     const onLaunched = () => {
       launchedAt = Date.now();
       lastOutputAt = launchedAt;
-      armExecutionDeadline?.();
       resolveLaunched?.();
     };
     const completion = this.registry.dispatchLaunch(
@@ -1133,7 +1251,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         ...(this.workspaceLocationId ? { workspace_location_id: this.workspaceLocationId } : {}),
         argv: input.command,
         stdin: controller ? null : input.stdin,
-        timeout_seconds: input.timeout_seconds,
+        timeout_seconds: null,
         keep_stdin_open: Boolean(controller),
         provider_binding: this.providerBinding ?? undefined,
         installation: this.installation,
@@ -1146,7 +1264,7 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
         egress_transport: this.egressTransport,
       },
       onOutput,
-      input.on_stderr_chunk,
+      (chunk) => { lastOutputAt = Date.now(); input.on_stderr_chunk?.(chunk); },
       onLaunched,
       this.maxConcurrentRuns,
       this.launchId,
@@ -1158,77 +1276,61 @@ export class RemoteWsCliCommandExecutor implements CliCommandExecutor {
       () => { this.registry.sendTerminate(this.hostId, input.run_id, true); },
     );
 
-    const timeoutMs = input.timeout_seconds > 0 ? input.timeout_seconds * 1000 : null;
-    const stallMs = input.stall_timeout_seconds && input.stall_timeout_seconds > 0
+    // At an explicit time limit orchestration aborts the signal and then
+    // stops the process the way an explicit stop does. A host that never
+    // confirms the stop must not hold the Run, its Host slot, or its renewed
+    // credentials: after a bounded wait force the stop and settle this
+    // dispatch ourselves. The daemon's late `complete` then matches nothing.
+    let abandonTimer: ReturnType<typeof setTimeout> | undefined;
+    const onDeadline = () => {
+      abandonTimer = setTimeout(() => {
+        this.registry.sendTerminate(this.hostId, input.run_id, true);
+        this.registry.receiveComplete(
+          this.hostId,
+          input.run_id,
+          { exit_code: -1, timed_out: true, error: "run_time_limit_reached" },
+          this.launchId,
+        );
+      }, REMOTE_TIME_LIMIT_ABANDON_MS);
+      abandonTimer.unref?.();
+    };
+    if (input.deadline_signal?.aborted) {
+      // Unreachable while the check above and the dispatch share one tick;
+      // kept so a launch that ever does race its deadline is stopped now,
+      // not only when the abandon timer fires.
+      this.registry.sendTerminate(this.hostId, input.run_id, false);
+      onDeadline();
+    } else input.deadline_signal?.addEventListener("abort", onDeadline, { once: true });
+
+    const noticeMs = input.stall_timeout_seconds && input.stall_timeout_seconds > 0
       ? input.stall_timeout_seconds * 1000
       : null;
-    if (!timeoutMs && !stallMs) {
-      const outcome = await completion;
-      input.process_registry?.deregister(input.run_id);
-      return toExecutionResult(outcome, controller);
-    }
-    let expiry: "timeout" | "stall_timeout" | null = null;
-    let expiredBeforeLaunch = false;
-    const deadlines: Array<Promise<null>> = [];
-    if (timeoutMs) {
-      deadlines.push(new Promise<null>((resolve) => {
-        // The Run's budget is for running. It starts when the host starts the
-        // process (`launched`), as the daemon's own timer does — a launch the
-        // host queued behind another writer of its Location, or this server
-        // queued for a built-in host slot, has not used any of it. The wait
-        // itself is bounded by one budget from dispatch, so a launch that is
-        // never let in still ends.
-        const waitTimer = setTimeout(() => {
-          if (launchedAt !== null) return;
-          expiredBeforeLaunch = true;
-          expiry ??= "timeout";
-          resolve(null);
-        }, timeoutMs);
-        waitTimer.unref?.();
-        armExecutionDeadline = () => {
-          clearTimeout(waitTimer);
-          armExecutionDeadline = null;
-          const timer = setTimeout(() => { expiry ??= "timeout"; resolve(null); }, timeoutMs);
-          timer.unref?.();
-        };
-        if (launchedAt !== null) armExecutionDeadline();
-      }));
-    }
-    if (stallMs) {
-      deadlines.push(new Promise<null>((resolve) => {
-        // Re-armed rather than a single timer: the deadline is measured from
-        // the last output, not from launch, so a run producing events stays
-        // alive indefinitely under the run timeout alone.
-        const check = () => {
-          // Silence before the process exists is not a stall: the wait has
-          // its own bound above when there is a run budget.
-          if (this.registry.isWaitingForWorkspace(input.run_id) || (launchedAt === null && timeoutMs)) {
-            lastOutputAt = Date.now();
-          }
-          const idleMs = Date.now() - lastOutputAt;
-          if (idleMs >= stallMs) { expiry ??= "stall_timeout"; resolve(null); return; }
-          const timer = setTimeout(check, stallMs - idleMs);
-          timer.unref?.();
-        };
-        const timer = setTimeout(check, stallMs);
-        timer.unref?.();
-      }));
-    }
-    const outcome = await Promise.race([completion, ...deadlines]);
-    input.process_registry?.deregister(input.run_id);
-    if (expiry || !outcome) {
-      this.registry.sendTerminate(this.hostId, input.run_id, true);
-      return {
-        returncode: 1,
-        stdout: "",
-        stderr: expiredBeforeLaunch
-          ? "The host did not start this run within its time budget: another Run was writing its workspace, or the host had no free slot."
-          : "",
-        timed_out: true,
-        failure_code: expiredBeforeLaunch ? "launch_wait_timeout" : expiry ?? "timeout",
-        idle_seconds: Math.round((Date.now() - lastOutputAt) / 1000),
+    let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+    if (noticeMs && input.on_silence) {
+      const check = () => {
+        // A queued process has not started; its silence is expected.
+        if (this.registry.isWaitingForWorkspace(input.run_id) || launchedAt === null) {
+          lastOutputAt = Date.now();
+        }
+        const idleMs = Date.now() - lastOutputAt;
+        if (idleMs >= noticeMs) {
+          // One notice per Run, with no terminal event or termination request.
+          void Promise.resolve().then(() => input.on_silence?.(Math.floor(idleMs / 1000)))
+            .catch(() => undefined);
+          return;
+        }
+        noticeTimer = setTimeout(check, noticeMs - idleMs);
+        noticeTimer.unref?.();
       };
+      noticeTimer = setTimeout(check, noticeMs);
+      noticeTimer.unref?.();
     }
+    const outcome = await completion.finally(() => {
+      clearTimeout(noticeTimer);
+      clearTimeout(abandonTimer);
+      input.deadline_signal?.removeEventListener("abort", onDeadline);
+      input.process_registry?.deregister(input.run_id);
+    });
     return toExecutionResult(outcome, controller);
   }
 }
@@ -1261,4 +1363,19 @@ function toExecutionResult(
 function stderrTail(stderr: string | null | undefined): string | null {
   const lines = (stderr ?? "").split("\n").map((line) => line.trim()).filter(Boolean);
   return lines.length > 0 ? lines.slice(-3).join("\n") : null;
+}
+
+/** Materialize exactly the package files authorized in Delivery, even without Rainver tool grants. */
+export function skillWorkSurface(delivery: InvocationDelivery | undefined, base: RunWorkSurfaceFrame | null): RunWorkSurfaceFrame | null {
+  const skills = delivery?.skill_packages ?? [];
+  if (skills.length === 0) return base;
+  const surface: RunWorkSurfaceFrame = { env: { ...base?.env }, files: [...(base?.files ?? [])],
+    dir_env: { ...base?.dir_env, RAINVER_SKILL_ROOT: "rainver/skills" } };
+  for (const skill of skills) {
+    for (const file of skill.content.files) {
+      surface.files.push({ relative_path: `rainver/skills/${skill.content.skill_package_id}/${file.path}`,
+        contents: file.content_base64, encoding: "base64", content_hash: file.content_hash });
+    }
+  }
+  return surface;
 }

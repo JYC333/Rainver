@@ -44,6 +44,21 @@ the server defaults.
   Channel configuration; Connector implementation metadata is an Instance
   Admin/catalog concern.
 - Common primitives and exported value sets.
+- `agentAttention.ts` defines Agent work read identities, independent Run/Turn/Task
+  axes, resource-linked reasons, personal reading revisions, operation locators and
+  bounded current/history queries. Authenticated user-level list/item/read-state and
+  snapshot routes are owned by `agentAttention`; the aggregate SSE route is owned by
+  `streaming`. Shared frames carry connection-local sequence, replacement window,
+  counts and exact-revision notice identities, never Turn bodies. Reading CAS and
+  immutable enablement baseline persist only in the owning Agent Attention module.
+  A descriptor locates an existing domain operation; it grants no permission and
+  carries no arbitrary command URL or input body. Source commands retain their
+  owning authorization and explicit Space. See [Agent Attention](../modules/agent-attention.md).
+  Run roles and group member roles reuse their owning schemas; `task_run_role`
+  separately retains the Project Work execution-link role. Contract source kinds
+  are authored in `runOrchestration.ts` and shared with the server contract writer.
+  `turnParts.ts` exports structured resource wait codes, reusing Run statuses,
+  Turn workspace blocking and the Agent wait tool's scope schema.
 - Shared contracts only when the shape is a server/client or internal server
   boundary, not a purely local web view model.
   Provider-specific preset taxonomies and connector UI metadata stay with the

@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { fetch } from "undici";
 import { HttpError } from "../routeUtils/common.js";
 import { parseSkillMarkdown } from "./skillParser.js";
 import { analyzeSkillRisk } from "./skillRisk.js";
+import { fetchSkillMetadata, fetchSkillSource } from "./skillSourceFetch.js";
+import { assertSkillPackagePaths, isPlatformMetadataPath } from "./skillPackagePaths.js";
 import type {
   NormalizedSkillResource,
   SkillImportPreview,
@@ -11,7 +12,7 @@ import type {
 } from "./types.js";
 
 export interface SkillFetcher {
-  (url: string): Promise<{ body: string; finalUrl?: string | null; contentType?: string | null }>;
+  (url: string): Promise<{ body: string; bytes?: Uint8Array; finalUrl?: string | null; contentType?: string | null }>;
 }
 
 export interface SkillCommitResolver {
@@ -74,35 +75,23 @@ function assertAllowedFetchHost(candidate: string): void {
 
 const defaultSkillFetcher: SkillFetcher = async (url) => {
   assertAllowedFetchHost(url);
-  const response = await fetch(url, { method: "GET", redirect: "follow" });
+  const response = await fetchSkillSource(url, MAX_SKILL_BYTES, "Skill source is too large");
   if (!response.ok) {
     throw new HttpError(response.status, `Skill source fetch failed with HTTP ${response.status}`);
   }
-  // Re-validate after redirects so a 3xx cannot pull content from a
-  // non-allowlisted (e.g. private-network) host.
+  // Every redirect was authorized before fetching; also retain the source check.
   if (response.url) assertAllowedFetchHost(response.url);
   const contentType = response.headers.get("content-type") ?? "";
-  if (contentType && !/text|markdown|plain|json|yaml|octet-stream/i.test(contentType)) {
-    throw new HttpError(415, "Skill source must be text content");
-  }
-  return { body: await response.text(), finalUrl: response.url, contentType };
+  return { body: new TextDecoder().decode(response.bytes), bytes: response.bytes, finalUrl: response.url, contentType };
 };
 
 const defaultGitHubCommitResolver: SkillCommitResolver = async (repo, ref) => {
   if (commitSha(ref)) return ref;
-  const response = await fetch(
+  const response = await fetchSkillMetadata(
     `https://api.github.com/repos/${repo}/commits/${encodeURIComponent(ref)}`,
-    {
-      method: "GET",
-      headers: {
-        accept: "application/vnd.github+json",
-        "user-agent": "rainver-skill-import",
-      },
-      redirect: "follow",
-    },
   );
   if (!response.ok) return null;
-  const parsed = (await response.json()) as unknown;
+  const parsed = JSON.parse(new TextDecoder().decode(response.bytes)) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   const sha = (parsed as { sha?: unknown }).sha;
   return typeof sha === "string" && commitSha(sha) ? sha : null;
@@ -111,21 +100,13 @@ const defaultGitHubCommitResolver: SkillCommitResolver = async (repo, ref) => {
 const defaultGitHubPackageLister: SkillPackageLister = async (source) => {
   const treeish =
     source.commitSha ? await resolveGitHubTreeSha(source.repo, source.commitSha) : source.ref;
-  const response = await fetch(
+  const response = await fetchSkillMetadata(
     `https://api.github.com/repos/${source.repo}/git/trees/${encodeURIComponent(treeish)}?recursive=1`,
-    {
-      method: "GET",
-      headers: {
-        accept: "application/vnd.github+json",
-        "user-agent": "rainver-skill-import",
-      },
-      redirect: "follow",
-    },
   );
   if (!response.ok) {
     throw new HttpError(response.status, `Skill package tree fetch failed with HTTP ${response.status}`);
   }
-  const parsed = (await response.json()) as unknown;
+  const parsed = JSON.parse(new TextDecoder().decode(response.bytes)) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new HttpError(502, "Skill package tree response is invalid");
   }
@@ -148,19 +129,11 @@ const defaultGitHubPackageLister: SkillPackageLister = async (source) => {
 };
 
 async function resolveGitHubTreeSha(repo: string, commitShaValue: string): Promise<string> {
-  const response = await fetch(
+  const response = await fetchSkillMetadata(
     `https://api.github.com/repos/${repo}/git/commits/${encodeURIComponent(commitShaValue)}`,
-    {
-      method: "GET",
-      headers: {
-        accept: "application/vnd.github+json",
-        "user-agent": "rainver-skill-import",
-      },
-      redirect: "follow",
-    },
   );
   if (!response.ok) return commitShaValue;
-  const parsed = (await response.json()) as unknown;
+  const parsed = JSON.parse(new TextDecoder().decode(response.bytes)) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return commitShaValue;
   const tree = (parsed as { tree?: unknown }).tree;
   if (!tree || typeof tree !== "object" || Array.isArray(tree)) return commitShaValue;
@@ -202,7 +175,11 @@ export async function previewSkillImport(
   const fetched = await fetcher(rawSkillUrl);
   assertTextContent(fetched.contentType ?? null, source.skillPath, "Skill source must be text content");
   assertByteLimit(fetched.body, MAX_SKILL_BYTES, "Skill source is too large");
-  const rawContent = fetched.body;
+  let rawContent = fetched.body;
+  if (fetched.bytes) {
+    try { rawContent = new TextDecoder("utf-8", { fatal: true }).decode(fetched.bytes); }
+    catch { throw new HttpError(422, "SKILL.md must contain valid UTF-8 text"); }
+  }
   const normalized = parseSkillMarkdown(rawContent, "SKILL.md");
   const declaredResources = declaredResourceMap(normalized.resources);
 
@@ -217,71 +194,94 @@ export async function previewSkillImport(
     source,
     stableRef,
     primaryContent: rawContent,
+    primaryBytes: fetched.bytes,
     primaryContentType: fetched.contentType ?? null,
     declaredResources,
     fetcher,
   });
-  const packageHash = hashPackageFiles(packageBuild.files);
+  return completeSkillPreview({
+    source_type: "github", url: source.url, repo: source.repo, path: source.skillPath,
+    ref: source.ref, commit_sha: resolvedCommitSha, content_hash: "",
+    metadata_json: { normalized_from: source.kind, raw_url: rawSkillUrl,
+      resolved_url: fetched.finalUrl ?? rawSkillUrl, commit_sha_resolution: commitResolution },
+  }, rawContent, source.packageRoot, normalized, packageBuild);
+}
 
+/** The same immutable package path for a browser upload or an authorized Host read. */
+export function previewSkillFiles(
+  input: { files: Array<{ path: string; content_base64: string }>; source_type?: "upload" | "local_workspace"; source_metadata?: Record<string, unknown> },
+): SkillImportPreview {
+  // Finder/desktop metadata copied with a folder is not package content.
+  const packageFiles = input.files.filter(file => !isPlatformMetadataPath(file.path));
+  if (packageFiles.length === 0 || packageFiles.length > MAX_PACKAGE_FILES) throw new HttpError(422, "Skill package must contain 1–200 files");
+  assertSkillPackagePaths(packageFiles.map(file => file.path));
+  const all = new Map<string, Buffer>();
+  let total = 0;
+  for (const file of packageFiles) {
+    validateRelativePackagePath(file.path, "Skill package file path is invalid");
+    if (all.has(file.path)) throw new HttpError(422, "Skill package contains duplicate paths");
+    const bytes = Buffer.from(file.content_base64, "base64");
+    if (bytes.toString("base64") !== file.content_base64) throw new HttpError(422, "Skill file encoding is invalid");
+    if (bytes.length > MAX_PACKAGE_TEXT_FILE_BYTES) throw new HttpError(413, "Skill package file is too large");
+    total += bytes.length;
+    if (total > MAX_PACKAGE_TOTAL_BYTES) throw new HttpError(413, "Skill package is too large");
+    all.set(file.path, bytes);
+  }
+  const roots = [...all.keys()].filter(path => path === "SKILL.md" || path.endsWith("/SKILL.md"));
+  if (roots.length !== 1) throw new HttpError(422, "Select one skill folder containing exactly one SKILL.md");
+  const skillPath = roots[0]!;
+  const root = dirname(skillPath);
+  if ([...all.keys()].some(path => !pathWithinRoot(path, root))) throw new HttpError(422, "Files must belong to the selected skill folder");
+  let markdown: string;
+  try { markdown = new TextDecoder("utf-8", { fatal: true }).decode(all.get(skillPath)!); }
+  catch { throw new HttpError(422, "SKILL.md must be UTF-8 text"); }
+  const normalized = parseSkillMarkdown(markdown);
+  const contents: Record<string, string> = Object.create(null);
+  const files = [...all].map(([path, bytes]): SkillPackageFilePreview => {
+    contents[path] = bytes.toString("base64");
+    const kind = classifyPackageFile(path, root, skillPath);
+    const executable = kind === "script" || EXECUTABLE_PATH_RE.test(path);
+    return { path, kind, content_hash: createHash("sha256").update(bytes).digest("hex"),
+      content_type: isTextPackagePath(path) ? "text/plain" : "application/octet-stream",
+      byte_length: bytes.length, included: true, executable,
+      risk_flags_json: executable ? { script: true, executable: true } : {} };
+  }).sort((a, b) => a.path.localeCompare(b.path));
+  return completeSkillPreview({ source_type: input.source_type ?? "upload", url: null, repo: null,
+    path: skillPath, ref: null, commit_sha: null, content_hash: "",
+    metadata_json: input.source_metadata ?? {},
+  }, markdown, root, normalized, { files, contents, warnings: files.some(file => file.executable) ? ["script_files_detected"] : [] });
+}
+
+function completeSkillPreview(
+  source: SkillImportPreview["source"], rawContent: string, packageRoot: string,
+  normalized: ReturnType<typeof parseSkillMarkdown>,
+  packageBuild: { files: SkillPackageFilePreview[]; warnings: string[]; contents: Record<string, string> },
+): SkillImportPreview {
+  const packageHash = hashPackageFiles(packageBuild.files);
   normalized.spec_kind = "agent_skills";
   normalized.spec_version = "2025-11-10";
-  normalized.skill_root = source.packageRoot || ".";
+  normalized.skill_root = packageRoot || ".";
   normalized.package_hash = packageHash;
   normalized.diagnostics = packageBuild.warnings;
-  normalized.resources = resourcesFromPackageFiles(packageBuild.files, source.packageRoot);
-  normalized.execution_profile = {
-    ...normalized.execution_profile,
-    scripts_present: packageBuild.files.some((file) => file.kind === "script"),
-    package_file_count: packageBuild.files.length,
-    package_root: source.packageRoot || ".",
-  };
-
+  normalized.resources = resourcesFromPackageFiles(packageBuild.files, packageRoot);
+  normalized.execution_profile = { ...normalized.execution_profile,
+    scripts_present: packageBuild.files.some(file => file.executable),
+    package_file_count: packageBuild.files.length, package_root: packageRoot || "." };
   const risk = analyzeSkillRisk(normalized);
   const warnings = uniqueSorted([...risk.warnings, ...packageBuild.warnings]);
-  normalized.trust_analysis = {
-    risk_level: risk.risk_level,
-    warnings,
-    signals: risk.signals,
-  };
-
+  normalized.trust_analysis = { risk_level: risk.risk_level, warnings, signals: risk.signals };
   return {
-    source: {
-      source_type: "github",
-      url: source.url,
-      repo: source.repo,
-      path: source.skillPath,
-      ref: source.ref,
-      commit_sha: resolvedCommitSha,
-      content_hash: packageHash,
-      metadata_json: {
-        normalized_from: source.kind,
-        raw_url: rawSkillUrl,
-        resolved_url: fetched.finalUrl ?? rawSkillUrl,
-        commit_sha_resolution: commitResolution,
-        skill_path: source.skillPath,
-        package_root: source.packageRoot || ".",
-        package_hash: packageHash,
-        package_file_count: packageBuild.files.length,
-        resource_policy: {
-          max_package_files: MAX_PACKAGE_FILES,
-          max_package_total_bytes: MAX_PACKAGE_TOTAL_BYTES,
-          max_package_text_file_bytes: MAX_PACKAGE_TEXT_FILE_BYTES,
-          same_repository_package_root_only: true,
-          scripts_executed: false,
-          dependencies_installed: false,
-        },
-      },
-    },
-    normalized_skill: normalized,
-    package_root: source.packageRoot || ".",
-    package_hash: packageHash,
-    package_files: packageBuild.files,
-    risk_level: risk.risk_level,
-    requested_permissions: risk.requested_permissions,
-    files_detected: packageBuild.files.map((file) => file.path),
-    warnings,
-    persistable: true,
-    raw_content: rawContent,
+    source: { ...source, content_hash: packageHash, metadata_json: { ...source.metadata_json,
+      skill_path: source.path, package_root: packageRoot || ".", package_hash: packageHash,
+      package_file_count: packageBuild.files.length,
+      resource_policy: { max_package_files: MAX_PACKAGE_FILES, max_package_total_bytes: MAX_PACKAGE_TOTAL_BYTES,
+        max_package_text_file_bytes: MAX_PACKAGE_TEXT_FILE_BYTES, same_repository_package_root_only: true,
+        scripts_executed: false, dependencies_installed: false },
+    } },
+    normalized_skill: normalized, package_root: packageRoot || ".", package_hash: packageHash,
+    package_files: packageBuild.files, risk_level: risk.risk_level, requested_permissions: risk.requested_permissions,
+    files_detected: packageBuild.files.map(file => file.path), warnings, persistable: true,
+    raw_content: rawContent, package_contents: packageBuild.contents,
   };
 }
 
@@ -320,6 +320,7 @@ async function listPackageEntries(input: {
   if (out.length > MAX_PACKAGE_FILES) {
     throw new HttpError(422, "Skill package contains too many files");
   }
+  assertSkillPackagePaths(out.map(file => file.path));
   return out;
 }
 
@@ -332,11 +333,13 @@ async function buildPackageFiles(input: {
   source: NormalizedSource;
   stableRef: string;
   primaryContent: string;
+  primaryBytes?: Uint8Array;
   primaryContentType: string | null;
   declaredResources: Map<string, DeclaredResource>;
   fetcher: SkillFetcher;
-}): Promise<{ files: SkillPackageFilePreview[]; warnings: string[] }> {
+}): Promise<{ files: SkillPackageFilePreview[]; warnings: string[]; contents: Record<string, string> }> {
   const files: SkillPackageFilePreview[] = [];
+  const contents: Record<string, string> = Object.create(null);
   const warnings = new Set<string>();
   let totalBytes = 0;
 
@@ -354,37 +357,25 @@ async function buildPackageFiles(input: {
     if (executable) riskFlags.executable = true;
 
     const shouldFetchText = entry.path === input.source.skillPath || kind === "script" || isTextPackagePath(entry.path);
-    if (!shouldFetchText) {
-      riskFlags.binary_or_unsupported = true;
-      warnings.add("binary_or_unsupported_files_detected");
-      files.push({
-        path: entry.path,
-        kind,
-        content_hash: entry.sha ? `git:${entry.sha}` : null,
-        content_type: entry.contentType ?? null,
-        byte_length: entry.size ?? null,
-        included: false,
-        executable,
-        risk_flags_json: riskFlags,
-      });
-      continue;
-    }
+    if (entry.mode === "120000" || entry.mode === "160000") throw new HttpError(422, "Skill packages cannot contain symlinks or submodules");
 
     const fetched = entry.path === input.source.skillPath
       ? {
           body: input.primaryContent,
+          bytes: input.primaryBytes,
           contentType: input.primaryContentType,
           finalUrl: rawGitHubUrl(input.source.repo, input.stableRef, entry.path),
         }
       : await input.fetcher(rawGitHubUrl(input.source.repo, input.stableRef, entry.path));
     assertAllowedFetchHost(fetched.finalUrl ?? rawGitHubUrl(input.source.repo, input.stableRef, entry.path));
-    assertTextContent(
+    if (shouldFetchText) assertTextContent(
       fetched.contentType ?? null,
       entry.path,
       "Skill package file must be text content or a declared non-text asset",
     );
-    assertByteLimit(fetched.body, MAX_PACKAGE_TEXT_FILE_BYTES, "Skill package text file is too large");
-    const byteLength = Buffer.byteLength(fetched.body, "utf8");
+    const bytes = Buffer.from("bytes" in fetched && fetched.bytes ? fetched.bytes : Buffer.from(fetched.body, "utf8"));
+    const byteLength = bytes.byteLength;
+    if (byteLength > MAX_PACKAGE_TEXT_FILE_BYTES) throw new HttpError(413, "Skill package file is too large");
     totalBytes += byteLength;
     if (totalBytes > MAX_PACKAGE_TOTAL_BYTES) {
       throw new HttpError(413, "Skill package is too large");
@@ -393,16 +384,17 @@ async function buildPackageFiles(input: {
     files.push({
       path: entry.path,
       kind,
-      content_hash: sha256(fetched.body),
+      content_hash: createHash("sha256").update(bytes).digest("hex"),
       content_type: fetched.contentType ?? entry.contentType ?? null,
       byte_length: byteLength,
       included: true,
       executable,
       risk_flags_json: riskFlags,
     });
+    contents[entry.path] = bytes.toString("base64");
   }
 
-  return { files, warnings: [...warnings].sort((a, b) => a.localeCompare(b)) };
+  return { files, warnings: [...warnings].sort((a, b) => a.localeCompare(b)), contents };
 }
 
 function resourcesFromPackageFiles(
@@ -566,7 +558,7 @@ function normalizeSkillPath(path: string): string {
 }
 
 function validateRelativePackagePath(path: string, message: string): void {
-  if (!path || path.includes("\0") || /^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith("/")) {
+  if (!path || path.includes("\0") || path.includes("\\") || /^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith("/")) {
     throw new HttpError(422, message);
   }
   if (path.split("/").some((part) => !part || part === "." || part === "..")) {

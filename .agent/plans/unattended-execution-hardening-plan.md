@@ -49,7 +49,8 @@ to wait, not a bureaucratic one.
 - deterministic same-route or compatible fallback retry;
 - explicit Runtime hard pins;
 - waiting-for-review and human resume/abandon;
-- orphan recovery and CLI stall timeout;
+- orphan recovery (the former CLI stall timeout now only records a silence
+  notice; it no longer fails a Run);
 - managed-call abort propagation and two-phase CLI cancellation;
 - normalized Claude Code, Codex, and OpenCode usage in Run envelopes and the
   append-only usage ledger;

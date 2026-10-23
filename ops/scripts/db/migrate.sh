@@ -13,17 +13,22 @@
 #     (or a complete set of POSTGRES_* with POSTGRES_HOST).
 #
 # Pre-migration backup safety:
-#   For --mode prod a pre-migration pg_dump custom-format backup is REQUIRED and
-#   is taken before migrations run, written to:
-#       $RAINVER_ROOT/<mode>/db/dumps/pre-migrate-<timestamp>.dump
+#   For --mode prod a pre-migration pg_dump custom-format backup is REQUIRED
+#   whenever a migration is pending, and is taken before migrations run:
+#       $RAINVER_ROOT/<mode>/db/dumps/pre-migrate-<timestamp>-from-<version>.dump
+#   (<version> is the latest applied migration the dump preserves). A start
+#   with nothing pending takes no dump, so routine restarts cannot rotate the
+#   dump preceding a real schema change out of retention. If the pending check
+#   cannot be answered, the dump is taken anyway (without the version suffix).
 #   If that dump fails, migration aborts before the schema is touched.
 #   Non-prod modes skip it for convenience; opt in with PRE_MIGRATION_BACKUP=1
 #   or the --pre-migration-backup flag to get the identical safety net.
 #
 # PostgreSQL is the server database. Drizzle owns schema authoring through
 # server/src/db/schema/; generated server migrations own schema creation and
-# migration. This helper runs the no-write Drizzle schema check before database
-# bootstrap. Server startup does not mutate schema files or auto-migrate from
+# migration. Dev/host mode runs the no-write Drizzle schema check before database
+# bootstrap; fixed test/prod images enforce it at build time.
+# Server startup does not mutate schema files or auto-migrate from
 # the long-running server process.
 #
 # Credentials are never printed — the target is shown with credentials redacted.
@@ -133,8 +138,8 @@ ensure_docker_database_exists() {
 }
 
 run_drizzle_schema_check_docker() {
-  if [[ "$MODE" == "prod" ]]; then
-    echo "[migrate] Drizzle schema check is enforced during production server image build."
+  if [[ "$MODE" != "dev" ]]; then
+    echo "[migrate] Drizzle schema check is enforced during the $MODE server image build."
     return 0
   fi
 
@@ -218,12 +223,44 @@ pre_migration_backup_host() {
   pg_dump -Fc --no-owner --no-acl "$MIGRATION_DATABASE_URL" > "$out"
 }
 
+# Returns 1 when the runner reports nothing pending. Otherwise returns 0 and
+# sets BACKUP_FROM_VERSION to the latest applied version (empty when the check
+# could not be answered — an older image, an unreachable database: the safe
+# reading is to take the dump anyway).
+BACKUP_FROM_VERSION=""
+migration_backup_needed() {
+  local output status=0
+  if [[ "$RUN_MODE" == "host" ]]; then
+    resolve_host_database_url
+    output="$(cd "$REPO_ROOT/server" && SERVER_DATABASE_URL="$MIGRATION_DATABASE_URL" \
+      SERVER_MIGRATIONS_DIR="$REPO_ROOT/server/migrations" \
+      node dist/db/migrateCli.js pending)" || status=$?
+  else
+    output="$("${COMPOSE[@]}" run --rm -T --no-deps \
+      -e SERVER_DATABASE_URL="$(compose_admin_database_url)" \
+      -e SERVER_MIGRATIONS_DIR=/app/server/migrations \
+      server node dist/db/migrateCli.js pending)" || status=$?
+  fi
+  if [[ "$status" -eq 0 ]]; then
+    return 1
+  elif [[ "$status" -eq 10 ]]; then
+    BACKUP_FROM_VERSION="$(head -n 1 <<<"$output")"
+    [[ "$BACKUP_FROM_VERSION" =~ ^[0-9]{4}$ ]] || BACKUP_FROM_VERSION=""
+  else
+    echo "[migrate] could not determine whether a migration is pending (runner exited $status); taking the backup anyway."
+  fi
+  return 0
+}
+
 ensure_pre_migration_backup() {
   local dumps_dir="$MODE_ROOT/db/dumps"
   install -d -m 700 "$dumps_dir"
-  local ts dump_path
+  local ts dump_path final_dump_path
   ts="$(date -u +%Y%m%d-%H%M%S)"
-  dump_path="$dumps_dir/pre-migrate-$ts.dump"
+  # The applied version groups retries before one schema change in retention.
+  final_dump_path="$dumps_dir/pre-migrate-$ts${BACKUP_FROM_VERSION:+-from-$BACKUP_FROM_VERSION}.dump"
+  # Retention must never count an in-progress dump as a completed recovery point.
+  dump_path="$(mktemp "$dumps_dir/.pre-migrate-$ts-XXXXXXXX.partial")"
 
   echo "[migrate] taking required pre-migration backup before server migrations (mode: $MODE)..."
   local dump_status=0
@@ -266,6 +303,8 @@ ensure_pre_migration_backup() {
     fi
   fi
   chmod 600 "$dump_path"
+  mv "$dump_path" "$final_dump_path"
+  dump_path="$final_dump_path"
   echo "[migrate] pre-migration backup written: $dump_path ($(du -sh "$dump_path" | cut -f1))"
 }
 
@@ -363,9 +402,14 @@ fi
 
 assert_no_pending_maintenance
 
-# prod always requires it; other modes only when explicitly opted in.
+# prod always requires it when a migration is pending; other modes only when
+# explicitly opted in.
 if [[ "$MODE" == "prod" || "$PRE_MIGRATION_BACKUP" == "1" ]]; then
-  ensure_pre_migration_backup
+  if migration_backup_needed; then
+    ensure_pre_migration_backup
+  else
+    echo "[migrate] no pending migrations; pre-migration backup not needed."
+  fi
 else
   echo "[migrate] pre-migration backup skipped (mode: $MODE)."
   echo "          Opt in with PRE_MIGRATION_BACKUP=1 or --pre-migration-backup."

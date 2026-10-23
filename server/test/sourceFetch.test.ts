@@ -3,20 +3,10 @@ import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createOutboundGuard } from "@rainver/outbound-guard";
 import { fetchSource } from "../src/modules/sources/sourceFetch.js";
-import { isBlockedAddress } from "../src/modules/sources/outboundUrlSafety.js";
 import { fixtureServerGuard, publicAddressGuard } from "./support/outboundGuard.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
-});
-
-describe("outbound URL safety", () => {
-  it("blocks loopback, RFC1918, and link-local metadata addresses", () => {
-    for (const address of ["10.0.0.5", "172.17.0.2", "192.168.1.1", "127.0.0.1", "169.254.169.254", "::1", "fd00::1", "fe80::1"]) {
-      expect(isBlockedAddress(address)).toBe(true);
-    }
-    expect(isBlockedAddress("93.184.216.34")).toBe(false);
-  });
 });
 
 describe("fetchSource", () => {

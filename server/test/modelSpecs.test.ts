@@ -57,12 +57,4 @@ describe("model spec provenance", () => {
         .toBeLessThanOrEqual(Date.now());
     }
   });
-
-  it("reports how stale the oldest row is, so re-checks are a visible chore", () => {
-    const oldest = registeredModelSpecs()
-      .reduce((acc, spec) => (Date.parse(spec.verifiedOn) < Date.parse(acc.verifiedOn) ? spec : acc));
-    const ageDays = Math.floor((Date.now() - Date.parse(oldest.verifiedOn)) / 86_400_000);
-    console.info(`[model-specs] oldest row verified ${ageDays} day(s) ago: ${oldest.source}`);
-    expect(ageDays).toBeGreaterThanOrEqual(0);
-  });
 });

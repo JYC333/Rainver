@@ -2,6 +2,61 @@ import { describe, expect, it } from "vitest";
 import { createThreadEventNormalizer } from "../src/modules/hosts/threadEventNormalization.js";
 
 describe("createThreadEventNormalizer", () => {
+  it("keeps Claude permission-check metadata out of the conversation across stderr chunks", () => {
+    const normalizer = createThreadEventNormalizer("claude_code");
+    const metadata = 'Unexpected case: {"type":"system","subtype":"permission_check_status","status":"checking"}';
+    expect(normalizer.pushStderr(metadata.slice(0, 40))).toEqual([]);
+    expect(normalizer.pushStderr(metadata.slice(40) + "\r\n" + metadata + "\npermission denied\n")).toEqual([
+      { event_type: "diagnostic", text: "permission denied" },
+    ]);
+    normalizer.pushStderr(metadata);
+    expect(normalizer.finish()).toEqual([]);
+  });
+
+  it.each([undefined, "codex_cli", "opencode"])("preserves other runtimes' diagnostics (%s)", (runtimeKey) => {
+    const normalizer = createThreadEventNormalizer(runtimeKey);
+    const text = 'Unexpected case: {"type":"system","subtype":"permission_check_status"}';
+    expect(normalizer.pushStderr(text + "\n")).toEqual([{ event_type: "diagnostic", text }]);
+  });
+
+  it.each([
+    'Unexpected case: {"type":"system","subtype":"unknown_new_event"}',
+    'Unexpected case: {"type":"error","subtype":"permission_check_status"}',
+    'Unexpected case: {"type":"system","subtype":"permission_check_status"',
+    'Error: permission_check_status failed',
+    "You've reached your Fable limit",
+  ])("preserves errors and unknown Claude diagnostics: %s", (text) => {
+    const normalizer = createThreadEventNormalizer("claude_code");
+    expect(normalizer.pushStderr(text + "\n")).toEqual([{ event_type: "diagnostic", text }]);
+    normalizer.pushStderr(text);
+    expect(normalizer.finish()).toEqual([{ event_type: "diagnostic", text }]);
+  });
+
+  it.each(["completed", "failed"])("retains exit metadata and the output tail without classifying warnings (%s)", (status) => {
+    const normalizer = createThreadEventNormalizer();
+    const text = "[WARN] engine mismatch\n" + "log line\n".repeat(1000) + "test failure at the end";
+    const rows = normalizer.pushAcpProtocolEvent({ method: "session/update", params: { update: {
+      sessionUpdate: "tool_call_update", toolCallId: "exec", status,
+      rawOutput: { formatted_output: text, exit_code: status === "failed" ? "1" : 0 },
+    } } });
+    const event = rows.at(-1)!;
+    expect(event.status).toBe(status === "failed" ? "failed" : "succeeded");
+    const result = JSON.parse(event.tool_result_summary!);
+    expect(result.exit_code).toBe(status === "failed" ? 1 : 0);
+    expect(result.truncated).toBe(true);
+    expect(result.formatted_output).toHaveLength(4000);
+    expect(result.formatted_output).toContain("[WARN] engine mismatch");
+    expect(result.formatted_output).toContain("test failure at the end");
+  });
+
+  it("retains an exit code when command output was redirected", () => {
+    const normalizer = createThreadEventNormalizer();
+    const rows = normalizer.pushAcpProtocolEvent({ method: "session/update", params: { update: {
+      sessionUpdate: "tool_call_update", toolCallId: "exec", status: "failed",
+      rawOutput: { formatted_output: "", exit_code: "1" },
+    } } });
+    expect(JSON.parse(rows.at(-1)!.tool_result_summary!)).toEqual({ formatted_output: "", exit_code: 1, truncated: false });
+  });
   it("streams stderr lines as diagnostic events, one per line", () => {
     const normalizer = createThreadEventNormalizer();
     const drafts = normalizer.pushStderr("permission denied\nretrying\n");
@@ -183,7 +238,31 @@ describe("createThreadEventNormalizer", () => {
     });
     const summary = drafts[0]?.tool_result_summary ?? "";
     expect(summary.length).toBeLessThan(longText.length);
-    expect(summary.endsWith("…")).toBe(true);
+    expect(summary).toContain("[output truncated; middle omitted]");
+    expect(summary.endsWith("x")).toBe(true);
+  });
+
+  it("redacts credentials from persisted tool input and result summaries", () => {
+    const token = "ghp_" + "A1b2C3d4".repeat(4);
+    const update = (rawOutput: unknown, content?: unknown) => {
+      const normalizer = createThreadEventNormalizer();
+      normalizer.pushAcpProtocolEvent({ method: "session/update", params: { update: { sessionUpdate: "tool_call", toolCallId: "call-1" } } });
+      return normalizer.pushAcpProtocolEvent({
+        method: "session/update",
+        params: { update: { sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed",
+          rawInput: { command: `curl -H 'Authorization: Bearer ${token}'` }, rawOutput, ...(content ? { content } : {}) } },
+      })[0]!;
+    };
+    for (const draft of [
+      update(`GITHUB_TOKEN=${token}`),
+      update({ formatted_output: `${"x".repeat(5_000)} ${token}`, exit_code: 0 }),
+      update(undefined, [{ type: "content", content: { type: "text", text: `token: ${token}` } }]),
+      update(`${token} ${"y".repeat(200_000)}`),
+    ]) {
+      expect(draft.tool_result_summary).not.toContain(token);
+      expect(draft.tool_result_summary).toContain("[REDACTED_SECRET]");
+      expect(draft.tool_input_summary).not.toContain(token);
+    }
   });
 
   it("repairs an update whose ACP start event is missing", () => {

@@ -5,6 +5,8 @@ import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 
 const { runsApiMock, evolutionApiMock, useRunMock } = vi.hoisted(() => ({
   runsApiMock: {
+    get: vi.fn(),
+    stop: vi.fn(),
     activities: vi.fn(),
     artifacts: vi.fn(),
     proposals: vi.fn(),
@@ -96,6 +98,7 @@ describe('RunDetailPage route decision panel', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     useRunMock.mockReturnValue({ run, loading: false, error: null })
+    runsApiMock.get.mockResolvedValue(run)
     runsApiMock.activities.mockResolvedValue({ items: [] })
     runsApiMock.artifacts.mockResolvedValue({ items: [] })
     runsApiMock.proposals.mockResolvedValue({ items: [] })
@@ -147,7 +150,7 @@ describe('RunDetailPage route decision panel', () => {
     await user.click(screen.getByRole('tab', { name: 'Route' }))
     expect(await screen.findByText(/adapter_id/)).toBeInTheDocument()
     expect(screen.getByText(/adapter-1/)).toBeInTheDocument()
-    expect(runsApiMock.routeDecision).toHaveBeenCalledWith('run-1')
+    expect(runsApiMock.routeDecision).toHaveBeenCalledWith('run-1', expect.objectContaining({ spaceId: 'space-1' }))
   })
 
   it('shows an explicit unavailable state instead of an empty JSON placeholder', async () => {
@@ -300,6 +303,30 @@ describe('RunDetailPage route decision panel', () => {
     expect(screen.queryByText('Run A activity')).not.toBeInTheDocument()
   })
 
+  it('keeps the loaded page mounted while an action refreshes the Run', async () => {
+    const { useRun: actualUseRun } = await vi.importActual<typeof import('../../../hooks/useRun')>('../../../hooks/useRun')
+    useRunMock.mockImplementation(actualUseRun)
+    runsApiMock.get.mockResolvedValue(waitingRun)
+    runsApiMock.resume.mockResolvedValue({})
+    const user = userEvent.setup({ delay: null })
+    const view = renderPage()
+    await screen.findByRole('button', { name: 'Resume' })
+    const heading = view.container.querySelector('h1')!
+    // The action's canonical GET completes; the subsequent background GET stays pending.
+    runsApiMock.get.mockResolvedValueOnce(waitingRun).mockImplementation(() => new Promise(() => {}))
+    await user.click(screen.getByRole('button', { name: 'Resume' }))
+    await waitFor(() => expect(runsApiMock.get).toHaveBeenCalledTimes(3))
+    expect(heading.isConnected).toBe(true)
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument()
+  })
+
+  it('does not add a stop entry to the Run detail page', async () => {
+    useRunMock.mockReturnValue({ run: { ...(run as unknown as Record<string, unknown>), status: 'cancelling' }, loading: false, error: null })
+    renderPage()
+    await waitFor(() => expect(runsApiMock.attempts).toHaveBeenCalled())
+    expect(screen.queryByRole('button', { name: /stop|停止/i })).not.toBeInTheDocument()
+  })
+
   it('offers resume and abandon only for a run waiting for review', async () => {
     runsApiMock.routeDecision.mockResolvedValue({ adapter_id: 'adapter-1' })
     runsApiMock.resume.mockResolvedValue({ id: 'run-1', status: 'queued', resumed_at: '2026-07-12T00:00:00Z', resume_kind: 'new_attempt' })
@@ -311,11 +338,11 @@ describe('RunDetailPage route decision panel', () => {
     expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Abandon' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Resume' }))
-    expect(runsApiMock.resume).toHaveBeenCalledWith('run-1')
+    expect(runsApiMock.resume).toHaveBeenCalledWith('run-1', expect.objectContaining({ spaceId: 'space-1' }))
     await user.click(screen.getByRole('button', { name: 'Abandon' }))
     await user.type(screen.getByPlaceholderText('Why is this review being abandoned?'), 'No longer needed')
     await user.click(screen.getByRole('button', { name: 'Abandon Run' }))
-    expect(runsApiMock.abandon).toHaveBeenCalledWith('run-1', { reason: 'No longer needed' })
+    expect(runsApiMock.abandon).toHaveBeenCalledWith('run-1', { reason: 'No longer needed' }, expect.objectContaining({ spaceId: 'space-1' }))
   })
 
   it('requires the authorization decision instead of exposing generic resume', async () => {

@@ -68,6 +68,27 @@ describe("provider proxy server", () => {
     expect(leases.size()).toBe(1);
   });
 
+  it("renews live leases without reviving revoked or expired leases", () => {
+    vi.useFakeTimers();
+    try {
+      const leases = new ProviderProxyLeaseRegistry();
+      const lease = leases.create(authorizedFor("space-1", "run-1", "provider-1"), {
+        run_id: "run-1", space_id: "space-1", provider_id: "provider-1",
+        upstream_base_url: "https://upstream.example.test", ttl_ms: 1_000,
+      });
+      vi.advanceTimersByTime(500);
+      leases.renew(lease.id, 2_000);
+      vi.advanceTimersByTime(600);
+      expect(leases.resolve(lease.id, lease.token)).not.toBeNull();
+      vi.advanceTimersByTime(2_000);
+      leases.renew(lease.id, 2_000);
+      expect(leases.resolve(lease.id, lease.token)).toBeNull();
+      leases.revoke(lease.id);
+      leases.renew(lease.id, 2_000);
+      expect(leases.resolve(lease.id, lease.token)).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
+
   it("forwards a Claude-compatible request with provider credentials instead of the lease token", async () => {
     const upstream = await startMockUpstream();
     upstreams.push(upstream);

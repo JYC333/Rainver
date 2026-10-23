@@ -5,9 +5,12 @@ import type {
   SemanticCheckpoint,
 } from "@rainver/protocol";
 import * as protocol from "@rainver/protocol";
+import { instructionInRunRequest } from "./runRequest.js";
+import { loadSelectedSkills, selectedSkillInstruction } from "../capabilities/selectedSkills.js";
 import type { Pool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 import type { Queryable } from "../routeUtils/common.js";
+import { retryTaskInstruction } from "../runs/retryPolicy.js";
 import {
   PgRuntimeContextAcquisitionRepository,
   type RunContextRecord,
@@ -71,7 +74,8 @@ import { effectiveRunProviderModel } from "../runs/remoteProviderBinding.js";
 import { availableModels } from "../providers/dbReader.js";
 import {
   loadConversationInputResourceDescriptors,
-  renderConversationInputResourceDescriptors,
+  loadConversationSkillDescriptors,
+  renderConversationInputMessage,
 } from "../sessions/conversationInputService.js";
 
 type SetupRow = {
@@ -182,14 +186,15 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
           userId: request.identity.userId,
           runId: run.id,
         });
-    if (!current || !current.content.trim()) throw new Error("Current input is missing or outside the Work Context scope");
+    if (!current) throw new Error("Current input is missing or outside the Work Context scope");
+    const skillDescriptors = request.turn.current_message_ref.type === "message"
+      ? await loadConversationSkillDescriptors(this.db, { spaceId: request.identity.spaceId, messageId: request.turn.current_message_ref.id }) : [];
     const inputResourceDescriptors = request.turn.current_message_ref.type === "message"
       ? await loadConversationInputResourceDescriptors(this.db, {
           spaceId: request.identity.spaceId,
           messageId: request.turn.current_message_ref.id,
         })
       : [];
-    const inputResourceText = renderConversationInputResourceDescriptors(inputResourceDescriptors);
     const project = await this.context.loadPublishedProjectContext(
       request.identity.spaceId,
       authority.projectId,
@@ -211,10 +216,13 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
       selection: "required",
       semanticRole: "user_input",
       trust: current.role === "system" ? "system_approved" : "user_confirmed",
-      text: inputResourceText ? `${current.content}\n\n${inputResourceText}` : current.content,
+      text: renderConversationInputMessage(current.content, inputResourceDescriptors, skillDescriptors),
       revalidation: {
         message_created_at: String(current.created_at ?? ""),
         input_resource_ids: inputResourceDescriptors.map((descriptor) => descriptor.resource_id),
+        ...(request.turn.current_message_ref.type === "run_request"
+          ? { run_instruction_in_request: instructionInRunRequest(run) }
+          : {}),
       },
     })];
     if (request.turn.current_message_ref.type === "message" && isRoomConversation(run.model_override_json)) {
@@ -238,10 +246,12 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
         }));
       }
     }
-    if (run.prompt?.trim() && run.instruction?.trim()) {
+    if (run.prompt?.trim() && run.instruction?.trim()
+      && !(request.turn.current_message_ref.type === "run_request" && instructionInRunRequest(run))) {
       items.push(normalizeOwned({
         authority, request,
         sourceRef: { type: "run_instruction", id: run.id },
+        identityKey: `run_instruction:${run.run_group_id ?? run.id}`,
         selection: "required", semanticRole: "delegated_instruction", trust: "system_approved",
         text: run.instruction,
         conflictKey: "run_instruction",
@@ -262,6 +272,7 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
       items.push(normalizeOwned({
         authority, request,
         sourceRef: { type: "run_group_agent_identity", id: run.id },
+        identityKey: `run_group_agent_identity:${run.agent_id ?? run.id}`,
         selection: "required", semanticRole: "delegated_instruction", trust: "system_approved",
         text: roomIdentity,
         conflictKey: "run_group_agent_identity",
@@ -395,6 +406,18 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
       capabilities_json: run.capabilities_json,
     });
     const items: ContextItem[] = [];
+    const selected = await loadSelectedSkills(this.db, {
+      space_id: run.space_id, project_id: authority.controlSnapshot.project_id, agent_id: authority.controlSnapshot.agent_id,
+      user_id: request.identity.userId, session_id: run.session_id,
+      message_id: request.turn.current_message_ref.type === "message" ? request.turn.current_message_ref.id : null,
+    });
+    for (const skill of selected) {
+      items.push(normalizeOwned({ authority, request,
+        sourceRef: { type: "skill_package_binding", id: skill.binding_id, version: `${skill.content.package_hash}:${run.id}` },
+        selection: "required", semanticRole: "delegated_instruction", trust: "system_approved",
+        text: selectedSkillInstruction(skill.content), structuredPayload: { skill_package: skill.content },
+      }));
+    }
     for (const candidate of candidates) {
       if (this.config) await enforceRuntimeSkillRender(this.config, run.id, run.space_id, candidate);
       const rendered = renderRuntimeSkillCandidate(candidate);
@@ -978,6 +1001,9 @@ export function roomRoutingInstruction(value: unknown): string | null {
   const currentIndex = nonnegativeInteger(routing.current_segment_index);
   const currentRecipient = stringValue(routing.current_recipient_agent_id);
   if (currentIndex === null || !currentRecipient || segments.length === 0) return null;
+  // One segment is the whole message, already delivered as the current input
+  // and named as the assigned task; there is nothing to route.
+  if (segments.length === 1) return null;
   const lines = segments.map((segment, index) => {
     const labels = Array.isArray(segment.recipient_labels)
       ? segment.recipient_labels.filter((label): label is string => typeof label === "string")
@@ -985,10 +1011,8 @@ export function roomRoutingInstruction(value: unknown): string | null {
     const recipients = Array.isArray(segment.recipient_agent_ids)
       ? segment.recipient_agent_ids.filter((id): id is string => typeof id === "string")
       : [];
-    const marker = index === currentIndex && recipients.includes(currentRecipient)
-      ? " (this run)"
-      : "";
-    return `${index + 1}. ${(labels.length ? labels : recipients).join(", ")}${marker}\n   Task: ${stringValue(segment.task) ?? ""}`;
+    const current = index === currentIndex && recipients.includes(currentRecipient);
+    return `${index + 1}. ${(labels.length ? labels : recipients).join(", ")}${current ? " (this run)" : ""}\n   Task: ${current ? "see [Assigned task for this Room turn]" : stringValue(segment.task) ?? ""}`;
   });
   return [
     "Room turn routing context:",
@@ -1012,6 +1036,7 @@ function normalizeOwned(input: {
   sensitivity?: ContextItem["sensitivity"];
   rank?: number | null;
   structuredPayload?: Record<string, unknown>;
+  identityKey?: string;
 }): ContextItem {
   const control = input.authority.controlSnapshot;
   const sensitivity = input.sensitivity ?? "highly_restricted";
@@ -1030,6 +1055,7 @@ function normalizeOwned(input: {
     text: input.text,
     rank: input.rank,
     structuredPayload: input.structuredPayload,
+    identityKey: input.identityKey,
     revalidation: {
       status: "live",
       checked_at: new Date().toISOString(),
@@ -1067,11 +1093,11 @@ function supervisorRetryContext(errorJson: unknown): string | null {
     "[Supervisor retry]",
     `This is physical attempt ${attemptNumber}.`,
     `The previous attempt did not complete acceptably (${reasonCode}).`,
-    "Re-attempt the original task and correct that failure; do not merely repeat the prior response.",
+    retryTaskInstruction(reasonCode),
   ].join("\n");
 }
 
-function groupedAgentIdentityContext(run: {
+export function groupedAgentIdentityContext(run: {
   run_group_id: string | null;
   agent_name: string | null;
 }): string | null {

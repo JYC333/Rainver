@@ -18,6 +18,38 @@ describe('readBackTurnState', () => {
 })
 
 describe('settledTurn', () => {
+  const hostTurn: RunTurn = {
+    schema_version: 'run_turn.v1', run_id: 'run-host', state: 'working',
+    source: 'host_thread_events', blocked_on: null, cursor: 3, updated_at: null,
+    parts: [
+      { type: 'text', index: 0, text: 'Checking.' },
+      { type: 'tool_call', index: 1, call_id: 'read', name: 'read', kind: null, status: 'succeeded', input: null, output: null },
+      { type: 'text', index: 2, text: 'Done.' },
+    ],
+  }
+
+  it('retains recorded message boundaries when the complete trace matches the saved reply', () => {
+    const settled = settledTurn(hostTurn, 'done', 'Checking.Done.')!
+    expect(settled.parts).toEqual(hostTurn.parts)
+    expect(settled.state).toBe('done')
+    expect(hostTurn.state).toBe('working')
+    expect(settledTurn(settled, 'done', 'Checking.Done.')!.parts).toEqual(settled.parts)
+  })
+
+  it('uses the canonical message when the trace is incomplete or the finalizer adds a question', () => {
+    for (const text of ['Checking.Done. Answer this question?', 'Only the saved reply.']) {
+      const settled = settledTurn(hostTurn, 'done', text)!
+      expect(settled.parts.filter(part => part.type === 'text')).toEqual([{ type: 'text', index: 2, text }])
+    }
+  })
+
+  it('drops a transient duplicate without discarding the complete Host segments', () => {
+    const streamed: RunTurn = { ...hostTurn, parts: [...hostTurn.parts,
+      { type: 'text', index: Number.MAX_SAFE_INTEGER, text: 'Checking.Done.', streamed: true },
+    ] }
+    expect(settledTurn(streamed, 'done', 'Checking.Done.')!.parts).toEqual(hostTurn.parts)
+  })
+
   it('gives the saved reply an index no kept step already uses', () => {
     const streamed = {
       run_id: 'run-1', state: 'working', blocked_on: null,

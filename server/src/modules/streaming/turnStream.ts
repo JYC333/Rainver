@@ -69,6 +69,7 @@ export async function streamRunTurn(
     return sendErrorEnvelope(reply, 404, errorEnvelope("run_not_found", "Run not found", requestId));
   }
 
+  let modelSelection = JSON.stringify(snapshot.model_selection);
   let closed = false;
   request.raw.on("close", () => { closed = true; });
 
@@ -126,6 +127,14 @@ export async function streamRunTurn(
       }
       if (!turn) break;
       cursor = turn.cursor;
+      const nextModel = JSON.stringify(turn.model_selection);
+      if (nextModel !== modelSelection && turn.model_selection) {
+        modelSelection = nextModel;
+        send(raw, "turn.model_changed", {
+          type: "turn.model_changed", run_id: runId, model_selection: turn.model_selection,
+        } satisfies TurnStreamFrame);
+      }
+
 
       for (const frame of turnDiffFrames(emitted, turn, runId, cursor)) {
         send(raw, frameEvent(frame), frame);
@@ -209,6 +218,7 @@ export function turnDiffFrames(
 /** The SSE event name a frame is sent under. */
 function frameEvent(frame: TurnStreamFrame): string {
   switch (frame.type) {
+    case "turn.model_changed": return "turn.model_changed";
     case "turn.snapshot": return SNAPSHOT_EVENT;
     case "turn.part_appended": return APPENDED_EVENT;
     case "turn.part_updated": return UPDATED_EVENT;

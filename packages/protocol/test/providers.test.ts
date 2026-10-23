@@ -1,4 +1,4 @@
-import { describe, it, expect, expectTypeOf } from "vitest";
+import { describe, it, expect } from "vitest";
 import {
   CredentialChannelMetadataSchema,
   ModelProviderCreateRequestSchema,
@@ -12,7 +12,6 @@ import {
   ProviderPresetDTOSchema,
   isCredentialChannel,
   isProviderType,
-  type ModelProviderDTO,
 } from "../src/index";
 
 describe("provider contracts", () => {
@@ -241,12 +240,5 @@ describe("provider contracts", () => {
       rotated: false,
       owner_bound: true,
     });
-  });
-});
-
-describe("provider type-level contracts", () => {
-  it("infers provider DTO types from schemas", () => {
-    expectTypeOf<ModelProviderDTO>().toHaveProperty("space_id");
-    expectTypeOf<ModelProviderDTO["has_api_key"]>().toEqualTypeOf<boolean>();
   });
 });

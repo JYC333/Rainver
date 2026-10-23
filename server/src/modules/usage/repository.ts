@@ -62,6 +62,7 @@ export interface UsageEventRecord {
 interface UsageTotals {
   event_count: number;
   request_count: number;
+  unknown_request_count_events: number;
   input_tokens: number;
   output_tokens: number;
   cache_creation_input_tokens: number;
@@ -152,6 +153,7 @@ interface AggregateRow {
   group_label: string | null;
   event_count: string | number;
   request_count: string | number;
+  unknown_request_count_events?: string | number;
   input_tokens: string | number | null;
   output_tokens: string | number | null;
   cache_creation_input_tokens: string | number | null;
@@ -1116,11 +1118,22 @@ function effectiveAccessLevelSql(filters: UsageQueryFilters): string {
   return contentAccessLevelSql({ definition: usageResourceDefinition(), alias: "e", userExpr: "$4" });
 }
 
+// Legacy local CLI rows also contain a default 1 for an aggregate Run. Do not
+// reinterpret that value as evidence of one physical model request.
+function requestCountKnownSql(): string {
+  return `(e.execution_channel <> 'local_cli' OR COALESCE(e.metadata_json->>'request_count_known', 'false') = 'true')`;
+}
+
+function requestCountKnown(row: UsageEventRecord): boolean {
+  return row.execution_channel !== "local_cli" || row.metadata_json?.request_count_known === true;
+}
+
 function aggregateSelectSql(): string {
   const totalExpr = effectiveTotalSql();
   return `
     count(*)::int AS event_count,
-    COALESCE(sum(e.request_count), 0)::bigint AS request_count,
+    COALESCE(sum(CASE WHEN ${requestCountKnownSql()} THEN e.request_count ELSE 0 END), 0)::bigint AS request_count,
+    count(*) FILTER (WHERE NOT (${requestCountKnownSql()}))::int AS unknown_request_count_events,
     COALESCE(sum(e.input_tokens), 0)::bigint AS input_tokens,
     COALESCE(sum(e.output_tokens), 0)::bigint AS output_tokens,
     COALESCE(sum(e.cache_creation_input_tokens), 0)::bigint AS cache_creation_input_tokens,
@@ -1163,6 +1176,7 @@ function aggregateRowToBreakdown(row: AggregateRow | undefined): UsageBreakdownR
     totals: {
       event_count: eventCount,
       request_count: intValue(row?.request_count),
+      unknown_request_count_events: intValue(row?.unknown_request_count_events),
       input_tokens: intValue(row?.input_tokens),
       output_tokens: intValue(row?.output_tokens),
       cache_creation_input_tokens: intValue(row?.cache_creation_input_tokens),
@@ -1216,7 +1230,8 @@ export function eventToOut(row: UsageEventRecord): Record<string, unknown> {
     cache_creation_1h_input_tokens: intValue(row.cache_creation_1h_input_tokens),
     cache_read_input_tokens: intValue(row.cache_read_input_tokens),
     reasoning_tokens: intValue(row.reasoning_tokens),
-    request_count: intValue(row.request_count),
+    request_count: requestCountKnown(row) ? intValue(row.request_count) : 0,
+    request_count_known: requestCountKnown(row),
     estimated_cost_usd: numberOrNull(row.estimated_cost_usd),
     cost_accuracy: row.cost_accuracy,
     usage_accuracy: row.usage_accuracy,

@@ -9,6 +9,7 @@ import {
   runReadSql,
 } from "../access/contentAccessSql.js";
 import { canReadProject } from "../projects/access.js";
+import { collaborationLimits } from "./collaborationBudgetRepository.js";
 
 export interface AgentRunGroupRecord {
   id: string;
@@ -197,6 +198,10 @@ const ACTIVE_ROOM_MEMBER_OR_NO_ROOM_SQL = `(
 
 export class PgAgentGroupRepository {
   constructor(private readonly db: Queryable) {}
+
+  collaborationLimits(group: AgentRunGroupRecord, input: Parameters<typeof collaborationLimits>[2], persist = false) {
+    return collaborationLimits(this.db, group, input, persist);
+  }
 
   /** The Agent-triggered turns charged to a container group, or to the discussion it is a wave of. */
   async containerTurnsUsed(input: { space_id: string; discussion_id: string | null; container_group_id: string }): Promise<number> {

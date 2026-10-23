@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isAcpAuthRequiredError, parseAcpAuthMethods, parseAcpPromptCapabilities, parseAcpSessionOptions, parseAcpSessionProbeResult } from '../src/acpProbe.js'
+import { parseAcpAuthMethods, parseAcpPromptCapabilities, parseAcpSessionOptions, parseAcpSessionProbeResult } from '../src/acpProbe.js'
 
 describe('ACP authentication method parsing', () => {
   it('normalizes every protocol auth kind without vendor-specific knowledge', () => {
@@ -11,13 +11,6 @@ describe('ACP authentication method parsing', () => {
       { id: 'browser', name: 'Browser login', description: 'Open the browser', type: 'agent', args: [], env: {} },
       { id: 'device', name: 'Device code', description: null, type: 'terminal', args: ['login', '--device'], env: { AUTH_MODE: 'device' } },
     ])
-  })
-
-  it('recognizes the ACP authentication-required reason and the message-only phrasing', () => {
-    expect(isAcpAuthRequiredError({ code: -32000, data: { reason: 'auth_required' } })).toBe(true)
-    expect(isAcpAuthRequiredError({ code: -32000, message: 'Authentication required' })).toBe(true)
-    expect(isAcpAuthRequiredError({ code: -32000, message: 'workspace failed' })).toBe(false)
-    expect(isAcpAuthRequiredError(null)).toBe(false)
   })
 
   it('reports unauthenticated only for auth_required; another session failure keeps the advertised methods with the login state unknown', () => {

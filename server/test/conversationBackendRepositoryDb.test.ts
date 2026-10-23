@@ -184,6 +184,19 @@ beforeEach(async () => {
 
 describe("PgConversationBackendRepository (real Postgres)", () => {
 
+  it("persists saved options without a message and isolates session and Space reads", async (ctx) => {
+    if (!db.available || !repository) return ctx.skip();
+    await repository.resolveBinding({ space_id: "space-1", user_id: "user-1", session_id: "session-1", agent_id: "agent-1" });
+    const saved = [{ id: "model", type: "select" as const, category: "model", value: "ops" }];
+    await repository.saveSessionConfig("space-1", "session-1", "agent-1", saved);
+    expect(await new PgConversationBackendRepository(db.pool).sessionConfig("space-1", "session-1", "agent-1")).toEqual(saved);
+    expect(await repository.sessionConfig("other-space", "session-1", "agent-1")).toEqual([]);
+    expect(await repository.sessionConfig("space-1", "other-session", "agent-1")).toEqual([]);
+    await expect(repository.saveSessionConfig("other-space", "session-1", "agent-1", [])).rejects.toMatchObject({ statusCode: 404 });
+    await repository.saveSessionConfig("space-1", "session-1", "agent-1", []);
+    expect(await repository.sessionConfig("space-1", "session-1", "agent-1")).toEqual([]);
+  });
+
   it("uses the ACP capability for a Host-owned model without server Provider metadata", async (ctx) => {
     if (!db.available || !repository || !db.pool) return ctx.skip();
 
@@ -510,6 +523,30 @@ describe("PgConversationBackendRepository (real Postgres)", () => {
       name: ConversationTurnInProgressError.name,
       statusCode: 409,
     }));
+  });
+
+  it.for([
+    { status: "failed", chat: true },
+    { status: "cancelled", chat: true },
+    { status: "orphaned", chat: true },
+    { status: "succeeded", chat: false },
+  ] as const)("does not strand a conversation behind a $status Run (chat: $chat) without chat_completed", async ({ status, chat }, ctx) => {
+    if (!db.available) return ctx.skip();
+    const runs = new PgRunRepository(db.pool);
+    const queued = await runs.createQueuedRun({
+      execution_kind: "agent", agent_id: "agent-1", space_id: "space-1", user_id: "user-1",
+      mode: "live", run_type: "agent", trigger_origin: "manual", runtime_profile_id: "runtime-cli",
+      runtime_profile_selection_source: "explicit", session_id: "session-1", prompt: "Earlier work",
+      model_override_json: chat ? { chat_turn: { schema_version: "chat_turn.v1", user_id: "user-1" } } : {},
+    });
+    if (status === "succeeded") await new PgRouteDecisionRepository(db.pool).routeRun(queued);
+    await runs.markRunTerminal({
+      run_id: queued.id, space_id: "space-1", status, output_json: {}, error_json: {},
+      exit_code: status === "succeeded" ? 0 : 1, completed_at: new Date().toISOString(),
+    });
+    await expect(new PgConversationRuntimeSessionRepository(db.pool).claimTurn({
+      space_id: "space-1", session_id: "session-1", user_id: "user-1",
+    })).resolves.toBeUndefined();
   });
 
   it("atomically invalidates the conversation binding with terminal Run visibility", async (ctx) => {

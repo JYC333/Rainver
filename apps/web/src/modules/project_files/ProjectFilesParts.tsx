@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight, FileCode, FileText, Folder } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileCode, FileText, Folder, Loader } from 'lucide-react'
 import type { FileNode, GitChangedFile } from '../../types/api'
+import { useAppTranslation } from '../../i18n'
 
 export const STATUS_VARIANT: Record<string, string> = {
   modified:  'bg-amber-500/15 text-amber-600',
@@ -49,7 +50,7 @@ function folderTint(path: string, changes: Map<string, GitChangedFile['status']>
 }
 
 export function FileTreeNode({
-  node, depth, selectedPath, onFileSelect, changes,
+  node, depth, selectedPath, onFileSelect, changes, loadDirectory,
 }: {
   node: FileNode
   depth: number
@@ -57,8 +58,26 @@ export function FileTreeNode({
   onFileSelect: (path: string) => void
   /** From `changeIndex`; when given, changed files and their folders are tinted by status. */
   changes?: Map<string, GitChangedFile['status']>
+  loadDirectory?: (path: string, offset?: number) => Promise<FileNode>
 }) {
-  const [open, setOpen] = useState(depth < 2)
+  const { t } = useAppTranslation()
+  const [open, setOpen] = useState(depth === 0)
+  const [listing, setListing] = useState(node)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const load = async (offset = 0) => {
+    if (!loadDirectory || loading) return
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await loadDirectory(node.path, offset)
+      setListing(previous => ({ ...result, children: offset ? [...(previous.children ?? []), ...(result.children ?? [])].filter((child, index, all) => all.findIndex(item => item.path === child.path) === index) : result.children }))
+    } catch {
+      setError('Could not load directory')
+    } finally {
+      setLoading(false)
+    }
+  }
   const pl = depth * 12 + 8
 
   if (node.type === 'file') {
@@ -96,7 +115,11 @@ export function FileTreeNode({
   return (
     <div>
       <button
-        onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+        onClick={() => {
+          setOpen(v => !v)
+          if (!open && listing.children === undefined) void load()
+        }}
         className={[
           'w-full flex items-center gap-1 py-[3px] text-xs text-left hover:bg-accent/50 transition-colors rounded-sm',
           dirty ?? 'text-foreground/80 hover:text-foreground',
@@ -107,9 +130,9 @@ export function FileTreeNode({
         <Folder className={`size-3 shrink-0 ${dirty ? 'opacity-80' : 'text-primary/60'}`} />
         <span className="font-medium">{node.name}</span>
       </button>
-      {open && node.children && (
+      {open && (
         <div>
-          {node.children.map(child => (
+          {listing.children?.map(child => (
             <FileTreeNode
               key={child.path}
               node={child}
@@ -117,8 +140,13 @@ export function FileTreeNode({
               selectedPath={selectedPath}
               onFileSelect={onFileSelect}
               changes={changes}
+              loadDirectory={loadDirectory}
             />
           ))}
+          {loading && <p role="status" className="text-xs text-muted-foreground p-2 flex items-center gap-1"><Loader className="size-3 animate-spin" />{t('fileTree.loading')}</p>}
+          {error && <button className="text-xs text-destructive p-2" onClick={() => void load(listing.next_offset ?? 0)}>{t('fileTree.retry')}</button>}
+          {!loading && !error && listing.children?.length === 0 && <p className="text-xs text-muted-foreground p-2">{t('fileTree.empty')}</p>}
+          {!loading && !error && listing.next_offset !== undefined && <button className="text-xs text-primary p-2" onClick={() => void load(listing.next_offset)}>{t('fileTree.more')}</button>}
         </div>
       )}
     </div>

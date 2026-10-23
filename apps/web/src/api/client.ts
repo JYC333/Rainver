@@ -1,3 +1,4 @@
+import { mergeAbortSignals } from '../lib/mergeAbortSignals'
 import type {
   AuthAccount,
   AuthConfiguration,
@@ -361,12 +362,8 @@ import type {
   SendRoomMessageRequest,
   SerendipityFeedbackResult,
   Session,
-  SkillConvertToCapabilityResponse,
   SkillImportApprovalProposalResponse,
   SkillImportPreviewResponse,
-  SkillLibraryIndexResponse,
-  SkillLocalOverlay,
-  SkillLocalOverlayUpsertRequest,
   SkillPackage,
   SourceBackfillPlan,
   SourceBackfillPreview,
@@ -456,7 +453,8 @@ import type {
   WorkRetrievalSwitch,
   WorkRetrievalSwitchRequest,
 } from '@rainver/protocol'
-import { ConversationInputMediaOutSchema } from '@rainver/protocol'
+import { AgentAttentionStreamFrameSchema, ConversationInputMediaOutSchema, AgentAttentionQuerySchema, AgentAttentionReadRequestSchema, AgentAttentionViewRequestSchema } from '@rainver/protocol'
+import type { AgentAttentionQueryInput, AgentAttentionPage, AgentWorkIdentity, AgentWorkItem, AgentAttentionReadRequest, AgentAttentionReadState, AgentAttentionViewRequest, AgentAttentionViewResult } from '@rainver/protocol'
 
 const BASE = '/api/v1'
 
@@ -492,7 +490,7 @@ function formatApiErrorMessage(err: ApiError, fallback: string): string {
   return withRequestId(fallback)
 }
 
-interface RequestOptions {
+export interface RequestOptions {
   includeSpaceContext?: boolean
   spaceId?: string
   idempotencyKey?: string
@@ -565,8 +563,47 @@ const put   = <T>(path: string, body?: unknown, options?: RequestOptions) => req
 const patch = <T>(path: string, body?: unknown, options?: RequestOptions) => request<T>('PATCH',  path, body, options)
 const del   = <T>(path: string, options?: RequestOptions)                => request<T>('DELETE', path, undefined, options)
 
+/** User-level aggregate: active Space never supplies authority or filters. */
+export const agentAttentionApi = {
+  snapshot: (options: RequestOptions = {}) => get<import('@rainver/protocol').AgentAttentionStreamFrame>('/me/agent-attention/snapshot', { ...options, includeSpaceContext: false }),
+  stream: async (onFrame: (frame: import('@rainver/protocol').AgentAttentionStreamFrame) => void, options: RequestOptions = {}) => {
+    const headers: Record<string, string> = { Accept: 'text/event-stream' }
+    if (_apiKey) headers.Authorization = `Bearer ${_apiKey}`
+    const response = await fetch(`${BASE}/me/agent-attention/stream`, { headers, signal: options.signal })
+    if (options.signal?.aborted) { await response.body?.cancel().catch(() => {}); return }
+    if (response.status === 401) window.dispatchEvent(new Event('auth:required'))
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {})
+      throw new ApiRequestError(`Attention stream failed (${response.status})`, response.status)
+    }
+    for await (const event of readServerSentEvents(response)) {
+      if (options.signal?.aborted) return
+      onFrame(AgentAttentionStreamFrameSchema.parse(JSON.parse(event.data)))
+    }
+    if (!options.signal?.aborted) throw new ApiRequestError('Attention stream disconnected', 502)
+  },
+  list(query: AgentAttentionQueryInput = {}, options: RequestOptions = {}) {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(AgentAttentionQuerySchema.parse(query))) {
+      if (value !== undefined) params.set(key, String(value))
+    }
+    return get<AgentAttentionPage>(`/me/agent-attention?${params}`, { ...options, includeSpaceContext: false })
+  },
+  item(identity: AgentWorkIdentity & { space_id: string; runs_cursor?: string }, options: RequestOptions = {}) {
+    const params = new URLSearchParams(Object.entries(identity).filter((entry): entry is [string, string] => entry[1] !== undefined))
+    return get<AgentWorkItem>(`/me/agent-attention/item?${params}`, { ...options, includeSpaceContext: false })
+  },
+  setReadState(body: AgentAttentionReadRequest, options: RequestOptions = {}) {
+    return patch<AgentAttentionReadState>('/me/agent-attention/read-state', AgentAttentionReadRequestSchema.parse(body), { ...options, includeSpaceContext: false })
+  },
+  /** A conversation surface displayed these messages; the server decides what that reads. */
+  recordViews(body: AgentAttentionViewRequest, options: RequestOptions = {}) {
+    return post<AgentAttentionViewResult>('/me/agent-attention/views', AgentAttentionViewRequestSchema.parse(body), { ...options, includeSpaceContext: false })
+  },
+}
+
 export const conversationInputApi = {
-  uploadImage: (file: File, onProgress?: (progress: number) => void): Promise<ConversationInputMediaOut> => {
+  uploadImage: (file: File, onProgress?: (progress: number) => void, options: RequestOptions = {}): Promise<ConversationInputMediaOut> => {
     const form = new FormData()
     form.append('file', file, file.name)
     return new Promise((resolve, reject) => {
@@ -574,7 +611,7 @@ export const conversationInputApi = {
       xhr.open('POST', `${BASE}/conversation-inputs/media`)
       xhr.withCredentials = true
       if (_apiKey) xhr.setRequestHeader('Authorization', `Bearer ${_apiKey}`)
-      xhr.setRequestHeader('X-Rainver-Space-Id', _spaceId)
+      xhr.setRequestHeader('X-Rainver-Space-Id', options.spaceId ?? _spaceId)
       xhr.upload.onprogress = event => {
         if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100))
       }
@@ -598,20 +635,24 @@ export const conversationInputApi = {
           reject(new ApiRequestError('Image upload returned an invalid response', xhr.status))
         }
       }
+      const abort = () => xhr.abort()
+      options.signal?.addEventListener('abort', abort, { once: true })
+      xhr.addEventListener('loadend', () => options.signal?.removeEventListener('abort', abort), { once: true })
+      if (options.signal?.aborted) { reject(new DOMException('Aborted', 'AbortError')); return }
       xhr.send(form)
     })
   },
-  deletePendingImage: (mediaId: string) => del<null>(`/conversation-inputs/media/${encodeURIComponent(mediaId)}`),
-  imageBlob: async (mediaId: string): Promise<Blob> => {
-    const headers: Record<string, string> = { 'X-Rainver-Space-Id': _spaceId }
+  deletePendingImage: (mediaId: string, options: RequestOptions = {}) => del<null>(`/conversation-inputs/media/${encodeURIComponent(mediaId)}`, options),
+  imageBlob: async (mediaId: string, options: RequestOptions = {}): Promise<Blob> => {
+    const headers: Record<string, string> = { 'X-Rainver-Space-Id': options.spaceId ?? _spaceId }
     if (_apiKey) headers.Authorization = `Bearer ${_apiKey}`
-    const response = await fetch(`${BASE}/conversation-inputs/media/${encodeURIComponent(mediaId)}`, { headers })
+    const response = await fetch(`${BASE}/conversation-inputs/media/${encodeURIComponent(mediaId)}`, { headers, signal: options.signal })
     if (response.status === 401) window.dispatchEvent(new CustomEvent('auth:required'))
     if (!response.ok) throw new ApiRequestError(`Could not load image (${response.status})`, response.status)
     return response.blob()
   },
-  searchFiles: (sessionId: string, query: string, signal?: AbortSignal) =>
-    get<ConversationInputFileSearchResponse>(`/sessions/${encodeURIComponent(sessionId)}/input-files?q=${encodeURIComponent(query)}&limit=20`, { signal }),
+  searchFiles: (sessionId: string, query: string, signal?: AbortSignal, options: RequestOptions = {}) =>
+    get<ConversationInputFileSearchResponse>(`/sessions/${encodeURIComponent(sessionId)}/input-files?q=${encodeURIComponent(query)}&limit=20`, { ...options, signal: mergeAbortSignals(signal, options.signal) }),
 }
 
 /**
@@ -638,7 +679,7 @@ async function* readServerSentEvents(
       buffer = frames.pop() ?? ''
       for (const frame of frames) {
         const lines = frame.split(/\r?\n/)
-        const data = lines.find(line => line.startsWith('data:'))?.slice(5).trim()
+        const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n')
         if (!data) continue
         yield { event: lines.find(line => line.startsWith('event:'))?.slice(6).trim(), data }
       }
@@ -682,6 +723,9 @@ function applyTurnFrame(turn: RunTurn | null, frame: TurnStreamFrame): RunTurn |
     return frame.turn
   }
   if (!turn) return null
+  if (frame.type === 'turn.model_changed') {
+    return { ...turn, model_selection: frame.model_selection }
+  }
   if (frame.type === 'turn.state_changed') {
     return { ...turn, state: frame.state, blocked_on: frame.blocked_on }
   }
@@ -742,7 +786,7 @@ export async function streamTurnParts(
     }
     if (!('type' in frame)) continue
     turn = applyTurnFrame(turn, frame)
-    if (turn) options.onTurn(turn)
+    if (!options.signal?.aborted && turn) options.onTurn(turn)
   }
   // The server sends the settled state before it closes, so a stream that
   // ends on `working` ended for some other reason — the poll hit a database
@@ -771,8 +815,9 @@ async function postChatTurn(
   } = {},
 ): Promise<ChatTurnOut> {
   const accepted = await post<ChatTurnAccepted>(path, body, options)
+  if (options.signal?.aborted) throw new DOMException('Request aborted', 'AbortError')
   options.onAccepted?.(accepted)
-  const response = await fetch(accepted.event_stream_url, { headers: streamHeaders(options.spaceId) })
+  const response = await fetch(accepted.event_stream_url, { headers: streamHeaders(options.spaceId), signal: options.signal })
 
   let turn: RunTurn | null = null
   for await (const { event, data } of readServerSentEvents(response)) {
@@ -784,6 +829,7 @@ async function postChatTurn(
     if (!('type' in frame)) continue
     turn = applyTurnFrame(turn, frame)
     if (!turn) continue
+    if (options.signal?.aborted) throw new DOMException('Request aborted', 'AbortError')
     options.onTurn?.(turn)
     // A blocked turn has stopped, but it is not over: it resumes when the
     // person decides, so the caller keeps watching rather than going to read
@@ -808,7 +854,7 @@ async function postChatTurn(
     }
     const messages = await get<Message[]>(
       `/sessions/${encodeURIComponent(accepted.session_id)}/messages`,
-      { spaceId: options.spaceId },
+      { spaceId: options.spaceId, signal: options.signal },
     )
     const assistant = messages.find(message =>
       message.role === 'assistant' && message.run_id === accepted.run_id)
@@ -1217,20 +1263,20 @@ export const sessionsApi = {
   list:       (params: Record<string, string> = {}) =>
     get<Page<Session>>('/sessions?' + new URLSearchParams(params)),
   create:     (data: Partial<Session>)              => post<Session>('/sessions', data),
-  get:        (id: string)                          => get<Session>(`/sessions/${id}`),
-  messages:   (id: string)                          => get<Message[]>(`/sessions/${id}/messages`),
+  get:        (id: string, options: RequestOptions = {})                          => get<Session>(`/sessions/${id}`, options),
+  messages:   (id: string, options: RequestOptions = {})                          => get<Message[]>(`/sessions/${id}/messages`, options),
   addMessage: (id: string, data: { content: string }) =>
     post<Message>(`/sessions/${id}/messages`, data),
   reflect:    (id: string)                          => post<ReflectResult>(`/sessions/${id}/reflect`),
-  executionContext: (id: string) => get<ConversationExecutionPreflightResponse>(`/sessions/${encodeURIComponent(id)}/execution-context`),
-  preflightExecution: (id: string, body: ConversationExecutionPreflightRequest) =>
-    post<ConversationExecutionPreflightResponse>(`/sessions/${encodeURIComponent(id)}/execution-context/preflight`, body),
-  initializeExecution: (id: string, body: ConversationExecutionInitializeRequest) =>
-    post<ConversationExecutionSummary>(`/sessions/${encodeURIComponent(id)}/execution-context/initialize`, body),
-  refreshGitContext: (id: string) =>
-    post<ConversationExecutionSummary>(`/sessions/${encodeURIComponent(id)}/execution-context/refresh-git`, {}),
-  mutateExecutionAttachments: (id: string, body: ConversationAttachmentMutation) =>
-    post<ConversationAttachmentMutationResponse>(`/sessions/${encodeURIComponent(id)}/execution-context/attachments`, body),
+  executionContext: (id: string, options: RequestOptions = {}) => get<ConversationExecutionPreflightResponse>(`/sessions/${encodeURIComponent(id)}/execution-context`, options),
+  preflightExecution: (id: string, body: ConversationExecutionPreflightRequest, options: RequestOptions = {}) =>
+    post<ConversationExecutionPreflightResponse>(`/sessions/${encodeURIComponent(id)}/execution-context/preflight`, body, options),
+  initializeExecution: (id: string, body: ConversationExecutionInitializeRequest, options: RequestOptions = {}) =>
+    post<ConversationExecutionSummary>(`/sessions/${encodeURIComponent(id)}/execution-context/initialize`, body, options),
+  refreshGitContext: (id: string, options: RequestOptions = {}) =>
+    post<ConversationExecutionSummary>(`/sessions/${encodeURIComponent(id)}/execution-context/refresh-git`, {}, options),
+  mutateExecutionAttachments: (id: string, body: ConversationAttachmentMutation, options: RequestOptions = {}) =>
+    post<ConversationAttachmentMutationResponse>(`/sessions/${encodeURIComponent(id)}/execution-context/attachments`, body, options),
   remove:     (id: string)                          => del<Session>(`/sessions/${id}`),
 }
 
@@ -1372,31 +1418,32 @@ export const runsApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Run[]>('/runs?' + new URLSearchParams(q))
   },
-  get:    (id: string) => get<Run>(`/runs/${id}`),
-  logicalIO: (id: string) => get<RunLogicalIO>(`/runs/${id}/io`),
-  status: (id: string) => get<RunStatusOut>(`/runs/${id}/status`),
-  stop:   (id: string) => patch<Record<string, unknown>>(`/runs/${id}/stop`),
-  executeQueuedRun: (id: string) => post<Run>(`/runs/${id}/execute`),
-  resume: (id: string) => post<{ id: string; status: string; resumed_at: string; resume_kind: string }>(`/runs/${id}/resume`, {}),
-  abandon: (id: string, body: { reason?: string | null } = {}) => post<{ id: string; status: string; abandoned_at: string }>(`/runs/${id}/abandon`, body),
-  activities: (id: string, params: Record<string, string> = {}) =>
-    get<Page<ActivityInboxRecord>>(`/runs/${id}/activities?` + new URLSearchParams(params)),
-  artifacts: (id: string, params: Record<string, string> = {}) =>
-    get<Page<Artifact>>(`/runs/${id}/artifacts?` + new URLSearchParams(params)),
-  proposals: (id: string, params: Record<string, string> = {}) =>
-    get<Page<Proposal>>(`/runs/${id}/proposals?` + new URLSearchParams(params)),
-  authorizationRequests: (id: string) =>
-    get<AuthorizationRequest[]>(`/runs/${id}/authorization-requests`),
-  attempts: (id: string) => get<{ attempts: RunAttempt[]; supervisor_decisions: RunSupervisorDecision[] }>(`/runs/${id}/attempts`),
-  evaluations: (id: string) => get<RunEvaluation[]>(`/runs/${id}/evaluations`),
-  verifications: (id: string) => get<RunVerificationResult[]>(`/runs/${id}/verifications`),
-  finalizations: (id: string) => get<RunFinalization[]>(`/runs/${id}/finalizations`),
-  routeDecision: (id: string) => get<Record<string, unknown>>(`/runs/${id}/route-decision`),
+  get:    (id: string, options: RequestOptions = {}) => get<Run>(`/runs/${id}`, options),
+  logicalIO: (id: string, options: RequestOptions = {}) => get<RunLogicalIO>(`/runs/${id}/io`, options),
+  status: (id: string, options: RequestOptions = {}) => get<RunStatusOut>(`/runs/${id}/status`, options),
+  stop:   (id: string, options: RequestOptions = {}) => patch<Record<string, unknown>>(`/runs/${id}/stop`, undefined, options),
+  quotaRecovery: (id: string, autoContinue: boolean, options: RequestOptions = {}) => patch<import('@rainver/protocol').QuotaRecovery>(`/runs/${id}/quota-recovery`, { auto_continue: autoContinue }, options),
+  executeQueuedRun: (id: string, options: RequestOptions = {}) => post<Run>(`/runs/${id}/execute`, undefined, options),
+  resume: (id: string, options: RequestOptions = {}) => post<{ id: string; status: string; resumed_at: string; resume_kind: string }>(`/runs/${id}/resume`, {}, options),
+  abandon: (id: string, body: { reason?: string | null } = {}, options: RequestOptions = {}) => post<{ id: string; status: string; abandoned_at: string }>(`/runs/${id}/abandon`, body, options),
+  activities: (id: string, params: Record<string, string> = {}, options: RequestOptions = {}) =>
+    get<Page<ActivityInboxRecord>>(`/runs/${id}/activities?` + new URLSearchParams(params), options),
+  artifacts: (id: string, params: Record<string, string> = {}, options: RequestOptions = {}) =>
+    get<Page<Artifact>>(`/runs/${id}/artifacts?` + new URLSearchParams(params), options),
+  proposals: (id: string, params: Record<string, string> = {}, options: RequestOptions = {}) =>
+    get<Page<Proposal>>(`/runs/${id}/proposals?` + new URLSearchParams(params), options),
+  authorizationRequests: (id: string, options: RequestOptions = {}) =>
+    get<AuthorizationRequest[]>(`/runs/${id}/authorization-requests`, options),
+  attempts: (id: string, options: RequestOptions = {}) => get<{ attempts: RunAttempt[]; supervisor_decisions: RunSupervisorDecision[] }>(`/runs/${id}/attempts`, options),
+  evaluations: (id: string, options: RequestOptions = {}) => get<RunEvaluation[]>(`/runs/${id}/evaluations`, options),
+  verifications: (id: string, options: RequestOptions = {}) => get<RunVerificationResult[]>(`/runs/${id}/verifications`, options),
+  finalizations: (id: string, options: RequestOptions = {}) => get<RunFinalization[]>(`/runs/${id}/finalizations`, options),
+  routeDecision: (id: string, options: RequestOptions = {}) => get<Record<string, unknown>>(`/runs/${id}/route-decision`, options),
   /**
    * The turn as it stands. For a surface showing a turn that has stopped —
    * one waiting on a person, say — where streaming would poll forever.
    */
-  turn: (id: string) => get<RunTurn>(`/runs/${encodeURIComponent(id)}/turn`),
+  turn: (id: string, options: RequestOptions = {}) => get<RunTurn>(`/runs/${encodeURIComponent(id)}/turn`, options),
   /** The live turn, as parts. See `streamTurnParts`. */
   streamTurn: (
     id: string,
@@ -1405,8 +1452,8 @@ export const runsApi = {
 }
 
 export const authorizationRequestsApi = {
-  approve: (id: string) => post<AuthorizationRequest>(`/authorization-requests/${id}/approve`, {}),
-  reject: (id: string) => post<AuthorizationRequest>(`/authorization-requests/${id}/reject`, {}),
+  approve: (id: string, options: RequestOptions = {}) => post<AuthorizationRequest>(`/authorization-requests/${id}/approve`, {}, options),
+  reject: (id: string, options: RequestOptions = {}) => post<AuthorizationRequest>(`/authorization-requests/${id}/reject`, {}, options),
 }
 
 
@@ -1440,19 +1487,19 @@ export const roomsApi = {
   },
   create: (body: CreateRoomRequest, idempotencyKey?: string) =>
     post<CreateRoomResponse>('/rooms', body, { idempotencyKey }),
-  get: (roomId: string) => get<RoomDetail>(`/rooms/${roomId}`),
+  get: (roomId: string, options: RequestOptions = {}) => get<RoomDetail>(`/rooms/${roomId}`, options),
   /** Copy picked content into a conversation that already exists. */
   attachReferences: (
     roomId: string,
     sessionId: string,
-    body: { references: ThreadReferencePick[]; confirm_disclosure?: boolean | string[] },
+    body: { references: ThreadReferencePick[]; confirm_disclosure?: boolean | string[] }, options: RequestOptions = {},
   ) => post<{
     items: RoomMessage[]
     task_group_ids: string[]
     conversation: RoomConversation | null
     limit: number
     offset: number
-  }>(`/rooms/${roomId}/conversations/${sessionId}/references`, body),
+  }>(`/rooms/${roomId}/conversations/${sessionId}/references`, body, options),
   agentCandidates: (roomId: string, params: { limit?: number; offset?: number } = {}) => {
     const q = new URLSearchParams()
     if (params.limit !== undefined) q.set('limit', String(params.limit))
@@ -1483,20 +1530,20 @@ export const roomsApi = {
     post<RoomAgentMutationResponse>(`/rooms/${roomId}/owner-claim`, {}),
   resetAgentContext: (roomId: string, agentId: string) =>
     post<RoomAgentMutationResponse>(`/rooms/${roomId}/agents/${agentId}/reset-context`, {}),
-  conversations: (roomId: string, params: { limit?: number; offset?: number } = {}) => {
+  conversations: (roomId: string, params: { limit?: number; offset?: number } = {}, options: RequestOptions = {}) => {
     const q = new URLSearchParams()
     if (params.limit !== undefined) q.set('limit', String(params.limit))
     if (params.offset !== undefined) q.set('offset', String(params.offset))
-    return get<Page<RoomConversation>>(`/rooms/${roomId}/conversations?${q}`)
+    return get<Page<RoomConversation>>(`/rooms/${roomId}/conversations?${q}`, options)
   },
-  createConversation: (roomId: string) =>
-    post<RoomConversation>(`/rooms/${roomId}/conversations`, {}),
-  summary: (roomId: string, sessionId: string) =>
-    get<RoomConversationSummaryResponse>(`/rooms/${roomId}/conversations/${sessionId}/summary`),
+  createConversation: (roomId: string, options: RequestOptions = {}) =>
+    post<RoomConversation>(`/rooms/${roomId}/conversations`, {}, options),
+  summary: (roomId: string, sessionId: string, options: RequestOptions = {}) =>
+    get<RoomConversationSummaryResponse>(`/rooms/${roomId}/conversations/${sessionId}/summary`, options),
   messages: (
     roomId: string,
     sessionId: string,
-    params: { limit?: number; offset?: number } = {},
+    params: { limit?: number; offset?: number } = {}, options: RequestOptions = {},
   ) => {
     const q = new URLSearchParams()
     if (params.limit !== undefined) q.set('limit', String(params.limit))
@@ -1510,57 +1557,58 @@ export const roomsApi = {
       task_group_ids: string[]
       limit: number
       offset: number
-    }>(`/rooms/${roomId}/conversations/${sessionId}/messages?${q}`)
+    }>(`/rooms/${roomId}/conversations/${sessionId}/messages?${q}`, options)
     )
   },
   sendMessage: (
     roomId: string,
     sessionId: string,
-    body: Omit<SendRoomMessageRequest, 'input_parts' | 'queue'> & { input_parts?: ConversationInputPart[]; queue?: boolean },
+    body: Omit<SendRoomMessageRequest, 'input_parts' | 'queue'> & { input_parts?: ConversationInputPart[]; queue?: boolean }, options: RequestOptions = {},
   ) =>
     post<{
       message: RoomMessage
       conversation: RoomConversation
       task_group_ids: string[]
       run_ids: string[]
-    } | QueuedRoomMessageResponse>(`/rooms/${roomId}/conversations/${sessionId}/messages`, body),
+    } | QueuedRoomMessageResponse>(`/rooms/${roomId}/conversations/${sessionId}/messages`, body, options),
   /** Takes back one's own message that is still waiting for the turn. */
-  withdrawQueuedMessage: (roomId: string, sessionId: string, queuedId: string) =>
-    del<QueuedRoomMessage>(`/rooms/${roomId}/conversations/${sessionId}/queued-messages/${encodeURIComponent(queuedId)}`),
-  retryMessage: (roomId: string, sessionId: string, runId: string, options: { idempotencyKey?: string } = {}) =>
+  withdrawQueuedMessage: (roomId: string, sessionId: string, queuedId: string, options: RequestOptions = {}) =>
+    del<QueuedRoomMessage>(`/rooms/${roomId}/conversations/${sessionId}/queued-messages/${encodeURIComponent(queuedId)}`, options),
+  retryMessage: (roomId: string, sessionId: string, runId: string, options: RequestOptions = {}) =>
     post<ConversationRetryResponse>(`/rooms/${roomId}/conversations/${sessionId}/retry`, { run_id: runId }, {
+      ...options,
       idempotencyKey: options.idempotencyKey ?? crypto.randomUUID(),
     }),
   continueAfterProposal: (
     roomId: string,
     sessionId: string,
-    body: ContinueRoomAfterProposalRequest,
+    body: ContinueRoomAfterProposalRequest, options: RequestOptions = {},
   ) => post<{
     message: RoomMessage
     conversation: RoomConversation
     task_group_ids: string[]
     run_ids: string[]
-  }>(`/rooms/${roomId}/conversations/${sessionId}/proposal-continuations`, body),
+  }>(`/rooms/${roomId}/conversations/${sessionId}/proposal-continuations`, body, options),
   /** Posts the topic as the person's message and dispatches the first wave; 409 while another discussion is active. */
-  openDiscussion: (roomId: string, sessionId: string, body: OpenRoomDiscussionRequest) =>
-    post<OpenRoomDiscussionResponse>(`/rooms/${roomId}/conversations/${sessionId}/discussions`, body),
+  openDiscussion: (roomId: string, sessionId: string, body: OpenRoomDiscussionRequest, options: RequestOptions = {}) =>
+    post<OpenRoomDiscussionResponse>(`/rooms/${roomId}/conversations/${sessionId}/discussions`, body, options),
   /** Newest first. */
-  discussions: (roomId: string, sessionId: string) =>
-    get<RoomDiscussionListResponse>(`/rooms/${roomId}/conversations/${sessionId}/discussions`),
-  discussion: (roomId: string, sessionId: string, discussionId: string) =>
-    get<RoomDiscussionDetail>(`/rooms/${roomId}/conversations/${sessionId}/discussions/${discussionId}`),
+  discussions: (roomId: string, sessionId: string, options: RequestOptions = {}) =>
+    get<RoomDiscussionListResponse>(`/rooms/${roomId}/conversations/${sessionId}/discussions`, options),
+  discussion: (roomId: string, sessionId: string, discussionId: string, options: RequestOptions = {}) =>
+    get<RoomDiscussionDetail>(`/rooms/${roomId}/conversations/${sessionId}/discussions/${discussionId}`, options),
   /** No further waves; the Manager then writes the conclusion. */
-  stopDiscussion: (roomId: string, sessionId: string, discussionId: string) =>
-    post<RoomDiscussion>(`/rooms/${roomId}/conversations/${sessionId}/discussions/${discussionId}/stop`, {}),
+  stopDiscussion: (roomId: string, sessionId: string, discussionId: string, options: RequestOptions = {}) =>
+    post<RoomDiscussion>(`/rooms/${roomId}/conversations/${sessionId}/discussions/${discussionId}/stop`, {}, options),
   /** Adds rounds; on an emergent discussion held at its cap this also opens it. */
-  extendDiscussion: (roomId: string, sessionId: string, discussionId: string, body: ExtendRoomDiscussionRequest) =>
-    post<RoomDiscussion>(`/rooms/${roomId}/conversations/${sessionId}/discussions/${discussionId}/extend`, body),
+  extendDiscussion: (roomId: string, sessionId: string, discussionId: string, body: ExtendRoomDiscussionRequest, options: RequestOptions = {}) =>
+    post<RoomDiscussion>(`/rooms/${roomId}/conversations/${sessionId}/discussions/${discussionId}/extend`, body, options),
   /** The Space's quota lines, the windows of the logins this conversation's Agents use, and what is held. */
-  conversationQuota: (roomId: string, sessionId: string) =>
-    get<RoomConversationQuota>(`/rooms/${roomId}/conversations/${sessionId}/quota`),
+  conversationQuota: (roomId: string, sessionId: string, options: RequestOptions = {}) =>
+    get<RoomConversationQuota>(`/rooms/${roomId}/conversations/${sessionId}/quota`, options),
   /** "Continue anyway": admits the Agent-triggered turns held at the reserve line (Project writer). */
-  continuePastQuota: (roomId: string, sessionId: string) =>
-    post<RoomConversationQuota>(`/rooms/${roomId}/conversations/${sessionId}/quota/continue`, {}),
+  continuePastQuota: (roomId: string, sessionId: string, options: RequestOptions = {}) =>
+    post<RoomConversationQuota>(`/rooms/${roomId}/conversations/${sessionId}/quota/continue`, {}, options),
 }
 
 // ── Personal Memory Grants ─────────────────────────────────────────────────
@@ -1600,28 +1648,29 @@ export const artifactsApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<Artifact>>('/artifacts?' + new URLSearchParams(q))
   },
-  get: (id: string, params: { project_folder_id?: string } = {}) => {
+  get: (id: string, params: { project_folder_id?: string } = {}, options: RequestOptions = {}) => {
     const q: Record<string, string> = {}
     if (params.project_folder_id !== undefined) q.project_folder_id = params.project_folder_id
     const suffix = new URLSearchParams(q).toString()
-    return get<Artifact>(`/artifacts/${id}${suffix ? `?${suffix}` : ''}`)
+    return get<Artifact>(`/artifacts/${id}${suffix ? `?${suffix}` : ''}`, options)
   },
-  export: (id: string, params: { project_folder_id?: string } = {}) => downloadArtifactExport(id, params),
+  export: (id: string, params: { project_folder_id?: string } = {}, options: RequestOptions = {}) => downloadArtifactExport(id, params, options),
 }
 
 async function downloadArtifactExport(
   artifactId: string,
   params: { project_folder_id?: string } = {},
+  options: RequestOptions = {},
 ): Promise<void> {
   const headers: Record<string, string> = {}
   if (_apiKey) headers['Authorization'] = `Bearer ${_apiKey}`
-  headers['X-Rainver-Space-Id'] = _spaceId
+  headers['X-Rainver-Space-Id'] = options.spaceId ?? _spaceId
   const sep = '/artifacts/' + artifactId + '/export'
   const query = new URLSearchParams()
   if (params.project_folder_id !== undefined) query.set('project_folder_id', params.project_folder_id)
   const artifactParams = query.toString()
   const url = BASE + sep + (artifactParams ? `?${artifactParams}` : '')
-  const r = await fetch(url, { method: 'GET', headers })
+  const r = await fetch(url, { method: 'GET', headers, signal: options.signal })
   if (r.status === 401) window.dispatchEvent(new CustomEvent('auth:required'))
   if (r.status === 404) throw new Error('Artifact not found or not exportable')
   if (!r.ok) {
@@ -1676,12 +1725,12 @@ export const proposalsApi = {
     if (params.offset !== undefined) q.offset = String(params.offset)
     return get<Page<Proposal>>('/proposals?' + new URLSearchParams(q))
   },
-  get: (id: string) => get<Proposal>(`/proposals/${id}`),
-  accept: (id: string, options: { confirmIncompletePatch?: boolean } = {}) => {
+  get: (id: string, options: RequestOptions = {}) => get<Proposal>(`/proposals/${id}`, options),
+  accept: (id: string, options: RequestOptions & { confirmIncompletePatch?: boolean } = {}) => {
     const suffix = options.confirmIncompletePatch ? '?confirm_incomplete_patch=true' : ''
-    return post<ProposalAcceptOut>(`/proposals/${id}/accept${suffix}`)
+    return post<ProposalAcceptOut>(`/proposals/${id}/accept${suffix}`, undefined, options)
   },
-  reject: (id: string) => post<Proposal>(`/proposals/${id}/reject`),
+  reject: (id: string, options: RequestOptions = {}) => post<Proposal>(`/proposals/${id}/reject`, undefined, options),
   approveEgressGrantingUserProposal: (id: string, input: EgressApprovalRequest = {}) =>
     post<ProposalApprovalResponse>(`/proposals/${id}/approvals/egress-granting-user`, input),
 }
@@ -1886,7 +1935,7 @@ export const evolutionApi = {
 export const agentsApi = {
   list: (params: Record<string, string> = {}, options: { spaceId?: string } = {}) =>
     get<AgentOut[]>('/agents?' + new URLSearchParams(params), { spaceId: options.spaceId }),
-  get: (agentId: string) => get<AgentOut>(`/agents/${agentId}`),
+  get: (agentId: string, options: RequestOptions = {}) => get<AgentOut>(`/agents/${agentId}`, options),
   /** The managed Assistant instance for a scope: the Space's own, or a Project's (null before its first Room message). */
   getSystemAssistant: (projectId?: string | null) =>
     get<{ assistant: AgentOut | null }>(`/agents/system-assistant${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
@@ -1895,8 +1944,8 @@ export const agentsApi = {
   // Config edit: appends a new immutable AgentVersion and repoints current_version_id.
   updateConfig: (agentId: string, data: AgentConfigUpdateBody) =>
     post<AgentOut>(`/agents/${agentId}/config`, data),
-  listRuntimeProfiles: (agentId: string) =>
-    get<AgentRuntimeProfileOut[]>(`/agents/${agentId}/runtime-profiles`),
+  listRuntimeProfiles: (agentId: string, options: RequestOptions = {}) =>
+    get<AgentRuntimeProfileOut[]>(`/agents/${agentId}/runtime-profiles`, options),
   getSpaceRuntimeDefault: () => get<SpaceAgentRuntimeDefaultOut | null>('/agents/runtime-default'),
   setSpaceRuntimeDefault: (data: SpaceAgentRuntimeDefaultWrite) =>
     put<SpaceAgentRuntimeDefaultOut>('/agents/runtime-default', data),
@@ -1914,14 +1963,21 @@ export const agentsApi = {
   currentVersion: (agentId: string) => get<AgentVersionOut>(`/agents/${agentId}/current-version`),
   conversationBackends: (
     agentId: string,
-    options: { spaceId?: string; sessionId?: string } = {},
+    options: RequestOptions & { sessionId?: string } = {},
   ) =>
     get<ConversationBackendCatalog>(
       `/agents/${agentId}/conversation-backends${options.sessionId
         ? `?session_id=${encodeURIComponent(options.sessionId)}`
         : ''}`,
-      { spaceId: options.spaceId },
+      { spaceId: options.spaceId, signal: options.signal },
     ),
+  saveConversationSessionConfig: (
+    agentId: string,
+    data: { session_id: string; runtime_profile_id: string; session_config: NonNullable<ConversationBackendCatalog['session_config']> },
+    options: RequestOptions = {},
+  ) => put<{ session_config: NonNullable<ConversationBackendCatalog['session_config']> }>(
+    `/agents/${agentId}/conversation-session-config`, data, options,
+  ),
   // Assistant preferences (soft UI/context layer — never edits prompt or hard policy).
   getAssistantSettings: () => get<SpaceAssistantSettingsOut>('/agents/default-assistant/settings'),
   updateAssistantSettings: (data: SpaceAssistantSettingsUpdate) =>
@@ -1947,22 +2003,21 @@ export const agentsApi = {
       backend?: Pick<ConversationBackendBinding, 'runtime_profile_id'>
       session_config?: NonNullable<ChatTurnRequest['session_config']>
     },
-    options: {
-      spaceId?: string
+    options: RequestOptions & {
       onAccepted?: (accepted: ChatTurnAccepted) => void
       onTurn?: (turn: RunTurn) => void
     } = {},
   ) => postChatTurn(`/agents/${agentId}/chat`, body, options),
-  retryConversation: (agentId: string, runId: string, options: { spaceId?: string; idempotencyKey?: string } = {}) =>
+  retryConversation: (agentId: string, runId: string, options: RequestOptions = {}) =>
     post<ConversationRetryResponse>(`/agents/${encodeURIComponent(agentId)}/chat/retry`, { run_id: runId }, {
       ...options,
       idempotencyKey: options.idempotencyKey ?? crypto.randomUUID(),
     }),
-  resetContext: (agentId: string) =>
-    post<{ agent_id: string; session_reset: boolean; thread_id: string | null; workspace_mode: 'location' | 'managed' | null }>(`/agents/${agentId}/chat/reset-context`, {}),
+  resetContext: (agentId: string, options: RequestOptions = {}) =>
+    post<{ agent_id: string; session_reset: boolean; thread_id: string | null; workspace_mode: 'location' | 'managed' | null }>(`/agents/${agentId}/chat/reset-context`, {}, options),
   listRuns:       (limit = 50)        => get<Run[]>(`/agents/runs?limit=${limit}`),
-  getRun:         (runId: string)     => get<Run>(`/runs/${runId}`),
-  listRunsForAgent:  (agentId: string)   => get<Run[]>(`/agents/${agentId}/runs`),
+  getRun:         (runId: string, options: RequestOptions = {})     => get<Run>(`/runs/${runId}`, options),
+  listRunsForAgent:  (agentId: string, options: RequestOptions = {})   => get<Run[]>(`/agents/${agentId}/runs`, options),
 }
 
 // ── Agent Templates (reusable factories) ────────────────────────────────────
@@ -1998,8 +2053,8 @@ export const automationsApi = {
 
 // ── Project Folders ──────────────────────────────────────────────────────
 export const projectFoldersApi = {
-  list:    (projectId: string, params: Record<string, string> = {}) =>
-    get<Page<ProjectFolder>>(`/projects/${projectId}/folders?` + new URLSearchParams(params)),
+  list:    (projectId: string, params: Record<string, string> = {}, options?: RequestOptions) =>
+    get<Page<ProjectFolder>>(`/projects/${projectId}/folders?` + new URLSearchParams(params), options),
   listExecutionReady: async (projectId: string, params: Record<string, string> = {}) => {
     const page = await get<Page<ProjectFolder>>(`/projects/${projectId}/folders?` + new URLSearchParams(params))
     const ready = (await Promise.all(page.items.map(async folder => {
@@ -2014,8 +2069,8 @@ export const projectFoldersApi = {
     post<{ items: ProjectFolderScanCandidate[] }>(`/projects/${projectId}/folders/scan`),
   get:     (projectId: string, folderId: string) =>
     get<ProjectFolder>(`/projects/${projectId}/folders/${folderId}`),
-  locations: (projectId: string, folderId: string) =>
-    get<WorkspaceLocation[]>(`/projects/${projectId}/folders/${folderId}/locations`),
+  locations: (projectId: string, folderId: string, options: RequestOptions = {}) =>
+    get<WorkspaceLocation[]>(`/projects/${projectId}/folders/${folderId}/locations`, options),
   activateLocation: (projectId: string, folderId: string, locationId: string) =>
     post<WorkspaceLocation>(`/projects/${projectId}/folders/${folderId}/locations/${locationId}/activate`),
   update:  (projectId: string, folderId: string, data: ProjectFolderUpdateBody) =>
@@ -2024,10 +2079,10 @@ export const projectFoldersApi = {
     del<null>(`/projects/${projectId}/folders/${folderId}`),
   unregister: (projectId: string, folderId: string, confirm = false) =>
     post<null>(`/projects/${projectId}/folders/${folderId}/unregister`, confirm ? { confirm: true } : {}),
-  tree:    (projectId: string, folderId: string) =>
-    get<FileNode>(`/projects/${projectId}/folders/${folderId}/tree`),
-  file:    (projectId: string, folderId: string, path: string, options: { convertUtf8?: boolean } = {}) =>
-    get<FileContent>(`/projects/${projectId}/folders/${folderId}/file?path=${encodeURIComponent(path)}${options.convertUtf8 ? '&convert=utf8' : ''}`),
+  tree:    (projectId: string, folderId: string, path = '.', offset = 0, options: RequestOptions = {}) =>
+    get<FileNode>(`/projects/${projectId}/folders/${folderId}/tree?path=${encodeURIComponent(path)}&offset=${offset}`, options),
+  file:    (projectId: string, folderId: string, path: string, options: RequestOptions & { convertUtf8?: boolean } = {}) =>
+    get<FileContent>(`/projects/${projectId}/folders/${folderId}/file?path=${encodeURIComponent(path)}${options.convertUtf8 ? '&convert=utf8' : ''}`, options),
   draft:   (projectId: string, folderId: string, path: string) =>
     get<ProjectFileDraft | null>(`/projects/${projectId}/folders/${folderId}/file/draft?path=${encodeURIComponent(path)}`),
   upsertDraft: (projectId: string, folderId: string, data: {
@@ -2117,7 +2172,7 @@ export const ambientSessionsApi = {
 // ADR 0016: multi-host control center — pairing, dispatch, and the
 // work-stream read side (task threads). See .agent/modules/hosts.md.
 export const hostsApi = {
-  list: () => get<{ items: Host[] }>('/hosts'),
+  list: (options: RequestOptions = {}) => get<{ items: Host[] }>('/hosts', options),
   executionTargets: (projectId?: string | null) =>
     get<HostExecutionTargetsResponse>(`/hosts/execution-targets${projectId ? `?project_id=${encodeURIComponent(projectId)}` : ''}`),
   pairingCode: (name: string) => post<HostPairingCode>('/hosts/pairing-codes', { name }),
@@ -2141,6 +2196,8 @@ export const hostsApi = {
   /** Asks the host's daemon to install a managed copy of a runtime (any ACP adapter with a distribution). */
   installRuntime: (hostId: string, runtimeKey: string) =>
     post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}`),
+  updateOwnRuntime: (hostId: string, runtimeKey: string) =>
+    post<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/own/update`),
   uninstallRuntime: (hostId: string, runtimeKey: string, installation: string) =>
     del<RuntimeInstallResult>(`/hosts/${encodeURIComponent(hostId)}/installations/${encodeURIComponent(runtimeKey)}/${encodeURIComponent(installation)}`),
   /** Undoes the last upgrade of a managed copy, promoting the version the host kept behind it. */
@@ -2212,6 +2269,17 @@ export const hostsApi = {
 }
 
 export const capabilitiesFrameworkApi = {
+  scanHostSkills: (hostId: string, options?: RequestOptions) =>
+    post<import('@rainver/protocol').HostSkillScan>(`/skill-sources/hosts/${encodeURIComponent(hostId)}/scan`, {}, options),
+  /** Skills enabled for every addressed recipient; a Room menu names them in `recipient_agent_ids` (none means the manager). */
+  availableSkills: (query: { session_id?: string | null; project_id?: string | null; agent_id?: string | null; recipient_agent_ids?: readonly string[] }, options?: RequestOptions) => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      const text = typeof value === 'string' || value == null ? value : value.join(',')
+      if (text) params.set(key, text)
+    }
+    return get<import('@rainver/protocol').ConversationInputSkillPart[]>(`/capabilities/skills/available?${params}`, options)
+  },
   listCapabilityDefinitions: () =>
     get<CapabilityDefinition[]>('/capability-definitions'),
   getCapabilityDefinition: (id: string) =>
@@ -2220,30 +2288,24 @@ export const capabilitiesFrameworkApi = {
     get<CapabilityPackDescriptor[]>('/capability-packs'),
   getCapabilityPack: (id: string) =>
     get<CapabilityPackDescriptor>(`/capability-packs/${encodeURIComponent(id)}`),
-  previewSkillImport: (data: { url: string }) =>
-    post<SkillImportPreviewResponse>('/skill-sources/import-preview', data),
+  previewSkillImport: (data: import('@rainver/protocol').SkillImportPreviewRequest, options?: RequestOptions) =>
+    post<SkillImportPreviewResponse>('/skill-sources/import-preview', data, options),
   /** Imports the previewed package; `package_hash` is the preview's, and a changed package answers 409 `skill_package_changed`. */
-  importSkill: (data: { url: string; package_hash: string }) =>
-    post<SkillPackage>('/skill-sources/import', data),
-  listSkillPackages: () =>
-    get<Page<SkillPackage>>('/skill-packages'),
-  getSkillPackage: (id: string) =>
-    get<SkillPackage>(`/skill-packages/${encodeURIComponent(id)}`),
-  listSkillLibraryIndex: () =>
-    get<SkillLibraryIndexResponse>('/capabilities/skills/index'),
-  getSkillLocalOverlay: (skillPackageId: string, params: { scope_type?: string; scope_id?: string | null } = {}) => {
-    const q: Record<string, string> = {}
-    if (params.scope_type !== undefined) q.scope_type = params.scope_type
-    if (params.scope_id !== undefined && params.scope_id !== null) q.scope_id = params.scope_id
-    const suffix = new URLSearchParams(q).toString()
-    return get<SkillLocalOverlay>(`/capabilities/skills/${encodeURIComponent(skillPackageId)}/local-overlay${suffix ? `?${suffix}` : ''}`)
-  },
-  updateSkillLocalOverlay: (skillPackageId: string, data: SkillLocalOverlayUpsertRequest) =>
-    put<SkillLocalOverlay>(`/capabilities/skills/${encodeURIComponent(skillPackageId)}/local-overlay`, data),
-  createSkillReviewProposal: (skillPackageId: string) =>
-    post<SkillImportApprovalProposalResponse>(`/skill-packages/${encodeURIComponent(skillPackageId)}/review-proposal`),
-  convertSkillToCapability: (skillPackageId: string, data: { capability_id?: string; namespace?: string; enable_for_project_id?: string | null; create_runtime_bindings?: boolean } = {}) =>
-    post<SkillConvertToCapabilityResponse>(`/skill-packages/${encodeURIComponent(skillPackageId)}/convert-to-capability`, data),
+  importSkill: (data: import('@rainver/protocol').SkillImportRequest, options?: RequestOptions) =>
+    post<SkillPackage>('/skill-sources/import', data, options),
+  listSkillPackages: (options?: RequestOptions, offset = 0) =>
+    get<Page<SkillPackage>>(`/skill-packages?limit=100&offset=${offset}`, options),
+  getSkillContent: (id: string, options?: RequestOptions) =>
+    get<import('@rainver/protocol').SkillPackageContent>(`/skill-packages/${encodeURIComponent(id)}/content`, options),
+  listSkillBindings: (id: string, options?: RequestOptions) =>
+    get<import('@rainver/protocol').SkillBinding[]>(`/skill-packages/${encodeURIComponent(id)}/bindings`, options),
+  createSkillBindingProposal: (id: string, data: import('@rainver/protocol').SkillBindingRequest, options?: RequestOptions) =>
+    post<Proposal>(`/skill-packages/${encodeURIComponent(id)}/binding-proposal`, data, options),
+  getSkillPackage: (id: string, options?: RequestOptions) =>
+    get<SkillPackage>(`/skill-packages/${encodeURIComponent(id)}`, options),
+  /** Files the review; an enabling `binding` makes the same approval enable the package for that scope. */
+  createSkillReviewProposal: (skillPackageId: string, data: import('@rainver/protocol').SkillReviewProposalRequest = {}, options?: RequestOptions) =>
+    post<SkillImportApprovalProposalResponse>(`/skill-packages/${encodeURIComponent(skillPackageId)}/review-proposal`, data, options),
   createCapabilityEnableProposal: (capabilityId: string, data: { capability_version_id?: string; project_id?: string; agent_id?: string; user_id?: string; config_json?: Record<string, unknown> } = {}) =>
     post<Proposal>(`/capability-definitions/${encodeURIComponent(capabilityId)}/enable-proposal`, data),
   createCapabilityDisableProposal: (capabilityId: string, data: { capability_version_id?: string; project_id?: string; agent_id?: string; user_id?: string } = {}) =>
@@ -2860,12 +2922,12 @@ export const readerApi = {
 
 // ── Projects ──────────────────────────────────────────────────────────────
 export const projectsApi = {
-  list: (params: { status?: string; limit?: number; offset?: number } = {}) => {
+  list: (params: { status?: string; limit?: number; offset?: number } = {}, options?: RequestOptions) => {
     const q: Record<string, string> = {}
     if (params.status !== undefined) q.status = params.status
     if (params.limit !== undefined) q.limit = String(params.limit)
     if (params.offset !== undefined) q.offset = String(params.offset)
-    return get<Page<Project>>('/projects?' + new URLSearchParams(q))
+    return get<Page<Project>>('/projects?' + new URLSearchParams(q), options)
   },
   create: (data: ProjectCreate) => post<Project>('/projects', data),
   get: (id: string) => get<Project>(`/projects/${id}`),
@@ -2889,7 +2951,7 @@ export const projectsApi = {
   hostExecutionTargets: (id: string) =>
     get<HostExecutionTargetsResponse>(`/projects/${encodeURIComponent(id)}/host-execution-targets`),
   getBoard: (id: string) => get<ProjectBoard>(`/projects/${id}/board`),
-  mainlineRoom: (id: string) => get<ProjectMainlineRoomResponse>(`/projects/${id}/mainline-room`),
+  mainlineRoom: (id: string, options: RequestOptions = {}) => get<ProjectMainlineRoomResponse>(`/projects/${id}/mainline-room`, options),
   /**
    * Everyone who can read this Project.
    *
@@ -3472,12 +3534,27 @@ export const researchDiscoveryApi = {
     get<ListResearchQueryAttemptsResponse>(`/research/query-strategies/${encodeURIComponent(strategyId)}/providers/${encodeURIComponent(providerKey)}/attempts?${new URLSearchParams({ project_id: query.project_id, limit: String(query.limit), offset: String(query.offset) })}`),
 }
 
+/**
+ * Whose knowledge-retrieval switch: a direct conversation names its scope; a
+ * Room recipient names the Conversation and the recipient, and the server
+ * resolves that pair's scope.
+ */
+export type RetrievalSwitchTarget =
+  | { scopeId: string }
+  | { sessionId: string; roomAgentMemberId: string }
+
+function retrievalSwitchPath(target: RetrievalSwitchTarget): string {
+  return 'scopeId' in target
+    ? `/runtime-context/work-contexts/${encodeURIComponent(target.scopeId)}/retrieval`
+    : `/runtime-context/room-conversations/${encodeURIComponent(target.sessionId)}/recipients/${encodeURIComponent(target.roomAgentMemberId)}/retrieval`
+}
+
 /** A conversation's knowledge-retrieval switch, kept per person and conversation. */
 export const runtimeContextApi = {
-  retrievalSwitch: (scopeId: string) =>
-    get<WorkRetrievalSwitch>(`/runtime-context/work-contexts/${encodeURIComponent(scopeId)}/retrieval`),
-  setRetrievalSwitch: (scopeId: string, body: WorkRetrievalSwitchRequest) =>
-    put<WorkRetrievalSwitch>(`/runtime-context/work-contexts/${encodeURIComponent(scopeId)}/retrieval`, body),
+  retrievalSwitch: (target: RetrievalSwitchTarget, options: RequestOptions = {}) =>
+    get<WorkRetrievalSwitch>(retrievalSwitchPath(target), options),
+  setRetrievalSwitch: (target: RetrievalSwitchTarget, body: WorkRetrievalSwitchRequest, options: RequestOptions = {}) =>
+    put<WorkRetrievalSwitch>(retrievalSwitchPath(target), body, options),
 }
 
 export const instanceOperationsApi = {

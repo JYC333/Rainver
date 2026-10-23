@@ -45,6 +45,7 @@ export interface RailItem {
 /** Major destinations. Home is always first and stable. */
 export const RAIL_ITEMS: RailItem[] = [
   { id: 'home',       label: 'Home',       to: '/home',        icon: Home,        scope: 'home',  mobile: true },
+  { id: 'agent-work', label: 'Agent Work', to: '/agent-work', icon: Bot, scope: 'home' },
   // ADR 0016 D11: Command Center is the default landing page for a Space
   // (see App.tsx's `spaces/:spaceId` index redirect) — placed first among
   // the space-scoped rail items so it reads as the space's home surface.
@@ -167,7 +168,7 @@ export const SCENES: Scene[] = [
     id: 'agents',
     title: 'Agents',
     icon: Bot,
-    segments: ['agents', 'sessions', 'runs', 'automations', 'capabilities', 'plans'],
+    segments: ['agents', 'sessions', 'runs', 'automations', 'skills', 'capabilities', 'plans'],
     items: [
       { label: 'My agents',  to: '/agents' },
       { label: 'Chat history', to: '/sessions' },
@@ -175,6 +176,7 @@ export const SCENES: Scene[] = [
       { label: 'Runs',       to: '/runs' },
       { label: 'Plans',      to: '/plans' },
       { label: 'Automations', to: '/automations' },
+      { label: 'Skills',     to: '/skills' },
       { label: 'Capabilities', to: '/capabilities' },
     ],
   },
@@ -196,7 +198,7 @@ export type RouteScope = 'home' | 'space'
  * Top-level paths that are NOT inside a Space, so they never get a `/spaces/:id` prefix.
  * Home is user-scoped (cross-space); Settings/Time/Cards are neutral system surfaces.
  */
-const USER_SCOPED_PREFIXES = ['/home', '/settings', '/instance-settings', '/time', '/cards', '/evolution', '/login']
+const USER_SCOPED_PREFIXES = ['/home', '/agent-work', '/settings', '/instance-settings', '/time', '/cards', '/evolution', '/login']
 
 function isUserScopedPath(path: string): boolean {
   return USER_SCOPED_PREFIXES.some(p => path === p || path.startsWith(`${p}/`))

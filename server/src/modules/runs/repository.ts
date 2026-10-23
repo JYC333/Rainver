@@ -1751,6 +1751,7 @@ export class PgRunRepository {
                 updated_at = $3,
                 required_sandbox_level = COALESCE($4, required_sandbox_level)
           WHERE space_id = $1 AND id = $2 AND status = 'queued' AND execution_kind = 'agent'
+            AND NOT (COALESCE(output_json, '{}'::jsonb) ? 'waiting_for_quota')
           RETURNING id, space_id, agent_id, agent_version_id, execution_kind, runtime_profile_id,
                     runtime_profile_snapshot_json, run_type, status, mode,
                     prompt, instruction, project_folder_id, workspace_location_id, trust_mode, host_task_thread_id, session_id, project_id,
@@ -2175,7 +2176,8 @@ export class PgRunRepository {
    * attempt to bind to means no launch: the dispatch fails here rather than
    * sending work whose outputs could never be attributed.
    */
-  async bindAttemptLaunch(input: { space_id: string; run_id: string; launch_id: string }): Promise<void> {
+  /** False when the Run has no open attempt — it was stopped or settled — so nothing may launch for it. */
+  async bindAttemptLaunch(input: { space_id: string; run_id: string; launch_id: string }): Promise<boolean> {
     const result = await this.db.query<{ id: string }>(
       `UPDATE run_attempts a
           SET launch_id = $3, updated_at = now()
@@ -2189,9 +2191,7 @@ export class PgRunRepository {
         RETURNING a.id`,
       [input.space_id, input.run_id, input.launch_id],
     );
-    if (result.rowCount !== 1) {
-      throw new Error(`Run '${input.run_id}' has no open attempt to bind launch '${input.launch_id}' to`);
-    }
+    return result.rowCount === 1;
   }
 
   async getLatestRunAttempt(spaceId: string, runId: string): Promise<RunAttemptRecord | null> {
@@ -2614,6 +2614,29 @@ export class PgRunRepository {
       }
       return { status: "waiting", dependency_statuses: lockedDependencies.rows };
     });
+  }
+
+  /**
+   * A parked Host-thread Run resumes the ACP session it parked in. Its
+   * `host_thread.runtime_session_id` was written at creation; once an attempt
+   * has started a session, the next attempt must ask for that one, or the CLI
+   * binding sees a mismatch and starts yet another session.
+   */
+  async recordParkedHostThreadSession(input: {
+    run_id: string;
+    space_id: string;
+    vendor_session_id: string;
+  }): Promise<void> {
+    await this.db.query(
+      `UPDATE runs
+          SET model_override_json = jsonb_set(model_override_json, '{host_thread,runtime_session_id}', to_jsonb($3::text)),
+              updated_at = now()
+        WHERE space_id = $1 AND id = $2
+          AND host_task_thread_id IS NOT NULL
+          AND jsonb_typeof(model_override_json->'host_thread') = 'object'
+          AND status IN ('waiting_for_dependency', 'waiting_for_review')`,
+      [input.space_id, input.run_id, input.vendor_session_id],
+    );
   }
 
   async requeueWaitingDependencyRun(input: {

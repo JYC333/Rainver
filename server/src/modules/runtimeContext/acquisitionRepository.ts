@@ -51,6 +51,7 @@ export interface RunContextRecord {
   agent_version_id: string | null;
   prompt: string | null;
   instruction: string | null;
+  delegation_id?: string | null;
   error_json: unknown;
   run_group_id: string | null;
   agent_name: string | null;
@@ -102,7 +103,7 @@ export class PgRuntimeContextAcquisitionRepository {
     const result = await this.db.query<RunContextRecord>(
       `SELECT r.id, r.space_id, r.agent_id, r.agent_version_id,
               r.prompt, r.instruction, r.error_json,
-              r.run_group_id, agent.name AS agent_name,
+              r.run_group_id, r.delegation_id, agent.name AS agent_name,
               r.project_folder_id, r.project_id, r.session_id, r.root_run_id,
               (SELECT execution.id
                  FROM workflow_executions execution

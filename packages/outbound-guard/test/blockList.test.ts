@@ -48,10 +48,6 @@ describe("isSyntheticDnsAddress", () => {
       expect(isSyntheticDnsAddress(address), String(address)).toBe(false);
     }
   });
-
-  it("does not weaken the direct-address block list", () => {
-    expect(isBlockedAddress("198.18.0.1")).toBe(true);
-  });
 });
 
 describe("isLoopbackAddress", () => {

@@ -7,6 +7,8 @@ import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildTree,
+  listFolderDirectory,
+  MAX_FILES,
   FolderReadError,
   folderGitDiff,
   MAX_FILE_BYTES,
@@ -32,6 +34,50 @@ async function tempRoot(): Promise<string> {
 }
 
 describe("folder-read filesystem operations", () => {
+  it("returns exact binary and BOM bytes only when original-byte acquisition is requested", async () => {
+    const root = await tempRoot();
+    for (const [name, bytes] of [["SKILL.md", Buffer.from("\ufeff# Skill\r\n")], ["asset.bin", Buffer.from([0, 255, 128])]] as const) {
+      await writeFile(join(root, name), bytes);
+      const preview = await readFolderFile(root, name);
+      expect(preview.content_base64).toBeUndefined();
+      const original = await readFolderFile(root, name, { includeOriginalBytes: true });
+      expect(Buffer.from(original.content_base64!, "base64")).toEqual(bytes);
+      expect(original.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+    }
+  });
+  it("lists dot directories and root files without consuming a nested tree's budget", async () => {
+    const root = await tempRoot();
+    await mkdir(join(root, ".agent", "deep"), { recursive: true });
+    await mkdir(join(root, "node_modules"));
+    await mkdir(join(root, ".ssh"));
+    await writeFile(join(root, ".editorconfig"), "root = true");
+    await writeFile(join(root, ".npmrc"), "//registry.example/:_authToken=secret");
+    await writeFile(join(root, ".env"), "secret");
+    await writeFile(join(root, "private.key"), "secret");
+    await writeFile(join(root, "README.md"), "readme");
+    await Promise.all(Array.from({ length: MAX_FILES + 1 }, (_, i) => writeFile(join(root, ".agent", `file-${i}.md`), "x")));
+    const tree = await listFolderDirectory(root);
+    expect(tree.children?.map(child => child.name)).toEqual([".agent", ".editorconfig", "README.md"]);
+    expect(tree.children?.[0]?.children).toBeUndefined();
+    expect(tree.next_offset).toBeUndefined();
+    const first = await listFolderDirectory(root, ".agent");
+    expect(first.children).toHaveLength(MAX_FILES);
+    const second = await listFolderDirectory(root, ".agent", { offset: first.next_offset });
+    expect(second.children).toHaveLength(2);
+    expect(second.next_offset).toBeUndefined();
+    expect(new Set([...first.children!, ...second.children!].map(child => child.path)).size).toBe(MAX_FILES + 2);
+  });
+
+  it("refuses directory traversal, sensitive directories and linked ancestors", async () => {
+    const root = await tempRoot();
+    await mkdir(join(root, "docs", "deep"), { recursive: true });
+    await symlink(join(root, "docs"), join(root, "alias"));
+    await expect(listFolderDirectory(root, "../outside")).rejects.toThrow(/traversal/i);
+    await expect(listFolderDirectory(root, ".ssh")).rejects.toThrow(/forbidden/i);
+    await expect(listFolderDirectory(root, "alias/deep")).rejects.toMatchObject({ code: "path_forbidden" });
+    await expect(listFolderDirectory(root, ".git")).rejects.toThrow(/excluded/);
+  });
+
   it("builds a bounded tree and reads utf8 files", async () => {
     const root = await tempRoot();
     await mkdir(join(root, "src"));

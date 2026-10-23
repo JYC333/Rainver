@@ -88,6 +88,27 @@ const HOST = {
 } as unknown as Host
 
 describe('HostAgents', () => {
+  it('updates an own CLI through its separate endpoint and refreshes the Host', async () => {
+    const update = vi.spyOn((await import('../../../api/client')).hostsApi, 'updateOwnRuntime').mockResolvedValue({ ok: true, error: null, installation: 'own' } as never)
+    const changed = vi.fn()
+    const host = { ...HOST, capabilities_json: { runtimes: ['claude'], installations: { claude_code: [{ id: 'own', version: '1.0.0', logged_in: true }] } } } as unknown as Host
+    render(<HostAgents host={host} adapters={ADAPTERS.map(adapter => ({ ...adapter, latest_own_version: '2.0.0' }))} isInstanceAdmin={false} manageable onChanged={changed} />)
+    await userEvent.click(screen.getByRole('button', { name: 'Update own Claude Code on Laptop' }))
+    await waitFor(() => expect(update).toHaveBeenCalledWith('h1', 'claude_code'))
+    await waitFor(() => expect(changed).toHaveBeenCalled())
+    update.mockRestore()
+  })
+  it.each([
+    ['1.0.0', '1.0.0', false], ['2.0.0', '1.0.0', false],
+    ['1.9.0', '1.10.0', true], ['claude 1.0.0', '1.0.1', true],
+    [null, '1.0.1', false], ['unknown', '1.0.1', false],
+    ['1.0.0', null, false], ['1.0.0-beta.1', '1.0.0', false],
+  ])('shows own update only for a confirmed newer vendor release: %s -> %s', (current, latest, visible) => {
+    const host = { ...HOST, capabilities_json: { installations: { claude_code: [{ id: 'own', version: current, logged_in: true }] } } } as unknown as Host
+    render(<HostAgents host={host} adapters={ADAPTERS.map(adapter => ({ ...adapter, latest_managed_version: '99.0.0', latest_own_version: latest }))} isInstanceAdmin={false} manageable onChanged={() => {}} />)
+    expect(screen.queryByRole('button', { name: 'Update own Claude Code on Laptop' }) !== null).toBe(visible)
+  })
+
   it("lists only the agents this host has a copy of, with log-in and remove, and adds a managed copy", async () => {
     const onChanged = vi.fn()
     render(<HostAgents host={HOST} adapters={ADAPTERS} isInstanceAdmin={false}

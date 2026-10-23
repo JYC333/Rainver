@@ -4,6 +4,7 @@ import type {
   ConversationBackendOption,
   ConversationGitSnapshot,
   RuntimeSessionConfigOption,
+  RuntimeSessionConfigSelection,
   RuntimePromptCapabilities,
 } from "@rainver/protocol";
 import type { RunGitSnapshot } from "../runs/contractSnapshot.js";
@@ -177,6 +178,31 @@ export class ConversationBackendError extends Error {
 
 export class PgConversationBackendRepository {
   constructor(private readonly db: Queryable) {}
+
+  /** The member binding owns saved selections; historical Run snapshots are read-only fallback. */
+  async sessionConfig(spaceId: string, sessionId: string, agentId: string): Promise<RuntimeSessionConfigSelection[]> {
+    const result = await this.db.query<{ config: RuntimeSessionConfigSelection[] | null }>(
+      `SELECT COALESCE(binding.session_config_json, (
+         SELECT run.model_override_json->'acp_session_config' FROM runs run
+          WHERE run.space_id = binding.space_id AND run.session_id = binding.session_id
+            AND run.agent_id = binding.agent_id AND run.model_override_json ? 'acp_session_config'
+          ORDER BY run.created_at DESC, run.id DESC LIMIT 1
+       )) AS config FROM session_conversation_backends binding
+        WHERE binding.space_id = $1 AND binding.session_id = $2 AND binding.agent_id = $3`,
+      [spaceId, sessionId, agentId],
+    );
+    return result.rows[0]?.config ?? [];
+  }
+
+  async saveSessionConfig(spaceId: string, sessionId: string, agentId: string,
+    selections: RuntimeSessionConfigSelection[]): Promise<void> {
+    const result = await this.db.query(
+      `UPDATE session_conversation_backends SET session_config_json = $4::jsonb, updated_at = now()
+        WHERE space_id = $1 AND session_id = $2 AND agent_id = $3 RETURNING id`,
+      [spaceId, sessionId, agentId, JSON.stringify(selections)],
+    );
+    if (!result.rows[0]) throw new ConversationBackendError("Conversation Agent binding not found", 404);
+  }
 
   async listOptions(
     spaceId: string,
@@ -608,6 +634,10 @@ export class PgConversationBackendRepository {
            model_provider_id_snapshot = EXCLUDED.model_provider_id_snapshot,
            runtime_config_snapshot_json = EXCLUDED.runtime_config_snapshot_json,
            runtime_policy_snapshot_json = EXCLUDED.runtime_policy_snapshot_json,
+           session_config_json = CASE
+             WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
+             THEN session_conversation_backends.session_config_json ELSE NULL
+           END,
            runtime_state_key = CASE
              WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
              THEN session_conversation_backends.runtime_state_key

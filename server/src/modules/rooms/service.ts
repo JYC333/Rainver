@@ -2,7 +2,7 @@ import { PgRoomRosterRepository } from "./rosterRepository.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
-import { AgentGroupRunService, type AgentGroupMessageRecipientSegment } from "../agentGroups/service.js";
+import { AgentGroupRunService, type AgentGroupMessageRecipientSegment, type RoomCoordinationTarget } from "../agentGroups/service.js";
 import { HttpError, bestEffortStep, withDbTransaction, dateIso } from "../routeUtils/common.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { PgRunRepository } from "../runs/repository.js";
@@ -604,6 +604,7 @@ export class RoomService {
           request: {
             routing_mode: input.routing_mode ?? "direct",
             recipient_segments: input.recipient_segments ?? null,
+            coordination_target_agent_ids: input.coordination_target_agent_ids ?? null,
             focus_refs: input.focus_refs ?? null,
             backends: input.backends ?? [],
             discussion_id: input.discussion_id ?? null,
@@ -637,6 +638,7 @@ export class RoomService {
       focus_refs: input.focus_refs ?? null,
       routing_mode: input.routing_mode ?? "direct",
       recipient_segments: input.recipient_segments ?? null,
+      coordination_target_agent_ids: input.coordination_target_agent_ids ?? null,
       backends: input.backends ?? [],
       kind: "user",
       discussion_intent: input.discussion_id ? "join" : "separate",
@@ -660,6 +662,7 @@ export class RoomService {
     discussion_intent?: "join" | "separate";
     recipient_segments: AgentGroupMessageRecipientSegment[] | null;
     routing_mode?: "direct" | "agent_coordination";
+    coordination_target_agent_ids?: string[] | null;
     focus_refs?: Array<{ type: "task"; id: string }> | null;
     backends?: Array<{ agent_id: string; runtime_profile_id: string; session_config?: RuntimeSessionConfigSelection[] }>;
   }) {
@@ -672,6 +675,7 @@ export class RoomService {
       focus_refs: input.focus_refs ?? null,
       routing_mode: input.routing_mode ?? "direct",
       recipient_segments: input.recipient_segments,
+      coordination_target_agent_ids: input.coordination_target_agent_ids ?? null,
       backends: input.backends ?? [],
       kind: "user",
       discussion_intent: input.discussion_intent ?? (input.discussion_id ? "join" : "separate"),
@@ -746,7 +750,7 @@ export class RoomService {
             throw new HttpError(409, "Every recipient Run in this Room turn must be failed before retry");
           }
           const segments = new Map<number, AgentGroupMessageRecipientSegment>();
-          const backends = new Map<string, { agent_id: string; runtime_profile_id: string; session_config?: RuntimeSessionConfigSelection[] }>();
+          const backends = new Map<string, { agent_id: string; runtime_profile_id: string; session_config?: RuntimeSessionConfigSelection[]; session_config_inherited?: boolean }>();
           for (const run of completeRuns) {
             const model = record(run.model_override_json);
             const turn = record(model.chat_turn);
@@ -767,13 +771,23 @@ export class RoomService {
             const requestedConfig = Array.isArray(model.acp_session_config)
               ? model.acp_session_config.filter((value): value is RuntimeSessionConfigSelection => Boolean(value && typeof value === "object"))
               : [];
-            backends.set(agentId, { agent_id: agentId, runtime_profile_id: runtimeProfileId, ...(requestedConfig.length ? { session_config: requestedConfig } : {}) });
+            // The original turn's selections, replayed: a value the runtime has
+            // since withdrawn falls back instead of refusing the retry.
+            backends.set(agentId, { agent_id: agentId, runtime_profile_id: runtimeProfileId, ...(requestedConfig.length ? { session_config: requestedConfig, session_config_inherited: true } : {}) });
           }
+          // A message the person handed to the manager is retried the same
+          // way, with the same targets — less any no longer in the Room.
+          const coordinated = metadata.routing_mode === "agent_coordination";
+          const activeAgentIds = coordinated
+            ? new Set((await rooms.listAgentMembers(identity.spaceId, roomId, identity.userId)).map((member) => member.agent_id))
+            : new Set<string>();
           const dispatched = await this.dispatchRoomMessage(client, rooms, room, identity, conversation.id, {
             content: originalMessage.content,
             input_parts: [],
-            routing_mode: "direct",
-            recipient_segments: Array.from(segments.entries()).sort(([left], [right]) => left - right).map(([, segment]) => segment),
+            routing_mode: coordinated ? "agent_coordination" : "direct",
+            coordination_target_agent_ids: stringArray(metadata.coordination_target_agent_ids)
+              .filter((agentId) => activeAgentIds.has(agentId)),
+            recipient_segments: coordinated ? null : Array.from(segments.entries()).sort(([left], [right]) => left - right).map(([, segment]) => segment),
             backends: Array.from(backends.values()),
             kind: "user",
             capability_input_parts: originalMessage.input_parts ?? [],
@@ -1094,16 +1108,20 @@ export class RoomService {
       focus_refs?: Array<{ type: "task"; id: string }> | null;
       routing_mode: "direct" | "agent_coordination";
       recipient_segments: AgentGroupMessageRecipientSegment[] | null;
+      /** Agents a coordinated message referred to; the manager arranges the work with them. */
+      coordination_target_agent_ids?: string[] | null;
       backends: Array<{
         agent_id: string;
         runtime_profile_id: string;
         session_config?: RuntimeSessionConfigSelection[];
+        /** Set only by the server's own retry; the request schemas are strict and cannot carry it. */
+        session_config_inherited?: boolean;
       }>;
       input_parts?: ConversationInputPart[];
       /** Marks a retry so remote prompt hydration can preserve immutable inputs. */
       retry_of_run_id?: string | null;
       /** Existing message-owned parts to validate for a retry without re-claiming them. */
-      capability_input_parts?: Array<{ kind: "image" | "file_reference" | "input_resource" }>;
+      capability_input_parts?: Array<{ kind: "image" | "file_reference" | "input_resource" | "skill" }>;
       prepared_input_parts?: PreparedConversationInputPart[];
       existing_user_message?: MessageOut;
       /** See `AddMessageInput.created_at`; set when references precede it. */
@@ -1150,6 +1168,7 @@ export class RoomService {
           throw new HttpError(422, "Room message recipients must be active Room agents");
         }
       }
+      const coordinationTargets = roomCoordinationTargets(input, agentMembers, manager.agent_id);
       const content = input.content;
       if (!content && !(input.input_parts?.length) && !(input.capability_input_parts?.length)) {
         throw new HttpError(422, "content or an input part is required");
@@ -1165,6 +1184,14 @@ export class RoomService {
         // Resolve and validate every recipient before claiming the turn or
         // inserting the Room message. A mixed-capability fan-out is rejected
         // as one unit and cannot leave a partial transcript or Run set.
+        // Selected Skills: the message author's bindings govern every
+        // addressed recipient, so a retry by another member re-checks the
+        // original author's selection; package bytes are verified once.
+        const verifiedSkills = await assertSelectedSkillsForRecipients(client, {
+          space_id: identity.spaceId, project_id: room.project_id, session_id: sessionId,
+          user_id: input.existing_user_message ? input.existing_user_message.user_id ?? null : identity.userId,
+          setup_user_id: identity.userId,
+        }, recipientIds, capabilityInputParts);
         const capabilityFailures: string[] = [];
         for (const agentId of recipientIds) {
           const selected = requestedBackends.get(agentId);
@@ -1197,6 +1224,7 @@ export class RoomService {
               userId: identity.userId,
               sessionId,
               parts: input.input_parts,
+              verifiedSkills,
             });
           } catch (error) {
             if (error instanceof ConversationInputError) throw new HttpError(error.statusCode, error.message);
@@ -1299,6 +1327,7 @@ export class RoomService {
         agent_id: backend.agent_id,
         runtime_profile_id: backend.runtime_profile_id,
         ...(backend.session_config?.length ? { session_config: backend.session_config } : {}),
+        ...(backend.session_config?.length && backend.session_config_inherited ? { session_config_inherited: true } : {}),
       }));
       const effectiveSegments = input.recipient_segments?.length
         ? segments ? [...segments] : null
@@ -1372,6 +1401,7 @@ export class RoomService {
         retry_of_run_id: input.retry_of_run_id,
         routing_mode: input.routing_mode,
         recipient_segments: effectiveSegments,
+        coordination_targets: coordinationTargets,
         metadata_json: {
           room_id: roomId,
           session_id: sessionId,
@@ -1398,6 +1428,17 @@ export class RoomService {
       });
       const metadata = record(dispatched.message.metadata_json);
       const runIds = stringArray(metadata.recipient_run_ids);
+      // How a person's message was routed, kept on the message itself so a
+      // retry sends it the same way: to the manager with the same targets,
+      // or directly to the same recipients.
+      const routeMetadata: Record<string, unknown> = input.kind === "user"
+        ? {
+            routing_mode: input.routing_mode,
+            ...(coordinationTargets.length
+              ? { coordination_target_agent_ids: coordinationTargets.map((target) => target.agent_id) }
+              : {}),
+          }
+        : {};
       await client.query(
         `UPDATE messages
             SET metadata_json = COALESCE(metadata_json, '{}'::jsonb)
@@ -1410,6 +1451,7 @@ export class RoomService {
           JSON.stringify({
             task_group_id: created.group.id,
             run_ids: runIds,
+            ...routeMetadata,
           }),
         ],
       );
@@ -1422,6 +1464,7 @@ export class RoomService {
             ...(roomMessage.metadata_json ?? {}),
             task_group_id: created.group.id,
             run_ids: runIds,
+            ...routeMetadata,
             ...(input.discussion
               ? { wave: input.discussion.wave, ...(input.discussion.closing ? { discussion_closing: true } : {}) }
               : {}),
@@ -1481,6 +1524,29 @@ async function joinPostedRoomMessage(
   return wave;
 }
 
+/**
+ * The Agents a coordinated message asks the manager to arrange work with:
+ * each an active Agent member of the Room, the manager itself left out.
+ * Targets on a direct send are refused rather than ignored.
+ */
+function roomCoordinationTargets(
+  input: { routing_mode: "direct" | "agent_coordination"; coordination_target_agent_ids?: string[] | null },
+  agentMembers: ReadonlyArray<{ agent_id: string; agent_name: string }>,
+  managerAgentId: string,
+): RoomCoordinationTarget[] {
+  const requested = Array.from(new Set((input.coordination_target_agent_ids ?? []).map((id) => id.trim()).filter(Boolean)));
+  if (requested.length === 0) return [];
+  if (input.routing_mode !== "agent_coordination") {
+    throw new HttpError(422, "Coordination targets require routing_mode agent_coordination");
+  }
+  const members = new Map(agentMembers.map((member) => [member.agent_id, member]));
+  return requested.flatMap((agentId) => {
+    const member = members.get(agentId);
+    if (!member) throw new HttpError(422, "Coordination targets must be active Room agents");
+    return agentId === managerAgentId ? [] : [{ agent_id: agentId, label: member.agent_name }];
+  });
+}
+
 function roomRecipientIds(
   input: { routing_mode: "direct" | "agent_coordination"; recipient_segments: AgentGroupMessageRecipientSegment[] | null },
   managerAgentId: string,
@@ -1530,6 +1596,7 @@ interface RoomSendInput {
   focus_refs?: Array<{ type: "task"; id: string }> | null;
   routing_mode?: "direct" | "agent_coordination";
   recipient_segments?: AgentGroupMessageRecipientSegment[] | null;
+  coordination_target_agent_ids?: string[] | null;
   backends?: Array<{
     agent_id: string;
     runtime_profile_id: string;
@@ -1787,3 +1854,4 @@ async function describeRoomFocus(
       + `else in the Project normally — this is a hint, not a restriction.`,
   };
 }
+import { assertSelectedSkillsForRecipients } from "../capabilities/selectedSkills.js";

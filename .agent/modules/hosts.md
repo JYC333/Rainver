@@ -10,6 +10,53 @@ select or default that binding. **This document describes the current system.**
 
 ## Purpose
 
+Paired-Host owners can explicitly update an `own` Claude Code or Codex CLI
+through `POST /hosts/:hostId/installations/:runtimeKey/own/update`. Which
+runtimes qualify, and the npm package naming each one's release, is one list:
+`OWN_CLI_UPDATE_PACKAGES` in `packages/protocol/src/hostWire.ts`, read by the
+wire frame, the daemon's recipes, the release lookup, the route and the host
+card. The route has no daemon-version check of its own: every daemon the
+control plane accepts (`MIN_HOST_DAEMON_VERSION`) answers `update_own_tool`.
+The daemon drains the runtime before replacement and
+selects fixed recipes from its own PATH: original-prefix npm globals, Claude
+native installs, or Codex standalone installs. Other installation methods are
+refused; no sudo, caller-supplied command or provider credential is used.
+Updater output is streamed and discarded except for a bounded tail used in a
+failure message, so verbose npm output cannot stop an install half way.
+For npm copies, download/install runs in a private temporary prefix beside the
+original Node prefix. The existing command remains usable during that work.
+The staged CLI must pass its version check before promotion; the old package
+and entry are retained until the promoted command also passes. A failed install
+or timeout leaves the old copy alone, and a failed promotion restores it. A
+rollback failure preserves the recovery directory and reports its location.
+Native installations still use their original vendor updater.
+
+Reuse / Dependency Check: reuse the fixed own-update recipes, streaming updater,
+bounded version probe and the managed installer's staging/rename pattern. npm
+performs package acquisition; native filesystem renames provide promotion and
+rollback. No new dependency or second CLI installation manager is introduced.
+Built-in Hosts remain managed-only. This updates the user's CLI, not a bundled
+ACP adapter or its private CLI. The daemon reads the CLI's `--version` before
+and after and returns both on `tool_result` (`from_version`, `to_version`).
+An update that changed the version enters runtime change history with both
+versions; an updater that found the CLI already current answers
+`changed: false` and is not recorded. A daemon that reports no versions is
+recorded as before, with unknown versions.
+The own-update button appears only when the known vendor CLI version is below
+the stable release reported by npm (separate from ACP package versions). Release
+lookups use guarded HTTPS with a three-second deadline and are never awaited by
+`runtime-definitions`: `ownCliReleases.peek` answers from memory and starts at
+most one background lookup when the answer is missing or older than 15 minutes
+(one minute after a failure). A failed lookup keeps the last good version, so
+an offline control plane adds no network wait to the request; the first read
+after start-up reports `null` until the lookup lands. Unknown or prerelease installed
+versions do not offer an update; failed lookups never imply an available update.
+
+The local release builder (`ops/scripts/host/build-local-release.sh`) selects
+Node 24 from PATH or the installed Host's shared runtime, and uses that selection
+for its build subprocesses and packaged runtime. A shell using another Node
+major does not require a manual PATH prefix when the Host runtime is installed.
+
 `hosts` is the control-plane registry of ExecutionHosts: the instance's
 built-in host (exactly one row, seeded automatically, `owner_user_id` NULL)
 and any personal machine a user has paired. It owns pairing, authentication,
@@ -180,6 +227,7 @@ matching `spaces` routes — hosts are user-scoped, not Space-scoped):
   frontend reads instead of re-deriving eligibility. Per runtime:
   `runtime_key`, `display_name`, launch `command`, `capability_probe`,
   `remote_eligible`, `registry_id`, `latest_managed_version`,
+  `latest_own_version` (memory-only, see Purpose),
   `server_supported_version`, `reports_managed_cli_version`, `provider_api`
   (`claude_compatible`, `openai_compatible`, or `vendor` — OpenCode, which
   follows each Provider's vendor protocol; the composer's Provider picker then
@@ -546,17 +594,73 @@ thread reset without the archive happening starts a fresh session in a profile
 that still holds the old one — wasteful, visible in the error the caller gets,
 and fixed by running it again. There is no web surface for this reset.
 
-A remote run is given up on for two distinct reasons, and the failure says
-which: `runtime_timeout` when the whole run budget elapsed, and
-`runtime_stall_timeout` when the runtime produced no output for the stall
-budget. Both carry how long the runtime had been silent. The stall budget is
-one rule for both execution paths (`runs/stallTimeout.ts`): five minutes by
-default, `adapter_config.stall_timeout_seconds` per dispatch, never longer
-than the run budget. Do not derive the stall budget as a fraction of the run
-budget: a runtime busy inside one tool call emits nothing until it returns.
-Do not drop the stall timeout: a runtime that goes quiet must fail as
-`runtime_stall_timeout`, distinct from `runtime_timeout`. Both codes are
-retryable. Nothing emits `cli_adapter_timeout` or `cli_stall_timeout`.
+A remote run has **no default whole-run time budget**. The launch frame sends
+`timeout_seconds: null` (`runs/remoteHostCliAdapter.ts`) and the daemon never
+ends a run because of elapsed time: an implementation round, a test suite or a
+build legitimately outlasts any fixed budget. A run ends when the runtime
+finishes, when the user stops it (`PATCH /api/v1/runs/:runId/stop`), when the
+host connection is lost, when the protocol reports a real failure, or when an
+**explicitly set** time limit is reached.
+
+An explicit limit is enforced by the server, never by the daemon
+(`runs/runTimeLimit.ts`, called from `RunOrchestrationService.invokeAdapter`).
+It is the Run contract's `max_duration_seconds` — set on a Space run budget, a
+Task, a Plan node, an automation or workflow target, or from an experiment's
+`timeout_seconds` — or a dispatch's own `timeout_ms`, whichever is shorter, and
+it applies to each execution attempt from its adapter dispatch. Nothing sets
+one by default: a new Task has no `max_duration_seconds` unless someone sets
+it, and AgentVersion `max_run_time_seconds` is legacy metadata, not a limit.
+At the limit orchestration aborts the attempt's deadline signal, then stops the
+runtime through the same terminate → wait 5 s → force → wait 2 s sequence an
+explicit stop uses (`stopRuntimeProcess`). If the host has still not confirmed
+the stop ten seconds after the limit, `RemoteWsCliCommandExecutor` sends a
+forced `terminate`, settles its own dispatch (`run_time_limit_reached`), and so
+frees the Host slot and stops the credential renewals; the daemon's late
+`complete` then matches nothing. The thread records `status: run_timeout`, and
+the Run settles through the normal terminal path as `failed` with the
+non-retryable `run_timed_out` code, releasing its execution lock, Job and CLI
+lease. An adapter that ignores the signal (any non-daemon family) is given up
+fifteen seconds after the limit with the same outcome. Any representable limit
+is honoured: the timer re-arms in chunks below `setTimeout`'s 2^31−1 ms
+ceiling, so a 30-day limit does not fire at once.
+
+The limit can pass, or a person can stop the Run, before anything was
+launched, while the adapter is still preparing (binding and lease, work
+surface, conversation input, host trust, model observation). The stop then
+reaches no process. `RunOrchestrationService.invokeAdapter` therefore opens
+the invocation on the process registry (`openInvocation`), and
+`terminate`/`forceTerminate` abort its cancel signal even when no process is
+registered. The adapter checks the deadline and cancel signals after each
+preparation step and immediately before dispatch, and
+`RemoteWsCliCommandExecutor` refuses to send a `launch` on either aborted
+signal: a timed-out or stopped attempt never starts a command, even when
+preparation outlasts the settle grace and the Run has already settled. A
+pre-launch stop returns `run_cancelled` and the execution owner publishes the
+Run `cancelled`. The attempt's launch nonce is bound last, just before
+dispatch, and `bindAttemptLaunch` only binds an open (`queued`/`running`)
+attempt, so a Run already `cancelling` or settled — also by a stop on another
+server process — cannot launch either. A Run stopped after its turn already
+reported usage keeps that usage, `model_usage`, `subscription_quota` and the
+host's completion metadata (`task_worktree`, `egress`) on the `run_timed_out`
+envelope, and the usage is metered like any other failed Run's.
+
+Silence is not failure either. A runtime busy inside one tool call emits
+nothing until it returns, and five quiet minutes is ordinary for a long test
+run or a slow model response. After the silence window
+(`runs/stallTimeout.ts`: five minutes by default,
+`adapter_config.stall_timeout_seconds` per dispatch — the name is kept for
+configuration compatibility) the server records **one** informational
+`status: run_quiet` thread event — a code, not prose: the turn projection turns
+it into an `info` diagnostic with `error_code: "run_quiet"` and the web client
+words it in the reader's language (`ConversationTurn.tsx`) — saying no new
+output has arrived and the run is still running. It does not terminate the process, does not mark the session
+invalid, and does not retry. Do not reintroduce a kill-on-silence rule: it
+cannot tell a hung runtime from a working one, and only the user or a
+protocol error can. The current daemon answers every `complete` frame with
+`timed_out: false`, so `runtime_timeout` and `runtime_stall_timeout` are
+legacy values that only older stored Runs carry, and the `run_timeout` status
+is written only for an explicit time limit (above); nothing emits
+`cli_adapter_timeout` or `cli_stall_timeout`.
 
 A bound run tells its runtime which model over ACP
 (`session/set_config_option`), and the value is the binding's resolved model
@@ -816,6 +920,11 @@ over-limit account gets. Anything else answers "no subscription quota" rather
 than launching a CLI to learn nothing. The control plane caches the answer in
 `host_runtime_usage`, refreshes every three hours, folds in the live reading a
 finished Run carries back, and shows it beside the copy on the host card.
+Live Claude readings update that account-wide cache only for the exact
+`five_hour` and `seven_day` windows. Model-specific windows such as
+`seven_day_fable`, and other unrecognised window names, do not overwrite the
+account percentages, reset times, or cache freshness. Their Run metadata is
+retained; this cache does not represent separate model allowances.
 `GET /api/v1/hosts/:hostId/usage` is a cache read; `POST
 .../installations/:runtimeKey/:installation/usage` is the probe. One gate reads
 the cache: an Agent-triggered Room turn waits while its login is past the
@@ -881,6 +990,16 @@ shell to type into — it bounds the channel to what a keyboard can produce;
 the command's exit is `login_exit { exit_code, logged_in }`,
 after which the daemon clears that copy's ACP capability cache and heartbeats
 so both `installations[].logged_in` and its advertised auth methods are current.
+The adapter's optional login `env` applies only to that login/logout subprocess,
+after credential filtering. Claude declares `DISABLE_AUTOUPDATER=1` so leaving
+its login PTY cannot interrupt a background replacement of the user's CLI.
+The current adapter login spec takes precedence over a saved managed manifest.
+Its optional `verification_command` / `managed_verification_command` must pass
+the bounded program-version check before a credential-present login is reported
+successful. Failure retains the credential file, prints an installation-repair
+message and reports unknown login state rather than claiming success. The
+runtime remains held against replacement until verification finishes. Existing
+Hosts need the updated daemon and control-plane login spec for these guards.
 Some Agents advertise Agent Auth but wait indefinitely for credentials their
 own CLI must create first (Cursor: `agent login`, then `authenticate` with
 `cursor_login`). A managed installation without an explicit login spec is
@@ -984,7 +1103,11 @@ entries as `model_override_json.acp_session_config`. The controller validates
 each selection against `session/new`, applies them in category order (model,
 mode, thought level, model config, then unknown), and requires every
 `session/set_config_option` response to return the requested current value
-before prompting. Each response replaces the option snapshot because a model
+before prompting. A Run whose selections came from saved settings rather than
+its request carries `acp_session_config_source: "saved"`; for those the
+controller skips an option or value the live session no longer offers, or does
+not apply, keeps the runtime default, and lists it in the protocol result's
+`dropped_session_config` instead of failing the Run. Each response replaces the option snapshot because a model
 change may change available reasoning levels. There are no `set_model`,
 `set_effort`, `modes`, or vendor-config compatibility paths.
 
@@ -1059,9 +1182,9 @@ heartbeat is marked `execution_ready = false`. On socket close, the host is
 marked `offline` immediately; Host liveness remains distinct from Location
 readiness.
 A `hello` reporting a daemon older than `MIN_HOST_DAEMON_VERSION`
-(`hosts/daemonCompatibility.ts`, `0.4.0`) is refused with `daemon_outdated`.
-An older daemon does not speak the `task_merge_*` frames and would launch a
-resolution Run as an ordinary Task Run. The reported version is recorded and
+(`hosts/daemonCompatibility.ts`, `0.4.3`) is refused with `daemon_outdated`.
+Older daemons do not preserve the original Skill base64 bytes, content hashes
+and structured resource links required by current launches. The reported version is recorded and
 the host stays offline rather than accepting Runs it would fail one at a time,
 so a paired host must update before it can execute again. The refused daemon
 recognises that close (`isOutdatedDaemonClose` in `commands/run.ts`), logs the
@@ -1197,12 +1320,13 @@ waits until that claim is released.
 COALESCE) whenever a resume degrades (`session_reset`) — which
 `recordHostThreadOutcome` concludes only when the runtime proved it: the Run
 failed with `runtime_session_invalid`, or finished a turn without a session id.
-A resume the runtime never answered — `session/resume` sent, no reply before the
-stall timeout or deadline — is reported as `runtime_session_invalid` too
-(`resume_unanswered`), so a session that hangs on load is given up instead of
-timing out every turn. A Run that failed before the runtime tried (the host
-offline, a launch that waited out its budget behind another writer, a person's
-stop, a runtime silent before it initialized) leaves the session in place. A
+A resume the runtime never answers — `session/resume` sent, no reply — is not
+timed out by the server (there is no default run deadline and silence only
+produces a notice); it runs until the user stops it, an explicit time limit is
+reached, or the host connection drops, and none of those retires the session. A Run that failed before the runtime
+tried (the host offline, a launch still queued behind another writer, a
+person's stop, a runtime silent before it initialized) leaves the session in
+place. A
 Run that reports on a session the thread has since retired (dispatched before
 a rotation or reset, run after it — held for the subscription window, say)
 records only that it was the last Run: the retired session is never written
@@ -1305,7 +1429,8 @@ the daemon on heartbeat.
 `assistant_text` (coalesced text segments), `tool_activity_started`/
 `tool_activity_finished` (ACP ToolCall/ToolCallUpdate fields, upserted by
 `tool_call_id` when projected), `status` (`run_started`/`run_succeeded`/`run_failed`/
-`run_timeout`), `diagnostic` (one stderr line each), and `assistant_thought`
+`run_timeout`, plus the informational `run_quiet` silence notice), `diagnostic`
+(one stderr line each), and `assistant_thought`
 (reasoning, coalesced the same way as `assistant_text`).
 
 ACP `tool_call_id` values are opaque correlation keys and are stored as text,
@@ -1409,6 +1534,48 @@ and `/internal/hosts/ws` and nothing else. The tool surface a
 paired host's children call lives at `/api/v1/runs/:runId/tools…`: it is gated
 by the Run's own bearer token, not by the instance token `/internal` carries,
 and a Run reaches the instance through `FRONTEND_URL` like any other client.
+The vendor's command sandbox can still deny network on a trusted Host.
+In particular, the pinned Codex ACP `agent` mode sends `networkAccess: false`
+on each turn, regardless of workspace-network settings in its config file.
+For `RAINVER_TOOL_BRIDGE_PROTOCOL=file-v1` work surfaces, the Linux or macOS daemon
+keeps the Run bearer outside the runtime and exports `RAINVER_TOOL_BRIDGE`, a
+private directory unique to that launch. The server sends `file-v1` only to a
+Host that can serve it (`selectToolBridgeProtocol` in `runs/runWorkSurface.ts`):
+the daemon advertises `capabilities_json.tool_bridge_protocols`, and a daemon
+predating that report is assumed to support it only on Linux, the one platform
+it was implemented on. Any other Host (Windows, or an older macOS daemon) keeps
+the direct-HTTP channel, where the Run bearer is in the Run's environment. That
+token is Run-scoped and not a provider credential; no provider key or OAuth
+material ever enters the environment on any channel (ADR 0008). The CLI exchanges bounded atomic
+request/response files there; the Host forwards only the existing tool REST
+requests with the fixed Run identity. No command network permission or MCP is
+needed. The server negotiates ACP `additionalDirectories` support, and the Host
+adds only this directory to the explicitly requested setup field, including
+on resume. It leaves prompts and vendor network/model settings untouched.
+Both sides pin the directory with an open descriptor. On Linux every child
+operation resolves through `/proc/self/fd/<fd>`, so a renamed or replaced
+directory cannot redirect Host I/O. macOS has no such path and Node has no
+`openat`, so the held descriptor fixes the inode and the path is re-checked
+against its device/inode with `lstat` before every child operation; a
+replacement fails closed, and close never removes a path that no longer names
+the pinned directory. The residual check-then-use window needs write access to
+the bridge directory's parent (the daemon's run directory), which a
+vendor-sandboxed command does not have, and an unsandboxed trusted-Host command
+already holds the owner's full authority. Child entries are read with
+`O_NOFOLLOW`, created with `O_EXCL`, and renamed/unlinked as links, so planted
+links inside the directory are never followed. Symbolic/hard links
+and oversized payloads are rejected, and at most eight calls are in flight.
+A request path is `tools` or `tools/<one action segment>`; dot segments
+(`.`, `..`, `%2e`) and encoded separators (`%2f`, `%5c`) are refused, since the
+URL parser would normalize them into another Run route carrying the bearer.
+Runtime exit or failed launch closes the bridge and aborts pending HTTP.
+An uncertain write is never retried automatically. Each attempt has its own
+directory, so an older attempt's cleanup cannot close the newer one's channel.
+Older server/Host combinations retain direct HTTP; update both components to
+enable this path. The CLI reports DNS, connection, permission, timeout and TLS codes
+without printing credentials from nested errors; HTTP refusals retain the
+server response and status. Requests use a 30-second network timeout and do
+not follow redirects. A transport error alone never proves Host liveness.
 The dev Vite proxy forwards that one WebSocket path rather than all of
 `/internal`, so dev exposes exactly what production does.
 
@@ -1586,12 +1753,12 @@ live dispatch (nonce-checked) until `launched` or `complete`;
 `isWaitingForWorkspace(runId)` is read by `runs/turnReadModel.ts`, which
 reports a `running` Run so marked as `state: "blocked"`,
 `blocked_on: "workspace"` through the existing blocked-turn rendering.
-**A Run's time budget starts at `launched`.** `RemoteWsCliCommandExecutor`
-arms the Run's timeout when the daemon reports the process started, as the
-daemon's own timer does, so a launch queued behind another writer (or for a
-built-in host slot) spends none of it; the wait itself is bounded by one
-budget from dispatch, after which the dispatch ends as a timeout and a
-`terminate` for it is sent. The stall clock does not run before `launched`.
+**The silence notice starts at `launched`.** A Run has no default time
+budget (see "no default whole-run time budget" above), and a launch queued
+behind another writer (or for a built-in host slot) is not timed out either:
+the dispatch waits until the daemon reports `launched`, the user stops it, the
+host disconnects, or an explicitly set limit — measured from dispatch, so the
+queue wait counts — is reached. The silence-notice timer does not run before `launched`.
 
 **Task worktrees and Task branches (ADR 0016 §11).** `withTaskWorktree`
 (`runs/remoteHostCliAdapter.ts`) sets `LaunchWorkspace.worktree: { task_id }`
@@ -2303,9 +2470,9 @@ Capability discovery (`src/capabilities.ts`) probes PATH via `--version` for
 (one per implemented ACP adapter spec — the daemon holds no list of its own,
 so the first hello of a fresh daemon reports only `git` until the heartbeat
 sent right after the ack). Absent binaries are silently omitted. A binary
-found on PATH is the machine's own copy and is never installed or upgraded by
-the daemon; installing and version-managing is only ever done to a *managed*
-copy, on either host kind, through `install_tool` (above).
+found on PATH is the machine's own copy. It is never changed on the daemon's
+own initiative; the owner may explicitly request the fixed `update_own_tool`
+recipes described above. Managed copies use `install_tool`.
 
 ## Known current gaps
 
@@ -2347,3 +2514,27 @@ and ADR 0008's credential channel. Fixed verification recipes keep using
 `command_run`; when the Run uses a managed installation, its adapter and
 installation identity travel with that frame so the same namespace binds the
 versioned executable tree.
+
+## Imported Skill package files
+
+Accepted Runtime Context Delivery packages become bounded work-surface files
+under `rainver/skills/<package-id>/`; base64 encoding plus SHA-256 is verified
+before spawning the CLI. `RAINVER_SKILL_ROOT` names this launch's Skill root.
+ACP resource links use an exact materialized path map; arbitrary user text
+is opaque. Negotiated additionalDirectories includes the Skill root for
+Claude Code/Codex access. These files grant no extra execution permissions,
+install no hooks/dependencies, and leave with the temporary Run surface.
+Project Folder import can request original bytes over folder-read without
+changing the ordinary text-preview API. Host daemon 0.4.3 is the minimum for
+these contracts.
+
+## Global CLI Skill acquisition
+
+Daemon 0.4.3 supports `skill_scan` and `skill_read` on the shared single-frame
+request transport. `globalSkills.ts` resolves fixed personal and managed CLI
+roots locally, supports top-level linked Skill folders, returns bounded logical
+metadata/opaque ids, and reacquires selected original files via folder-read.
+There is no caller-supplied arbitrary root or server filesystem access. Paired
+Host state is owner-only; scanning built-in Host global state requires instance
+admin. The capabilities module owns API import, hash binding and review. The
+Skill import modal replaces the Project Folder picker with these discoveries.

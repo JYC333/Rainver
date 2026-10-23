@@ -46,11 +46,6 @@ describe('groupThreadsForNavigator', () => {
     expect(groups.map(group => group.id)).toEqual(['closed'])
   })
 
-  it('omits empty groups instead of rendering placeholder headings', () => {
-    const groups = groupThreadsForNavigator([thread({ id: 'a', attention_state: 'focused' })])
-    expect(groups).toHaveLength(1)
-  })
-
   it('sorts higher priority first, then oldest first', () => {
     const groups = groupThreadsForNavigator([
       thread({ id: 'low', priority: 0, created_at: '2026-07-01T00:00:00.000Z' }),

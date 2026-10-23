@@ -76,20 +76,35 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   exit 1
 fi
 
-for command_name in git node pnpm sha256sum tar; do
+for command_name in git pnpm sha256sum tar; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "Required command not found: $command_name" >&2
     exit 1
   }
 done
 
-node_command="$(command -v node)"
-node_major="$("$node_command" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
-if [[ "$node_major" != "24" ]]; then
-  echo "Local Host packaging requires Node.js 24.x; found $("$node_command" --version 2>/dev/null || echo unknown)." >&2
-  echo "Activate the repository's Node version from .nvmrc and try again." >&2
-  exit 1
+node_command="$(command -v node || true)"
+node_major=""
+if [[ -n "$node_command" ]]; then
+  node_major="$("$node_command" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)"
 fi
+if [[ "$node_major" != "24" ]]; then
+  # Match install-host.sh: an installed Host already carries the required
+  # runtime even when the user's interactive shell selects another major.
+  host_install_root="${RAINVER_HOST_INSTALL_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/rainver-host}"
+  shared_node="$host_install_root/runtime/node-current/bin/node"
+  if [[ -x "$shared_node" && "$("$shared_node" -p 'process.versions.node.split(".")[0]' 2>/dev/null || true)" == "24" ]]; then
+    node_command="$shared_node"
+  else
+    echo "Local Host packaging requires Node.js 24.x; none found on PATH or in the installed Host runtime." >&2
+    echo "Install/activate the repository's Node version from .nvmrc and try again." >&2
+    exit 1
+  fi
+fi
+# pnpm and its build children must use the selected runtime too, not merely
+# the binary copied into the release. This does not change the parent shell.
+export PATH="$(dirname "$node_command"):$PATH"
+echo "Using Node.js $("$node_command" --version): $node_command"
 
 case "$(uname -m)" in
   x86_64|amd64) release_arch="x64" ;;

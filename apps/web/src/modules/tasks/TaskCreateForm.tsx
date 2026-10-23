@@ -97,7 +97,7 @@ export default function TaskCreateForm({ boards, agents, submitLabel, busy = fal
       </div>
 
       <div className="space-y-1.5"><Label htmlFor="task-create-tags">Tags <span className="font-normal text-muted-foreground">(optional, comma separated)</span></Label><Input id="task-create-tags" value={tags} onChange={event => setTags(event.target.value)} placeholder="e.g. planning, launch" /></div>
-      <p className="text-xs text-muted-foreground">Execution defaults: {DEFAULT_TASK_LIMITS.max_runs} runs · ${DEFAULT_TASK_LIMITS.max_cost} budget · {DEFAULT_TASK_LIMITS.max_duration_seconds / 60} minutes. You can change these later under advanced contract settings.</p>
+      <p className="text-xs text-muted-foreground">Execution defaults: {DEFAULT_TASK_LIMITS.max_runs} runs · ${DEFAULT_TASK_LIMITS.max_cost} budget · no time limit. You can change these later under advanced contract settings.</p>
 
       <div className="flex justify-end gap-2 border-t border-border pt-4">{onCancel && <Button type="button" variant="ghost" onClick={onCancel} disabled={busy || saving}>Cancel</Button>}<Button type="submit" disabled={busy || saving}>{(busy || saving) ? 'Creating…' : submitLabel}</Button></div>
     </form>

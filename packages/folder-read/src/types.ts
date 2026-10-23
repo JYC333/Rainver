@@ -4,9 +4,13 @@ export interface FileNode {
   type: "file" | "dir";
   size?: number;
   children?: FileNode[];
+  /** Another page of this directory, absent when the listing is complete. */
+  next_offset?: number;
 }
 
 export interface FileContent {
+  /** Explicit bounded original-byte acquisition (Skill imports), never a text preview. */
+  content_base64?: string;
   path: string;
   content: string;
   size: number;

@@ -1,14 +1,7 @@
-const RUN_CONTRACT_VERSION = "run_contract.v1" as const;
+import { RunContractSourceKindSchema, type RunContractSourceKind } from "@rainver/protocol";
+export type { RunContractSourceKind } from "@rainver/protocol";
 
-export type RunContractSourceKind =
-  | "direct"
-  | "space"
-  | "task"
-  | "automation"
-  | "workflow"
-  | "delegation"
-  | "plan"
-  | "agent_version";
+const RUN_CONTRACT_VERSION = "run_contract.v1" as const;
 
 export interface RunContractSource {
   kind: RunContractSourceKind;
@@ -121,30 +114,11 @@ export function createRunContractSnapshot(
   const source = input?.source ?? { kind: "direct" as const, id: null };
   const budgetSources = normalizeBudgetSources(input, source);
   const budget = resolveBudget(budgetSources);
-  const agentConstraintSource = input?.agent_constraints
-    ? { kind: "agent_version" as const, id: input.agent_constraints.agent_version_id }
-    : null;
-  const effectiveBudget = { ...budget.effective };
-  const selectedSourceByDimension = { ...budget.resolution.selected_source_by_dimension };
-  const recordedBudgetSources = [...budget.sources];
-  if (input?.agent_constraints) {
-    const { max_run_time_seconds: maxRunTimeSeconds } = input.agent_constraints;
-    recordedBudgetSources.push({
-      source: agentConstraintSource!,
-      max_duration_seconds: maxRunTimeSeconds,
-    });
-    if (effectiveBudget.max_duration_seconds === null || maxRunTimeSeconds <= effectiveBudget.max_duration_seconds) {
-      effectiveBudget.max_duration_seconds = maxRunTimeSeconds;
-      selectedSourceByDimension.max_duration_seconds = agentConstraintSource;
-    }
-  }
-  const budgetResolution: RunBudgetResolution = {
-    ...budget.resolution,
-    mode: budget.resolution.mode === "none" && input?.agent_constraints
-      ? "strictest_of_all"
-      : budget.resolution.mode,
-    selected_source_by_dimension: selectedSourceByDimension,
-  };
+  // Preserve declared budget metadata for audit, but an AgentVersion's legacy
+  // duration is no longer an execution budget.
+  const effectiveBudget = budget.effective;
+  const recordedBudgetSources = budget.sources;
+  const budgetResolution = budget.resolution;
   return {
     contract_version: RUN_CONTRACT_VERSION,
     source: {
@@ -329,7 +303,8 @@ function resolveBudget(sources: RunBudgetSource[]): {
 }
 
 function isSourceKind(value: unknown): value is RunContractSourceKind {
-  return value === "direct" || value === "space" || value === "task" || value === "automation" || value === "workflow" || value === "delegation" || value === "plan";
+  // AgentVersion provenance is readable, but was never an admitted budget source.
+  return RunContractSourceKindSchema.exclude(["agent_version"]).safeParse(value).success;
 }
 
 function nonNegativeNumberOrNull(value: number | null | undefined): number | null {

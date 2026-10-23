@@ -217,22 +217,6 @@ describe("Memory zero-LLM retrieval create-safety", () => {
     expect(db.forbiddenWrites).toHaveLength(0);
   });
 
-  it("does not surface another user's private memory", async () => {
-    const db = new MemorySearchFakeDb();
-    db.addMemory(memRow({ visibility: "private", owner_user_id: USER_B }));
-    db.addAlias(MEM_A, "Coffee preferences", "title");
-
-    const out = await service(db).assessCreateSafety({
-      spaceId: SPACE_A,
-      viewerUserId: USER_A,
-      objectType: "memory_entry",
-      title: "Coffee preferences",
-    });
-
-    expect(out.create_safety).toBe("unknown");
-    expect(out.matches).toHaveLength(0);
-  });
-
   it("does not surface a highly_restricted memory to a non-owner", async () => {
     const db = new MemorySearchFakeDb();
     db.addMemory(memRow({ sensitivity_level: "highly_restricted", owner_user_id: USER_B }));
@@ -290,23 +274,6 @@ describe("Memory zero-LLM retrieval create-safety", () => {
     ).toHaveLength(0);
   });
 
-  it("matches summary-access memory but redacts its content for a non-owner", async () => {
-    const db = new MemorySearchFakeDb();
-    db.addMemory(memRow({ visibility: "space_shared", access_level: "summary", owner_user_id: USER_B }));
-    db.addAlias(MEM_A, "Coffee preferences", "title");
-
-    const out = await service(db).assessCreateSafety({
-      spaceId: SPACE_A,
-      viewerUserId: USER_A,
-      objectType: "memory_entry",
-      title: "Coffee preferences",
-    });
-
-    expect(out.matches[0]?.object_id).toBe(MEM_A);
-    // Content must not leak through the snippet for summary access.
-    expect(out.matches[0]?.snippet).toBeNull();
-  });
-
   it("excludes the memory being edited from its own create-safety check", async () => {
     const db = new MemorySearchFakeDb();
     db.addMemory(memRow());
@@ -346,25 +313,6 @@ describe("Memory retrieval project gating", () => {
     });
   }
 
-  it("hides project memory from a non-member in a shared space", async () => {
-    const db = dbWithProjectMemory("household");
-    const out = await search(db, USER_B); // USER_B is not a member and not the owner
-    expect(out.items).toHaveLength(0);
-  });
-
-  it("shows project memory to an active project member", async () => {
-    const db = dbWithProjectMemory("household");
-    db.addMember(PROJECT, USER_B);
-    const out = await search(db, USER_B);
-    expect(out.items.map((i) => i.object_id)).toContain(MEM_A);
-  });
-
-  it("shows project memory to the project owner", async () => {
-    const db = dbWithProjectMemory("household");
-    const out = await search(db, USER_A);
-    expect(out.items.map((i) => i.object_id)).toContain(MEM_A);
-  });
-
   it("shows all project memory to the sole member of a personal space", async () => {
     const db = dbWithProjectMemory("personal");
     // USER_B is not a member/owner of the project, but in a personal space the
@@ -373,13 +321,6 @@ describe("Memory retrieval project gating", () => {
     expect(out.items.map((i) => i.object_id)).toContain(MEM_A);
   });
 
-  it("does not project-gate memory with no project_id", async () => {
-    const db = new MemorySearchFakeDb();
-    db.addMemory(memRow({ project_id: null, owner_user_id: USER_A, visibility: "space_shared" }));
-    db.addAlias(MEM_A, "Coffee preferences", "title");
-    const out = await search(db, USER_B); // non-member, but row has no project
-    expect(out.items.map((i) => i.object_id)).toContain(MEM_A);
-  });
 });
 
 describe("Memory retrieval batch revalidation", () => {

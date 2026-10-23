@@ -29,6 +29,11 @@ describe("run evidence redaction", () => {
     expect(redactEvidenceText("adapter completed")).toBe("adapter completed");
   });
 
+  it("redacts an npm token in the same shape the folder diff rule does", () => {
+    const token = `npm_${"a1B2".repeat(9)}`;
+    expect(redactSecretPatterns(`publish with ${token} now`)).toBe("publish with [REDACTED_SECRET] now");
+  });
+
   it("removes raw evidence fields recursively from persisted metadata", () => {
     expect(
       sanitizeEvidenceJson({

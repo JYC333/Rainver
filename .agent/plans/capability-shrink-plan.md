@@ -1,7 +1,89 @@
 # Capability Shrink Plan
 
 Date: 2026-08-13; revised 2026-08-14
-Status: **PAUSED 2026-08-21**, re-pointed 2026-08-23 — items 1–6 below remain
+Status: **Skill Library implementation authorized 2026-10-22**. The user
+approved unified local/network import, central management across CLIs, and
+explicit `/` and `@` conversation invocation. The execution checklist below
+supersedes the old pause for this scope. Unrelated research-capability removal
+is not part of this implementation.
+
+## Current execution checklist (2026-10-22)
+
+- [x] Preserve bounded original package bytes, including references/assets,
+  with an additive generated migration. Old inventory-only imports remain
+  readable and explicitly need reimport before package delivery.
+- [x] Resolve reviewed, pinned packages through scope bindings and Runtime
+  Context Delivery; materialize only authorized files for the execution Host.
+  Keep package scripts, hooks and dependencies separate from execution grants.
+- [x] Unify GitHub, uploaded folder/ZIP, and authorized Project Folder imports
+  behind the same preview/hash/review path. Provide the Skills library page.
+- [x] Add `/` and `@` skill selection to direct and Room conversations, with
+  typed package/version refs, visible selected-skill chips, and durable replay.
+- [x] Verify import bounds, Space/scope authorization, immutable versions,
+  delivery integrity and conversation selection with focused real-Postgres,
+  Host, protocol and frontend tests; update owning guides and build checks.
+
+Implemented in the current working tree. Validation: 174 focused backend tests,
+132 Room DB tests, 106 frontend tests, 272 protocol tests, 57 Host tests and
+27 folder-read tests passed. Server/web/Host/protocol type checks, web build,
+schema consistency and guide/boundary checks passed. Real PostgreSQL fixtures
+exercise approval, original-byte persistence, live binding revocation,
+Direct sessions without agent_id, Setup Project overrides and Skill-only retry.
+No deployment, push or commit is included. Live vendor-account CLI smoke is
+not part of this verification; both Claude Code/Codex ACP resource links and
+Host binary materialization are covered deterministically.
+
+### UI and local-source correction (2026-10-22)
+
+The Skill library is a list/detail surface; import lives in a source-tabbed
+modal with loading, empty, failure and selected-file states. Local discovery
+uses the selected owned Host's CLI global directories, not a Project Folder
+picker. Claude personal skills, Codex shared and legacy skills, and OpenCode
+personal skills are discovered for personal and installed managed copies.
+Only fixed daemon-resolved roots and opaque candidate ids cross this boundary.
+
+Reuse / Dependency Check: reuse HostConnectionRegistry's typed single-frame
+request transport, installedTools manifests, folder-read safe opens/path policy,
+existing package preview/hash review, Radix dialog/tabs and existing Select.
+The filesystem capability is already provided by Node and folder-read; a new
+installer or filesystem library is unnecessary. No new runtime dependency.
+Host protocol 0.4.3 introduces scan/read frames. Project Folder import remains
+a legacy API; the page replaces its picker with global CLI discovery.
+
+Validation for this correction: real Chromium desktop/mobile and light/dark
+checks, including populated detail and import selection; no horizontal
+overflow. Focused backend/DB/transport (75), web navigation/import (27),
+Host execution/folder regression (57) and scanner (5) tests passed; protocol
+suite (273), affected final protocol checks, type checks and web build passed.
+Preview fixtures were synthetic; no personal global Skill contents or vendor
+accounts were read for UI verification. No deployment or commit performed.
+
+Root references: https://code.claude.com/docs/en/skills,
+https://github.com/openai/codex/blob/main/codex-rs/ext/skills/src/host_roots.rs,
+https://opencode.ai/docs/skills/.
+
+### Reuse / Dependency Check
+
+Reuse the GitHub outbound guard, YAML parser, package review applier, scope
+authorization, Runtime Context Delivery, Host work-surface transport, typed
+conversation inputs, existing UI primitives and real PostgreSQL fixtures.
+The Agent Skills format remains the content format. Vercel Skills supports
+multi-agent installation, but its installer owns user directories and is not
+a drop-in for Rainver's Space/approval/Host boundary; retain Rainver's bounded
+source acquisition rather than invoking an installer on the server.
+Use pinned `fflate` 0.8.2 for ZIP decoding (MIT, TypeScript, ESM/CJS, no runtime
+dependencies, streaming entry API); bound entry count and decompressed bytes
+in the import adapter. It is an established small ZIP implementation with
+no transitive runtime supply chain; malformed/truncated archive and expansion
+regressions are covered locally. Version upgrades require the same boundary
+checks. No custom ZIP parser or new Agent execution loop.
+References: https://agentskills.io/specification,
+https://github.com/vercel-labs/skills/blob/main/docs/commands.md,
+https://github.com/101arrowz/fflate.
+
+## Prior scheduling context
+
+Previously **PAUSED 2026-08-21**, re-pointed 2026-08-23 — items 1–6 below remained
 unscheduled and stay unscheduled while the execution-topology and Project
 control-plane work (Machine/ExecutionHost/WorkspaceLocation dispatch + Task
 spine; P0/P1 shipped 2026-08-23, that plan now retired — git history holds
@@ -27,12 +109,12 @@ the authority for what they did.
 The second was originally the first half of a single "delete the pack and
 template layer" item. It was split during implementation because the capability
 half turned out not to be dead code; that finding is recorded under item 2
-below. Everything remaining is unscheduled.
+below. The remaining historical removal work is unscheduled; the approved unified
+Skill library checklist above is active.
 
 Review consent is run-scoped to the item being implemented plus relevant
-repository context, and reviewers are local subagents in this session. No push,
-PR, deployment, destructive cleanup, or implementation of an unscheduled item is
-authorized.
+repository context, and reviewers are local subagents in this session. No push, PR, deployment or destructive cleanup is authorized by this plan.
+The 2026-10-22 approval authorizes the unified library checklist above.
 
 ## Purpose
 

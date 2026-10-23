@@ -171,7 +171,7 @@ export function DiscussionGroup({
   warnPct?: number
   messages: readonly RoomMessage[]
   agents: readonly AgentLabel[]
-  onStop: (discussionId: string) => Promise<void>
+  onStop?: (discussionId: string) => Promise<void>
   /** Absent for a reader who may not add rounds (not a Project writer). */
   onExtend?: (discussionId: string, rounds: number) => Promise<void>
   /** Admit the turns held at the subscription reserve line. */
@@ -221,7 +221,7 @@ export function DiscussionGroup({
             )}
           </span>
         </div>
-        {latest && (discussion?.status === 'active' || discussion?.status === 'cap_reached') && (
+        {latest && onStop && (discussion?.status === 'active' || discussion?.status === 'cap_reached') && (
           <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => void act(() => onStop(discussionId))}>
             {t('conversation_ui.discussion.stop')}
           </Button>

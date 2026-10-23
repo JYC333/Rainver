@@ -166,21 +166,26 @@ export class PostRunFinalizationService {
     snapshot: RunRecord,
     attemptNumber: number,
   ): Promise<RunFinalizationRecord> {
-    const run = snapshot;
-    const spaceId = run.space_id;
-    const runId = run.id;
+    const spaceId = snapshot.space_id;
+    const runId = snapshot.id;
     const existing = await this.repository.getRunFinalizationByVersion(
       spaceId,
       runId,
       attemptNumber,
       RUN_FINALIZER_VERSION,
     );
+    // The Run and attempt were read separately before this lock. A competing
+    // finalizer can have queued (or even finished) a successor between them.
+    // Only the current terminal snapshot may supply evidence for this attempt.
+    const run = await this.repository.getRun(spaceId, runId);
+    if (!run) throw new RunNotFoundError(`Run '${runId}' not found in space '${spaceId}'`);
+    if (await this.currentAttemptNumber(run) !== attemptNumber) {
+      if (existing) return existing;
+      throw new NonTerminalRunError(`Run '${runId}' changed physical attempt before finalization; retry with its current status.`);
+    }
     if (existing) {
-      // `run` was read before the lock. The finalizer that wrote `existing`
-      // may have supervised this failure since — requeued the Run on its
-      // next attempt — so the question "is there a failure to supervise" is
-      // asked of the Run as it is now, not of that snapshot.
-      const run = await this.repository.getRun(spaceId, runId) ?? snapshot;
+      // A previous pass may have persisted its evaluation before supervision
+      // or settlement finished. Resume that work only for this same attempt.
       const verificationResults = await this.repository.listVerificationResults(spaceId, runId);
       const repeatedEvaluation = {
         id: existing.run_evaluation_id,
@@ -199,13 +204,17 @@ export class PostRunFinalizationService {
         repeated: true,
       });
       if (isSupervisableStatus(run.status)) {
-        await this.superviseBestEffort(run, repeatedEvaluation);
+        await this.superviseBestEffort(run, repeatedEvaluation, attemptNumber);
       }
       if (!existing.settled_at) {
         const currentRun = await this.repository.getRun(spaceId, runId);
         await this.settle(currentRun ?? run, existing);
       }
       return existing;
+    }
+
+    if (!TERMINAL_STATUSES.has(run.status)) {
+      throw new NonTerminalRunError(`Run '${runId}' is no longer terminal (status='${run.status}'); finalization requires a terminal status.`);
     }
 
     // Idempotency rests on the finalization row, written last. A pass that
@@ -268,7 +277,7 @@ export class PostRunFinalizationService {
       // RunEvent is an append-only audit log. A missed audit event must not
       // turn a completed finalization into a failed one.
     }
-    await this.superviseBestEffort(run, evaluation);
+    await this.superviseBestEffort(run, evaluation, attemptNumber);
     const currentRun = await this.repository.getRun(spaceId, runId);
     await this.settle(currentRun ?? run, finalization);
     return finalization;
@@ -277,12 +286,13 @@ export class PostRunFinalizationService {
   private async superviseBestEffort(
     run: RunRecord,
     evaluation: Pick<RunEvaluationRecord, "failure_reason_code" | "outcome_status">,
+    attemptNumber: number,
   ): Promise<void> {
     if (!this.supervisor) return;
     // The evaluation is durable and repeated finalization is idempotent, but a
     // missing Supervisor decision is not optional: callers must retry until
     // the retry/review transition is committed.
-    await this.supervisor.supervise({ run, evaluation });
+    await this.supervisor.supervise({ run, evaluation, attempt_number: attemptNumber });
   }
 
   /**
@@ -293,10 +303,17 @@ export class PostRunFinalizationService {
    * best-effort extras outside the gate.
    */
   private async settle(run: RunRecord, finalization: RunFinalizationRecord): Promise<void> {
+    // Supervision can commit a successor while this finalizer still owns the
+    // previous attempt's lock. That successor may already have finished on
+    // another worker; only its own finalization may reconcile its outcome.
+    // The earlier finalization can close its own completion gate: it owes
+    // no domain reconciliation once superseded, and must not look pending.
+    const reconcilers = await this.currentAttemptNumber(run) === finalization.attempt_number
+      ? this.settlement?.reconcilers() ?? [] : [];
     const recorded = recordValue(finalization.settlement_json).completed;
     const completed = new Set(Array.isArray(recorded) ? recorded.filter((key): key is string => typeof key === "string") : []);
     let failure: { key: string; error_code: string; message: string } | null = null;
-    for (const { key, settle } of this.settlement?.reconcilers() ?? []) {
+    for (const { key, settle } of reconcilers) {
       if (completed.has(key)) continue;
       try {
         await settle(run);

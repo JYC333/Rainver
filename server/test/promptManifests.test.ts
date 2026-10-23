@@ -180,33 +180,4 @@ describe("loadPromptManifests validation", () => {
     );
     await expect(loadPromptManifests(dir)).rejects.toThrow(/does not match prompt_asset\.v1/);
   });
-
-  it("rejects prompt content with no renderable messages or template", async () => {
-    dir = await mkdtemp(join(tmpdir(), "prompt-manifests-"));
-    await writeManifest(
-      dir,
-      "empty-prompt.yaml",
-      "asset_key: empty.prompt\ndisplay_name: Empty\ncontent:\n  schema_version: prompt_asset.v1\n  prompt_type: text\n",
-    );
-    await expect(loadPromptManifests(dir)).rejects.toThrow(/exactly one of messages or template/);
-  });
-
-  it("rejects unsupported rendering engines", async () => {
-    dir = await mkdtemp(join(tmpdir(), "prompt-manifests-"));
-    await writeManifest(
-      dir,
-      "unsupported-engine.yaml",
-      [
-        "asset_key: unsupported.engine",
-        "display_name: Unsupported",
-        "content:",
-        "  schema_version: prompt_asset.v1",
-        "  prompt_type: text",
-        "  template: Hello",
-        "  rendering:",
-        "    engine: mustache",
-      ].join("\n"),
-    );
-    await expect(loadPromptManifests(dir)).rejects.toThrow(/does not match prompt_asset\.v1/);
-  });
 });

@@ -21,11 +21,10 @@ export const TASK_RISK_OPTIONS = [
   { value: 'critical', label: 'Critical' },
 ]
 
-/** Conservative defaults applied by the server for ordinary user-created Tasks. */
+/** Conservative defaults applied by the server for ordinary user-created Tasks. There is no default time limit. */
 export const DEFAULT_TASK_LIMITS = {
   max_runs: 3,
   max_cost: 10,
-  max_duration_seconds: 3600,
 }
 
 export function taskTypeOptions(current: string | null | undefined) {

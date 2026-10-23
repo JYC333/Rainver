@@ -732,10 +732,12 @@ export default function ProjectFilesPage() {
               ) : (
                 <FileTreeNode
                   node={fileTree}
+                  key={selectedFolder?.id}
                   depth={0}
                   selectedPath={selectedFilePath}
                   onFileSelect={handleFileSelect}
                   changes={treeChanges}
+                  loadDirectory={(path, offset) => projectFoldersApi.tree(projectId, selectedFolder!.id, path, offset)}
                 />
               )}
             </TabsContent>

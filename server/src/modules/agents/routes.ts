@@ -1,3 +1,10 @@
+import {
+  reconcileSavedSessionConfig,
+  resolveSessionConfig,
+  sessionConfigRunOverride,
+  validateSessionConfig as validateConversationSessionConfig,
+  type ResolvedSessionConfig,
+} from "../sessions/sessionConfig.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import * as protocol from "@rainver/protocol";
 import type {
@@ -44,7 +51,7 @@ import { resolveContentCreationContext } from "../access/creationContext.js";
 import { prepareHostConversationDispatch } from "../agentGroups/service.js";
 import { renderAgentIdentityPrompt } from "../agentGroups/agentIdentityPrompt.js";
 import { TERMINAL_RUN_STATUSES } from "../runs/orchestrationResults.js";
-import { assertProjectReadable } from "../projects/access.js";
+import { assertProjectReadable, assertProjectWriterForMutation } from "../projects/access.js";
 import { requireSpaceOwnerOrAdmin } from "../routeUtils/access.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
@@ -599,10 +606,45 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         ? repository.findBinding(identity.spaceId, identity.userId, sessionId, agentId)
         : Promise.resolve(null),
       sessionId
-        ? latestConversationSessionConfig(dbPool(context.config), identity.spaceId, sessionId, agentId)
+        ? repository.sessionConfig(identity.spaceId, sessionId, agentId)
         : Promise.resolve([]),
     ]);
     return reply.send({ options, binding, session_config: sessionConfig });
+  });
+
+  app.put("/api/v1/agents/:agentId/conversation-session-config", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    try {
+      const body = parseBody(protocol.ConversationSessionConfigSaveSchema, jsonBody(request));
+      const agentId = params(request).agentId ?? "";
+      const config = await withTransaction(dbPool(context.config), async (db) => {
+        const session = await new PgSessionRepository(db).getConversationForBackendSelection(
+          identity.spaceId, identity.userId, body.session_id,
+        );
+        if (!session) throw new HttpError(404, "Session not found");
+        if (session.room_id) {
+          if (!session.project_id) throw new HttpError(404, "Project not found");
+          await assertProjectWriterForMutation(db, identity.spaceId, session.project_id, identity.userId);
+          const member = await db.query(
+            `SELECT 1 FROM room_agent_members WHERE space_id = $1 AND room_id = $2 AND agent_id = $3 AND status = 'active'`,
+            [identity.spaceId, session.room_id, agentId],
+          );
+          if (!member.rows[0]) throw new HttpError(404, "Agent not found");
+        } else if (session.agent_id && session.agent_id !== agentId) {
+          throw new HttpError(404, "Agent not found");
+        }
+        const repository = new PgConversationBackendRepository(db);
+        const backend = await repository.resolveBinding({
+          space_id: identity.spaceId, user_id: identity.userId, session_id: session.id, agent_id: agentId,
+          requested: { runtime_profile_id: body.runtime_profile_id },
+        });
+        const selections = validateConversationSessionConfig(body.session_config, backend.session_config_options ?? []);
+        await repository.saveSessionConfig(identity.spaceId, session.id, agentId, selections);
+        return selections;
+      });
+      return reply.send({ session_config: config });
+    } catch (error) { return sendRouteError(reply, error); }
   });
 
   app.get("/api/v1/agents/:agentId/current-version", async (request, reply) => {
@@ -971,10 +1013,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           agent_id: agent.id,
           requested: req.backend ?? null,
         });
-        const sessionConfig = validateConversationSessionConfig(
-          req.session_config ?? [],
+        // A selection sent with this turn is strict; a saved or inherited one
+        // the runtime has since withdrawn falls back to its default, with a
+        // notice on the turn (`sessions/sessionConfig.ts`).
+        const sessionConfig = await resolveSessionConfig(
+          req.session_config,
+          async () => transaction.db ? new PgConversationBackendRepository(transaction.db).sessionConfig(identity.spaceId, session.id, agent.id) : [],
           backend.session_config_options ?? [],
         );
+        if (!req.session_id && req.session_config && transaction.db) {
+          await new PgConversationBackendRepository(transaction.db).saveSessionConfig(
+            identity.spaceId, session.id, agent.id, sessionConfig.selections,
+          );
+        }
         try {
           assertConversationInputCapabilities(req.input_parts, backend.prompt_capabilities);
           assertConversationInputResourceTools(req.input_parts, backend.runtime_key);
@@ -1023,11 +1074,16 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         let preparedInputParts;
         if (req.input_parts.length > 0) {
           if (!transaction.db) throw new ChatContextError("Conversation input validation is temporarily unavailable", 503);
+          // Admission verifies each selected package once; preparation reuses that result.
+          const verifiedSkills = await assertSelectedSkillsForRecipients(transaction.db, { space_id: creation.spaceId,
+            project_id: session.project_id ?? null, user_id: identity.userId, session_id: session.id },
+          [agentId], req.input_parts);
           preparedInputParts = await new ConversationInputService(transaction.db, context.config).prepareMessageParts({
             spaceId: creation.spaceId,
             userId: identity.userId,
             sessionId: session.id,
             parts: req.input_parts,
+            verifiedSkills,
           });
         }
         const userMessage = await transaction.sessions.addMessage(
@@ -1280,14 +1336,19 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               }
               throw error;
             }
-            const requestedConfig = protocol.RuntimeSessionConfigSelectionSchema.array().safeParse(originalModel?.acp_session_config);
-            const sessionConfig = validateConversationSessionConfig(
-              requestedConfig.success ? requestedConfig.data : [],
-              backend.session_config_options ?? [],
-            );
+            // A retry replays the original turn's selections. Nobody chose
+            // them again, so one the runtime has since withdrawn falls back.
+            const sessionConfig: ResolvedSessionConfig = {
+              ...reconcileSavedSessionConfig(originalModel?.acp_session_config, backend.session_config_options ?? []),
+              source: "saved",
+            };
             try {
               assertConversationInputCapabilities(originalMessage.input_parts ?? [], backend.prompt_capabilities);
               assertConversationInputResourceTools(originalMessage.input_parts ?? [], backend.runtime_key);
+              await assertSelectedSkillBindings(transaction.db!, {
+                space_id: identity.spaceId, project_id: session.project_id ?? null,
+                agent_id: agent.id, user_id: identity.userId, session_id: session.id,
+              }, originalMessage.input_parts ?? []);
             } catch (error) {
               if (error instanceof ConversationInputCapabilityError) {
                 throw new ChatContextError(`Retry context needs review: ${error.message}`, error.statusCode);
@@ -1505,7 +1566,7 @@ async function prepareChatRun(
     projectId?: string | null;
     visibility: "private" | "space_shared" | "selected_users";
     backend: ResolvedConversationBackend;
-    sessionConfig: NonNullable<protocol.ChatTurnRequest["session_config"]>;
+    sessionConfig: ResolvedSessionConfig;
     hostDispatch?: PreparedHostConversationDispatch | null;
     hostPromptContext?: string | null;
     retryOfRunId?: string | null;
@@ -1552,7 +1613,7 @@ async function prepareChatRun(
       ...(lightweightCliConversation
         ? { execution_mode: "conversation_lightweight.v1" }
         : {}),
-      ...(input.sessionConfig.length ? { acp_session_config: input.sessionConfig } : {}),
+      ...sessionConfigRunOverride(input.sessionConfig),
       chat_turn: {
         schema_version: "chat_turn.v1",
         // What this turn was asked, kept apart from the assembled prompt for
@@ -1697,47 +1758,7 @@ function gitSnapshotChanged(expected: Record<string, unknown>, current: RunGitSn
     || (expected.execution_ready !== undefined && expected.execution_ready !== current.execution_ready);
 }
 
-function validateConversationSessionConfig(
-  requested: NonNullable<protocol.ChatTurnRequest["session_config"]>,
-  advertised: NonNullable<ResolvedConversationBackend["session_config_options"]>,
-): NonNullable<protocol.ChatTurnRequest["session_config"]> {
-  const seen = new Set<string>();
-  return requested.map((selection) => {
-    if (seen.has(selection.id)) throw new ChatContextError(`Session option '${selection.id}' was selected more than once`, 422);
-    seen.add(selection.id);
-    const option = advertised.find((candidate) => candidate.id === selection.id);
-    if (!option || option.type !== selection.type || option.category !== selection.category) {
-      throw new ChatContextError(`Session option '${selection.id}' is not available for this backend`, 422);
-    }
-    if (option.type === "select") {
-      if (typeof selection.value !== "string" || !option.options.some((choice) => choice.value === selection.value)) {
-        throw new ChatContextError(`Value for session option '${selection.id}' is not available`, 422);
-      }
-    } else if (typeof selection.value !== "boolean") {
-      throw new ChatContextError(`Value for session option '${selection.id}' must be boolean`, 422);
-    }
-    return selection;
-  });
-}
 
-async function latestConversationSessionConfig(
-  db: Pool,
-  spaceId: string,
-  sessionId: string,
-  agentId: string,
-): Promise<NonNullable<protocol.ConversationBackendCatalog["session_config"]>> {
-  const result = await db.query<{ config: unknown }>(
-    `SELECT model_override_json->'acp_session_config' AS config
-       FROM runs
-      WHERE space_id = $1 AND session_id = $2 AND agent_id = $3
-        AND model_override_json ? 'acp_session_config'
-      ORDER BY created_at DESC
-      LIMIT 1`,
-    [spaceId, sessionId, agentId],
-  );
-  const parsed = protocol.ConversationBackendCatalogSchema.shape.session_config.safeParse(result.rows[0]?.config);
-  return parsed.success ? parsed.data ?? [] : [];
-}
 
 function agentChatServices(context: ModuleContext): AgentChatServices {
   if (servicesFactoryOverride) return servicesFactoryOverride(context);
@@ -1840,3 +1861,4 @@ function assistantSettingsTarget(
   const projectId = typeof raw === "string" && raw.trim() ? raw.trim() : null;
   return { spaceId: identity.spaceId, projectId };
 }
+import { assertSelectedSkillBindings, assertSelectedSkillsForRecipients } from "../capabilities/selectedSkills.js";

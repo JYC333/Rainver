@@ -1,3 +1,4 @@
+import { scanGlobalSkills, readGlobalSkill } from "../globalSkills.js";
 import { rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -35,6 +36,7 @@ import {
 } from "../execution.js";
 import { ReconnectableFrameSink } from "../reconnectableFrameSink.js";
 import { OWN_INSTALLATION, installTool, managedInstallationId, rollbackTool, uninstallTool } from "../tools.js";
+import { updateOwnTool } from "../ownToolUpdate.js";
 import { loginSession, openLoginSession } from "../login.js";
 import { refreshAmbientSessionCounts } from "../ambientCounts.js";
 import { importAmbientSessions, sanitizeFailure, type AmbientImportRequest } from "../ambientSessions.js";
@@ -478,6 +480,16 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
         case "stdin_close":
           handleStdinClose(frame);
           return;
+        case "skill_scan": {
+          void scanGlobalSkills().then(result => sink.send({ type: "skill_scan_result", request_id: frame.request_id, ok: true, result, error: null }))
+            .catch(() => sink.send({ type: "skill_scan_result", request_id: frame.request_id, ok: false, result: null, error: "skill_scan_failed" }));
+          return;
+        }
+        case "skill_read": {
+          void readGlobalSkill(frame.skill_id).then(result => sink.send({ type: "skill_read_result", request_id: frame.request_id, ok: true, ...result, error: null }))
+            .catch(() => sink.send({ type: "skill_read_result", request_id: frame.request_id, ok: false, files: null, candidate: null, error: "skill_read_failed_or_changed" }));
+          return;
+        }
         case "list_dirs": {
           void listDirectories(frame.path).then((result) => {
             sink.send({ type: "list_dirs_result", request_id: frame.request_id, ...result });
@@ -669,6 +681,20 @@ function connectOnce(serverUrl: string, token: string, log: (line: string) => vo
               });
             }
           })();
+          return;
+        }
+        case "update_own_tool": {
+          void withRuntimeKeyDrained(frame.runtime_key, TOOL_DRAIN_TIMEOUT_MS, async () => {
+            const config = await loadConfig();
+            if (config?.trust !== "trusted") throw new Error("Own CLI updates require a trusted paired Host");
+            return updateOwnTool(frame.runtime_key);
+          }).then((outcome) => {
+            clearRuntimeOptionsCache(frame.runtime_key, OWN_INSTALLATION);
+            sendHeartbeat();
+            sink.send({ type: "tool_result", request_id: frame.request_id, ok: true, error: null, installation: OWN_INSTALLATION, ...outcome });
+          }, error => {
+            sink.send({ type: "tool_result", request_id: frame.request_id, ok: false, error: sanitizeFailure(error), installation: null });
+          });
           return;
         }
         case "rollback_tool": {

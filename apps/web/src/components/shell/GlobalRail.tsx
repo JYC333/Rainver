@@ -3,6 +3,7 @@ import { PanelLeftOpen, PanelLeftClose, Puzzle, BookOpen, Landmark, type LucideI
 import { cn } from '../../lib/utils'
 import { RAIL_ITEMS, sceneForPath, spacePath, stripSpacePrefix, type RailItem } from '../../core/navigation'
 import { ReviewAttentionIndicator } from './ReviewAttentionIndicator'
+import { AttentionBadge } from '../../modules/agent_work/AttentionIndicators'
 import { useAppTranslation } from '../../i18n'
 
 /** Map lucide icon names (kebab-case) used by official plugins to icon components. */
@@ -98,6 +99,7 @@ export function GlobalRail({
       >
         <Icon className="size-[18px] shrink-0" />
         {expanded && <span className="text-[13px] font-medium truncate">{label}</span>}
+        {item.id === 'agent-work' && <AttentionBadge compact={!expanded} />}
         {item.id === 'review' && (
           <ReviewAttentionIndicator count={pendingReviewCount} compact={!expanded} />
         )}

@@ -226,20 +226,20 @@ export async function mergeRunQuota(pool: Pool, input: {
   quota: { rate_limit_type: string; utilization: number; resets_at: number };
 }): Promise<void> {
   if (!hasSubscriptionQuota(input.runtimeKey)) return;
+  // Only account-wide windows can update this account-wide cache. Model-
+  // specific windows (for example seven_day_fable) have independent limits.
+  const window = input.quota.rate_limit_type === "five_hour"
+    ? "session"
+    : input.quota.rate_limit_type === "seven_day"
+      ? "week"
+      : null;
+  if (!window) return;
   const cached = (await readHostUsage(pool, input.hostId))
     .find((row) => row.runtime_key === input.runtimeKey && row.installation === input.installation);
   const pct = Math.max(0, Math.min(100, Math.round(input.quota.utilization * 100)));
   const resets = Number.isFinite(input.quota.resets_at) && input.quota.resets_at > 0
     ? `Resets ${new Date(input.quota.resets_at * 1000).toISOString()}`
     : null;
-  // Anthropic names the five-hour window `five_hour`; anything else is the
-  // longer one. An unrecognised name is not guessed at.
-  const window = input.quota.rate_limit_type === "five_hour"
-    ? "session"
-    : input.quota.rate_limit_type.includes("seven") || input.quota.rate_limit_type.includes("week")
-      ? "week"
-      : null;
-  if (!window) return;
   const quota: HostUsageQuota = {
     ...(cached?.quota ?? { available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: null }),
     ...(window === "session" ? { session_pct: pct, session_resets: resets } : { week_pct: pct, week_resets: resets }),

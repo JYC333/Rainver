@@ -7,6 +7,7 @@ import { assertProjectReadable, assertProjectReadableLocked } from "../projects/
 import { contentReadSql, projectReadAccessSql } from "../access/contentAccessSql.js";
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
 import { resolveRuntimeContextPolicyForExecution } from "../policy/runtimeContextPolicyRepository.js";
+import { ensureRoomConversationScope } from "../policy/executionControlSnapshots.js";
 
 interface SetupRow { [key: string]: unknown; id: string; space_id: string; work_context_scope_id: string; scope_kind: string; version: number; user_id: string; project_id: string | null; project_folder_id: string | null; agent_id: string | null; runtime_ref_json: unknown; pinned_refs_json: unknown; excluded_refs_json: unknown; retrieval_preferences_json: unknown; continuity_preferences_json: unknown; project_brief_version_id: string | null; project_instruction_version_id: string | null; project_instruction_enabled: boolean; governing_policy_refs_json: unknown; setup_fingerprint: string; base_version: number | null; typed_diff_json: unknown; reason: string; policy_decision_record_id: string; created_by_user_id: string; created_at: unknown; }
 
@@ -182,6 +183,39 @@ export class WorkContextService {
     });
   }
 
+  /**
+   * The work scope of one Room recipient in one Conversation, for a person
+   * active in that Room. The scope row is an identity, created on first use;
+   * what may be read or changed in it is still decided by the Setup checks.
+   * This writes: only a mutating path (or a Run resolving its scope) calls it.
+   */
+  async roomConversationScopeId(identity: SpaceUserIdentity, sessionId: string, roomAgentMemberId: string): Promise<string> {
+    await this.assertRoomConversationRecipient(identity, sessionId, roomAgentMemberId);
+    return ensureRoomConversationScope(this.db, { spaceId: identity.spaceId, sessionId, roomAgentMemberId });
+  }
+
+  /**
+   * A Room recipient's knowledge-retrieval switch in one Conversation, read
+   * without creating its scope: a recipient nobody has set and no Run has
+   * reached yet has the new-conversation default (off) and no scope id.
+   */
+  async getRoomConversationRetrievalSwitch(
+    identity: SpaceUserIdentity,
+    sessionId: string,
+    roomAgentMemberId: string,
+  ): Promise<protocol.WorkRetrievalSwitch> {
+    await this.assertRoomConversationRecipient(identity, sessionId, roomAgentMemberId);
+    const scope = await this.db.query<{ id: string }>(
+      `SELECT id FROM room_conversation_recipients
+        WHERE space_id=$1 AND session_id=$2 AND room_agent_member_id=$3`,
+      [identity.spaceId, sessionId, roomAgentMemberId],
+    );
+    const scopeId = scope.rows[0]?.id;
+    return scopeId
+      ? this.getRetrievalSwitch(identity, scopeId)
+      : retrievalSwitchOut(null, "room_recipient", {}, null);
+  }
+
   /** The conversation's knowledge-retrieval switch as this person last set it. */
   async getRetrievalSwitch(identity: SpaceUserIdentity, scopeId: string): Promise<protocol.WorkRetrievalSwitch> {
     const active = await this.getActive(identity, scopeId);
@@ -189,6 +223,23 @@ export class WorkContextService {
       ? active.scope_kind
       : await inferWorkContextScopeKind(this.db, identity, scopeId);
     return retrievalSwitchOut(scopeId, scopeKind, active?.retrieval_preferences, active ? Number(active.version) : null);
+  }
+
+  /** 404 unless the person is active in the Conversation's Room and the recipient is an active member of it. */
+  private async assertRoomConversationRecipient(identity: SpaceUserIdentity, sessionId: string, roomAgentMemberId: string): Promise<void> {
+    const recipient = await this.db.query(
+      `SELECT 1
+         FROM sessions session
+         JOIN room_agent_members recipient
+           ON recipient.room_id=session.room_id AND recipient.space_id=session.space_id
+         JOIN room_user_members member
+           ON member.room_id=session.room_id AND member.space_id=session.space_id
+          AND member.user_id=$4 AND member.status='active'
+        WHERE session.id=$1 AND session.space_id=$2 AND session.room_id IS NOT NULL
+          AND recipient.id=$3 AND recipient.status='active'`,
+      [sessionId, identity.spaceId, roomAgentMemberId, identity.userId],
+    );
+    if (!recipient.rows[0]) throw new HttpError(404, "Room Conversation recipient not found");
   }
 
   /**
@@ -357,15 +408,18 @@ async function lockWorkContextScopeAuthority(
   if (scopeKind === "room_recipient") {
     const result = await db.query(
       `SELECT 1
-         FROM room_agent_members recipient
+         FROM room_conversation_recipients scope
+         JOIN room_agent_members recipient
+           ON recipient.id=scope.room_agent_member_id AND recipient.space_id=scope.space_id
          JOIN rooms room ON room.id=recipient.room_id AND room.space_id=recipient.space_id
          JOIN agents recipient_agent
            ON recipient_agent.id=recipient.agent_id AND recipient_agent.space_id=recipient.space_id
-         JOIN sessions session ON session.room_id=room.id AND session.space_id=room.space_id
+         JOIN sessions session
+           ON session.id=scope.session_id AND session.room_id=room.id AND session.space_id=room.space_id
          JOIN room_user_members member
            ON member.room_id=room.id AND member.space_id=room.space_id
           AND member.user_id=$3 AND member.status='active'
-        WHERE recipient.id=$1 AND recipient.space_id=$2
+        WHERE scope.id=$1 AND scope.space_id=$2
           AND recipient.status='active' AND recipient_agent.status='active'
           AND room.status='active' AND session.room_id IS NOT NULL
           AND (
@@ -380,7 +434,7 @@ async function lockWorkContextScopeAuthority(
                  AND room_grant.revoked_at IS NULL
             )
           )
-        FOR SHARE OF recipient,room,session,member`,
+        FOR SHARE OF scope,recipient,room,session,member`,
       [scopeId, identity.spaceId, identity.userId],
     );
     if (!result.rows[0]) throw new HttpError(404, "Work Context scope not found");
@@ -439,15 +493,19 @@ async function inferWorkContextScopeKind(
   if (workflow.rows[0]) return "workflow_execution";
   const roomRecipient = await db.query(
     `SELECT 1
-       FROM room_agent_members recipient
+       FROM room_conversation_recipients scope
+       JOIN room_agent_members recipient
+         ON recipient.id=scope.room_agent_member_id AND recipient.space_id=scope.space_id
        JOIN rooms room
          ON room.id=recipient.room_id AND room.space_id=recipient.space_id
+       JOIN sessions session
+         ON session.id=scope.session_id AND session.room_id=room.id AND session.space_id=room.space_id
        JOIN agents recipient_agent
          ON recipient_agent.id=recipient.agent_id AND recipient_agent.space_id=recipient.space_id
        JOIN room_user_members member
          ON member.room_id=room.id AND member.space_id=room.space_id
         AND member.user_id=$3 AND member.status='active'
-      WHERE recipient.id=$1 AND recipient.space_id=$2
+      WHERE scope.id=$1 AND scope.space_id=$2
         AND recipient.status='active' AND recipient_agent.status='active'
         AND room.status='active'
         AND (
@@ -531,7 +589,10 @@ async function assertSetupReferences(
 export function roomScopedAgentReadSql(agentAlias: string, userExpr: string, scopeExpr: string): string {
   return `EXISTS (
     SELECT 1
-      FROM room_agent_members recipient
+      FROM room_conversation_recipients conversation_scope
+      JOIN room_agent_members recipient
+        ON recipient.id=conversation_scope.room_agent_member_id
+       AND recipient.space_id=conversation_scope.space_id
       JOIN rooms room_scope
         ON room_scope.id=recipient.room_id AND room_scope.space_id=recipient.space_id
       JOIN room_user_members room_member
@@ -539,7 +600,7 @@ export function roomScopedAgentReadSql(agentAlias: string, userExpr: string, sco
        AND room_member.room_id=recipient.room_id
        AND room_member.user_id=${userExpr}
        AND room_member.status='active'
-     WHERE recipient.id=${scopeExpr}
+     WHERE conversation_scope.id=${scopeExpr}
        AND recipient.space_id=${agentAlias}.space_id
        AND recipient.agent_id=${agentAlias}.id
        AND recipient.status='active'
@@ -678,17 +739,19 @@ export async function resolveWorkContextScopeBindings(
       `SELECT COALESCE(s.project_id, room.project_id) AS project_id,
               COALESCE(s.project_folder_id, room.project_folder_id) AS project_folder_id,
               recipient.agent_id
-         FROM room_agent_members recipient
+         FROM room_conversation_recipients scope
+         JOIN room_agent_members recipient
+           ON recipient.id=scope.room_agent_member_id AND recipient.space_id=scope.space_id
          JOIN rooms room
            ON room.id=recipient.room_id AND room.space_id=recipient.space_id
          JOIN agents recipient_agent
            ON recipient_agent.id=recipient.agent_id AND recipient_agent.space_id=recipient.space_id
          JOIN sessions s
-           ON s.room_id=room.id AND s.space_id=room.space_id
+           ON s.id=scope.session_id AND s.room_id=room.id AND s.space_id=room.space_id
          JOIN room_user_members member
            ON member.room_id=s.room_id AND member.space_id=s.space_id
           AND member.user_id=$3 AND member.status='active'
-        WHERE recipient.id=$1 AND recipient.space_id=$2
+        WHERE scope.id=$1 AND scope.space_id=$2
           AND recipient.status='active' AND recipient_agent.status='active'
           AND room.status='active' AND s.room_id IS NOT NULL
           AND (
@@ -885,7 +948,7 @@ function setupTypedDiff(previous: SetupRow | null, next: Record<string, unknown>
 }
 
 function retrievalSwitchOut(
-  scopeId: string,
+  scopeId: string | null,
   scopeKind: string,
   rawPreferences: unknown,
   version: number | null,

@@ -1,6 +1,20 @@
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema } from "./common.js";
 
+/** Outcomes announced by the Task merge owner in work events and conversation notices. */
+export const TaskMergeOutcomeSchema = z.enum([
+  "merged",
+  "waiting_local_changes",
+  "conflict",
+  "verification_failed",
+  "failed",
+]);
+export type TaskMergeOutcome = z.infer<typeof TaskMergeOutcomeSchema>;
+
+/** A completed merge cannot be an open attention reason. */
+export const TaskMergeBlockedOutcomeSchema = TaskMergeOutcomeSchema.exclude(["merged"]);
+export type TaskMergeBlockedOutcome = z.infer<typeof TaskMergeBlockedOutcomeSchema>;
+
 /**
  * Work Loop stages and the Project work event vocabulary.
  *

@@ -4,7 +4,7 @@ import type {
   InquiryEvidenceSignal, InquiryThreadDetail, InquiryThreadStep, ProjectResearchWorkflow,
 } from '../../../../types/api'
 import {
-  deriveStages, inStageAlternatives, kindsInStage, recommendStep, STAGE_ORDER, type StageInput,
+  deriveStages, inStageAlternatives, kindsInStage, recommendStep, type StageInput,
 } from '../stages'
 
 const QUESTION: InquiryThreadDetail = {
@@ -118,16 +118,6 @@ describe('deriveStages', () => {
     // covers what is known, so calling it finished while unread material sits
     // in front of it would be the row lying to make a point about history.
     expect(derived.stages.find(stage => stage.id === 'conclude')?.complete).toBe(false)
-  })
-
-  it('reaches Land once this round has written up what it found', () => {
-    const input: StageInput = {
-      ...base,
-      questionRefined: true,
-      signals: [signal()],
-      roundSteps: [step({ kind: 'synthesize' })],
-    }
-    expect(deriveStages(input).current).toBe('land')
   })
 
   it('starts the next round over instead of opening it pinned at Land', () => {
@@ -328,10 +318,6 @@ describe('alternatives', () => {
     expect(inStageAlternatives(input).map(item => item.kind)).not.toContain('design_run_experiment')
   })
 
-  it('keeps every action reachable through its owning stage', () => {
-    const offered = new Set(STAGE_ORDER.flatMap(kindsInStage))
-    expect(offered.size).toBe(8)
-  })
 })
 
 describe('stage membership', () => {

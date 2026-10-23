@@ -56,6 +56,19 @@ export const RuntimeSessionConfigSelectionSchema = z.object({
 export type RuntimeSessionConfigSelection = z.infer<typeof RuntimeSessionConfigSelectionSchema>;
 
 /**
+ * A saved or inherited selection a Run did not apply because the runtime no
+ * longer offers the option or the value; the runtime's own default was used.
+ * An explicit selection in the request is refused instead of dropped.
+ */
+export const RuntimeSessionConfigDroppedSelectionSchema = z.object({
+  id: z.string().min(1).max(256),
+  category: z.string().max(128).nullable(),
+  value: z.union([z.string().max(1000), z.boolean()]),
+  reason: z.enum(["option_unavailable", "value_unavailable", "not_applied"]),
+}).strict();
+export type RuntimeSessionConfigDroppedSelection = z.infer<typeof RuntimeSessionConfigDroppedSelectionSchema>;
+
+/**
  * One authentication flow advertised by an Agent during ACP initialize.
  * Missing `type` on the wire is normalized to `agent`, as required by ACP.
  * Terminal arguments and environment are Agent-provided data. Rainver's
@@ -164,6 +177,12 @@ export const HostCapabilitiesSchema = z.object({
   versions: z.record(z.string(), z.string()),
   /** Every copy of every adapter, keyed by adapter type. */
   installations: z.record(z.string(), z.array(RuntimeInstallationSchema)),
+  /**
+   * Run tool-bridge protocols this daemon can host (`file-v1`). Absent from
+   * daemons that predate the report; the control plane then assumes `file-v1`
+   * only on Linux, the one platform those daemons implemented it on.
+   */
+  tool_bridge_protocols: z.array(z.string()).optional(),
 });
 export type HostCapabilities = z.infer<typeof HostCapabilitiesSchema>;
 

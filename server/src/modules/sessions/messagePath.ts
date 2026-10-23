@@ -125,3 +125,19 @@ export function childBranchPath(input: {
     ? input.parentBranchPath
     : `${input.parentBranchPath}${input.parentDepth}:${input.childMessageId}/`;
 }
+
+/** A human answer closes only the visible branch's question sent to this Agent.
+ * The dispatch Run is durable acceptance evidence; a drafted/failed send has none.
+ */
+export function openHumanQuestionSql(message: string, run: string): string {
+  return `COALESCE((${message}.metadata_json->>'awaiting_answer')='true'
+    AND ${run}.delegation_id IS NULL AND NOT EXISTS (
+      SELECT 1 FROM messages reply
+      JOIN runs dispatched ON dispatched.space_id=reply.space_id
+        AND dispatched.session_id=reply.session_id AND dispatched.agent_id=${run}.agent_id
+        AND dispatched.model_override_json->'chat_turn'->>'user_message_id'=reply.id
+      WHERE reply.space_id=${message}.space_id AND reply.session_id=${message}.session_id
+        AND reply.role='user' AND reply.user_id IS NOT NULL AND reply.path_depth>${message}.path_depth
+        AND ${visibleRoomTranscriptSql({alias:"reply",spaceParam:`${message}.space_id`,sessionParam:`${message}.session_id`})}
+    ),false)`;
+}

@@ -52,6 +52,16 @@ export function startBackgroundServices(
     // Plugin-contributed scheduler tasks (fan out to enabled users internally).
     ...(pluginHost?.getSchedulerTasks() ?? []),
     {
+      name: "migration_artifact_retention",
+      intervalSeconds: 3600,
+      runOnStart: false,
+      run: async () => {
+        const policy = await readInstanceOperationsPolicy(config);
+        const deleted = await new BackupService(config, policy).pruneMigrationArtifacts((message) => log?.warn(`[scheduler] ${message}`));
+        if (deleted.length) log?.info(`[scheduler] migration_artifact_retention pruned ${deleted.length} item(s)`);
+      },
+    },
+    {
       // Once at boot: a seed change must reach every Assistant that already
       // exists, not only the ones a Room is next created for. Daily after
       // that is a cheap backstop; the work is idempotent.

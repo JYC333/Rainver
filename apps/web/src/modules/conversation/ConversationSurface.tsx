@@ -1,8 +1,11 @@
+import { useAttentionViewing } from '../agent_work/AgentAttentionProvider'
+import { mergeAbortSignals } from '../../lib/mergeAbortSignals'
+import { ConversationScope, useConversationScope } from './ConversationScope'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Bot, Loader2, MessagesSquare, Quote, X } from 'lucide-react'
 import { toast } from 'sonner'
-import { agentsApi, ApiRequestError, conversationInputApi, roomsApi, runsApi } from '../../api/client'
-import { SpaceLink as Link } from '../../core/spaceNav'
+import { agentsApi, ApiRequestError, roomsApi, runsApi } from '../../api/client'
+import { ConversationLink as Link } from './ConversationScope'
 import { useSpace } from '../../contexts/SpaceContext'
 import i18n, { useAppTranslation } from '../../i18n'
 import { formatTime } from '../../i18n/format'
@@ -32,7 +35,12 @@ import { ActionPreviewCards, type ActionDecision } from './ActionPreviewCard'
 import { MessageResponse } from '../../components/ai-elements/message'
 import { AwaitingAnswerMarker, ConversationTurn } from './ConversationTurn'
 import { readBackTurnState, settledTurn } from './settledTurn'
-import { RoomMessageComposer, emptyRoomMessageComposerValue } from '../agent_groups/RoomMessageComposer'
+import {
+  RoomMessageComposer,
+  emptyRoomMessageComposerValue,
+  roomMessageRecipientIds,
+  roomMessageRoute,
+} from '../agent_groups/RoomMessageComposer'
 import {
   ConversationAgentSessionConfigs,
   mergeSessionConfig,
@@ -42,8 +50,10 @@ import { ConversationComposer } from './ConversationComposer'
 import type { ConversationInputPart } from '@rainver/protocol'
 import { ConversationInputPartsView, type ConversationInputFileSource } from './ConversationInputComposer'
 import type { CurrentFileAttachment } from '../projects/ProjectFolderConversationContext'
-import { clearConversationDraft, draftFileSearchQuery, readConversationDraft, writeConversationDraft } from './conversationDraft'
+import { clearConversationDraft } from './conversationDraft'
+import { useConversationDraft } from './useConversationDraft'
 import { ConversationRunControls } from './ConversationRunControls'
+import { ConversationActivity } from './ConversationActivity'
 import { notifyProjectFolderContentChanged } from '../../core/projectFolderEvents'
 import {
   DiscussionGroup,
@@ -70,7 +80,6 @@ import { KnowledgeRetrievalToggle } from './KnowledgeRetrievalToggle'
  * width on the panel — stays with the surface.
  */
 
-export type RoutingMode = 'direct' | 'agent_coordination'
 export type ConversationBackendSelection = {
   agent_id: string
   runtime_profile_id: string
@@ -87,6 +96,11 @@ type PendingProposalContinuation = {
 
 const MESSAGE_PAGE_SIZE = 50
 
+type ComposerValue = ReturnType<typeof emptyRoomMessageComposerValue>
+const composerText = (value: ComposerValue) => value.text
+const composerWithText = (value: ComposerValue, text: string): ComposerValue => ({ ...value, text })
+const composerRouteChoice = (value: ComposerValue) => value.routeChoice
+
 function sameCurrentFilePart(part: ConversationInputPart, current: CurrentFileAttachment): boolean {
   if (part.kind === 'file_reference') {
     return part.project_folder_id === current.projectFolderId
@@ -102,6 +116,12 @@ function sameCurrentFilePart(part: ConversationInputPart, current: CurrentFileAt
 }
 
 interface ConversationSurfaceProps {
+  /** Read an authorized transcript without offering conversation mutations. */
+  readOnly?: boolean
+  /** Post-render evidence only; consumers decide which source revisions to acknowledge. */
+  onMessagesDisplayed?: (ids: string[]) => void
+  onReadError?: (error: unknown) => void
+  spaceId?: string
   roomId: string
   /** Null while a new Conversation is still awaiting explicit execution setup. */
   conversationId: string | null
@@ -112,7 +132,6 @@ interface ConversationSurfaceProps {
   /** Agents beyond the roster, for labelling a reply from one. */
   agents?: Array<{ id: string; name: string; kind?: string; status?: string }>
   humans?: SpaceMember[]
-  routingMode?: RoutingMode
   /** Which backend each recipient runs on before the Conversation is initialized. */
   /** Catalogs already loaded by a containing execution-settings surface. */
   /** What the person is looking at; a hint the server states in the turn. */
@@ -162,14 +181,25 @@ interface ConversationSurfaceProps {
   references?: ThreadReferencePick[]
 }
 
-export function ConversationSurface({
+export function ConversationSurface(props: ConversationSurfaceProps) {
+  const [destination, setDestination] = useState({ id: props.conversationId, epoch: 0 })
+  if (destination.id !== props.conversationId) {
+    // Explicit setup binds the unsent draft to its first Session without losing text/picks.
+    const openingDraft = destination.id === null && props.conversationId !== null
+    setDestination({ id: props.conversationId, epoch: destination.epoch + (openingDraft ? 0 : 1) })
+  }
+  return <ConversationScope key={`${props.spaceId ?? ''}:${props.roomId}:${destination.epoch}`} spaceId={props.spaceId}>
+    <ConversationSurfaceContent {...props} />
+  </ConversationScope>
+}
+
+function ConversationSurfaceContent({
   roomId,
   conversationId,
   detail: suppliedDetail,
   variant,
   agents = [],
   humans = [],
-  routingMode = 'direct',
   focusRefs,
   onConversationUpdated,
   onSent,
@@ -185,7 +215,11 @@ export function ConversationSurface({
   isOwner = false,
   emptyHint,
   references,
+  readOnly = false,
+  onMessagesDisplayed,
+  onReadError,
 }: ConversationSurfaceProps) {
+  const scope = useConversationScope()
   const { userId } = useSpace()
   const { t } = useAppTranslation()
   const [detail, setDetail] = useState<RoomDetail | null>(suppliedDetail ?? null)
@@ -194,6 +228,15 @@ export function ConversationSurface({
   // next turn boundary; the poll replaces this with what still waits.
   const [queued, setQueued] = useState<QueuedRoomMessage[]>([])
   const [messagesLoading, setMessagesLoading] = useState(true)
+  useAttentionViewing(scope.spaceId, conversationId, {
+    messages: messages.map(message => ({ id: message.id, content: message.content, awaitingAnswer: message.metadata_json?.awaiting_answer })),
+    ready: !messagesLoading,
+  })
+  useEffect(() => {
+    if (!messagesLoading && messages.length) onMessagesDisplayed?.(messages.map(message => message.id))
+  }, [messagesLoading, messages, onMessagesDisplayed])
+  const readErrorRef = useRef(onReadError)
+  readErrorRef.current = onReadError
   const [hasOlderMessages, setHasOlderMessages] = useState(false)
   const [summary, setSummary] = useState<RoomConversationSummaryResponse | null>(null)
   const [runs, setRuns] = useState<Record<string, Run>>({})
@@ -207,12 +250,11 @@ export function ConversationSurface({
   const requestSequence = useRef(0)
   const scrollRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
-  const [composer, setComposer] = useState(emptyRoomMessageComposerValue)
-  const [inputParts, setInputParts] = useState<ConversationInputPart[]>([])
   const previousConversationId = useRef<string | null | undefined>(undefined)
   const [resetToken, setResetToken] = useState(0)
-  const [restoredDraft, setRestoredDraft] = useState<{ token: number; text: string } | null>(null)
+  const [restoredDraft, setRestoredDraft] = useState<{ token: number; text: string; routeChoice: ComposerValue['routeChoice'] } | null>(null)
   const [sending, setSending] = useState(false)
+  const [savingSettings, setSavingSettings] = useState(0)
   const [loadedBackendCatalogs, setLoadedBackendCatalogs] = useState<Record<string, ConversationBackendCatalog>>({})
   const [sessionConfig, setSessionConfig] = useState<Record<string, SessionConfigSelection[]>>({})
   const sendingRef = useRef(false)
@@ -244,7 +286,21 @@ export function ConversationSurface({
   const pickingRef = useRef(false)
   const referencesAttachedRef = useRef(false)
   const draftDestination = `room:${roomId}:${conversationId ?? 'new'}`
-  const draftReadyRef = useRef<string | null>(null)
+  const {
+    value: composer,
+    parts: inputParts,
+    setValue: setComposer,
+    setParts: setInputParts,
+  } = useConversationDraft({
+    destination: draftDestination,
+    initialValue: emptyRoomMessageComposerValue,
+    textOf: composerText,
+    withText: composerWithText,
+    routeChoiceOf: composerRouteChoice,
+    sessionId: conversationId,
+    fileSources: inputFileSources ?? [],
+    onTextRestored: (text, routeChoice) => setRestoredDraft(current => ({ token: (current?.token ?? 0) + 1, text, routeChoice })),
+  })
 
   useEffect(() => {
     const previous = previousConversationId.current
@@ -258,65 +314,7 @@ export function ConversationSurface({
     }
     previousConversationId.current = conversationId
     setDiscussionSendMode('join')
-  }, [conversationId])
-
-  useEffect(() => {
-    let cancelled = false
-    if (draftReadyRef.current === draftDestination) return () => { cancelled = true }
-    draftReadyRef.current = null
-    const draft = readConversationDraft(draftDestination)
-    if (!draft) {
-      draftReadyRef.current = draftDestination
-      return
-    }
-    void (async () => {
-      const validated = await Promise.all(draft.input_parts.map(async part => {
-        try {
-          if (part.kind === 'image') {
-            await conversationInputApi.imageBlob(part.media_id)
-            return part
-          }
-          if (conversationId && part.kind === 'file_reference') {
-            // The search accepts at most 200 characters while a path may run
-            // to 4096; the file name finds the candidates and the full path
-            // picks the reference back out of them.
-            const result = await conversationInputApi.searchFiles(conversationId, draftFileSearchQuery(part.relative_path))
-            return result.items.some(item => item.project_folder_id === part.project_folder_id
-              && item.workspace_location_id === part.workspace_location_id
-              && item.relative_path === part.relative_path)
-              ? part
-              : null
-          }
-          if (part.kind === 'input_resource') return part
-          return part.kind === 'file_reference' && inputFileSources?.some(source => source.projectFolderId === part.project_folder_id
-            && (!source.workspaceLocationId || source.workspaceLocationId === part.workspace_location_id))
-            ? part
-            : null
-        } catch {
-          return null
-        }
-      }))
-      if (cancelled) return
-      setComposer(current => ({ ...current, text: draft.text }))
-      setInputParts(validated.filter((part): part is ConversationInputPart => part !== null))
-      // Put back into the editor, not reset: the reset token is the
-      // after-send clear, and it emptied the restored text and attachments,
-      // which the next write then deleted from storage.
-      setRestoredDraft(current => ({ token: (current?.token ?? 0) + 1, text: draft.text }))
-      draftReadyRef.current = draftDestination
-    })()
-    return () => { cancelled = true }
-  }, [conversationId, draftDestination, inputFileSources])
-
-  useEffect(() => {
-    if (draftReadyRef.current !== draftDestination) return
-    const timer = window.setTimeout(() => writeConversationDraft({
-      destination: draftDestination,
-      text: composer.text,
-      input_parts: inputParts,
-    }), 250)
-    return () => window.clearTimeout(timer)
-  }, [composer.text, draftDestination, inputParts])
+  }, [conversationId, setComposer, setInputParts])
 
   useEffect(() => { runsRef.current = runs }, [runs])
   useEffect(() => { discussionsRef.current = discussions }, [discussions])
@@ -335,9 +333,9 @@ export function ConversationSurface({
   useEffect(() => {
     if (suppliedDetail !== undefined) return
     let active = true
-    roomsApi.get(roomId).then(next => { if (active) setDetail(next) }).catch(() => { /* labels degrade to roles */ })
+    roomsApi.get(roomId, scope).then(next => { if (active) setDetail(next) }).catch(() => { /* labels degrade to roles */ })
     return () => { active = false }
-  }, [roomId, suppliedDetail])
+  }, [roomId, suppliedDetail, scope])
 
   const refreshRuns = useCallback(async (
     runIds: readonly string[],
@@ -349,14 +347,14 @@ export function ConversationSurface({
     })
     if (idsToRefresh.length === 0) return
     const results = await Promise.all(idsToRefresh.map(async id => {
-      try { return await runsApi.get(id) } catch { return null }
+      try { return await runsApi.get(id, scope) } catch { return null }
     }))
     if (!isCurrent()) return
     setRuns(current => ({
       ...current,
       ...Object.fromEntries(results.filter((run): run is Run => Boolean(run)).map(run => [run.id, run])),
     }))
-  }, [])
+  }, [scope])
 
   const refreshDiscussionDetails = useCallback((items: readonly RoomDiscussion[]) => {
     if (!conversationId) return
@@ -366,7 +364,7 @@ export function ConversationSurface({
       detailVersions.current.set(item.id, version)
       // Only the read for the latest version lands: an older one resolving
       // last would otherwise leave a hold that has already lifted on screen.
-      void roomsApi.discussion(roomId, conversationId, item.id)
+      void roomsApi.discussion(roomId, conversationId, item.id, scope)
         .then(next => {
           if (detailVersions.current.get(item.id) !== version) return
           setDiscussionDetails(current => ({ ...current, [item.id]: next }))
@@ -381,7 +379,7 @@ export function ConversationSurface({
         })
         .catch(() => { if (detailVersions.current.get(item.id) === version) detailVersions.current.delete(item.id) })
     }
-  }, [conversationId, refreshRuns, roomId])
+  }, [conversationId, refreshRuns, roomId, scope])
 
   /**
    * Re-read the discussions these messages name, the way Runs are refreshed:
@@ -405,7 +403,7 @@ export function ConversationSurface({
       return (newest.get(id) ?? '') <= held.updated_at
     }
     if (referenced.every(settled)) return
-    void roomsApi.discussions(roomId, conversationId)
+    void roomsApi.discussions(roomId, conversationId, scope)
       .then(list => {
         setDiscussions(current => {
           const next = { ...current }
@@ -421,7 +419,7 @@ export function ConversationSurface({
         refreshDiscussionDetails(list.items.filter(item => item.session_id === conversationId && referenced.includes(item.id)))
       })
       .catch(() => { /* Messages remain visible even when discussion header facts cannot be read. */ })
-  }, [conversationId, refreshDiscussionDetails, roomId])
+  }, [conversationId, refreshDiscussionDetails, roomId, scope])
 
   const loadMessages = useCallback(async (options: { replace?: boolean } = {}) => {
     // Nothing has been said, so there is nothing to read. Returning rather
@@ -429,8 +427,8 @@ export function ConversationSurface({
     // unaware that a conversation can be absent.
     if (!conversationId) return
     const sequence = ++requestSequence.current
-    const page = await roomsApi.messages(roomId, conversationId, { limit: MESSAGE_PAGE_SIZE, offset: 0 })
-    if (sequence !== requestSequence.current) return
+    const page = await roomsApi.messages(roomId, conversationId, { limit: MESSAGE_PAGE_SIZE, offset: 0 }, scope)
+    if (scope.signal?.aborted || sequence !== requestSequence.current) return
     // Only the conversation this instance is reading. A poll issued before the
     // reader switched conversations lands after the switch — this component is
     // keyed by id, so the new instance's sequence guard does not cover the old
@@ -447,13 +445,13 @@ export function ConversationSurface({
     setQueued(page.queued ?? [])
     refreshDiscussions(page.items)
     if (variant === 'full') {
-      void roomsApi.summary(roomId, conversationId)
+      void roomsApi.summary(roomId, conversationId, scope)
         .then(next => { if (sequence === requestSequence.current) setSummary(next) })
         .catch(() => { if (sequence === requestSequence.current) setSummary(null) })
     }
     const runIds = uniqueIds(page.items.flatMap(message => messageRunIds(message)))
     await refreshRuns(runIds, () => sequence === requestSequence.current)
-    if (sequence !== requestSequence.current) return
+    if (scope.signal?.aborted || sequence !== requestSequence.current) return
     // Whether a turn still belongs on screen is decided in one place, where
     // it is rendered: it stays until its reply is a message of its own.
     // Dropping it here on the Run's status instead would take it away at an
@@ -461,30 +459,33 @@ export function ConversationSurface({
     // its turn would simply vanish along with the only account of what went
     // wrong, and a succeeded one would blink out until the next poll brought
     // the message back.
-  }, [conversationId, refreshDiscussions, refreshRuns, roomId, variant])
+  }, [conversationId, refreshDiscussions, refreshRuns, roomId, variant, scope])
 
   const loadOlderMessages = useCallback(async () => {
     if (!hasOlderMessages || !conversationId) return
-    const page = await roomsApi.messages(roomId, conversationId, { limit: MESSAGE_PAGE_SIZE, offset: messages.length })
+    const page = await roomsApi.messages(roomId, conversationId, { limit: MESSAGE_PAGE_SIZE, offset: messages.length }, scope)
+    if (scope.signal?.aborted) return
     setMessages(current => uniqueMessages([...page.items, ...current]))
     setHasOlderMessages(page.items.length === MESSAGE_PAGE_SIZE)
     refreshDiscussions(page.items)
-  }, [conversationId, hasOlderMessages, messages.length, refreshDiscussions, roomId])
+  }, [conversationId, hasOlderMessages, messages.length, refreshDiscussions, roomId, scope])
 
   const watchRuns = useCallback((runIds: string[]) => {
     for (const runId of uniqueIds(runIds)) {
       if (streamControllers.current.has(runId)) continue
       const controller = new AbortController()
       streamControllers.current.set(runId, controller)
-      void runsApi.streamTurn(runId, {
-        signal: controller.signal,
+      void runsApi.streamTurn(runId, { ...scope,
+        signal: mergeAbortSignals(scope.signal, controller.signal),
         onTurn: turn => {
+          if (scope.signal?.aborted || controller.signal.aborted) return
           setLiveTurns(current => ({ ...current, [runId]: turn }))
           // A blocked turn is still open — it resumes when somebody decides —
           // so the controller stays. Dropping it here would let the watch
           // effect open a second stream for the same Run on its next run, and
           // each one would drop its own controller again.
           if (turn.state === 'working' || turn.state === 'blocked') return
+          controller.abort()
           streamControllers.current.delete(runId)
           notifyProjectFolderContentChanged(inputFileSourcesRef.current.map(source => source.projectFolderId))
           void loadMessages()
@@ -510,17 +511,19 @@ export function ConversationSurface({
         })
         fetchedTurns.current.delete(runId)
       }).finally(() => {
+        controller.abort()
         if (streamControllers.current.get(runId) === controller) streamControllers.current.delete(runId)
       })
     }
-  }, [loadMessages])
+  }, [loadMessages, scope])
 
   const retryRun = useCallback(async (runId: string) => {
     if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
-    const retried = await roomsApi.retryMessage(roomId, conversationId, runId)
+    const retried = await roomsApi.retryMessage(roomId, conversationId, runId, scope)
+    if (scope.signal?.aborted) return
     watchRuns(retried.run_ids)
     await loadMessages({ replace: true })
-  }, [conversationId, loadMessages, roomId, watchRuns])
+  }, [conversationId, loadMessages, roomId, watchRuns, scope])
 
   // A new conversation starts from nothing and follows its tail.
   useEffect(() => {
@@ -542,7 +545,7 @@ export function ConversationSurface({
     fetchedTurns.current.clear()
     referencesAttachedRef.current = false
     loadMessages()
-      .catch(error => toast.error(errMsg(error)))
+      .catch(error => { if (!cancelled) { toast.error(errMsg(error)); readErrorRef.current?.(error) } })
       .finally(() => { if (!cancelled) setMessagesLoading(false) })
     return () => { cancelled = true }
   }, [conversationId, loadMessages, roomId])
@@ -598,7 +601,7 @@ export function ConversationSurface({
       // mark on failure would turn one blip into permanent silence about a
       // Run whose turn is the only account of what went wrong.
       fetchedTurns.current.add(run.id)
-      void runsApi.turn(run.id)
+      void runsApi.turn(run.id, scope)
         // Settled on arrival, for the same reason the chat panel settles its
         // history: the reply is written before `chat_completed`, so a turn
         // read back can still say `working` on finished work — and a read is
@@ -659,13 +662,13 @@ export function ConversationSurface({
   // A Conversation's binding is session-owned: its catalogs are read back
   // for the initialized session, never chosen elsewhere.
   const backendCatalogs = loadedBackendCatalogs
-  // Who the next message reaches: the manager under coordination or when
-  // nobody is named, otherwise the named Agents.
-  const addressedAgentIds = useMemo(() => routingMode === 'agent_coordination'
-    ? managerAgentId ? [managerAgentId] : []
-    : composer.routingSegments.length > 0
-      ? uniqueIds(composer.routingSegments.flatMap(segment => segment.recipient_agent_ids))
-      : managerAgentId ? [managerAgentId] : [], [composer.routingSegments, managerAgentId, routingMode])
+  // Who the next message reaches: the manager when it is handed to them to
+  // arrange or names nobody, otherwise the Agents it addresses.
+  const composerRoute = useMemo(() => roomMessageRoute(composer, managerAgentId), [composer, managerAgentId])
+  const addressedAgentIds = useMemo(
+    () => roomMessageRecipientIds(composerRoute, managerAgentId),
+    [composerRoute, managerAgentId],
+  )
   // Knowledge retrieval is kept per person and Room recipient: each addressed
   // Agent's membership row is its Work Context.
   const retrievalRecipients = (detail?.agent_members ?? [])
@@ -700,7 +703,7 @@ export function ConversationSurface({
     let cancelled = false
     Promise.all(requestedAgentIds.map(async agentId => ({
       agentId,
-      catalog: await agentsApi.conversationBackends(agentId, {
+      catalog: await agentsApi.conversationBackends(agentId, { ...scope,
         ...(conversationId ? { sessionId: conversationId } : {}),
       }),
     }))).then(entries => {
@@ -718,7 +721,7 @@ export function ConversationSurface({
       if (!cancelled) toast.error(errMsg(error))
     })
     return () => { cancelled = true }
-  }, [configurableAgentKey, conversationId, executionReady])
+  }, [configurableAgentKey, conversationId, executionReady, scope])
 
   const configuredBackendsFor = useCallback((recipientAgentIds: string[]): ConversationBackendSelection[] => {
     return recipientAgentIds.flatMap(agentId => {
@@ -726,8 +729,7 @@ export function ConversationSurface({
       const bound = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
       if (!bound) return []
       const backend = { agent_id: agentId, runtime_profile_id: bound.runtime_profile_id }
-      const selected = sessionConfig[agentId] ?? []
-      return [{ ...backend, ...(selected.length ? { session_config: selected } : {}) }]
+      return [backend]
     })
   }, [backendCatalogs, sessionConfig])
 
@@ -736,10 +738,12 @@ export function ConversationSurface({
 
   const sendMessage = useCallback(async (confirmDisclosure?: string[]) => {
     const text = composer.text.trim()
-    if (!conversationId || sendingRef.current || !executionReady) return
-    const segments = composer.routingSegments
+    if (!conversationId || sendingRef.current || savingSettings > 0 || !executionReady) return
+    const route = roomMessageRoute(composer, managerAgentId)
+    const routingMode = route.routing_mode
+    const segments = route.recipient_segments
       .map(segment => ({ recipient_agent_ids: uniqueIds(segment.recipient_agent_ids), content: segment.content.trim() }))
-      .filter(segment => segment.recipient_agent_ids.length > 0 && segment.content)
+      .filter(segment => segment.recipient_agent_ids.length > 0 && (segment.content || inputParts.length > 0 || implicitInputResource))
     const recipientAgentIds = uniqueIds(
       routingMode === 'agent_coordination' || segments.length === 0
         ? managerAgentId ? [managerAgentId] : []
@@ -752,6 +756,7 @@ export function ConversationSurface({
       let effectiveInputParts = inputParts.filter(part => !implicitInputResource || !sameCurrentFilePart(part, implicitInputResource))
       if (implicitInputResource) {
         const resource = await implicitInputResource.flushForSend()
+        if (scope.signal?.aborted) return
         if (!resource) throw new Error(t('conversation_ui.surface.current_file_gone'))
         effectiveInputParts = [...effectiveInputParts, resource]
       }
@@ -763,7 +768,8 @@ export function ConversationSurface({
         await roomsApi.attachReferences(roomId, conversationId, {
           references,
           ...(confirmDisclosure ? { confirm_disclosure: confirmDisclosure } : {}),
-        })
+        }, scope)
+        if (scope.signal?.aborted) return
         referencesAttachedRef.current = true
       }
       const dispatched = await roomsApi.sendMessage(roomId, conversationId, {
@@ -777,13 +783,19 @@ export function ConversationSurface({
         ...(routingMode === 'direct' && segments.length > 0
           ? { recipient_segments: segments }
           : variant === 'full' ? { recipient_segments: null } : {}),
+        // A mention inside a sentence hands the message to the manager and
+        // names who should do the work.
+        ...(routingMode === 'agent_coordination' && route.coordination_target_agent_ids.length > 0
+          ? { coordination_target_agent_ids: route.coordination_target_agent_ids }
+          : {}),
         backends: configuredBackendsFor(recipientAgentIds),
         ...(focusRefs ? { focus_refs: focusRefs } : {}),
         // A turn already running does not refuse this: the message waits for
         // it and is sent when it ends. Attachments are claimed at send, so a
         // message with any is sent now or refused.
         ...(effectiveInputParts.length === 0 ? { queue: true } : {}),
-      })
+      }, scope)
+      if (scope.signal?.aborted) return
       if ('queued' in dispatched) {
         // A poll already in flight read the list before this message joined it.
         requestSequence.current += 1
@@ -826,7 +838,7 @@ export function ConversationSurface({
       sendingRef.current = false
       setSending(false)
     }
-  }, [activeDiscussion, composer, configuredBackendsFor, conversationId, discussionSendMode, executionReady, focusRefs, implicitInputResource, inputParts, managerAgentId, onReferencesRejected, references, roomId, routingMode, variant, watchRuns])
+  }, [activeDiscussion, composer, configuredBackendsFor, conversationId, discussionSendMode, executionReady, focusRefs, implicitInputResource, inputParts, managerAgentId, onReferencesRejected, references, roomId, variant, watchRuns, scope, savingSettings])
 
   // A decision made here continues the conversation here.
   const continueAfterDecision = useCallback(async (preview: ChatActionPreview, action: ActionDecision) => {
@@ -838,11 +850,13 @@ export function ConversationSurface({
     setContinuation({ proposalId: preview.proposal_id, action, phase: 'submitting', runIds: [] })
     try {
       if (action === 'accept') await onBeforeContinue?.(action)
+      if (scope.signal?.aborted) return
       if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
       const dispatched = await roomsApi.continueAfterProposal(roomId, conversationId, {
         proposal_id: preview.proposal_id,
         backends: configuredBackendsFor(managerAgentId ? [managerAgentId] : []),
-      })
+      }, scope)
+      if (scope.signal?.aborted) return
       setContinuation(current => current && current.proposalId === preview.proposal_id
         ? { ...current, phase: 'running', runIds: dispatched.run_ids }
         : current)
@@ -857,7 +871,7 @@ export function ConversationSurface({
       sendingRef.current = false
       setSending(false)
     }
-  }, [configuredBackendsFor, conversationId, managerAgentId, onBeforeContinue, roomId, watchRuns])
+  }, [configuredBackendsFor, conversationId, managerAgentId, onBeforeContinue, roomId, watchRuns, scope])
 
   const keepDiscussion = useCallback((discussion: RoomDiscussion) => {
     setDiscussions(current => ({ ...current, [discussion.id]: discussion }))
@@ -868,10 +882,10 @@ export function ConversationSurface({
   // discussion's record changes — a hold starting or lifting bumps it.
   const refreshQuota = useCallback(() => {
     if (!conversationId) return
-    void roomsApi.conversationQuota(roomId, conversationId)
+    void roomsApi.conversationQuota(roomId, conversationId, scope)
       .then(setQuota)
       .catch(() => { /* the line is a courtesy; sending does not depend on it */ })
-  }, [conversationId, roomId])
+  }, [conversationId, roomId, scope])
   const discussionsVersion = useMemo(
     () => Object.values(discussions).map(item => `${item.id}@${item.updated_at}`).sort().join('|'),
     [discussions],
@@ -882,24 +896,24 @@ export function ConversationSurface({
   // the next read, and each discussion's header re-reads its hold.
   const continuePastQuota = useCallback(async () => {
     if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
-    setQuota(await roomsApi.continuePastQuota(roomId, conversationId))
+    setQuota(await roomsApi.continuePastQuota(roomId, conversationId, scope))
     detailVersions.current.clear()
     await loadMessages()
-  }, [conversationId, loadMessages, roomId])
+  }, [conversationId, loadMessages, roomId, scope])
 
   const stopDiscussion = useCallback(async (discussionId: string) => {
     if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
-    keepDiscussion(await roomsApi.stopDiscussion(roomId, conversationId, discussionId))
+    keepDiscussion(await roomsApi.stopDiscussion(roomId, conversationId, discussionId, scope))
     await loadMessages()
-  }, [conversationId, keepDiscussion, loadMessages, roomId])
+  }, [conversationId, keepDiscussion, loadMessages, roomId, scope])
 
   // Extending re-posts the held mentions as the next wave; their Runs arrive
   // on the messages the next read brings back.
   const extendDiscussion = useCallback(async (discussionId: string, rounds: number) => {
     if (!conversationId) throw new Error(t('conversation_ui.surface.unavailable'))
-    keepDiscussion(await roomsApi.extendDiscussion(roomId, conversationId, discussionId, { rounds }))
+    keepDiscussion(await roomsApi.extendDiscussion(roomId, conversationId, discussionId, { rounds }, scope))
     await loadMessages()
-  }, [conversationId, keepDiscussion, loadMessages, roomId])
+  }, [conversationId, keepDiscussion, loadMessages, roomId, scope])
 
   // Opening a discussion posts its topic as the person's message, so it lands
   // the way a send does.
@@ -910,7 +924,7 @@ export function ConversationSurface({
     setSending(true)
     followRef.current = true
     try {
-      const opened = await roomsApi.openDiscussion(roomId, conversationId, request)
+      const opened = await roomsApi.openDiscussion(roomId, conversationId, request, scope)
       keepDiscussion(opened.discussion)
       setDiscussionSendMode('join')
       watchRuns(opened.run_ids)
@@ -922,7 +936,7 @@ export function ConversationSurface({
       sendingRef.current = false
       setSending(false)
     }
-  }, [conversationId, keepDiscussion, roomId, watchRuns])
+  }, [conversationId, keepDiscussion, roomId, watchRuns, scope])
 
   /** The pick, in the shape the server takes. Always from *this* conversation. */
   const picksFromSelection = useCallback((): ThreadReferencePick[] => (
@@ -942,7 +956,7 @@ export function ConversationSurface({
       await roomsApi.attachReferences(roomId, sessionId, {
         references,
         ...(confirmDisclosure ? { confirm_disclosure: confirmDisclosure } : {}),
-      })
+      }, scope)
       setPicked([])
       toast.success(t('conversation_ui.surface.attached'))
     } catch (error) {
@@ -957,7 +971,7 @@ export function ConversationSurface({
       pickingRef.current = false
       setPicking(false)
     }
-  }, [picksFromSelection, roomId])
+  }, [picksFromSelection, roomId, scope])
 
   /**
    * Whether messages may be picked at all.
@@ -967,7 +981,7 @@ export function ConversationSurface({
    * surface that supplies neither destination still shows checkboxes and a
    * button that silently does nothing.
    */
-  const canPick = Boolean(conversationId) && (
+  const canPick = !readOnly && Boolean(conversationId) && (
     Boolean(onUseInNewThread) || (siblingConversations?.length ?? 0) > 1
   )
 
@@ -986,7 +1000,7 @@ export function ConversationSurface({
         notice={notice}
         discussion={discussions[notice.discussion_id]}
         agents={labelAgents}
-        onExtend={detail?.viewer_can_write ? extendDiscussion : undefined}
+        onExtend={!readOnly && detail?.viewer_can_write ? extendDiscussion : undefined}
       />
     )
     // A reference has no speaker, so it is not rendered as one.
@@ -1022,8 +1036,8 @@ export function ConversationSurface({
           delegatedRunIds={[...allDelegatedRunIds]}
           runs={runs}
           projectId={detail?.room.project_id ?? null}
-          onRetry={retryRun}
-          onActionDecision={continueAfterDecision}
+          onRetry={readOnly ? undefined : retryRun}
+          onActionDecision={readOnly ? undefined : continueAfterDecision}
         />
         {/*
           The turns this message started, as the Agent speaking after the
@@ -1047,7 +1061,7 @@ export function ConversationSurface({
               delegatedBy={delegatedIds.has(runId) ? delegatorNameForRun(runId) : undefined}
               run={runs[runId]}
               projectId={detail?.room.project_id ?? null}
-              onRetry={allDelegatedRunIds.has(runId) ? undefined : retryRun}
+              onRetry={readOnly || allDelegatedRunIds.has(runId) ? undefined : retryRun}
             />
           ))}
       </Fragment>
@@ -1110,9 +1124,9 @@ export function ConversationSurface({
               warnPct={quota?.warn_pct}
               messages={item.messages}
               agents={labelAgents}
-              onStop={stopDiscussion}
-              onExtend={detail?.viewer_can_write ? extendDiscussion : undefined}
-              onContinueAnyway={detail?.viewer_can_write ? continuePastQuota : undefined}
+              onStop={readOnly ? undefined : stopDiscussion}
+              onExtend={!readOnly && detail?.viewer_can_write ? extendDiscussion : undefined}
+              onContinueAnyway={!readOnly && detail?.viewer_can_write ? continuePastQuota : undefined}
             >
               {item.messages.map(renderMessage)}
               {lastSegment.get(item.discussionId) === item.segment && uniqueIds((discussionDetails[item.discussionId]?.waves ?? [])
@@ -1127,7 +1141,7 @@ export function ConversationSurface({
                     agentName={agentNameForRun(runId)}
                     run={runs[runId]}
                     projectId={detail?.room.project_id ?? null}
-                    onRetry={allDelegatedRunIds.has(runId) ? undefined : retryRun}
+                    onRetry={readOnly || allDelegatedRunIds.has(runId) ? undefined : retryRun}
                   />
                 ))}
             </DiscussionGroup>
@@ -1137,9 +1151,9 @@ export function ConversationSurface({
             key={item.id}
             message={item}
             author={humans.find(human => human.user_id === item.user_id)?.display_name ?? t('conversation_ui.surface.someone')}
-            canWithdraw={item.user_id === userId}
+            canWithdraw={!readOnly && item.user_id === userId}
             onWithdraw={async () => {
-              await roomsApi.withdrawQueuedMessage(roomId, conversationId!, item.id)
+              await roomsApi.withdrawQueuedMessage(roomId, conversationId!, item.id, scope)
               // A poll already in flight read the list with this message still in it.
               requestSequence.current += 1
               setQueued(current => current.filter(entry => entry.id !== item.id))
@@ -1160,7 +1174,16 @@ export function ConversationSurface({
           }}
         />
       </div>
-      <div className={compact ? 'space-y-2 border-t border-border p-3' : 'space-y-3 border-t border-border bg-card px-5 py-3'}>
+      <ConversationActivity
+        runs={Object.values(runs).filter(run =>
+          (!isTerminalRunStatus(run.status) || run.status === 'waiting_for_review')
+          && liveTurns[run.id]?.state !== 'done' && liveTurns[run.id]?.state !== 'failed')}
+        turns={liveTurns}
+        agentName={agentNameForRun}
+        allowCommands={!readOnly}
+        onChanged={run => setRuns(current => ({ ...current, [run.id]: run }))}
+      />
+      {!readOnly && <div className={compact ? 'space-y-2 border-t border-border p-3' : 'space-y-3 border-t border-border bg-card px-5 py-3'}>
         {/* A draft has to be visible to be a draft. Name the pick and give it
             a way to drop. On the same condition the send uses, not merely
             "there are picks". Do not show a banner for content the send
@@ -1186,7 +1209,7 @@ export function ConversationSurface({
         )}
         {executionPreflight}
         {runSettings}
-        <ConversationQuotaLine quota={quota} onContinueAnyway={detail?.viewer_can_write ? continuePastQuota : undefined} />
+        <ConversationQuotaLine quota={quota} onContinueAnyway={!readOnly && detail?.viewer_can_write ? continuePastQuota : undefined} />
         <ConversationComposer
           renderInputReferences={false}
           editor={<RoomMessageComposer
@@ -1206,12 +1229,14 @@ export function ConversationSurface({
             sessionId={conversationId}
             inputParts={inputParts}
             onInputPartsChange={setInputParts}
+            recipientAgentIds={addressedAgentIds}
+            managerAgentId={managerAgentId}
             embedded
           />}
           controls={(
             <>
               {retrievalRecipients.map(member => (
-                <KnowledgeRetrievalToggle key={member.id} scopeId={member.id} agentName={member.agent_name} disabled={sending} />
+                <KnowledgeRetrievalToggle key={member.id} sessionId={conversationId} roomAgentMemberId={member.id} agentName={member.agent_name} disabled={sending} />
               ))}
               {activeDiscussion && (
                 <div role="group" aria-label={t('conversation_ui.surface.destination')} className="flex items-center gap-1 text-xs">
@@ -1236,7 +1261,7 @@ export function ConversationSurface({
                   <MessagesSquare className="size-3.5" />{t('conversation_ui.surface.open_discussion')}
                 </Button>
               )}
-              <ConversationAgentSessionConfigs
+              <ConversationAgentSessionConfigs key={`${scope.spaceId}:${conversationId}`}
                 agents={roomAgents.flatMap(agent => {
                   const catalog = backendCatalogs[agent.id]
                   const backend = catalog?.binding ?? catalog?.options.find(option => option.usable !== false)
@@ -1246,7 +1271,20 @@ export function ConversationSurface({
                     name: agent.name,
                     options: option.session_config_options,
                     value: sessionConfig[agent.id] ?? [],
+                    persistedValue: catalog?.session_config,
                     onChange: (value: SessionConfigSelection[]) => setSessionConfig(current => ({ ...current, [agent.id]: value })),
+                    onSave: conversationId && backend && !readOnly && detail?.viewer_can_write ? async (value: SessionConfigSelection[]) => {
+                      setSavingSettings(current => current + 1)
+                      try {
+                        await agentsApi.saveConversationSessionConfig(agent.id, {
+                          session_id: conversationId, runtime_profile_id: backend.runtime_profile_id, session_config: value,
+                        }, scope)
+                        if (scope.signal?.aborted || previousConversationId.current !== conversationId) return
+                        setLoadedBackendCatalogs(current => ({ ...current,
+                          [agent.id]: { ...current[agent.id]!, session_config: value },
+                        }))
+                      } finally { setSavingSettings(current => current - 1) }
+                    } : undefined,
                   }] : []
                 })}
                 disabled={sending}
@@ -1255,7 +1293,7 @@ export function ConversationSurface({
           )}
           note={!executionReady ? t('conversation_ui.surface.configure_first') : undefined}
           sending={sending}
-          sendDisabled={sending || !executionReady || (!composer.text.trim() && inputParts.length === 0 && !implicitInputResource)}
+          sendDisabled={sending || savingSettings > 0 || !executionReady || (!composer.text.trim() && inputParts.length === 0 && !implicitInputResource)}
           onSend={() => void sendMessage()}
           inputParts={inputParts}
           onInputPartsChange={setInputParts}
@@ -1266,8 +1304,8 @@ export function ConversationSurface({
           sessionId={conversationId}
           inputResetToken={resetToken}
         />
-      </div>
-      {variant === 'full' && (
+      </div>}
+      {!readOnly && variant === 'full' && (
         <OpenDiscussionDialog
           open={discussionDialogOpen}
           agents={roomAgents.filter(agent => agent.status === 'active')}
@@ -1304,8 +1342,8 @@ function RoomMessageView({
   projectId?: string | null
   /** Child Runs an Agent delegated: shown live, never retried as a recipient. */
   delegatedRunIds: string[]
-  onRetry: (runId: string) => Promise<void>
-  onActionDecision: (preview: ChatActionPreview, action: ActionDecision) => Promise<void>
+  onRetry?: (runId: string) => Promise<void>
+  onActionDecision?: (preview: ChatActionPreview, action: ActionDecision) => Promise<void>
 }) {
   const { t } = useAppTranslation()
   const mine = message.role === 'user'
@@ -1316,6 +1354,19 @@ function RoomMessageView({
     : mine
     ? (human?.display_name ?? human?.email ?? (message.user_id === viewerUserId ? t('conversation_ui.surface.you') : t('conversation_ui.surface.person')))
     : agents.find(agent => agent.id === message.sender_agent_id)?.name ?? t('conversation_ui.surface.agent')
+  const delegated = message.role === 'assistant' && runIds.some(id => delegatedRunIds.includes(id) || runs[id]?.parent_run_id)
+  // Only a successful, settled specialist reply folds. Questions, failures,
+  // live progress and blocked turns stay visible, as do action cards below.
+  const unsuccessful = runIds.some(id => ['failed', 'cancelled', 'orphaned'].includes(runs[id]?.status))
+  const foldReply = delegated && !unsuccessful && !message.metadata_json?.awaiting_answer && (turn
+    ? turn.state === 'done'
+    : runIds.some(id => ['succeeded', 'degraded'].includes(runs[id]?.status)))
+  const reply = <>
+    <ConversationInputPartsView parts={message.input_parts} text={message.content} />
+    {turn
+      ? <ConversationTurn turn={settledTurn(turn, turn.state, message.content)!} runHref={`/runs/${turn.run_id}`} className="max-w-none" />
+      : message.content && <MessageResponse>{message.content}</MessageResponse>}
+  </>
   return (
     // Who said it has to be readable at a glance in a column of mixed-language
     // text, so the two sides differ in alignment, fill and edge at once.
@@ -1358,16 +1409,10 @@ function RoomMessageView({
             here from the Run's status produces a second, worse answer. Only the
             prose is replaced, with what was actually saved.
           */}
-          <ConversationInputPartsView parts={message.input_parts} />
-          {turn
-            ? (
-              <ConversationTurn
-                turn={settledTurn(turn, turn.state, message.content)!}
-                runHref={`/runs/${turn.run_id}`}
-                className="max-w-none"
-              />
-            )
-            : message.content && <MessageResponse>{message.content}</MessageResponse>}
+          {foldReply ? <details>
+            <summary className="cursor-pointer text-xs text-muted-foreground">{t('conversation_ui.surface.delegated_result')}</summary>
+            <div className="mt-2">{reply}</div>
+          </details> : reply}
           {message.metadata_json?.awaiting_answer && <AwaitingAnswerMarker />}
           <ActionPreviewCards
             previews={metadataActionPreviews(message.metadata_json)}

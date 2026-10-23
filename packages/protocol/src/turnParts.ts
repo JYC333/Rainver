@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema } from "./common.js";
 import { JsonObjectSchema } from "./capabilities.js";
+import { AgentWaitForResultsScopeSchema } from "./agentGroupRuns.js";
+import { RunStatusSchema } from "./runOrchestration.js";
+import { RuntimeSessionConfigDroppedSelectionSchema } from "./hosts.js";
 
 /**
  * One Agent turn, as an ordered list of parts.
@@ -141,8 +144,22 @@ export type ActionPreviewTurnPart = z.infer<typeof ActionPreviewTurnPartSchema>;
 export const TurnStateSchema = z.enum(["working", "blocked", "done", "failed"]);
 export type TurnState = z.infer<typeof TurnStateSchema>;
 
+/** A runtime report is evidence; a requested picker value alone is not. */
+export const RunModelSelectionSchema = z.object({
+  requested: z.string().nullable(),
+  reported: z.string().nullable(),
+  status: z.enum(["pending", "reported", "unknown"]),
+  /**
+   * Saved or inherited session options the Run left at the runtime's default
+   * because the runtime no longer offers them. Absent when none were dropped.
+   */
+  dropped: z.array(RuntimeSessionConfigDroppedSelectionSchema).max(32).optional(),
+}).strict();
+export type RunModelSelection = z.infer<typeof RunModelSelectionSchema>;
+
 export const RunTurnSchema = z.object({
   schema_version: z.literal("run_turn.v1"),
+  model_selection: RunModelSelectionSchema.optional(),
   run_id: IdSchema,
   state: TurnStateSchema,
   /** Which log this was projected from. For debugging, not for rendering. */
@@ -155,7 +172,7 @@ export const RunTurnSchema = z.object({
    * same directory, which the host lets this one into once that Run ends —
    * nobody has to act on it.
    */
-  blocked_on: z.enum(["authorization", "run_decision", "workspace"]).nullable(),
+  blocked_on: z.enum(["authorization", "run_decision", "workspace", "quota"]).nullable(),
   /**
    * The highest event index this projection consumed. A stream resumes from
    * here rather than replaying the turn.
@@ -165,8 +182,29 @@ export const RunTurnSchema = z.object({
 }).strict();
 export type RunTurn = z.infer<typeof RunTurnSchema>;
 
+/**
+ * Resource waits reported by the owning Run/Room/Host paths. These are exact
+ * status, marker and scope codes, never classifications of a reason's prose.
+ * Host directory locks and concurrency admission both report workspace waits.
+ */
+export const RunResourceWaitCodeSchema = z.enum([
+  RunStatusSchema.enum.queued,
+  RunStatusSchema.enum.waiting_for_dependency,
+  RunTurnSchema.shape.blocked_on.unwrap().enum.workspace,
+  "waiting_for_quota",
+  "waiting_for_turn",
+  "conversation_serialization",
+  ...AgentWaitForResultsScopeSchema.options,
+]);
+export type RunResourceWaitCode = z.infer<typeof RunResourceWaitCodeSchema>;
+
 /** One frame of the live part stream. */
 export const TurnStreamFrameSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("turn.model_changed"),
+    run_id: IdSchema,
+    model_selection: RunModelSelectionSchema,
+  }).strict(),
   z.object({
     type: z.literal("turn.snapshot"),
     turn: RunTurnSchema,

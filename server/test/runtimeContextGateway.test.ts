@@ -198,7 +198,8 @@ describe("RuntimeContextInvocationGateway", () => {
       { async load() { return control(); } },
       { async ingest(event) { return event as never; } },
       {
-        async prepareDelivery() {
+        async prepareDelivery(input) {
+          expect(input.leaseGeneration).toBe(1);
           return {
             id: "40000000-0000-4000-8000-000000000099",
             runtime_state_key: "40000000-0000-4000-8000-000000000098",
@@ -226,6 +227,7 @@ describe("RuntimeContextInvocationGateway", () => {
         acknowledged_item_ids: [stable.id],
         generation: 2,
         rotation_reason: null,
+        lease_generation: 1,
       },
     });
     const attempt = createAttempt.mock.calls[0]![0];

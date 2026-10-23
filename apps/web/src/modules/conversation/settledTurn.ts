@@ -20,6 +20,13 @@ export function settledTurn(
   text: string,
 ): RunTurn | null {
   if (!streamed) return null
+  // The Host trace retains prose separated by tool calls. Keep those boundaries
+  // only when the complete trace agrees with the saved reply; a partial trace,
+  // a pause notice or an appended question must still use the canonical message.
+  const recordedParts = streamed.parts.filter(part => part.type !== 'text' || !part.streamed)
+  const recordedText = recordedParts.flatMap(part => part.type === 'text' ? [part.text] : []).join('')
+  const preserveSegments = streamed.source === 'host_thread_events'
+    && recordedText.trim().length > 0 && recordedText.trim() === text.trim()
   const steps = streamed.parts.filter(part => part.type !== 'text')
   // Steps keep their stream positions (a host turn interleaves text with
   // them), so the reply takes the first index above every kept step rather
@@ -31,7 +38,7 @@ export function settledTurn(
     // Only a settled turn has nothing left to wait on. A blocked one keeps
     // what it is blocked on, because that is what names the link out.
     blocked_on: state === 'blocked' ? streamed.blocked_on : null,
-    parts: [...steps, { type: 'text', index: textIndex, text }],
+    parts: preserveSegments ? recordedParts : [...steps, { type: 'text', index: textIndex, text }],
   }
 }
 

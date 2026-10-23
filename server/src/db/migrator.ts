@@ -6,7 +6,9 @@
  * `0000_baseline.sql` followed by one numbered file per schema change,
  * generated from `server/src/db/schema/` by `pnpm run schema:generate`
  * (see `server/migrations/README.md`). Deployments carry data, so a change is
- * always a new file, never an edit to one that has been applied.
+ * normally a new file, never an edit to one that has been applied. The explicit
+ * pre-publication squash/conversion workflow is documented in ADR 0025; this
+ * ordinary runner never converts history implicitly.
  *
  * Design:
  * - Migrations are ordered `.sql` files named `NNNN_name.sql` under a directory;
@@ -28,11 +30,11 @@ import { join } from "node:path";
 import type { Pool, PoolClient } from "pg";
 
 /** Arbitrary, stable 64-bit key for the migration advisory lock. */
-const MIGRATION_LOCK_KEY = 7263123498012n;
+export const MIGRATION_LOCK_KEY = 7263123498012n;
 
 const MIGRATIONS_TABLE = "public.server_schema_migrations";
 
-interface MigrationFile {
+export interface MigrationFile {
   /** Numeric-ish prefix used for ordering + identity, e.g. `0001`. */
   version: string;
   /** Human label after the first underscore, e.g. `baseline`. */

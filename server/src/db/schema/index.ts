@@ -88,3 +88,4 @@ export * from "./hostRuntimeUsage.js";
 export * from "./projectFolders.js";
 export * from "./projectFileDrafts.js";
 export * from "./workspaceLocations.js";
+export * from "./agentAttention.js";

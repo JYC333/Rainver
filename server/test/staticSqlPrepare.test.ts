@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
+import { MIGRATION_CONVERSION_AUDIT_SQL } from "../src/db/migrationConversion.js";
 
 // Every static SQL string in server/src is PREPAREd against a migrated
 // database. PREPARE parses, resolves names, and deduces parameter types
@@ -126,6 +127,9 @@ describe("static SQL", () => {
     const client = await db.pool.connect();
     const failures: string[] = [];
     try {
+      // Operations metadata is created on demand, outside the application
+      // schema chain. Validate its queries against its owning tool's real DDL.
+      await client.query(MIGRATION_CONVERSION_AUDIT_SQL);
       let index = 0;
       for (const statement of statements) {
         index += 1;

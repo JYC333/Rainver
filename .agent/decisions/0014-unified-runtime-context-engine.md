@@ -192,8 +192,17 @@ acknowledgements, committed records, cursor checks, and reconciliation.
 ### 11. Vendor sessions are disposable continuity caches
 
 A `work_context_scope` identifies one direct conversation, one Room recipient
-and instructing user, one root task, or one workflow execution, and normally
-continues in the same vendor session including across vendor compaction. The
+in one Conversation and instructing user, one root task, or one workflow
+execution, and normally continues in the same vendor session including across
+vendor compaction.
+
+Amended 2026-10-22: a Room holds several Conversations, and a scope keyed by
+the Room recipient alone spliced the raw history of every one of them into
+each. A Room recipient's scope is now its `room_conversation_recipients` row
+(Conversation × recipient), so one Conversation's ledger, checkpoints, CLI
+continuity and Setup never carry another's. What should reach across
+Conversations does so through governed channels — Memory, Project state,
+Knowledge — never through another Conversation's transcript. The
 authoritative state is ledger plus checkpoints; a missing, corrupt, reset, or
 incompatible vendor session is rebuilt from the latest checkpoint, uncovered
 tail, and current context. Two cursors are tracked: `checkpoint_cursor` and

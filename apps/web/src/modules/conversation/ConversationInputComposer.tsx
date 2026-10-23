@@ -1,3 +1,5 @@
+import { hasSkillReference, SelectedSkillChips } from './conversationSkills'
+import { useConversationScope } from './ConversationScope'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type DragEvent, type ClipboardEvent, type ReactNode } from 'react'
 import { FileText, ImagePlus, Loader2, Paperclip, Search, X } from 'lucide-react'
 import type {
@@ -115,6 +117,7 @@ export function useConversationInputDraft({
   disabled?: boolean
   resetToken?: number
 }): ConversationInputDraftController {
+  const scope = useConversationScope()
   const { t } = useAppTranslation()
   const [uploads, setUploads] = useState<UploadState[]>([])
   const [fileMenuOpen, setFileMenuOpen] = useState(false)
@@ -136,7 +139,7 @@ export function useConversationInputDraft({
 
   const fallbackFileSources = useMemo<ConversationInputFileSource[]>(() => projectFolderId
     ? [{ projectFolderId, label: t('conversation_ui.input.source_project_folder') }]
-    : [], [projectFolderId, t])
+    : [], [projectFolderId, t, scope])
   const inputFileSources = fileSources ?? fallbackFileSources
   const inputFileSourceKey = inputFileSources.map(source => `${source.projectFolderId}:${source.workspaceLocationId ?? ''}:${source.label}`).join('|')
   const inputFileSourcesRef = useRef(inputFileSources)
@@ -145,13 +148,13 @@ export function useConversationInputDraft({
   const changeParts = useCallback((next: ConversationInputPart[]) => {
     partsRef.current = next
     onPartsChange?.(next)
-  }, [onPartsChange])
+  }, [onPartsChange, scope])
 
   const removePendingUpload = useCallback((upload: UploadState) => {
     cancelledUploadsRef.current.add(upload.localId)
     URL.revokeObjectURL(upload.previewUrl)
-    if (upload.media) void conversationInputApi.deletePendingImage(upload.media.media_id).catch(() => undefined)
-  }, [])
+    if (upload.media) void conversationInputApi.deletePendingImage(upload.media.media_id, scope).catch(() => undefined)
+  }, [scope])
 
   // Images that count against the cap: attached parts plus uploads still in
   // flight, which have no part yet. A failed upload holds no slot; its retry
@@ -159,7 +162,7 @@ export function useConversationInputDraft({
   const imageSlotsUsed = useCallback(() => (
     partsRef.current.filter(part => part.kind === 'image').length
     + uploadsRef.current.filter(upload => !upload.media && !upload.error && !cancelledUploadsRef.current.has(upload.localId)).length
-  ), [])
+  ), [scope])
 
   const uploadImage = useCallback(async (file: File, retryLocalId?: string) => {
     if (!ConversationImageMediaTypeSchema.options.includes(file.type as never)) return
@@ -184,9 +187,10 @@ export function useConversationInputDraft({
       const media = await conversationInputApi.uploadImage(file, progress => {
         if (cancelledUploadsRef.current.has(localId)) return
         setUploads(items => items.map(item => item.localId === localId ? { ...item, progress } : item))
-      })
+      }, scope)
+      if (scope.signal?.aborted) return
       if (cancelledUploadsRef.current.has(localId)) {
-        void conversationInputApi.deletePendingImage(media.media_id).catch(() => undefined)
+        void conversationInputApi.deletePendingImage(media.media_id, scope).catch(() => undefined)
         return
       }
       const part: ConversationInputImagePart = {
@@ -207,7 +211,7 @@ export function useConversationInputDraft({
         ? { ...item, error: errMsg(error), progress: 0 }
         : item))
     }
-  }, [changeParts, imageSlotsUsed])
+  }, [changeParts, imageSlotsUsed, scope])
 
   const receiveImages = useCallback((files: File[]) => {
     const images = files.filter(file => ConversationImageMediaTypeSchema.options.includes(file.type as never))
@@ -218,7 +222,7 @@ export function useConversationInputDraft({
     const remaining = Math.max(0, CONVERSATION_MAX_IMAGES - imageSlotsUsed())
     if (images.length > remaining) setFileError(t('conversation_ui.input.too_many_images', { max: CONVERSATION_MAX_IMAGES }))
     void Promise.all(images.slice(0, remaining).map(file => uploadImage(file)))
-  }, [imageSlotsUsed, uploadImage])
+  }, [imageSlotsUsed, uploadImage, scope])
 
   const onPaste = useCallback((event: ClipboardEvent<HTMLDivElement>) => {
     const files = Array.from(event.clipboardData.files)
@@ -226,7 +230,7 @@ export function useConversationInputDraft({
       event.preventDefault()
       receiveImages(files)
     }
-  }, [receiveImages])
+  }, [receiveImages, scope])
 
   const onDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
     if (Array.from(event.dataTransfer.types).includes('Files')) {
@@ -234,15 +238,15 @@ export function useConversationInputDraft({
       event.dataTransfer.dropEffect = 'copy'
       setDragging(true)
     }
-  }, [])
+  }, [scope])
 
   const onDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
     event.preventDefault()
     setDragging(false)
     receiveImages(Array.from(event.dataTransfer.files))
-  }, [receiveImages])
+  }, [receiveImages, scope])
 
-  const onDragLeave = useCallback(() => setDragging(false), [])
+  const onDragLeave = useCallback(() => setDragging(false), [scope])
 
   useEffect(() => {
     setFileTrees([])
@@ -250,7 +254,7 @@ export function useConversationInputDraft({
     setFileMenuOpen(false)
     setFileQuery('')
     setFileError(null)
-  }, [inputFileSourceKey, projectId])
+  }, [inputFileSourceKey, projectId, scope])
 
   const loadFiles = useCallback(async () => {
     if (!projectId || inputFileSourcesRef.current.length === 0) return
@@ -261,7 +265,7 @@ export function useConversationInputDraft({
     setFileError(null)
     try {
       if (sessionId) {
-        const response = await conversationInputApi.searchFiles(sessionId, fileQuery, controller.signal)
+        const response = await conversationInputApi.searchFiles(sessionId, fileQuery, controller.signal, scope)
         if (controller.signal.aborted) return
         setSearchCandidates(response.items.map(item => ({
           projectFolderId: item.project_folder_id,
@@ -274,9 +278,9 @@ export function useConversationInputDraft({
         return
       }
       const loaded = await Promise.all(inputFileSourcesRef.current.map(async source => {
-        const tree = await projectFoldersApi.tree(projectId, source.projectFolderId)
+        const tree = await projectFoldersApi.tree(projectId, source.projectFolderId, undefined, undefined, scope)
         if (source.workspaceLocationId) return { source: source as ConversationInputFileSource & { workspaceLocationId: string }, tree }
-        const locations = await projectFoldersApi.locations(projectId, source.projectFolderId)
+        const locations = await projectFoldersApi.locations(projectId, source.projectFolderId, scope)
         const location = locations.find(candidate => candidate.status === 'active' && candidate.execution_ready !== false)
           ?? locations.find(candidate => candidate.status === 'active')
         if (!location) return null
@@ -294,27 +298,27 @@ export function useConversationInputDraft({
     } finally {
       if (fileSearchControllerRef.current === controller) setFileLoading(false)
     }
-  }, [fileQuery, projectId, sessionId])
+  }, [fileQuery, projectId, sessionId, scope])
 
   useEffect(() => {
     if (fileMenuOpen && sessionId) void loadFiles()
-  }, [fileMenuOpen, fileQuery, loadFiles, sessionId])
+  }, [fileMenuOpen, fileQuery, loadFiles, sessionId, scope])
 
-  useEffect(() => () => fileSearchControllerRef.current?.abort(), [])
+  useEffect(() => () => fileSearchControllerRef.current?.abort(), [scope])
 
   const openFileMenu = useCallback(() => {
     if (disabled || !projectId || inputFileSources.length === 0) return
     setFileMenuOpen(open => !open)
     setFileError(null)
     if (!sessionId && fileTrees.length === 0) void loadFiles()
-  }, [disabled, fileTrees.length, inputFileSources.length, loadFiles, projectId, sessionId])
+  }, [disabled, fileTrees.length, inputFileSources.length, loadFiles, projectId, sessionId, scope])
 
   const candidates = useMemo(() => {
     const query = fileQuery.trim().toLowerCase()
     return (searchCandidates ?? fileTrees.flatMap(({ source, tree }) => flattenFileTree(tree, source)))
       .filter(file => !query || file.path.toLowerCase().includes(query) || file.name.toLowerCase().includes(query))
       .slice(0, 12)
-  }, [fileQuery, fileTrees, searchCandidates])
+  }, [fileQuery, fileTrees, searchCandidates, scope])
 
   const addFile = useCallback(async (candidate: FileCandidate) => {
     if (!projectId) {
@@ -332,7 +336,7 @@ export function useConversationInputDraft({
     setFileLoadingPath(candidate.path)
     setFileError(null)
     try {
-      const content = await projectFoldersApi.file(projectId, candidate.projectFolderId, candidate.path)
+      const content = await projectFoldersApi.file(projectId, candidate.projectFolderId, candidate.path, scope)
       const bytes = new TextEncoder().encode(content.content)
       if (bytes.byteLength > CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) {
         throw new Error(t('conversation_ui.input.file_too_large_error', { max: formatBytes(CONVERSATION_MAX_FILE_SNAPSHOT_BYTES) }))
@@ -358,7 +362,7 @@ export function useConversationInputDraft({
     } finally {
       setFileLoadingPath(null)
     }
-  }, [changeParts, projectId])
+  }, [changeParts, projectId, scope])
 
   const discardUpload = useCallback((upload: UploadState) => {
     removePendingUpload(upload)
@@ -366,7 +370,7 @@ export function useConversationInputDraft({
     if (upload.media) {
       changeParts(partsRef.current.filter(part => part.kind !== 'image' || part.media_id !== upload.media?.media_id))
     }
-  }, [changeParts, removePendingUpload])
+  }, [changeParts, removePendingUpload, scope])
 
   const removePart = useCallback((part: ConversationInputPart) => {
     if (part.kind === 'image') {
@@ -377,7 +381,18 @@ export function useConversationInputDraft({
       }
     }
     changeParts(partsRef.current.filter(candidate => candidate !== part && !samePart(candidate, part)))
-  }, [changeParts, discardUpload])
+  }, [changeParts, discardUpload, scope])
+
+  useEffect(() => {
+    // A parent can consume just the accepted message's parts while the next
+    // draft already has uploads. Release only completed previews whose parts
+    // left the draft; pending uploads still belong to the next message.
+    const consumed = uploads.filter(upload => upload.media
+      && !parts.some(part => part.kind === 'image' && part.media_id === upload.media?.media_id))
+    if (consumed.length === 0) return
+    setUploads(current => current.filter(upload => !consumed.includes(upload)))
+    consumed.forEach(upload => URL.revokeObjectURL(upload.previewUrl))
+  }, [parts, uploads])
 
   useEffect(() => {
     if (resetToken === 0) return
@@ -385,11 +400,11 @@ export function useConversationInputDraft({
     setUploads([])
     changeParts([])
     previous.forEach(removePendingUpload)
-  }, [changeParts, removePendingUpload, resetToken])
+  }, [changeParts, removePendingUpload, resetToken, scope])
 
   useEffect(() => () => {
     uploadsRef.current.forEach(removePendingUpload)
-  }, [removePendingUpload])
+  }, [removePendingUpload, scope])
 
   const unresolved = uploads.some(upload => !upload.media || Boolean(upload.error))
   return {
@@ -566,13 +581,14 @@ function ImageAttachment({ part, upload, onRemove }: { part: ConversationInputIm
   )
 }
 
-export function ConversationInputPartsView({ parts }: { parts?: Array<ConversationInputPart | ConversationInputResourceMessagePart> }) {
+export function ConversationInputPartsView({ parts, text = '' }: { parts?: Array<ConversationInputPart | ConversationInputResourceMessagePart>; text?: string }) {
   const { t } = useAppTranslation()
   if (!parts?.length) return null
   const inputParts = parts.filter((part): part is ConversationInputPart => 'kind' in part)
   const resourceParts = parts.filter((part): part is ConversationInputPart | ConversationInputResourceMessagePart => 'kind' in part && part.kind === 'input_resource')
   return (
     <div className="mt-1 flex min-w-0 max-w-full flex-wrap gap-2" aria-label={t('conversation_ui.input.message_inputs')}>
+      <SelectedSkillChips parts={inputParts.filter(part => part.kind === 'skill' && !hasSkillReference(text, part))} />
       {inputParts.filter((part): part is ConversationInputImagePart => part.kind === 'image').map(part => <ImageAttachment key={part.media_id} part={part} />)}
       {inputParts.filter((part): part is ConversationInputFileReferencePart => part.kind === 'file_reference').map(part => (
         <div key={`${part.project_folder_id}:${part.relative_path}`} className="flex items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1.5 text-xs" title={t('conversation_ui.input.referenced_file_title', { path: part.relative_path })} aria-label={t('conversation_ui.input.referenced_file_label', { path: part.relative_path })}>
@@ -595,6 +611,7 @@ export function ConversationInputPartsView({ parts }: { parts?: Array<Conversati
 }
 
 function AuthenticatedImage({ mediaId, alt, className }: { mediaId: string; alt: string; className?: string }) {
+  const scope = useConversationScope()
   const { t } = useAppTranslation()
   const [src, setSrc] = useState<string | null>(null)
   const [error, setError] = useState(false)
@@ -603,7 +620,7 @@ function AuthenticatedImage({ mediaId, alt, className }: { mediaId: string; alt:
     let objectUrl: string | null = null
     setSrc(null)
     setError(false)
-    void conversationInputApi.imageBlob(mediaId).then(blob => {
+    void conversationInputApi.imageBlob(mediaId, scope).then(blob => {
       if (!active) return
       objectUrl = URL.createObjectURL(blob)
       setSrc(objectUrl)
@@ -614,7 +631,7 @@ function AuthenticatedImage({ mediaId, alt, className }: { mediaId: string; alt:
       active = false
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [mediaId])
+  }, [mediaId, scope])
   if (error) return <div role="img" aria-label={t('conversation_ui.input.image_unavailable_label', { alt })} className={`${className ?? ''} flex items-center justify-center bg-muted/40 px-2 text-center text-[10px] text-muted-foreground`}>{t('conversation_ui.input.image_unavailable')}</div>
   if (!src) return <div className={`${className ?? ''} flex items-center justify-center bg-muted/40`}><Loader2 className="size-4 animate-spin text-muted-foreground" /></div>
   return <img src={src} alt={alt} className={className} />
@@ -641,6 +658,7 @@ function flattenFileTree(root: FileNode | null, source: ConversationInputFileSou
 
 function samePart(a: ConversationInputPart, b: ConversationInputPart): boolean {
   if (a.kind !== b.kind) return false
+  if (a.kind === 'skill' && b.kind === 'skill') return a.skill_package_id === b.skill_package_id && a.package_hash === b.package_hash
   if (a.kind === 'image' && b.kind === 'image') return a.media_id === b.media_id
   if (a.kind === 'file_reference' && b.kind === 'file_reference') {
     return a.project_folder_id === b.project_folder_id && a.workspace_location_id === b.workspace_location_id && a.relative_path === b.relative_path

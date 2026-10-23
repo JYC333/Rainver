@@ -227,6 +227,35 @@ describe('UsagePage', () => {
     setupMocks()
   })
 
+  it('distinguishes unreported model calls, cumulative usage, delivery estimates and occupancy', async () => {
+    vi.mocked(usageApi.summary).mockResolvedValue({ ...summary(), totals: { ...totals, request_count: 0, unknown_request_count_events: 1 } })
+    vi.mocked(usageApi.events).mockResolvedValue({ ...events, items: [{
+      ...events.items[0]!, execution_channel: 'local_cli', request_count: 0, request_count_known: false,
+      cache_creation_input_tokens: 200, cache_creation_1h_input_tokens: 50, cache_read_input_tokens: 100,
+      dimensions: { run_purpose: 'handoff', run_outcome: 'failed', run_attempt_number: 2 },
+      metadata: { cli_usage: { acp_turns: 2, occupancy_used: 9000, occupancy_size: 1000000, estimated_total: 500, estimate_instructions: 100, delivery_mode: 'full', rotation_reason: 'tool_policy_changed' } },
+    }] })
+    render(<UsagePage />)
+    expect(await screen.findByText('1 record did not report internal model calls')).toBeInTheDocument()
+    const diagnostics = (await screen.findByText('Usage diagnostics')).closest('details')!
+    fireEvent.click(within(diagnostics).getByText('Usage diagnostics'))
+    expect(within(diagnostics).getByText('Cumulative reported input (including cache)').parentElement).toHaveTextContent('1,300')
+    expect(within(diagnostics).getByText('Model calls').parentElement).toHaveTextContent('Unknown')
+    expect(within(diagnostics).getByText('ACP requests').parentElement).toHaveTextContent('2')
+    expect(within(diagnostics).getByText('Context used / capacity').parentElement).toHaveTextContent('9,000 / 1,000,000')
+    expect(within(diagnostics).getByText('This delivery estimate').parentElement).toHaveTextContent('500')
+    expect(within(diagnostics).getByText('Delivery mode').parentElement).toHaveTextContent('Full delivery')
+    expect(within(diagnostics).getByText('Run purpose').parentElement).toHaveTextContent('Session handoff')
+    expect(within(diagnostics).getByText('Run attempt number').parentElement).toHaveTextContent('2')
+    expect(within(diagnostics).getByText('Reconstruction reason').parentElement).toHaveTextContent('Tool permissions changed')
+  })
+
+  it('shows a lower bound when only part of the model call count is known', async () => {
+    vi.mocked(usageApi.summary).mockResolvedValue({ ...summary(), totals: { ...totals, unknown_request_count_events: 1 } })
+    render(<UsagePage />)
+    expect(await screen.findByText('≥ 3')).toBeInTheDocument()
+  })
+
   it('renders grouped usage and sends group and accuracy filters', async () => {
     render(<UsagePage />)
 

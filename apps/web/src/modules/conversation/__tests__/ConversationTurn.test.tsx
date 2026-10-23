@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import type { RunTurn, ToolCallTurnPart, TurnPart } from '../../../types/api'
 import { ConversationTurn } from '../ConversationTurn'
+import { settledTurn } from '../settledTurn'
 
 // `SpaceLink` resolves a logical path against the active Space; the turn's
 // links are in-space destinations, so the context has to exist.
@@ -31,6 +32,102 @@ function show(node: React.ReactElement) {
 }
 
 describe('ConversationTurn states', () => {
+  it('folds progress after completion and keeps it available after saved-message readback', () => {
+    const parts: TurnPart[] = [
+      { type: 'text', index: 0, text: 'I will inspect the code.' },
+      tool(1, 'read', 'succeeded'),
+      { type: 'text', index: 2, text: 'The change is ready; checking tests.' },
+      tool(3, 'test', 'succeeded'),
+      { type: 'text', index: 4, text: 'Fixed. All checks passed.' },
+    ]
+    const live = { ...turn('working', parts), source: 'host_thread_events' as const }
+    const { rerender } = show(<ConversationTurn turn={live} />)
+    expect(screen.getByText('I will inspect the code.')).toBeInTheDocument()
+    const saved = settledTurn(live, 'done', parts.flatMap(part => part.type === 'text' ? [part.text] : []).join(''))!
+    rerender(<MemoryRouter><ConversationTurn turn={saved} /></MemoryRouter>)
+    expect(screen.queryByText('I will inspect the code.')).not.toBeInTheDocument()
+    expect(screen.queryByText('The change is ready; checking tests.')).not.toBeInTheDocument()
+    expect(screen.getByText('Fixed. All checks passed.')).toBeInTheDocument()
+    const disclosure = screen.getByRole('button', { name: 'show work (2 steps)' })
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(disclosure)
+    expect(screen.getByText('I will inspect the code.')).toBeInTheDocument()
+    expect(screen.getByText('The change is ready; checking tests.')).toBeInTheDocument()
+    expect(screen.getAllByText('Fixed. All checks passed.')).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: 'hide work' }))
+    expect(screen.queryByText('I will inspect the code.')).not.toBeInTheDocument()
+  })
+
+  it('never hides the only remaining prose or guesses boundaries in a legacy combined reply', () => {
+    const reply = 'Checking the code. Fixed. Tests passed.'
+    show(<ConversationTurn turn={turn('done', [
+      { type: 'text', index: 0, text: reply },
+      tool(1, 'test', 'succeeded'),
+    ])} />)
+    expect(screen.getByText(reply)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /show work/ })).not.toBeInTheDocument()
+  })
+
+  it('keeps progress visible when the turn fails or waits for a decision', () => {
+    const parts: TurnPart[] = [
+      { type: 'text', index: 0, text: 'Checking access.' },
+      tool(1, 'write', 'failed'),
+      { type: 'text', index: 2, text: 'Need authorization.' },
+    ]
+    const { rerender } = show(<ConversationTurn turn={turn('failed', parts)} />)
+    expect(screen.getByText('Checking access.')).toBeInTheDocument()
+    expect(screen.getByText('Need authorization.')).toBeInTheDocument()
+    rerender(<MemoryRouter><ConversationTurn turn={turn('blocked', parts, 'authorization')} /></MemoryRouter>)
+    expect(screen.getByText('Checking access.')).toBeInTheDocument()
+    expect(screen.getByText('approval needed')).toBeInTheDocument()
+  })
+
+  it('separates failed status and exit code from ordinary command output', () => {
+    const { container } = show(<ConversationTurn turn={turn('failed', [{
+      ...tool(0, 'exec_command', 'failed'),
+      output: JSON.stringify({ formatted_output: '[WARN] engine mismatch\nfile.ts', exit_code: '1', truncated: true }),
+    }])} />)
+    fireEvent.click(screen.getByText('exec_command'))
+    expect(screen.getByText('Exit code: 1')).toBeInTheDocument()
+    expect(screen.getByText(/Output is incomplete/)).toBeInTheDocument()
+    expect(container.textContent).toContain('[WARN] engine mismatch')
+    expect(container.textContent).not.toContain('formatted_output')
+    const output = container.querySelector('pre')
+    expect(output?.closest('.text-destructive')).toBeNull()
+  })
+
+  it('shows a nonzero command result neutrally without changing the working turn into a failure', () => {
+    show(<ConversationTurn turn={turn('working', [{
+      ...tool(0, 'exec_command', 'failed'),
+      output: JSON.stringify({ formatted_output: '', exit_code: 1 }),
+    }])} />)
+    expect(screen.getByText('Exit code: 1')).toBeInTheDocument()
+    expect(screen.queryByText('Error')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('exec_command'))
+    expect(screen.getByText(/can mean no matches/)).toBeInTheDocument()
+    expect(screen.queryByText(/The tool reported failure/)).not.toBeInTheDocument()
+  })
+
+  it('keeps a tool failure without a process exit code visible as an error', () => {
+    show(<ConversationTurn turn={turn('working', [{ ...tool(0, 'read', 'failed'), output: 'Permission denied' }])} />)
+    expect(screen.getByText('Error')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('read'))
+    expect(screen.getByText(/The tool reported failure/)).toBeInTheDocument()
+  })
+
+  it('explains empty output with a nonzero exit code', () => {
+    show(<ConversationTurn turn={turn('failed', [{ ...tool(0, 'exec_command', 'failed'), output: '{"formatted_output":"","exit_code":1}' }])} />)
+    fireEvent.click(screen.getByText('exec_command'))
+    expect(screen.getByText('Exit code: 1')).toBeInTheDocument()
+    expect(screen.getByText('No output was reported.')).toBeInTheDocument()
+  })
+
+  it('marks previously truncated summaries as incomplete without inventing an exit code', () => {
+    show(<ConversationTurn turn={turn('failed', [{ ...tool(0, 'exec_command', 'failed'), output: '{"formatted_output":"[WARN]…' }])} />)
+    fireEvent.click(screen.getByText('exec_command'))
+    expect(screen.getByText(/Output is incomplete/)).toBeInTheDocument()
+    expect(screen.queryByText(/Exit code:/)).not.toBeInTheDocument()
+  })
   it('working: hides completed tools while keeping the live text visible', () => {
     show(<ConversationTurn turn={turn('working', [
       tool(0, 'search', 'succeeded'),
@@ -91,6 +188,7 @@ describe('ConversationTurn states', () => {
     expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
     expect(screen.queryByText('search')).not.toBeInTheDocument()
     expect(screen.queryByText('read')).not.toBeInTheDocument()
+    expect(screen.queryByText('Parameters')).not.toBeInTheDocument()
   })
 
   it('done: keeps a non-sensitive plan available behind the work disclosure', () => {
@@ -142,7 +240,7 @@ describe('ConversationTurn states', () => {
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
 
-  it('leaves out what a backend did not report, and shows what it did', () => {
+  it('shows reported failed-tool summaries without JSON quoting', () => {
     const reported: TurnPart = {
       type: 'tool_call', index: 0, call_id: 'c0', name: 'read', kind: null,
       status: 'failed', input: 'path=/a.ts, limit=100', output: '42 lines',
@@ -158,16 +256,6 @@ describe('ConversationTurn states', () => {
     expect(container.textContent).toContain('path=/a.ts, limit=100')
     expect(container.textContent).not.toContain('"path=/a.ts, limit=100"')
 
-    cleanup()
-    // A managed backend reports the name and the status but neither input nor
-    // output, so those sections are absent rather than rendered blank.
-    show(<ConversationTurn turn={turn('done', [
-      tool(0, 'search', 'succeeded'),
-      { type: 'text', index: 1, text: 'Done.' },
-    ])} />)
-    expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
-    expect(screen.queryByText('Parameters')).not.toBeInTheDocument()
-    expect(screen.queryByText('search')).not.toBeInTheDocument()
   })
 
   it('does not append run navigation to a completed conversation turn', () => {

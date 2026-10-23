@@ -12,11 +12,6 @@ describe('Knowledge canonical item kinds', () => {
     )
   })
 
-  it('drops the removed working-note item types', () => {
-    for (const removed of ['knowledge', 'claim', 'idea', 'experience', 'reflection', 'source']) {
-      expect(KNOWLEDGE_ITEM_KINDS).not.toContain(removed)
-    }
-  })
 })
 
 describe('Knowledge canonical relation types', () => {
@@ -30,9 +25,4 @@ describe('Knowledge canonical relation types', () => {
     )
   })
 
-  it('drops removed relation types', () => {
-    for (const removed of ['related', 'answers']) {
-      expect(KNOWLEDGE_LINK_TYPES).not.toContain(removed)
-    }
-  })
 })

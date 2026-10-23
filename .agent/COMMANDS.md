@@ -90,6 +90,29 @@ TESTCONTAINERS_REUSE_ENABLE=false pnpm test
 SERVER_DATABASE_URL=postgresql://... pnpm run migrate:status
 SERVER_DATABASE_URL=postgresql://... pnpm run migrate
 
+# Explicit unpublished-plan squash/conversion, independent of environment.
+# Default convert is read-only. Apply requires stopped writers and a backup.
+# Full procedure: server/migrations/README.md.
+pnpm run build
+../ops/scripts/db/squash-migrations.sh --help
+# Prepare a managed source/target pair, selecting the first unpublished migration.
+# prepare and convert --host run on the host and require Node 24.
+../ops/scripts/db/squash-migrations.sh prepare --mode dev --from 0001 --name plan_name
+# One-command formal Compose cutover (archives auto-matched by content and the
+# database's applied history; after several squashes an instance on an older
+# source converts pair by pair; the last target may be a prefix of the
+# checkout, later migrations then run by normal `up`). This records and stops running/restarting applications,
+# backs up, converts, and restores them on success; after a failure, rerun the
+# same command to finish and restart the recorded applications.
+../ops/scripts/db/squash-migrations.sh cutover --mode test
+# --archive DIR is an optional explicit override for external/ambiguous catalogs.
+# Generated safety dumps use the shared backup retention count (per schema
+# recovery point); managed pairs stay pinned until their database has passed
+# the target and all recorded backup dependencies expire. Cleanup is hourly and
+# logs a warning while a cutover marker or stale mutex blocks it.
+# The one-time 2026-10-22 rebase of 0001 and restoring backups from before it:
+# server/migrations/README.md.
+
 # Schema changes: edit server/src/db/schema/, then append the migration
 # drizzle-kit derives from the diff. This epoch starts from the single
 # server/migrations/0000_baseline.sql; after release it is frozen and future
@@ -112,6 +135,9 @@ pnpm run schema:check
 # and name the offline command instead (ADR 0016 §10). The distinction
 # is compatibility with the running version, not whether a database changes.
 SERVER_DATABASE_URL=postgresql://... node dist/db/migrateCli.js maintenance-pending  # exit 10 = pending
+# Any pending migration (migrate.sh asks before its pre-migration dump): prints
+# the latest applied version, then pending files; exit 10 = pending, 0 = none.
+SERVER_DATABASE_URL=postgresql://... node dist/db/migrateCli.js pending
 ```
 
 For the default Docker Compose setup, Postgres is **not** published to the host, so prefer the
@@ -132,13 +158,20 @@ MAINTENANCE_DRAIN_SECONDS=1800 ./ops/scripts/start.sh --prod --maintenance
 
 Default client-facing API (server): http://localhost:3000/api/v1
 
-In dev/test Docker Compose, server hot reload is enabled: the service
+In dev Docker Compose, server hot reload is enabled: the service
 uses the Dockerfile `dev-runtime` target, bind-mounts `server/src` and
 `packages/protocol/src`, uses `server/scripts/watch-typescript.mjs` to poll
 those bind mounts plus official plugin packages, compile protocol, server, and
 official plugins in order, and restart with `node --watch dist/index.js`. This
-avoids native watcher failures on Docker bind mounts. Prod still runs compiled
-JS only.
+avoids native watcher failures on Docker bind mounts. Test and prod run compiled
+JS only. Test builds the same server `runtime` and frontend Nginx `prod` targets
+locally, without mounting application source or watching for changes. Update it
+from the checkout with `./ops/scripts/start.sh --test --build --detach`; this
+builds the server before applying its bundled migrations, builds the other
+services, and recreates changed containers while preserving test data. Run it
+when no work is in flight. Omitting `--build` reuses existing images. For real
+work, enable backups and opt into a pre-migration dump with
+`PRE_MIGRATION_BACKUP=1 ./ops/scripts/start.sh --test --build --detach`.
 
 ## Database scripts (run from repo root)
 
@@ -146,18 +179,19 @@ JS only.
 # Run committed migrations (Docker-native by default: the server migration runner
 # runs inside a one-shot server container, using the in-network postgres service).
 # The normal start script invokes this helper before app services start. The
-# helper runs the no-write schema check, then Docker-native mode creates
-# POSTGRES_DB when it is missing, then applies every pending migration in order.
-# Production image builds also run the same schema check.
+# helper enforces the no-write schema check (at image build time for test/prod,
+# at invocation for dev/host), then Docker-native mode creates POSTGRES_DB when
+# it is missing and applies every pending migration in order.
 ./ops/scripts/db/migrate.sh [--mode dev|test|prod]
 
 # Host mode: only when DATABASE_URL points to a reachable external Postgres
 # (runs the server migration runner from server/; needs the Node toolchain).
 DATABASE_URL=postgresql://... ./ops/scripts/db/migrate.sh --host [--mode dev|test|prod]
 
-# Pre-migration backup: --mode prod ALWAYS takes a pg_dump custom-format dump to
-# $RAINVER_ROOT/<mode>/db/dumps/pre-migrate-<ts>.dump before migrations run, and
-# aborts if it fails. Opt into the same safety for non-prod modes:
+# Pre-migration backup: --mode prod takes a pg_dump custom-format dump to
+# $RAINVER_ROOT/<mode>/db/dumps/pre-migrate-<ts>-from-<version>.dump whenever a
+# migration is pending (none when nothing is pending; an unanswered check still
+# dumps), and aborts if it fails. Opt into the same safety for non-prod modes:
 PRE_MIGRATION_BACKUP=1 ./ops/scripts/db/migrate.sh --mode dev
 ./ops/scripts/db/migrate.sh --mode dev --pre-migration-backup
 
@@ -233,8 +267,8 @@ pnpm run preview
 pnpm test
 ```
 
-Docker dev/test frontend services keep `node_modules` inside a container volume.
-Their dev entrypoint hashes the root workspace files, `pnpm-lock.yaml`, and package
+The Docker dev frontend keeps `node_modules` inside a container volume.
+Its dev entrypoint hashes the root workspace files, `pnpm-lock.yaml`, and package
 manifests, then runs `pnpm install --frozen-lockfile` automatically when those
 dependency inputs change.
 
@@ -289,6 +323,11 @@ the current checkout without publishing to GitHub:
 The helper emits the same verified archives and `SHA256SUMS` consumed by the
 normal installer, using a local `file://` release source. Use `--output DIR`
 when the release should remain available for a later manual install.
+The helper uses Node 24 from PATH when available, otherwise reuses the installed
+Host's `runtime/node-current/bin/node` (respecting `RAINVER_HOST_INSTALL_ROOT`
+and `XDG_DATA_HOME`). It selects that runtime for pnpm and all build children
+without changing the calling shell. If neither location provides Node 24, it
+stops with instructions to install or activate the version in `.nvmrc`.
 
 One current version per adapter per host, plus exactly one kept behind it as
 the rollback target. An upgrade drains that copy's Runs first and refuses
@@ -418,8 +457,8 @@ guarantee. Without `SQL_CAPTURE_DIR` the capture shim is inert.
 `server/src/modules/providers/modelSpecs.ts` is the single source for per-model
 context windows and output guidance; both Runtime Context planning and provider
 request building read it. Every row carries `source` and `verifiedOn`, and
-`test/modelSpecs.test.ts` prints how stale the oldest row is on each run. When
-adding a model or touching a figure, re-read the vendor page in `source` and
+`test/modelSpecs.test.ts` checks that every row has a source and a valid
+verification date. When adding a model or touching a figure, re-read the vendor page in `source` and
 move `verifiedOn` to that day.
 
 ## Product acceptance

@@ -1,4 +1,5 @@
 import { CircleArrowUp, Loader2, RefreshCw } from 'lucide-react'
+import { isOwnCliUpdateRuntimeKey } from '@rainver/protocol'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import type {
@@ -21,6 +22,18 @@ function versionLabel(version: string | null): string {
   if (!version) return 'unknown version'
   const numeric = version.match(/\bv?\d+(?:\.\d+)+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0]
   return numeric?.replace(/^v/, '') ?? version
+}
+
+/** Unknown and prerelease versions cannot establish a safe stable upgrade. */
+function hasOwnUpdate(current: string | null, latest: string | null | undefined): boolean {
+  const installed = current?.match(/\bv?(\d+)\.(\d+)\.(\d+)(?![\d.+-])/)
+  const available = latest?.match(/^(\d+)\.(\d+)\.(\d+)$/)
+  if (!installed || !available) return false
+  for (let index = 1; index <= 3; index++) {
+    const left = Number(available[index]), right = Number(installed[index])
+    if (left !== right) return left > right
+  }
+  return false
 }
 
 function installationVersionLabel(entry: RuntimeInstallation, adapter: HostRuntimeDefinitionOption): string {
@@ -74,6 +87,7 @@ export default function HostAgentRow({
   usage,
   usageBusy,
   onInstall,
+  onUpdateOwn,
   onUninstall,
   onLogin,
   onRefreshUsage,
@@ -106,6 +120,7 @@ export default function HostAgentRow({
   usage: ReadonlyMap<string, HostRuntimeUsage>
   usageBusy: ReadonlySet<string>
   onInstall: () => void
+  onUpdateOwn: () => void
   onUninstall: (entry: RuntimeInstallation) => void
   onLogin: (installation: string, target: HostAgentLoginTarget) => void
   onRefreshUsage: (installation: string) => void
@@ -172,6 +187,14 @@ export default function HostAgentRow({
                   onClick={() => onRefreshUsage(entry.id)}
                 >
                   {usageBusy.has(entry.id) ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                </Button>
+              )}
+              {manageable && host.kind === 'remote' && entry.id === 'own' && isOwnCliUpdateRuntimeKey(adapter.runtime_key) && hasOwnUpdate(entry.version, adapter.latest_own_version) && (
+                <Button size="sm" variant="ghost"
+                  aria-label={`Update own ${adapter.display_name} on ${host.name}`}
+                  disabled={host.status !== 'online' || installBusy.has(`${adapter.runtime_key}:own-update`)}
+                  onClick={onUpdateOwn}>
+                  {installBusy.has(`${adapter.runtime_key}:own-update`) ? <Loader2 className="h-3 w-3 animate-spin" /> : <CircleArrowUp className="h-3 w-3" />}
                 </Button>
               )}
               {manageable && !rainverPinned && entry.id !== 'own' && adapter.latest_managed_version && adapter.latest_managed_version !== entry.version && (

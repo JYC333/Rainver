@@ -120,7 +120,7 @@ export function normalizeUsageObservation(
     cache_creation_1h_input_tokens: normalized.usageDetails.input_cache_creation_1h ?? 0,
     cache_read_input_tokens: normalized.usageDetails.input_cache_read ?? 0,
     reasoning_tokens: normalized.usageDetails.output_reasoning ?? 0,
-    request_count: nonNegativeInt(input.request_count) ?? 1,
+    request_count: nonNegativeInt(input.request_count) ?? (input.execution_channel === "local_cli" ? 0 : 1),
     estimated_cost_usd: catalogCost,
     cost_accuracy: costAccuracy,
     usage_schema: trimOrNull(input.usage_schema) ?? "rainver_v1",
@@ -134,7 +134,12 @@ export function normalizeUsageObservation(
     dedupe_confidence: normalizeDedupeConfidence(input.dedupe_confidence),
     import_batch_id: trimOrNull(input.import_batch_id),
     idempotency_key: idempotencyKey,
-    metadata_json: safeTraceObject(input.metadata),
+    metadata_json: {
+      ...safeTraceObject(input.metadata),
+      ...(input.execution_channel === "local_cli"
+        ? { request_count_known: nonNegativeInt(input.request_count) !== undefined }
+        : {}),
+    },
     grant_snapshots: attribution.grant_snapshots,
     created_at: recordedAt,
   };

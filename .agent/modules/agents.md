@@ -313,6 +313,27 @@ user message. Composer drafts are destination-scoped sessionStorage records
 containing only text and server-issued logical input references, validated on
 restore and discarded after seven days.
 
+Member ACP options are saved explicitly through the shared composer controls.
+The Conversation binding stores them independently of sending a message;
+Room delegated Runs use the target member's saved options. The first direct
+message can carry its initial choices while creating the Session. Run and Turn
+views distinguish the requested picker value from the runtime-reported model;
+unconfirmed reports and the runtime's `default` policy are never presented as
+a verified model identity. See `modules/rooms.md`, "Saved member session options".
+
+### Agent work projections
+
+[Agent Attention](agent-attention.md) owns the user-level aggregation reader and
+personal reading state, exposed through three `/api/v1/me/agent-attention` endpoints.
+Its `semantics.ts` pure functions and protocol DTOs preserve Task/Plan, Session,
+non-Room group and explicit Run lineage identities. The repository supplies current
+access decisions; Task responsibility, Session answering and Turn state stay in
+their owning modules. Reading never writes their business lifecycle.
+Queued members project as waiting; an executing member keeps the work working.
+Explicit Room supersession and direct retry links remove old members' reasons and
+results from current attention, preserving history. Result read revisions include the
+physical Attempt identity, so a previous Attempt's read cannot consume a new result.
+
 ## Identity and memory
 
 An Agent is the memory boundary; a Conversation is the context boundary; host ×
@@ -393,7 +414,7 @@ AgentVersion:
   version_label             — immutable version label
   system_prompt             — immutable execution prompt text
   risk_level                — Agent execution constraint
-  max_run_time_seconds      — Agent execution constraint
+  max_run_time_seconds      — legacy metadata; no execution deadline
   context_policy_json       — {readable_scopes, writable_scopes}
   memory_policy_json        — {readable_scopes, writable_scopes, requires_proposal}
   capabilities_json         — list of capability IDs
@@ -495,10 +516,12 @@ The web Agent Rooms surface is the Projects module's `rooms` route
 (`/projects/:projectId/rooms`, `apps/web/src/modules/agent_groups/AgentGroupsPage.tsx`).
 It creates manager-led rooms, reads group timeline/trace, posts
 natural-language room messages, and exposes room settings separately from the
-chat surface. The default recipient is the manager. Structured Tiptap `@`
-mentions route direct segments to selected room members, adjacent mentions fan
-out one segment in parallel, and Agent coordination routes the whole message to
-the manager for decomposition. Room members define the `agent.delegate` target
+chat surface. The default recipient is the manager. A structured Tiptap `@`
+mention that opens the message or a line addresses that member directly
+(adjacent mentions fan out one segment); mentions inside a sentence hand the
+whole message to the manager with those members as coordination targets. The
+composer shows the route and lets the person switch it (`modules/rooms.md`,
+"Addressing and routing a message"). Room members define the `agent.delegate` target
 pool and `agent.wait_for_results` can wait on sibling or delegated runs.
 Child artifacts and proposals link to the existing Artifacts and Review
 surfaces instead of creating a separate approval path.
@@ -519,7 +542,8 @@ public config-proposal route:
 2. **Owner config UI edit → `POST /api/v1/agents/{agent_id}/config`.** This
    focused endpoint appends an immutable `AgentVersion` and accepts the prompt,
    context/memory/tool/output policy, schedule/output schema, and typed
-   `execution_constraints` (`risk_level`, `max_run_time_seconds`). It does not
+   `execution_constraints` (`risk_level`; legacy `max_run_time_seconds` is
+   accepted for compatibility but is not enforced or offered in the UI). It does not
    accept runtime identity, Provider/model binding, backend mode, Host,
    installation, or Profile options; those are changed through the Runtime
    Profile API. Safety clamps preserve memory-proposal and output-policy

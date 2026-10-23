@@ -232,7 +232,11 @@ describe("run tool identity", () => {
       [expired],
     );
 
+    await identities.renew(run, token, 120_000);
+    expect(await identities.resolve(token, run)).not.toBeNull();
     await identities.revoke(run);
+    await identities.renew(run, token, 120_000);
+    await identities.renew(expired, staleToken, 120_000);
 
     expect(await identities.resolve(token, run)).toBeNull();
     expect(await identities.resolve(staleToken, expired)).toBeNull();

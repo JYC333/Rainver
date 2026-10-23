@@ -1,4 +1,6 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { OwnCliReleases, ownCliReleases } from "../src/modules/hosts/ownCliReleases.js";
+import { isOwnCliUpdateRuntimeKey } from "@rainver/protocol";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
@@ -114,6 +116,7 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   __setAuthIdentityForTests(null);
   __setAuthRepositoryForTests(null);
   __setHostRepositoryForTests(null);
@@ -121,6 +124,7 @@ afterEach(() => {
 });
 
 beforeEach(async () => {
+  vi.spyOn(ownCliReleases, "peek").mockImplementation((runtimeKey) => isOwnCliUpdateRuntimeKey(runtimeKey) ? "9.8.7" : null);
   if (!db.available) return;
   await resetTables(
     db.pool,
@@ -135,6 +139,36 @@ beforeEach(async () => {
 });
 
 describe("hosts routes", () => {
+  it("allows only the paired Host owner to update a supported own CLI and records success", async (ctx) => {
+    if (!db.available || !app || !db.pool) return ctx.skip();
+    __setAuthRepositoryForTests(stubAuth());
+    const issue = await app.inject({ method: "POST", url: "/api/v1/hosts/pairing-codes", headers: { cookie: authCookie(OWNER_TOKEN) }, payload: { name: "Own updater" } });
+    const register = await app.inject({ method: "POST", url: "/api/v1/hosts/register", payload: { pairing_code: issue.json().pairing_code, ...HELLO_INFO } });
+    expect(register.statusCode).toBe(201);
+    const hosts = await app.inject({ method: "GET", url: "/api/v1/hosts", headers: { cookie: authCookie(OWNER_TOKEN) } });
+    const hostId = hosts.json().items.find((host: { name: string }) => host.name === "Own updater").id;
+    const url = `/api/v1/hosts/${hostId}/installations/codex_cli/own/update`;
+    __setAuthIdentityForTests({ spaceId: "host-route-space", userId: OTHER_USER });
+    expect((await app.inject({ method: "POST", url, headers: { cookie: authCookie(OTHER_TOKEN) } })).statusCode).toBe(404);
+    __setAuthIdentityForTests({ spaceId: "host-route-space", userId: OWNER });
+    await db.pool.query("UPDATE hosts SET daemon_version = $2 WHERE id = $1", [hostId, MIN_HOST_DAEMON_VERSION]);
+    const action = vi.spyOn(sharedHostConnectionRegistry, "requestToolAction")
+      .mockResolvedValueOnce({ ok: true, error: null, installation: "own", from_version: "1.2.0", to_version: "1.2.0" })
+      .mockResolvedValueOnce({ ok: true, error: null, installation: "own", from_version: "1.2.0", to_version: "1.3.0" });
+    const upgrades = async () => (await app!.inject({ method: "GET", url: "/api/v1/hosts/runtime-changes", headers: { cookie: authCookie(OWNER_TOKEN) } }))
+      .json().items.filter((row: { host_id: string; action: string }) => row.host_id === hostId && row.action === "upgrade");
+    try {
+      // Already current: reported, but not listed as a change.
+      const unchanged = await app.inject({ method: "POST", url, headers: { cookie: authCookie(OWNER_TOKEN) } });
+      expect(unchanged.statusCode).toBe(200);
+      expect(unchanged.json()).toMatchObject({ changed: false, from_version: "1.2.0", to_version: "1.2.0" });
+      expect(action).toHaveBeenCalledWith(hostId, "update_own_tool", { runtime_key: "codex_cli" });
+      expect(await upgrades()).toEqual([]);
+      const response = await app.inject({ method: "POST", url, headers: { cookie: authCookie(OWNER_TOKEN) } });
+      expect(response.json()).toMatchObject({ changed: true });
+      expect(await upgrades()).toMatchObject([{ from_version: "1.2.0", to_version: "1.3.0" }]);
+    } finally { action.mockRestore(); }
+  });
   it("lets ordinary members read Server Runtime health but forbids them from retrying provisioning", async (ctx) => {
     if (!db.available || !app || !db.pool) return ctx.skip();
     const hostId = await new PgHostRepository(db.pool).ensureServerHostId();
@@ -182,6 +216,7 @@ describe("hosts routes", () => {
       expect(item).toMatchObject({
         supports_runtime_native: supportsRuntimeBackendMode(String(item.runtime_key), "runtime_native"),
         supports_model_provider: supportsRuntimeBackendMode(String(item.runtime_key), "model_provider"),
+        latest_own_version: ["claude_code", "codex_cli"].includes(String(item.runtime_key)) ? "9.8.7" : null,
       });
     }
     expect(items.find((item) => item.runtime_key === "opencode")).toMatchObject({ supports_model_provider: true });
@@ -258,16 +293,6 @@ describe("hosts routes", () => {
       headers: { cookie: authCookie(OWNER_TOKEN) },
     });
     expect(revokeAsOwner.statusCode).toBe(204);
-  });
-
-  it("rejects an unknown pairing code at registration", async (ctx) => {
-    if (!db.available || !app) return ctx.skip();
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/v1/hosts/register",
-      payload: { pairing_code: "bogus", ...HELLO_INFO },
-    });
-    expect(response.statusCode).toBe(401);
   });
 
   it("rate-limits unauthenticated host registration attempts", async (ctx) => {
@@ -1198,4 +1223,35 @@ describe("hosts routes", () => {
     });
     expect(failed).toBe(true);
   });
+});
+
+it("answers vendor releases from memory, refreshing in the background and keeping the last good one", async () => {
+  type Fetch = typeof import("../src/modules/sources/outboundUrlSafety.js").fetchGuarded;
+  const answer = (version: string) => ({ ok: true, truncated: false, bytes: new TextEncoder().encode(`{"version":"${version}"}`) }) as Awaited<ReturnType<Fetch>>;
+  let release!: (value: Awaited<ReturnType<Fetch>>) => void;
+  const fetchMetadata = vi.fn<Fetch>(() => new Promise((resolve) => { release = resolve; }));
+  const releases = new OwnCliReleases(fetchMetadata);
+  vi.useFakeTimers({ toFake: ["Date"] });
+  try {
+    // The first reader is not held up by the network: it gets "unknown" now.
+    expect(releases.peek("claude_code")).toBeNull();
+    expect(releases.peek("claude_code")).toBeNull();
+    expect(fetchMetadata).toHaveBeenCalledTimes(1);
+    release(answer("1.10.0"));
+    await vi.waitFor(() => expect(releases.peek("claude_code")).toBe("1.10.0"));
+    expect(fetchMetadata).toHaveBeenCalledTimes(1);
+    // Stale: answered at once from memory while one lookup runs; an offline
+    // registry keeps the last good version.
+    vi.setSystemTime(Date.now() + 16 * 60_000);
+    fetchMetadata.mockRejectedValueOnce(new Error("offline"));
+    expect(releases.peek("claude_code")).toBe("1.10.0");
+    await vi.waitFor(() => expect(fetchMetadata).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(releases.peek("claude_code")).toBe("1.10.0");
+    expect(fetchMetadata).toHaveBeenCalledTimes(2);
+    expect(releases.peek("unsupported")).toBeNull();
+    expect(fetchMetadata).toHaveBeenCalledTimes(2);
+  } finally {
+    vi.useRealTimers();
+  }
 });

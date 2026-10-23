@@ -5,7 +5,8 @@ Status: inventory only. Not a work queue.
 
 This file holds designs extracted from `.agent/architecture/`,
 `.agent/modules/`, `.agent/ROADMAP.md`, `.agent/ARCHITECTURE.md`,
-`.agent/GLOSSARY.md`, and `docs/` as if they were current product state.
+`.agent/GLOSSARY.md`, and `docs/` as if they were current product state, plus
+first-release exclusions retained from retired implementation details.
 They are not implemented. Current-state guides now record only what the
 code does.
 
@@ -521,6 +522,27 @@ stubs (see §2–§3). There is no Editor or Calendar module.
 - Activity / Run / Artifact cross-links (post-consolidate navigation to
   proposals; post-accept link to the created memory).
 - Board visibility notice for shared-space use.
+
+---
+
+## 27. Agent work cockpit first-release exclusions
+
+Retained from the retired Agent Work cockpit implementation plan.
+Inventory only; these capabilities are outside the first-release cockpit, not a
+second backlog or authorization to implement. Existing related domain mechanisms
+remain owned by their current modules.
+
+- File-edit overlap warnings, automatic merging and additional conflict handling.
+- A full user-initiated handover from Agent A to Agent B.
+- Native ACP mid-turn permission prompts and arbitrary terminal keystroke input.
+- Live observation/control of Agents launched in external IDEs or terminals.
+- Web Push after webpage closure and external messaging channels such as Feishu.
+- A new execution engine, complex collaboration DAG, cost dashboard, full trace
+  analytics and meeting privacy mode.
+- Redesign of Task acceptance, Run settlement, Memory/Proposal or runtime credential
+  boundaries. Existing domain lifecycles are reused by the cockpit.
+
+Current implemented behavior is in [Agent Attention](../modules/agent-attention.md).
 
 ---
 

@@ -1,4 +1,4 @@
-import { SpaceLink as Link } from '../../../core/spaceNav'
+import { ConversationLink as Link } from '../../conversation/ConversationScope'
 import { personLabel } from '../audience'
 import { Quote, ShieldAlert } from 'lucide-react'
 import { MessageResponse } from '../../../components/ai-elements/message'

@@ -71,6 +71,14 @@ Boards and tasks are scoped by **space** (and optionally **Project Folder**). As
 
 `POST /api/v1/tasks/{id}/runs` creates a **queued** `Run` (plus its initial attempt) through the runs repository inside one transaction with the `max_runs` admission lock, inserts a `task_runs` row (canonical), and may move the task to `in_progress`. It does **not** call runtime adapters or enqueue infrastructure jobs. Running the same Task again always creates a new Run and a new `task_runs` row; a terminal Run is never reopened by user request.
 
+`PATCH /api/v1/tasks/{id}` leaves an omitted nullable column unchanged and
+stores an explicit `null`. For `max_runs`, `max_cost` and
+`max_duration_seconds`, `null` means the Task sets no such limit: the next
+Run's contract snapshot carries none from the Task (a Space budget still
+applies). The Web contract editor therefore sends `null` when a person clears a
+stored limit, shows "No limit" for an empty field, and omits a field that was
+empty and untouched.
+
 On an execution host, a Task's write-capable execution Runs share one branch,
 `rainver/task-<task_id>`, in a worktree the daemon owns, and run one at a time
 (the `agent_run` job waits while another of them has not ended); each Run ends

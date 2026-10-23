@@ -39,6 +39,13 @@ export interface ReadOnlyCliExecutionOptions {
 
 export interface CliProcessRegistry {
   register(runId: string, pid: number): void;
+  /**
+   * Marks a Run's adapter invocation in flight before it has a process. Its
+   * signal is aborted by `terminate`/`forceTerminate`, so a stop that lands
+   * while the dispatch is still being prepared, with nothing registered to
+   * reach, still stops the launch. Close it when the invocation returns.
+   */
+  openInvocation?(runId: string): { signal: AbortSignal; close: () => void };
   registerRemote?(runId: string, terminate: () => void, forceTerminate: () => void): void;
   deregister(runId: string): void;
   terminate(runId: string): boolean;
@@ -57,7 +64,20 @@ export interface CliCommandExecutor {
     scope_id?: string;
     stdin: string | null;
     process_registry?: CliProcessRegistry;
+    /**
+     * Aborted at the Run's explicit time limit, after which orchestration
+     * stops the runtime through the normal stop path. An executor that still
+     * has not finished soon after must give the Run up rather than hold it.
+     */
+    deadline_signal?: AbortSignal;
+    /**
+     * Aborted when the Run was stopped. An executor must not launch once it is
+     * aborted; a process already launched is stopped through `process_registry`.
+     */
+    cancel_signal?: AbortSignal;
+    /** Legacy setting name: delay before an informational silence notice, never a deadline. */
     stall_timeout_seconds?: number;
+    on_silence?: (idleSeconds: number) => Promise<void> | void;
     on_stdout_chunk?: (chunk: string) => void;
     on_stderr_chunk?: (chunk: string) => void;
     stdio_controller?: CliStdioController;
@@ -100,8 +120,17 @@ export interface CliStdioController {
       is_using_overage: boolean;
     } | null;
     context_window?: { used: number; size: number } | null;
+    /** ACP prompts sent, not the model calls inside those prompts. */
+    acp_prompt_count?: number;
     /** The runtime's own question that ended the turn (`vendorQuestion.ts`). */
     asked_user?: { question: string; options: string[] } | null;
+    /** Saved session options the live session did not offer or apply; the runtime kept its default. */
+    dropped_session_config?: Array<{
+      id: string;
+      category: string | null;
+      value: string | boolean;
+      reason: "option_unavailable" | "value_unavailable" | "not_applied";
+    }>;
   };
 }
 
@@ -109,9 +138,24 @@ export interface CliStdioController {
 export class LocalCliProcessRegistry implements CliProcessRegistry {
   private readonly processes = new Map<string, { terminate: () => void; forceTerminate: () => void; lastActivityAt: number }>();
   private readonly exitWaiters = new Map<string, Set<(exited: boolean) => void>>();
+  private readonly invocations = new Map<string, Set<AbortController>>();
 
   register(): void {
     throw new Error("Application-server subprocess registration is disabled; use registerRemote.");
+  }
+
+  openInvocation(runId: string): { signal: AbortSignal; close: () => void } {
+    const controller = new AbortController();
+    const open = this.invocations.get(runId) ?? new Set<AbortController>();
+    open.add(controller);
+    this.invocations.set(runId, open);
+    return {
+      signal: controller.signal,
+      close: () => {
+        open.delete(controller);
+        if (open.size === 0 && this.invocations.get(runId) === open) this.invocations.delete(runId);
+      },
+    };
   }
 
   registerRemote(runId: string, terminate: () => void, forceTerminate: () => void): void {
@@ -126,7 +170,9 @@ export class LocalCliProcessRegistry implements CliProcessRegistry {
     for (const resolve of waiters) resolve(true);
   }
 
+  /** True only when a registered process was signalled; an invocation still preparing is stopped either way. */
   terminate(runId: string): boolean {
+    this.stopInvocations(runId);
     const process = this.processes.get(runId);
     if (!process) return false;
     process.terminate();
@@ -134,6 +180,7 @@ export class LocalCliProcessRegistry implements CliProcessRegistry {
   }
 
   forceTerminate(runId: string): boolean {
+    this.stopInvocations(runId);
     const process = this.processes.get(runId);
     if (!process) return false;
     process.forceTerminate();
@@ -155,6 +202,10 @@ export class LocalCliProcessRegistry implements CliProcessRegistry {
       waiters.add(done);
       this.exitWaiters.set(runId, waiters);
     });
+  }
+
+  private stopInvocations(runId: string): void {
+    for (const controller of this.invocations.get(runId) ?? []) controller.abort();
   }
 
   touchActivity(runId: string): void {

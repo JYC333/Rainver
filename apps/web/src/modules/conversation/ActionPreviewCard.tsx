@@ -1,7 +1,8 @@
+import { useConversationScope } from './ConversationScope'
 import { useEffect, useState } from 'react'
 import { proposalsApi } from '../../api/client'
 import { Button } from '../../components/ui/button'
-import { SpaceLink } from '../../core/spaceNav'
+import { ConversationLink as SpaceLink } from './ConversationScope'
 import { errMsg } from '../../lib/utils'
 import { useAppTranslation } from '../../i18n'
 import type { ChatActionPreview } from '../../types/api'
@@ -65,6 +66,7 @@ function ActionPreviewCard({
   preview: ChatActionPreview
   onDecision?: (preview: ChatActionPreview, action: ActionDecision) => Promise<void>
 }) {
+  const scope = useConversationScope()
   const { t } = useAppTranslation()
   const [status, setStatus] = useState<ActionDisplayStatus>(preview.status)
   const [checkingStatus, setCheckingStatus] = useState(Boolean(preview.proposal_id))
@@ -103,7 +105,7 @@ function ActionPreviewCard({
   useEffect(() => {
     if (!preview.proposal_id) return
     let cancelled = false
-    proposalsApi.get(preview.proposal_id).then(proposal => {
+    proposalsApi.get(preview.proposal_id, scope).then(proposal => {
       if (cancelled) return
       setStatus(proposalStatus(proposal.status))
     }).catch(() => { /* retain the auditable snapshot when refresh is unavailable */ })
@@ -111,7 +113,7 @@ function ActionPreviewCard({
         if (!cancelled) setCheckingStatus(false)
       })
     return () => { cancelled = true }
-  }, [preview.proposal_id])
+  }, [preview.proposal_id, scope])
 
   const continueAfterDecision = async (action: ActionDecision) => {
     if (!onDecision) return
@@ -134,8 +136,9 @@ function ActionPreviewCard({
     setBusy(true)
     setError(null)
     try {
-      if (action === 'accept') await proposalsApi.accept(preview.proposal_id)
-      else await proposalsApi.reject(preview.proposal_id)
+      if (action === 'accept') await proposalsApi.accept(preview.proposal_id, scope)
+      else await proposalsApi.reject(preview.proposal_id, scope)
+      if (scope.signal?.aborted) return
       setStatus(action === 'accept' ? 'auto_applied' : 'rejected')
       await continueAfterDecision(action)
     } catch (decisionError) {

@@ -55,7 +55,15 @@ deployer socket or product API entry point.
 Production compose files reference the images CI publishes to GHCR
 (`ghcr.io/jyc333/rainver-<name>:${RAINVER_IMAGE_TAG:-stable}`; see the
 `publish-images` job in `.github/workflows/ci.yml`). A prod machine pulls; it
-never builds. dev and test still build from the checkout. The server image
+never builds. dev and test still build from the checkout. Dev mounts source
+and runs watchers; test runs fixed local builds using the server `runtime`
+and frontend Nginx `prod` targets, with no application source mounts. Update
+test explicitly with `./ops/scripts/start.sh --test --build --detach` when no
+work is in flight; runtime data remains under `$RAINVER_ROOT/test`. Its browser
+entrypoint remains port 3100, with `FRONTEND_URL` set to the actual local or
+Tailscale HTTPS URL. Test migrations and official plugin artifacts come from
+the built server image; its build enforces the schema check, as production does.
+The server image
 copies runtime dependencies for each workspace package it loads; its Dockerfile
 imports `@rainver/outbound-guard` during the image build to catch missing
 package-local dependencies before publication.

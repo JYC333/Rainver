@@ -130,7 +130,7 @@ There are exactly two route scopes (`routeScopeForPath` in `src/core/navigation.
 
 | Scope | Routes | Data source | Write target |
 |---|---|---|---|
-| `home` | `/`, `/home`, and neutral system surfaces (`/settings`) | `meApi` cross-space `/me/*` aggregate (no `space_id` param) | the personal-inbox capture destination always targets the user's **Personal Space** |
+| `home` | `/`, `/home`, `/agent-work`, and neutral system surfaces (`/settings`) | user-level `/me/*` aggregates; Agent Work accepts independently authorized source filters | personal-inbox capture targets **Personal Space**; Agent Work commands target their explicit source Space |
 | `space` | `/spaces/:spaceId/*` (`…/today`, `…/activity`, `…/knowledge`, …) | space-scoped APIs bound to the URL's `:spaceId` | Project entry points create shared Project content; creation without Project context targets Personal Space privately |
 
 **The active Space lives in the URL.** Space-scoped routes are `/spaces/:spaceId/<module>`;
@@ -194,6 +194,19 @@ Home data comes from `/api/v1/me/*`; space Today data comes from
 `/api/v1/home/summary`. When Home needs another count, queue, or rollup, add or
 extend a backend read model instead of reconstructing proposal/activity/runtime
 logic by calling every domain API separately from the browser.
+
+### Agent Work (`/agent-work`) — user-level workbench
+
+`registry.ts` registers a personal module under RequireAuth without a Space-prefixed
+alias or new mobile primary tab. Global Rail and Home link to it and display the
+account-keyed Shell provider's needs-you/unread-work counts. Filters use source
+Space/Project locally and never switch URL active Space or global reminder scope.
+The list uses server identity/groups/counts/cursors; a selected detail embeds the
+existing scoped Room/direct surface or Turn/Run controls. Refresh/offline keeps
+content, draft and focus; denied access removes protected content. The Shell
+aggregate stream owns no per-Run content, sender or execution lifecycle. Sound and
+system notifications default off and require explicit enablement; browser delivery
+and its limits are in [Agent Attention](../modules/agent-attention.md).
 
 ### Space Today (`/spaces/:spaceId/today`) — space-scoped dashboard
 

@@ -318,7 +318,10 @@ successful commit and never participate in the critical write outcome.
   and add data backfills before it is applied anywhere. A file any database has
   applied is never edited — the runner records checksums and refuses a changed
   one. `schema:check` (no-write) validates chain shape, declared extensions,
-  and schema drift. See `server/migrations/README.md` and B59.
+  and schema drift. The explicit exception for an unpublished plan's terminal
+  suffix is ADR 0025: prepare a separate merged chain, then convert each
+  existing database's verified history without a reset. Published files and
+  the baseline stay fixed. See `server/migrations/README.md` and B59.
   Maintenance-marked migrations are deliberately refused by the live-start
   path once an instance already has an applied release; the offline migration
   path applies them during a coordinated cutover. Authentication lives in
@@ -368,8 +371,9 @@ successful commit and never participate in the critical write outcome.
   exit; DB-only dump/restore/reset and offline system backup/restore/verify use the same
   start/stop ownership rule. They leave a pre-existing running database untouched.
 - **Pre-migration backup safety** (`ops/scripts/db/migrate.sh`): `--mode prod` requires a
-  pre-migration `pg_dump -Fc` backup before server migrations run, written to
-  `$RAINVER_ROOT/<mode>/db/dumps/pre-migrate-<timestamp>.dump`. If that dump fails, migration
+  pre-migration `pg_dump -Fc` backup before server migrations run whenever one is pending
+  (`migrateCli.js pending`), written to
+  `$RAINVER_ROOT/<mode>/db/dumps/pre-migrate-<timestamp>-from-<version>.dump`. If that dump fails, migration
   aborts before migrations touch the schema. Non-prod modes skip it for convenience; opt in with
   `PRE_MIGRATION_BACKUP=1` or `--pre-migration-backup`.
 - **Fresh-instance bootstrap** is server-owned: on an empty migrated DB it
@@ -377,6 +381,14 @@ successful commit and never participate in the critical write outcome.
   membership, system memories, and default note collections — the usable initial state.
 - PostgreSQL data lives under `$RAINVER_ROOT/<mode>/db/postgres` (bind-mounted into the postgres container).
 - Database dumps live under `$RAINVER_ROOT/<mode>/db/dumps`.
+  The shared backup retention count bounds generated `pre-migrate`/`pre-squash`
+  dumps (per schema recovery point) via the hourly migration-artifact retention task. Manually named dumps
+  are preserved. Unfinished dumps are not published as completed recovery points.
+  Managed squash archives live in `db/migration-archives/<content-id>/`; resolved
+  pairs (cutover done, or this database already past the target) are retained
+  while any recorded local backup/dump depends on them. Other pending pairs and
+  failed cutovers are pinned. See Operations and Safety for locking and
+  the distinction between managed pairs and read-only external source catalogs.
 - Local test mode reaches the server API through the frontend proxy at `localhost:3100/api/v1`; compose-internal web traffic uses `http://server:8010`.
 - Job queue uses `SELECT ... FOR UPDATE SKIP LOCKED` for safe concurrent claim. `jobs.scheduled_at`
   is NOT NULL with a server default, and DB CHECK constraints enforce the allowed `status` set,
@@ -577,9 +589,37 @@ changes.
 - `server/src/db/schema/` is the schema authoring source for tables,
   constraints, indexes, and foreign keys that Drizzle can represent.
 - `server/migrations/` is the canonical append-only schema history (B59).
-- `server/src/db/migrator.ts` is the only schema applier for real databases.
+- `server/src/db/migrator.ts` is the normal schema applier for real databases.
   It reads ordered `NNNN_*.sql` files, rejects duplicate version prefixes,
   records checksums, and holds the migration advisory lock.
+- `migrationSquash.ts` and `migrationConversion.ts` are its explicit ADR 0025
+  operations companion. Its operator entrypoint is
+  `ops/scripts/db/squash-migrations.sh`, with argument handling in the adjacent
+  `migration-squash.mjs`; there is no server package CLI for this operation.
+  The shell reuses `local-compose.sh` for dev/test/prod one-shot containers
+  (existing env files only, no bootstrap), or accepts `--host` with an explicit
+  `SERVER_DATABASE_URL`/`DATABASE_URL` for any reachable database.
+  The explicit `cutover --mode MODE --archive DIR` lifecycle wrapper delegates
+  to `ops/scripts/lib/migration-cutover.sh`: build/check before downtime
+  (the archived target may be a prefix of the checkout chain), record and stop
+  running/restarting apps, use the existing dump helper behind a verified
+  partial file, convert, run normal `up` for later migrations, and recover
+  the recorded app set (also on a retry after a failure). It holds a per-mode operations lock in addition to
+  the converter's DB lock. PostgreSQL stays running; failures stop the sequence.
+  Conversion has no dev/test mode restriction. It only accepts an exact source
+  prefix (a history at or past the target is a no-op) and byte-for-byte ordered merged SQL, applies missing source files,
+  then swaps suffix records and writes a conversion audit in one transaction
+  under the same migration lock. Default preview does not execute SQL or write.
+  `public.server_schema_migration_conversions` is runner-owned operations
+  metadata like `server_schema_migrations`, not an application schema table;
+  it stores original timestamps/checksums, both chain identities, catch-up
+  versions, database/operator and backup reference. SQL/backfills must be
+  transaction-safe; no embedded transaction controls/nontransactional effects.
+  History validation is not a live schema-drift or business-data validator:
+  rehearse on a restored copy and verify plan-specific invariants before cutover.
+  The low-level converter never resets a database, stops writers, infers publication status,
+  makes a backup, or changes the checkout's chain. See the migration README
+  for backup, cutover, Drizzle metadata and pre-conversion restore procedures.
 - `drizzle-kit` (config: `server/drizzle.config.ts`) only generates plain
   `.sql` files by diffing `src/db/schema/**` against the
   `server/migrations/meta/*.json` snapshots. It is not used to apply anything

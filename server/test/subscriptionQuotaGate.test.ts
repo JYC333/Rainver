@@ -1,7 +1,9 @@
+import { SUBSCRIPTION_QUOTA_POLICY_DEFAULTS } from "@rainver/protocol";
 import { describe, expect, it } from "vitest";
 import { classifyRuntimeFailure, isRetryableRunErrorCode, SUBSCRIPTION_QUOTA_EXHAUSTED } from "../src/modules/runs/retryPolicy.js";
 import { quotaVerdict } from "../src/modules/rooms/quotaGate.js";
 import { fullerWindow, refusedWindow, resetsAtOf } from "../src/modules/rooms/subscriptionLogins.js";
+import { runtimeQuotaResetAt } from "../src/modules/runtimeAdapters/quotaReset.js";
 
 describe("subscription quota exhaustion is a runtime refusal, not a retryable failure", () => {
   it("classifies each runtime's own refusal text", () => {
@@ -10,6 +12,8 @@ describe("subscription quota exhaustion is a runtime refusal, not a retryable fa
     expect(classifyRuntimeFailure("claude_code", "5-hour limit reached ∙ resets 3pm", { providerBound: false }))
       .toBe(SUBSCRIPTION_QUOTA_EXHAUSTED);
     expect(classifyRuntimeFailure("claude_code", "You've hit your limit · resets 7pm (Europe/Berlin)", { providerBound: false }))
+      .toBe(SUBSCRIPTION_QUOTA_EXHAUSTED);
+    expect(classifyRuntimeFailure("claude_code", "Claude Code ACP RPC failed: Internal error: You've hit your session limit · resets 11:40pm (Europe/London)", { providerBound: false }))
       .toBe(SUBSCRIPTION_QUOTA_EXHAUSTED);
     expect(classifyRuntimeFailure("codex_cli", "error: usage_limit_reached", { providerBound: false }))
       .toBe(SUBSCRIPTION_QUOTA_EXHAUSTED);
@@ -27,6 +31,24 @@ describe("subscription quota exhaustion is a runtime refusal, not a retryable fa
     expect(classifyRuntimeFailure("claude_code", null, { providerBound: false })).toBeNull();
     // Falling back from Opus is a notice, not a refusal.
     expect(classifyRuntimeFailure("claude_code", "Opus limit reached · now using Sonnet", { providerBound: false })).toBeNull();
+  });
+});
+
+describe("runtime-reported quota reset times", () => {
+  it("reads the declared epoch and localized clock without using the server's timezone", () => {
+    const now = new Date("2026-10-21T21:00:00Z");
+    expect(runtimeQuotaResetAt("claude_code", "resets 11:40pm (Europe/London)", now)).toBe("2026-10-21T22:40:00.000Z");
+    const epoch = Date.parse("2026-10-21T22:40:00Z") / 1000;
+    expect(runtimeQuotaResetAt("claude_code", `Claude AI usage limit reached|${epoch}`, now)).toBe("2026-10-21T22:40:00.000Z");
+    expect(runtimeQuotaResetAt("claude_code", "resets 1am (Asia/Tokyo)", now)).toBe("2026-10-22T16:00:00.000Z");
+  });
+  it("handles midnight and DST and leaves ambiguous or malformed prose unknown", () => {
+    expect(runtimeQuotaResetAt("claude_code", "resets 12am (Europe/London)", new Date("2026-10-21T22:30:00Z"))).toBe("2026-10-21T23:00:00.000Z");
+    expect(runtimeQuotaResetAt("claude_code", "resets 1:30am (Europe/London)", new Date("2026-10-25T00:40:00Z"))).toBe("2026-10-25T01:30:00.000Z");
+    expect(runtimeQuotaResetAt("claude_code", "resets 11pm (Not/AZone)", new Date())).toBeNull();
+    expect(runtimeQuotaResetAt("claude_code", "resets 13pm (Europe/London)", new Date())).toBeNull();
+    expect(runtimeQuotaResetAt("claude_code", "resets 11pm", new Date())).toBeNull();
+    expect(runtimeQuotaResetAt("opencode", "resets 11pm (Europe/London)", new Date())).toBeNull();
   });
 });
 
@@ -62,7 +84,14 @@ describe("the quota gate's verdict", () => {
   const window = (utilization: number, resets_at: string | null = "2026-09-24T19:40:00.000Z") =>
     ({ kind: "session" as const, utilization, resets_at });
 
-  it("holds an Agent-triggered turn at or past the reserve line", () => {
+  it("admits automation at 85–99 percent with the default policy and waits at exhaustion", () => {
+    for (const pct of [85, 90, 99]) {
+      expect(quotaVerdict({ window: window(pct), reservePct: SUBSCRIPTION_QUOTA_POLICY_DEFAULTS.reserve_pct, override: false, now }).hold).toBe(false);
+    }
+    expect(quotaVerdict({ window: window(100), reservePct: SUBSCRIPTION_QUOTA_POLICY_DEFAULTS.reserve_pct, override: false, now }).hold).toBe(true);
+  });
+
+  it("holds an Agent-triggered turn at or past an explicitly chosen reserve line", () => {
     expect(quotaVerdict({ window: window(85), reservePct: 85, override: false, now })).toEqual({ hold: true, window: window(85) });
     expect(quotaVerdict({ window: window(100, null), reservePct: 85, override: false, now }).hold).toBe(true);
   });
@@ -86,5 +115,20 @@ describe("the quota gate's verdict", () => {
     expect(fullerWindow({ available: false, session_pct: null, session_resets: null, week_pct: null, week_resets: null, error: "offline" }))
       .toBeNull();
     expect(resetsAtOf("Resets 3pm")).toBeNull();
+  });
+
+  it("uses the last reset on equally full windows, including an unknown reset", () => {
+    const quota = { available: true, session_pct: 100, session_resets: "2026-09-25T02:00:00Z",
+      week_pct: 100, week_resets: "2026-09-25T00:00:00Z", error: null };
+    expect(fullerWindow(quota)).toMatchObject({ kind: "session", resets_at: "2026-09-25T02:00:00.000Z" });
+    expect(fullerWindow({ ...quota, week_resets: null })).toMatchObject({ kind: "week", resets_at: null });
+  });
+
+  it("keeps the cached display while admission selects a window that has not reset", () => {
+    const quota = { available: true, session_pct: 90, session_resets: "2026-09-25T02:00:00Z",
+      week_pct: 100, week_resets: "2026-09-25T00:00:00Z", error: null };
+    expect(fullerWindow(quota)).toMatchObject({ kind: "week", utilization: 100 });
+    expect(fullerWindow(quota, new Date("2026-09-25T01:00:00Z"))).toMatchObject({ kind: "session", utilization: 90 });
+    expect(fullerWindow(quota, new Date("2026-09-25T02:00:00Z"))).toBeNull();
   });
 });

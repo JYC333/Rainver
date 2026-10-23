@@ -32,13 +32,3 @@ export const IGNORE_DIRS = new Set([
   ".nuxt",
   "coverage",
 ]);
-
-export const SHOW_HIDDEN = new Set([
-  ".gitignore",
-  ".env.example",
-  ".env.dev.example",
-  ".env.test.example",
-  ".env.prod.example",
-  ".claude",
-  ".editorconfig",
-]);

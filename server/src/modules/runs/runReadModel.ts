@@ -1,3 +1,4 @@
+import { runModelSelection } from "./runModelSelection.js";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { RUNTIME_PROFILE_MODEL_SOURCE } from "./remoteProviderBinding.js";
 import type {
@@ -76,6 +77,7 @@ export function runToOut(
     capabilities_json: Array.isArray(run.capabilities_json) ? run.capabilities_json : [],
     selected_model_provider_id: run.model_provider_id ?? null,
     resolved_model: buildResolvedModel(run, provider, options),
+    model_selection: runModelSelection(run.model_override_json, run.status),
     required_sandbox_level: run.required_sandbox_level,
     owner_user_id: run.owner_user_id ?? null,
     visibility: run.visibility ?? "space_shared",
@@ -130,6 +132,7 @@ function runUsageToOut(usage: RunRecord["usage"]): Record<string, unknown> | nul
 export function runStatusToOut(run: VisibleRunRecord): Record<string, unknown> {
   return {
     id: run.id,
+    model_selection: runModelSelection(run.model_override_json, run.status),
     status: run.status,
     mode: run.mode,
     run_type: run.run_type ?? "agent",

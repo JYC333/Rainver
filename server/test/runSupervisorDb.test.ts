@@ -5,14 +5,15 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
 import { PgVerificationRepository } from "../src/modules/runs/verification/repository.js";
-import { PgRunSupervisor } from "../src/modules/runs/supervisor.js";
-import { PostRunFinalizationService } from "../src/modules/runs/finalizationService.js";
+import { PgRunSupervisor, type RunSupervisorPort } from "../src/modules/runs/supervisor.js";
+import { NonTerminalRunError, PostRunFinalizationService } from "../src/modules/runs/finalizationService.js";
 import { PgRouteDecisionRepository } from "../src/modules/routing/repository.js";
 import { PgUsageRepository } from "../src/modules/usage/repository.js";
 import { normalizeUsageObservation } from "../src/modules/usage/normalizer.js";
 import { EvolutionSignalEmitter } from "../src/modules/evolution/signalEmitters.js";
 import { insertProposalRow } from "../src/modules/proposals/reviewPackets.js";
 import { seedServerHost } from "./support/domainSeeds.js";
+import { settleTasksForRun } from "../src/modules/projectWork/settlement.js";
 
 const SPACE = "81111111-1111-4111-8111-111111111111";
 const PROJECT = "81111111-1111-4111-8111-111111111112";
@@ -332,6 +333,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
 
     const decision = await new PgRunSupervisor(db.pool).supervise({
       run: (await repository.getRun(SPACE, runId))!,
+      attempt_number: 1,
       evaluation: {
         outcome_status: "failed",
         failure_reason_code: "run_orchestration_failed",
@@ -422,6 +424,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     const runId = await seedRun();
     const repository = new PgRunRepository(db.pool);
     await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    expect(await repository.bindAttemptLaunch({ space_id: SPACE, run_id: runId, launch_id: randomUUID() })).toBe(true);
     const cancelling = await repository.markRunCancelling({
       run_id: runId,
       space_id: SPACE,
@@ -431,6 +434,9 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     });
     expect(cancelling?.status).toBe("cancelling");
     expect((await repository.getLatestRunAttempt(SPACE, runId))?.status).toBe("cancelling");
+    // A dispatch still being prepared when the stop landed cannot bind a
+    // launch to the stopped attempt, so it never launches.
+    expect(await repository.bindAttemptLaunch({ space_id: SPACE, run_id: runId, launch_id: randomUUID() })).toBe(false);
 
     await repository.markRunTerminal({
       run_id: runId,
@@ -1045,6 +1051,7 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
     const supervisor = new PgRunSupervisor(db.pool, new EvolutionSignalEmitter(db.pool));
     expect(await supervisor.supervise({
       run: stale,
+      attempt_number: 1,
       evaluation: { failure_reason_code: "runtime_stall_timeout", outcome_status: "failed" },
     })).toBeNull();
 
@@ -1088,6 +1095,134 @@ describe("run attempts and supervisor against shared PostgreSQL", () => {
       `SELECT count(*)::text AS count FROM run_evaluations WHERE space_id = $1 AND run_id = $2`,
       [SPACE, runId],
     )).rows[0]?.count).toBe("1");
+  });
+
+  it("never finalizes a queued successor from the prior attempt's terminal snapshot", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const runId = await seedRun({ max_attempts: 2 });
+    const repository = new PgRunRepository(db.pool);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    await repository.markRunTerminal({ run_id: runId, space_id: SPACE, status: "failed",
+      error_json: { error_code: "runtime_stall_timeout" }, completed_at: new Date().toISOString() });
+    const firstFinalizer = new PostRunFinalizationService(repository, undefined, undefined, undefined, undefined, new PgRunSupervisor(db.pool));
+    let interleaved = false;
+    class ConcurrentFinalizerRepository extends PgRunRepository {
+      override async getRun(spaceId: string, id: string) {
+        const snapshot = await super.getRun(spaceId, id);
+        if (!interleaved) {
+          interleaved = true;
+          // Another finalizer commits the retry after this reader saw the
+          // failed Run, before it reads the current physical attempt.
+          await firstFinalizer.finalize(id, spaceId);
+        }
+        return snapshot;
+      }
+    }
+    await expect(new PostRunFinalizationService(new ConcurrentFinalizerRepository(db.pool)).finalize(runId, SPACE))
+      .rejects.toBeInstanceOf(NonTerminalRunError);
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("queued");
+    expect((await db.pool.query(`SELECT attempt_number FROM run_finalizations WHERE run_id = $1`, [runId])).rows)
+      .toEqual([{ attempt_number: 1 }]);
+    expect((await db.pool.query(`SELECT evidence_json->>'attempt_number' AS attempt FROM run_evaluations WHERE run_id = $1`, [runId])).rows)
+      .toEqual([{ attempt: "1" }]);
+  });
+
+  it("does not supervise a later failed attempt using an earlier attempt's evaluation", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const runId = await seedRun({ max_attempts: 3 });
+    const repository = new PgRunRepository(db.pool);
+    const supervisor = new PgRunSupervisor(db.pool);
+    const finalizer = new PostRunFinalizationService(repository, undefined, undefined, undefined, undefined, supervisor);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    await repository.markRunTerminal({ run_id: runId, space_id: SPACE, status: "failed",
+      error_json: { error_code: "runtime_stall_timeout" }, completed_at: new Date().toISOString() });
+    const stale = (await repository.getRun(SPACE, runId))!;
+    await finalizer.finalize(runId, SPACE);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    await repository.markRunTerminal({ run_id: runId, space_id: SPACE, status: "failed",
+      error_json: { error_code: "credentials_missing" }, completed_at: new Date().toISOString() });
+    expect(await supervisor.supervise({ run: stale, attempt_number: 1,
+      evaluation: { failure_reason_code: "runtime_stall_timeout", outcome_status: "failed" } })).toBeNull();
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("failed");
+    expect((await repository.listRunSupervisorDecisions(SPACE, runId))).toHaveLength(1);
+    await finalizer.finalize(runId, SPACE);
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("waiting_for_review");
+    expect(await repository.listRunSupervisorDecisions(SPACE, runId)).toContainEqual(
+      expect.objectContaining({ attempt_id: (await repository.getLatestRunAttempt(SPACE, runId))!.id,
+        decision: "human_review", reason_code: "credentials_missing" }),
+    );
+  });
+
+  it("keeps an earlier finalization replay from settling a later attempt", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const runId = await seedRun({ max_attempts: 3 });
+    const repository = new PgRunRepository(db.pool);
+    const supervisor = new PgRunSupervisor(db.pool);
+    const finalizer = new PostRunFinalizationService(repository, undefined, undefined, undefined, undefined, supervisor);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    await repository.markRunTerminal({ run_id: runId, space_id: SPACE, status: "failed",
+      error_json: { error_code: "runtime_stall_timeout" }, completed_at: new Date().toISOString() });
+    class DelayedFinalizerRepository extends PgRunRepository {
+      override async withRunFinalizationLock<T>(spaceId: string, id: string, attemptNumber: number, version: string,
+        fn: (locked: PgRunRepository) => Promise<T>): Promise<T> {
+        await finalizer.finalize(id, spaceId);
+        await repository.markRunRunning({ run_id: id, space_id: spaceId, started_at: new Date().toISOString() });
+        await repository.markRunTerminal({ run_id: id, space_id: spaceId, status: "failed",
+          error_json: { error_code: "credentials_missing" }, completed_at: new Date().toISOString() });
+        return super.withRunFinalizationLock(spaceId, id, attemptNumber, version, fn);
+      }
+    }
+    const replay = await new PostRunFinalizationService(new DelayedFinalizerRepository(db.pool),
+      undefined, undefined, undefined, undefined, supervisor).finalize(runId, SPACE);
+    expect(replay.attempt_number).toBe(1);
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("failed");
+    expect(await repository.listRunSupervisorDecisions(SPACE, runId)).toHaveLength(1);
+    expect((await db.pool.query(`SELECT evidence_json->>'attempt_number' AS attempt FROM run_evaluations WHERE run_id = $1`, [runId])).rows)
+      .toEqual([{ attempt: "1" }]);
+    expect((await finalizer.finalize(runId, SPACE)).attempt_number).toBe(2);
+  });
+
+  it("leaves a fast successor to its own finalization after the Supervisor retries", async (ctx) => {
+    if (!db.available) return ctx.skip();
+    const taskId = randomUUID();
+    await db.pool.query(`INSERT INTO tasks (id, space_id, project_id, title, status, owner_user_id, created_at, updated_at)
+      VALUES ($1,$2,$3,'Retried task','in_progress',$4,now(),now())`, [taskId, SPACE, PROJECT, USER]);
+    const runId = await seedRun({ max_attempts: 3 });
+    await db.pool.query(`UPDATE runs SET contract_snapshot_json = jsonb_set(contract_snapshot_json, '{source,id}', to_jsonb($2::text))
+      WHERE id = $1`, [runId, taskId]);
+    await db.pool.query(`INSERT INTO task_runs (id, space_id, task_id, run_id, role, created_at)
+      VALUES ($1,$2,$3,$4,'primary',now())`, [randomUUID(), SPACE, taskId, runId]);
+    const repository = new PgRunRepository(db.pool);
+    const realSupervisor = new PgRunSupervisor(db.pool);
+    const supervisor: RunSupervisorPort = {
+      async supervise(input) {
+        const decision = await realSupervisor.supervise(input);
+        if (decision?.decision === "retry_same_route") {
+          // A second worker can finish the successor as soon as the retry
+          // transaction commits, before the first finalizer reaches settlement.
+          await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+          await repository.markRunTerminal({ run_id: runId, space_id: SPACE, status: "failed",
+            error_json: { error_code: "credentials_missing" }, completed_at: new Date().toISOString() });
+        }
+        return decision;
+      },
+    };
+    const finalizer = new PostRunFinalizationService(repository, undefined, undefined, undefined, {
+      reconcilers: () => [{ key: "project_work", settle: async run => { await settleTasksForRun(db.pool, run.space_id, run.id); } }],
+    }, supervisor);
+    await repository.markRunRunning({ run_id: runId, space_id: SPACE, started_at: new Date().toISOString() });
+    await repository.markRunTerminal({ run_id: runId, space_id: SPACE, status: "failed",
+      error_json: { error_code: "runtime_stall_timeout" }, completed_at: new Date().toISOString() });
+    expect((await finalizer.finalize(runId, SPACE)).attempt_number).toBe(1);
+    expect((await repository.getRun(SPACE, runId))?.status).toBe("failed");
+    expect((await db.pool.query(`SELECT status FROM tasks WHERE id = $1`, [taskId])).rows[0]?.status).toBe("in_progress");
+    expect((await db.pool.query(`SELECT 1 FROM project_work_events WHERE subject_id = $1 AND event_kind = 'task.run_settled'`, [taskId])).rows)
+      .toHaveLength(0);
+
+    expect((await finalizer.finalize(runId, SPACE)).attempt_number).toBe(2);
+    expect((await db.pool.query(`SELECT status FROM tasks WHERE id = $1`, [taskId])).rows[0]?.status).toBe("waiting_for_review");
+    expect((await db.pool.query(`SELECT 1 FROM project_work_events WHERE subject_id = $1 AND event_kind = 'task.run_settled'`, [taskId])).rows)
+      .toHaveLength(1);
   });
 
   it("enforces a run cost cap across attempts before scheduling a retry", async (ctx) => {

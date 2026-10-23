@@ -5,4 +5,6 @@
  * the scopes an Agent chooses through `agent.wait_for_results` — such a Run
  * never ran, and its resume keeps the prompt it was dispatched with.
  */
-export const CONVERSATION_SERIALIZATION_WAIT_SCOPE = "conversation_serialization";
+import { RunResourceWaitCodeSchema } from "@rainver/protocol";
+
+export const CONVERSATION_SERIALIZATION_WAIT_SCOPE = RunResourceWaitCodeSchema.enum.conversation_serialization;

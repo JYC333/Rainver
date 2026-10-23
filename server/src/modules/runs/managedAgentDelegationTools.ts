@@ -14,6 +14,7 @@ import { PgAgentGroupRepository } from "../agentGroups/repository.js";
 import { PgRunRepository, type AgentRunRecord } from "./repository.js";
 import { runAssignedTask } from "./runAssignedTask.js";
 import { isHardTerminalRunStatus } from "./orchestrationResults.js";
+import { CollaborationBudgetSchema } from "../agentGroups/collaborationBudgetRepository.js";
 import type { SystemActionDispatchResult } from "../systemActions/toolResult.js";
 
 const AGENT_DELEGATE_TOOL = "agent.delegate";
@@ -95,7 +96,10 @@ function agentDelegateToolDefinition(targets: readonly AgentDelegationTarget[]):
           budget: {
             type: "object",
             additionalProperties: true,
-            description: "Optional trace-safe delegation budget hints.",
+            description: "Optional trace-safe hints. Only when the person explicitly requests sustained task collaboration, announce and declare collaboration on the first delegation: task_id from task.list covering the entire authorized workflow (not just its current stage), 1–2 fixed participant_agent_ids, and max_delegations (1–128) for the entire task. The original human turn sets it once; completion turns cannot reset or widen it. Ordinary ad-hoc delegation keeps its small default budget.",
+            properties: {
+              collaboration: protocol.systemActionInputJsonSchema({ input_schema: CollaborationBudgetSchema }),
+            },
           },
           context: {
             type: "object",

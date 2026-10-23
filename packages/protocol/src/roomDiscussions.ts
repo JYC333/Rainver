@@ -147,7 +147,7 @@ export type RoomDiscussionNotice = z.infer<typeof RoomDiscussionNoticeSchema>;
 // ---------------------------------------------------------------------------
 
 /**
- * A message as the recipient router sees it: text runs and addressed Agents.
+ * A message as the recipient router sees it: text runs and mentioned Agents.
  * The composer builds these from its editor; an Agent's reply is parsed into
  * them by `parseAgentMentions`. Both then segment the same way.
  */
@@ -166,31 +166,75 @@ export interface AgentMentionRosterEntry {
 }
 
 /**
+ * Where a person's message goes when nobody overrides it. `null`: it names
+ * nobody, so it goes to the Room's manager like any unaddressed message.
+ */
+export type AgentMentionDefaultRoute = "direct" | "agent_coordination" | null;
+
+/**
+ * How the mentions of one message route it.
+ *
+ * Adjacent mentions form one cluster. A cluster is an **address** only when
+ * it opens the message or a line — nothing but whitespace (and list or quote
+ * markers) before it on that line; any other mention is a **reference** to an
+ * Agent the message talks about. A message with an address goes directly to
+ * the addressed Agents; one whose mentions are all references goes to the
+ * manager, who is asked to arrange the work with the referenced Agents.
+ */
+export interface AgentMentionRoute {
+  default_route: AgentMentionDefaultRoute;
+  /** Every mentioned Agent, addresses and references, in order. */
+  mentioned_agent_ids: string[];
+  /** Agents addressed by a cluster that opens the message or a line. */
+  addressed_agent_ids: string[];
+  /**
+   * What a direct send delivers: the address clusters' segments, or — when
+   * the person chose direct for a message with only references — one
+   * segment per mention cluster.
+   */
+  direct_segments: AgentMentionSegment[];
+  /** A stable key of the mentions and their roles; a route choice holds while it is unchanged. */
+  key: string;
+}
+
+export function agentMentionRoute(tokens: readonly AgentMentionToken[]): AgentMentionRoute {
+  const clusters = mentionClusters(tokens);
+  const addresses = clusters.filter((cluster) => cluster.address);
+  return {
+    default_route: clusters.length === 0 ? null : addresses.length > 0 ? "direct" : "agent_coordination",
+    mentioned_agent_ids: uniqueAgentIds(clusters.flatMap((cluster) => cluster.recipient_agent_ids)),
+    addressed_agent_ids: uniqueAgentIds(addresses.flatMap((cluster) => cluster.recipient_agent_ids)),
+    direct_segments: segmentsForClusters(tokens, addresses.length > 0 ? addresses : clusters),
+    key: clusters
+      .map((cluster) => `${cluster.address ? "a" : "r"}:${cluster.recipient_agent_ids.join(",")}`)
+      .join("|"),
+  };
+}
+
+/**
  * Who a message addresses, and what it says to each.
  *
- * Adjacent mentions form one cluster addressed together. With one cluster,
- * the whole message minus the mentions is its content; with several, each
- * cluster gets the text that follows it, and the first also gets whatever
- * came before it.
+ * Only address clusters (see `AgentMentionRoute`) route a segment; with
+ * `include: "all"` every cluster does, which is what a person's explicit
+ * choice of a direct send means for a message of references. With one
+ * routed cluster the whole message is its content; with several, each gets
+ * the text from its own mentions to the next routed cluster, and the first
+ * also gets whatever came before it. Mentions stay in the content, so the
+ * recipient reads the message as it was written.
  */
-export function agentMentionSegments(tokens: readonly AgentMentionToken[]): AgentMentionSegment[] {
+export function agentMentionSegments(
+  tokens: readonly AgentMentionToken[],
+  options: { include?: "addresses" | "all" } = {},
+): AgentMentionSegment[] {
   const clusters = mentionClusters(tokens);
-  if (clusters.length === 0) return [];
-  if (clusters.length === 1) {
-    const cluster = clusters[0]!;
-    const content = normalizeMentionText([
-      renderMentionTokens(tokens.slice(0, cluster.start), false),
-      renderMentionTokens(tokens.slice(cluster.end), false),
-    ].filter(Boolean).join(" "));
-    return [{ recipient_agent_ids: cluster.recipient_agent_ids, content }];
-  }
+  return segmentsForClusters(tokens, options.include === "all" ? clusters : clusters.filter((cluster) => cluster.address));
+}
+
+function segmentsForClusters(tokens: readonly AgentMentionToken[], clusters: readonly MentionCluster[]): AgentMentionSegment[] {
   return clusters.map((cluster, index) => {
     const next = clusters[index + 1] ?? null;
-    const prefix = index === 0 ? renderMentionTokens(tokens.slice(0, cluster.start), false) : "";
-    const content = normalizeMentionText([
-      prefix,
-      renderMentionTokens(tokens.slice(cluster.end, next?.start ?? tokens.length), false),
-    ].filter(Boolean).join(" "));
+    const from = index === 0 ? 0 : cluster.start;
+    const content = normalizeMentionText(renderMentionTokens(tokens.slice(from, next?.start ?? tokens.length), true));
     return { recipient_agent_ids: cluster.recipient_agent_ids, content };
   });
 }
@@ -215,12 +259,21 @@ export function normalizeMentionText(value: string): string {
  * reply — into tokens. Labels match case-insensitively, longest first, and
  * only where the `@` starts a word and the label ends one (a CJK character on
  * either side counts as a word edge). Code (fenced blocks and inline spans) is
- * never read as addressing anyone.
+ * never read as mentioning anyone.
+ *
+ * `segments` holds only the address clusters — a mention that opens the reply
+ * or a line. A mention inside a sentence (an explanation, a quote, an
+ * example) is a reference and addresses nobody.
  */
 export function parseAgentMentions(
   text: string,
   roster: readonly AgentMentionRosterEntry[],
-): { tokens: AgentMentionToken[]; segments: AgentMentionSegment[]; mentioned_agent_ids: string[] } {
+): {
+  tokens: AgentMentionToken[];
+  segments: AgentMentionSegment[];
+  mentioned_agent_ids: string[];
+  addressed_agent_ids: string[];
+} {
   const entries = roster
     .filter((entry) => entry.label.trim().length > 0)
     .map((entry) => ({ ...entry, lower: entry.label.trim().toLowerCase() }))
@@ -260,14 +313,47 @@ export function parseAgentMentions(
     index += 1;
   }
   flush();
-  const mentioned = [...new Set(tokens.flatMap((token) => token.type === "mention" ? [token.id] : []))];
-  return { tokens, segments: agentMentionSegments(tokens), mentioned_agent_ids: mentioned };
+  const route = agentMentionRoute(tokens);
+  return {
+    tokens,
+    segments: agentMentionSegments(tokens),
+    mentioned_agent_ids: route.mentioned_agent_ids,
+    addressed_agent_ids: route.addressed_agent_ids,
+  };
 }
 
 interface MentionCluster {
   start: number;
   end: number;
   recipient_agent_ids: string[];
+  /** Opens the message or a line: an address rather than a reference. */
+  address: boolean;
+}
+
+/**
+ * Whitespace and list markers (`-`, `*`, `+`, `1.`, `1)`) only. A quoted line
+ * (`>`) reproduces someone's words, so a mention opening it is a reference.
+ */
+const LINE_OPENING = /^[ \t\u3000]*(?:(?:[-*+\u2022]|\d{1,9}[.)])[ \t\u3000]+)*$/;
+
+/** Whether the tokens before `index` leave it at the start of a line. */
+function opensLine(tokens: readonly AgentMentionToken[], index: number): boolean {
+  let prefix = "";
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const token = tokens[cursor]!;
+    if (token.type === "mention") return false;
+    const newline = token.text.lastIndexOf("\n");
+    if (newline >= 0) {
+      prefix = token.text.slice(newline + 1) + prefix;
+      break;
+    }
+    prefix = token.text + prefix;
+  }
+  return LINE_OPENING.test(prefix);
+}
+
+function uniqueAgentIds(ids: readonly string[]): string[] {
+  return [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
 }
 
 function mentionClusters(tokens: readonly AgentMentionToken[]): MentionCluster[] {
@@ -285,18 +371,23 @@ function mentionClusters(tokens: readonly AgentMentionToken[]): MentionCluster[]
     let cursor = end;
     while (cursor < tokens.length) {
       let next = cursor;
+      // Mentions join one cluster only on the same line: each line is
+      // judged on its own, so a reference cannot absorb the next line's address.
+      let lineBreak = false;
       while (tokens[next]?.type === "text") {
         const textToken = tokens[next] as Extract<AgentMentionToken, { type: "text" }>;
         if (textToken.text.trim().length > 0) break;
+        if (textToken.text.includes("\n")) lineBreak = true;
         next += 1;
       }
+      if (lineBreak) break;
       const candidate = tokens[next];
       if (candidate?.type !== "mention") break;
       recipients.push(candidate.id);
       cursor = next + 1;
       end = cursor;
     }
-    clusters.push({ start, end, recipient_agent_ids: [...new Set(recipients.map((id) => id.trim()).filter(Boolean))] });
+    clusters.push({ start, end, recipient_agent_ids: uniqueAgentIds(recipients), address: opensLine(tokens, start) });
     index = end;
   }
   return clusters;

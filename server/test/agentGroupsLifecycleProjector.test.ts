@@ -175,6 +175,11 @@ class FakeClient {
       }
       return { rows: [], rowCount: row ? 1 : 0 };
     }
+    if (sql.includes("SELECT 1 FROM runs") && sql.includes("output_json->'waiting_for_quota'->'recovery' IS NOT NULL")) {
+      const row = this.state.runs.get(String(params[1]));
+      const recovering = row?.status === "queued" && Boolean((row.output_json as { waiting_for_quota?: { recovery?: unknown } } | null)?.waiting_for_quota?.recovery);
+      return { rows: recovering ? [{} as Row] : [], rowCount: recovering ? 1 : 0 };
+    }
     if (sql.includes("SELECT 1 FROM runs") && sql.includes("output_json ? 'waiting_for_quota'")) {
       const row = this.state.runs.get(String(params[1]));
       const held = Boolean(row && (row.output_json as Record<string, unknown> | null)?.waiting_for_quota);
@@ -202,9 +207,10 @@ class FakeClient {
       return { rows: rows as Row[], rowCount: rows.length };
     }
     // No conversation here: the turn check (`enqueueWhenTurnFree`) has nothing to wait for.
-    if (sql.includes("SELECT session_id, run_group_id FROM runs")) {
+    if (sql.includes("SELECT session_id, run_group_id,") && sql.includes("AS recovering FROM runs")) {
       const row = this.state.runs.get(String(params[1]));
-      return { rows: row ? [{ session_id: null, run_group_id: row.run_group_id } as Row] : [], rowCount: row ? 1 : 0 };
+      const recovering = Boolean((row?.output_json as { waiting_for_quota?: { recovery?: unknown } } | null)?.waiting_for_quota?.recovery);
+      return { rows: row ? [{ session_id: null, run_group_id: row.run_group_id, recovering } as Row] : [], rowCount: row ? 1 : 0 };
     }
     if (sql.includes("SELECT session_id FROM runs")) {
       const row = this.state.runs.get(String(params[1]));
@@ -642,16 +648,16 @@ describe("AgentGroupRunLifecycleProjector", () => {
       login: { host_id: "host-1", host_name: "Server", runtime_key: "claude_code", installation: "own" },
     };
 
-    // A delegation is Agent-triggered: at 90 % of the window (reserve 85 %) it waits, with no job.
-    await projectorFor(state, fixedQuota(90)).queueDelegatedChildren(parent);
+    // A delegation is Agent-triggered: at the default 100 % reserve it waits, with no job.
+    await projectorFor(state, fixedQuota(100)).queueDelegatedChildren(parent);
     expect(state.jobs).toHaveLength(0);
     expect(state.runs.get("run-child")).toMatchObject({
       status: "queued",
-      output_json: { waiting_for_quota: expect.objectContaining({ window: "session", utilization: 90, account_label: "Claude Code · Server" }) },
+      output_json: { waiting_for_quota: expect.objectContaining({ window: "session", utilization: 100, account_label: "Claude Code · Server" }) },
     });
 
     // The FIFO re-evaluates its head on the next terminal event; below the line it runs.
-    await projectorFor(state, fixedQuota(40)).queueDelegatedChildren(parent);
+    await projectorFor(state, fixedQuota(99)).queueDelegatedChildren(parent);
     expect(state.jobs).toHaveLength(1);
     expect(state.jobs?.[0]?.payload_json).toMatchObject({ run_id: "run-child", trigger_origin: "delegation" });
     // Admitted, it no longer reads as waiting.

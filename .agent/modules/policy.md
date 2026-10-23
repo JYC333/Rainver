@@ -42,6 +42,11 @@ RBAC/ABAC platform — it is a lightweight, code-owned permission layer that rou
 - Agent runtime policy (stored on `AgentRuntimeProfile.runtime_policy_json` and
   snapshotted onto runs, then read by runners).
 
+`POLICY_APPROVER_MAX_RISK` in `packages/protocol/src/policy.ts` is the shared
+role ceiling value set (owner critical, admin high, reviewer medium), consumed by
+`policy/decisions.ts` and web Run-control eligibility. Enforcement stays in
+the server; the shared table grants no authority on its own.
+
 Policy does not own proposal mutations. Authorization-request approval uses
 the same policy-audited ActionApprovalGrant creation authority as the public
 grant route.

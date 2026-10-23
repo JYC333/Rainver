@@ -1,3 +1,4 @@
+import { ConversationSessionConfigSaveSchema, TurnStreamFrameSchema } from "../src/index.js";
 import { describe, expect, it } from "vitest";
 import {
   ChatTurnPrepareRunRequestSchema,
@@ -389,4 +390,21 @@ describe("memory + sessions contracts", () => {
     ).toThrow();
   });
 
+});
+
+
+describe("saved conversation options and model observation", () => {
+  it("accepts bounded member settings and rejects oversized or unknown fields", () => {
+    const selection = { id: "model", type: "select", category: "model", value: "ops" };
+    const body = { session_id: "session", runtime_profile_id: "profile", session_config: [selection] };
+    expect(ConversationSessionConfigSaveSchema.parse(body)).toEqual(body);
+    expect(ConversationSessionConfigSaveSchema.safeParse({ ...body, session_config: Array(33).fill(selection) }).success).toBe(false);
+    expect(ConversationSessionConfigSaveSchema.safeParse({ ...body, agent_id: "another" }).success).toBe(false);
+  });
+  it("carries model observations independently of text and tool frames", () => {
+    const frame = { type: "turn.model_changed", run_id: "run", model_selection: {
+      requested: "ops", reported: null, status: "unknown",
+    } };
+    expect(TurnStreamFrameSchema.parse(frame)).toEqual(frame);
+  });
 });

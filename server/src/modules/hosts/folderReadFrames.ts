@@ -89,6 +89,10 @@ function validateRemoteTreeNode(
   if (value.type !== "dir" && value.type !== "file") return null;
   if (!root) counter.count += 1;
   const node: FileNode = { name: value.name, path: value.path, type: value.type };
+  if (value.next_offset !== undefined) {
+    if (!root || value.type !== "dir" || !boundedInteger(value.next_offset, Number.MAX_SAFE_INTEGER) || value.next_offset === 0) return null;
+    node.next_offset = value.next_offset;
+  }
   if (value.size !== undefined && !boundedInteger(value.size, Number.MAX_SAFE_INTEGER)) return null;
   if (value.type === "file") {
     if (value.children !== undefined) return null;

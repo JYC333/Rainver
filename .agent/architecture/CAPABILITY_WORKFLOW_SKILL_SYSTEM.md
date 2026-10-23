@@ -66,16 +66,28 @@ unchanged by it — the Run's
 points at `list` rather than naming a fixed set. Each Run records the content
 hash of the Skill it was given.
 
-It is delivered as a file. An imported Open Skill is flattened into prompt
-text by the Runtime Context gateway.
+The Work Skill is delivered as a file. Explicitly selected imported Skills
+are delivered as their original package files, separately from builtin
+capability renderings; see the unified library below.
 
 ### Open Skill
 
-An Open Skill is an external, portable skill source package. Import fetches
-GitHub only. A `source_type` other than `github`, or a fetch host other than
-`raw.githubusercontent.com`, is rejected as `unsupported_skill_source`. It
-usually contains `SKILL.md` plus optional references, assets, scripts, and
+An Open Skill is an external, portable skill source package. Import accepts
+GitHub, uploaded Markdown/folder files or ZIP, and a Skill discovered in the
+global CLI Skill directories of an owned Host. Remote URL acquisition supports GitHub only; arbitrary
+websites and registries are not fetched. A package usually contains `SKILL.md` plus optional references, assets, scripts, and
 vendor metadata.
+
+`capabilities/skillSourceFetch.ts` uses the shared `sources/outboundUrlSafety`
+`fetchGuarded` boundary for content and GitHub API metadata. The original host
+must remain unchanged on every redirect (`raw.githubusercontent.com` for files,
+`api.github.com` for metadata); each hop is checked before connecting. The shared
+guard owns address pinning, HTTPS enforcement, redirect limits and the request
+deadline. Files are read under the existing 256 KiB ceiling, metadata under an
+8 MiB ceiling, and excess or unsuccessful bodies are cancelled. The existing
+200-file and 2 MiB included-package limits still apply. Commit resolution
+remains optional; a refused or unavailable lookup retains its existing
+unresolved-ref fallback.
 
 An Open Skill is not trusted by default, but its approved package snapshot
 remains the content of record. Rainver may preview, inventory, hash,
@@ -105,11 +117,142 @@ declarations such as `allowed-tools` remain permission requests, not grants.
 relative Agent Skill directory. GitHub imports treat a tree URL as the skill
 root and a blob/raw `SKILL.md` URL as a file inside its containing root.
 
-The importer records file path, kind, hash where available, byte length,
-content type, inclusion state, executable/script flags, and risk flags. Text
-files under the package root are fetched within size caps. Non-text assets are
-recorded as inventory metadata when available, but they are not executed or
-installed.
+The importer records file path, kind, hash, byte length, content type,
+inclusion state, executable/script flags, and risk flags. Text and binary files under the package root are fetched within size caps.
+`skill_package_files.content_base64` stores the exact original bytes, including
+BOM and line endings. The inventory hash covers each file hash and length.
+Older inventory-only packages remain inspectable but require reimport for delivery.
+
+### Unified Skill library and explicit invocation
+
+`POST /api/v1/skill-sources/import-preview` and `/import` accept one of:
+`{url}`, `{source_type:"upload",files:[{path,content_base64}]}`,
+`{source_type:"upload",archive_base64}`, or
+`{source_type:"local_workspace",host_id,skill_id}` (global CLI discovery,
+below). Import repeats acquisition and requires the preview's `package_hash`.
+Desktop metadata is not package content: `__MACOSX/` trees, AppleDouble `._*`
+files and `.DS_Store` are dropped from ZIP entries (within their own expansion
+bound, and the archive entry cap of 1,000 counts them) and from file lists
+before path validation and hashing (`isPlatformMetadataPath`).
+The single root must contain exactly one `SKILL.md`. Packages are bounded to
+200 files, 256 KiB per file and 2 MiB total; ZIP is bounded to 3 MiB encoded
+input bytes before base64 (4 MiB base64), with streaming expansion limits and
+central-directory completeness checks through `fflate`. No extraction occurs
+on the server filesystem. New content is a new imported immutable package.
+
+`GET /api/v1/skill-packages/:id/content` returns integrity-checked original
+files for inspection within the Space. `GET .../:id/bindings` reads permitted
+bindings; `POST .../:id/binding-proposal` creates a
+`runtime_skill_binding_update` proposal with operation
+`skill_package_binding_update`. Review must finish before a binding proposal.
+`POST .../:id/review-proposal` optionally takes `{binding}` (enabled; Space,
+user or Agent scope, never Project because a review is a Space decision): the
+`skill_import_approve` proposal then reviews the package and writes that pinned
+binding in the same apply, so one explicit approval makes an import usable. A
+person has one pending review per snapshot: asking again for the same review
+(same binding, or none) returns it with 200; asking for a different one answers
+409 `skill_review_pending` with its `proposal_id`, and the package panel shows
+that pending proposal to decide first. Approving a review supersedes every other
+pending review of the package (their bindings must be requested again as binding
+proposals). Reviews, bindings and turn selection take the package advisory lock
+(`lockSkillPackage`) before the package row, and the supersede step skips
+reviews another transaction holds (`FOR UPDATE SKIP LOCKED`), so two reviews
+approved at once do not deadlock: the second finds the package reviewed and its
+approval marks it `superseded` (`superseded_by_proposal_id`) instead of failing,
+which is also what approving any review skipped that way does later. Nothing is
+enabled without that approval. The applier
+owns `skill_bindings`; each binding pins a package id and hash and one scope:
+Space, current user, Project or Agent. Effective precedence is
+Project > Agent > user > Space; a narrower disabled binding suppresses the
+broader enabled one (`resolveSkillBindingsForScopes` resolves several
+Project/Agent scopes of one person in one query). Scope writes reuse the
+local-overlay authority checks when filed. Review and binding proposals both
+carry `required_approver_role: "admin"`, matching that Space-scope writes are a
+Space owner's or admin's: an admin or owner approves either (a Project owner
+also approves a Project binding through `effectiveApproverRole`), and the
+proposal-type risk ceiling still leaves critical-risk packages to the owner.
+Applying an Agent binding re-checks that the Agent exists, is not archived and
+is still managed by the proposer.
+
+`GET /api/v1/capabilities/skills/available` takes optional conversation,
+Project and Agent ids and returns eligible typed selections. For a Room
+conversation it also takes `recipient_agent_ids` (comma-separated active Room
+Agents; none means the manager, who receives an unaddressed message) and returns
+only Skills enabled for every one of them, as admission requires; the Room
+composer passes its addressed Agents. Both `/` and `@`
+menus create `{kind:"skill",skill_package_id,package_hash,display_name}` input
+parts, with at most four distinct selections. Selection also inserts a visible
+`/display_name` at the caret in both composers, highlighted like an `@Agent`
+mention and deleted as one token; removing it clears the selection.
+This text is presentation, not package identity or authorization. Existing
+message history without inline references retains its Skill chips.
+Room `@Agent` mentions remain
+recipient routing; selected Skills apply to all addressed recipients and each
+recipient must have an effective binding (422 `selected_skill_not_enabled`
+naming the `agent_ids` otherwise). Admission
+(`assertSelectedSkillsForRecipients`) resolves all recipients' bindings in one
+query and verifies each package's complete bytes once per turn; message
+preparation reuses that verification. Skill-only turns are valid. Drafts,
+message history and retries retain the selected package/version.
+
+The message author's bindings govern a selection. A Room member who can see a
+failed turn may retry it; the retry re-checks the original author's selection
+for every recipient, while the retrier's Work Context supplies the Project
+override. `loadSelectedSkills` reads a message's selections whoever the viewer
+is (the viewer must be able to read the conversation, otherwise 404), so what is
+delivered always matches the rendered `[Explicitly selected Skills]`
+descriptors; a selection no longer enabled for the author fails closed.
+
+Runtime Context acquisition reads the canonical message selections, resolves
+reviewed original files against the execution control snapshot's scope, and
+creates required delegated-instruction items. Gateway revalidates the live
+bindings, complete package hash and exact payload before accepting
+`Delivery.skill_packages`. Run-specific item versions keep files present on
+continuation turns. Host launches materialize verified base64 bytes beneath
+`RAINVER_SKILL_ROOT`; structured ACP resource links identify each `SKILL.md`.
+Claude Code and Codex read the same original bytes. User prompt text is never
+rewritten to substitute paths. Additional Skill directories are admitted only
+in negotiated ACP directory fields. Host daemon **0.4.3+** is required; older
+Hosts fail the existing compatibility gate before accepting work.
+
+Scripts, hooks, dependency declarations and vendor tool hints are retained as
+content, not installed or automatically executed. Existing execution and tool
+authority continues to govern every action. Original-package selection does
+not invoke the legacy normalized conversion/rendering path.
+
+### Global CLI discovery and library UI
+
+The `/skills` page lists imported packages with search, loading/error states,
+a single empty state and automatic first-package selection. Import is a
+separate modal with Local CLIs, GitHub and Files tabs. The Local CLIs tab calls
+`POST /api/v1/skill-sources/hosts/:hostId/scan` and displays bounded candidates
+with runtime, installation and logical source directory. It does not require a
+Project or Folder binding. Host changes/rescans invalidate previous selections.
+The Files tab accepts one `.md` (256 KiB) or `.zip` (3 MiB) file by click or
+drag-and-drop, with drag feedback. A standalone Markdown upload uses the
+existing `files` request with path `SKILL.md` and unmodified original bytes;
+packages with supporting files use ZIP. Replacing a file invalidates its
+preview; imports still require explicit preview and confirmation of that
+package hash.
+
+The daemon's `skill_scan`/`skill_read` frames reuse the typed single-frame Host
+request transport. Roots are resolved on the Host: Claude's personal Skill
+root, Codex `$HOME/.agents/skills` and legacy `$CODEX_HOME/skills`, and OpenCode's
+XDG config Skill directory; explicit CLI config roots and installed managed
+runtime HOMEs are respected. Discovery is bounded to 1,000 directories, depth
+five and 200 candidates, with truncation/warnings reported. Top-level linked
+Skill directories are supported and deduplicated by canonical target within a
+root. Reads use folder-read's safe handles and path policy; internal symlinks,
+credential-like paths and dependency directories are not copied.
+
+Import source `{source_type:"local_workspace",host_id,skill_id}` names only an
+opaque discovery id, never an arbitrary Host path. The daemon rediscovers it
+for each read; removed/retargeted entries are refused. The control plane checks
+owner access (built-in Host requires instance admin), online state and daemon
+compatibility before requesting scan/read. Preview and import both reacquire
+original bytes and use the existing immutable hash/review flow; provenance
+records `origin:"cli_global"`, Host, candidate, runtime and installation.
+Nothing is automatically enabled or installed in the CLI's own directories.
 
 ### SkillLocalOverlay
 
@@ -251,14 +394,20 @@ plugin boundary:
   services. Internal passes still execute through immutable Workflow Executions,
   while user-facing Project Research controls call the domain application
   service rather than constructing generic run drafts in the browser.
-- The Capabilities page remains the control-plane inspection surface. It shows
-  built-in packs, GitHub skill package preview/import, imported skill
-  review/convert proposal actions, and imported package details including
-  requested permissions, package root/hash/source, instructions, diagnostics,
-  and package file risk inventory.
-- The Context Configuration page consumes the Skill Library Index as a lighter
-  directory view. It can show active local overlays but does not collapse Open
-  Skill, Capability, runtime skill, or official optional module boundaries.
+- The Capabilities page shows builtin definitions and packs. The separate
+  `/skills` page owns import preview, original-file inspection, review proposals
+  and scope-binding proposals. Import defaults to filing a review-and-enable
+  proposal for the Space when the person is a Space owner or admin and for
+  themselves otherwise (the Space scope is offered only to owners/admins), or
+  "import only". If filing the enabling review fails after import, the dialog
+  files the review alone and explains the outcome inline. The package panel
+  decides a pending review or binding proposal in place through the normal
+  proposal accept/reject API, and the server still enforces the approver role.
+  Empty `/` and `@` Skill menus link to the conversation Space's library.
+  Conversion remains a legacy API with no web client, not the new library
+  workflow.
+- The Skill Library Index and local-overlay APIs have no web consumer; they
+  remain server APIs only.
 - Project Research materializes `research_report.v1` into its domain Reader.
   Its `research_report.archive.v1` Artifact is a hidden audit/export backup;
   Artifact Detail does not render it as the report.
@@ -303,7 +452,7 @@ user-facing report is the corresponding `project_research_reports` row.
   SHA-256. `POST /api/v1/skill-sources/import` must carry that
   `package_hash`, re-fetches the source, and saves the snapshot only when the
   bytes it fetched hash to it. Otherwise it answers 409
-  `skill_package_changed`, and the Capabilities page withdraws the preview and
+  `skill_package_changed`, and the Skills page withdraws the preview and
   asks for a new one. Approval of one preview never applies to other content.
 - An imported Skill's capability version carries its reviewed snapshot in
   `metadata_json`: `normalized_skill`, the `capability_definition` derived
@@ -314,10 +463,9 @@ user-facing report is the corresponding `project_research_reports` row.
   `imported_skill_snapshot_immutable`); new content comes only from a new
   import, which produces a new snapshot and hash. Status and other metadata
   remain updatable.
-- GitHub package imports are limited to files under the detected skill root.
-  Text files are fetched with size/type caps and traversal checks. Non-text
-  assets remain inventory metadata unless a later storage path is explicitly
-  added.
+- Package imports are limited to files under the selected Skill root. Both
+  text and binary bytes are retained within bounds. Unsafe, colliding or
+  nonportable paths and incomplete packages fail closed.
 - Truncated or over-limit GitHub package trees fail closed because an incomplete
   inventory cannot be treated as a reviewed package snapshot.
 - Raw external content remains untrusted.
@@ -336,10 +484,12 @@ user-facing report is the corresponding `project_research_reports` row.
   unique among pending proposals of its type in a Space
   (`uq_proposals_pending_operation`). Asking again while that proposal is
   pending returns it with 200 instead of 201, and two concurrent requests
-  file one proposal. Once it is decided, a new request files a new one.
-  Skill package reads include the caller's `pending_proposal`
-  (`{id, operation}` or null). The Capabilities page shows it as pending and
-  disables the matching action.
+  file one proposal. A review request whose binding differs from the pending
+  one answers 409 `skill_review_pending` instead. Once it is decided, a new
+  request files a new one. Skill package reads include the caller's
+  `pending_proposal` (`{id, operation}` or null), counting a review only while
+  the package is `imported` and a Convert only while it is `reviewed`. The
+  `/skills` package panel shows it as pending and disables the scope actions.
 - Conversion requests create a `capability_install` proposal. Applying it
   produces a disabled draft capability version plus disabled runtime bindings;
   requesting direct enablement during conversion (`enable_for_project_id`) fails
@@ -401,10 +551,12 @@ a native execution path exists.
 - The native `capability` runtime adapter is declared and disabled.
 - Import preview supports safe GitHub `blob`/`tree` package roots and
   `raw.githubusercontent.com` URLs that resolve to `SKILL.md`.
-- Registry, local workspace, upload, and official-catalog skill source types
-  are modeled and not implemented.
-- Binary asset storage is not implemented; binary/non-text assets are kept as
-  package inventory metadata where GitHub exposes blob metadata.
+- Registry and official-catalog acquisition are not implemented. GitHub,
+  uploads and global CLI discovery on an owned Host share the same preview path.
+  Project Folder acquisition is not an import source.
+- Host acquisition follows the daemon's folder-read policy; forbidden paths,
+  symlinks and dependency directories omitted by that policy are not copied. No
+  arbitrary server-local path import exists.
 - No native web search service is implemented.
 - Workflow drafts set one primary `runs.capability_id` and
   persist the full workflow capability list in `runs.capabilities_json`.

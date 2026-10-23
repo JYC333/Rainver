@@ -313,9 +313,15 @@ const NormalizedAgentWaitTextSchema = z.string().transform((value) => {
 });
 
 /** The shared input contract for the live `agent.wait_for_results` tool. */
+export const AgentWaitForResultsScopeSchema = z.enum([
+  "current_turn",
+  "own_delegations",
+  "run_ids",
+]);
+
 export const AgentWaitForResultsInputSchema = z
   .object({
-    scope: z.enum(["current_turn", "own_delegations", "run_ids"]).optional(),
+    scope: AgentWaitForResultsScopeSchema.optional(),
     run_ids: NormalizedAgentWaitIdListSchema.optional(),
     target_agent_ids: NormalizedAgentWaitIdListSchema.optional(),
     reason: NormalizedAgentWaitTextSchema.optional(),

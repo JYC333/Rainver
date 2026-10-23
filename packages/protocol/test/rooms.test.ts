@@ -1,4 +1,4 @@
-import { agentMentionSegments, parseAgentMentions } from "../src/roomDiscussions.js";
+import { agentMentionRoute, agentMentionSegments, parseAgentMentions } from "../src/roomDiscussions.js";
 import { describe, expect, it } from "vitest";
 import {
   ContinueRoomAfterProposalRequestSchema,
@@ -100,6 +100,16 @@ describe("Room contracts", () => {
     expect(SendRoomMessageRequestSchema.safeParse({
       content: "hidden instruction",
       message_kind: "system_continuation",
+    }).success).toBe(false);
+    expect(SendRoomMessageRequestSchema.parse({
+      content: "你可以派 @Codex 去查",
+      routing_mode: "agent_coordination",
+      coordination_target_agent_ids: ["agent-codex"],
+    }).coordination_target_agent_ids).toEqual(["agent-codex"]);
+    // Targets are the manager's to arrange; a direct send has none.
+    expect(SendRoomMessageRequestSchema.safeParse({
+      content: "@Codex check",
+      coordination_target_agent_ids: ["agent-codex"],
     }).success).toBe(false);
 
     expect(SendRoomMessageResponseSchema.parse({
@@ -227,19 +237,20 @@ describe("addressing Agents in an Agent's reply", () => {
   it("matches the longest roster label, case-insensitively, only where a word starts", () => {
     const parsed = parseAgentMentions("@research specialist can you check this? cc @Coder", roster);
     expect(parsed.mentioned_agent_ids).toEqual(["agent-research", "agent-coder"]);
+    // The opening mention addresses; `cc @Coder` only refers to Coder.
+    expect(parsed.addressed_agent_ids).toEqual(["agent-research"]);
     expect(parsed.segments).toEqual([
-      { recipient_agent_ids: ["agent-research"], content: "can you check this? cc" },
-      { recipient_agent_ids: ["agent-coder"], content: "" },
+      { recipient_agent_ids: ["agent-research"], content: "@Research Specialist can you check this? cc @Coder" },
     ]);
     expect(parseAgentMentions("email me at someone@Coder.example", roster).mentioned_agent_ids).toEqual([]);
     expect(parseAgentMentions("@Coders are busy", roster).mentioned_agent_ids).toEqual([]);
   });
 
-  it("addresses adjacent mentions together and never reads code as addressing anyone", () => {
+  it("never reads code as mentioning anyone, and a mid-sentence mention addresses nobody", () => {
     const parsed = parseAgentMentions("Thoughts, @Research @Coder?\n```ts\n@Coder decorator\n```\nand `@Research`", roster);
-    expect(parsed.segments).toEqual([
-      { recipient_agent_ids: ["agent-research-lead", "agent-coder"], content: "Thoughts, ?\n```ts\n@Coder decorator\n```\nand `@Research`" },
-    ]);
+    expect(parsed.mentioned_agent_ids).toEqual(["agent-research-lead", "agent-coder"]);
+    expect(parsed.segments).toEqual([]);
+    expect(parseAgentMentions("`@Coder` look at this", roster).mentioned_agent_ids).toEqual([]);
   });
 
   it("finds mentions written against CJK text, which has no spaces between words", () => {
@@ -249,24 +260,112 @@ describe("addressing Agents in an Agent's reply", () => {
     expect(parseAgentMentions("@Coder请检查", cjkRoster).mentioned_agent_ids).toEqual(["agent-coder"]);
     // Latin text keeps its word boundaries.
     expect(parseAgentMentions("someone@Coder and @Coders", cjkRoster).mentioned_agent_ids).toEqual([]);
+    // Found, but inside the sentence: a reference.
+    expect(parseAgentMentions("你可以派@Coder去查", cjkRoster)).toMatchObject({
+      mentioned_agent_ids: ["agent-coder"], addressed_agent_ids: [], segments: [],
+    });
+    expect(parseAgentMentions("@Coder请检查", cjkRoster).addressed_agent_ids).toEqual(["agent-coder"]);
   });
 
   it("keeps positions when lowercasing changes a character's length", () => {
-    const parsed = parseAgentMentions("İİ @Coder look", roster);
+    const parsed = parseAgentMentions("İİ\n@Coder look", roster);
     expect(parsed.mentioned_agent_ids).toEqual(["agent-coder"]);
-    expect(parsed.segments).toEqual([{ recipient_agent_ids: ["agent-coder"], content: "İİ look" }]);
+    expect(parsed.segments).toEqual([{ recipient_agent_ids: ["agent-coder"], content: "İİ\n@Coder look" }]);
+  });
+});
+
+describe("routing a message by where its mentions stand", () => {
+  const A = { type: "mention" as const, id: "a", label: "A" };
+  const B = { type: "mention" as const, id: "b", label: "B" };
+  const text = (value: string) => ({ type: "text" as const, text: value });
+
+  it("sends a message with no mention to the manager", () => {
+    expect(agentMentionRoute([text("hello")])).toMatchObject({ default_route: null, direct_segments: [], mentioned_agent_ids: [] });
   });
 
-  it("segments the way the composer does", () => {
-    expect(agentMentionSegments([
-      { type: "text", text: "Intro " },
-      { type: "mention", id: "a", label: "A" },
-      { type: "text", text: " do x " },
-      { type: "mention", id: "b", label: "B" },
-      { type: "text", text: " do y" },
-    ])).toEqual([
-      { recipient_agent_ids: ["a"], content: "Intro do x" },
-      { recipient_agent_ids: ["b"], content: "do y" },
+  it("addresses a mention that opens the message or a line, list markers included", () => {
+    expect(agentMentionRoute([A, text(" do x")])).toMatchObject({
+      default_route: "direct",
+      addressed_agent_ids: ["a"],
+      direct_segments: [{ recipient_agent_ids: ["a"], content: "@A do x" }],
+    });
+    expect(agentMentionRoute([text("  "), A, text(" do x")]).default_route).toBe("direct");
+    expect(agentMentionRoute([text("Context first.\n"), A, text(" do x")])).toMatchObject({
+      default_route: "direct",
+      direct_segments: [{ recipient_agent_ids: ["a"], content: "Context first.\n@A do x" }],
+    });
+    for (const marker of ["- ", "* ", "1. ", "2) "]) {
+      expect(agentMentionRoute([text(`Intro\n${marker}`), A, text(" do x")]).addressed_agent_ids).toEqual(["a"]);
+    }
+  });
+
+  it("reads a mention on a quoted line as a reference", () => {
+    for (const marker of ["> ", ">", "> - "]) {
+      const route = agentMentionRoute([text(`引用原话：\n${marker}`), A, text(" 查一下")]);
+      expect(route.default_route).toBe("agent_coordination");
+      expect(route.addressed_agent_ids).toEqual([]);
+    }
+    // An Agent reply quoting someone summons nobody.
+    const reply = parseAgentMentions("引用原话：\n> @Coder 查一下", [{ agent_id: "agent-coder", label: "Coder" }]);
+    expect(reply.addressed_agent_ids).toEqual([]);
+    expect(reply.segments).toEqual([]);
+  });
+
+  it("judges each line on its own, so a reference does not absorb the next line's address", () => {
+    const route = agentMentionRoute([text("请参考 "), A, text("\n"), B, text(" 修复构建")]);
+    expect(route.default_route).toBe("direct");
+    expect(route.addressed_agent_ids).toEqual(["b"]);
+    expect(route.mentioned_agent_ids).toEqual(["a", "b"]);
+    expect(route.direct_segments).toEqual([{ recipient_agent_ids: ["b"], content: "请参考 @A\n@B 修复构建" }]);
+    // Two line-opening addresses stay two segments, not one cluster.
+    expect(agentMentionRoute([A, text("\n"), B, text(" do y")]).direct_segments).toEqual([
+      { recipient_agent_ids: ["a"], content: "@A" },
+      { recipient_agent_ids: ["b"], content: "@B do y" },
+    ]);
+  });
+
+  it("segments several address clusters, each keeping its own mentions", () => {
+    expect(agentMentionRoute([A, text(" do x\n"), B, text(" do y")]).direct_segments).toEqual([
+      { recipient_agent_ids: ["a"], content: "@A do x" },
+      { recipient_agent_ids: ["b"], content: "@B do y" },
+    ]);
+    expect(agentMentionRoute([A, text(" "), B, text(" both do x")]).direct_segments).toEqual([
+      { recipient_agent_ids: ["a", "b"], content: "@A @B both do x" },
+    ]);
+  });
+
+  it("hands a message of mid-sentence references to the manager with the references as targets", () => {
+    const route = agentMentionRoute([text("提交吧，你可以派 "), A, text(" 去查")]);
+    expect(route).toMatchObject({
+      default_route: "agent_coordination",
+      mentioned_agent_ids: ["a"],
+      addressed_agent_ids: [],
+      // What a person's explicit "send directly" delivers.
+      direct_segments: [{ recipient_agent_ids: ["a"], content: "提交吧，你可以派 @A 去查" }],
+    });
+    expect(agentMentionRoute([text("先看下上下文"), A, text("修构建")]).default_route).toBe("agent_coordination");
+    expect(agentMentionRoute([text("Hi -"), A]).default_route).toBe("agent_coordination");
+  });
+
+  it("routes an opening address directly and leaves later references in its text", () => {
+    const route = agentMentionRoute([A, text(" please ask "), B, text(" about it")]);
+    expect(route.default_route).toBe("direct");
+    expect(route.mentioned_agent_ids).toEqual(["a", "b"]);
+    expect(route.direct_segments).toEqual([{ recipient_agent_ids: ["a"], content: "@A please ask @B about it" }]);
+  });
+
+  it("keys the route by the mentions and their roles, not the surrounding text", () => {
+    const key = agentMentionRoute([text("see "), A]).key;
+    expect(agentMentionRoute([text("please see "), A, text(" now")]).key).toBe(key);
+    expect(agentMentionRoute([A, text(" see")]).key).not.toBe(key);
+  });
+
+  it("segments every cluster only when asked to", () => {
+    const tokens = [text("Intro "), A, text(" do x "), B, text(" do y")];
+    expect(agentMentionSegments(tokens)).toEqual([]);
+    expect(agentMentionSegments(tokens, { include: "all" })).toEqual([
+      { recipient_agent_ids: ["a"], content: "Intro @A do x" },
+      { recipient_agent_ids: ["b"], content: "@B do y" },
     ]);
   });
 });

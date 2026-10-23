@@ -15,12 +15,10 @@
  * decides what that run may do.
  */
 import { readFile } from "node:fs/promises";
+import { toolHttpRequest, type ToolIdentity, type ToolResponse } from "./toolHttp.ts";
+import { localToolRequest } from "./localBridge.ts";
 
-interface Environment {
-  apiUrl: string;
-  runId: string;
-  token: string;
-}
+type Environment = { bridge: string } | ToolIdentity;
 
 const USAGE = `rainver — report to Rainver about the work you were given
 
@@ -28,8 +26,8 @@ const USAGE = `rainver — report to Rainver about the work you were given
   rainver describe <action>       one action's JSON input schema
   rainver call <action> [input]   invoke it; input is JSON, @file, or - for stdin
 
-Reads RAINVER_API_URL, RAINVER_RUN_ID and RAINVER_TOOL_TOKEN from the
-environment; the run you were dispatched for already has them set.`;
+Uses this Run's Host tool bridge when supplied. Direct callers use
+RAINVER_API_URL, RAINVER_RUN_ID and RAINVER_TOOL_TOKEN.`;
 
 async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
@@ -80,7 +78,7 @@ async function main(argv: string[]): Promise<number> {
         process.stderr.write("The input must be a JSON object.\n");
         return 2;
       }
-      return request(env, "POST", `tools/${encodeURIComponent(action)}`, parsed);
+      return request(env, "POST", `tools/${encodeURIComponent(action)}`, parsed as Record<string, unknown>);
     }
     default:
       process.stderr.write(`Unknown command '${command}'.\n\n${USAGE}\n`);
@@ -89,6 +87,8 @@ async function main(argv: string[]): Promise<number> {
 }
 
 function readEnvironment(): Environment {
+  const bridge = process.env.RAINVER_TOOL_BRIDGE?.trim();
+  if (bridge) return { bridge };
   const apiUrl = process.env.RAINVER_API_URL?.trim();
   const runId = process.env.RAINVER_RUN_ID?.trim();
   const token = process.env.RAINVER_TOOL_TOKEN?.trim();
@@ -131,28 +131,23 @@ async function request(
   env: Environment,
   method: "GET" | "POST",
   path: string,
-  body?: unknown,
+  body?: Record<string, unknown>,
 ): Promise<number> {
-  const url = `${env.apiUrl}/api/v1/runs/${encodeURIComponent(env.runId)}/${path}`;
-  let response: Response;
+  const input = { id: idempotencyKey(), method, path, ...(body ? { body } : {}) };
+  let response: ToolResponse;
   try {
-    response = await fetch(url, {
-      method,
-      headers: {
-        authorization: `Bearer ${env.token}`,
-        ...(body === undefined
-          ? {}
-          : { "content-type": "application/json", "idempotency-key": idempotencyKey() }),
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    response = "bridge" in env
+      ? await localToolRequest(env.bridge, input)
+      : await toolHttpRequest(env, input);
   } catch (error) {
-    process.stderr.write(`Could not reach Rainver at ${env.apiUrl}: ${message(error)}\n`);
+    process.stderr.write(`${message(error)}\n`);
     return 1;
   }
-  const text = await response.text();
+  const text = response.text;
+  const ok = response.status >= 200 && response.status < 300;
+  if (!ok) process.stderr.write(`Rainver returned HTTP ${response.status}${response.status === 401 || response.status === 403 ? "; the Run identity may have expired, been revoked, or lack permission" : ""}.\n`);
   process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
-  if (response.ok) {
+  if (ok) {
     // An action can refuse inside a 200 body; the agent must see that as a
     // failure too, or a script that checks the exit status reports success for
     // a write that never happened.

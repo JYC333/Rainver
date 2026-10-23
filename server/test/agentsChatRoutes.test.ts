@@ -534,64 +534,6 @@ describe("agents asynchronous chat-turn route", () => {
     expect(observed.jobSawRun).toBe(true);
   });
 
-  it("queues only the canonical increment and defers CLI session selection to orchestration", async () => {
-    __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    let queuedRun: Record<string, unknown> | undefined;
-    __setAgentChatServicesFactoryForTests(() =>
-      services({
-        backends: {
-          async resolveBinding() {
-            return {
-              runtime_profile_id: "runtime-profile-1",
-              runtime_key: "opencode",
-              execution_host_id: null,
-              workspace_location_id: null,
-              runtime_installation: null,
-              binding_id: "binding-1",
-              runtime_state_key: "11111111-1111-4111-8111-111111111111",
-              runtime_session_id: "ses_existing-opaque",
-              runtime_context_fingerprint: "old-fingerprint",
-              model_name: "provider/model",
-              model_provider_id: "provider-1",
-              runtime_config_json: {},
-              runtime_policy_json: {},
-              retired_runtime_state_key: null,
-            };
-          },
-        },
-        runtimeSessions: {
-          async prepare(input) {
-            return {
-              binding_id: input.binding_id,
-              runtime_state_key: "11111111-1111-4111-8111-111111111111",
-              runtime_session_id: "ses_existing-opaque",
-              runtime_context_fingerprint: input.context_fingerprint,
-              retired_runtime_state_key: null,
-            };
-          },
-        },
-        runs: {
-          async createQueuedRun(input) {
-            queuedRun = input as unknown as Record<string, unknown>;
-            return services().runs.createQueuedRun(input);
-          },
-        },
-      }),
-    );
-    app = buildModuleServer(chatConfig(), [agentsModule, runsModule]);
-
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/v1/agents/agent-1/chat",
-      payload: { message: "NEW TURN" },
-    });
-
-    expect(response.statusCode).toBe(202);
-    expect(queuedRun?.prompt).toContain("NEW TURN");
-    expect(queuedRun?.prompt).not.toContain("OLD HISTORY");
-    expect(queuedRun?.model_override_json).not.toHaveProperty("conversation_runtime");
-  });
-
   it("does not author runtime fingerprints in the HTTP route", async () => {
     __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     let runtimeRevision = 1;

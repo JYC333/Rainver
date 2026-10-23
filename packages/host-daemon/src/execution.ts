@@ -1,5 +1,6 @@
 import { REMOTE_CWD_PLACEHOLDER, WORK_SKILL_PATH_PLACEHOLDER, type HostDaemonFrame, type HostEgressTransport, type HostLaunchFrame, type HostLaunchIsolation, type HostLaunchProviderBinding, type HostLaunchWorkSurface, type HostServerFrameOf } from "@rainver/protocol";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
@@ -20,6 +21,8 @@ import { ensureManagedWorkspace, runtimeProfileContainerPath, type ManagedWorksp
 import { isPackagedAdapter, resolvePackagedAdapter } from "./adapterInstallation.js";
 import { egressProxyEnv, proxyBypassHosts, type EgressProfile, type EgressProxyHandle } from "./egressProxy.js";
 import { ensureCodexStrictSandboxConfig } from "./codexStrictSandbox.js";
+import { startLocalToolBridge, type LocalToolBridge } from "@rainver/agent-cli/local-bridge";
+import { toolHttpRequest } from "@rainver/agent-cli/tool-http";
 
 export interface LaunchWorkspace {
   kind: "location" | "managed";
@@ -134,6 +137,7 @@ type TerminateFrame = Pick<HostServerFrameOf<"terminate">, "run_id"> & Partial<P
 
 interface ActiveRun {
   child: ChildProcess;
+  toolBridgeDirectory?: string;
   cwd: string;
   /** The control plane's nonce for this dispatch, echoed on every frame this run sends. */
   launchId: string;
@@ -146,7 +150,6 @@ interface ActiveRun {
   timedOut: boolean;
   /** Whether something asked this run to stop, as opposed to it stopping on its own. */
   terminationRequested: boolean;
-  timeoutTimer: ReturnType<typeof setTimeout> | null;
 }
 
 /**
@@ -244,6 +247,7 @@ export function substituteAcpInput(
   value: string,
   placeholders: Record<string, string>,
   paths: Record<string, string>,
+  toolBridgeDirectory?: string,
 ): string {
   // Plain-text stdin uses the placeholder contract. Only parsed ACP JSON
   // is field-scoped, so user-owned text stays opaque.
@@ -251,6 +255,13 @@ export function substituteAcpInput(
   let parsed: unknown;
   try { parsed = JSON.parse(value); } catch { return substitutePlaceholders(value, placeholders); }
   let changed = false;
+  const frame = parsed as { method?: string; params?: { additionalDirectories?: unknown } };
+  const extraDirectories = [toolBridgeDirectory, placeholders["rainver:skill-root"]].filter((value): value is string => !!value);
+  if (extraDirectories.length && ["session/new", "session/load", "session/resume"].includes(frame.method ?? "")
+    && Array.isArray(frame.params?.additionalDirectories)) {
+    frame.params.additionalDirectories = [...new Set([...frame.params.additionalDirectories, ...extraDirectories])];
+    changed = true;
+  }
   const visit = (node: unknown): void => {
     if (!node || typeof node !== "object") return;
     if (Array.isArray(node)) {
@@ -266,6 +277,9 @@ export function substituteAcpInput(
           object.uri = pathToFileURL(path).href;
           changed = true;
         }
+      } else if (object.uri.startsWith("rainver:skill-root/")) {
+        const path = paths[object.uri];
+        if (path) { object.uri = pathToFileURL(path).href; changed = true; }
       }
     }
     for (const [key, child] of Object.entries(object)) {
@@ -587,7 +601,10 @@ async function materializeWorkSurface(
   for (const file of surface.files) {
     const target = resolveInsideDir(root, file.relative_path);
     await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-    await writeFile(target, file.contents, { encoding: "utf8", mode: 0o600 });
+    const bytes = Buffer.from(file.contents, file.encoding === "base64" ? "base64" : "utf8");
+    if (file.encoding === "base64" && bytes.toString("base64") !== file.contents) throw new Error("Invalid Skill file encoding");
+    if (file.content_hash && createHash("sha256").update(bytes).digest("hex") !== file.content_hash) throw new Error("Skill file hash mismatch");
+    await writeFile(target, bytes, { mode: 0o600 });
   }
   const env: Record<string, string> = { ...surface.env };
   for (const [key, relativePath] of Object.entries(surface.dir_env)) {
@@ -971,7 +988,7 @@ export async function handleLaunch(
     return;
   }
   launchingRuns.set(frame.launch_id, frame.run_id);
-  const hold: LaunchHold = { leases: [], worktree: null, resolution: null, spawned: false };
+  const hold: LaunchHold = { leases: [], worktree: null, resolution: null, spawned: false, toolBridge: null };
   try {
     await launchRun(frame, send, log, hold);
   } finally {
@@ -980,7 +997,10 @@ export async function handleLaunch(
     // A launch that never spawned gives back what it took on the way; one
     // that did leaves that to its child's close handler. A Task worktree
     // stays either way: it is the Task's, and settle removes it.
-    if (!hold.spawned) releaseHeldLeases(frame, hold);
+    if (!hold.spawned) {
+      try { await hold.toolBridge?.close(); }
+      finally { releaseHeldLeases(frame, hold); }
+    }
   }
 }
 
@@ -997,6 +1017,7 @@ interface LaunchHold {
   /** A merge's conflict resolution: the Task worktree as the merge left it, neither prepared nor settled. */
   resolution: { root: string; gitCommonDir: string } | null;
   spawned: boolean;
+  toolBridge: LocalToolBridge | null;
 }
 
 function releaseHeldLeases(frame: Pick<LaunchFrame, "launch_id">, hold: LaunchHold): void {
@@ -1379,11 +1400,36 @@ async function launchRun(
     return;
   }
 
+  // Never inherit another Run's tool channel from the daemon's shell/profile.
+  for (const environment of [baseEnv, bindingEnv, acpAdapterEnv]) {
+    for (const name of ["RAINVER_API_URL", "RAINVER_RUN_ID", "RAINVER_TOOL_TOKEN", "RAINVER_TOOL_BRIDGE", "RAINVER_TOOL_BRIDGE_PROTOCOL", "RAINVER_CLI", "RAINVER_SKILL_PATH", "RAINVER_SKILL_ROOT"]) {
+      delete environment[name];
+    }
+  }
+  if (frame.work_surface?.env.RAINVER_TOOL_BRIDGE_PROTOCOL === "file-v1") {
+    try {
+      const { RAINVER_API_URL: apiUrl, RAINVER_RUN_ID: runId, RAINVER_TOOL_TOKEN: token } = workSurfaceEnv;
+      if (!apiUrl || runId !== frame.run_id || !token) throw new Error("Incomplete or mismatched Run tool identity");
+      hold.toolBridge = await startLocalToolBridge(runDir(frame.run_id),
+        (request, signal) => toolHttpRequest({ apiUrl, runId, token }, request, signal));
+      workSurfaceEnv.RAINVER_TOOL_BRIDGE = hold.toolBridge.directory;
+      // The runtime uses only its local directory. The server bearer stays in
+      // the Host closure and never enters a command's environment.
+      delete workSurfaceEnv.RAINVER_TOOL_TOKEN;
+      delete baseEnv.RAINVER_TOOL_TOKEN;
+    } catch (error) {
+      send({ type: "complete", run_id: frame.run_id, launch_id: frame.launch_id, exit_code: 1, timed_out: false,
+        error: `Could not prepare this Run's local tool bridge: ${error instanceof Error ? error.message : String(error)}` });
+      return;
+    }
+  }
+
   // The work surface is applied after the binding for the same reason the
   // binding is applied after the ambient environment: it is control-plane
   // authority, and this machine does not get to override which Rainver a run
   // reports to.
   const derivedEnv: Record<string, string> = { RAINVER_OUTPUT_DIR: outputsDir, ...attachedWorkspaceEnv, ...acpAdapterEnv, ...bindingEnv, ...workSurfaceEnv };
+  if (hold.toolBridge) delete derivedEnv.RAINVER_TOOL_TOKEN;
 
   let spawnCommand = command;
   let spawnCommandArgs = spawnArgs;
@@ -1520,17 +1566,20 @@ async function launchRun(
   }
   const active: ActiveRun = {
     child,
+    toolBridgeDirectory: hold.toolBridge?.directory,
     cwd,
     launchId: frame.launch_id,
     placeholders: {
       [REMOTE_CWD_PLACEHOLDER]: cwd,
       ...(workSurfaceEnv.RAINVER_SKILL_PATH ? { [WORK_SKILL_PATH_PLACEHOLDER]: workSurfaceEnv.RAINVER_SKILL_PATH } : {}),
+      ...(workSurfaceEnv.RAINVER_SKILL_ROOT ? { "rainver:skill-root": workSurfaceEnv.RAINVER_SKILL_ROOT } : {}),
     },
-    inputResourcePaths,
+    inputResourcePaths: { ...inputResourcePaths, ...Object.fromEntries((frame.work_surface?.files ?? [])
+      .filter(file => /^rainver\/skills\/[^/]+\/SKILL\.md$/.test(file.relative_path))
+      .map(file => [`rainver:skill-root/${file.relative_path.slice("rainver/skills/".length)}`, resolveInsideDir(runDir(frame.run_id), file.relative_path)])) },
     runtimeKey: frame.runtime_key ?? null,
     timedOut: false,
     terminationRequested: false,
-    timeoutTimer: null,
   };
   // A retry of the same run id may arrive while the previous attempt's child
   // is still being torn down; the newest dispatch owns the id from here.
@@ -1545,7 +1594,7 @@ async function launchRun(
   send({ type: "launched", run_id: frame.run_id, launch_id: frame.launch_id });
 
   if (frame.stdin) {
-    const translated = substituteAcpInput(frame.stdin, active.placeholders, active.inputResourcePaths);
+    const translated = substituteAcpInput(frame.stdin, active.placeholders, active.inputResourcePaths, hold.toolBridge?.directory);
     child.stdin?.write(translated);
   }
   if (!frame.keep_stdin_open) child.stdin?.end();
@@ -1569,18 +1618,11 @@ async function launchRun(
     send({ type: "stderr", run_id: frame.run_id, launch_id: frame.launch_id, chunk: text });
   });
 
-  if (frame.timeout_seconds && frame.timeout_seconds > 0) {
-    active.timeoutTimer = setTimeout(() => {
-      active.timedOut = true;
-      active.terminationRequested = true;
-      terminateWithEscalation(child, false, log);
-    }, frame.timeout_seconds * 1000);
-    active.timeoutTimer.unref?.();
-  }
-
   child.on("close", (code) => {
     void (async () => {
-      if (active.timeoutTimer) clearTimeout(active.timeoutTimer);
+      await hold.toolBridge?.close().catch((error: unknown) => {
+        log(`run ${frame.run_id}: tool bridge cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
       // Only this attempt's own entry: a retry that took the run id over
       // while this child was dying must keep its registration.
       if (activeRuns.get(frame.run_id) === active) activeRuns.delete(frame.run_id);
@@ -1712,7 +1754,7 @@ export function handleTerminate(frame: TerminateFrame, log: (line: string) => vo
 export function handleStdin(frame: StdinFrame): void {
   const active = activeRuns.get(frame.run_id);
   if (!active) return;
-  active.child.stdin?.write(substituteAcpInput(frame.value, active.placeholders, active.inputResourcePaths));
+  active.child.stdin?.write(substituteAcpInput(frame.value, active.placeholders, active.inputResourcePaths, active.toolBridgeDirectory));
 }
 
 /** Ends the run's child process stdin, mirroring the default (non-`keep_stdin_open`) behavior in `handleLaunch`. */

@@ -65,10 +65,11 @@ import {
   taskRunOutFromList,
 } from "./taskRepositoryMappers.js";
 
+// No default time limit: a Task's Runs may work as long as they need unless
+// someone sets `max_duration_seconds` (`runs/runTimeLimit.ts`).
 const DEFAULT_TASK_LIMITS = {
   maxRuns: 3,
   maxCost: 10,
-  maxDurationSeconds: 3600,
 } as const;
 const TASK_STATUSES = new Set<string>(PROTOCOL_TASK_STATUSES);
 /**
@@ -466,7 +467,7 @@ export class PgTaskRepository {
         toDbDate(body.start_after),
         defaultNumber(body.max_runs, DEFAULT_TASK_LIMITS.maxRuns),
         defaultNumber(body.max_cost, DEFAULT_TASK_LIMITS.maxCost),
-        defaultNumber(body.max_duration_seconds, DEFAULT_TASK_LIMITS.maxDurationSeconds),
+        numberValue(body.max_duration_seconds),
         JSON.stringify(optionalObject(body.policy_json)),
         JSON.stringify(optionalObject(body.metadata_json)),
         JSON.stringify(Array.isArray(body.tags) ? body.tags : null),

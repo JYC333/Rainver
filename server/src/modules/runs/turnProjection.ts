@@ -7,6 +7,8 @@ import type {
   TurnState,
 } from "@rainver/protocol";
 
+import { RUN_QUIET_STATUS } from "./stallTimeout.js";
+
 /**
  * One Agent turn, folded from whichever event log recorded it.
  *
@@ -192,6 +194,17 @@ export function projectHostThreadTurn(rows: readonly HostThreadEventRow[]): Turn
         // `chat_completed`, or by the Run's own status for work that is not
         // a conversation.
         if (runStatusToTurnState(row.status) === "failed") state = "failed";
+        // The runtime has been quiet for a while; it is still running. A
+        // code, not prose: the reader's client words it in their language.
+        if (row.status === RUN_QUIET_STATUS) {
+          openText = null;
+          append({
+            type: "diagnostic",
+            level: "info",
+            text: "No new output yet; the Run is still working. Keep waiting or stop it.",
+            error_code: RUN_QUIET_STATUS,
+          });
+        }
         break;
       }
       default:

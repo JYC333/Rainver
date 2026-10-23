@@ -75,6 +75,7 @@ import { projectFoldersModule } from "../modules/projectFolders/index.js";
 import { hostsModule } from "../modules/hosts/index.js";
 import { importedSessionsModule } from "../modules/importedSessions/index.js";
 import { deploymentModule } from "../modules/deployment/index.js";
+import { agentAttentionModule } from "../modules/agentAttention/index.js";
 import { frontendSupportModule } from "../modules/frontendSupport/index.js";
 // Official optional module control plane — registered before optional product modules.
 import { pluginsModule } from "../modules/plugins/index.js";
@@ -171,6 +172,7 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   backupsModule,
   deploymentModule,
   frontendSupportModule,
+  agentAttentionModule,
   // Official optional module control plane.
   // Must appear before optional product modules that depend on the plugin guard.
   pluginsModule,

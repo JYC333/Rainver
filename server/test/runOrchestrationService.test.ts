@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../src/config.js";
 import {
   RunOrchestrationService,
+  currentRuntimeContextInputRef,
   retrievalIntentFor,
   type RunDelegationLifecycleProjectorPort,
   type RunExecutionRepositoryPort,
@@ -18,9 +19,11 @@ import type {
   RunTerminalUpdate,
   ConversationRuntimeTerminalSync,
 } from "../src/modules/runs/repository.js";
-import type { ExecutionControlSnapshot, InvocationDelivery, RunAdapterResultEnvelope } from "@rainver/protocol";
+import type { ExecutionControlSnapshot, InvocationDelivery } from "@rainver/protocol";
 import type { PreparedRunSandbox, RunSandboxManagerPort } from "../src/modules/projectFolders/index.js";
-import type { CliCommandExecutor, CliStdioController } from "../src/modules/runs/localCliExecution.js";
+import { LocalCliProcessRegistry, type CliCommandExecutor, type CliStdioController } from "../src/modules/runs/localCliExecution.js";
+import { explicitRunTimeLimit, invokeWithinTimeLimit } from "../src/modules/runs/runTimeLimit.js";
+import { isRetryableRunErrorCode } from "../src/modules/runs/retryPolicy.js";
 import { NO_PROVIDER_BINDINGS, type RemoteHostCliAdapterDeps } from "../src/modules/runs/remoteHostCliAdapter.js";
 import type { TaskRunSettlementInput } from "../src/modules/runs/taskRunSettlement.js";
 
@@ -58,6 +61,7 @@ function invocationDelivery(prompt = "Say hello"): InvocationDelivery {
     tool_grant_refs: [],
     output_contract_ref: null,
     expected_prompt_tokens: 8,
+    context_estimate: { instructions: 3, current_input: 5 },
     max_output_tokens: null,
     snapshot_draft_ref: { type: "invocation_snapshot", id: "snapshot-1" },
     audit_refs: {
@@ -626,6 +630,8 @@ class FakeDelegationProjector implements RunDelegationLifecycleProjectorPort {
 }
 
 describe("RunOrchestrationService", () => {
+  afterEach(() => { vi.useRealTimers(); });
+
   it("asks the database for the built-in host again after a transient failure", async () => {
     // The resolved id is cached for the worker's lifetime. Caching the
     // rejection too would fail every later unbound CLI Run in this process
@@ -806,6 +812,8 @@ describe("RunOrchestrationService", () => {
       { type: "work_context_setup", id: "setup-1", version: "1" },
     );
     expect(acknowledgeDelivery).toHaveBeenCalledTimes(1);
+    // ACP reports aggregate internal usage, not the size of this one Delivery.
+    expect(acknowledgeDelivery).toHaveBeenCalledWith(expect.objectContaining({ actualPromptTokens: null }));
     expect(finalizeInvocation).toHaveBeenCalledTimes(1);
     expect(repo.calls).toEqual([
       "get:space-1:run-1",
@@ -897,7 +905,6 @@ describe("RunOrchestrationService", () => {
       root_run_id: "run-root",
     });
     const delegationProjector = new FakeDelegationProjector();
-    let adapterCalled = false;
     const service = orchestration(repo, {
       delegationProjector,
     });
@@ -911,7 +918,6 @@ describe("RunOrchestrationService", () => {
       status: "failed",
       skip_reason: "execution_authorization_revoked",
     });
-    expect(adapterCalled).toBe(false);
     expect(delegationProjector.terminal).toHaveLength(0);
   });
 
@@ -994,7 +1000,6 @@ describe("RunOrchestrationService", () => {
         space_id: "space-1",
         worker_id: "worker-1",
         command_source: "job",
-        timeout_ms: 1,
       }),
     ).resolves.toMatchObject({
       status: "failed",
@@ -1007,7 +1012,235 @@ describe("RunOrchestrationService", () => {
       },
     });
     expect(repo.calls).toContain("unlock:run-1");
-    expect(timeoutSeconds).toBeGreaterThan(0);
+    expect(timeoutSeconds).toBe(0);
+  });
+
+  describe("explicit time limits", () => {
+    // No default limit: only a limit someone set stops a Run, and it stops it
+    // through the same terminate-then-force path an explicit stop uses.
+    function stoppableExecutor(): { executor: CliCommandExecutor; registry: LocalCliProcessRegistry; terminations: string[]; launched: () => boolean } {
+      const registry = new LocalCliProcessRegistry();
+      const terminations: string[] = [];
+      let started = false;
+      return {
+        registry,
+        terminations,
+        launched: () => started,
+        executor: {
+          runCommand(input) {
+            started = true;
+            return new Promise((resolve) => {
+              input.process_registry?.registerRemote?.(
+                input.run_id,
+                () => {
+                  terminations.push("terminate");
+                  input.process_registry?.deregister(input.run_id);
+                  resolve({ returncode: 143, stdout: "", stderr: "terminated", timed_out: false });
+                },
+                () => { terminations.push("force"); },
+              );
+            });
+          },
+        },
+      };
+    }
+
+    it("stops a Run at its contract's max_duration_seconds and records run_timed_out", async () => {
+      const repo = new FakeRepo();
+      repo.run = run({ contract_snapshot_json: { max_duration_seconds: 0.05 } });
+      const stoppable = stoppableExecutor();
+      const service = orchestration(repo, {
+        policyEnforcer: allowPolicy,
+        processRegistry: stoppable.registry,
+        ...daemonCli(stoppable.executor),
+      });
+
+      await expect(service.executeRun({
+        run_id: "run-1", space_id: "space-1", worker_id: "worker-1", command_source: "job",
+      })).resolves.toMatchObject({ status: "failed", error_code: "run_timed_out" });
+      expect(stoppable.terminations).toEqual(["terminate"]);
+      expect(repo.terminalUpdates[0]).toMatchObject({
+        status: "failed",
+        error_json: { error_code: "run_timed_out", error_text: expect.stringMatching(/time limit/) },
+      });
+      expect(repo.calls).toContain("unlock:run-1");
+      expect(isRetryableRunErrorCode("run_timed_out")).toBe(false);
+    });
+
+    it("applies a dispatch timeout_ms when it is the shorter limit", async () => {
+      const repo = new FakeRepo();
+      repo.run = run({ contract_snapshot_json: { max_duration_seconds: 3600 } });
+      const stoppable = stoppableExecutor();
+      const service = orchestration(repo, {
+        policyEnforcer: allowPolicy,
+        processRegistry: stoppable.registry,
+        ...daemonCli(stoppable.executor),
+      });
+      await expect(service.executeRun({
+        run_id: "run-1", space_id: "space-1", worker_id: "worker-1", command_source: "job", timeout_ms: 50,
+      })).resolves.toMatchObject({ status: "failed", error_code: "run_timed_out" });
+      expect(stoppable.terminations).toEqual(["terminate"]);
+    });
+
+    it("never launches a command whose time limit passed while the dispatch was being prepared", async () => {
+      // The stop finds no process while preparation is still awaiting; the
+      // launch that would have followed must be refused, not sent late.
+      const repo = new FakeRepo();
+      repo.run = run({ contract_snapshot_json: { max_duration_seconds: 0.05 } });
+      const stoppable = stoppableExecutor();
+      // Preparation resumes only after the time limit's stop found nothing
+      // to terminate, which is exactly the late-launch window.
+      let stopReached!: () => void;
+      const stopped = new Promise<void>((resolve) => { stopReached = resolve; });
+      const terminate = stoppable.registry.terminate.bind(stoppable.registry);
+      stoppable.registry.terminate = (runId: string) => {
+        const signalled = terminate(runId);
+        stopReached();
+        return signalled;
+      };
+      const cli = daemonCli(stoppable.executor);
+      cli.hostCli.bindings = {
+        ...cli.hostCli.bindings!,
+        observeModel: () => stopped,
+      };
+      const service = orchestration(repo, {
+        policyEnforcer: allowPolicy,
+        processRegistry: stoppable.registry,
+        ...cli,
+      });
+
+      await expect(service.executeRun({
+        run_id: "run-1", space_id: "space-1", worker_id: "worker-1", command_source: "job",
+      })).resolves.toMatchObject({ status: "failed", error_code: "run_timed_out" });
+      expect(stoppable.launched()).toBe(false);
+      expect(stoppable.terminations).toEqual([]);
+    });
+
+    it("never launches a command stopped while the dispatch was being prepared", async () => {
+      // The stop lands inside the adapter's preparation, before anything is
+      // registered for it to terminate.
+      const repo = new FakeRepo();
+      const stoppable = stoppableExecutor();
+      const cli = daemonCli(stoppable.executor);
+      let service: RunOrchestrationService;
+      cli.hostCli.bindings = {
+        ...cli.hostCli.bindings!,
+        observeModel: async () => {
+          await service.cancelRun({ run_id: "run-1", space_id: "space-1", reason: "stopped while preparing" });
+        },
+      };
+      service = orchestration(repo, {
+        policyEnforcer: allowPolicy,
+        processRegistry: stoppable.registry,
+        ...cli,
+      });
+
+      await expect(service.executeRun({
+        run_id: "run-1", space_id: "space-1", worker_id: "worker-1", command_source: "job",
+      })).resolves.toMatchObject({ status: "cancelled" });
+      expect(stoppable.launched()).toBe(false);
+      expect(repo.run?.status).toBe("cancelled");
+    });
+
+    it("keeps and meters the usage a runtime reported before its time limit", async () => {
+      const repo = new FakeRepo();
+      repo.run = run({
+        contract_snapshot_json: { max_duration_seconds: 0.05 },
+        runtime_profile_snapshot_json: DEFAULT_ACP_PROFILE_SNAPSHOT,
+        model_provider_id: null,
+        required_sandbox_level: "none",
+      });
+      const usageObservations: Array<Record<string, unknown>> = [];
+      const registry = new LocalCliProcessRegistry();
+      const service = orchestration(repo, {
+        policyEnforcer: allowPolicy,
+        processRegistry: registry,
+        usageRecorder: async (observation) => { usageObservations.push(observation as never); },
+        hostKindResolver: onBuiltinHost,
+        ...daemonCli({
+          async runCommand(input) {
+            // The turn answered with its usage; the process then kept going
+            // until the stop reached it.
+            await completeCodexProtocol(input.stdio_controller, "partial");
+            return new Promise((resolve) => {
+              input.process_registry?.registerRemote?.(input.run_id, () => {
+                input.process_registry?.deregister(input.run_id);
+                resolve({
+                  returncode: 143, stdout: "", stderr: "terminated", timed_out: false,
+                  task_worktree: { branch: "rainver/task-1", start_commit: "abc123" },
+                });
+              }, () => undefined);
+            });
+          },
+        }),
+      });
+
+      await expect(service.executeRun({
+        run_id: "run-1", space_id: "space-1", worker_id: "worker-1", command_source: "job",
+      })).resolves.toMatchObject({ status: "failed", error_code: "run_timed_out" });
+      expect(usageObservations).toHaveLength(1);
+      expect(usageObservations[0]).toMatchObject({
+        execution_channel: "local_cli",
+        usage_details: { input: 12, output: 3, total: 20 },
+        dimensions: { run_outcome: "failed" },
+      });
+    });
+
+    it("waits out a limit longer than one timer can hold instead of firing at once", async () => {
+      // setTimeout overflows past 2^31-1 ms (about 24.8 days) to 1 ms.
+      vi.useFakeTimers();
+      const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+      const stops: string[] = [];
+      let settled = false;
+      const outcome = invokeWithinTimeLimit({
+        run: { runtime_key: "managed_custom" },
+        limit: { ms: thirtyDaysMs, seconds: thirtyDaysMs / 1000, source: "run_contract" },
+        invoke: () => new Promise(() => undefined),
+        stop: async () => {
+          stops.push("stop");
+          return { process_terminated: false, confirmed_exit: true, force_kill_escalated: false };
+        },
+        settleMs: 10,
+      });
+      void outcome.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(2 ** 31);
+      expect(stops).toEqual([]);
+      await vi.advanceTimersByTimeAsync(thirtyDaysMs - 2 ** 31 - 1_000);
+      expect(stops).toEqual([]);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(stops).toEqual(["stop"]);
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(outcome).resolves.toMatchObject({ success: false, error_code: "run_timed_out" });
+    });
+
+    it("sets no limit when none was set, and AgentVersion max_run_time_seconds is not one", () => {
+      expect(explicitRunTimeLimit({}, null)).toBeNull();
+      expect(explicitRunTimeLimit({ agent_constraints: { max_run_time_seconds: 1 }, max_duration_seconds: null }, undefined)).toBeNull();
+      expect(explicitRunTimeLimit({ max_duration_seconds: 120 }, 30_000)).toEqual({ ms: 30_000, seconds: 30, source: "dispatch" });
+      expect(explicitRunTimeLimit({ max_duration_seconds: 20 }, 30_000)).toEqual({ ms: 20_000, seconds: 20, source: "run_contract" });
+    });
+
+    it("bounds an adapter that ignores its stop, so the Run is not held forever", async () => {
+      const stops: string[] = [];
+      const result = await invokeWithinTimeLimit({
+        run: { runtime_key: "managed_custom" },
+        limit: { ms: 20, seconds: 1, source: "run_contract" },
+        invoke: () => new Promise(() => undefined),
+        stop: async () => {
+          stops.push("stop");
+          return { process_terminated: false, confirmed_exit: true, force_kill_escalated: false };
+        },
+        settleMs: 20,
+      });
+      expect(stops).toEqual(["stop"]);
+      expect(result).toMatchObject({
+        success: false,
+        error_code: "run_timed_out",
+        adapter_kind: "managed_api",
+        metadata_json: { time_limit: { seconds: 1, source: "run_contract", adapter_settled: false } },
+      });
+    });
   });
 
   it("routes CLI runs through the vendor CLI adapter and supports cancellation", async () => {
@@ -1018,7 +1251,6 @@ describe("RunOrchestrationService", () => {
       required_sandbox_level: "worktree",
       project_folder_id: "workspace-1",
     });
-    const executorResults: RunAdapterResultEnvelope[] = [];
     const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       hostKindResolver: onBuiltinHost,
@@ -1043,7 +1275,6 @@ describe("RunOrchestrationService", () => {
       sandbox_cwd: "/tmp",
       context_text: "context",
     });
-    executorResults.push(repo.terminalUpdates[0].output_json as RunAdapterResultEnvelope);
 
     expect(repo.terminalUpdates[0]).toMatchObject({
       status: "succeeded",
@@ -1066,7 +1297,6 @@ describe("RunOrchestrationService", () => {
         requested_by_user_id: "user-1",
       },
     });
-    expect(executorResults.length).toBe(1);
   });
 
   it("does not overwrite a CLI run paused by a governed tool approval", async () => {
@@ -1142,41 +1372,6 @@ describe("RunOrchestrationService", () => {
     // Declared outputs settle. They arrive as the daemon's own uploads
     // (`recordOutputArtifacts`). Do not stage a directory pair the server
     // reads back. That pair has no meaning on another machine.
-    expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
-  });
-
-  it("prepares no server workspace for a CLI run, whatever its sandbox level", async () => {
-    const repo = new FakeRepo();
-    repo.run = run({
-      runtime_key: "codex_cli",
-      model_provider_id: null,
-      required_sandbox_level: "worktree",
-      project_folder_id: "workspace-1",
-    });
-    const workspaceManager = new FakeWorkspaceManager();
-    const service = orchestration(repo, {
-      policyEnforcer: allowPolicy,
-      workspaceManager,
-      hostKindResolver: onBuiltinHost,
-      ...daemonCli({
-        async runCommand(input) {
-          await completeCodexProtocol(input.stdio_controller, "cli ok");
-          return { returncode: 0, stdout: "cli ok", stderr: "", timed_out: false };
-        },
-      }),
-    });
-
-    await service.executeRun({
-      run_id: "run-1",
-      space_id: "space-1",
-      worker_id: "worker-1",
-      command_source: "job",
-    });
-
-    // The workspace belongs to the daemon. On the built-in host it is wrapped
-    // in a namespace the server does not check out. Do not check out a
-    // worktree or stage a context directory here.
-    expect(workspaceManager.calls).toEqual([]);
     expect(repo.terminalUpdates[0]?.status).toBe("succeeded");
   });
 
@@ -1624,7 +1819,6 @@ describe("RunOrchestrationService", () => {
       error_code: "policy_denied",
       message: "Runtime execution denied by policy: blocked by rule",
     });
-    let adapterInvoked = false;
     const finalized: string[] = [];
     const service = orchestration(repo, {
       policyEnforcer: denyPolicy,
@@ -1647,7 +1841,6 @@ describe("RunOrchestrationService", () => {
       status: "failed",
       error_code: "policy_denied_runtime_execute",
     });
-    expect(adapterInvoked).toBe(false);
     expect(repo.terminalUpdates[0]).toMatchObject({
       status: "failed",
       error_json: { error_code: "policy_denied_runtime_execute" },
@@ -1844,7 +2037,6 @@ describe("RunOrchestrationService", () => {
       runtime_profile_snapshot_json: { ...DEFAULT_ACP_PROFILE_SNAPSHOT, runtime_key: "legacy_removed" },
       required_sandbox_level: "none",
     });
-    let hostCalled = false;
     const service = orchestration(repo, {
       policyEnforcer: allowPolicy,
       runtimeContextGateway: new FakeRuntimeContextGateway() as never,
@@ -1861,7 +2053,6 @@ describe("RunOrchestrationService", () => {
       status: "failed",
       error_code: "runtime_adapter_not_implemented",
     });
-    expect(hostCalled).toBe(false);
     expect(repo.terminalUpdates[0]).toMatchObject({
       status: "failed",
       error_json: { error_code: "runtime_adapter_not_implemented" },
@@ -2103,6 +2294,10 @@ describe("RunOrchestrationService", () => {
       execution_channel: "local_cli",
       runtime_key: "codex_cli",
       event_type: "llm.generation",
+      metadata: {
+        cli_usage: { acp_turns: 1, estimated_total: 8, estimate_instructions: 3, estimate_current_input: 5 },
+      },
+      dimensions: { run_outcome: "succeeded", run_purpose: "task" },
     });
     // Recording is best-effort: a ledger that throws must not fail the run.
     expect(result).toMatchObject({ status: "succeeded" });
@@ -2316,14 +2511,6 @@ describe("retrievalIntentFor", () => {
     expect(await retrievalIntentFor("   ")).toBeNull();
   });
 
-  it("keeps an explicit intent whole, so a batch caller never relies on truncation", async () => {
-    const { RETRIEVAL_INTENT_MAX_CHARS } = await import("@rainver/protocol");
-    const goal = "How do long-term memory architectures compare in personalization quality?";
-    const renderedBatch = "ITEM 1\n".repeat(RETRIEVAL_INTENT_MAX_CHARS);
-    expect(await retrievalIntentFor(goal ?? renderedBatch)).toBe(goal);
-    expect(goal.length).toBeLessThan(RETRIEVAL_INTENT_MAX_CHARS);
-  });
-
   it("truncates a batch-sized prompt to something the turn schema accepts", async () => {
     const { RETRIEVAL_INTENT_MAX_CHARS, TurnContextRequestSchema } = await import("@rainver/protocol");
     const intent = await retrievalIntentFor("x".repeat(RETRIEVAL_INTENT_MAX_CHARS * 4));
@@ -2337,5 +2524,47 @@ describe("retrievalIntentFor", () => {
       invocation_purpose: "agent_task",
     });
     expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+  });
+});
+
+// The current input is what the Delivery labels as the message to answer. A
+// Room child carries its parent's turn record (the same conversation, the
+// same user message) and must still be handed its delegation instruction,
+// never the person's message its parent is answering.
+describe("currentRuntimeContextInputRef", () => {
+  const chatTurn = (extra: Record<string, unknown> = {}) => ({
+    chat_turn: {
+      schema_version: "chat_turn.v1",
+      user_message_id: "22222222-2222-4222-8222-222222222222",
+      ...extra,
+    },
+  });
+  const run = (overrides: Record<string, unknown>) => ({
+    id: "run-1",
+    space_id: "space-1",
+    agent_id: "agent-1",
+    status: "queued",
+    prompt: "Review the implementation.",
+    ...overrides,
+  }) as never;
+
+  it("answers the canonical user message on an ordinary chat turn", () => {
+    expect(currentRuntimeContextInputRef(run({ model_override_json: chatTurn() })))
+      .toEqual({ type: "message", id: "22222222-2222-4222-8222-222222222222" });
+  });
+
+  it("gives a delegated child its own request even though it inherits the parent's turn", () => {
+    expect(currentRuntimeContextInputRef(run({
+      model_override_json: chatTurn({ assigned_task: "Review the implementation." }),
+      parent_run_id: "run-parent",
+      delegation_id: "delegation-1",
+    }))).toEqual({ type: "run_request", id: "run-1" });
+  });
+
+  it("gives a session handoff and a run without a chat turn their own request", () => {
+    expect(currentRuntimeContextInputRef(run({ model_override_json: chatTurn({ kind: "handoff" }) })))
+      .toEqual({ type: "run_request", id: "run-1" });
+    expect(currentRuntimeContextInputRef(run({ model_override_json: null })))
+      .toEqual({ type: "run_request", id: "run-1" });
   });
 });

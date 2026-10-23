@@ -9,13 +9,16 @@ import { contractRecord } from "./contractSnapshot.js";
 import { isManagedFailFastRun } from "../policy/managedExecutionPolicy.js";
 import { PgRunRepository, type RunRecord } from "./repository.js";
 import type { RunEvaluationRecord, RunAttemptRecord } from "./runRepositoryTypes.js";
-import { isRetryableRunErrorCode } from "./retryPolicy.js";
+import { isRetryableRunErrorCode, SUBSCRIPTION_QUOTA_EXHAUSTED } from "./retryPolicy.js";
+import { prepareQuotaRecovery } from "../rooms/quotaRecovery.js";
+import { holdInterruptedRun } from "../rooms/quotaGate.js";
 
 const DEFAULT_MAX_RUN_ATTEMPTS = 2;
 
 export interface RunSupervisorPort {
   supervise(input: {
     run: RunRecord;
+    attempt_number: number;
     evaluation: Pick<RunEvaluationRecord, "failure_reason_code" | "outcome_status">;
   }): Promise<SupervisorDecision | null>;
 }
@@ -46,6 +49,7 @@ export class PgRunSupervisor implements RunSupervisorPort {
 
   async supervise(input: {
     run: RunRecord;
+    attempt_number: number;
     evaluation: Pick<RunEvaluationRecord, "failure_reason_code" | "outcome_status">;
   }): Promise<SupervisorDecision | null> {
     if (input.run.run_role === "coordinator") return null;
@@ -66,6 +70,9 @@ export class PgRunSupervisor implements RunSupervisorPort {
       const currentStatus = current.rows[0]?.status;
       if (!currentStatus || !isSupervisableStatus(currentStatus)) return null;
       const attempt = await ensureAttempt(db, input.run);
+      // A newer attempt may already have failed as well. Status alone
+      // cannot tie this evaluation to the physical execution it describes.
+      if (attempt.attempt_number !== input.attempt_number) return null;
       const existing = await db.query<{ id: string }>(
         `SELECT id
            FROM run_supervisor_decisions
@@ -89,8 +96,11 @@ export class PgRunSupervisor implements RunSupervisorPort {
       const attemptNumber = attempt.attempt_number;
       const maxAttempts = maxAttemptsForRun(input.run);
       const budgetExceeded = maxCost !== null && totalCost !== null && totalCost >= maxCost;
+      const recovery = reasonCode === SUBSCRIPTION_QUOTA_EXHAUSTED && !budgetExceeded && attemptNumber < maxAttempts && !managedFailFast
+        ? await prepareQuotaRecovery(db, await repository.getRun(input.run.space_id, input.run.id) ?? input.run, attemptNumber + 1)
+        : null;
       const retryable = isRetryableRunErrorCode(reasonCode);
-      const canRetry = retryable && !budgetExceeded && attemptNumber < maxAttempts;
+      const canRetry = (retryable || Boolean(recovery)) && !budgetExceeded && attemptNumber < maxAttempts;
       // Managed Source/Research executions still own their final failure and
       // user-facing retry action. Allow only the Supervisor's bounded,
       // automatic recovery for transient failures; once that is unavailable
@@ -103,7 +113,7 @@ export class PgRunSupervisor implements RunSupervisorPort {
       // Genuine policy/authorization pauses enter waiting_for_review before
       // terminal supervision and remain unaffected by this rule.
       if ((managedFailFast || interactiveChat) && !canRetry) return null;
-      const hasFallbackRoute = canRetry
+      const hasFallbackRoute = canRetry && !recovery
         ? await new PgRouteDecisionRepository(db).hasFallbackRoute(input.run)
         : false;
       const userId = input.run.owner_user_id ?? input.run.instructed_by_user_id ?? null;
@@ -158,6 +168,7 @@ export class PgRunSupervisor implements RunSupervisorPort {
             max_attempts: maxAttempts,
             reroute: decision.decision === "retry_fallback_route",
             retryable,
+            quota_recovery: Boolean(recovery),
             source_status: input.run.status,
             outcome_status: input.evaluation.outcome_status,
           }),
@@ -174,7 +185,9 @@ export class PgRunSupervisor implements RunSupervisorPort {
           attempt_number: attemptNumber + 1,
         });
         if (!requeued) throw new Error("Supervisor could not requeue the failed run");
-        await new PgJobQueueRepository(db).enqueue({
+        if (recovery) {
+          await holdInterruptedRun(db, input.run.space_id, input.run.id, recovery);
+        } else await new PgJobQueueRepository(db).enqueue({
           job_type: "agent_run",
           space_id: input.run.space_id,
           user_id: userId,

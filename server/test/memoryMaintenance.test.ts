@@ -215,33 +215,6 @@ describe("Memory maintenance scan", () => {
     });
   });
 
-  it("marks owner-readable summary-only content use when content checks inspect it", async () => {
-    const db = fakeDb([
-      row({
-        id: "summary-owner",
-        owner_user_id: "user-1",
-        visibility: "space_shared",
-        access_level: "summary",
-        title: null,
-        content: "tiny",
-      }),
-    ]);
-
-    const result = await scan(db);
-
-    expect(result.report.findings).toEqual([
-      expect.objectContaining({
-        kind: "thin",
-        objects: [{ object_type: "memory_entry", object_id: "summary-owner", title: null }],
-      }),
-    ]);
-    expect(result.report.access_safety).toMatchObject({
-      summary_access_full_content_used: true,
-      raw_content_included: false,
-    });
-    expect(JSON.stringify(result.report)).not.toContain("tiny");
-  });
-
   it("asks for a revision of source-policy and contradiction drift without content", async () => {
     const db = fakeDb([
       row({

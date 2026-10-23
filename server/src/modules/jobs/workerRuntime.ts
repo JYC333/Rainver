@@ -31,7 +31,7 @@ import { registerTaskMergeHandler } from "../hosts/taskMerges.js";
 import { TaskMergeResolutionDispatcher } from "../tasks/mergeResolution.js";
 import { recordHostThreadOutcome } from "../hosts/threadOutcome.js";
 import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
-import { finalizeChatTurn } from "../runs/chatTurnFinalizer.js";
+import { finalizeChatTurn, recordChatTurnFinalizationFailure } from "../runs/chatTurnFinalizer.js";
 import type { ChatTurnFinalizerDeps } from "../runs/chatTurnFinalizer.js";
 import { isHardTerminalRunStatus } from "../runs/orchestrationResults.js";
 import { registerRuntimeContextCheckpointHandler } from "../runtimeContext/continuity/job.js";
@@ -263,7 +263,20 @@ export async function reconcileTerminalChatRuns(
         if (hostThread.thread_id) {
           await recordHostThreadOutcome(config, hostThread.thread_id, current, hostThread.resume_attempted, hostThread.identity);
         }
-        await finalizeChatTurn(config, runs, current, finalizerDeps);
+        try {
+          await finalizeChatTurn(config, runs, current, finalizerDeps);
+        } catch (error) {
+          // Bounded: a successful chat Run holds its conversation until it
+          // completes, so a finalization that keeps failing must not hold it
+          // for good. Past the bound the turn completes as failed.
+          const failure = await recordChatTurnFinalizationFailure(config, runs, current, error, finalizerDeps);
+          if (!failure.completed) throw error;
+          log?.warn(
+            `[jobs-worker] chat Run ${item.id} completed as failed after ${failure.attempts} finalization attempts: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
       }
     } catch (error) {
       log?.warn(

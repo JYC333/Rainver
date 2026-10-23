@@ -7,7 +7,7 @@ import { terminalAuthAvailable } from "./terminalAuth.js";
 
 /**
  * The daemon discovers whatever the machine already has installed — it
- * never installs or manages a CLI's version tree itself (that would make it
+ * never installs or manages an own CLI's version tree on its own initiative (that would make it
  * a second `runtimeTools` service; ADR 0016 keeps execution-host capability
  * discovery to "what is on PATH right now").
  *
@@ -60,14 +60,15 @@ export interface DaemonCapabilities {
   installations: Record<string, RuntimeInstallation[]>;
 }
 
-function probeVersion(bin: string, timeoutMs = 4000): Promise<string | null> {
+export function probeVersion(bin: string, timeoutMs = 4000, options: { args?: string[]; env?: NodeJS.ProcessEnv; cwd?: string } = {}): Promise<string | null> {
   return new Promise((resolve) => {
     let settled = false;
     // The version probe gets the same helper environment every other probe
     // does. Do not spawn it with the machine's whole environment. That
     // includes vendor keys.
-    const child = spawn(bin, ["--version"], {
-      env: helperProcessEnv(process.env),
+    const child = spawn(bin, options.args ?? ["--version"], {
+      env: helperProcessEnv(options.env ?? process.env),
+      cwd: options.cwd,
       stdio: ["ignore", "pipe", "ignore"],
     });
     const timer = setTimeout(() => {
@@ -78,7 +79,7 @@ function probeVersion(bin: string, timeoutMs = 4000): Promise<string | null> {
     }, timeoutMs);
     let stdout = "";
     child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
+      stdout = (stdout + chunk.toString("utf8")).slice(-4000);
     });
     child.on("error", () => {
       if (settled) return;

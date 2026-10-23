@@ -29,7 +29,7 @@ describe('KnowledgeRetrievalToggle', () => {
     await waitFor(() => expect(button).toBeEnabled())
     expect(button).toHaveAttribute('aria-pressed', 'false')
     await user.click(button)
-    expect(runtimeContextApi.setRetrievalSwitch).toHaveBeenCalledWith(SCOPE, { enabled: true })
+    expect(runtimeContextApi.setRetrievalSwitch).toHaveBeenCalledWith({ scopeId: SCOPE }, { enabled: true }, expect.any(Object))
     expect(await screen.findByRole('button', { name: /Knowledge: on/ })).toHaveAttribute('aria-pressed', 'true')
     expect(screen.getByRole('button', { name: 'Search in' })).toBeInTheDocument()
   })
@@ -42,10 +42,10 @@ describe('KnowledgeRetrievalToggle', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Search in' }))
     await user.click(await screen.findByRole('menuitemcheckbox', { name: 'Memory' }))
-    expect(runtimeContextApi.setRetrievalSwitch).toHaveBeenCalledWith(SCOPE, {
+    expect(runtimeContextApi.setRetrievalSwitch).toHaveBeenCalledWith({ scopeId: SCOPE }, {
       enabled: true,
       preferred_domains: ['knowledge', 'sources', 'projects', 'inquiry'],
-    })
+    }, expect.any(Object))
   })
 
   it('cannot be set before the conversation exists', () => {
@@ -66,10 +66,13 @@ describe('KnowledgeRetrievalToggle', () => {
     expect(await screen.findByRole('button', { name: /Knowledge: on/ })).toBeEnabled()
   })
 
-  it('names the Agent when the switch belongs to one Room recipient', async () => {
+  it('names the Agent and asks for its switch in this Conversation when it belongs to one Room recipient', async () => {
     vi.mocked(runtimeContextApi.retrievalSwitch).mockResolvedValue({ work_context_scope_id: SCOPE, enabled: false, preferred_domains: [], setup_version: null })
-    render(<KnowledgeRetrievalToggle scopeId={SCOPE} agentName="Researcher" />)
+    render(<KnowledgeRetrievalToggle sessionId="conversation-1" roomAgentMemberId="member-1" agentName="Researcher" />)
     expect(await screen.findByRole('button', { name: 'Researcher · Knowledge: off' })).toBeInTheDocument()
-    expect(runtimeContextApi.retrievalSwitch).toHaveBeenCalledWith(SCOPE)
+    expect(runtimeContextApi.retrievalSwitch).toHaveBeenCalledWith(
+      { sessionId: 'conversation-1', roomAgentMemberId: 'member-1' },
+      expect.any(Object),
+    )
   })
 })

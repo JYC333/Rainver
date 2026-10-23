@@ -139,6 +139,14 @@ export interface Module {
  * ───────────────────────────────────────────────────────────────────────────
  */
 export const MODULE_REGISTRY: Module[] = [
+  {
+    id: 'agent-work', label: 'Agent Work', path: '/agent-work',
+    section: 'agents', group: 'work', icon: 'bot',
+    description: 'Discover and handle your Agent work across Spaces.',
+    source: 'built_in', enabled: true, visible: true, planned: false,
+    perspectiveType: 'personal',
+    component: lazy(() => import('./agent_work/AgentWorkPage')),
+  },
 
   // ── Official optional modules ──────────────────────────────────────────────
   // These entries have source: 'official_plugin'. Their enabled/visible values
@@ -477,6 +485,15 @@ export const MODULE_REGISTRY: Module[] = [
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./capabilities/CapabilitiesPage')),
+  },
+  {
+    id: 'skills', label: 'Skills', path: '/skills',
+    section: 'agents', group: 'agents', icon: 'zap',
+    description: 'Import, review and bind shared Skills for conversation runtimes.',
+    source: 'built_in', capabilityId: undefined,
+    enabled: true, visible: true, planned: false,
+    perspectiveType: 'space-scoped',
+    component: lazy(() => import('./capabilities/SkillsPage')),
   },
   {
     id: 'agents_mgmt', label: 'Agents', path: '/agents',

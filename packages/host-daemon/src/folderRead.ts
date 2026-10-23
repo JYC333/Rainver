@@ -1,6 +1,7 @@
 import type { FolderReadDaemonError, FolderReadKind as ProtocolFolderReadKind, HostServerFrameOf } from "@rainver/protocol";
 import {
   buildTree,
+  listFolderDirectory,
   folderGitDiff,
   folderGitStatus,
   FolderReadError,
@@ -21,8 +22,10 @@ export interface FolderReadRequest {
   workspace_location_id: string;
   kind: FolderReadKind;
   path?: string;
+  tree_offset?: number;
   protected: boolean;
   include_utf16_preview?: boolean;
+  include_original_bytes?: boolean;
   root: string;
 }
 
@@ -69,7 +72,7 @@ export function resolveFolderReadRequest(
       throw new FolderReadFrameError("path_forbidden", "folder_read paths must be relative");
     }
     path = rawPath;
-  } else if (kind === "git_diff" && rawPath !== undefined) {
+  } else if ((kind === "git_diff" || kind === "tree") && rawPath !== undefined) {
     if (typeof rawPath !== "string" || !rawPath.trim() || !isWireRelativePath(rawPath)) {
       throw new FolderReadFrameError("path_forbidden", "folder_read paths must be relative");
     }
@@ -77,12 +80,17 @@ export function resolveFolderReadRequest(
   } else if (rawPath !== undefined) {
     throw new FolderReadFrameError("read_failed", `${kind} reads do not accept a path`);
   }
+  if (frame.tree_offset !== undefined && (kind !== "tree" || path === undefined || !Number.isSafeInteger(frame.tree_offset) || frame.tree_offset < 0)) {
+    throw new FolderReadFrameError("read_failed", "tree_offset requires a directory tree path and a nonnegative integer");
+  }
   return {
     request_id: requestId,
     workspace_location_id: locationId,
     kind,
     ...(path === undefined ? {} : { path }),
+    ...(frame.tree_offset === undefined ? {} : { tree_offset: frame.tree_offset }),
     protected: frame.protected,
+    ...(frame.include_original_bytes === true ? { include_original_bytes: true } : {}),
     ...(frame.include_utf16_preview === true ? { include_utf16_preview: true } : {}),
     root,
   };
@@ -99,13 +107,16 @@ export async function performFolderRead(request: FolderReadRequest, signal?: Abo
     let result: FileNode | FileContent | GitStatus | GitDiff;
     switch (request.kind) {
       case "tree":
-        result = await buildTree(request.root, signal);
+        result = request.path === undefined
+          ? await buildTree(request.root, signal)
+          : await listFolderDirectory(request.root, request.path, { offset: request.tree_offset, protectedFolder: request.protected, signal });
         break;
       case "file":
         result = await readFolderFile(request.root, request.path!, {
           protectedFolder: request.protected,
           signal,
           includeUtf16Preview: request.include_utf16_preview,
+          includeOriginalBytes: request.include_original_bytes,
         });
         break;
       case "git_status":

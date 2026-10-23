@@ -1,6 +1,18 @@
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema, SecretResponseGuards } from "./common.js";
 
+/** Persisted recovery choice for an interrupted Run; cancellation survives reconnects. */
+export const QuotaRecoverySchema = z.object({
+  auto_continue: z.boolean(),
+  refused_at: ISODateTimeSchema,
+  intent_at: ISODateTimeSchema,
+  next_check_at: ISODateTimeSchema,
+  expires_at: ISODateTimeSchema,
+  pause_reason: z.enum(["user", "conversation_changed", "authority_changed", "expired"]).nullable(),
+}).strict();
+export type QuotaRecovery = z.infer<typeof QuotaRecoverySchema>;
+export const QuotaRecoveryUpdateSchema = z.object({ auto_continue: z.boolean() }).strict();
+
 /**
  * Subscription quota as the conversation surface sees it (server
  * `modules/rooms.md`, "Cost lines, by funding source" and "Subscription quota gate").
@@ -24,7 +36,7 @@ export const SubscriptionQuotaPolicySchema = z.object({
 });
 export type SubscriptionQuotaPolicy = z.infer<typeof SubscriptionQuotaPolicySchema>;
 
-export const SUBSCRIPTION_QUOTA_POLICY_DEFAULTS = { warn_pct: 70, reserve_pct: 85 } as const;
+export const SUBSCRIPTION_QUOTA_POLICY_DEFAULTS = { warn_pct: 70, reserve_pct: 100 } as const;
 
 export const SubscriptionQuotaPolicyUpdateSchema = z.object({
   warn_pct: z.number().int().min(1).max(100),

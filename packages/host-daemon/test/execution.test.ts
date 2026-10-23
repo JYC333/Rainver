@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { createServer, type Server } from "node:http";
@@ -168,6 +169,22 @@ describe("handleLaunch", () => {
     expect(output.params.prompt[1].text).toBe(`body ${REMOTE_CWD_PLACEHOLDER}`);
   });
 
+  it("resolves only authorized Skill resource links and leaves identical user text untouched", () => {
+    const uri = "rainver:skill-root/package-1/SKILL.md";
+    const target = join(workspaceDir, "skills/package-1/SKILL.md");
+    const input = JSON.stringify({ method: "session/prompt", params: { prompt: [
+      { type: "resource_link", uri, name: "skill" }, { type: "text", text: uri },
+      { type: "resource_link", uri: "rainver:skill-root/other/SKILL.md", name: "other" },
+    ] } });
+    const output = JSON.parse(substituteAcpInput(input, { "rainver:skill-root": join(workspaceDir, "skills") }, { [uri]: target }));
+    expect(output.params.prompt[0].uri).toBe(pathToFileURL(target).href);
+    expect(output.params.prompt[1].text).toBe(uri);
+    expect(output.params.prompt[2].uri).toBe("rainver:skill-root/other/SKILL.md");
+    const session = JSON.parse(substituteAcpInput(JSON.stringify({ method: "session/new", params: { additionalDirectories: [] } }),
+      { "rainver:skill-root": join(workspaceDir, "skills") }, {}));
+    expect(session.params.additionalDirectories).toEqual([join(workspaceDir, "skills")]);
+  });
+
   it("streams stdout as output frames and reports a clean exit", async () => {
     const { frames, send, complete } = collectSend();
     await handleLaunch(
@@ -266,20 +283,21 @@ describe("handleLaunch", () => {
     expect(output).toContain("echo:ping");
   });
 
-  it("kills the process on timeout and reports timed_out", async () => {
+  it("ignores legacy whole-run timeout and allows the process to finish", async () => {
     const { complete, send } = collectSend();
     await handleLaunch(
       {
         run_id: "run-5",
         launch_id: "launch-6",workspace_location_id: "folder-1",
-        argv: ["node", "-e", "setTimeout(() => {}, 60000)"],
-        timeout_seconds: 0.1,
+        argv: ["node", "-e", "setTimeout(() => process.exit(0), 200)"],
+        timeout_seconds: 0.001,
       },
       send,
       () => {},
     );
     const done = await complete();
-    expect(done.timed_out).toBe(true);
+    expect(done.timed_out).toBe(false);
+    expect(done.exit_code).toBe(0);
   }, 10000);
 
   it("keeps stdin open across multiple stdin frames when keep_stdin_open is set", async () => {
@@ -710,6 +728,36 @@ describe("handleLaunch with a provider binding", () => {
 });
 
 describe("the work surface a dispatched run is given", () => {
+  it("preserves direct CLI delivery for a server that has not requested the local protocol", async () => {
+    const { send, complete } = collectSend();
+    await handleLaunch({ run_id: "old-surface", launch_id: "old-surface-launch", workspace_location_id: "folder-1",
+      argv: ["sh", "-c", 'printf "%s|%s" "$RAINVER_TOOL_TOKEN" "$RAINVER_TOOL_BRIDGE"'],
+      work_surface: { env: { RAINVER_API_URL: "https://control.example.test", RAINVER_RUN_ID: "old-surface", RAINVER_TOOL_TOKEN: "old-token" }, files: [], dir_env: {} },
+    }, send, () => {});
+    expect((await complete()).exit_code).toBe(0);
+    expect(frames(send).join("")).toBe("old-token|");
+  });
+
+  it("rejects a local channel whose identity belongs to another Run", async () => {
+    const { send, complete } = collectSend();
+    await handleLaunch({ run_id: "identity-mismatch", launch_id: "identity-mismatch-launch", workspace_location_id: "folder-1", argv: ["true"],
+      work_surface: { env: { RAINVER_TOOL_BRIDGE_PROTOCOL: "file-v1", RAINVER_API_URL: "https://control.example.test", RAINVER_RUN_ID: "other-run", RAINVER_TOOL_TOKEN: "other-token" }, files: [], dir_env: {} },
+    }, send, () => {});
+    expect(await complete()).toMatchObject({ exit_code: 1, error: expect.stringContaining("mismatched Run tool identity") });
+  });
+
+  it("admits only this launch's bridge into explicitly negotiated ACP directory fields", () => {
+    for (const method of ["session/new", "session/resume", "session/load"]) {
+      const input = { jsonrpc: "2.0", id: 2, method, params: { cwd: REMOTE_CWD_PLACEHOLDER, additionalDirectories: [], mcpServers: [] } };
+      const translated = JSON.parse(substituteAcpInput(JSON.stringify(input), { [REMOTE_CWD_PLACEHOLDER]: workspaceDir }, {}, "/run/own-tools"));
+      expect(translated.params).toMatchObject({ cwd: workspaceDir, additionalDirectories: ["/run/own-tools"], mcpServers: [] });
+    }
+    const prompt = JSON.stringify({ method: "session/prompt", params: { prompt: [{ type: "text", text: "additionalDirectories: []" }] } });
+    expect(substituteAcpInput(prompt, {}, {}, "/run/own-tools")).toBe(prompt);
+    const unsupported = JSON.stringify({ method: "session/new", params: { cwd: "/workspace" } });
+    expect(substituteAcpInput(unsupported, {}, {}, "/run/own-tools")).toBe(unsupported);
+  });
+
   it("writes the Skill, sets the environment, and hands the agent a runnable command", async () => {
     const { send, complete } = collectSend();
 
@@ -722,6 +770,7 @@ describe("the work surface a dispatched run is given", () => {
         argv: ["sh", "-c", 'printf "%s|%s|%s\\n" "$RAINVER_API_URL" "$RAINVER_TOOL_TOKEN" "$RAINVER_SKILL_PATH"; cat "$RAINVER_SKILL_PATH"; "$RAINVER_CLI" --help 2>&1'],
         work_surface: {
           env: {
+            RAINVER_TOOL_BRIDGE_PROTOCOL: "file-v1",
             RAINVER_API_URL: "https://control.example.test",
             RAINVER_RUN_ID: "run-surface-1",
             RAINVER_TOOL_TOKEN: "token-surface-1",
@@ -737,8 +786,25 @@ describe("the work surface a dispatched run is given", () => {
     const done = await complete();
     expect(done.exit_code).toBe(0);
     const output = frames(send).join("");
-    expect(output).toContain("https://control.example.test|token-surface-1|");
+    expect(output).toContain("https://control.example.test||");
+    expect(output).not.toContain("token-surface-1");
     expect(output).toContain("# Working for Rainver");
+  });
+
+  it("materializes original Skill bytes and rejects a changed digest before launching", async () => {
+    const bytes = Buffer.from([239, 187, 191, 13, 10, 0, 255, 128]);
+    const surface = {
+      env: {}, dir_env: { RAINVER_SKILL_ROOT: "rainver/skills" },
+      files: [{ relative_path: "rainver/skills/package/assets.bin", contents: bytes.toString("base64"), encoding: "base64" as const, content_hash: createHash("sha256").update(bytes).digest("hex") }],
+    };
+    const first = collectSend();
+    await handleLaunch({ run_id: "original-bytes", launch_id: "original-bytes-launch", workspace_location_id: "folder-1", argv: ["sh", "-c", 'od -An -tx1 "$RAINVER_SKILL_ROOT/package/assets.bin"'], work_surface: surface }, first.send, () => {});
+    expect((await first.complete()).exit_code).toBe(0);
+    expect(frames(first.send).join("").trim()).toBe("ef bb bf 0d 0a 00 ff 80");
+    const second = collectSend();
+    await handleLaunch({ run_id: "changed-bytes", launch_id: "changed-bytes-launch", workspace_location_id: "folder-1", argv: ["sh", "-c", "echo should-not-run"], work_surface: { ...surface, files: [{ ...surface.files[0]!, content_hash: "0".repeat(64) }] } }, second.send, () => {});
+    expect((await second.complete()).exit_code).toBe(1);
+    expect(frames(second.send).join("")).not.toContain("should-not-run");
   });
 
   it("removes the run directory, and with it the Skill, once the run ends", async () => {
@@ -750,7 +816,7 @@ describe("the work surface a dispatched run is given", () => {
         launch_id: "launch-24",workspace_location_id: "folder-1",
         argv: ["sh", "-c", "true"],
         work_surface: {
-          env: { RAINVER_TOOL_TOKEN: "token-surface-2" },
+          env: { RAINVER_API_URL: "https://control.example.test", RAINVER_RUN_ID: "run-surface-2", RAINVER_TOOL_TOKEN: "token-surface-2" },
           files: [{ relative_path: "rainver/SKILL.md", contents: "skill" }],
           dir_env: {},
         },
@@ -793,7 +859,7 @@ describe("the work surface a dispatched run is given", () => {
 
 describe("a retry that reuses the run id", () => {
   const surface = {
-    env: {},
+    env: { RAINVER_TOOL_BRIDGE_PROTOCOL: "file-v1", RAINVER_API_URL: "https://control.example.test", RAINVER_RUN_ID: "run-retry", RAINVER_TOOL_TOKEN: "token-retry" },
     files: [{ relative_path: "rainver/SKILL.md", contents: "# the skill" }],
     dir_env: { RAINVER_SKILL_PATH: "rainver/SKILL.md" },
   };
@@ -835,7 +901,7 @@ describe("a retry that reuses the run id", () => {
     // read_file tool can open.
     const { frames: sent, send, complete } = collectSend();
     await handleLaunch(
-      { run_id: "run-ph", launch_id: "launch-3", workspace_location_id: "folder-1", argv: ["cat"], stdin: "read rainver:work-skill-path now", work_surface: surface },
+      { run_id: "run-ph", launch_id: "launch-3", workspace_location_id: "folder-1", argv: ["cat"], stdin: "read rainver:work-skill-path now", work_surface: { ...surface, env: { ...surface.env, RAINVER_RUN_ID: "run-ph" } } },
       send,
       () => {},
     );

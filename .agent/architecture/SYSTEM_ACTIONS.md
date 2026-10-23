@@ -74,6 +74,34 @@ sandboxed Run — as an absolute path in `RAINVER_CLI`, never on `PATH`
 action names and input schemas come from the server at run time, so a new
 System Action needs nothing added to it.
 
+On Linux Hosts the server requests `RAINVER_TOOL_BRIDGE_PROTOCOL=file-v1` in
+the work surface. The daemon creates a private directory per launch, exports
+`RAINVER_TOOL_BRIDGE`, and retains the Run bearer in its own request-handler
+closure instead of the runtime environment. CLI requests use atomic local
+files; the Host forwards only the existing tool REST verbs using that fixed
+identity and endpoint. Socket-disabled commands therefore need no network
+escalation. Directory handles are pinned through `/proc/self/fd` so replacing
+a directory cannot redirect Host reads/writes; payloads reject symlinks,
+hardlinks and oversized files. The channel admits eight in-flight calls,
+never automatically retries a write, aborts requests on runtime exit or failed
+launch, and removes its private directory. It is not a general proxy.
+
+The shared ACP controller requests an empty `additionalDirectories` list only
+when a work surface exists and the Agent advertises that capability. The Host
+adds its own launch directory to that field in session setup frames, never to
+prompts or user text. This grants local IPC access without changing the
+Agent's network policy; it also works on session resume. No vendor config file
+or model selection is changed. An older Host ignores the protocol marker and
+continues direct CLI HTTP; an updated Host receiving an older work surface
+does the same. Both server and Host must be updated to enable file IPC.
+
+Reuse / Dependency Check: reuse `CliAgentToolTransport`, Run identities and
+the existing REST actions. Node's filesystem API supplies local transport;
+HTTP and Unix sockets cannot carry calls from a fully socket-disabled command,
+and subprocess stdio cannot be inherited by arbitrary nested CLI invocations.
+The bounded file exchange is a narrowly scoped extension of `@rainver/agent-cli`,
+with no new dependency, action registry, policy evaluator or MCP surface.
+
 The identity is a `run_tool_identities` row: a bearer token stored only as a
 digest, issued for one Run, matched against the Run id rather than trusted
 from the token, expiring, and revoked when the Run stops. Durable rather than

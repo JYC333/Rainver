@@ -50,7 +50,8 @@ The bundled PostgreSQL containers have stable names per mode:
 | Path | Meaning | In normal backups? |
 |---|---|---|
 | `$RAINVER_ROOT/<mode>/db/postgres` | Live PostgreSQL data directory (bind-mounted into the postgres container) | **No** — never archived. The database is captured logically via `pg_dump`. |
-| `$RAINVER_ROOT/<mode>/db/dumps` | `pg_dump` custom-format dump files written by `ops/scripts/db/dump.sh` | Operator-managed; not part of the system archive |
+| `$RAINVER_ROOT/<mode>/db/dumps` | PostgreSQL custom-format dumps | Generated `pre-migrate`/`pre-squash` dumps have automatic retention; manual dumps are operator-managed; not part of the system archive |
+| `$RAINVER_ROOT/<mode>/db/migration-archives` | Registered frozen migration pairs and dependency records | Separately retain/copy with old backups; not part of the system archive |
 | `storage/`, `artifacts/`, `config/`, `workspaces/` | Non-credential file data | Yes |
 | `secrets/` | Credential master key and CLI login state | **No** — separate sensitive recovery archive only |
 | `.env` | Deployment settings and secrets | **No** — snapshotted as `instance.env` in the sensitive recovery archive |
@@ -60,6 +61,26 @@ The bundled PostgreSQL containers have stable names per mode:
 ---
 
 ## Automatic backup (canonical)
+
+Generated safety dumps are pruned hourly using the same retained count as
+automatic full-system backups (default 7), even if automatic backup creation is
+disabled. Only ordinary, recognizable `pre-migrate-*.dump`/`pre-squash-*.dump`
+files are eligible, counted per schema recovery point (retries before the same
+schema change keep only the newest). Production takes a pre-migrate dump only
+when a migration is pending, so routine restarts do not rotate it out. Manual
+`dump-*.dump` files and manual full-system archives are preserved. Managed
+migration archives are removed only after conversion succeeds (or this
+instance's database has already passed the archived target by normal
+migration) and all recorded local backup dependencies are gone. Keep a source
+release/chain with any old backup copied elsewhere: local retention cannot
+discover offsite copies. External source catalogs remain operator-owned.
+
+An interrupted cutover pins recovery material until recovery/retry (cleanup
+logs a warning meanwhile), and cleanup shares an exclusive filesystem mutex
+with cutover. Backups from before the one-time 2026-10-22 migration rebase
+need the procedure in `server/migrations/README.md`. See
+[Operations and Safety](../.agent/architecture/OPERATIONS_AND_SAFETY.md) for
+stale-lock recovery; do not bypass a live operation's lock.
 
 ### Enable
 

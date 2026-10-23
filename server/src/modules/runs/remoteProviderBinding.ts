@@ -17,7 +17,7 @@ import {
   type CredentialSpendAuthorization,
   type CredentialSpendDeps,
 } from "../policy/credentialSpend.js";
-import type { HostLaunchProviderBinding } from "@rainver/protocol";
+import type { HostLaunchProviderBinding, RuntimeSessionConfigDroppedSelection } from "@rainver/protocol";
 import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import type { AgentRunRecord } from "./repository.js";
 import type { VendorCliRuntimeKey } from "../runtimeAdapters/specs.js";
@@ -254,6 +254,41 @@ export const RUNTIME_PROFILE_MODEL_SOURCE = "runtime_profile";
  * the column for an unbound run matters just as much — a run on the machine's
  * own login must not name a provider at all.
  */
+/** Runtime observation, distinct from requested/Provider-selected configuration. */
+export async function recordRuntimeReportedModel(db: Queryable, runId: string, spaceId: string, model?: string | null): Promise<void> {
+  await db.query(
+    model === undefined
+      ? `UPDATE runs SET model_override_json = COALESCE(model_override_json, '{}'::jsonb) - 'runtime_reported_model', updated_at = now()
+          WHERE id = $1 AND space_id = $2`
+      : `UPDATE runs SET model_override_json = COALESCE(model_override_json, '{}'::jsonb)
+          || jsonb_build_object('runtime_reported_model', $3::text), updated_at = now()
+          WHERE id = $1 AND space_id = $2`,
+    model === undefined ? [runId, spaceId] : [runId, spaceId, model],
+  );
+}
+
+/**
+ * Appends saved session options the live ACP session did not offer or apply
+ * to the Run's `acp_session_config_dropped`, where the turn's model selection
+ * reads them (`runModelSelection.ts`). Merged, never replacing the blob.
+ */
+export async function recordDroppedSessionConfig(
+  db: Queryable,
+  runId: string,
+  spaceId: string,
+  dropped: readonly RuntimeSessionConfigDroppedSelection[],
+): Promise<void> {
+  if (dropped.length === 0) return;
+  await db.query(
+    `UPDATE runs SET model_override_json = COALESCE(model_override_json, '{}'::jsonb)
+        || jsonb_build_object('acp_session_config_dropped',
+             COALESCE(model_override_json->'acp_session_config_dropped', '[]'::jsonb) || $3::jsonb),
+        updated_at = now()
+      WHERE id = $1 AND space_id = $2`,
+    [runId, spaceId, JSON.stringify(dropped)],
+  );
+}
+
 export async function recordRemoteRunBackend(
   db: Queryable,
   runId: string,
@@ -511,6 +546,8 @@ export async function buildRemoteProviderBinding(input: {
     );
   }
 
+  const renewal = setInterval(() => registry.renew(lease.id, input.ttlSeconds * 1000), 60_000);
+  renewal.unref?.();
   try {
     return {
       frame: bindingFrame({
@@ -525,9 +562,10 @@ export async function buildRemoteProviderBinding(input: {
         route: requirement.route,
       }),
       used_model: model,
-      revoke: () => registry.revoke(lease.id),
+      revoke: () => { clearInterval(renewal); registry.revoke(lease.id); },
     };
   } catch (error) {
+    clearInterval(renewal);
     registry.revoke(lease.id);
     throw error;
   }

@@ -34,6 +34,7 @@ export interface RuntimeContextInvocationInput extends RuntimeContextPreviewInpu
     acknowledged_item_ids: string[];
     generation: number;
     rotation_reason: string | null;
+    lease_generation: number;
   } | null;
 }
 

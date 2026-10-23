@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { retryTaskInstruction } from "../runs/retryPolicy.js";
 import * as protocol from "@rainver/protocol";
 import type { ContextEvent, ContextItem, ExecutionControlSnapshot, InvocationDelivery, InvocationSnapshotSafe, RetrievalObjectType, RuntimeContextEnvelope, RuntimeContextEventIngress } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
@@ -38,8 +39,10 @@ import type { RuntimeContextPlanningService } from "./planningService.js";
 import { estimateModelTokens } from "../usage/modelCatalog.js";
 import { loadConversationContinuityThroughMessage } from "./conversationContinuity.js";
 import { contextItemText } from "./itemNormalizer.js";
+import { instructionInRunRequest } from "./runRequest.js";
 import {
   createProductionRuntimeContextPlanningService,
+  groupedAgentIdentityContext,
   isRoomConversation,
   loadAuthorizedCurrentContextMessage,
   renderCheckpointContinuity,
@@ -59,6 +62,11 @@ import { loadActionRegistry } from "../policy/actionRegistry.js";
 import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 import { effectiveRunProviderModel } from "../runs/remoteProviderBinding.js";
 import { availableModels } from "../providers/dbReader.js";
+import {
+  loadConversationInputResourceDescriptors,
+  loadConversationSkillDescriptors,
+  renderConversationInputMessage,
+} from "../sessions/conversationInputService.js";
 
 const deliverySourceRegistry = new RetrievalRegistry();
 for (const adapter of [
@@ -126,6 +134,7 @@ export class RuntimeContextInvocationGateway implements RuntimeContextInvocation
     const cliState = input.cliBinding
       ? await this.requireCliContinuity().prepareDelivery({
           bindingId: input.cliBinding.id,
+          leaseGeneration: input.cliBinding.lease_generation,
           spaceId: input.identity.spaceId,
           workContextScopeId: input.turn.work_context_scope_id,
           invocationId: input.invocationId,
@@ -285,6 +294,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       instructed_by_user_id: string | null;
       prompt: string | null;
       instruction: string | null;
+      delegation_id: string | null;
       error_json: unknown;
       run_group_id: string | null;
       session_id: string | null;
@@ -292,13 +302,14 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       runtime_profile_snapshot_json: unknown;
       agent_id: string | null;
       project_id: string | null;
+      project_folder_id: string | null;
       capability_id: string | null;
       capabilities_json: unknown;
     }>(
       `SELECT run.runtime_key,run.model_provider_id,run.owner_user_id,run.instructed_by_user_id,
-              run.prompt,run.instruction,run.error_json,run.run_group_id,
+              run.prompt,run.instruction,run.delegation_id,run.error_json,run.run_group_id,
               run.session_id,run.model_override_json,run.runtime_profile_snapshot_json,run.agent_id,run.project_id,
-              run.capability_id,run.capabilities_json
+              run.project_folder_id,run.capability_id,run.capabilities_json
          FROM execution_control_snapshots control_row
          JOIN runs run ON run.id=control_row.run_id AND run.space_id=control_row.space_id
         WHERE control_row.id=$1 AND control_row.space_id=$2 AND run.id=$3
@@ -315,7 +326,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     if ((run.model_provider_id ?? null) !== input.providerId) {
       throw new HttpError(409, "Invocation Delivery provider does not match the persisted Run");
     }
-    const agentName = await this.authorizeSetupAndAgent(db, input, control);
+    const agentName = await this.authorizeSetupAndAgent(db, input, control, run);
     const revalidatedRun = { ...run, agent_name: agentName };
     await this.authorizeProject(db, input, control);
     const egress = await this.authorizeEgress(db, input, control, run);
@@ -338,11 +349,12 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
           AND user_id=$4 AND agent_id=$5 AND runtime_key=$6
           AND runtime_state_key=$7 AND generation=$8
           AND vendor_session_id IS NOT DISTINCT FROM $9 AND cli_known_cursor=$10
+          AND execution_lease_generation=$11
           AND status='active' FOR SHARE`,
       [session.binding_ref.id, input.spaceId, control.work_context_scope_id,
         viewerUserId, control.agent_id, input.runtimeKey,
         session.runtime_state_key, generation, session.vendor_session_id,
-        session.cursor_from],
+        session.cursor_from, session.lease_generation],
     );
     if (!result.rows[0]) throw new HttpError(409, "CLI Delivery binding authority changed before persistence");
   }
@@ -351,6 +363,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     db: Queryable,
     input: InvocationAttemptInput,
     control: ExecutionControlSnapshot,
+    run: { project_id: string | null; project_folder_id: string | null },
   ): Promise<string | null> {
     const viewerUserId = input.viewerUserId;
     if (!viewerUserId) throw new HttpError(403, "Invocation Delivery requires a live viewer authority");
@@ -361,10 +374,14 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       [input.spaceId, control.work_context_scope_id, viewerUserId],
     );
     const row = setup.rows[0];
+    // Match resolveEffectiveBindingsForRun: an unset Setup binding inherits
+    // the persisted Run binding. The caller holds that Run FOR SHARE, and the
+    // effective Project/Folder still undergo live access checks below.
     if (!row || control.work_context_setup_ref?.id !== row.id
       || control.work_context_setup_ref.version !== String(row.version)
-      || row.agent_id !== control.agent_id || row.project_id !== control.project_id
-      || row.project_folder_id !== control.project_folder_id) {
+      || row.agent_id !== control.agent_id
+      || (row.project_id ?? run.project_id) !== control.project_id
+      || (row.project_folder_id ?? run.project_folder_id) !== control.project_folder_id) {
       throw new HttpError(409, "Invocation Delivery setup authority is no longer current");
     }
     const agentId = control.agent_id;
@@ -500,6 +517,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     run: {
       prompt: string | null;
       instruction: string | null;
+      delegation_id?: string | null;
       error_json: unknown;
       run_group_id: string | null;
       agent_name: string | null;
@@ -518,7 +536,8 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       if (item.acquisition === "direct" && item.source_ref.type === "message") {
         await this.authorizeMessageSource(db, input, item, run);
       } else if (item.acquisition === "direct" && item.source_ref.type === "run_request") {
-        if (item.source_ref.id !== input.invocationId || contextItemText(item) !== runRequestText(run)) {
+        if (item.source_ref.id !== input.invocationId || contextItemText(item) !== runRequestText(run)
+          || (item.revalidation.run_instruction_in_request === true && !instructionInRunRequest(run))) {
           throw new HttpError(409, "Invocation Delivery Run request changed after planning");
         }
       } else if (item.acquisition === "direct" && item.source_ref.type === "run_instruction") {
@@ -550,6 +569,21 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
         await this.authorizeProjectResearchMatrix(db, input, control, item);
       } else if (item.acquisition === "direct" && item.source_ref.type === "runtime_skill_binding") {
         await this.authorizeRuntimeSkill(db, input, item, run);
+      } else if (item.acquisition === "direct" && item.source_ref.type === "skill_package_binding") {
+        const current = await new PgRuntimeContextAcquisitionRepository(db).loadRun(input.spaceId, input.invocationId);
+        if (!current) throw new HttpError(409, "Skill invocation disappeared");
+        const selected = await loadSelectedSkills(db, {
+          space_id: input.spaceId, project_id: control.project_id, agent_id: control.agent_id,
+          user_id: input.viewerUserId!, session_id: current.session_id,
+          message_id: input.envelope.turn_request.current_message_ref.type === "message"
+            ? input.envelope.turn_request.current_message_ref.id : null, lock: true,
+        });
+        const skill = selected.find(skill => skill.binding_id === item.source_ref.id);
+        if (!skill || item.source_ref.version !== `${skill.content.package_hash}:${current.id}`
+          || contextItemText(item) !== selectedSkillInstruction(skill.content)
+          || JSON.stringify(item.payload.skill_package) !== JSON.stringify(skill.content)) {
+          throw new HttpError(409, "Skill package authorization changed after planning");
+        }
       } else if (item.acquisition === "continuity") {
         await this.authorizeContinuitySource(db, input, item, run);
       } else if (item.acquisition === "runtime_event") {
@@ -819,8 +853,13 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       userId: input.viewerUserId,
       runId: input.invocationId,
     });
+    const descriptors = await loadConversationInputResourceDescriptors(db, {
+      spaceId: input.spaceId,
+      messageId: item.source_ref.id,
+    });
     const canonicalMessageId = chatTurnMessageId(run.model_override_json);
-    if (!row || canonicalMessageId !== item.source_ref.id || contextItemText(item) !== row.content.trim()
+    const skills = await loadConversationSkillDescriptors(db, { spaceId: input.spaceId, messageId: item.source_ref.id });
+    if (!row || canonicalMessageId !== item.source_ref.id || contextItemText(item) !== renderConversationInputMessage(row.content, descriptors, skills)
       || item.trust !== (row.role === "system" ? "system_approved" : "user_confirmed")
       || (session.roomId === null && row.metadata_run_id !== input.invocationId)) {
       throw new HttpError(409, "Invocation Delivery Message changed or is no longer authoritative");
@@ -1322,24 +1361,12 @@ function supervisorRetryContext(errorJson: unknown): string | null {
     "[Supervisor retry]",
     `This is physical attempt ${attemptNumber}.`,
     `The previous attempt did not complete acceptably (${reasonCode}).`,
-    "Re-attempt the original task and correct that failure; do not merely repeat the prior response.",
+    retryTaskInstruction(reasonCode),
   ].join("\n");
 }
 
 function runRequestText(run: { prompt: string | null; instruction: string | null }): string {
   return (run.prompt?.trim() ? run.prompt : run.instruction ?? "").trim();
-}
-
-function groupedAgentIdentityContext(run: { run_group_id: string | null; agent_name: string | null }): string | null {
-  if (!run.run_group_id) return null;
-  const label = run.agent_name?.trim() || "the current room agent";
-  return [
-    "Agent room execution context:",
-    `- You are ${label} for this run.`,
-    "- If the user message includes a structured @mention matching your name, treat it as addressing you directly.",
-    "- Do not claim to be the room manager or another room member unless this run's agent identity is that agent.",
-    "- Internal agent IDs, run IDs, UUIDs, and tool identifiers are system details. Do not include them in user-facing replies unless the user explicitly asks for audit/debug identifiers.",
-  ].join("\n");
 }
 
 async function lockRequiredRow(
@@ -1497,3 +1524,4 @@ function acceptedEnvelopeSourceRefs(envelope: RuntimeContextEnvelope) {
     .filter((item) => decisions.get(item.id) !== "blocked")
     .map((item) => item.source_ref);
 }
+import { loadSelectedSkills, selectedSkillInstruction } from "../capabilities/selectedSkills.js";

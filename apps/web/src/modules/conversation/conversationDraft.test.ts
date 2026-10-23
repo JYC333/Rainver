@@ -74,6 +74,19 @@ describe('conversation drafts', () => {
     expect(readConversationDraft('room:room-1')).toBeNull()
   })
 
+  it('keeps the route a person chose for a Room draft, and nothing else in its place', () => {
+    writeConversationDraft({ destination: 'room:room-1:session-1', text: 'ask @Codex', input_parts: [], route_choice: 'direct' })
+    expect(readConversationDraft('room:room-1:session-1')?.route_choice).toBe('direct')
+    writeConversationDraft({ destination: 'room:room-1:session-1', text: 'ask @Codex', input_parts: [] })
+    expect(readConversationDraft('room:room-1:session-1')).not.toHaveProperty('route_choice')
+    sessionStorage.setItem(
+      `rainver:conversation-draft:v1:${encodeURIComponent('room:room-1:session-1')}`,
+      JSON.stringify({ version: 1, destination: 'room:room-1:session-1', text: 'ask', input_parts: [], route_choice: 'everyone', saved_at: new Date().toISOString() }),
+    )
+    expect(readConversationDraft('room:room-1:session-1')).toMatchObject({ text: 'ask' })
+    expect(readConversationDraft('room:room-1:session-1')).not.toHaveProperty('route_choice')
+  })
+
   it('keeps the stored draft when the current text cannot be sent as written', () => {
     writeConversationDraft({ destination: 'room:room-1:session-1', text: 'short', input_parts: [] })
     writeConversationDraft({ destination: 'room:room-1:session-1', text: 'x'.repeat(8001), input_parts: [] })

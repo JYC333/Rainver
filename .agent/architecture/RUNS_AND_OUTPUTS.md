@@ -99,7 +99,10 @@ event — not the Run going terminal — is what moves the turn to `done`, becau
 everything earlier happens while the reply does not yet exist. On `done` the
 client reads the durable message, including Artifact and canonical tool-call
 references. Worker recovery periodically reconciles any terminal Chat Run
-missing this event, including stale/orphaned and retry-exhausted work. While
+missing this event, including stale/orphaned and retry-exhausted work; a turn
+whose finalization keeps failing is completed as failed after a bounded number
+of passes (`recordChatTurnFinalizationFailure`), each failure visible as a
+turn warning. While
 the adapter is running, non-durable `chat.text_delta` frames reach the client
 as a growing `text` part, so the reply renders incrementally.
 
@@ -299,16 +302,27 @@ Conversation, not at Room creation. Conversation setup is an explicit draft
 action that pins execution before the first message. The room `goal` is optional, can be edited after creation, and
 is used as run instruction/background only when present; it is not inserted as a
 synthetic chat message. Structured `@agent` mention tokens from the Tiptap room
-composer are resolved by the product UI into a visible routing preview and
-trace-safe `recipient_segments`: one mention routes that segment directly to
-that agent, adjacent mentions fan out the same segment to multiple agents in
-parallel, and separated mention groups create separate recipient prompts. The
-message content remains the displayed chat text, while each run prompt uses the
-segment content with mention tokens removed. The user can explicitly choose
-Agent coordination, which routes the full message to the manager instead of
-direct fan-out so the manager can decompose/delegate through room tools. Plain
-text resembling an `@agent` mention is not trusted for routing. When no
-structured mention is present, the message goes to the manager by default.
+composer are classified by one protocol rule (`agentMentionRoute` in
+`packages/protocol/src/roomDiscussions.ts`): a mention cluster that opens the
+message or a line (only whitespace and list markers before it; a quoted `>`
+line does not count, and a line break ends a cluster) is an **address**; any
+other mention is a **reference**. A message with an address
+is sent `direct` with trace-safe `recipient_segments`: one address cluster
+receives the whole message, adjacent mentions fan the same segment out to
+several agents, and separate address clusters (for example one per line)
+create separate recipient prompts. A message whose mentions are all
+references is sent as `agent_coordination`: the full message goes to the
+manager, with the referenced agents as `coordination_target_agent_ids`, which
+the server checks are active Agent members of the Room (422 otherwise), records
+on the message and in the manager Run's `model_override_json.room_coordination`,
+and states in the manager's prompt as a "[The person asked you to arrange this
+with]" block so the manager delegates to them through room tools. The composer
+shows this route as one line under the editor whenever the draft mentions
+anyone, and the person can switch it to the other route for that draft. Segment
+and message content keep the `@Name` text as written. Plain text resembling an
+`@agent` mention is not trusted for routing. When no structured mention is
+present, the message goes to the manager by default. A retry routes the
+message the way it was sent, including its still-active coordination targets.
 Direct segmented routing does not contain server-side hard-coded summary
 semantics; a manager or other recipient that needs the other segment results
 must use `agent.wait_for_results(scope=current_turn)`. Multi-recipient direct
@@ -399,6 +413,48 @@ space-scoped result read model.
 
 ## Attempts, cancellation, and supervision
 
+An execution-time `subscription_quota_exhausted` refusal can park a bounded
+successor attempt through `rooms/quotaRecovery.ts` and the existing
+`waiting_for_quota` gate. The failed attempt and its usage remain intact; the
+Run stays queued without a new job, releases its dispatch lock and conversation
+turn, and is not projected as terminal to its parent. A task contract or an
+explicit task-scoped collaboration defaults to automatic continuation; ordinary
+chat defaults to a paused choice. Managed fail-fast work retains its own failure
+surface. The existing attempt and cost caps still apply, and quota recovery
+always uses the same route, without a model/funding fallback or a new
+collaboration budget.
+
+The marker's typed `recovery` records the choice, refusal/intent times, next
+check, seven-day expiry and pause reason. The existing minute pass reads due,
+enabled recoveries only. A known vendor reset permits one bounded attempt;
+newer telemetry or a later CLI refusal showing a full window postpones it.
+Refusal-derived readings retain the refusal's timestamp. Admission considers
+the fullest window that has not reset; equal percentages use the later or
+unknown reset, so one reset cannot bypass another exhausted window. Cached
+usage displays retain the original reading. Without a reset, only a
+new readable quota below the Space's reserve line can release it. Unresolved checks back off at
+least fifteen minutes. Recovery admissions serialize per login and wait behind
+active work on that account. New user messages, closed/blocked tasks, lost
+membership/Project write authority, edits to the task or a cancelled collaboration pause recovery;
+dispatch still performs normal policy, Profile and fresh context authorization.
+Expiry pauses the choice rather than starting old work later.
+
+Recovery admission creates a job for the successor physical attempt while
+holding the Run row lock. It never reuses the failed attempt's still-finishing
+job; clearing the waiting marker and enqueueing the successor commit together.
+
+`PATCH /api/v1/runs/:runId/quota-recovery` accepts only `auto_continue` and uses
+the existing owner/instructing-user command rule. Its row lock serializes with
+admission: disabling persists without discarding progress; enabling renews the
+person's intent. After admission it returns 409 and directs the person to stop
+the active Run. Generic execution, FIFO and reserve overrides cannot erase or
+bypass an interrupted Run's choice. Normal Stop cancels the Run altogether.
+The same scoped controls appear in the transcript, its fixed bottom activity
+bar, and Run detail. A queued quota hold is a blocked Turn with `blocked_on =
+quota`, not active model work. The retry context requires inspecting completed
+actions/current files before continuing; external CLI side effects still have
+no universal exactly-once guarantee, and uncertain outcomes need the person.
+
 `runs` is the logical execution record; `run_attempts` is the physical
 execution record. The first dispatch claims a pre-created queued attempt when
 available. A Run with no attempt row is recorded as attempt 1. A retry never creates
@@ -413,6 +469,14 @@ Exchange output validation failure. A successful adapter process with an
 explicit `status=rejected` or failed/error acceptance check is terminalized as
 a failed Attempt before finalization. `RunEvaluation` classifies the structured
 reason, and the existing Supervisor remains the sole physical-attempt authority.
+Finalization rechecks the Run and physical attempt under its existing lock;
+the Supervisor compares that attempt number again under the Run row lock.
+An earlier attempt's evaluation cannot finalize or supervise a newer one.
+Settlement rechecks the attempt after supervision as well: once a retry has
+superseded it, the earlier finalization leaves domain reconciliation to the
+successor's own finalization, even if another worker has already finished it.
+The superseded finalization closes its own completion gate without running
+reconcilers, because it owes no further domain settlement.
 It respects the `max_attempts` cap and aggregate run cost cap. A retry receives
 the original task plus bounded prior-attempt reason context; a grouped/Room Run
 is not projected terminal while the Supervisor has requeued it. Exhaustion,
@@ -443,9 +507,14 @@ are the daemon's (ADR 0016). No CLI process runs in the server. On worker
 startup, a stale `running` run whose in-flight state was lost becomes
 `orphaned`, is finalized, and passes through the same supervisor policy. A
 stale `cancelling` run settles as `cancelled` so an explicit cancel is not
-undone by an automatic orphan retry. A
-daemon attempt also has a no-output/no-activity watchdog, which reports
-`runtime_stall_timeout`.
+undone by an automatic orphan retry. A daemon attempt has no default run
+deadline and no no-output watchdog: prolonged silence records one
+informational `run_quiet` status event and the attempt keeps running until it
+finishes, is stopped, loses its host connection, or reaches an explicitly set
+time limit — the contract's `max_duration_seconds` or the dispatch's
+`timeout_ms` — which stops it through the normal stop path and fails it with
+the non-retryable `run_timed_out` (`modules/hosts.md`, "no default whole-run
+time budget").
 
 `manual_review` and `model_judge` return `skipped`. A skipped result cannot
 make a run pass. Do not implement `model_judge` with the same model that
@@ -518,6 +587,52 @@ multi-server or separately deployed worker topology must replace the process
 local bus with shared pub/sub while preserving the same `chat.text_delta`
 contract. The durable message remains the canonical conversation record.
 
+`RunOut.model_selection` and the status/Turn projections additionally expose
+requested ACP selection and runtime-reported identity separately. The shared
+ACP controller reports the current model only after option application, then
+persists subsequent model updates. A queued retry suppresses its previous
+attempt's observation; dispatch clears it before opening ACP. Missing reports
+and `default` remain unknown rather than being inferred from the selected
+Profile or requested alias. The Turn stream updates this metadata through
+`turn.model_changed` without replacing in-flight text.
+
 ## ModelProvider secrets
 
 Provider API keys are write-only on the API. Storage uses `Credential.secret_ref` with scheme `model_provider_api_key:v1:` (encrypted payload + nonce). Runtime credential resolution decrypts via `Credential.secret_ref` through the canonical `runtimes.credentials` boundary. `ModelProvider.credential_id` is the single source of truth for provider API keys.
+
+## Shared web Run actions
+
+`apps/web/src/modules/runs/useRunActions.ts` owns the web command adapter shared
+by RunDetailPage and ConversationRunControls: resume, abandon, and exact
+pending authorization decisions. ConversationRunControls also uses its stop
+command; RunDetailPage does not add a stop button. It accepts the source Space and abort signal,
+serializes a component's in-flight commands, discards responses after a Run/Space
+change, and rereads the canonical Run before refreshing its caller. If only that
+reread (or the caller refresh) fails, the command still reports success and
+exposes a separate `refreshError` note, so an applied command is not retried. Authorization
+reconciliation remains server-owned and is never followed by a duplicate resume.
+`hasRunAuthorizationPause` is the shared UI distinction between that hold and a
+Run review; server command authorization remains authoritative. `useRun` keeps
+its existing status polling with an optional explicit Space and cancels reads
+when that scope changes. Reloading the same Run keeps the loaded page visible
+while refetching; only Run/Space changes clear it. Combined request signals use
+the listener-based `lib/mergeAbortSignals.ts` for older browser targets. There is no new Run state classifier or polling engine.
+
+Completed Run commands abort their local controller after delivering the canonical
+Run and clearing busy state; this releases listeners on the shared panel signal.
+
+Known scope limit: RunDetailPage's ContentAccessControl and PersonalContextPanel
+subtrees, plus evolutionApi.previewWorkflowFromRun/saveWorkflowFromRun, still use
+the API's global Space default. The current page's scope is the URL's current
+Space, so those calls agree today. Embedding this detail subtree for a Run from
+a different Space would first require scoping these consumers. This is a
+prerequisite for any such stage 4 integration, not an implemented embedded view.
+
+Agent Work embeds only scoped ConversationTurn/ConversationRunControls, not the
+standalone RunDetailPage subtree described above. Expanded members read their
+canonical Run and Turn in the source Space, and shared useRunActions handles
+stop/resume/abandon and authorization decisions followed by a canonical reread.
+Workbench controls filter UI eligibility by source membership and Run standing;
+Task/Proposal lifecycle changes remain linked to their existing owning pages.
+The attention DTO adds optional bounded Agent label, runtime key and start time
+from existing Run facts; it adds no state machine or database columns.

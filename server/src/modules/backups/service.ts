@@ -18,6 +18,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
+import { pruneMigrationArtifacts } from "../../db/migrationArtifacts.js";
 import type { InstanceOperationsPolicy } from "../settings/index.js";
 import { type BackupManifest, serializeManifest } from "./manifest.js";
 
@@ -171,6 +172,34 @@ export class BackupService {
       throw error;
     } finally {
       await releaseLock?.();
+    }
+  }
+
+  async pruneMigrationArtifacts(warn?: (message: string) => void): Promise<string[]> {
+    const backupRoot = resolve(this.config.backupRoot);
+    await prepareBackupRoot(backupRoot);
+    let releaseLock: (() => Promise<void>) | null = null;
+    try {
+      releaseLock = await acquireLock(join(backupRoot, ".backup.lock"));
+      return await pruneMigrationArtifacts(this.config.rainverHome, backupRoot, this.policy.backup_retention_count, {
+        warn, appliedMigrations: await this.appliedMigrations(warn),
+      });
+    } catch (error) {
+      if (error instanceof BackupInProgressError) return [];
+      throw error;
+    } finally { await releaseLock?.(); }
+  }
+
+  /** This instance's applied history, so retention can resolve pairs it no longer needs. */
+  private async appliedMigrations(warn?: (message: string) => void) {
+    if (!this.config.databaseUrl) return undefined;
+    try {
+      return (await getDbPool(this.config.databaseUrl).query<{ version: string; name: string; checksum: string }>(
+        "SELECT version, name, checksum FROM public.server_schema_migrations ORDER BY version",
+      )).rows;
+    } catch (error) {
+      warn?.(`Migration artifact retention could not read applied migrations; pending archives stay pinned: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
     }
   }
 

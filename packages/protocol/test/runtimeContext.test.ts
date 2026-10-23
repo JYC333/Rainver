@@ -486,6 +486,15 @@ describe("runtime context contracts", () => {
       },
     };
     expect(InvocationDeliverySchema.safeParse(delivery).success).toBe(true);
+    const skill = { source_item_id: "skill-item", content: { skill_package_id: "package-1", package_hash: "a".repeat(64), package_name: "Audit", files: [{ path: "SKILL.md", content_base64: "", content_hash: "b".repeat(64), executable: false }] } };
+    expect(InvocationDeliverySchema.safeParse({ ...delivery, skill_packages: [skill] }).success).toBe(false);
+    const withSkill = { ...delivery,
+      planned_items: [...delivery.planned_items, { item_id: "skill-item", semantic_role: "delegated_instruction", required: true }],
+      message_blocks: [...delivery.message_blocks, { semantic_role: "delegated_instruction", content: "Read selected Skill", source_item_ids: ["skill-item"] }],
+      skill_packages: [skill],
+    };
+    expect(InvocationDeliverySchema.safeParse(withSkill).success).toBe(true);
+    expect(InvocationDeliverySchema.safeParse({ ...withSkill, skill_packages: [skill, skill] }).success).toBe(false);
     expect(InvocationDeliverySchema.safeParse({
       ...delivery,
       audit_refs: { ...delivery.audit_refs, delivery_id: "delivery-2" },

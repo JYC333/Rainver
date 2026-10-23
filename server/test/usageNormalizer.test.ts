@@ -17,6 +17,21 @@ const privateAttribution = {
 };
 
 describe("usage normalizer", () => {
+  it("does not invent model calls for aggregated CLI usage and preserves safe diagnostics", () => {
+    const observation = {
+      space_id: "space-1", event_type: "llm.generation" as const, source_type: "local_run" as const,
+      execution_channel: "local_cli" as const, usage_details: { input: 42, input_cache_read: 10_000 },
+      metadata: { request_count_known: true, cli_usage: { acp_turns: 2, estimated_total: 500, occupancy_used: 9_000 } },
+    };
+    const unknown = normalizeUsageObservation(observation, "instance-1", privateAttribution);
+    expect(unknown.request_count).toBe(0);
+    expect(unknown.metadata_json).toEqual({
+      request_count_known: false, cli_usage: { acp_turns: 2, estimated_total: 500, occupancy_used: 9_000 },
+    });
+    const known = normalizeUsageObservation({ ...observation, request_count: 21 }, "instance-1", privateAttribution);
+    expect(known.request_count).toBe(21);
+    expect(known.metadata_json.request_count_known).toBe(true);
+  });
   it("normalizes OpenAI-style usage into exclusive token buckets without raw payload metadata", () => {
     const event = normalizeUsageObservation(
       {

@@ -30,11 +30,16 @@ export function isRetryableRunErrorCode(errorCode: string): boolean {
 
 /**
  * A vendor CLI refused because the subscription's window is used up. Never
- * retried: another attempt meets the same refusal until the window resets,
- * and each one spends a turn of the Run's budget to learn nothing. A
- * discussion stops at it as at a cap (`rooms/discussionService.ts`).
+ * immediately retried: another attempt meets the same refusal until the window resets.
+ * The Supervisor can park a bounded successor attempt at the quota gate.
  */
 export const SUBSCRIPTION_QUOTA_EXHAUSTED = "subscription_quota_exhausted";
+
+export function retryTaskInstruction(reasonCode: string): string {
+  return reasonCode === SUBSCRIPTION_QUOTA_EXHAUSTED
+    ? "Continue the task interrupted by quota exhaustion. First inspect current workspace and completed actions; preserve prior progress. Do not replay completed side effects. If an action's outcome cannot be established, ask the person before repeating it. Follow current instructions and authorization; do not change model, funding or collaboration bounds."
+    : "Re-attempt the original task and correct that failure; do not merely repeat the prior response.";
+}
 
 /**
  * The code a failed CLI Run gets from what the runtime said, when its text

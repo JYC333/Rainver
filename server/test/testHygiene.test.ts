@@ -63,7 +63,7 @@ describe("test hygiene", () => {
     expect(offenders((_, text) => /vi\.mock\("\.\.\/src\/db\/pool\.js"/.test(text), [
       "agentsCrudRoutes.test.ts", "automationsProjectDb.test.ts", "claimReviewLoopRoutes.test.ts",
       "claimSourcesSourcePolicy.test.ts", "contextOpsRoutes.test.ts",
-      "evolutionRoutes.test.ts", "jobsSchedulers.test.ts", "knowledgeRetrievalEvalRoutes.test.ts",
+      "jobsSchedulers.test.ts", "knowledgeRetrievalEvalRoutes.test.ts",
       "knowledgeRetrievalExplainRoutes.test.ts", "knowledgeRetrievalRoutes.test.ts", "memoryMaintenanceRoutes.test.ts",
       "objectProfileRegistry.test.ts", "publicationsRoutes.test.ts",
     ])).toEqual([]);
@@ -93,7 +93,7 @@ describe("test hygiene", () => {
       const tests = (text.match(/^\s*(?:it|test)(?:\.each\([^)]*\))?\(/gm) ?? []).length;
       return tests > 0 && tests < 3 && !/Group\.test\.ts$/.test(name) && groups.some((g) => g.startsWith(family(name)));
     }, [
-      "claimSourcesSourcePolicy.test.ts", "contentAccessEquivalence.test.ts", "evolutionRoutes.test.ts",
+      "claimSourcesSourcePolicy.test.ts", "contentAccessEquivalence.test.ts",
       "knowledgeRetrievalExplainRoutes.test.ts", "projectBriefConversationProjection.test.ts", "projectCorpusGraph.test.ts",
       "projectExecutionModeAdapters.test.ts", "projectResearchExecutionProfileDb.test.ts",
       "projectResearchInitialIntakeCoordinator.test.ts", "projectResearchQuestionRefineRoutesDb.test.ts", "projectResearchReconcileNudge.test.ts",
@@ -128,7 +128,6 @@ describe("test hygiene", () => {
       "claimSourcesSourcePolicy.test.ts",
       "contextOpsReviewCycle.test.ts",
       "contextOpsRoutes.test.ts",
-      "evolutionRoutes.test.ts",
       "jobsSchedulers.test.ts",
       "knowledgeRetrievalEvalRoutes.test.ts",
       "knowledgeRetrievalExplainRoutes.test.ts",

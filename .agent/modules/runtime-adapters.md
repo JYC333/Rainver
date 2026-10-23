@@ -46,10 +46,61 @@ installation distribution, not in parallel Rainver Agent loops. Claude,
 Codex, and OpenCode all use ACP; Claude stream-JSON and Codex app-server are
 not current execution protocols.
 
-The shared controller accepts non-message session metadata between context
-and current-user prompts or just after a prompt response; message and thought
-chunks remain confined to an active prompt and updates from another session
-are rejected.
+The pinned Claude ACP 0.70.0 and Codex ACP 1.12.0 distributions both advertise
+`_meta.steering.supported` at initialization and implement the
+`_session/steering` extension with `{ sessionId, prompt: ContentBlock[] }`.
+Rainver does not expose that extension: its controller receives its prompt
+list at construction and closes stdin after that list completes. The Host's
+duplex transport is sufficient, but no runtime option enables live input in
+the current product. Conversation queueing still waits for the turn boundary.
+Claude injects active-turn steering with `priority: "now"`; its separate
+`claudeCode.promptQueueing` capability is not the same operation. Claude can
+refuse idle steering without starting work via
+`_meta.steering.idleBehavior: "promptRequired"`. The pinned Codex adapter has
+no such idle option: it can return `startedNewTurn` and start work when the
+original turn finishes before injection. A future integration must keep that
+work tracked, authorize and record the new input through Runtime Context,
+and bind its acknowledgement to the correct Run, attempt and CLI lease;
+concurrent ordinary `session/prompt` calls are not a portable substitute.
+See the mid-turn steering entry in the
+[deferred register](../tasks/deferred-register.md).
+
+The shared controller accepts non-message session metadata while a known
+session is being resumed, between context and current-user prompts, or just
+after a prompt response. Resume metadata does not acknowledge the resume or
+start a prompt: the controller still waits for the matching response, and a
+resume error still fails the handshake. Message and thought chunks remain
+confined to an active prompt and updates from another session are rejected.
+
+Claude ACP 0.70 logs the unhandled SDK `system/permission_check_status`
+metadata as `Unexpected case: <JSON>` on stderr. The thread-event projection
+recognizes that exact diagnostic for `claude_code` and omits it from the
+conversation, including split chunks and a final line without a newline.
+Other stderr, malformed JSON and unknown message kinds remain diagnostics.
+This does not acknowledge a permission request or change Run failure handling;
+the Host still relays the original stderr. Keep vendor recognition in
+`runtimeAdapters/runtimeDiagnostic.ts`, rather than matching words in the UI.
+
+Model picker values are not necessarily all the model identifiers an adapter
+accepts. The Claude adapter also resolves aliases in `session/set_config_option`
+(for example, `fable` to a canonical model id). Its spec declares
+`model.acp_model_aliases`; the shared controller sends an unlisted model alias
+to that adapter and waits for a successful response with a canonical picker
+value before prompting. A picker value alone does not prove the alias was
+honoured — an adapter that ignores an unknown alias echoes its unchanged
+default — so the response must either move the session to another value or
+name the alias (the choice's display name, or a dash-separated word of its
+canonical id such as `fable` in `claude-fable-5-1`). Otherwise the Run fails,
+or, for a saved selection, keeps the runtime default with a dropped-selection
+notice. Usage attribution uses that returned value. Rainver
+does not keep its own alias map. Explicit picker selections still require an
+exact acknowledgement, as do non-model options; other runtimes retain exact
+validation unless their spec declares alias support. An already-current value
+can be retained even when the picker omits it, as can happen on session resume.
+Rainver's `initialize` opts into boolean session options, so an adapter may
+advertise a toggle (Codex `fast-mode`, Claude `fast`) as `type: "boolean"`;
+the controller then sets it as `{ type: "boolean", value }`, the protocol's
+discriminated request shape, which schema-validating adapters require.
 
 Interactive requests from the runtime. There is no "ask the person and
 suspend" tool: an Agent asks by ending its turn with the question, and the
@@ -77,6 +128,24 @@ real host are an open acceptance item in `tasks/deferred-register.md`.
 
 ## Run and Host boundary
 
+Terminal subscription refusals are normalized by the runtime spec, including
+Claude's `session limit` wording. `runtimeAdapters/quotaReset.ts` reads only
+spec-declared reset formats; Claude's epoch and a clock with an IANA timezone
+are supported. `Intl` supplies timezone/DST rules, never the server's local
+zone. Unknown reset prose stays unknown. The Supervisor may park the next
+physical attempt at the existing subscription gate; see
+[Runs and outputs](../architecture/RUNS_AND_OUTPUTS.md#attempts-cancellation-and-supervision).
+A runtime that is itself still waiting has not returned a terminal refusal,
+so Rainver never creates a concurrent successor. There is no extra vendor
+agent loop or native-terminal configuration change.
+
+Reuse / Dependency Check:
+- Existing capability: Run Supervisor/attempts, quota gate and minute scheduler, shared Run commands.
+- Installed dependencies: existing PostgreSQL/transaction helpers and Zod; native Date/Intl for reset instants.
+- External option: n/a for Run intent, authorization and continuation semantics; the scheduler already exists.
+- Approach: extend these existing mechanisms, with no new dependency or migration.
+- Reason: one durable admission and cancellation authority prevents competing retry engines.
+
 1. Run creation identifies the Agent and immutable AgentVersion constraints.
    It records a requested Profile when one is explicit; otherwise routing
    selects among that Agent's eligible Profiles.
@@ -94,12 +163,46 @@ real host are an open acceptance item in `tasks/deferred-register.md`.
    protocol. Rainver retains Run finalization, cancellation/recovery,
    artifacts, usage, tool authorization and audit ownership.
 
+The shared controller counts the ACP prompts it actually sends, including a
+context phase when present, and reports the runtime's last valid context
+occupancy/capacity. Neither is an internal model-call count. The server adds
+the accepted Gateway plan's numeric allocation estimate to usage diagnostics;
+it never reads vendor transcripts to guess missing measurements. Unreported
+model calls are unknown, including legacy aggregate CLI observations. See
+[execution accounting](../architecture/EXECUTION_MODEL.md) for the ledger and
+Usage page semantics. This does not require an execution Host protocol change.
+
 The built-in Server Runtime is an execution Host using the same daemon protocol
 as a paired Host. Its managed OpenCode version is pinned by the Rainver release
 and maintained by Server lifecycle policy; paired Host installs and upgrades
 remain explicit Host-owner actions. A runtime that is not installed, healthy,
 or reported by its Host fails admission/launch rather than silently switching
 to another copy.
+
+ACP Agent Runs have no default elapsed-time budget, and the legacy
+AgentVersion `max_run_time_seconds` and adapter `timeout` values never limit
+them. An explicitly set limit is enforced: the Run contract's
+`max_duration_seconds` or a dispatch's `timeout_ms`, the shorter of the two,
+stops the attempt server-side through the normal stop path and fails it as
+`run_timed_out` (`runs/runTimeLimit.ts`; `modules/hosts.md`, "no default
+whole-run time budget"). The launch frame sends no deadline, and the daemon
+ignores launch deadlines. Explicit stop, runtime completion/failure and
+connection loss still apply. Silence after launch (300 seconds by default, configured through
+the legacy `stall_timeout_seconds` option) produces one neutral waiting notice
+per Run. It never terminates execution, reports failure, or invalidates a stored
+session. Both stdout and stderr count as output; queued processes do not trigger
+this notice. The observation timer is cleared on completion or failure.
+Linux Run work surfaces use the Host's private file tool channel when both
+server and Host support `file-v1`. Commands need no network permission for
+Rainver actions. The controller negotiates ACP `additionalDirectories`; the
+Host resolves only the current launch's IPC directory into session setup,
+including resume. This uses the shared controller, adds no vendor protocol,
+and changes no model or command-network setting. See
+[System Actions](../architecture/SYSTEM_ACTIONS.md) for identity, request bounds
+and older-Host behavior.
+Provider leases and work-surface identities use renewable 15-minute lifetimes,
+refreshed every minute while execution is active and revoked when it ends.
+Renewal cannot revive an expired/revoked identity or another attempt's token.
 
 ## Credentials and backend modes
 
@@ -176,6 +279,26 @@ loop.
 Runtime sessions and continuations are scoped by the owning Conversation or
 Host thread. Run snapshots preserve the selected runtime identity and backend
 for audit; edits to a live Profile cannot rebind existing Conversation state.
+
+Conversation tool results retain the execution-reported state for audit. When a
+failed tool result contains a parsed nonzero process exit code, the conversation
+shows the numeric exit code with neutral styling and explains that it may mean
+no matches, differences, or command failure. It does not infer success from a
+command name or downgrade the Run's terminal failure. Tool failures without a
+process exit code keep their error indicator.
+
+### Model observation
+
+After all requested options have been acknowledged, the shared ACP controller
+reports the model-category option's current value at prompt dispatch and on
+subsequent in-prompt option updates. Missing requested model options fail before
+prompting rather than silently using a default. The adapter serializes these
+observations to `runs.model_override_json.runtime_reported_model`, clearing the
+previous attempt's report before launch. `default` and absent reports remain
+unknown; a request or a Provider binding alone is not runtime confirmation.
+Run/Turn read models expose requested and reported values separately. This
+identifies what ACP reports, not an independently verified upstream model when
+the adapter exposes only an alias.
 
 ## Source and verification
 

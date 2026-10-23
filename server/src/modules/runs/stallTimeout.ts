@@ -1,17 +1,14 @@
 /**
- * How long a CLI runtime may say nothing before the Run is given up on.
- *
- * One rule for both execution paths. Do not use a third of the run budget.
- * For the default budget that is 100s, shorter than an ordinary long tool
- * call, and a runtime that is busy inside one emits nothing until it returns. Configured
- * per dispatch through `adapter_config.stall_timeout_seconds`; the default is
- * five minutes, never longer than the run budget itself.
+ * The thread status a quiet runtime records once per Run. Informational: it
+ * neither ends the turn nor stops the runtime, and the conversation renders
+ * it in the reader's language (`turnProjection.ts`).
  */
+export const RUN_QUIET_STATUS = "run_quiet";
+
+/** Legacy configuration name; this now controls an informational notice only. */
 export function stallTimeoutSeconds(
   adapterConfig: Record<string, unknown> | undefined,
-  timeoutSeconds: number,
 ): number {
   const configured = Number(adapterConfig?.stall_timeout_seconds);
-  const requested = Number.isFinite(configured) && configured > 0 ? configured : 300;
-  return Math.min(requested, Math.max(1, timeoutSeconds - 1));
+  return Number.isFinite(configured) && configured > 0 ? configured : 300;
 }

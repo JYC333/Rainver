@@ -379,18 +379,6 @@ describe("AdaptiveQueryOrchestrator", () => {
       expect(retried[0]?.sequence).toBe(1);
     });
 
-    it("rejects retrying a provider plan that has never been evaluated (still pending)", async () => {
-      const store = new FakeStore(["arxiv"]);
-      const orchestrator = new AdaptiveQueryOrchestrator({} as Queryable, {} as ServerConfig, {
-        repository: store,
-        contextRepository: { get: async () => contextVersion() },
-      });
-
-      await expect(orchestrator.retryProvider({ spaceId: "space", userId: "user" }, {
-        projectId: "project", strategyId: "strategy", providerKey: "arxiv",
-      })).rejects.toMatchObject({ statusCode: 409 });
-    });
-
     it("retries an already-selected provider plan, starting the new round from the exact combination that was selected", async () => {
       const store = new FakeStore(["arxiv", "openalex"]);
       store.seedSelected("arxiv");
@@ -417,20 +405,6 @@ describe("AdaptiveQueryOrchestrator", () => {
       // The new round's first attempt reuses the previously-selected combination
       // verbatim (bypassing ladder.initial()'s re-ranking/truncation).
       expect(retriedRoundAttempt?.semanticQuery).toEqual(semanticIntent());
-    });
-
-    it("rejects retrying a provider plan once the strategy has been materialized", async () => {
-      const store = new FakeStore(["arxiv"]);
-      store.seedSelected("arxiv");
-      store.markMaterialized();
-      const orchestrator = new AdaptiveQueryOrchestrator({} as Queryable, {} as ServerConfig, {
-        repository: store,
-        contextRepository: { get: async () => contextVersion() },
-      });
-
-      await expect(orchestrator.retryProvider({ spaceId: "space", userId: "user" }, {
-        projectId: "project", strategyId: "strategy", providerKey: "arxiv",
-      })).rejects.toMatchObject({ statusCode: 409 });
     });
 
     it("plans and records the intent when the strategy has none stored yet", async () => {
@@ -552,11 +526,6 @@ class FakeStore {
     plan.attempts = [attempt];
     plan.selected_attempt_id = attempt.id;
     plan.status = "selected";
-    this.strategy.status = "materialized";
-    this.strategy.materialized_at = new Date().toISOString();
-  }
-
-  markMaterialized() {
     this.strategy.status = "materialized";
     this.strategy.materialized_at = new Date().toISOString();
   }

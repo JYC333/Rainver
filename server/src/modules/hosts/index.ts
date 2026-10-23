@@ -12,3 +12,5 @@ export {
   type HostFailure,
   type DaemonHelloInfo,
 } from "./repository.js";
+
+export { STOPPED_MERGE_STATUSES } from "./taskMerges.js";

@@ -1,4 +1,5 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { ownCliReleases } from "../src/modules/hosts/ownCliReleases.js";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { LOGIN_INPUT_MAX_CHARS } from "@rainver/protocol";
 import type { FastifyInstance } from "fastify";
 import { useTestDatabase } from "./support/testDatabase.js";
@@ -95,6 +96,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  vi.spyOn(ownCliReleases, "peek").mockReturnValue(null);
   if (!db.available) return;
   await resetTables(db.pool, ["hosts", "settings", "spaces", "users"], { cascade: true });
   const now = new Date().toISOString();
@@ -110,6 +112,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   __setAuthIdentityForTests(null);
   __setAuthRepositoryForTests(null);
   __setAcpRegistryForTests(null);

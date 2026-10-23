@@ -9,6 +9,7 @@ import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository.js
 import { contractRecord, createRunContractSnapshot } from "../src/modules/runs/contractSnapshot.js";
 import type { AgentRunRecord, RunRecord } from "../src/modules/runs/repository.js";
 import { isRetryableRunErrorCode } from "../src/modules/runs/retryPolicy.js";
+import { runAssignedTask } from "../src/modules/runs/runAssignedTask.js";
 import { type RunExchangeHandle, RunExchangeManager } from "../src/modules/runs/runExchange.js";
 import { assembleRunInputEnvelope, logicalRunInput } from "../src/modules/runs/runInputEnvelope.js";
 import {
@@ -22,7 +23,12 @@ import {
   verificationResultToOut,
 } from "../src/modules/runs/runReadModel.js";
 import { resetTables } from "./support/resetTables.js";
-import { ensureDefaultRuntimeProfile, seedServerHost } from "./support/domainSeeds.js";
+import { ensureDefaultRuntimeProfile, seedRun, seedServerHost, seedSpaceOwnerProject } from "./support/domainSeeds.js";
+import { loadConfig } from "../src/config.js";
+import { RunOrchestrationService } from "../src/modules/runs/orchestrationService.js";
+import { PgRunRepository } from "../src/modules/runs/repository.js";
+import { LocalCliProcessRegistry, type CliCommandExecutor } from "../src/modules/runs/localCliExecution.js";
+import { NO_PROVIDER_BINDINGS } from "../src/modules/runs/remoteHostCliAdapter.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resolveExecutionHost } from "../src/modules/runs/executionHostResolution.js";
 import { finalizedForPostRun } from "../src/modules/runs/finalizationOutcome.js";
@@ -109,7 +115,7 @@ describe("runContractSnapshot", () => {
       expect(snapshot.budget_resolution.mode).toBe("strictest_of_all");
     });
 
-    it("keeps AgentVersion risk and duration constraints stricter than caller precedence", () => {
+    it("preserves AgentVersion risk without turning legacy duration into a Run deadline", () => {
       const snapshot = createRunContractSnapshot({
         source: { kind: "automation", id: "automation-1" },
         risk_level: "low",
@@ -130,11 +136,11 @@ describe("runContractSnapshot", () => {
         risk_level: "high",
         max_run_time_seconds: 240,
       });
-      expect(snapshot.max_duration_seconds).toBe(240);
+      expect(snapshot.max_duration_seconds).toBe(900);
       expect(snapshot.budget_resolution.mode).toBe("explicit_precedence");
       expect(snapshot.budget_resolution.selected_source_by_dimension.max_duration_seconds).toEqual({
-        kind: "agent_version",
-        id: "agent-version-1",
+        kind: "automation",
+        id: "automation-1",
       });
     });
 
@@ -830,5 +836,130 @@ describe("agent_run post-run steps", () => {
     expect(finalizedForPostRun({ status: "succeeded" })).toBe(true);
     // A real failure stops before them; the job's retry runs them.
     expect(finalizedForPostRun({ status: "failed", error_code: "finalization_failed" })).toBe(false);
+  });
+});
+
+describe("runTimeLimitDb", () => {
+  // An explicitly set limit stops the Run end to end: the stop reaches the
+  // runtime, and the durable Run row ends failed with `run_timed_out`
+  // rather than staying running behind renewed leases.
+  const db = useTestDatabase(`${import.meta.filename}#runTimeLimitDb`);
+
+  it("settles a Run that reaches its contract time limit as failed run_timed_out and releases its execution lock", async () => {
+    if (!db.available) return;
+    const space = randomUUID();
+    const owner = randomUUID();
+    const runId = randomUUID();
+    const agent = randomUUID();
+    await seedSpaceOwnerProject(db.pool, { space, owner, project: randomUUID() });
+    await seedRun(db.pool, { id: runId, space, owner, agent, version: randomUUID() });
+    // A conversation's managed workspace on the built-in host.
+    const workspace = { kind: "managed", agent_id: agent, container: { kind: "conversation", conversation_id: randomUUID() } };
+    await db.pool.query(
+      `UPDATE runs SET status = 'queued', started_at = NULL, ended_at = NULL, prompt = 'Work for a long time',
+              instructed_by_user_id = $2, contract_snapshot_json = $3::jsonb,
+              runtime_profile_snapshot_json = runtime_profile_snapshot_json || $4::jsonb
+        WHERE id = $1`,
+      [runId, owner, JSON.stringify({ max_duration_seconds: 0.05 }), JSON.stringify({ workspace })],
+    );
+    const processes = new LocalCliProcessRegistry();
+    const stops: string[] = [];
+    const executor: CliCommandExecutor = {
+      runCommand(input) {
+        // A runtime that would work forever; only the stop path ends it.
+        return new Promise((resolve) => {
+          input.process_registry?.registerRemote?.(
+            input.run_id,
+            () => {
+              stops.push("terminate");
+              input.process_registry?.deregister(input.run_id);
+              resolve({ returncode: 143, stdout: "", stderr: "terminated", timed_out: false });
+            },
+            () => { stops.push("force"); },
+          );
+        });
+      },
+    };
+    const service = new RunOrchestrationService(
+      loadConfig({ SERVER_INTERNAL_TOKEN: "internal-token", RAINVER_HOME: join(tmpdir(), "rainver-run-time-limit-home") }),
+      new PgRunRepository(db.pool),
+      {
+        policyEnforcer: async () => ({ status: "allow" }),
+        processRegistry: processes,
+        builtinHostResolver: async () => "host-builtin",
+        hostKindResolver: async () => ({ hostKind: "server" as const, hostId: "host-builtin", workspaceLocationId: "location-1" }),
+        hostCli: {
+          executor,
+          bindings: {
+            ...NO_PROVIDER_BINDINGS,
+            async profileScope(run: { agent_id: string | null }) {
+              return { agent_id: run.agent_id!, container_kind: "conversation" as const, container_id: randomUUID() };
+            },
+          },
+        },
+        runtimeContextGateway: {
+          async prepareInvocation() {
+            return {
+              id: "delivery-1", invocation_id: runId, delivery_kind: "agent_task", runtime_key: "codex_cli",
+              provider_id: null, model: null, renderer_version: "acp.v1", mode: "full",
+              planned_items: [{ item_id: "user-item", semantic_role: "user_input", required: true }],
+              message_blocks: [{ semantic_role: "user_input", content: "Work for a long time", source_item_ids: ["user-item"] }],
+              control_ref: { type: "execution_control_snapshot", id: "control-1" }, sandbox_ref: null, tool_grant_refs: [],
+              output_contract_ref: null, expected_prompt_tokens: 4, context_estimate: { current_input: 4 }, max_output_tokens: null,
+              snapshot_draft_ref: { type: "invocation_snapshot", id: "snapshot-1" },
+              audit_refs: { delivery_id: "delivery-1", invocation_snapshot_id: "snapshot-1", execution_control_snapshot_id: "control-1", usage_source_id: randomUUID() },
+            };
+          },
+          async acknowledgeDelivery() { return {}; },
+          async finalizeInvocation() { return {}; },
+        } as never,
+        workContextResolver: async (run) => ({
+          workContextScopeId: run.id,
+          workContextSetupRef: { type: "work_context_setup", id: "setup-1", version: "1" },
+          projectId: run.project_id, projectFolderId: run.project_folder_id, agentId: run.agent_id,
+          runtimeProfileId: run.runtime_profile_id ?? null, projectBriefRef: null, projectInstructionRef: null,
+        }),
+        executionControlSnapshotWriter: async () => ({ id: "control-1" }) as never,
+      },
+    );
+
+    const outcome = await service.executeRun({
+      run_id: runId, space_id: space, worker_id: "worker-1", command_source: "job",
+    });
+    expect(outcome).toMatchObject({ status: "failed", error_code: "run_timed_out" });
+
+    expect(stops).toEqual(["terminate"]);
+    const stored = await db.pool.query<{ status: string; error_json: Record<string, unknown>; ended_at: string | null }>(
+      "SELECT status, error_json, ended_at FROM runs WHERE id = $1",
+      [runId],
+    );
+    expect(stored.rows[0]).toMatchObject({
+      status: "failed",
+      error_json: { error_code: "run_timed_out", error_text: expect.stringMatching(/time limit/) },
+    });
+    expect(stored.rows[0]!.ended_at).not.toBeNull();
+    const locks = await db.pool.query("SELECT 1 FROM run_execution_locks WHERE run_id = $1", [runId]);
+    expect(locks.rows).toHaveLength(0);
+  });
+});
+
+describe("what a sibling Agent is told this Run was asked", () => {
+  // A sibling receives the assigned task, excluding the other Agent's identity and memories.
+  const ROOM_TURN = {
+    prompt: "[What you have learned about yourself]\nI answer briefly.\n\n[Assigned task]\nCompare the vendors",
+    model_override_json: { chat_turn: { schema_version: "chat_turn.v1", assigned_task: "Compare the vendors" } },
+  };
+
+  it("gives the task, never the prompt that carries another Agent's identity", () => {
+    expect(runAssignedTask(ROOM_TURN)).toBe("Compare the vendors");
+    expect(runAssignedTask(ROOM_TURN)).not.toContain("I answer briefly.");
+  });
+
+  it("falls back to the prompt for a Run that was asked one thing", () => {
+    // An Automation or an evolution run has no assembled prompt to separate
+    // from: what it was asked *is* its prompt.
+    expect(runAssignedTask({ prompt: "Run the weekly digest", model_override_json: null }))
+      .toBe("Run the weekly digest");
+    expect(runAssignedTask({ prompt: null, model_override_json: null })).toBeNull();
   });
 });

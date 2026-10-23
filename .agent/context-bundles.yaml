@@ -61,6 +61,7 @@ backend-domain:
 
 frontend-product:
   docs:
+    - .agent/modules/agent-attention.md
     - .agent/architecture/FRONTEND_INFORMATION_ARCHITECTURE.md
     - .agent/modules/product-shell.md
     - .agent/modules/frontend-layout.md
@@ -205,6 +206,7 @@ memory:
 agents:
   docs:
     - .agent/modules/agents.md
+    - .agent/modules/agent-attention.md
     - .agent/decisions/0002-agent-model.md
     - .agent/decisions/0004-context-wrapper.md
     - .agent/decisions/0006-plugin-module-architecture.md
@@ -212,9 +214,44 @@ agents:
   code_roots:
     - server/src/modules/agents
     - server/src/modules/runs
+    - server/src/modules/agentAttention
+    - apps/web/src/modules/agent_work # Shell aggregate provider, browser delivery, page/hooks/tests
+    - server/src/modules/streaming/agentAttentionStream.ts
+    - server/test/agentAttentionStream.test.ts
+    - server/test/agentAttentionSnapshotDb.test.ts
+    - packages/protocol/src/agentAttention.ts
+    - server/test/agentAttentionSemantics.test.ts
+    - server/test/agentAttentionDb.test.ts
+    - server/test/agentAttentionLineageDb.test.ts
+    - server/src/db/schema/agentAttention.ts
     - server/src/modules/projectFolders
     - server/src/gateway/routeRegistry.ts
     - server/test/runOrchestrationService.test.ts
+
+conversation:
+  docs:
+    - .agent/architecture/CONVERSATION.md
+    - .agent/architecture/RUNS_AND_OUTPUTS.md
+    - .agent/modules/client-server-protocol.md
+    - .agent/modules/agent-attention.md
+    - .agent/architecture/REUSE_AND_DEPENDENCY_POLICY.md
+    - .agent/architecture/TESTING_STRATEGY.md
+    - .agent/BOUNDARIES.md
+    - .agent/COMMANDS.md
+  code_roots:
+    - apps/web/src/modules/conversation
+    - apps/web/src/modules/agent_work # explicit source-Space consumers and tests
+    - apps/web/src/modules/agents/ChatPanel.tsx
+    - apps/web/src/modules/agent_groups/AgentGroupsPage.tsx
+    - apps/web/src/modules/agent_groups/RoomMessageComposer.tsx
+    - apps/web/src/modules/agent_groups/RoomMessageComposer.test.tsx
+    - apps/web/src/lib/mergeAbortSignals.ts
+    - apps/web/src/lib/mergeAbortSignals.test.ts
+    - apps/web/src/modules/projects/sidecar/ProjectChatSidecar.tsx
+    - apps/web/src/modules/runs
+    - apps/web/src/hooks/useRun.ts
+    - apps/web/src/api/client.ts
+    - apps/web/src/__tests__/conversation-scope-api.test.ts
 
 policy:
   docs:

@@ -21,6 +21,9 @@ import { spaces } from "./spaces.js";
 import { users } from "./auth.js";
 import { agentRuntimeProfiles, agents } from "./agents.js";
 import { modelProviders } from "./providers.js";
+import { hostThreads } from "./hostThreads.js";
+import { sessions } from "./sessions.js";
+import { roomAgentMembers } from "./rooms.js";
 import { projects, projectBriefVersions, projectInstructionVersions } from "./projects.js";
 
 export const runtimeContextPolicyVersions = pgTable("runtime_context_policy_versions", {
@@ -96,6 +99,27 @@ export const executionControlSnapshots = pgTable("execution_control_snapshots", 
   foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "execution_control_snapshots_space_id_fkey" }),
   foreignKey({ columns: [table.runId], foreignColumns: [runs.id], name: "execution_control_snapshots_run_id_fkey" }).onDelete("cascade"),
   check("ck_execution_control_snapshots_json_object", sql`jsonb_typeof(snapshot_json) = 'object'`),
+]);
+
+/**
+ * The work scope of one Room recipient in one Conversation (ADR 0014 §11).
+ * A Room holds several Conversations; each keeps its own history,
+ * checkpoints and CLI continuity, and the recipient row stays the Room-level
+ * membership. The id is the `work_context_scope_id` of a `room_recipient`
+ * scope.
+ */
+export const roomConversationRecipients = pgTable("room_conversation_recipients", {
+  id: varchar({ length: 36 }).primaryKey().notNull(),
+  spaceId: varchar("space_id", { length: 36 }).notNull(),
+  sessionId: varchar("session_id", { length: 36 }).notNull(),
+  roomAgentMemberId: varchar("room_agent_member_id", { length: 36 }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
+}, (table): PgTableExtraConfigValue[] => [
+  unique("uq_room_conversation_recipients_session_member").on(table.sessionId, table.roomAgentMemberId),
+  index("ix_room_conversation_recipients_member").on(table.roomAgentMemberId),
+  foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "room_conversation_recipients_space_id_fkey" }),
+  foreignKey({ columns: [table.sessionId], foreignColumns: [sessions.id], name: "room_conversation_recipients_session_id_fkey" }).onDelete("cascade"),
+  foreignKey({ columns: [table.roomAgentMemberId], foreignColumns: [roomAgentMembers.id], name: "room_conversation_recipients_member_id_fkey" }).onDelete("cascade"),
 ]);
 
 export const workContextSetups = pgTable("work_context_setups", {
@@ -248,6 +272,11 @@ export const runtimeContextCliBindings = pgTable("runtime_context_cli_bindings",
   model: varchar({ length: 256 }),
   runtimeStateKey: varchar("runtime_state_key", { length: 36 }).notNull(),
   vendorSessionId: varchar("vendor_session_id", { length: 512 }),
+  // The Host thread whose ACP session this cursor follows. One Room recipient
+  // scope spans every Conversation in the Room, each with its own thread and
+  // session, so each thread keeps its own active binding. Null for a binding
+  // that follows server-local CLI state rather than a Host thread.
+  hostThreadId: varchar("host_thread_id", { length: 36 }),
   authorityFingerprint: varchar("authority_fingerprint", { length: 64 }).notNull(),
   runtimeFingerprint: varchar("runtime_fingerprint", { length: 64 }).notNull(),
   fingerprintJson: jsonb("fingerprint_json").notNull(),
@@ -269,11 +298,13 @@ export const runtimeContextCliBindings = pgTable("runtime_context_cli_bindings",
   createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
-  uniqueIndex("uq_runtime_context_cli_bindings_active_scope").on(
-    table.spaceId,
-    table.workContextScopeId,
-    table.userId,
-    table.agentId,
+  uniqueIndex("uq_runtime_context_cli_bindings_active_scope").using(
+    "btree",
+    sql`space_id`,
+    sql`work_context_scope_id`,
+    sql`user_id`,
+    sql`agent_id`,
+    sql`COALESCE(host_thread_id, ''::character varying)`,
   ).where(sql`status = 'active'`),
   index("ix_runtime_context_cli_bindings_scope").on(table.spaceId, table.workContextScopeId),
   index("ix_runtime_context_cli_bindings_runtime_profile").on(table.runtimeProfileId),
@@ -282,6 +313,7 @@ export const runtimeContextCliBindings = pgTable("runtime_context_cli_bindings",
   foreignKey({ columns: [table.agentId, table.spaceId], foreignColumns: [agents.id, agents.spaceId], name: "runtime_context_cli_bindings_agent_scope_fkey" }),
   foreignKey({ columns: [table.runtimeProfileId, table.spaceId, table.agentId], foreignColumns: [agentRuntimeProfiles.id, agentRuntimeProfiles.spaceId, agentRuntimeProfiles.agentId], name: "runtime_context_cli_bindings_runtime_scope_fkey" }),
   foreignKey({ columns: [table.providerId], foreignColumns: [modelProviders.id], name: "runtime_context_cli_bindings_provider_id_fkey" }),
+  foreignKey({ columns: [table.hostThreadId], foreignColumns: [hostThreads.id], name: "runtime_context_cli_bindings_host_thread_id_fkey" }),
   check("ck_runtime_context_cli_bindings_scope_kind", sql`scope_kind IN ('direct_session','room_recipient','root_task','workflow_execution')`),
   check("ck_runtime_context_cli_bindings_status", sql`status IN ('active','rotated')`),
   check("ck_runtime_context_cli_bindings_cursor_generation", sql`cli_known_cursor >= 0 AND generation >= 1`),

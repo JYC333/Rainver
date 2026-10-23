@@ -4,12 +4,20 @@ const CONVERSATION_DRAFT_VERSION = 1
 const CONVERSATION_DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 const DRAFT_PREFIX = 'rainver:conversation-draft:v1:'
 
+/** A Room draft's route, when the person chose one other than its mentions' default. */
+export type ConversationDraftRouteChoice = 'direct' | 'agent_coordination'
+
 interface ConversationDraft {
   version: typeof CONVERSATION_DRAFT_VERSION
   destination: string
   text: string
   input_parts: ConversationInputPart[]
+  route_choice?: ConversationDraftRouteChoice
   saved_at: string
+}
+
+function routeChoiceOf(value: unknown): ConversationDraftRouteChoice | undefined {
+  return value === 'direct' || value === 'agent_coordination' ? value : undefined
 }
 
 function storageKey(destination: string): string {
@@ -43,6 +51,7 @@ export function readConversationDraft(destination: string, storage: Storage | nu
       destination,
       text: input.data.text,
       input_parts: input.data.input_parts,
+      ...(routeChoiceOf(record.route_choice) ? { route_choice: routeChoiceOf(record.route_choice) } : {}),
       saved_at: record.saved_at,
     }
   } catch {
@@ -70,6 +79,7 @@ export function writeConversationDraft(
       destination: draft.destination,
       text: input.data.text,
       input_parts: input.data.input_parts,
+      ...(routeChoiceOf(draft.route_choice) ? { route_choice: draft.route_choice } : {}),
       saved_at: new Date().toISOString(),
     } satisfies ConversationDraft))
   } catch {

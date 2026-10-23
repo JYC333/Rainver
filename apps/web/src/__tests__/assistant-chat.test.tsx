@@ -1,3 +1,5 @@
+import { StrictMode } from 'react'
+import ChatPanel from '../modules/agents/ChatPanel'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
@@ -27,6 +29,7 @@ vi.mock('../api/client', () => ({
   hostsApi: { list: hostsMock },
   runsApi: { get: runGetMock, turn: turnMock },
   proposalsApi: { get: proposalGetMock },
+  conversationInputApi: { uploadImage: vi.fn(), imageBlob: vi.fn(), deletePendingImage: vi.fn() },
   // The composer's knowledge-retrieval switch: off, as for a new conversation.
   runtimeContextApi: {
     retrievalSwitch: vi.fn(async (scopeId: string) => ({ work_context_scope_id: scopeId, enabled: false, preferred_domains: [], setup_version: null })),
@@ -39,9 +42,23 @@ vi.mock('../contexts/SpaceContext', () => ({
 }))
 
 import AssistantChatPage from '../modules/agents/AssistantChatPage'
-import { agentsApi } from '../api/client'
+import { agentsApi, conversationInputApi } from '../api/client'
+import { readConversationDraft, writeConversationDraft } from '../modules/conversation/conversationDraft'
 
 const routerFuture = { v7_relativeSplatPath: true, v7_startTransition: true } as const
+
+const acceptedDraftTurn = {
+  schema_version: 'chat_turn_accepted.v1', session_id: 'draft-session', run_id: 'draft-run',
+  user_message_id: 'draft-message', status: 'queued', event_stream_url: '/api/v1/runs/draft-run/turn/stream',
+  backend: { runtime_profile_id: 'runtime-1', runtime_key: 'opencode' },
+} as const
+
+function pasteDraftImage(input: HTMLElement, name: string) {
+  fireEvent.paste(input, { clipboardData: {
+    files: [new File([new Uint8Array([137, 80, 78, 71])], name, { type: 'image/png' })],
+    types: ['Files'], getData: () => '',
+  } })
+}
 
 function renderPage(entry = '/agents/a1/chat') {
   render(
@@ -73,6 +90,7 @@ function LocationProbe() {
 
 describe('AssistantChatPage conversation backends', () => {
   beforeEach(() => {
+    sessionStorage.clear()
     getMock.mockReset()
     messagesMock.mockReset()
     backendsMock.mockReset()
@@ -92,8 +110,57 @@ describe('AssistantChatPage conversation backends', () => {
     runGetMock.mockRejectedValue(new Error('no run'))
     proposalGetMock.mockReset()
     proposalGetMock.mockResolvedValue({ status: 'pending' })
+    vi.mocked(conversationInputApi.uploadImage).mockImplementation(async file => ({
+      media_id: file.name, filename: file.name, media_type: 'image/png', byte_size: file.size,
+      sha256: 'a'.repeat(64), expires_at: new Date().toISOString(),
+    }))
+    vi.mocked(conversationInputApi.imageBlob).mockResolvedValue(new Blob())
+    vi.mocked(conversationInputApi.deletePendingImage).mockResolvedValue(null as never)
+    if (!URL.createObjectURL) Object.defineProperty(URL, 'createObjectURL', { value: () => 'blob:test' })
+    if (!URL.revokeObjectURL) Object.defineProperty(URL, 'revokeObjectURL', { value: () => undefined })
     // jsdom doesn't implement Element.scrollTo, which ChatPanel calls on mount.
     Element.prototype.scrollTo = vi.fn() as unknown as typeof Element.prototype.scrollTo
+  })
+
+  it('reads and sends direct chat in the Agent Space B while the URL belongs to A', async () => {
+    vi.mocked(agentsApi.chat).mockResolvedValue({ ok: true, session_id: 'session-b', run_id: null, reply: 'Done', assistant_message: null, action_previews: [] } as never)
+    render(<MemoryRouter initialEntries={['/spaces/space-a/agents/a1/chat']}>
+      <ChatPanel agent={{ ...agent, space_id: 'space-b' } as never} initialSessionId="session-b" />
+    </MemoryRouter>)
+    const input = await enabledComposer()
+    fireEvent.change(input, { target: { value: 'hello B' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(agentsApi.chat).toHaveBeenCalledWith('a1', expect.any(Object), expect.objectContaining({ spaceId: 'space-b' })))
+    expect(messagesMock).toHaveBeenCalledWith('session-b', expect.objectContaining({ spaceId: 'space-b' }))
+    expect(backendsMock).toHaveBeenCalledWith('a1', expect.objectContaining({ spaceId: 'space-b' }))
+  })
+
+  it.each([false, true])('cancels B when returning to self-accepted A (StrictMode=%s)', async strict => {
+    const changed = vi.fn()
+    vi.mocked(agentsApi.chat).mockImplementation(async (_id, _body, options) => {
+      options?.onAccepted?.({ session_id: 'session-a', run_id: 'run-a' } as never)
+      return new Promise(() => {})
+    })
+    const content = (session?: string) => <MemoryRouter><ChatPanel
+      agent={agent as never} initialSessionId={session} onSessionChange={changed}
+    /></MemoryRouter>
+    const panel = (session?: string) => strict ? <StrictMode>{content(session)}</StrictMode> : content(session)
+    const view = render(panel())
+    const input = await enabledComposer()
+    fireEvent.change(input, { target: { value: 'start A' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(changed).toHaveBeenCalledWith('session-a'))
+    view.rerender(panel('session-a'))
+    const sendSignal = vi.mocked(agentsApi.chat).mock.calls[0]![2]!.signal!
+    expect(sendSignal.aborted).toBe(false)
+    view.rerender(panel('session-b'))
+    await waitFor(() => expect(messagesMock).toHaveBeenCalledWith('session-b', expect.any(Object)))
+    const bCall = messagesMock.mock.calls.filter(call => call[0] === 'session-b').slice(-1)[0]!
+    const bSignal = bCall[1].signal as AbortSignal
+    expect(sendSignal.aborted).toBe(true)
+    expect(bSignal.aborted).toBe(false)
+    view.rerender(panel('session-a'))
+    await waitFor(() => expect(bSignal.aborted).toBe(true))
   })
 
   it('reads a reply\'s turn on reload without exposing completed tools', async () => {
@@ -123,7 +190,7 @@ describe('AssistantChatPage conversation backends', () => {
     expect(await screen.findByText('Here is what I found.')).toBeInTheDocument()
     expect(screen.queryByText(/show work/)).not.toBeInTheDocument()
     expect(screen.queryByText('search')).not.toBeInTheDocument()
-    expect(turnMock).toHaveBeenCalledWith('run-past')
+    expect(turnMock).toHaveBeenCalledWith('run-past', expect.any(Object))
   })
 
   it('still says a reloaded turn is blocked, with somewhere to go', async () => {
@@ -212,8 +279,8 @@ describe('AssistantChatPage conversation backends', () => {
     expect(await screen.findByText('Reply 59')).toBeInTheDocument()
     expect(turnMock.mock.calls.length).toBeLessThanOrEqual(20)
     // The tail is what gets read, not an arbitrary slice.
-    expect(turnMock).toHaveBeenCalledWith('run-59')
-    expect(turnMock).not.toHaveBeenCalledWith('run-0')
+    expect(turnMock).toHaveBeenCalledWith('run-59', expect.any(Object))
+    expect(turnMock).not.toHaveBeenCalledWith('run-0', expect.any(Object))
   })
 
   it('still shows Thinking after a reload of a conversation whose history has turns', async () => {
@@ -277,10 +344,10 @@ describe('AssistantChatPage conversation backends', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /conversation backend/i })).toHaveTextContent('Subscription · claude_code')
     })
-    expect(backendsMock).toHaveBeenCalledWith('a1', {
+    expect(backendsMock).toHaveBeenCalledWith('a1', expect.objectContaining({
       spaceId: 'personal-1',
       sessionId: 's1',
-    })
+    }))
   })
 
   it('waits for backend discovery before auto-sending a Home draft', async () => {
@@ -340,7 +407,7 @@ describe('AssistantChatPage conversation backends', () => {
     expect(await screen.findByText(/could not complete/i)).toBeInTheDocument()
     expect(await screen.findByText('The run failed.')).toBeInTheDocument()
     // History must NOT be reloaded for a session created during this chat.
-    expect(messagesMock).not.toHaveBeenCalledWith('session-new')
+    expect(messagesMock).not.toHaveBeenCalledWith('session-new', expect.any(Object))
   })
 
   it('marks an in-flight partial reply as failed when the stream disconnects', async () => {
@@ -563,6 +630,193 @@ describe('AssistantChatPage conversation backends', () => {
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
   })
 
+  it.each(['done', 'quota', 'failed', 'disconnected'] as const)('preserves the next draft and attachments when the accepted turn is %s', async outcome => {
+    let options: Parameters<typeof agentsApi.chat>[2]
+    let finish!: (value: unknown) => void
+    let fail!: (error: Error) => void
+    vi.mocked(agentsApi.chat).mockImplementationOnce((_agentId, _body, callbacks) => {
+      options = callbacks
+      callbacks?.onAccepted?.(acceptedDraftTurn)
+      return new Promise((resolve, reject) => { finish = resolve; fail = reject }) as never
+    })
+    renderPage()
+    const input = await enabledComposer()
+    fireEvent.change(input, { target: { value: 'original task' } })
+    pasteDraftImage(input, 'submitted.png')
+    await screen.findByRole('button', { name: 'Remove submitted.png' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(agentsApi.chat).toHaveBeenCalledTimes(1))
+    expect(input).toHaveValue('')
+    expect(screen.queryByRole('button', { name: 'Remove submitted.png' })).not.toBeInTheDocument()
+    expect(vi.mocked(agentsApi.chat).mock.calls[0]?.[1]).toMatchObject({
+      message: 'original task', input_parts: [{ media_id: 'submitted.png' }],
+    })
+    fireEvent.change(input, { target: { value: 'next instruction' } })
+    expect(screen.getByRole('button', { name: 'Attach image' })).toBeEnabled()
+    pasteDraftImage(input, 'next.png')
+    await screen.findByRole('button', { name: 'Remove next.png' })
+    await waitFor(() => expect(readConversationDraft('direct:a1::draft-session')).toMatchObject({
+      text: 'next instruction', input_parts: [{ media_id: 'next.png' }],
+    }))
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+
+    await act(async () => {
+      if (outcome === 'quota') options?.onTurn?.({
+        schema_version: 'run_turn.v1', run_id: 'draft-run', state: 'blocked', blocked_on: 'quota',
+        source: 'run_events', cursor: 0, updated_at: null, parts: [],
+      })
+      else if (outcome === 'disconnected') fail(new Error('connection lost'))
+      else finish({ ok: outcome === 'done', session_id: 'draft-session', run_id: 'draft-run',
+        reply: 'Finished', error: outcome === 'failed' ? 'Run failed' : undefined, assistant_message: null })
+    })
+    expect(input).toHaveValue('next instruction')
+    expect(screen.getByRole('button', { name: 'Remove next.png' })).toBeInTheDocument()
+    expect(readConversationDraft('direct:a1::draft-session')).toMatchObject({
+      text: 'next instruction', input_parts: [{ media_id: 'next.png' }],
+    })
+    expect(readConversationDraft('direct:a1::new')).toBeNull()
+  })
+
+  it('preserves edits made before acceptance when binding a new Session', async () => {
+    let accept!: () => void
+    vi.mocked(agentsApi.chat).mockImplementationOnce((_agentId, _body, options) => {
+      accept = () => options?.onAccepted?.(acceptedDraftTurn)
+      return new Promise(() => {}) as never
+    })
+    // Binding a Session must not restore an older stored draft over current edits.
+    writeConversationDraft({ destination: 'direct:a1::draft-session', text: 'stale draft', input_parts: [] })
+    renderPage()
+    const input = await enabledComposer()
+    fireEvent.change(input, { target: { value: 'original task' } })
+    pasteDraftImage(input, 'submitted.png')
+    await screen.findByRole('button', { name: 'Remove submitted.png' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.change(input, { target: { value: 'edited while sending' } })
+    pasteDraftImage(input, 'later.png')
+    await screen.findByRole('button', { name: 'Remove later.png' })
+    act(() => accept())
+    expect(input).toHaveValue('edited while sending')
+    expect(screen.queryByRole('button', { name: 'Remove submitted.png' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove later.png' })).toBeInTheDocument()
+    await waitFor(() => expect(readConversationDraft('direct:a1::draft-session')).toMatchObject({
+      text: 'edited while sending', input_parts: [{ media_id: 'later.png' }],
+    }))
+    expect(readConversationDraft('direct:a1::new')).toBeNull()
+    expect(screen.getByTestId('location')).toHaveTextContent('session=draft-session')
+  })
+
+  it('retains the submitted draft and attachments if admission fails', async () => {
+    vi.mocked(agentsApi.chat).mockRejectedValueOnce(new Error('Admission refused'))
+    renderPage()
+    const input = await enabledComposer()
+    fireEvent.change(input, { target: { value: 'retry this draft' } })
+    pasteDraftImage(input, 'retry.png')
+    await screen.findByRole('button', { name: 'Remove retry.png' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await screen.findByText('Admission refused')
+    expect(input).toHaveValue('retry this draft')
+    expect(screen.getByRole('button', { name: 'Remove retry.png' })).toBeInTheDocument()
+    await waitFor(() => expect(readConversationDraft('direct:a1::new')).toMatchObject({
+      text: 'retry this draft', input_parts: [{ media_id: 'retry.png' }],
+    }))
+  })
+
+  it('keeps a next-draft upload in flight when the submitted message is accepted', async () => {
+    let accept!: () => void
+    let finishUpload!: (media: Awaited<ReturnType<typeof conversationInputApi.uploadImage>>) => void
+    vi.mocked(agentsApi.chat).mockImplementationOnce((_agentId, _body, options) => {
+      accept = () => options?.onAccepted?.(acceptedDraftTurn)
+      return new Promise(() => {}) as never
+    })
+    renderPage()
+    const input = await enabledComposer()
+    fireEvent.change(input, { target: { value: 'original task' } })
+    pasteDraftImage(input, 'submitted.png')
+    await screen.findByRole('button', { name: 'Remove submitted.png' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    vi.mocked(conversationInputApi.uploadImage).mockImplementationOnce(() => new Promise(resolve => { finishUpload = resolve }))
+    pasteDraftImage(input, 'uploading.png')
+    await screen.findByRole('progressbar', { name: 'Uploading uploading.png' })
+    act(() => accept())
+    expect(input).toHaveValue('')
+    expect(screen.queryByRole('button', { name: 'Remove submitted.png' })).not.toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: 'Uploading uploading.png' })).toBeInTheDocument()
+    await act(async () => finishUpload({
+      media_id: 'uploading.png', filename: 'uploading.png', media_type: 'image/png', byte_size: 4,
+      sha256: 'a'.repeat(64), expires_at: new Date().toISOString(),
+    }))
+    expect(screen.getByRole('button', { name: 'Remove uploading.png' })).toBeInTheDocument()
+    await waitFor(() => expect(readConversationDraft('direct:a1::draft-session')).toMatchObject({
+      input_parts: [{ media_id: 'uploading.png' }],
+    }))
+  })
+
+  it('restores the saved next draft with its validated attachments', async () => {
+    writeConversationDraft({ destination: 'direct:a1::draft-session', text: 'recovered draft', input_parts: [{
+      kind: 'image', media_id: 'saved-image', filename: 'saved.png', media_type: 'image/png', byte_size: 4, sha256: 'a'.repeat(64),
+    }] })
+    renderPage('/agents/a1/chat?session=draft-session')
+    const input = await enabledComposer()
+    await waitFor(() => expect(input).toHaveValue('recovered draft'))
+    expect(screen.getByRole('button', { name: 'Remove saved.png' })).toBeInTheDocument()
+  })
+
+  it.each(['text', 'attachments', 'both'] as const)('preserves edits to %s while saved attachments are being validated', async edited => {
+    let validate!: (blob: Blob) => void
+    vi.mocked(conversationInputApi.imageBlob).mockImplementationOnce(() => new Promise(resolve => { validate = resolve }))
+    writeConversationDraft({ destination: 'direct:a1::draft-session', text: 'saved draft', input_parts: [{
+      kind: 'image', media_id: 'saved-image', filename: 'saved.png', media_type: 'image/png', byte_size: 4, sha256: 'a'.repeat(64),
+    }] })
+    renderPage('/agents/a1/chat?session=draft-session')
+    const input = await enabledComposer()
+    if (edited !== 'attachments') fireEvent.change(input, { target: { value: 'new draft' } })
+    if (edited !== 'text') {
+      pasteDraftImage(input, 'new.png')
+      await screen.findByRole('button', { name: 'Remove new.png' })
+    }
+    await act(async () => validate(new Blob()))
+    expect(input).toHaveValue(edited === 'attachments' ? 'saved draft' : 'new draft')
+    expect(screen.getByRole('button', { name: edited === 'text' ? 'Remove saved.png' : 'Remove new.png' })).toBeInTheDocument()
+    if (edited !== 'text') expect(screen.queryByRole('button', { name: 'Remove saved.png' })).not.toBeInTheDocument()
+    await waitFor(() => expect(readConversationDraft('direct:a1::draft-session')).toMatchObject({
+      text: edited === 'attachments' ? 'saved draft' : 'new draft',
+      input_parts: [{ media_id: edited === 'text' ? 'saved-image' : 'new.png' }],
+    }))
+  })
+
+  it.each([false, true])('preserves the draft and send guard after a quota hold, with a newer send: %s', async sendDuringWait => {
+    let finishOld: ((value: unknown) => void) | undefined
+    let reportQuota: (() => void) | undefined
+    vi.mocked(agentsApi.chat).mockImplementationOnce(async (_agentId, _body, options) => {
+      options?.onAccepted?.({ schema_version: 'chat_turn_accepted.v1', session_id: 'quota-session', run_id: 'quota-run',
+        user_message_id: 'quota-message', status: 'queued', event_stream_url: '/api/v1/runs/quota-run/turn/stream',
+        backend: { runtime_profile_id: 'runtime-1', runtime_key: 'opencode' } })
+      reportQuota = () => options?.onTurn?.({ schema_version: 'run_turn.v1', run_id: 'quota-run', state: 'blocked',
+        source: 'run_events', blocked_on: 'quota', cursor: 0, updated_at: null, parts: [] })
+      reportQuota()
+      return new Promise(resolve => { finishOld = resolve as typeof finishOld }) as never
+    }).mockImplementationOnce(async () => new Promise(() => {}) as never)
+    renderPage()
+    const input = await enabledComposer()
+    fireEvent.change(input, { target: { value: 'original task' } })
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: false })
+    expect(await screen.findByText('waiting for quota or a continuation choice')).toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText(/ask your assistant/i), { target: { value: 'new draft' } })
+    act(() => reportQuota?.())
+    expect(screen.getByPlaceholderText(/ask your assistant/i)).toHaveValue('new draft')
+    if (sendDuringWait) {
+      fireEvent.keyDown(screen.getByPlaceholderText(/ask your assistant/i), { key: 'Enter', shiftKey: false })
+      await waitFor(() => expect(agentsApi.chat).toHaveBeenCalledTimes(2))
+      fireEvent.change(screen.getByPlaceholderText(/ask your assistant/i), { target: { value: 'newer unsent draft' } })
+    }
+    await act(async () => finishOld?.({ ok: true, session_id: 'quota-session', run_id: 'quota-run', reply: 'Old work finished', assistant_message: null }))
+    expect(screen.getByPlaceholderText(/ask your assistant/i)).toHaveValue(sendDuringWait ? 'newer unsent draft' : 'new draft')
+    if (!sendDuringWait) fireEvent.keyDown(screen.getByPlaceholderText(/ask your assistant/i), { key: 'Enter', shiftKey: false })
+    await waitFor(() => expect(agentsApi.chat).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(agentsApi.chat).mock.calls[1]?.[1]).toMatchObject({ message: 'new draft', session_id: 'quota-session' })
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
+  })
+
   it('loads persisted messages when opened with a session query param', async () => {
     messagesMock.mockResolvedValue([
       {
@@ -591,7 +845,7 @@ describe('AssistantChatPage conversation backends', () => {
 
     expect(await screen.findByText('What did we decide?')).toBeInTheDocument()
     expect(screen.getByText('We moved chat turns to TS.')).toBeInTheDocument()
-    expect(messagesMock).toHaveBeenCalledWith('s1')
+    expect(messagesMock).toHaveBeenCalledWith('s1', expect.any(Object))
   })
 
   it('does not show a direct-chat card that names somebody else as its decider', async () => {
@@ -658,7 +912,7 @@ describe('AssistantChatPage conversation backends', () => {
     expect(await screen.findByText('Accepted')).toBeInTheDocument()
     expect(screen.getByText('Project definition')).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Review proposal' })).toBeInTheDocument()
-    expect(proposalGetMock).toHaveBeenCalledWith('proposal-accepted')
+    expect(proposalGetMock).toHaveBeenCalledWith('proposal-accepted', expect.any(Object))
   })
 
   it('shows managed workspace state and sends an explicit restore choice', async () => {

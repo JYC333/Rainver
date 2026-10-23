@@ -1,5 +1,5 @@
 /**
- * CLI entry for the server migration runner: `node dist/db/migrateCli.js [up|status]`.
+ * CLI entry for the server migration runner: `node dist/db/migrateCli.js [up|status|pending|maintenance-pending]`.
  *
  * Schema migrations are explicit ops commands, not server-startup side effects.
  * Run from `server/` so the default migrations directory resolves, or set
@@ -53,6 +53,17 @@ async function main(): Promise<void> {
       process.exitCode = pending.length > 0 ? 10 : 0;
       return;
     }
+    // Asked by `migrate.sh` before its pre-migration dump: the first line is
+    // the latest applied version (`none` on an empty database), followed by
+    // pending files; exit 10 when anything is pending, 0 when nothing is.
+    if (command === "pending") {
+      const rows = await status(pool, dir);
+      const pending = rows.filter((row) => !row.applied);
+      console.log(rows.filter((row) => row.applied).at(-1)?.version ?? "none");
+      for (const row of pending) console.log(`${row.version}_${row.name}`);
+      process.exitCode = pending.length > 0 ? 10 : 0;
+      return;
+    }
     if (command === "up") {
       const result = await migrate(pool, dir, { log: (m) => console.log(m) });
       console.log(
@@ -62,7 +73,7 @@ async function main(): Promise<void> {
       );
       return;
     }
-    console.error(`unknown command: ${command} (expected "up", "status" or "maintenance-pending")`);
+    console.error(`unknown command: ${command} (expected "up", "status", "pending" or "maintenance-pending")`);
     process.exitCode = 2;
   } finally {
     await pool.end();

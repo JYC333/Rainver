@@ -1,3 +1,10 @@
+import {
+  NO_SESSION_CONFIG,
+  reconcileSavedSessionConfig,
+  resolveSessionConfig,
+  sessionConfigRunOverride,
+  type ResolvedSessionConfig,
+} from "../sessions/sessionConfig.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
@@ -44,6 +51,7 @@ import type { RunGitSnapshot } from "../runs/contractSnapshot.js";
 import {
   loadRoomConversationReplayThroughMessage,
 } from "../runtimeContext/conversationContinuity.js";
+import { RUN_REQUEST_INCLUDES_INSTRUCTION } from "../runtimeContext/runRequest.js";
 import {
   assembleRoomConversationContext,
   estimateRoomSummaryTokens,
@@ -104,7 +112,7 @@ export interface SendAgentGroupMessageInput {
    * claims nothing new, so this — not `input_parts` — is what says whether the
    * turn still carries resources the Run must be able to read.
    */
-  capability_input_parts?: Array<{ kind: "image" | "file_reference" | "input_resource" }>;
+  capability_input_parts?: Array<{ kind: "image" | "file_reference" | "input_resource" | "skill" }>;
   /** Marks a Room retry so remote prompt hydration can use immutable inputs. */
   retry_of_run_id?: string | null;
   /**
@@ -116,11 +124,23 @@ export interface SendAgentGroupMessageInput {
   parent_message_id?: string | null;
   routing_mode?: "direct" | "agent_coordination" | null;
   recipient_segments?: AgentGroupMessageRecipientSegment[] | null;
+  /**
+   * Under `agent_coordination`: the Agents the person referred to, already
+   * checked as active Room members by the caller. The manager's prompt names
+   * them so it arranges the work with them; ignored for a direct send.
+   */
+  coordination_targets?: RoomCoordinationTarget[] | null;
   metadata_json?: Record<string, unknown> | null;
   backends?: Array<{
     agent_id: string;
     runtime_profile_id: string;
     session_config?: RuntimeSessionConfigSelection[];
+    /**
+     * `session_config` replays an earlier turn's selections (a retry) rather
+     * than a choice made now, so a withdrawn value falls back instead of
+     * refusing the turn.
+     */
+    session_config_inherited?: boolean;
   }> | null;
   /**
    * Precomputed Project state context text (mode projection + attention),
@@ -382,12 +402,17 @@ export class AgentGroupRunService {
         throw new HttpError(409, "Agent group has no manager agent");
       }
       const content = input.content.trim();
-      if (!content && !(input.input_parts?.length)) {
+      if (!content && !(input.input_parts?.length || input.capability_input_parts?.length)) {
         throw new HttpError(422, "content or an input part is required");
       }
       const trigger: GroupedRunTrigger = input.trigger ?? { origin: "manual" };
       const routingMode = input.routing_mode ?? "direct";
       const routingSegments = messageRecipientSegmentsForInput(input, group.manager_agent_id, content);
+      const managerAgentId = group.manager_agent_id;
+      const coordinationTargets = routingMode === "agent_coordination"
+        ? uniqueCoordinationTargets(input.coordination_targets ?? [])
+          .filter((target) => target.agent_id !== managerAgentId)
+        : [];
       const recipientAgentIds = routingSegments.flatMap((segment) => segment.recipient_agent_ids);
       const allRecipientAgentIds = uniqueIds(recipientAgentIds);
       if (group.session_id && recipientAgentIds.length !== allRecipientAgentIds.length) {
@@ -505,7 +530,7 @@ export class AgentGroupRunService {
               workspace_location_id: preparedBackend?.workspace_location_id ?? null,
               trust_mode: preparedBackend?.host_is_remote ? "trusted_host" : null,
               host_task_thread_id: preparedBackend?.host_thread?.id ?? null,
-              prompt: roomRunPrompt(preparedBackend, segment.content, input.project_state_context),
+              prompt: roomRunPrompt(preparedBackend, segment.content, content, input.project_state_context, coordinationTargets),
               instruction: optionalTrimmedOrNull(group.goal),
               runtime_profile_id: preparedBackend?.runtime_profile_id ?? null,
               model_override_json: roomRunModelOverride(preparedBackend, {
@@ -517,6 +542,7 @@ export class AgentGroupRunService {
                 plannedRecipientRunCount,
                 recipientSnapshots,
                 retryOfRunId: input.retry_of_run_id,
+                coordinationTargets,
               }),
               ...conversationToolGrantInput,
               allow_system_assistant: Boolean(group.room_id),
@@ -553,7 +579,7 @@ export class AgentGroupRunService {
           run_type: "agent",
           trigger_origin: trigger.origin,
           cause_run_id: trigger.origin === "continuation" ? trigger.cause_run_id : null,
-              prompt: roomRunPrompt(preparedRootBackend, firstSegment.content, input.project_state_context),
+              prompt: roomRunPrompt(preparedRootBackend, firstSegment.content, content, input.project_state_context, coordinationTargets),
               instruction: optionalTrimmedOrNull(group.goal),
               session_id: group.session_id,
               project_id: group.project_id,
@@ -575,6 +601,7 @@ export class AgentGroupRunService {
             plannedRecipientRunCount,
             recipientSnapshots,
             retryOfRunId: input.retry_of_run_id,
+            coordinationTargets,
           }),
           visibility: roomRunVisibility,
           grantee_user_ids: roomRunGranteeUserIds,
@@ -625,7 +652,7 @@ export class AgentGroupRunService {
               workspace_location_id: preparedBackend?.workspace_location_id ?? null,
               trust_mode: preparedBackend?.host_is_remote ? "trusted_host" : null,
               host_task_thread_id: preparedBackend?.host_thread?.id ?? null,
-              prompt: roomRunPrompt(preparedBackend, segment.content, input.project_state_context),
+              prompt: roomRunPrompt(preparedBackend, segment.content, content, input.project_state_context, coordinationTargets),
               instruction: optionalTrimmedOrNull(group.goal),
               runtime_profile_id: preparedBackend?.runtime_profile_id ?? null,
               model_override_json: roomRunModelOverride(preparedBackend, {
@@ -637,6 +664,7 @@ export class AgentGroupRunService {
                 plannedRecipientRunCount,
                 recipientSnapshots,
                 retryOfRunId: input.retry_of_run_id,
+                coordinationTargets,
               }),
               ...conversationToolGrantInput,
               allow_system_assistant: Boolean(group.room_id),
@@ -683,6 +711,9 @@ export class AgentGroupRunService {
         metadata_json: {
           ...(input.metadata_json ?? {}),
           routing_mode: routingMode,
+          ...(coordinationTargets.length
+            ? { coordination_target_agent_ids: coordinationTargets.map((target) => target.agent_id) }
+            : {}),
           routing_segments: routingSegmentsWithRuns,
           root_run_id: rootRunId,
           recipient_agent_id: allRecipientAgentIds[0],
@@ -1101,6 +1132,8 @@ export class AgentGroupRunService {
       throw new HttpError(503, policy.message ?? "Policy audit failed for child run delegation");
     }
 
+    if (policy.status === "allow") await repos.groups.collaborationLimits(group, input, true);
+
     const requestMessageId = input.request_message_id ?? (await repos.groups.createMessage({
       space_id: input.space_id,
       group_id: input.group_id,
@@ -1175,6 +1208,7 @@ export class AgentGroupRunService {
     const roomRunGranteeUserIds = group.room_id
       ? await repos.groups.listActiveRoomUserIds(input.space_id, group.room_id)
       : [];
+    let delegatedSessionConfig: ResolvedSessionConfig = NO_SESSION_CONFIG;
     let delegatedBackend: ResolvedConversationBackend | null = null;
     let delegatedHostDispatch: PreparedRoomHostDispatch | null = null;
     let delegatedStanding: { text: string; digest: string; sent: boolean } | null = null;
@@ -1216,6 +1250,15 @@ export class AgentGroupRunService {
         if (!delegatedBackend) {
           throw new HttpError(409, `Conversation runtime for Agent '${input.target_agent_id}' is unavailable`);
         }
+        // Nobody chose these for this delegation: a value the runtime has
+        // since withdrawn falls back to its default rather than failing it.
+        delegatedSessionConfig = {
+          ...reconcileSavedSessionConfig(
+            await backendRepository.sessionConfig(input.space_id, parentRun.session_id, input.target_agent_id),
+            delegatedBackend.session_config_options ?? [],
+          ),
+          source: "saved",
+        };
         const thread = await executionContexts.getConversationThread(
           input.space_id,
           parentRun.session_id,
@@ -1326,6 +1369,7 @@ export class AgentGroupRunService {
           delegatedHostDispatch,
           delegatedWorkspaceAccess,
           delegatedStanding,
+          delegatedSessionConfig,
         )
         : null,
       runtime_profile_id: delegatedBackend?.runtime_profile_id ?? null,
@@ -1397,6 +1441,7 @@ export class AgentGroupRunService {
       group_id: input.group_id,
     });
     const limits = delegationBudgetLimits(group.budget_json);
+    const collaboration = await repo.collaborationLimits(group, input);
     // A Room turn's delegations also draw on its container's Agent-triggered
     // turns (the fan-out ceiling), which several recipients of one wave share:
     // a parent's own `max_fanout` alone would let a wave spawn past it.
@@ -1404,8 +1449,8 @@ export class AgentGroupRunService {
       ? Math.max(0, DISCUSSION_FANOUT_CEILING - await containerTurnsUsed(repo, group))
       : Number.POSITIVE_INFINITY;
     return {
-      fanout_count: fanoutCount + 1,
-      max_fanout: Math.min(limits.max_fanout, fanoutCount + containerLeft),
+      fanout_count: collaboration?.fanout_count ?? fanoutCount + 1,
+      max_fanout: collaboration?.max_fanout ?? Math.min(limits.max_fanout, fanoutCount + containerLeft),
       concurrency_count: concurrencyCount + 1,
       max_concurrency: limits.max_concurrency,
     };
@@ -1578,7 +1623,7 @@ function messageRecipientSegmentsForInput(
   const segments = rawSegments.map((segment, index) => ({
     recipient_agent_ids: uniqueIds(segment.recipient_agent_ids)
       .map((id) => requiredTrimmed(id, `recipient_segments[${index}].recipient_agent_ids`)),
-    content: input.input_parts?.length
+    content: (input.input_parts?.length || input.capability_input_parts?.length)
       ? segment.content.trim()
       : requiredTrimmed(segment.content, `recipient_segments[${index}].content`),
   })).filter((segment) => segment.recipient_agent_ids.length > 0);
@@ -1587,7 +1632,7 @@ function messageRecipientSegmentsForInput(
 }
 
 interface PreparedRoomConversationBackend extends ResolvedConversationBackend {
-  session_config: RuntimeSessionConfigSelection[];
+  session_config: ResolvedSessionConfig;
   room_id: string;
   session_id: string;
   user_id: string;
@@ -1933,10 +1978,15 @@ async function prepareRoomConversationBackends(input: {
       workspace_location_id: thread.workspace_location_id,
       runtime_installation: thread.runtime_installation,
     };
-    const sessionConfig = validateRoomSessionConfig(
-      requested?.session_config ?? [],
-      pinnedBackend.session_config_options ?? [],
-    );
+    // A selection sent with this message is strict; a saved, inherited or
+    // replayed one the runtime has since withdrawn falls back to its default.
+    const sessionConfig = requested?.session_config && requested.session_config_inherited
+      ? { ...reconcileSavedSessionConfig(requested.session_config, pinnedBackend.session_config_options ?? []), source: "saved" as const }
+      : await resolveSessionConfig(
+        requested?.session_config,
+        () => repository.sessionConfig(input.identity.spaceId, input.sessionId, agentId),
+        pinnedBackend.session_config_options ?? [],
+      );
     const revision = contextRevisions.get(agentId) ?? null;
     if (!revision?.agent_version_id) {
       throw new HttpError(409, `Room agent '${agentId}' has no active version`);
@@ -2123,7 +2173,7 @@ async function createRoomHandoffRun(
 ): Promise<RunRecord> {
   const thread = input.backend.host_thread!;
   const recipientOverride = recordValue(input.recipientRun.model_override_json);
-  const { room_turn_routing: _routing, ...shared } = recipientOverride;
+  const { room_turn_routing: _routing, room_coordination: _coordination, ...shared } = recipientOverride;
   const handoffRun = await repos.runs.createGroupedAgentRun({
     execution_kind: "agent",
     agent_id: input.recipientRun.agent_id!,
@@ -2240,7 +2290,10 @@ function roomRunModelOverride(
   backend: PreparedRoomConversationBackend | undefined,
   turn: Parameters<typeof roomTurnModelOverride>[0],
 ): Record<string, unknown> | null {
-  const routing = roomTurnModelOverride(turn) ?? {};
+  const routing = {
+    ...(roomTurnModelOverride(turn) ?? {}),
+    ...roomCoordinationModelOverride(turn.coordinationTargets),
+  };
   if (!backend) return Object.keys(routing).length > 0 ? routing : null;
   const runtime = backend.runtime_session;
   const resumeSessionId = backend.resume_runtime_session
@@ -2250,7 +2303,7 @@ function roomRunModelOverride(
   return {
     ...routing,
     execution_mode: "room_conversation.v1",
-    ...(backend.session_config.length > 0 ? { acp_session_config: backend.session_config } : {}),
+    ...sessionConfigRunOverride(backend.session_config),
     conversation_backend: {
       schema_version: "conversation_backend.v1",
       runtime_profile_id: backend.runtime_profile_id,
@@ -2306,6 +2359,8 @@ function roomRunModelOverride(
             replay_prompt: roomReplayPrompt(
               backend.resume_runtime_session ? backend.increment_prompt : backend.replay_prompt,
               assignedTask,
+              turn.content,
+              turn.coordinationTargets,
             ),
             message_cursor_id: backend.message_cursor_id,
           },
@@ -2314,28 +2369,6 @@ function roomRunModelOverride(
   };
 }
 
-function validateRoomSessionConfig(
-  requested: RuntimeSessionConfigSelection[],
-  advertised: NonNullable<ResolvedConversationBackend["session_config_options"]>,
-): RuntimeSessionConfigSelection[] {
-  const seen = new Set<string>();
-  return requested.map((selection) => {
-    if (seen.has(selection.id)) throw new HttpError(422, `Session option '${selection.id}' was selected more than once`);
-    seen.add(selection.id);
-    const option = advertised.find((candidate) => candidate.id === selection.id);
-    if (!option || option.type !== selection.type || option.category !== selection.category) {
-      throw new HttpError(422, `Session option '${selection.id}' is not available for this backend`);
-    }
-    if (option.type === "select") {
-      if (typeof selection.value !== "string" || !option.options.some((choice) => choice.value === selection.value)) {
-        throw new HttpError(422, `Value for session option '${selection.id}' is not available`);
-      }
-    } else if (typeof selection.value !== "boolean") {
-      throw new HttpError(422, `Value for session option '${selection.id}' must be boolean`);
-    }
-    return selection;
-  });
-}
 
 function delegatedRoomModelOverride(
   parentRun: Pick<RunRecord, "model_override_json">,
@@ -2346,11 +2379,13 @@ function delegatedRoomModelOverride(
   hostDispatch?: PreparedRoomHostDispatch | null,
   workspaceAccess: Array<{ workspace_location_id: string; access_mode: "read" | "write" }> = [],
   standing: { digest: string; sent: boolean } | null = null,
+  sessionConfig: ResolvedSessionConfig = NO_SESSION_CONFIG,
 ): Record<string, unknown> {
   const parent = recordValue(parentRun.model_override_json);
   const parentTurn = recordValue(parent.chat_turn);
   return {
     execution_mode: "room_conversation.v1",
+    ...sessionConfigRunOverride(sessionConfig),
     ...(backend
       ? {
           conversation_backend: {
@@ -2377,6 +2412,9 @@ function delegatedRoomModelOverride(
       ...(targetAgentVersionId ? { agent_version_id: targetAgentVersionId } : {}),
       assigned_task: instruction,
     },
+    // A Room child's prompt is assembled with this instruction as its last
+    // part; acquisition reads this fact rather than matching the text.
+    [RUN_REQUEST_INCLUDES_INSTRUCTION]: true,
     ...(backend && hostDispatch
       ? {
           workspace: hostDispatch.workspace,
@@ -2483,11 +2521,10 @@ function roomReplayWindow(
     budgets,
     summaryUnavailable: source.summary_unavailable,
   });
+  // The current message is the turn's own input and is delivered as such;
+  // the window is what came before it.
   return {
-    recent_messages: [
-      ...(context?.recent_messages ?? []),
-      source.current_message,
-    ].map((message) => ({
+    recent_messages: (context?.recent_messages ?? []).map((message) => ({
       id: message.id,
       user_id: message.user_id ?? null,
       sender_agent_id: message.sender_agent_id ?? null,
@@ -2612,7 +2649,7 @@ async function listRoomMessagesSinceAgentTurn(
         AND producer.id = message.run_id
       WHERE message.space_id = $1 AND message.session_id = $2
         AND ${visibleMessagePathSql({ alias: "message", spaceParam: "$1", sessionParam: "$2" })}
-        AND (message.path_depth, message.id) <= (current.path_depth, current.id)
+        AND (message.path_depth, message.id) < (current.path_depth, current.id)
         AND (last_agent.id IS NULL OR (message.path_depth, message.id) > (last_agent.path_depth, last_agent.id))
       ORDER BY message.path_depth ASC, message.id ASC`,
     [spaceId, sessionId, currentMessageId, agentId],
@@ -2656,7 +2693,7 @@ async function listRoomMessagesAfterCursor(
         AND (message.path_depth, message.id)
               > (bounds.cursor_path_depth, bounds.cursor_id)
         AND (message.path_depth, message.id)
-              <= (bounds.current_path_depth, bounds.current_id)
+              < (bounds.current_path_depth, bounds.current_id)
        LEFT JOIN runs producer
          ON producer.space_id = message.space_id
         AND producer.id = message.run_id
@@ -2735,10 +2772,78 @@ function roomRuntimeContextFingerprint(
   })).digest("hex");
 }
 
+/**
+ * The assigned-task section. A Room conversation turn's current input is the
+ * person's message (its `chat_turn` names it); when this run's task is that
+ * whole message the section points at it instead of repeating it. A routed
+ * segment that differs from the message is this run's actual task and is
+ * stated in full, as is every task of a run without a conversation turn,
+ * whose current input is this prompt itself.
+ */
+function roomAssignedTaskSection(
+  assignedTask: string,
+  currentMessage: string | null,
+  coordinationTargets: readonly RoomCoordinationTarget[] = [],
+): string {
+  return [
+    "[Assigned task for this Room turn]",
+    currentMessage !== null && assignedTask.trim() === currentMessage.trim()
+      ? "This run's task is the current user input below."
+      : assignedTask,
+    roomCoordinationSection(coordinationTargets),
+  ].filter(Boolean).join("\n\n");
+}
+
+/** An Agent the person referred to in a message handed to the manager. */
+export interface RoomCoordinationTarget {
+  agent_id: string;
+  label: string;
+}
+
+function uniqueCoordinationTargets(targets: readonly RoomCoordinationTarget[]): RoomCoordinationTarget[] {
+  const seen = new Set<string>();
+  return targets.flatMap((target) => {
+    const agentId = target.agent_id.trim();
+    if (!agentId || seen.has(agentId)) return [];
+    seen.add(agentId);
+    return [{ agent_id: agentId, label: target.label.trim() || agentId }];
+  });
+}
+
+/**
+ * The manager's instruction for a message that mentioned Agents only in
+ * passing ("you could send @Codex to check"): the person addressed the
+ * manager and named who should do the work, so the manager arranges it with
+ * them through its delegation tools rather than answering alone.
+ */
+function roomCoordinationSection(targets: readonly RoomCoordinationTarget[]): string | null {
+  if (targets.length === 0) return null;
+  return [
+    "[The person asked you to arrange this with]",
+    targets.map((target) => `- ${target.label} (agent id: ${target.agent_id})`).join("\n"),
+    "The person's message mentions these Room Agents as the ones to do the work, and was sent to you to arrange it. Delegate the relevant work to them with agent.delegate (and wait for their results when you need them) unless that is clearly unnecessary; if you do not delegate, say why in your reply.",
+  ].join("\n");
+}
+
+function roomCoordinationModelOverride(
+  targets: readonly RoomCoordinationTarget[] | undefined,
+): Record<string, unknown> {
+  if (!targets?.length) return {};
+  return {
+    room_coordination: {
+      schema_version: "room_coordination.v1",
+      target_agent_ids: targets.map((target) => target.agent_id),
+      target_labels: targets.map((target) => target.label),
+    },
+  };
+}
+
 function roomRunPrompt(
   backend: PreparedRoomConversationBackend | undefined,
   assignedTask: string,
+  currentMessage: string,
   projectStateContext?: string | null,
+  coordinationTargets: readonly RoomCoordinationTarget[] = [],
 ): string {
   // A host thread carries the rules inside its standing context, sent only
   // when its vendor session does not already hold them; a turn without one
@@ -2749,16 +2854,19 @@ function roomRunPrompt(
       : projectStateContext,
     backend?.host_thread ? backend.host_prompt_context : null,
     backend?.host_thread ? null : roomExecutionRules(),
-    "[Assigned task for this Room turn]",
-    assignedTask,
+    roomAssignedTaskSection(assignedTask, backend ? currentMessage : null, coordinationTargets),
   ].filter(Boolean).join("\n\n");
 }
 
-function roomReplayPrompt(replayPrompt: string, assignedTask: string): string {
+function roomReplayPrompt(
+  replayPrompt: string,
+  assignedTask: string,
+  currentMessage: string,
+  coordinationTargets: readonly RoomCoordinationTarget[] = [],
+): string {
   return [
     replayPrompt,
-    "[Assigned task for this Room turn]",
-    assignedTask,
+    roomAssignedTaskSection(assignedTask, currentMessage, coordinationTargets),
   ].filter(Boolean).join("\n\n");
 }
 
@@ -2896,6 +3004,7 @@ function roomTurnModelOverride(input: {
   plannedRecipientRunCount: number;
   recipientSnapshots: ReadonlyMap<string, AgentCapabilitySnapshotRecord>;
   retryOfRunId?: string | null;
+  coordinationTargets?: readonly RoomCoordinationTarget[];
 }): Record<string, unknown> | null {
   if (input.plannedRecipientRunCount <= 1) return null;
   return {

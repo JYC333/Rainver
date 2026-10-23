@@ -635,7 +635,12 @@ is frozen, and every schema change after it is a new numbered file appended by
 backfills written into that same file. A migration that any database has
 applied is never edited, renamed, or removed — the runner records checksums
 and refuses a changed one, and `baselineSchema.test.ts` pins the baseline's
-hash. Do not fold a change into an earlier file, and do not add compatibility
+hash. The explicit exception is an unpublished plan's terminal development
+suffix: [ADR 0025](decisions/0025-unpublished-migration-squash.md) permits the
+dedicated squash tool to produce one formal migration and convert existing
+databases without a reset. Published migrations and the baseline remain
+immutable. Never manually rewrite applied records or bypass checksum checks.
+Do not fold a change into an earlier file, and do not add compatibility
 shims in application code for a shape a migration has already replaced. A
 release's migrations run while the build they replace is still serving (ADR 0020 §5 puts
 `migrate` before `recreate`), so each one must leave the schema readable by the
@@ -655,7 +660,7 @@ from the baseline. None of these decisions itself authorizes deleting a
 running database.
 
 `server/migrations/README.md` states the current epoch beside the chain, and
-`baselineSchema.test.ts` pins its hash and one-migration shape. Everything
+`baselineSchema.test.ts` pins its hash and contiguous chain shape. Everything
 after the current baseline is append-only again on the terms above. A schema
 epoch is not a repeatable maintenance technique: any future fold needs its own
 accepted decision and explicit data-loss acknowledgement; nothing in this
@@ -687,5 +692,12 @@ code.
 ## Open-Source Boundary
 
 **B70** — (ADR 0017) A write is gated behind per-instance human approval only when it is self-modification, a long-term belief that widens reach, a real-checkout change, an exposure change, money above a bounded default, a credential or deployment change, or the Project's direction — and the action's registration names which. Every other Project-internal write is governed by trigger origin — the Run's verified root origin through delegation, graph and continuation hops (`effectiveRunTrigger`; a continuation inherits only within its cause's budget, an unverifiable chain is never `manual`) — (`manual` executes; anything unattended is `require_approval`), with one exception — an Agent writing its own persona on an `agent`-scope entry, a first one as much as a revision, which is governed instead by ADR 0003 §5 and named in B10 — and by bounds set before the work runs (fan-out ≤ 5 per turn as an execution ceiling, follow-up Tasks applied for the turn included, with the narrower conversational pacing of ADR 0019; spend at the pipeline's bounded default, the remainder offered once), with review-after: every such write is in Updates with undo, and attention carries only what a person must decide. A default may flip from proposal to direct only after the review it displaces exists.
+
+For explicitly requested sustained task collaboration, repeated handoffs to
+the same fixed specialists use the finite task-scoped budget declared by the
+original manual Room turn, rather than the ad-hoc Agent-turn ceiling. That
+budget cannot renew or widen on a continuation; it ends on task completion,
+hold, stop, lost authority, repeated child failure or exhaustion. This does
+not raise the five-object Project-write ceiling (ADR 0017).
 
 **B22** — The project is open source. Do not put private data, real user memory, or non-shareable credentials into the source repository; see B1/B2.

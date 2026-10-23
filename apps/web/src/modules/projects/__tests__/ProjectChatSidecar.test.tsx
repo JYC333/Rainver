@@ -1,10 +1,13 @@
+import type { ConversationInputPart } from '@rainver/protocol'
+import { readConversationDraft, writeConversationDraft } from '../../conversation/conversationDraft'
+import { ConversationSurface } from '../../conversation/ConversationSurface'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { useEffect } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ProjectChatSidecar, { focusRefsFor } from '../sidecar/ProjectChatSidecar'
 import { ProjectFolderConversationProvider, useProjectFolderConversation, type CurrentFileAttachment } from '../ProjectFolderConversationContext'
-import { projectsApi, proposalsApi, roomsApi, runsApi, sessionsApi } from '../../../api/client'
+import { conversationInputApi, projectsApi, proposalsApi, roomsApi, runsApi, sessionsApi } from '../../../api/client'
 import { projectTaskHref } from '../taskHref'
 import { subscribeProjectFolderContentChanged } from '../../../core/projectFolderEvents'
 
@@ -17,35 +20,54 @@ vi.mock('../ProjectConversationBackendCard', () => ({
 }))
 // The rich composer is TipTap, which jsdom cannot type into; the send path
 // is what is under test here, not the editor.
-vi.mock('../../agent_groups/RoomMessageComposer', () => ({
-  emptyRoomMessageComposerValue: () => ({ text: '', mentionIds: [], routingSegments: [] }),
-  // A leading `@agent-id ` stands in for a mention node: the real editor's
-  // segmenting is covered by its own test, this only has to hand one over.
-  RoomMessageComposer: ({ onChange }: { onChange: (value: { text: string; mentionIds: string[]; routingSegments: unknown[] }) => void }) => (
-    <textarea
-      aria-label="Room message"
-      onChange={event => {
-        const text = event.target.value
-        const mention = /^@(\S+)\s+(.*)$/s.exec(text)
-        onChange(mention
-          ? { text, mentionIds: [mention[1]!], routingSegments: [{ recipient_agent_ids: [mention[1]!], content: mention[2]! }] }
-          : { text, mentionIds: [], routingSegments: [] })
-      }}
-    />
-  ),
-}))
+vi.mock('../../agent_groups/RoomMessageComposer', async () => {
+  // The real route rule and helpers; only the editor is stood in for.
+  const actual = await vi.importActual<typeof import('../../agent_groups/RoomMessageComposer')>('../../agent_groups/RoomMessageComposer')
+  const { agentMentionRoute, normalizeMentionText } = await vi.importActual<typeof import('@rainver/protocol')>('@rainver/protocol')
+  type Value = ReturnType<typeof actual.emptyRoomMessageComposerValue>
+  return {
+    emptyRoomMessageComposerValue: actual.emptyRoomMessageComposerValue,
+    roomMessageRoute: actual.roomMessageRoute,
+    roomMessageRecipientIds: actual.roomMessageRecipientIds,
+    // `@agent-<n>` stands in for a mention node: the real editor is covered
+    // by its own test, this only has to hand the mentions over.
+    RoomMessageComposer: ({ value, onChange, onInputPartsChange }: { value: Value; onChange: (value: Value) => void; onInputPartsChange?: (parts: ConversationInputPart[]) => void }) => (
+      <>
+      <button onClick={() => onInputPartsChange?.([{ kind: 'skill', skill_package_id: 'skill-1', package_hash: 'a'.repeat(64), display_name: 'Audit' }])}>Select Audit Skill</button>
+      <button onClick={() => onChange({ ...value, routeChoice: 'direct' })}>Send directly instead</button>
+      <textarea
+        aria-label="Room message"
+        onChange={event => {
+          const text = event.target.value
+          const tokens = text.split(/(@agent-\d+)/).filter(Boolean).map(part => part.startsWith('@agent-')
+            ? { type: 'mention' as const, id: part.slice(1), label: part.slice(1) }
+            : { type: 'text' as const, text: part })
+          const mentionRoute = agentMentionRoute(tokens)
+          onChange({
+            text: normalizeMentionText(text),
+            mentionIds: mentionRoute.mentioned_agent_ids,
+            mentionRoute,
+            routeChoice: null,
+          })
+        }}
+      />
+      </>
+    ),
+  }
+})
 vi.mock('../../../api/client', async () => {
   const { ApiRequestError } = await import('../../../test/apiClientMock')
   return {
   ApiRequestError,
+  conversationInputApi: { imageBlob: vi.fn() },
   // Each addressed Room recipient's knowledge retrieval switch, off.
   runtimeContextApi: {
-    retrievalSwitch: vi.fn(async (scopeId: string) => ({ work_context_scope_id: scopeId, enabled: false, preferred_domains: [], setup_version: null })),
+    retrievalSwitch: vi.fn(async () => ({ work_context_scope_id: 'scope-1', enabled: false, preferred_domains: [], setup_version: null })),
     setRetrievalSwitch: vi.fn(),
   },
   projectsApi: { mainlineRoom: vi.fn() },
   proposalsApi: { get: vi.fn(), accept: vi.fn(), reject: vi.fn() },
-  runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn() },
+  runsApi: { get: vi.fn(), streamTurn: vi.fn(), turn: vi.fn(), authorizationRequests: vi.fn().mockResolvedValue([]) },
   roomsApi: {
     get: vi.fn(),
     summary: vi.fn(),
@@ -148,6 +170,7 @@ function viewport(wide: boolean) {
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
+  sessionStorage.clear()
   viewport(true)
   vi.mocked(projectsApi.mainlineRoom).mockResolvedValue({
     room: { id: 'room-1', title: 'Project Room', is_mainline: true }, joined: false, viewer_can_write: true,
@@ -202,9 +225,9 @@ describe('Project chat sidecar', () => {
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     // The mainline is the server's answer, not "whichever Room I am in that
     // was most recently active".
-    await waitFor(() => expect(projectsApi.mainlineRoom).toHaveBeenCalledWith(PROJECT))
-    await waitFor(() => expect(roomsApi.conversations).toHaveBeenCalledWith('room-1', { limit: 50 }))
-    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'conv-2', { limit: 50, offset: 0 }))
+    await waitFor(() => expect(projectsApi.mainlineRoom).toHaveBeenCalledWith(PROJECT, expect.objectContaining({ spaceId: 'space-1' })))
+    await waitFor(() => expect(roomsApi.conversations).toHaveBeenCalledWith('room-1', { limit: 50 }, expect.any(Object)))
+    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'conv-2', { limit: 50, offset: 0 }, expect.any(Object)))
   })
 
   it('opens the composer on a Project nobody has spoken in, creating nothing', async () => {
@@ -241,7 +264,7 @@ describe('Project chat sidecar', () => {
     expect(screen.getByRole('button', { name: 'Configure conversation' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled()
     expect(composer).toHaveValue('Please inspect the workspace.')
-    expect(screen.getByRole('link', { name: /configure or reconnect host/i })).toHaveAttribute('href', '/command-center')
+    expect(screen.getByRole('link', { name: /configure or reconnect host/i })).toHaveAttribute('href', '/spaces/space-1/command-center')
     expect(screen.queryByRole('link', { name: /project runtime settings/i })).not.toBeInTheDocument()
   })
 
@@ -284,7 +307,7 @@ describe('Project chat sidecar', () => {
       backends: [],
       focus_refs: [{ type: 'task', id: TASK }],
       queue: true,
-    }))
+    }, expect.any(Object)))
   })
 
   it('routes a mention typed in the panel, the same as the full Room page', async () => {
@@ -296,9 +319,94 @@ describe('Project chat sidecar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
     await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'conv-2', expect.objectContaining({
+      content: '@agent-2 check the style',
       routing_mode: 'direct',
-      recipient_segments: [{ recipient_agent_ids: ['agent-2'], content: 'check the style' }],
-    })))
+      recipient_segments: [{ recipient_agent_ids: ['agent-2'], content: '@agent-2 check the style' }],
+    }), expect.any(Object)))
+    expect(vi.mocked(roomsApi.sendMessage).mock.lastCall![2]).not.toHaveProperty('coordination_target_agent_ids')
+  })
+
+  it('hands a mid-sentence mention to the manager, naming the Agent and keeping the words', async () => {
+    // The incident: "dispatch @Codex" reached only Codex, as "你可以派 去查".
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({} as never)
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalled())
+
+    fireEvent.change(screen.getByLabelText('Room message'), { target: { value: '提交吧，提交完我觉得得再查一轮，你可以派 @agent-2 去查' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalled())
+    const payload = vi.mocked(roomsApi.sendMessage).mock.lastCall![2]
+    expect(payload).toMatchObject({
+      content: '提交吧，提交完我觉得得再查一轮，你可以派 @agent-2 去查',
+      routing_mode: 'agent_coordination',
+      coordination_target_agent_ids: ['agent-2'],
+    })
+    expect(payload).not.toHaveProperty('recipient_segments')
+  })
+
+  it('sends a mid-sentence mention directly when the person chose that', async () => {
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({} as never)
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalled())
+
+    fireEvent.change(screen.getByLabelText('Room message'), { target: { value: 'you could send @agent-2 to check' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send directly instead' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalled())
+    const payload = vi.mocked(roomsApi.sendMessage).mock.lastCall![2]
+    expect(payload).toMatchObject({
+      routing_mode: 'direct',
+      recipient_segments: [{ recipient_agent_ids: ['agent-2'], content: 'you could send @agent-2 to check' }],
+    })
+    expect(payload).not.toHaveProperty('coordination_target_agent_ids')
+  })
+
+  it('keeps the addressed segment when only a Skill is selected', async () => {
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({} as never)
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('Room message'), { target: { value: '@agent-2 ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Select Audit Skill' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'conv-2', expect.objectContaining({
+      recipient_segments: [{ recipient_agent_ids: ['agent-2'], content: '@agent-2' }],
+      input_parts: [expect.objectContaining({ kind: 'skill', skill_package_id: 'skill-1' })],
+    }), expect.any(Object)))
+  })
+
+  it('preserves newly selected Skill and text while old draft validation finishes', async () => {
+    let finish!: (blob: Blob) => void
+    vi.mocked(conversationInputApi.imageBlob).mockReturnValue(new Promise(resolve => { finish = resolve }))
+    const destination = 'room:room-1:conv-2'
+    writeConversationDraft({ destination, text: 'Old draft', input_parts: [{ kind: 'image', media_id: 'old-image', filename: 'old.png', media_type: 'image/png', byte_size: 4, sha256: 'b'.repeat(64) }] })
+    renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
+    await waitFor(() => expect(conversationInputApi.imageBlob).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('Room message'), { target: { value: 'New text' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Select Audit Skill' }))
+    await act(async () => { finish(new Blob()) })
+    expect(screen.queryByAltText('old.png')).not.toBeInTheDocument()
+    await waitFor(() => expect(readConversationDraft(destination)).toMatchObject({ text: 'New text', input_parts: [{ kind: 'skill', skill_package_id: 'skill-1' }] }))
+  })
+
+  it('keeps edits made during old draft validation when the parent re-renders before it finishes', async () => {
+    let finish!: (blob: Blob) => void
+    vi.mocked(conversationInputApi.imageBlob).mockReturnValue(new Promise(resolve => { finish = resolve }))
+    const destination = 'room:room-1:conv-2'
+    writeConversationDraft({ destination, text: 'Old draft', input_parts: [{ kind: 'image', media_id: 'old-image', filename: 'old.png', media_type: 'image/png', byte_size: 4, sha256: 'b'.repeat(64) }] })
+    // A fresh source list on every render, as callers derive it inline.
+    const panel = () => <MemoryRouter><ConversationSurface roomId="room-1" conversationId="conv-2" variant="panel"
+      inputFileSources={[{ projectFolderId: 'folder-1', workspaceLocationId: 'location-1', label: 'Source' }]} /></MemoryRouter>
+    const view = render(panel())
+    await waitFor(() => expect(conversationInputApi.imageBlob).toHaveBeenCalledTimes(1))
+    fireEvent.change(screen.getByLabelText('Room message'), { target: { value: 'New text' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Select Audit Skill' }))
+    view.rerender(panel())
+    await act(async () => { finish(new Blob()) })
+    expect(screen.queryByAltText('old.png')).not.toBeInTheDocument()
+    await waitFor(() => expect(readConversationDraft(destination)).toMatchObject({ text: 'New text', input_parts: [{ kind: 'skill', skill_package_id: 'skill-1' }] }))
+    expect(conversationInputApi.imageBlob).toHaveBeenCalledTimes(1)
   })
 
   it('shows the Files current-file bar and includes the acknowledged resource by default', async () => {
@@ -322,7 +430,7 @@ describe('Project chat sidecar', () => {
     await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'conv-2', expect.objectContaining({
       content: 'inspect',
       input_parts: [expect.objectContaining({ kind: 'input_resource', source_state: 'saved', relative_path: 'src/app.ts' })],
-    })))
+    }), expect.any(Object)))
     expect(attachment.flushForSend).toHaveBeenCalledTimes(1)
   })
 
@@ -372,7 +480,7 @@ describe('Project chat sidecar', () => {
     const stop = subscribeProjectFolderContentChanged(changed)
 
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
-    await waitFor(() => expect(sessionsApi.executionContext).toHaveBeenCalledWith('conv-2'))
+    await waitFor(() => expect(sessionsApi.executionContext).toHaveBeenCalledWith('conv-2', expect.any(Object)))
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'Create a file' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
 
@@ -382,7 +490,7 @@ describe('Project chat sidecar', () => {
 
   it('opens the full Room on the conversation being read', async () => {
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
-    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'conv-2', { limit: 50, offset: 0 }))
+    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalledWith('room-1', 'conv-2', { limit: 50, offset: 0 }, expect.any(Object)))
     // Full Room opens the conversation being read. Do not land on the Rooms list.
     expect(screen.getByRole('link', { name: /Full Room/ }))
       .toHaveAttribute('href', `/projects/${PROJECT}/rooms?room=room-1&conversation=conv-2`)
@@ -462,9 +570,9 @@ describe('Project chat sidecar', () => {
     const previews = await screen.findByTestId('previews-m2')
     expect(previews).toHaveTextContent('Research question: does batching help?')
     fireEvent.click(await within(previews).findByRole('button', { name: /accept|接受|确认/i }))
-    await waitFor(() => expect(proposalsApi.accept).toHaveBeenCalledWith('proposal-1'))
+    await waitFor(() => expect(proposalsApi.accept).toHaveBeenCalledWith('proposal-1', expect.any(Object)))
     await waitFor(() => expect(roomsApi.continueAfterProposal)
-      .toHaveBeenCalledWith('room-1', 'conv-2', { proposal_id: 'proposal-1', backends: [] }))
+      .toHaveBeenCalledWith('room-1', 'conv-2', { proposal_id: 'proposal-1', backends: [] }, expect.any(Object)))
   })
 
   it('starts a separate thread by clearing the composer, not by creating one', async () => {
@@ -480,14 +588,14 @@ describe('Project chat sidecar', () => {
 
     vi.mocked(roomsApi.createConversation).mockResolvedValue({ id: 'conv-3', room_id: 'room-1', title: 'New conversation' } as never)
     fireEvent.click(screen.getByRole('button', { name: 'Configure conversation' }))
-    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1'))
+    await waitFor(() => expect(roomsApi.createConversation).toHaveBeenCalledWith('room-1', expect.any(Object)))
 
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'A new topic' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     // Explicit setup created the draft before the message, so the send is
     // addressed to the selected conversation rather than creating one behind
     // the user's back.
-    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'conv-3', expect.anything()))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-1', 'conv-3', expect.anything(), expect.any(Object)))
     await waitFor(() => expect(localStorage.getItem('project.sidecar.room.room-1.conversation')).toBe('conv-3'))
   })
 
@@ -536,5 +644,44 @@ describe('Project chat sidecar', () => {
     fireEvent.click((await screen.findAllByLabelText('Pick this message'))[0]!)
     expect(await screen.findByLabelText('Attach to a thread')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Use in a new thread/ })).not.toBeInTheDocument()
+  })
+})
+
+describe('conversation panels with an explicit source Space', () => {
+  it('keeps Room reads, Run streams and sends in the source Space without changing the route', async () => {
+    vi.mocked(roomsApi.messages).mockResolvedValue({ items: [{ id: 'message-b', session_id: 'conversation-b', role: 'user',
+      content: 'Start here', created_at: '2026-10-21T12:00:00Z', metadata_json: { run_ids: ['run-b'] } }], task_group_ids: [], limit: 50, offset: 0 } as never)
+    vi.mocked(runsApi.get).mockResolvedValue({ id: 'run-b', space_id: 'source-b', status: 'running', agent_id: 'agent-b' } as never)
+    vi.mocked(runsApi.streamTurn).mockImplementation(() => new Promise(() => {}))
+    vi.mocked(roomsApi.sendMessage).mockResolvedValue({ message: { id: 'reply-b', session_id: 'conversation-b', role: 'user', content: 'Reply in B', metadata_json: {}, created_at: '2026-10-21T12:01:00Z' }, run_ids: [], task_group_ids: [], conversation: null } as never)
+    render(<MemoryRouter initialEntries={['/spaces/active-a/projects/project-a']}>
+      <ConversationSurface spaceId="source-b" roomId="room-b" conversationId="conversation-b" variant="panel" />
+    </MemoryRouter>)
+    await screen.findByText('Start here')
+    await waitFor(() => expect(runsApi.streamTurn).toHaveBeenCalledWith('run-b', expect.objectContaining({ spaceId: 'source-b', signal: expect.any(AbortSignal) })))
+    expect(roomsApi.get).toHaveBeenCalledWith('room-b', expect.objectContaining({ spaceId: 'source-b' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Room message' }), { target: { value: 'Reply in B' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(roomsApi.sendMessage).toHaveBeenCalledWith('room-b', 'conversation-b', expect.objectContaining({ content: 'Reply in B' }), expect.objectContaining({ spaceId: 'source-b' })))
+  })
+  it('cancels the previous Space and ignores a late message page and its parent callback', async () => {
+    let finish!: (value: never) => void
+    vi.mocked(roomsApi.messages).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const updated = vi.fn()
+    const panel = (spaceId: string, conversationId: string) => <MemoryRouter><ConversationSurface spaceId={spaceId} roomId="room" conversationId={conversationId} variant="panel" onConversationUpdated={updated} /></MemoryRouter>
+    const view = render(panel('source-a', 'conversation-a'))
+    await waitFor(() => expect(roomsApi.messages).toHaveBeenCalled())
+    const options = vi.mocked(roomsApi.messages).mock.calls[0]![3]!
+    view.rerender(panel('source-b', 'conversation-b'))
+    expect(options.signal!.aborted).toBe(true)
+    await act(async () => finish({ items: [{ id: 'old', role: 'user', session_id: 'conversation-a', content: 'Old private response', metadata_json: {}, created_at: '2026-10-21T12:00:00Z' }], conversation: { id: 'conversation-a' }, limit: 50, offset: 0 } as never))
+    expect(screen.queryByText('Old private response')).not.toBeInTheDocument()
+    expect(updated).not.toHaveBeenCalledWith(expect.objectContaining({ id: 'conversation-a' }))
+  })
+  it('does not provision or execute an uninitialized panel just to read it', () => {
+    render(<MemoryRouter><ConversationSurface spaceId="source-b" roomId="room-b" conversationId={null} executionReady={false} variant="panel" /></MemoryRouter>)
+    expect(roomsApi.createConversation).not.toHaveBeenCalled()
+    expect(roomsApi.sendMessage).not.toHaveBeenCalled()
+    expect(runsApi.streamTurn).not.toHaveBeenCalled()
   })
 })

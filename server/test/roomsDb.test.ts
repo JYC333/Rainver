@@ -1,3 +1,10 @@
+import { previewSkillFiles } from "../src/modules/capabilities/skillImporter.js";
+import { PgCapabilitiesRepository, approveSkillImportInTransaction } from "../src/modules/capabilities/repository.js";
+import { applySkillPackageBinding } from "../src/modules/capabilities/skillBindings.js";
+import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
+import { SkillPackageSchema, agentMentionRoute, normalizeMentionText, renderMentionTokens, type AgentMentionToken } from "@rainver/protocol";
+import { agentsModule } from "../src/modules/agents/index.js";
+import { PgConversationBackendRepository } from "../src/modules/sessions/conversationBackendRepository.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
@@ -18,6 +25,7 @@ import { seedConversationMessages } from "./support/domainSeeds.js";
 import { registerBuiltInAttentionAdapters } from "../src/modules/projects/attentionService.js";
 import { SpaceAssistantService } from "../src/modules/agents/spaceAssistantService.js";
 import { PgRunRepository, type RunRecord } from "../src/modules/runs/repository.js";
+import { loadRunTurn } from "../src/modules/runs/turnReadModel.js";
 import { runAssignedTask } from "../src/modules/runs/runAssignedTask.js";
 import { PgAgentRepository } from "../src/modules/agents/repository.js";
 import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
@@ -47,6 +55,7 @@ import {
   ROOM_DELEGATION_COMPLETION_RETRY_JOB,
   registerRoomDelegationCompletionRetryHandler,
 } from "../src/modules/agentGroups/delegationCompletionRetryJob.js";
+import { instructionInRunRequest, RUN_REQUEST_INCLUDES_INSTRUCTION } from "../src/modules/runtimeContext/runRequest.js";
 import { PgAgentGroupRepository } from "../src/modules/agentGroups/repository.js";
 import { JobHandlerRegistry } from "../src/modules/jobs/handlerRegistry.js";
 import { PgSessionRepository } from "../src/modules/sessions/repository.js";
@@ -76,6 +85,7 @@ import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance.js";
 import type { CredentialSpendBasis } from "../src/modules/policy/credentialSpend.js";
 import { effectiveRunTrigger } from "../src/modules/systemActions/effectiveRunTrigger.js";
+import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 
 let service: RoomService | undefined;
 let groupService: AgentGroupRunService | undefined;
@@ -488,6 +498,13 @@ async function releaseConversationTurn(runId: string): Promise<void> {
   }
 }
 
+/** A fully published prior turn, for fixtures that do not exercise chat finalization. */
+async function seedChatCompletion(runId: string): Promise<void> {
+  await new PgRunRepository(db.pool).appendRunEvent({
+    run_id: runId, space_id: "space-1", event_type: "chat_completed", status: "succeeded",
+  });
+}
+
 function recordOf(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -619,7 +636,10 @@ describe("Room workflow (real Postgres)", () => {
           "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id = ANY ($1::varchar[])",
           [result.run_ids],
         );
-        for (const runId of result.run_ids) await releaseConversationTurn(runId);
+        for (const runId of result.run_ids) {
+          await releaseConversationTurn(runId);
+          await seedChatCompletion(runId);
+        }
         return result;
       };
       const first = await say("job-1");
@@ -710,6 +730,7 @@ describe("Room workflow (real Postgres)", () => {
       [source.run_ids[0]],
     );
     await releaseConversationTurn(source.run_ids[0]!);
+    await seedChatCompletion(source.run_ids[0]!);
     const proposalId = randomUUID();
     await db.pool.query(
       `INSERT INTO proposals (
@@ -1444,6 +1465,7 @@ describe("Room workflow (real Postgres)", () => {
       [first.run_ids[0]],
     );
     await releaseConversationTurn(first.run_ids[0]!);
+    await seedChatCompletion(first.run_ids[0]!);
     const second = await service.sendMessage(
       member,
       created.room.id,
@@ -1653,9 +1675,12 @@ describe("Room workflow (real Postgres)", () => {
     expect(prompt).toContain("whichever research-execution tool is available");
     expect(prompt).not.toContain("[Current turn execution mode]");
     expect(prompt).toContain("[Assigned task for this Room turn]");
-    expect(prompt.endsWith("What should I do next?")).toBe(true);
+    // The message is delivered once, as the current input; the assigned task
+    // names it instead of repeating it, and the increment does not carry it.
+    expect(prompt.endsWith("This run's task is the current user input below.")).toBe(true);
+    expect(prompt).not.toContain("What should I do next?");
     // Context precedes the assigned task, never the other way around.
-    expect(prompt.indexOf("[Project state]")).toBeLessThan(prompt.indexOf("What should I do next?"));
+    expect(prompt.indexOf("[Project state]")).toBeLessThan(prompt.indexOf("[Assigned task for this Room turn]"));
   });
 
   it("states the Task the person is looking at, and stays silent about one they cannot read", async (ctx) => {
@@ -1955,6 +1980,37 @@ describe("Room workflow (real Postgres)", () => {
     });
   });
 
+  it("retries a Skill-only Room message with its original recipient and package version", async ctx => {
+    if (!db.available || !service) return ctx.skip();
+    const owner = { spaceId: "space-1", userId: "user-1" };
+    const created = await service.createRoom(owner, { project_id: "project-1", title: "Skill Room" });
+    const conversation = await seedConversation(owner, created.room.id, "Skill turn");
+    const repo = new PgCapabilitiesRepository(db.pool);
+    const preview = previewSkillFiles({ files: [{ path: "SKILL.md", content_base64: Buffer.from("---\nname: room-skill\ndescription: Test the original Skill.\n---\nFollow the request.").toString("base64") }] });
+    const pkg = SkillPackageSchema.parse(await repo.saveImportedSkill(owner, preview));
+    await approveSkillImportInTransaction({ db: db.pool, spaceId: owner.spaceId, userId: owner.userId, proposalId: randomUUID(), skillPackageId: pkg.id });
+    const proposal = await repo.createSkillBindingProposal(owner, pkg.id, { scope_type: "space", enabled: true });
+    await withDbTransaction(db.pool, async client => {
+      const row = (await client.query<ApplyProposal>("SELECT * FROM proposals WHERE id=$1", [proposal.id])).rows[0]!;
+      await applySkillPackageBinding({ db: client, proposal: row, userId: owner.userId, config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }) });
+      await client.query("UPDATE proposals SET status='accepted' WHERE id=$1", [proposal.id]);
+    });
+    const skill = { kind: "skill" as const, skill_package_id: pkg.id, package_hash: preview.package_hash, display_name: "room-skill" };
+    const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
+      content: "", input_parts: [skill], recipient_segments: [{ recipient_agent_ids: ["agent-1"], content: "" }],
+      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }],
+    });
+    await dispatchQueuedRoomRuns(sent.run_ids);
+    await db.pool.query("UPDATE runs SET status='failed' WHERE id=$1", [sent.run_ids[0]]);
+    await db.pool.query("UPDATE host_threads SET dispatch_lock_id=NULL WHERE session_id=$1", [conversation.id]);
+    const retried = await service.retryMessage(owner, created.room.id, conversation.id, { run_id: sent.run_ids[0]!, idempotency_key: "retry-skill-turn" });
+    expect(retried.value.run_ids).toHaveLength(1);
+    const run = await new PgRunRepository(db.pool).getRun(owner.spaceId, retried.value.run_ids[0]!);
+    expect(run?.agent_id).toBe("agent-1");
+    const messages = await new PgSessionRepository(db.pool).listRoomMessages(owner.spaceId, owner.userId, created.room.id, conversation.id, 50, 0);
+    expect(messages?.find(message => message.role === "user")?.input_parts).toEqual([skill]);
+  });
+
   /** A retry re-runs the persisted message, and the retried Run hydrates that
    *  message's frozen resources — so it must keep the tools that read them.
    *  A retry dispatches no new input parts. Do not decide the allowance from
@@ -2133,6 +2189,7 @@ describe("Room workflow (real Postgres)", () => {
       [firstRuntime.id],
     );
     await releaseConversationTurn(firstRuntime.id);
+    await seedChatCompletion(firstRuntime.id);
     await db.pool.query(
       `UPDATE messages
           SET created_at = '2026-01-01T00:00:00.000Z'
@@ -2201,6 +2258,7 @@ describe("Room workflow (real Postgres)", () => {
       [memberTurn.run_ids[0]],
     );
     await releaseConversationTurn(memberTurn.run_ids[0]!);
+    await seedChatCompletion(memberTurn.run_ids[0]!);
     const resumed = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "Continue with the new constraint.",
       recipient_segments: [{
@@ -2229,7 +2287,9 @@ describe("Room workflow (real Postgres)", () => {
     // completed turn; the older bounded history remains in the vendor
     // session. The assigned segment is still the exact tail of the prompt.
     expect(resumedRun.rows[0]?.prompt?.endsWith("Apply the owner-specific assigned constraint.")).toBe(true);
-    expect(resumedRun.rows[0]?.prompt).toContain("Continue with the new constraint.");
+    // The triggering message is the turn's current input, delivered once; the
+    // increment carries only what came before it.
+    expect(resumedRun.rows[0]?.prompt).not.toContain("Continue with the new constraint.");
     expect(resumedRun.rows[0]?.prompt).not.toContain("Bulk Room context 84");
     expect(resumedRun.rows[0]?.prompt).not.toContain("Member-owned answer from the same agent.");
     expect(resumedRun.rows[0]?.prompt).not.toContain("Start the shared analysis.");
@@ -2336,6 +2396,7 @@ describe("Room workflow (real Postgres)", () => {
         landed,
         identity: { digest: run.digest, sent: run.sent === "true" },
       });
+      if (landed) await seedChatCompletion(run.runId);
     };
 
     const first = await turn("First question.");
@@ -2350,7 +2411,9 @@ describe("Room workflow (real Postgres)", () => {
     expect(second.sent).toBe("false");
     expect(second.prompt).not.toContain("Separate evidence from assumption.");
     expect(second.prompt).not.toContain("[Room execution rules]");
-    expect(second.prompt.endsWith("Second question.")).toBe(true);
+    // The message is the current input; the prompt names it instead of repeating it.
+    expect(second.prompt.endsWith("This run's task is the current user input below.")).toBe(true);
+    expect(second.prompt).not.toContain("Second question.");
     await finish(second, true);
 
     // A revised role is a different block, sent again.
@@ -2392,6 +2455,7 @@ describe("Room workflow (real Postgres)", () => {
         identity: { digest: thread.digest, sent: true },
         contextWindow: { used: 150_000, size: 200_000 },
       });
+      await seedChatCompletion(firstRunId);
       const second = await service!.sendMessage(owner, created.room.id, conversation.id, {
         content: "Now the tests.",
         backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }],
@@ -2419,6 +2483,7 @@ describe("Room workflow (real Postgres)", () => {
       await db.pool.query(`UPDATE runs SET status = $2, ended_at = now(), updated_at = now() WHERE id = $1`, [handoffRunId, status]);
       const run = await new PgRunRepository(db.pool).getRun("space-1", handoffRunId);
       await projector().markDelegatedRunTerminal(run!);
+      if (status === "succeeded") await seedChatCompletion(handoffRunId);
     }
 
     it("parks the person's turn behind a handoff turn once the session passes the rotation share", async (ctx) => {
@@ -2542,6 +2607,7 @@ describe("Room workflow (real Postgres)", () => {
           lastRunId: runId, vendorSessionId: "vendor-full", sessionReset: false, landed: true, identity: null,
           contextWindow: { used, size: 200_000 },
         });
+        await seedChatCompletion(runId);
       };
       const nextKinds = async (content: string) => {
         const next = await service!.sendMessage(owner, created.room.id, conversation.id, {
@@ -2589,6 +2655,7 @@ describe("Room workflow (real Postgres)", () => {
           ...(used === null ? {} : { contextWindow: { used, size: 200_000 } }),
         });
         await projector().markDelegatedRunTerminal(run);
+        await seedChatCompletion(runId);
       };
       const first = await send("First round.");
       await finish(first.run_ids[0]!, 10_000);
@@ -2736,8 +2803,9 @@ describe("Room workflow (real Postgres)", () => {
     }
 
     async function queuedRunsFor(sessionId: string, agentId: string) {
-      return (await db.pool.query<{ id: string; prompt: string; instructed_by_user_id: string; discussion_id: string | null; status: string }>(
-        `SELECT run.id, run.prompt, run.instructed_by_user_id, grp.discussion_id, run.status
+      return (await db.pool.query<{ id: string; prompt: string; assigned_task: string; instructed_by_user_id: string; discussion_id: string | null; status: string }>(
+        `SELECT run.id, run.prompt, run.model_override_json->'chat_turn'->>'assigned_task' AS assigned_task,
+                run.instructed_by_user_id, grp.discussion_id, run.status
            FROM runs run JOIN agent_run_groups grp ON grp.id = run.run_group_id
           WHERE run.session_id = $1 AND run.agent_id = $2 AND run.status IN ('queued', 'waiting_for_dependency')
           ORDER BY run.created_at DESC`,
@@ -2752,10 +2820,10 @@ describe("Room workflow (real Postgres)", () => {
       }>(`SELECT * FROM room_discussions WHERE session_id = $1 ORDER BY created_at DESC LIMIT 1`, [sessionId])).rows[0];
     }
 
-    async function roomWithSpecialist(title: string) {
+    async function roomWithSpecialist(title: string, specialistName = "Research Specialist") {
       const owner = { spaceId: "space-1", userId: "user-1" };
       const now = new Date().toISOString();
-      await seedSpecialist(now, "agent-2", "version-2", "Research Specialist");
+      await seedSpecialist(now, "agent-2", "version-2", specialistName);
       const created = await service!.createRoom(owner, { project_id: "project-1", title });
       await db.pool.query(
         `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
@@ -2766,6 +2834,106 @@ describe("Room workflow (real Postgres)", () => {
       const manager = (await db.pool.query<{ name: string }>(`SELECT name FROM agents WHERE id = 'agent-1'`)).rows[0]!.name;
       return { owner, created, conversation, manager };
     }
+
+    it("saves each member's options independently and uses them for messages and delegation", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Model selections");
+      await addRoomMember(created.room.id, "user-2");
+      const option = { id: "model", name: "Model", category: "model", type: "select", description: null,
+        current_value: "default", options: ["default", "fable", "ops"].map(value => ({ value, name: value, description: null, group: null })) };
+      await db.pool.query(
+        `UPDATE hosts SET capabilities_json = jsonb_set(capabilities_json,
+          '{installations,claude_code,0,options}', $1::jsonb) WHERE id = 'host-1'`,
+        [JSON.stringify({ config_options: [option] })],
+      );
+      const configRepository = new PgConversationBackendRepository(db.pool);
+      const app = await buildModuleServer(loadConfig({ SERVER_DATABASE_URL: db.connectionUri }), [agentsModule]);
+      const save = async (agentId: string, model: string) => {
+        const binding = await configRepository.findBinding("space-1", "user-1", conversation.id, agentId);
+        return app.inject({ method: "PUT", url: `/api/v1/agents/${agentId}/conversation-session-config`, payload: {
+          session_id: conversation.id, runtime_profile_id: binding!.runtime_profile_id,
+          session_config: [{ id: "model", type: "select", category: "model", value: model }],
+        } });
+      };
+      try {
+        __setAuthIdentityForTests(owner);
+        expect((await save("agent-1", "fable")).statusCode).toBe(200);
+        expect((await save("agent-2", "ops")).statusCode).toBe(200);
+        const catalog = await app.inject({ method: "GET", url: `/api/v1/agents/agent-2/conversation-backends?session_id=${conversation.id}` });
+        expect(catalog.statusCode).toBe(200);
+        expect(catalog.json().session_config).toEqual([{ id: "model", type: "select", category: "model", value: "ops" }]);
+        expect((await save("agent-2", "unavailable")).statusCode).toBe(422);
+        __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-2" });
+        expect((await save("agent-2", "fable")).statusCode).toBe(403);
+        __setAuthIdentityForTests({ spaceId: "another-space", userId: "user-1" });
+        expect((await save("agent-2", "fable")).statusCode).toBe(404);
+        __setAuthIdentityForTests(owner);
+        const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Have the specialist review this." });
+        const runs = new PgRunRepository(db.pool);
+        const parent = await runs.getRun("space-1", sent.run_ids[0]!);
+        expect(parent!.model_override_json).toMatchObject({ acp_session_config: [{ value: "fable" }] });
+        const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
+        const child = await groupService.spawnChildRun(owner, {
+          space_id: "space-1", group_id: group!.id, parent_run_id: parent!.id, root_run_id: group!.root_run_id!,
+          requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review the change.",
+        });
+        expect((await runs.getRun("space-1", child.child_run_id!))!.model_override_json)
+          .toMatchObject({ acp_session_config: [{ value: "ops" }] });
+        expect((await save("agent-2", "fable")).statusCode).toBe(200);
+        // Saving future preferences never rewrites an already-created Run.
+        expect((await runs.getRun("space-1", child.child_run_id!))!.model_override_json)
+          .toMatchObject({ acp_session_config: [{ value: "ops" }] });
+      } finally { __setAuthIdentityForTests(null); await app.close(); }
+    });
+
+    it("falls back from saved options the runtime withdrew, but refuses an explicit one", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Withdrawn selections");
+      const offer = (values: string[]) => db.pool.query(
+        `UPDATE hosts SET capabilities_json = jsonb_set(capabilities_json,
+          '{installations,claude_code,0,options}', $1::jsonb) WHERE id = 'host-1'`,
+        [JSON.stringify({ config_options: [{ id: "model", name: "Model", category: "model", type: "select", description: null,
+          current_value: "default", options: values.map(value => ({ value, name: value, description: null, group: null })) }] })],
+      );
+      await offer(["default", "fable", "ops"]);
+      const configRepository = new PgConversationBackendRepository(db.pool);
+      for (const [agentId, model] of [["agent-1", "fable"], ["agent-2", "ops"]] as const) {
+        await configRepository.resolveBinding({ space_id: "space-1", user_id: "user-1", session_id: conversation.id, agent_id: agentId, requested: null });
+        await configRepository.saveSessionConfig("space-1", conversation.id, agentId,
+          [{ id: "model", type: "select", category: "model", value: model }]);
+      }
+      // A CLI update withdraws both saved models.
+      await offer(["default"]);
+      // A selection sent with the message itself is still refused.
+      const binding = (await configRepository.findBinding("space-1", "user-1", conversation.id, "agent-1"))!;
+      await expect(service.sendMessage(owner, created.room.id, conversation.id, {
+        content: "Use fable.",
+        backends: [{ agent_id: "agent-1", runtime_profile_id: binding.runtime_profile_id,
+          session_config: [{ id: "model", type: "select", category: "model", value: "fable" }] }],
+      })).rejects.toMatchObject({ statusCode: 422 });
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Have the specialist review this." });
+      const runs = new PgRunRepository(db.pool);
+      const parent = (await runs.getRun("space-1", sent.run_ids[0]!))!;
+      expect(parent.model_override_json).not.toHaveProperty("acp_session_config");
+      expect(parent.model_override_json).toMatchObject({
+        acp_session_config_dropped: [{ id: "model", category: "model", value: "fable", reason: "value_unavailable" }],
+      });
+      const turn = await loadRunTurn(db.pool, { spaceId: "space-1", runId: parent.id });
+      expect(turn!.model_selection).toMatchObject({
+        requested: null, dropped: [{ id: "model", value: "fable", reason: "value_unavailable" }],
+      });
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
+      const child = await groupService.spawnChildRun(owner, {
+        space_id: "space-1", group_id: group.id, parent_run_id: parent.id, root_run_id: group.root_run_id!,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review the change.",
+      });
+      expect((await runs.getRun("space-1", child.child_run_id!))!.model_override_json).toMatchObject({
+        acp_session_config_dropped: [{ id: "model", value: "ops", reason: "value_unavailable" }],
+      });
+      // The saved choice stays; it applies again if the runtime offers it again.
+      expect(await configRepository.sessionConfig("space-1", conversation.id, "agent-1"))
+        .toEqual([{ id: "model", type: "select", category: "model", value: "fable" }]);
+    });
 
     it("replays a retried delegation even when the group has no fan-out left", async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
@@ -2785,6 +2953,14 @@ describe("Room workflow (real Postgres)", () => {
       };
       const first = await groupService.spawnChildRunAuthorized(owner, input, await groupService.preflightSpawnChildRunPolicy(owner, input));
       expect(first.child_run_id).toBeTruthy();
+      // The child's prompt is assembled with the instruction last, and says so
+      // structurally, so Runtime Context never delivers the task twice.
+      const child = await db.pool.query<{ prompt: string; instruction: string; model_override_json: Record<string, unknown> }>(
+        "SELECT prompt, instruction, model_override_json FROM runs WHERE id = $1", [first.child_run_id],
+      );
+      expect(child.rows[0]!.instruction).toBe("Check the numbers.");
+      expect(child.rows[0]!.model_override_json[RUN_REQUEST_INCLUDES_INSTRUCTION]).toBe(true);
+      expect(instructionInRunRequest(child.rows[0]!)).toBe(true);
 
       const retryPolicy = await groupService.preflightSpawnChildRunPolicy(owner, input);
       expect(retryPolicy.status).toBe("allow");
@@ -2838,6 +3014,119 @@ describe("Room workflow (real Postgres)", () => {
       expect(await hasRunJob(specialistRun)).toBe(true);
     });
 
+    /** What the composer sends for `text` with `@Codex` (agent-2) written where it stands. */
+    function composedSend(before: string, after: string) {
+      const tokens: AgentMentionToken[] = [
+        ...(before ? [{ type: "text" as const, text: before }] : []),
+        { type: "mention", id: "agent-2", label: "Codex" },
+        { type: "text", text: after },
+      ];
+      const route = agentMentionRoute(tokens);
+      const content = normalizeMentionText(renderMentionTokens(tokens, true));
+      return route.default_route === "agent_coordination"
+        ? { content, routing_mode: "agent_coordination" as const, coordination_target_agent_ids: route.mentioned_agent_ids }
+        : { content, routing_mode: "direct" as const, recipient_segments: route.direct_segments };
+    }
+
+    async function runsOf(runIds: readonly string[]) {
+      return (await db.pool.query<{ id: string; agent_id: string; prompt: string; coordination: Record<string, unknown> | null }>(
+        `SELECT id, agent_id, prompt, model_override_json->'room_coordination' AS coordination
+           FROM runs WHERE id = ANY($1::varchar[]) ORDER BY created_at`,
+        [runIds],
+      )).rows;
+    }
+
+    it("hands a message that mentions an Agent in passing to the manager, naming the Agent as its target", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Sidecar incident", "Codex");
+      // The sidecar message that reached only Codex, with its mention stripped.
+      const send = composedSend("提交吧，提交完我觉得得再查一轮，你可以派 ", " 去查");
+      expect(send).toMatchObject({ routing_mode: "agent_coordination", coordination_target_agent_ids: ["agent-2"] });
+
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, send);
+
+      expect(sent.message.content).toBe("提交吧，提交完我觉得得再查一轮，你可以派 @Codex 去查");
+      expect(sent.message.metadata_json).toMatchObject({
+        routing_mode: "agent_coordination",
+        coordination_target_agent_ids: ["agent-2"],
+      });
+      const runs = await runsOf(sent.run_ids);
+      expect(runs.map((run) => run.agent_id)).toEqual(["agent-1"]);
+      expect(runs[0]!.prompt).toContain("[The person asked you to arrange this with]\n- Codex (agent id: agent-2)");
+      expect(runs[0]!.coordination).toMatchObject({ target_agent_ids: ["agent-2"], target_labels: ["Codex"] });
+      const stored = await db.pool.query<{ content: string; routing_mode: string; targets: string[] }>(
+        `SELECT content, metadata_json->>'routing_mode' AS routing_mode,
+                metadata_json->'coordination_target_agent_ids' AS targets
+           FROM messages WHERE id = $1`,
+        [sent.message.id],
+      );
+      expect(stored.rows[0]).toEqual({
+        content: "提交吧，提交完我觉得得再查一轮，你可以派 @Codex 去查",
+        routing_mode: "agent_coordination",
+        targets: ["agent-2"],
+      });
+    });
+
+    it("sends a message that opens with an address straight to that Agent, mention kept", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Addressed", "Codex");
+      const send = composedSend("", " 去查一下构建");
+      expect(send).toMatchObject({ routing_mode: "direct", recipient_segments: [{ recipient_agent_ids: ["agent-2"], content: "@Codex 去查一下构建" }] });
+
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, send);
+
+      const runs = await runsOf(sent.run_ids);
+      expect(runs.map((run) => run.agent_id)).toEqual(["agent-2"]);
+      expect(runs[0]!.prompt).not.toContain("[The person asked you to arrange this with]");
+      expect(runs[0]!.coordination).toBeNull();
+      expect(sent.message.metadata_json).toMatchObject({ routing_mode: "direct" });
+      expect(sent.message.metadata_json).not.toHaveProperty("coordination_target_agent_ids");
+    });
+
+    it("refuses a coordination target that is not an active Agent of the Room", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Bad target", "Codex");
+      await expect(service.sendMessage(owner, created.room.id, conversation.id, {
+        content: "你可以派 @Ghost 去查",
+        routing_mode: "agent_coordination",
+        coordination_target_agent_ids: ["agent-ghost"],
+      })).rejects.toMatchObject({ statusCode: 422 });
+      await expect(service.sendMessage(owner, created.room.id, conversation.id, {
+        content: "@Codex 去查",
+        routing_mode: "direct",
+        coordination_target_agent_ids: ["agent-2"],
+      })).rejects.toMatchObject({ statusCode: 422 });
+      const written = await db.pool.query(`SELECT 1 FROM messages WHERE session_id = $1 AND role = 'user'`, [conversation.id]);
+      expect(written.rowCount).toBe(0);
+    });
+
+    it("retries a coordinated message to the manager with the same targets", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Retry coordination", "Codex");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, composedSend("你可以派 ", " 去查"));
+      await failTurn(sent.run_ids[0]!, "runtime_error", "The CLI exited.");
+
+      const retried = await service.retryMessage(owner, created.room.id, conversation.id, {
+        run_id: sent.run_ids[0]!,
+        idempotency_key: "retry-coordination",
+      });
+
+      const runs = await runsOf(retried.value.run_ids);
+      expect(runs.map((run) => run.agent_id)).toEqual(["agent-1"]);
+      expect(runs[0]!.prompt).toContain("- Codex (agent id: agent-2)");
+      expect(runs[0]!.coordination).toMatchObject({ target_agent_ids: ["agent-2"] });
+    });
+
+    it("opens no discussion when an Agent's reply mentions another only in passing", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Passing mention");
+      const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
+      await completeTurn(first.run_ids[0]!, "Done. As @Research Specialist said yesterday, the numbers hold.");
+
+      expect(await discussionFor(conversation.id)).toBeUndefined();
+      expect(await queuedRunsFor(conversation.id, "agent-2")).toEqual([]);
+    });
+
     it("retries a multi-segment turn with each Agent's own task", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Retry segments");
@@ -2875,7 +3164,7 @@ describe("Room workflow (real Postgres)", () => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation, manager } = await roomWithSpecialist("Emergent");
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
-      await completeTurn(first.run_ids[0]!, "I will ask @Research Specialist to check the numbers first.");
+      await completeTurn(first.run_ids[0]!, "I will ask for a check first.\n@Research Specialist please check the numbers first.");
 
       const emergent = await discussionFor(conversation.id);
       expect(emergent).toMatchObject({ kind: "emergent", status: "active", rounds_used: 2, round_cap: 2, turns_used: 1 });
@@ -2892,7 +3181,7 @@ describe("Room workflow (real Postgres)", () => {
       expect(stamped.rows[0]!.id).toBe(first.message.id);
 
       // The second round addresses the Manager again: past the emergent cap.
-      await completeTurn(wave1!.id, `Checked. @${manager} please review before we ship.`);
+      await completeTurn(wave1!.id, `Checked.\n@${manager} please review before we ship.`);
       const capped = await discussionFor(conversation.id);
       expect(capped).toMatchObject({ status: "cap_reached", stop_reason: "round_cap" });
       expect(capped!.held_mentions_json.map((held) => held.agent_id)).toEqual(["agent-1"]);
@@ -2903,7 +3192,7 @@ describe("Room workflow (real Postgres)", () => {
       );
       expect(notice.rows).toEqual([expect.objectContaining({ kind: "cap_reached" })]);
       const [closing] = await queuedRunsFor(conversation.id, "agent-1");
-      expect(closing!.prompt).toContain("write the conclusion");
+      expect(closing!.assigned_task).toContain("write the conclusion");
       await completeTurn(closing!.id, "Conclusion: the numbers hold; review is pending.");
       const concluded = await discussionFor(conversation.id);
       expect(concluded!.status).toBe("cap_reached");
@@ -2921,7 +3210,7 @@ describe("Room workflow (real Postgres)", () => {
         .resolves.toMatchObject({ status: "stopped" });
       await completeTurn(review!.id, "Reviewed; ship it.");
       const [finalClosing] = await queuedRunsFor(conversation.id, "agent-1");
-      expect(finalClosing!.prompt).toContain("a person stopped it");
+      expect(finalClosing!.assigned_task).toContain("a person stopped it");
       await completeTurn(finalClosing!.id, "Conclusion: shipped after review.");
       await expect(discussionFor(conversation.id)).resolves.toMatchObject({ status: "closed" });
     });
@@ -2930,7 +3219,7 @@ describe("Room workflow (real Postgres)", () => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Asked");
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
-      await completeTurn(first.run_ids[0]!, "I will ask @Research Specialist which build to ship.");
+      await completeTurn(first.run_ids[0]!, "One question first.\n@Research Specialist which build should we ship?");
       const [asking] = await queuedRunsFor(conversation.id, "agent-2");
 
       // What the adapter reports when the runtime's own prompt ended the turn
@@ -2993,7 +3282,7 @@ describe("Room workflow (real Postgres)", () => {
       await completeTurn(opened.run_ids[0]!, "Postgres; nothing else is needed.");
       await expect(discussionFor(conversation.id)).resolves.toMatchObject({ status: "converged" });
       const [closing] = await queuedRunsFor(conversation.id, "agent-1");
-      expect(closing!.prompt).toContain("converged");
+      expect(closing!.assigned_task).toContain("converged");
       await completeTurn(closing!.id, "Agreed: Postgres.");
       const closed = await discussionFor(conversation.id);
       expect(closed).toMatchObject({ status: "closed" });
@@ -3054,7 +3343,7 @@ describe("Room workflow (real Postgres)", () => {
         [conversation.id],
       );
       expect(moved.rowCount).toBe(1);
-      await completeTurn(first.run_ids[0]!, "Let me ask @Research Specialist.");
+      await completeTurn(first.run_ids[0]!, "@Research Specialist, over to you.");
       const discussion = await discussionFor(conversation.id);
       expect(await queuedRunsFor(conversation.id, "agent-2")).toEqual([]);
       const notice = await db.pool.query<{ kind: string }>(
@@ -3173,6 +3462,56 @@ describe("Room workflow (real Postgres)", () => {
       expect(dispatched).toMatchObject({ instructed_by_user_id: "user-1" });
     });
 
+    it.for(["succeeded", "degraded"] as const)("keeps a %s turn occupied until its reply and chat completion are published", async (status, ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Reply publication boundary");
+      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
+      const discussions = new RoomDiscussionService(config, db.pool);
+      const runs = new PgRunRepository(db.pool);
+      const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Which approach should we use?" });
+      const waiting = await service.sendOrQueueMessage(owner, created.room.id, conversation.id, {
+        content: "Review that recommendation.",
+        recipient_segments: [{ recipient_agent_ids: ["agent-2"], content: "Review that recommendation." }],
+      });
+      expect(waiting).toMatchObject({ queued: { status: "queued" } });
+      const runId = first.run_ids[0]!;
+      await dispatchQueuedRoomRuns([runId]);
+      await db.pool.query(
+        `UPDATE runs SET status = $2, output_json = $3::jsonb, ended_at = now(), updated_at = now() WHERE id = $1`,
+        [runId, status, JSON.stringify({ schema_version: "run_output.v1", status: "succeeded", summary: "Use the incremental approach.", result: {}, output_manifest: [] })],
+      );
+      // The worker releases the Host claim before it publishes the reply.
+      // Interleave the independent queue-recovery job and a new direct send
+      // at that boundary: neither may create a trigger ahead of the reply.
+      await releaseConversationTurn(runId);
+      expect(await discussions.releaseQueued("space-1", conversation.id)).toBe("busy");
+      await expect(service.sendMessage(owner, created.room.id, conversation.id, { content: "Another follow-up." }))
+        .rejects.toMatchObject({ statusCode: 409, responseBody: { code: "conversation_turn_in_progress" } });
+      expect((await service.listMessages(owner, created.room.id, conversation.id, { limit: 50, offset: 0 })).items
+        .some(message => message.content === "Review that recommendation.")).toBe(false);
+
+      const terminal = (await runs.getRun("space-1", runId))!;
+      // A partial finalization can persist the reply and then fail. The
+      // canonical chat_completed marker, not just that message, releases it.
+      await expect(finalizeChatTurn(config, runs, terminal, {
+        ...finalizerDeps,
+        continuity: { async finalizeChatTurn() { throw new Error("continuity temporarily unavailable"); } },
+      })).rejects.toThrow("continuity temporarily unavailable");
+      expect(await discussions.releaseQueued("space-1", conversation.id)).toBe("busy");
+      expect(await runs.listTerminalChatRunsAwaitingCompletion()).toContainEqual({ id: runId, space_id: "space-1" });
+      await finalizeChatTurn(config, runs, terminal, finalizerDeps);
+
+      const page = await service.listMessages(owner, created.room.id, conversation.id, { limit: 50, offset: 0 });
+      expect(page.queued).toEqual([]);
+      const posted = page.items.find(message => message.content === "Review that recommendation.")!;
+      expect(posted).toBeDefined();
+      const replay = await loadRoomConversationReplayThroughMessage(db.pool, {
+        spaceId: "space-1", sessionId: conversation.id, currentMessageId: posted.id,
+      });
+      expect(replay.messages.map(message => message.content)).toContain("Use the incremental approach.");
+      expect((await queuedRunsFor(conversation.id, "agent-2"))).toHaveLength(1);
+    });
+
     it("admits a queued message between a discussion's waves as a new first round", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation, manager } = await roomWithSpecialist("Queue in discussion");
@@ -3260,7 +3599,7 @@ describe("Room workflow (real Postgres)", () => {
     it("keeps an explicit discussion reply queued while its wave waits for quota", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation, manager } = await roomWithSpecialist("Joined reply past quota hold");
-      await seedQuota(90, new Date(Date.now() + 2 * 3600_000).toISOString());
+      await seedQuota(100, new Date(Date.now() + 2 * 3600_000).toISOString());
       const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
       const opened = await discussions.open(owner, created.room.id, conversation.id, {
         topic: "Plan the migration", participant_agent_ids: ["agent-2"], shape: "open", round_cap: 3,
@@ -3301,6 +3640,7 @@ describe("Room workflow (real Postgres)", () => {
       await dispatchQueuedRoomRuns([first.run_ids[0]!]);
       await db.pool.query(`UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now() WHERE id = $1`, [first.run_ids[0]]);
       await releaseConversationTurn(first.run_ids[0]!);
+      await seedChatCompletion(first.run_ids[0]!);
       const third = await service.sendOrQueueMessage(owner, created.room.id, conversation.id, { content: "Third." });
       expect(third).toMatchObject({ queued: { status: "queued" } });
 
@@ -3388,6 +3728,83 @@ describe("Room workflow (real Postgres)", () => {
       expect(charged).toBe("1");
     });
 
+    it.for(["budget", "failures", "degraded", "task_closed", "task_missing", "task_review", "reset", "origin", "participants", "stop", "turns"])("bounds task collaboration by %s without the ad-hoc two-call cap", async (mode, ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Task collaboration");
+      const task = await new PgTaskRepository(db.pool).createTask(owner, { title: "Implement and review", project_id: "project-1" });
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Implement and independently review this task until complete." });
+      const parentId = sent.run_ids[0]!;
+      const groupId = sent.task_group_ids[0]!;
+      const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", groupId);
+      if (!group?.root_run_id) throw new Error("Missing group");
+      const bounds = { task_id: task.id, participant_agent_ids: ["agent-2"], max_delegations: 10 };
+      if (mode === "participants") bounds.participant_agent_ids = ["agent-1"];
+      if (mode === "task_missing") bounds.task_id = randomUUID();
+      const spawn = (budget?: Record<string, unknown>) => groupService!.spawnChildRun(owner, {
+        space_id: "space-1", group_id: groupId, parent_run_id: parentId, root_run_id: group.root_run_id!,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1",
+        instruction: "Review the current implementation and report concrete findings.", budget_json: budget,
+      });
+      if (mode === "origin") {
+        await db.pool.query("UPDATE runs SET trigger_origin = 'continuation' WHERE id = $1", [parentId]);
+        await expect(spawn({ collaboration: bounds })).rejects.toThrow("original Room turn");
+        return;
+      }
+      if (mode === "participants" || mode === "task_missing") {
+        await expect(spawn({ collaboration: bounds })).rejects.toThrow(mode === "participants" ? "other active Room members" : "open Task");
+        return;
+      }
+      const total = mode === "budget" ? 10 : mode === "failures" || mode === "degraded" ? 3 : 1;
+      for (let index = 0; index < total; index += 1) {
+        const child = await spawn(index === 0 ? { collaboration: bounds } : undefined);
+        expect(child.child_run_id).toBeTruthy();
+        await dispatchQueuedRoomRuns([child.child_run_id!]);
+        // A degraded child is a failed delegation that still replied: its own
+        // refused governed call, not a missing result.
+        await db.pool.query("UPDATE run_delegations SET status = $2 WHERE id = $1", [child.delegation.id, mode === "failures" || mode === "degraded" ? "failed" : "succeeded"]);
+        await db.pool.query("UPDATE runs SET status = $2, ended_at = now() WHERE id = $1", [child.child_run_id, mode === "failures" ? "failed" : mode === "degraded" ? "degraded" : "succeeded"]);
+        await releaseConversationTurn(child.child_run_id!);
+      }
+      if (mode === "degraded") {
+        // Three replies in a row, each with a refused call of its own, are
+        // results for the coordinator to judge, not a stop.
+        const fourth = await spawn();
+        expect(fourth.child_run_id).toBeTruthy();
+        expect(fourth.delegation.status).not.toBe("policy_denied");
+        return;
+      }
+      if (mode === "reset") {
+        await expect(spawn({ collaboration: { ...bounds, max_delegations: 11 } })).rejects.toThrow("cannot be reset or widened");
+        return;
+      }
+      if (mode === "task_closed") await db.pool.query("UPDATE tasks SET status = 'done' WHERE id = $1", [task.id]);
+      if (mode === "task_review") await db.pool.query("UPDATE tasks SET status = 'waiting_for_review' WHERE id = $1", [task.id]);
+      if (mode === "stop") await db.pool.query("UPDATE runs SET status = 'cancelled' WHERE id = $1", [parentId]);
+      if (mode === "turns") await db.pool.query("UPDATE agent_run_groups SET budget_json = budget_json || '{\"container_turns_used\":21}'::jsonb WHERE id = $1", [groupId]);
+      const next = await spawn();
+      expect(next).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+      if (mode === "budget") {
+        const client = await db.pool.connect();
+        try {
+          // Completion messages retain the original cause beyond the old five-turn ceiling.
+          const continuation = await agentOriginContinuation(client, "space-1", groupId);
+          expect(continuation.cause).toEqual({ run_id: group.root_run_id, within_budget: true });
+          expect(continuation.delegation_budget.container_group_id).toBe(groupId);
+          // A completion turn reaches each declared participant once.
+          expect(continuation.delegation_budget.max_fanout).toBe(bounds.participant_agent_ids.length);
+          // The ceiling (two turns per declared delegation) is judged on the
+          // charged count: the turn that reaches it is still in budget, the
+          // next is not.
+          await db.pool.query("UPDATE agent_run_groups SET budget_json = budget_json || '{\"container_turns_used\":19}'::jsonb WHERE id = $1", [groupId]);
+          const atCeiling = await agentOriginContinuation(client, "space-1", groupId);
+          expect(atCeiling.cause.within_budget).toBe(true);
+          const past = await agentOriginContinuation(client, "space-1", groupId);
+          expect(past.cause.within_budget).toBe(false);
+          expect(past.delegation_budget.max_fanout).toBe(0);
+        } finally { client.release(); }
+      }
+    });
+
     it("charges every branch of a delegation chain to one container", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Container");
@@ -3409,9 +3826,9 @@ describe("Room workflow (real Postgres)", () => {
     it("lets only whoever may spend a login continue a turn held on it", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Whose subscription");
-      await seedQuota(90, new Date(Date.now() + 2 * 3600_000).toISOString());
+      await seedQuota(100, new Date(Date.now() + 2 * 3600_000).toISOString());
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
-      await completeTurn(first.run_ids[0]!, "Let me ask @Research Specialist to check the numbers.");
+      await completeTurn(first.run_ids[0]!, "Let me ask.\n@Research Specialist please check the numbers.");
       const [wave] = await queuedRunsFor(conversation.id, "agent-2");
       const discussion = await discussionFor(conversation.id);
       {
@@ -3452,9 +3869,9 @@ describe("Room workflow (real Postgres)", () => {
     it("lets a person speak while Agents wait for the window, and admits them once that turn is over", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Quota hold and a person");
-      await seedQuota(90, new Date(Date.now() + 2 * 3600_000).toISOString());
+      await seedQuota(100, new Date(Date.now() + 2 * 3600_000).toISOString());
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
-      await completeTurn(first.run_ids[0]!, "Let me ask @Research Specialist to check the numbers.");
+      await completeTurn(first.run_ids[0]!, "Let me ask.\n@Research Specialist please check the numbers.");
       const [wave] = await queuedRunsFor(conversation.id, "agent-2");
       expect(await quotaMarker(wave!.id)).not.toBeNull();
 
@@ -3468,10 +3885,10 @@ describe("Room workflow (real Postgres)", () => {
       const admittedNow = await withDbTransaction(db.pool, (client) =>
         continueHeldRuns(client, { spaceId: "space-1", sessionId: conversation.id, userId: "user-1" }));
       expect(admittedNow).toBe(0);
-      expect(await releaseHeldRuns(db.pool, { source: fixedQuota(90) })).toBe(0);
+      expect(await releaseHeldRuns(db.pool, { source: fixedQuota(100) })).toBe(0);
       expect(await hasRunJob(wave!.id)).toBe(false);
       await completeTurn(personRun, "Drafted.");
-      expect(await releaseHeldRuns(db.pool, { source: fixedQuota(90) })).toBe(1);
+      expect(await releaseHeldRuns(db.pool, { source: fixedQuota(100) })).toBe(1);
       expect(await hasRunJob(wave!.id)).toBe(true);
       expect(await quotaMarker(wave!.id)).toBeNull();
     });
@@ -3480,7 +3897,7 @@ describe("Room workflow (real Postgres)", () => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Advance once");
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
-      await completeTurn(first.run_ids[0]!, "I will ask @Research Specialist to check the numbers first.");
+      await completeTurn(first.run_ids[0]!, "I will ask for a check first.\n@Research Specialist please check the numbers first.");
       const before = await discussionFor(conversation.id);
       const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
       // A retry job, a queue release and a second finalization all reach the same wave.
@@ -3501,9 +3918,9 @@ describe("Room workflow (real Postgres)", () => {
     it("parks a Run admitted while another group's turn holds the conversation, and admits it when that turn is over", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Parked for the turn");
-      await seedQuota(90, new Date(Date.now() + 2 * 3600_000).toISOString());
+      await seedQuota(100, new Date(Date.now() + 2 * 3600_000).toISOString());
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
-      await completeTurn(first.run_ids[0]!, "Let me ask @Research Specialist to check the numbers.");
+      await completeTurn(first.run_ids[0]!, "Let me ask.\n@Research Specialist please check the numbers.");
       const [held] = await queuedRunsFor(conversation.id, "agent-2");
       // The held wave gave the turn up; a person's turn took it.
       const spoken = await service.sendOrQueueMessage(owner, created.room.id, conversation.id, { content: "Meanwhile, draft the notes." });
@@ -3575,9 +3992,9 @@ describe("Room workflow (real Postgres)", () => {
     it("lets a person address an Agent whose own turn waits for the window, and gives the Agent back to it afterwards", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Held Agent addressed");
-      await seedQuota(90, new Date(Date.now() + 2 * 3600_000).toISOString());
+      await seedQuota(100, new Date(Date.now() + 2 * 3600_000).toISOString());
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
-      await completeTurn(first.run_ids[0]!, "Let me ask @Research Specialist to check the numbers.");
+      await completeTurn(first.run_ids[0]!, "Let me ask.\n@Research Specialist please check the numbers.");
       const [held] = await queuedRunsFor(conversation.id, "agent-2");
       expect(await quotaMarker(held!.id)).not.toBeNull();
 
@@ -3618,6 +4035,7 @@ describe("Room workflow (real Postgres)", () => {
           contextWindow: { used, size: 200_000 },
         });
         await new AgentGroupRunLifecycleProjector(db.pool, config, fixedQuota(10)).markDelegatedRunTerminal(run);
+        await seedChatCompletion(runId);
       };
       const first = await send("First round.");
       await finish(first.run_ids[0]!, 10_000);
@@ -3648,7 +4066,7 @@ describe("Room workflow (real Postgres)", () => {
         contextWindow: { used: 150_000, size: 200_000 },
       });
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
-      await completeTurn(first.run_ids[0]!, "Let me ask @Research Specialist to check the numbers.", fixedQuota(10));
+      await completeTurn(first.run_ids[0]!, "Let me ask.\n@Research Specialist please check the numbers.", fixedQuota(10));
       const handoff = (await db.pool.query<{ id: string }>(
         `SELECT id FROM runs WHERE session_id = $1 AND agent_id = 'agent-2' AND model_override_json->'chat_turn'->>'kind' = 'handoff'
           AND status = 'queued'`,
@@ -3672,7 +4090,7 @@ describe("Room workflow (real Postgres)", () => {
         );
       }
       const conversation = await seedConversation(owner, created.room.id, "Serial behind a held child");
-      await seedQuota(90, new Date(Date.now() + 4 * 3600_000).toISOString());
+      await seedQuota(100, new Date(Date.now() + 4 * 3600_000).toISOString());
       const sent = await service.sendMessage(owner, created.room.id, conversation.id, {
         content: "Both of you, please.",
         recipient_segments: [{ recipient_agent_ids: ["agent-1", "agent-2"], content: "Both of you, please." }],
@@ -3684,7 +4102,7 @@ describe("Room workflow (real Postgres)", () => {
         space_id: "space-1", group_id: group!.id, parent_run_id: managerRun, root_run_id: group!.root_run_id!,
         requesting_agent_id: "agent-1", target_agent_id: "agent-3", manager_user_id: "user-1", instruction: "Check the numbers.",
       });
-      await completeTurn(managerRun, "Asked for a check.", fixedQuota(90));
+      await completeTurn(managerRun, "Asked for a check.", fixedQuota(100));
       expect(await quotaMarker(spawned.child_run_id!)).not.toBeNull();
       expect(await conversationTurnTaken(db.pool, "space-1", conversation.id)).toBe(false);
       // A person addresses the waiting Specialist itself: its host thread is free too.
@@ -3700,9 +4118,9 @@ describe("Room workflow (real Postgres)", () => {
     it("clears a parked Run's marker when any path enqueues its job", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Stale park marker");
-      await seedQuota(90, new Date(Date.now() + 2 * 3600_000).toISOString());
+      await seedQuota(100, new Date(Date.now() + 2 * 3600_000).toISOString());
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
-      await completeTurn(first.run_ids[0]!, "Let me ask @Research Specialist to check the numbers.");
+      await completeTurn(first.run_ids[0]!, "Let me ask.\n@Research Specialist please check the numbers.");
       const [held] = await queuedRunsFor(conversation.id, "agent-2");
       const spoken = await service.sendOrQueueMessage(owner, created.room.id, conversation.id, { content: "Meanwhile, draft the notes." });
       const personRun = (spoken as { run_ids: string[] }).run_ids[0]!;
@@ -3716,6 +4134,7 @@ describe("Room workflow (real Postgres)", () => {
       await dispatchQueuedRoomRuns([personRun]);
       await db.pool.query(`UPDATE runs SET status = 'succeeded', ended_at = now() WHERE id = $1`, [personRun]);
       await releaseConversationTurn(personRun);
+      await seedChatCompletion(personRun);
       // A FIFO re-evaluating its head admits it: with its job it no longer reads as waiting.
       const outcome = await withDbTransaction(db.pool, (client) => admitAgentOriginRun(client, { spaceId: "space-1", runId: sibling, job, source: fixedQuota(10) }));
       expect(outcome).toBe("admitted");
@@ -3756,9 +4175,9 @@ describe("Room workflow (real Postgres)", () => {
     it("frees the turn only for a held Run and what waits on it, never for a Run about to run", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Turn beside a hold");
-      await seedQuota(90, new Date(Date.now() + 2 * 3600_000).toISOString());
+      await seedQuota(100, new Date(Date.now() + 2 * 3600_000).toISOString());
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
-      await completeTurn(first.run_ids[0]!, "Let me ask @Research Specialist to check the numbers.");
+      await completeTurn(first.run_ids[0]!, "Let me ask.\n@Research Specialist please check the numbers.");
       const [held] = await queuedRunsFor(conversation.id, "agent-2");
       const taken = () => conversationTurnTaken(db.pool, "space-1", conversation.id);
       expect(await taken()).toBe(false);
@@ -3840,9 +4259,9 @@ describe("Room workflow (real Postgres)", () => {
     it("posts a message waiting behind a person's turn while a discussion's wave waits for the window, outside the discussion", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Queue past a hold");
-      await seedQuota(90, new Date(Date.now() + 2 * 3600_000).toISOString());
+      await seedQuota(100, new Date(Date.now() + 2 * 3600_000).toISOString());
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
-      await completeTurn(first.run_ids[0]!, "Let me ask @Research Specialist to check the numbers.");
+      await completeTurn(first.run_ids[0]!, "Let me ask.\n@Research Specialist please check the numbers.");
       const held = await discussionFor(conversation.id);
       const [wave] = await queuedRunsFor(conversation.id, "agent-2");
       expect(await quotaMarker(wave!.id)).not.toBeNull();
@@ -3851,7 +4270,7 @@ describe("Room workflow (real Postgres)", () => {
       const waiting = await service.sendOrQueueMessage(owner, created.room.id, conversation.id, { content: "And the changelog." });
       expect(waiting).toMatchObject({ queued: { status: "queued" } });
       // An Agent mention in the ordinary turn does not silently join the held discussion.
-      await completeTurn((spoken as { run_ids: string[] }).run_ids[0]!, "Drafted. @Research Specialist please double-check the dates.");
+      await completeTurn((spoken as { run_ids: string[] }).run_ids[0]!, "Drafted.\n@Research Specialist please double-check the dates.");
 
       const posted = (await db.pool.query<{ discussion_id: string | null }>(
         `SELECT discussion_id FROM messages WHERE session_id = $1 AND content = 'And the changelog.'`,
@@ -3935,22 +4354,48 @@ describe("Room workflow (real Postgres)", () => {
       }
     });
 
-    it("holds Agent-triggered turns past the subscription reserve line until a person continues anyway", async (ctx) => {
+    it("admits Agent-triggered work below exhaustion without a configured reserve", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Full subscription window");
+      await seedQuota(99, new Date(Date.now() + 2 * 3600_000).toISOString());
+      const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
+      await completeTurn(first.run_ids[0]!, "Let me ask.\n@Research Specialist please check the numbers.");
+      const [wave] = await queuedRunsFor(conversation.id, "agent-2");
+      expect(wave).toMatchObject({ status: "queued" });
+      expect(await hasRunJob(wave!.id)).toBe(true);
+      expect(await quotaMarker(wave!.id)).toBeNull();
+      expect(await conversationQuota(db.pool, "space-1", conversation.id, "user-1")).toMatchObject({ reserve_pct: 100, holds: [] });
+    });
+
+    it("releases an existing quota hold once the default policy sees unused capacity", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Release old reserve hold");
+      await seedQuota(100, new Date(Date.now() + 2 * 3600_000).toISOString());
+      const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
+      await completeTurn(first.run_ids[0]!, "Let me ask.\n@Research Specialist please check the numbers.");
+      const [held] = await queuedRunsFor(conversation.id, "agent-2");
+      expect(await quotaMarker(held!.id)).not.toBeNull();
+      expect(await releaseHeldRuns(db.pool, { source: fixedQuota(90) })).toBe(1);
+      expect(await quotaMarker(held!.id)).toBeNull();
+      expect(await hasRunJob(held!.id)).toBe(true);
+    });
+
+    it("holds Agent-triggered turns at exhaustion until a person continues anyway", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Quota hold");
       const resetsAt = new Date(Date.now() + 2 * 3600_000).toISOString();
-      await seedQuota(90, resetsAt);
+      await seedQuota(100, resetsAt);
       // A person's own message is never held.
       const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
       expect(await hasRunJob(first.run_ids[0]!)).toBe(true);
       expect(await quotaMarker(first.run_ids[0]!)).toBeNull();
 
-      await completeTurn(first.run_ids[0]!, "Let me ask @Research Specialist to check the numbers.");
+      await completeTurn(first.run_ids[0]!, "Let me ask.\n@Research Specialist please check the numbers.");
       const discussion = await discussionFor(conversation.id);
       const [wave] = await queuedRunsFor(conversation.id, "agent-2");
       expect(wave).toMatchObject({ status: "queued", discussion_id: discussion!.id });
       expect(await hasRunJob(wave!.id)).toBe(false);
-      expect(await quotaMarker(wave!.id)).toMatchObject({ window: "session", resets_at: resetsAt, utilization: 90 });
+      expect(await quotaMarker(wave!.id)).toMatchObject({ window: "session", resets_at: resetsAt, utilization: 100 });
       const notices = await db.pool.query<{ notice: { resets_at: string } }>(
         `SELECT metadata_json->'discussion_notice' AS notice FROM messages
           WHERE discussion_id = $1 AND metadata_json->'discussion_notice'->>'kind' = 'quota_hold'`,
@@ -3967,7 +4412,7 @@ describe("Room workflow (real Postgres)", () => {
         subscription: [{
           account_label: expect.stringContaining("Claude Code"),
           tokens: 0,
-          window: { kind: "session", utilization: 90, resets_at: resetsAt },
+          window: { kind: "session", utilization: 100, resets_at: resetsAt },
         }],
       });
       // Still past the line at the minute's re-check: nothing moves.
@@ -3987,7 +4432,7 @@ describe("Room workflow (real Postgres)", () => {
       // The discussion's later Agent-triggered turns are not held again.
       await completeTurn(wave!.id, "Checked; the numbers hold.");
       const [closing] = await queuedRunsFor(conversation.id, "agent-1");
-      expect(closing!.prompt).toContain("converged");
+      expect(closing!.assigned_task).toContain("converged");
       expect(await hasRunJob(closing!.id)).toBe(true);
     });
 
@@ -4000,9 +4445,9 @@ describe("Room workflow (real Postgres)", () => {
       });
       const [first, second] = opened.run_ids as [string, string];
       // The person's topic: its second recipient is admitted whatever the window says.
-      await completeTurn(first, "Monolith.", fixedQuota(99));
+      await completeTurn(first, "Monolith.", fixedQuota(100));
       expect(await hasRunJob(second)).toBe(true);
-      await completeTurn(second, "Services.", fixedQuota(99));
+      await completeTurn(second, "Services.", fixedQuota(100));
       // The critique round is Agent-triggered: its second recipient waits.
       const critique = await db.pool.query<{ id: string }>(
         `SELECT run.id FROM runs run JOIN agent_run_groups grp ON grp.id = run.run_group_id
@@ -4010,14 +4455,14 @@ describe("Room workflow (real Postgres)", () => {
         [opened.discussion.id],
       );
       const [critiqueFirst, critiqueSecond] = critique.rows.map((row) => row.id) as [string, string];
-      await completeTurn(critiqueFirst, "Services still scale better.", fixedQuota(99));
+      await completeTurn(critiqueFirst, "Services still scale better.", fixedQuota(100));
       const held = (await new PgRunRepository(db.pool).getRun("space-1", critiqueSecond))!;
       expect(held.status).toBe("queued");
       expect(held.prompt).toContain("Services still scale better.");
       expect(await hasRunJob(critiqueSecond)).toBe(false);
-      expect(await quotaMarker(critiqueSecond)).toMatchObject({ utilization: 99 });
+      expect(await quotaMarker(critiqueSecond)).toMatchObject({ utilization: 100 });
 
-      expect(await releaseHeldRuns(db.pool, { source: fixedQuota(99) })).toBe(0);
+      expect(await releaseHeldRuns(db.pool, { source: fixedQuota(100) })).toBe(0);
       expect(await releaseHeldRuns(db.pool, { source: fixedQuota(12) })).toBe(1);
       expect(await hasRunJob(critiqueSecond)).toBe(true);
       expect(await quotaMarker(critiqueSecond)).toBeNull();
@@ -4065,7 +4510,7 @@ describe("Room workflow (real Postgres)", () => {
       expect(notice.rows[0]!.content).toContain("usage limit is reached");
       // The Manager runs on the login that refused: its closing turn waits for the window.
       const [closing] = await queuedRunsFor(conversation.id, "agent-1");
-      expect(closing!.prompt).toContain("write the conclusion");
+      expect(closing!.assigned_task).toContain("write the conclusion");
       expect(await hasRunJob(closing!.id)).toBe(false);
       expect(await quotaMarker(closing!.id)).toMatchObject({ utilization: 100, resets_at: resetsAt });
 
@@ -4540,6 +4985,7 @@ describe("Room workflow (real Postgres)", () => {
       vendorSessionId: "vendor-room-1",
       sessionReset: false,
     });
+    await seedChatCompletion(first.run_ids[0]!);
 
     const roomGroup = await new PgAgentGroupRepository(db.pool).getGroup("space-1", first.task_group_ids[0]!);
     if (!roomGroup?.root_run_id || !groupService) throw new Error("host Room group was not created");
@@ -4606,6 +5052,7 @@ describe("Room workflow (real Postgres)", () => {
       vendorSessionId: null,
       sessionReset: false,
     });
+    await seedChatCompletion(delegated.child_run_id!);
 
     const second = await service.sendMessage(owner, created.room.id, conversation.id, {
       content: "Continue the remote research.",
@@ -4645,6 +5092,7 @@ describe("Room workflow (real Postgres)", () => {
       vendorSessionId: null,
       sessionReset: false,
     });
+    await seedChatCompletion(second.run_ids[0]!);
 
     await db.pool.query(
       `UPDATE hosts SET last_heartbeat_at = now() - interval '2 minutes' WHERE id = 'host-room-bound'`,
@@ -4913,6 +5361,7 @@ describe("Room workflow (real Postgres)", () => {
       [runId],
     );
     await releaseConversationTurn(runId);
+    await seedChatCompletion(runId);
     // The next heartbeat carries the commit the Agent made.
     await db.pool.query(
       `UPDATE workspace_locations SET git_head = 'agent-commit', updated_at = now() WHERE id = 'location-1'`,
@@ -4940,6 +5389,7 @@ describe("Room workflow (real Postgres)", () => {
       [second.run_ids[0]],
     );
     await releaseConversationTurn(second.run_ids[0]!);
+    await seedChatCompletion(second.run_ids[0]!);
     // Somebody else commits on top; no Run of this Conversation left HEAD there.
     await db.pool.query(
       `UPDATE workspace_locations SET git_head = 'someone-else', updated_at = now() WHERE id = 'location-1'`,
@@ -5137,6 +5587,7 @@ describe("Room workflow (real Postgres)", () => {
       [managerRunId],
     );
     await releaseConversationTurn(managerRunId);
+    await seedChatCompletion(managerRunId);
     const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
     if (!group?.root_run_id) throw new Error("group or its root_run_id not found");
 
@@ -5164,6 +5615,7 @@ describe("Room workflow (real Postgres)", () => {
     const runs = new PgRunRepository(db.pool);
     const childRun = await runs.getRun("space-1", spawned.child_run_id!);
     if (!childRun) throw new Error("child run not found");
+    await seedChatCompletion(childRun.id);
 
     const projector = new AgentGroupRunLifecycleProjector(db.pool, loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
@@ -5609,6 +6061,7 @@ describe("Room workflow (real Postgres)", () => {
       [managerRunId],
     );
     await releaseConversationTurn(managerRunId);
+    await seedChatCompletion(managerRunId);
     const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
     if (!group?.root_run_id) throw new Error("group or its root_run_id not found");
 
@@ -5650,6 +6103,7 @@ describe("Room workflow (real Postgres)", () => {
     const runs = new PgRunRepository(db.pool);
     const childRun = await runs.getRun("space-1", spawned.child_run_id!);
     if (!childRun) throw new Error("child run not found");
+    await seedChatCompletion(childRun.id);
 
     const projector = new AgentGroupRunLifecycleProjector(db.pool, config);
     await projector.markDelegatedRunTerminal(childRun);
@@ -5713,6 +6167,7 @@ describe("Room workflow (real Postgres)", () => {
       [busyRunId],
     );
 
+    await seedChatCompletion(busyRunId);
     // Running the retry job now succeeds.
     await jobRegistry.dispatch({
       job_id: "retry-job-1",

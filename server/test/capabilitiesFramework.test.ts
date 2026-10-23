@@ -1,10 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { analyzeSkillRisk } from "../src/modules/capabilities/skillRisk.js";
 import { assertPackReferencesValid, listBuiltInCapabilityPacks } from "../src/modules/capabilities/packRegistry.js";
 import { assertUniqueCapabilityIds, listBuiltInCapabilityDefinitions } from "../src/modules/capabilities/registry.js";
 import { parseSkillMarkdown } from "../src/modules/capabilities/skillParser.js";
 import { previewSkillImport } from "../src/modules/capabilities/skillImporter.js";
 import { renderAllRuntimeSkills } from "../src/modules/capabilities/runtimeRenderers.js";
+import { outboundGuard } from "../src/modules/sources/outboundUrlSafety.js";
+import { publicAddressGuard } from "./support/outboundGuard.js";
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("capability framework built-ins", () => {
   it("registers the built-in research pack", () => {
@@ -222,6 +227,9 @@ describe("skill import preview", () => {
           if (url.endsWith("/skills/demo/references/guide.md")) {
             return { contentType: "text/markdown", body: "# Guide\n" };
           }
+          if (url.endsWith("/skills/demo/assets/logo.png")) {
+            return { contentType: "image/png", body: "", bytes: Uint8Array.from([137, 80, 78, 71, 0, 255]) };
+          }
           if (url.endsWith("/skills/demo/scripts/run.py")) {
             return { contentType: "text/x-python", body: "print('review only')\n" };
           }
@@ -245,9 +253,10 @@ describe("skill import preview", () => {
     });
     expect(preview.package_files.find((file) => file.path.endsWith("assets/logo.png"))).toMatchObject({
       kind: "asset",
-      included: false,
-      content_hash: "git:asset-sha",
+      included: true,
+      content_hash: createHash("sha256").update(Uint8Array.from([137, 80, 78, 71, 0, 255])).digest("hex"),
     });
+    expect(preview.package_contents?.["skills/demo/assets/logo.png"]).toBe(Buffer.from([137, 80, 78, 71, 0, 255]).toString("base64"));
     expect(preview.warnings).toContain("script_files_detected");
     expect(preview.risk_level).toBe("high");
   });
@@ -295,6 +304,132 @@ describe("skill import preview", () => {
         }),
       ),
     ).rejects.toThrow(/Optional skill resource path is invalid/);
+  });
+});
+
+describe("skill import network boundary", () => {
+  const sourceUrl = "https://github.com/org/repo/tree/main/skills/demo";
+  const skill = "# Bounded Skill\n\nRead only the supplied sources.";
+  const commit = "a".repeat(40);
+  const tree = "b".repeat(40);
+  const files = [{ path: "skills/demo/SKILL.md", type: "blob" as const }];
+
+  beforeEach(() => {
+    vi.spyOn(outboundGuard, "pin").mockImplementation(publicAddressGuard.pin);
+  });
+
+  function oversizedBody(limit: number, headers: Record<string, string> = {}) {
+    let cancelled = false;
+    let bytesProduced = 0;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (bytesProduced >= limit * 2) { controller.close(); return; }
+        const chunk = new Uint8Array(64 * 1024).fill(32);
+        bytesProduced += chunk.length;
+        controller.enqueue(chunk);
+      },
+      cancel() { cancelled = true; },
+    }), { headers: { "content-type": "text/plain", ...headers } });
+    return { response, cancelled: () => cancelled, bytesProduced: () => bytesProduced };
+  }
+
+  it.each([undefined, "1", "262145"])("stops an oversized Skill body with Content-Length %s", async (length) => {
+    const body = oversizedBody(256 * 1024, length === undefined ? {} : { "content-length": length });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(body.response);
+    await expect(previewSkillImport({ url: sourceUrl }, {
+      commitResolver: null, packageLister: null,
+    })).rejects.toMatchObject({ statusCode: 413 });
+    expect(body.cancelled()).toBe(true);
+    expect(body.bytesProduced()).toBeLessThan(512 * 1024);
+  });
+
+  it("accepts a UTF-8 Skill exactly at the existing byte ceiling", async () => {
+    const prefix = `${skill}\n`;
+    const body = prefix + "文".repeat(Math.floor((256 * 1024 - Buffer.byteLength(prefix)) / 3));
+    const padded = body + " ".repeat(256 * 1024 - Buffer.byteLength(body));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(padded));
+    const preview = await previewSkillImport({ url: sourceUrl }, { commitResolver: null, packageLister: null });
+    expect(preview.raw_content).toBe(padded);
+    expect(preview.package_files[0]?.byte_length).toBe(256 * 1024);
+  });
+
+  it("also stops oversized optional package resources during download", async () => {
+    const body = oversizedBody(256 * 1024);
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(skill)).mockResolvedValueOnce(body.response);
+    await expect(previewSkillImport({ url: sourceUrl }, {
+      commitResolver: null,
+      packageLister: async () => [...files, { path: "skills/demo/guide.md", type: "blob" }],
+    })).rejects.toMatchObject({ statusCode: 413 });
+    expect(body.cancelled()).toBe(true);
+  });
+
+  it.each(["commit", "tree_lookup", "tree_list"] as const)("bounds the %s GitHub JSON response before parsing", async (stage) => {
+    const body = oversizedBody(8 * 1024 * 1024, { "content-type": "application/json" });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const path = new URL(String(url)).pathname;
+      if (path.endsWith("/commits/main")) return stage === "commit" ? body.response : Response.json({ sha: commit });
+      if (path.includes("/git/commits/")) return stage === "tree_lookup" ? body.response : Response.json({ tree: { sha: tree } });
+      if (path.includes("/git/trees/")) return stage === "tree_list" ? body.response : Response.json({ tree: files });
+      if (path.endsWith("/SKILL.md")) return new Response(skill);
+      throw new Error(`Unexpected fixture request: ${path}`);
+    });
+    if (stage === "commit") {
+      // Commit resolution has always been optional; a refused lookup still
+      // follows that fallback, but cannot consume an unbounded response.
+      const preview = await previewSkillImport({ url: sourceUrl });
+      expect(preview.source.commit_sha).toBeNull();
+      expect(preview.source.metadata_json.commit_sha_resolution).toBe("unresolved");
+    } else {
+      await expect(previewSkillImport({ url: sourceUrl })).rejects.toMatchObject({ statusCode: 413 });
+    }
+    expect(body.cancelled()).toBe(true);
+    expect(body.bytesProduced()).toBeLessThan(16 * 1024 * 1024);
+  });
+
+  it.each(["https://example.com/file", "https://127.0.0.1/private", "http://raw.githubusercontent.com/file"])(
+    "rejects a raw-content redirect to %s before contacting it", async (target) => {
+      const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, {
+        status: 302, headers: { location: target },
+      }));
+      await expect(previewSkillImport({ url: sourceUrl }, {
+        commitResolver: null, packageLister: null,
+      })).rejects.toMatchObject({ statusCode: 422 });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("keeps allowed same-host redirects working", async () => {
+    const target = "https://raw.githubusercontent.com/org/repo/main/skills/moved/SKILL.md";
+    const fetch = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: target } }))
+      .mockResolvedValueOnce(new Response(skill));
+    const preview = await previewSkillImport({ url: sourceUrl }, { commitResolver: null, packageLister: null });
+    expect(preview.raw_content).toBe(skill);
+    expect(preview.source.metadata_json.resolved_url).toBe(target);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not follow a GitHub metadata redirect outside api.github.com", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, {
+      status: 302, headers: { location: "https://example.com/tree" },
+    }));
+    await expect(previewSkillImport({ url: sourceUrl }, {
+      commitResolver: null,
+      fetcher: async () => ({ body: skill }),
+    })).rejects.toMatchObject({ statusCode: 422 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels an unsuccessful upstream body without reading it", async () => {
+    const cancel = vi.fn();
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+      new ReadableStream({ cancel }), { status: 404 },
+    ));
+    await expect(previewSkillImport({ url: sourceUrl }, {
+      commitResolver: null, packageLister: null,
+    })).rejects.toMatchObject({ statusCode: 404 });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 });
 

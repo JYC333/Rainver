@@ -1,3 +1,4 @@
+import { AttentionBadge } from '../agent_work/AttentionIndicators'
 import { useEffect, useMemo, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -12,6 +13,7 @@ import { errMsg } from '../../lib/utils'
 import type {
   MeSummaryOut, MeTimelineEntry, MeTaskItem, MePendingProposalItem, MeSpaceRollup,
 } from '../../types/api'
+import { Button } from '../../components/ui/button'
 import { Card } from '../../components/ui/card'
 import { Badge, StatusBadge } from '../../components/ui/badge'
 import { Skeleton } from '../../components/ui/skeleton'
@@ -494,6 +496,7 @@ export default function HomePage() {
           <h1 className="text-2xl font-semibold tracking-tight m-0">
             {t(`home.greeting_${greeting}`)}{t('home.greeting_separator')}<span className="text-accent-foreground">{displayName}</span>{t('home.greeting_end')}
           </h1>
+          <Button variant="outline" size="sm" className="self-start" onClick={() => navigate('/agent-work')}>{t('agent_work.title')}<AttentionBadge /></Button>
           <p className="text-[13px] text-muted-foreground">
             {t('home.command_center_description')}
           </p>

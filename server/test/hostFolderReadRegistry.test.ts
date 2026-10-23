@@ -135,3 +135,21 @@ describe("HostConnectionRegistry folder writes", () => {
     await expect(pending).resolves.toEqual({ ok: false, error: "host_offline" });
   });
 });
+
+describe("HostConnectionRegistry global Skills", () => {
+  it("uses the shared request transport and rejects a reply from another Host", async () => {
+    const registry = new HostConnectionRegistry();
+    const frames: Record<string, unknown>[] = [];
+    registry.registerConnection("owner-host", sink(frames));
+    const scan = registry.scanHostSkills("owner-host");
+    expect(frames[0]?.type).toBe("skill_scan");
+    let finished = false;
+    void scan.then(() => { finished = true });
+    registry.receiveHostActionResult("other-host", String(frames[0]!.request_id), { ok: true, result: { items: [], truncated: false, warnings: [] }, error: null });
+    await Promise.resolve();
+    expect(finished).toBe(false);
+    registry.receiveHostActionResult("owner-host", String(frames[0]!.request_id), { ok: true, result: { items: [], truncated: false, warnings: [] }, error: null });
+    await expect(scan).resolves.toMatchObject({ ok: true, result: { items: [] } });
+    await expect(registry.scanHostSkills("missing-host")).resolves.toMatchObject({ ok: false, error: "host_offline" });
+  });
+});

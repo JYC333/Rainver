@@ -230,6 +230,14 @@ export class ProviderProxyLeaseRegistry {
     return lease;
   }
 
+  /** Extend an existing live lease without reissuing or reviving it. */
+  renew(id: string, ttlMs: number): void {
+    const lease = this.leases.get(id);
+    if (lease && lease.expires_at_ms > Date.now()) {
+      lease.expires_at_ms = Date.now() + Math.max(ttlMs, 1_000);
+    }
+  }
+
   revoke(id: string): void {
     this.leases.delete(id);
   }

@@ -363,20 +363,9 @@ export class ExecutionControlSnapshotRepository {
   }
 
   private async workContextScopeId(run: RunRecord): Promise<string> {
-    if (run.session_id) {
-      const roomRecipient = await this.db.query<{ id: string }>(
-        `SELECT recipient.id
-           FROM sessions session
-           JOIN room_agent_members recipient
-             ON recipient.room_id=session.room_id
-            AND recipient.space_id=session.space_id
-            AND recipient.agent_id=$3
-            AND recipient.status='active'
-          WHERE session.id=$1 AND session.space_id=$2 AND session.room_id IS NOT NULL
-          LIMIT 1`,
-        [run.session_id, run.space_id, run.agent_id],
-      );
-      if (roomRecipient.rows[0]) return roomRecipient.rows[0].id;
+    if (run.session_id && run.agent_id) {
+      const roomScope = await this.roomConversationScopeId(run.space_id, run.session_id, run.agent_id);
+      if (roomScope) return roomScope;
     }
     const rootRunId = run.root_run_id ?? run.id;
     const result = await this.db.query<{ id: string }>(
@@ -388,6 +377,30 @@ export class ExecutionControlSnapshotRepository {
       [run.space_id, rootRunId],
     );
     return result.rows[0]?.id ?? run.session_id ?? rootRunId;
+  }
+
+  /**
+   * A Room recipient works in one scope per Conversation (ADR 0014 §11): the
+   * Room's other Conversations are not this one's history. Null when the
+   * session is not a Room Conversation with this Agent as a recipient.
+   */
+  private async roomConversationScopeId(spaceId: string, sessionId: string, agentId: string): Promise<string | null> {
+    const recipient = await this.db.query<{ id: string }>(
+      `SELECT recipient.id
+         FROM sessions session
+         JOIN room_agent_members recipient
+           ON recipient.room_id=session.room_id
+          AND recipient.space_id=session.space_id
+          AND recipient.agent_id=$3
+          AND recipient.status='active'
+        WHERE session.id=$1 AND session.space_id=$2 AND session.room_id IS NOT NULL
+        LIMIT 1`,
+      [sessionId, spaceId, agentId],
+    );
+    const memberId = recipient.rows[0]?.id;
+    return memberId
+      ? ensureRoomConversationScope(this.db, { spaceId, sessionId, roomAgentMemberId: memberId })
+      : null;
   }
 
   private async providerEgress(
@@ -457,4 +470,28 @@ function refsFromRecords(
     return typeof id === "string" && id.trim() ? [id.trim()] : [];
   });
   return [...new Set(ids)].sort().map((id) => ({ type, id }));
+}
+
+/**
+ * The work scope of one Room recipient in one Conversation, created on first
+ * use (ADR 0014 §11). The caller has already established that the recipient
+ * belongs to the Conversation's Room.
+ */
+export async function ensureRoomConversationScope(
+  db: Pick<Pool, "query">,
+  input: { spaceId: string; sessionId: string; roomAgentMemberId: string },
+): Promise<string> {
+  await db.query(
+    `INSERT INTO room_conversation_recipients (id,space_id,session_id,room_agent_member_id,created_at)
+     VALUES ($1,$2,$3,$4,now())
+     ON CONFLICT (session_id,room_agent_member_id) DO NOTHING`,
+    [randomUUID(), input.spaceId, input.sessionId, input.roomAgentMemberId],
+  );
+  const scope = await db.query<{ id: string }>(
+    `SELECT id FROM room_conversation_recipients
+      WHERE space_id=$1 AND session_id=$2 AND room_agent_member_id=$3`,
+    [input.spaceId, input.sessionId, input.roomAgentMemberId],
+  );
+  if (!scope.rows[0]) throw new Error("Room Conversation work scope was not persisted");
+  return scope.rows[0].id;
 }

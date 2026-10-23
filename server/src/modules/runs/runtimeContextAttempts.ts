@@ -47,7 +47,10 @@ export function createRunInvocationAttemptLifecycle(input: {
       spaceId: input.run.space_id,
       deliveryId: delivery.id,
       status: response.success ? "accepted" : "failed",
-      actualPromptTokens: response.usage?.input_tokens ?? null,
+      // CLI usage aggregates all internal calls (and often multiple ACP turns).
+      // It cannot be reconciled as the input size of this one Delivery. The
+      // exclusive buckets are retained in the usage ledger instead.
+      actualPromptTokens: response.adapter_kind === "local_cli" ? null : response.usage?.input_tokens ?? null,
       adapterReceiptRef: { type: "runtime_attempt", id: delivery.id },
       errorCode: response.error_code ?? null,
     }),

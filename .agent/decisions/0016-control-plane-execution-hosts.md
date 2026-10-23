@@ -263,6 +263,16 @@ therefore outside ADR 0008's channel isolation and B67's mutual exclusion,
 which both govern what the *upstream* sees. Nothing is installed onto `PATH`
 (§7): the command is named by absolute path in the Run's environment.
 
+Linux and macOS Hosts now keep that bearer in their own process for `file-v1` work
+surfaces and give the runtime a private, per-launch file IPC directory; the
+server offers `file-v1` only to a Host that advertises it. It
+forwards the fixed CLI tool verbs to the same Run-scoped REST routes. ACP
+directory-capable runtimes receive only that directory through negotiated
+`additionalDirectories`, including on resume. This keeps command networking
+disabled and needs neither MCP nor an inbound Host listener. Older components
+retain direct HTTP until both server and Host have been updated. Identity,
+policy, approval and tool semantics remain server-owned.
+
 **An explicit ModelProvider binding does.** A Run may carry a binding chosen
 by the control plane, in which case the server-side provider proxy and its
 short-lived leases serve it. This costs reachability, not a trust-model

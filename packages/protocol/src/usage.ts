@@ -110,6 +110,8 @@ export const UsageTimeseriesQuerySchema = UsageQuerySchema.extend({
 export const UsageTotalsSchema = z.object({
   event_count: z.number().int().nonnegative(),
   request_count: z.number().int().nonnegative(),
+  /** Events whose internal model request count was not reported. */
+  unknown_request_count_events: z.number().int().nonnegative().optional(),
   input_tokens: z.number().int().nonnegative(),
   output_tokens: z.number().int().nonnegative(),
   cache_creation_input_tokens: z.number().int().nonnegative(),
@@ -212,6 +214,7 @@ export const UsageEventDTOSchema = z.object({
   cache_read_input_tokens: z.number().int().nonnegative(),
   reasoning_tokens: z.number().int().nonnegative(),
   request_count: z.number().int().nonnegative(),
+  request_count_known: z.boolean().optional(),
   estimated_cost_usd: z.number().nullable(),
   cost_accuracy: CostAccuracySchema,
   usage_accuracy: UsageAccuracySchema,

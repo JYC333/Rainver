@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { QuotaRecoveryUpdateSchema } from "@rainver/protocol";
+import { updateQuotaRecovery } from "../rooms/quotaRecovery.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { ModuleContext } from "../../gateway/routeRegistry.js";
 import { errorEnvelope, sendErrorEnvelope } from "../../gateway/errorEnvelope.js";
@@ -644,6 +646,24 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
       invocation_snapshots: invocationSnapshots,
       linked_tasks: linkedTasks,
     });
+  });
+
+  app.patch("/api/v1/runs/:runId/quota-recovery", async (request, reply) => {
+    const identity = await resolveIdentity(context, request, reply);
+    if (!identity) return reply;
+    const parsed = QuotaRecoveryUpdateSchema.safeParse(jsonBody(request));
+    if (!parsed.success) return reply.code(422).send({ detail: "Expected auto_continue as a boolean" });
+    const runId = params(request).runId ?? "";
+    try {
+      await authorizeRunCommand(PgRunRepository.fromConfig(context.config), identity, runId, "resume");
+      const recovery = await withDbTransaction(dbPool(context.config), async client => {
+        const result = await updateQuotaRecovery(client, identity.spaceId, runId, parsed.data.auto_continue);
+        await new PgRunRepository(client).appendRunEvent({ run_id: runId, space_id: identity.spaceId,
+          event_type: "state_transition", status: "succeeded", metadata_json: { action: "quota_recovery_updated", auto_continue: result.auto_continue } });
+        return result;
+      });
+      return reply.send(recovery);
+    } catch (error) { return sendRouteError(reply, error); }
   });
 
   app.post("/api/v1/runs/:runId/resume", async (request, reply) => {

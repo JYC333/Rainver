@@ -13,11 +13,17 @@ through `/api/v1/capability-definitions`. Catalog YAML under
   `capability_enable` / `capability_disable` proposals that the
   `/api/v1/capability-definitions/:id/enable-proposal` and `/disable-proposal`
   routes create, and their applier.
-- Skill packages: skill-source import preview/import from GitHub
-  (`/api/v1/skill-sources/*`; import must carry the preview's `package_hash`),
+- Unified Skill library: import preview/import from GitHub, uploaded Markdown/folder/ZIP
+  or global CLI discovery on an owned Host (`/api/v1/skill-sources/*`; import
+  must carry the preview's `package_hash`; macOS `__MACOSX/`, `._*` and
+  `.DS_Store` entries are dropped), original bytes and scope bindings,
   `/api/v1/skill-packages` reads (with the caller's `pending_proposal`),
-  idempotent review proposals, conversion to a capability, and the local
-  skill overlay (`/api/v1/capabilities/skills/*`). See
+  idempotent review/binding proposals approved by a Space admin or owner (a
+  review may carry its first enabling binding so one approval reviews and
+  enables; a different pending review answers 409 `skill_review_pending`),
+  recipient-aware Skill menus (`/api/v1/capabilities/skills/available`), legacy
+  conversion APIs, and the local skill overlay (`/api/v1/capabilities/skills/*`;
+  no web consumer). See
   [CAPABILITY_WORKFLOW_SKILL_SYSTEM](../architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md)
   for the preview binding, the immutable imported snapshot and the pending
   proposal identity.
@@ -112,8 +118,26 @@ execute node graphs.
 
 ## Related Files
 
-- `server/src/modules/capabilities/` (`routes.ts`, `service.ts`, `registry.ts`, `repository.ts`, `packRegistry.ts`, `skillImporter.ts`)
+- `server/src/modules/capabilities/` (`routes.ts`, `service.ts`, `registry.ts`, `repository.ts`, `packRegistry.ts`, `skillImporter.ts`, `skillArchive.ts`, `skillBindings.ts`, `selectedSkills.ts`)
 - `server/src/modules/catalog/` (read-only `/api/v1/server/catalog*` listing of `catalog/`)
 - `server/src/modules/runtimeAdapters/`
 - `server/src/modules/runs/materializationService.ts`
 - `catalog/capabilities/memory_reflect/`
+
+## Unified library runtime path
+
+The frontend `/skills` page owns package inspection, original-file previews,
+review and scope bindings. Direct and Room composers select pinned packages
+through `/` or `@` and persist typed Skill input parts. `selectedSkills.ts`
+checks every addressed recipient against the message author's bindings in one
+query, verifies each package once per turn, and supplies original files to
+Runtime Context Delivery; it never turns selected packages into new capability
+definitions.
+`skillPackageContent.ts` verifies complete bytes, hashes and portable paths.
+`skillArchive.ts` bounds ZIP decoding through `fflate`; `skillHostImport.ts`
+authorizes global CLI scan/read through the owning Host. The UI offers Local
+CLIs, GitHub and Markdown/ZIP file sources in a separate import modal. Standalone
+Markdown uses the existing original-file upload request as `SKILL.md`. Project
+Folder import is not a source; it had no web, CLI or tool consumer. See the
+unified library section of the architecture guide for API shapes, limits,
+precedence, approver roles and retry semantics.

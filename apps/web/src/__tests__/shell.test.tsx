@@ -1,5 +1,5 @@
 import { beforeEach, describe, it, expect, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 
 vi.mock('../contexts/ThemeContext', () => ({ useTheme: () => ({ theme: 'light', toggleTheme: vi.fn() }) }))
@@ -16,7 +16,16 @@ vi.mock('../contexts/SpaceContext', () => ({
   }),
 }))
 
+vi.mock('../api/client', async original => ({ ...await original<typeof import('../api/client')>(), agentAttentionApi: { stream: vi.fn(), snapshot: vi.fn(), list: vi.fn() } }))
+import { agentAttentionApi } from '../api/client'
+import type { AgentAttentionStreamFrame } from '@rainver/protocol'
 import Shell from '../core/Shell'
+
+beforeEach(() => {
+  vi.mocked(agentAttentionApi.stream).mockClear().mockImplementation(async (_sink, options) => {
+    await new Promise<void>(resolve => options?.signal?.addEventListener('abort', () => resolve(), { once: true }))
+  })
+})
 
 const routerFuture = { v7_relativeSplatPath: true, v7_startTransition: true } as const
 
@@ -72,4 +81,18 @@ describe('Shell mobile tab bar', () => {
     expect(within(tabs).getByRole('link', { name: 'Tasks' })).toBeInTheDocument()
     expect(within(tabs).queryByRole('link', { name: 'Command Center' })).toBeNull()
   })
+})
+
+
+it('keeps one account aggregate stream across navigation and updates the Agent Work rail badge', () => {
+  render(<MemoryRouter initialEntries={['/home']} future={routerFuture}><Shell /></MemoryRouter>)
+  const callback = vi.mocked(agentAttentionApi.stream).mock.calls[0]![0]
+  const frame: AgentAttentionStreamFrame = { type: 'attention.snapshot', seq: 1, version: 'source-revision', unread_count: 42, notices: [], page: {
+    items: [], next_cursor: null, counts: { needs_you: 3, recently_finished: 0, working: 0, waiting: 0, idle: 0 }, as_of: '2026-10-21T00:00:00Z',
+  } }
+  act(() => callback(frame))
+  const link = screen.getByRole('link', { name: /Agent Work/ })
+  expect(within(link).getByRole('status', { name: /3 need you.*42 unread/ })).toBeVisible()
+  fireEvent.click(link)
+  expect(agentAttentionApi.stream).toHaveBeenCalledTimes(1)
 })

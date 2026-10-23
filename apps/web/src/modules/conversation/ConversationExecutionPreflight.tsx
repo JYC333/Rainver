@@ -1,8 +1,9 @@
+import { ConversationScope, useConversationScope } from './ConversationScope'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Loader2, RefreshCw, Shield, Unplug } from 'lucide-react'
 import { toast } from 'sonner'
 import { roomsApi, sessionsApi } from '../../api/client'
-import { SpaceLink as Link } from '../../core/spaceNav'
+import { ConversationLink as Link } from './ConversationScope'
 import { errMsg } from '../../lib/utils'
 import i18n, { useAppTranslation } from '../../i18n'
 import type {
@@ -24,6 +25,7 @@ import { Select } from '../../components/ui/select'
 import { ConversationGitContext } from './ConversationGitContext'
 
 interface ConversationExecutionPreflightProps {
+  spaceId?: string
   projectId: string
   roomId: string
   sessionId: string | null
@@ -42,7 +44,11 @@ interface ConversationExecutionPreflightProps {
  * authorization and readiness, while this component owns only the visible
  * selection and the explicit actions that the user requested.
  */
-export function ConversationExecutionPreflight({
+export function ConversationExecutionPreflight(props: ConversationExecutionPreflightProps) {
+  return <ConversationScope key={`${props.spaceId ?? ''}:${props.roomId}:${props.sessionId ?? 'new'}`} spaceId={props.spaceId}><ConversationExecutionPreflightContent key={`${props.spaceId ?? ''}:${props.roomId}:${props.sessionId ?? 'new'}`} {...props} /></ConversationScope>
+}
+
+function ConversationExecutionPreflightContent({
   projectId,
   roomId,
   sessionId,
@@ -53,6 +59,7 @@ export function ConversationExecutionPreflight({
   onReadyChange,
   onSummaryChange,
 }: ConversationExecutionPreflightProps) {
+  const scope = useConversationScope()
   const { t } = useAppTranslation()
   const [detail, setDetail] = useState<RoomDetail | null>(suppliedDetail ?? null)
   const [preflight, setPreflight] = useState<ConversationExecutionPreflightResponse | null>(null)
@@ -86,20 +93,20 @@ export function ConversationExecutionPreflight({
     primarySelectionTouched.current = false
     onReadyChange?.(false)
     onSummaryChange?.(null)
-  }, [onReadyChange, onSummaryChange, sessionId])
+  }, [onReadyChange, onSummaryChange, sessionId, scope])
 
   useEffect(() => {
     if (suppliedDetail !== undefined) setDetail(suppliedDetail)
-  }, [suppliedDetail])
+  }, [suppliedDetail, scope])
 
   useEffect(() => {
     if (!sessionId || suppliedDetail?.agent_members.some(member => member.role === 'manager')) return
     let active = true
-    roomsApi.get(roomId)
+    roomsApi.get(roomId, scope)
       .then(next => { if (active) setDetail(next) })
       .catch(() => undefined)
     return () => { active = false }
-  }, [roomId, sessionId, suppliedDetail])
+  }, [roomId, sessionId, suppliedDetail, scope])
 
   const reload = useCallback(async () => {
     const sequence = ++requestSequence.current
@@ -112,8 +119,8 @@ export function ConversationExecutionPreflight({
     setLoading(true)
     setError(null)
     try {
-      const next = await sessionsApi.executionContext(sessionId)
-      if (sequence !== requestSequence.current) return
+      const next = await sessionsApi.executionContext(sessionId, scope)
+      if (scope.signal?.aborted || sequence !== requestSequence.current) return
       setPreflight(next)
       setProfiles(next.available_runtime_profiles ?? [])
       onSummaryChange?.(next.summary)
@@ -122,7 +129,7 @@ export function ConversationExecutionPreflight({
       // the next good refresh changed nothing and sending stayed disabled.
       onReadyChange?.(Boolean(next.summary.state === 'initialized' && next.summary.can_send))
     } catch (cause) {
-      if (sequence !== requestSequence.current) return
+      if (scope.signal?.aborted || sequence !== requestSequence.current) return
       const message = errMsg(cause)
       setError(message)
       onReadyChange?.(false)
@@ -130,9 +137,9 @@ export function ConversationExecutionPreflight({
     } finally {
       setLoading(false)
     }
-  }, [onReadyChange, onSummaryChange, sessionId])
+  }, [onReadyChange, onSummaryChange, sessionId, scope])
 
-  useEffect(() => { void reload() }, [reload])
+  useEffect(() => { void reload() }, [reload, scope])
 
   useEffect(() => {
     if (!sessionId) return
@@ -145,7 +152,7 @@ export function ConversationExecutionPreflight({
       window.removeEventListener('focus', refresh)
       document.removeEventListener('visibilitychange', refresh)
     }
-  }, [reload, sessionId])
+  }, [reload, sessionId, scope])
 
   const summary = preflight?.summary ?? null
   const initialized = summary?.state === 'initialized'
@@ -158,14 +165,14 @@ export function ConversationExecutionPreflight({
       workspace_location_id: primaryKey.slice('location:'.length),
     }
     return null
-  }, [primaryKey])
+  }, [primaryKey, scope])
   const selectedHost = preflight?.available_hosts.find(host => host.host_id === hostId) ?? null
   const selectedLocation = selectedPrimary?.kind === 'location'
     ? locations.find(location => location.workspace_location_id === selectedPrimary.workspace_location_id) ?? null
     : null
   const participantMembers = useMemo(
     () => (detail ?? suppliedDetail)?.agent_members ?? [],
-    [detail, suppliedDetail],
+    [detail, suppliedDetail, scope],
   )
   const manager = participantMembers.find(member => member.role === 'manager')
   const candidateProfilesByAgent = useMemo(() => {
@@ -182,7 +189,7 @@ export function ConversationExecutionPreflight({
       )))
     }
     return candidates
-  }, [hostId, participantMembers, profiles, selectedPrimary])
+  }, [hostId, participantMembers, profiles, selectedPrimary, scope])
   const candidateProfiles = manager ? candidateProfilesByAgent.get(manager.agent_id) ?? [] : []
   const selectedProfile = candidateProfiles.find(profile => runtimeCandidateKey(profile) === runtimeProfileId) ?? null
   const participantChoices = participantMembers.map(member => {
@@ -214,7 +221,7 @@ export function ConversationExecutionPreflight({
 
   useEffect(() => {
     if (initialized && (summary?.blocked_reason || error)) setExecutionDetailsOpen(true)
-  }, [error, initialized, summary?.blocked_reason])
+  }, [error, initialized, summary?.blocked_reason, scope])
 
   useEffect(() => {
     if (!preflight || initialized) return
@@ -247,7 +254,7 @@ export function ConversationExecutionPreflight({
       const pinned = profiles.find(profile => profile.runtime_profile_id === summary.runtime!.runtime_profile_id)
       if (pinned) setRuntimeProfileId(current => current || runtimeCandidateKey(pinned))
     }
-  }, [executableLocations, initialized, onReadyChange, preflight, preferredProjectFolderId, ready, summary])
+  }, [executableLocations, initialized, onReadyChange, preflight, preferredProjectFolderId, ready, summary, scope])
 
   useEffect(() => {
     if (initialized || !hostId || !selectedPrimary) return
@@ -273,21 +280,21 @@ export function ConversationExecutionPreflight({
       }
       return changed ? next : current
     })
-  }, [candidateProfiles, hostId, initialized, participantChoices, selectedPrimary])
+  }, [candidateProfiles, hostId, initialized, participantChoices, selectedPrimary, scope])
 
-  useEffect(() => { onReadyChange?.(ready) }, [onReadyChange, ready])
+  useEffect(() => { onReadyChange?.(ready) }, [onReadyChange, ready, scope])
 
   async function openDraft(): Promise<void> {
     setBusy(true)
     setError(null)
     try {
-      const conversation = await roomsApi.createConversation(roomId)
+      const conversation = await roomsApi.createConversation(roomId, scope)
       // The Room response can be older than the provisioning transaction that
       // just completed. Refresh the authoritative roster before rendering the
       // draft so a newly-created Project Agent is immediately selectable.
-      const nextDetail = await roomsApi.get(roomId).catch(() => null)
+      const nextDetail = await roomsApi.get(roomId, scope).catch(() => null)
       if (nextDetail) setDetail(nextDetail)
-      onConversationCreated?.(conversation)
+      if (!scope.signal?.aborted) onConversationCreated?.(conversation)
     } catch (cause) {
       const message = errMsg(cause)
       setError(message)
@@ -322,7 +329,7 @@ export function ConversationExecutionPreflight({
         }))
       await sessionsApi.initializeExecution(sessionId, additional_runtimes.length > 0
         ? { selection, runtime, additional_runtimes }
-        : { selection, runtime })
+        : { selection, runtime }, scope)
       await reload()
       toast.success(t('conversation_ui.preflight.initialized_toast'))
     } catch (cause) {
@@ -339,7 +346,7 @@ export function ConversationExecutionPreflight({
     setBusy(true)
     setError(null)
     try {
-      const nextSummary = await sessionsApi.refreshGitContext(sessionId)
+      const nextSummary = await sessionsApi.refreshGitContext(sessionId, scope)
       setPreflight(current => current ? { ...current, summary: nextSummary } : current)
       onSummaryChange?.(nextSummary)
       toast.success(t('conversation_ui.preflight.git_refreshed'))
@@ -366,15 +373,15 @@ export function ConversationExecutionPreflight({
           project_folder_id: location.project_folder_id,
           workspace_location_id: location.workspace_location_id,
           access_mode: attachMode,
-        })
+        }, scope)
       } else if (action === 'set_access' && attachmentId && mode) {
         await sessionsApi.mutateExecutionAttachments(sessionId, {
           action: 'set_access', mutation_id: crypto.randomUUID(), attachment_id: attachmentId, access_mode: mode,
-        })
+        }, scope)
       } else if (action === 'revoke' && attachmentId) {
         await sessionsApi.mutateExecutionAttachments(sessionId, {
           action: 'revoke', mutation_id: crypto.randomUUID(), attachment_id: attachmentId,
-        })
+        }, scope)
       }
       setAttachLocationId('')
       await reload()
