@@ -181,11 +181,11 @@ Project member through it — and produces proposals, never writes
 No Tasks are generated: a "next step" from finished history is usually already
 done, and a list of them is work for the reader rather than for the Project.
 
-The contract is the Runtime Context semantic checkpoint's — the same system
-prompt, exported so there is one definition of it, and the same strict output
-schema. What is not reused is that extractor's metering, which resolves a Work
-Context Setup; imported history has no work context scope, and inventing one to
-satisfy a lookup would be contorting the mechanism rather than reusing it.
+The contract is the Runtime Context semantic checkpoint schema
+(`SemanticCheckpointExtractionSchema`), one strict definition of what a
+checkpoint of some work means. This is its only producer now: the live
+ledger is audited, never extracted from (ADR 0014 §11), so the system prompt
+lives here (`extraction.ts`).
 
 A batch is claimed atomically before the model is called, so a scheduled
 extraction and a pressed button take disjoint work instead of both paying for

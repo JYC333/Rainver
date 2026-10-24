@@ -17,6 +17,7 @@ export async function recordHostThreadOutcome(
   completedRun: { id: string; status: string; output_json?: unknown; error_json?: unknown },
   resumeAttempted: boolean,
   identity: { digest: string; sent: boolean } | null = null,
+  standing: { digest: string; sent: boolean } | null = null,
 ): Promise<void> {
   if (!config.databaseUrl) return;
   const pool = getDbPool(config.databaseUrl);
@@ -50,6 +51,7 @@ export async function recordHostThreadOutcome(
     landed: Boolean(externalSessionId)
       && (completedRun.status === "succeeded" || completedRun.status === "degraded"),
     identity,
+    standing,
     contextWindow: contextWindowFrom(result.context_window),
   });
 

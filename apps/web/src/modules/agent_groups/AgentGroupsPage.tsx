@@ -468,7 +468,7 @@ export default function AgentGroupsPage() {
           </Card>
           </div>
       ) : (
-        <section className="grid items-start gap-4 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[230px_minmax(0,1fr)_240px]">
+        <section className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[230px_minmax(0,1fr)_240px]">
           <aside aria-label="Room and conversation navigation" className="space-y-3 lg:sticky lg:top-4">
             <Card className="p-3 space-y-3">
               <div>

@@ -31,7 +31,7 @@ import type { SystemActionId } from "@rainver/protocol";
  * (ADR 0017 §1/§2). `agent.delegate` and
  * `research.start_acquisition` are both visible, directly-executed
  * coordination actions — `agent.delegate` is independently constrained by
- * the Room's one-level/two-specialist delegation budget, and
+ * the Room's one-level, shared soft/hard delegation budget, and
  * `research.start_acquisition` is idempotency-guarded rather than
  * proposal-gated: the Thread was already human-accepted at creation.
  * `research.cancel_acquisition` is its stop lever, listed here so a Room
@@ -69,6 +69,12 @@ import type { SystemActionId } from "@rainver/protocol";
 export const CONVERSATION_TOOL_ALLOWANCE: readonly SystemActionId[] = [
   "memory.remember",
   "memory.revise",
+  // The conversation's own record. The vendor session is the Agent's working
+  // memory and Rainver keeps every message and Agent event; after a summary
+  // or a renewed session, what the summary left out is looked up here rather
+  // than replayed into the prompt.
+  "conversation.search",
+  "conversation.read",
 ];
 
 /** Added only for a turn whose persisted message owns text resources. */

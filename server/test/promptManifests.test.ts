@@ -9,8 +9,8 @@ import { loadPromptManifests } from "../src/modules/prompts/builtins.js";
 const REAL_CATALOG_ROOT = resolve(process.cwd(), "..", "catalog");
 
 const EXPECTED_ASSET_KEYS = [
+  "agent.conversation_summary",
   "agent.default_assistant.system",
-  "agent.handoff",
   "agent_template.coding_reviewer.system",
   "agent_template.activity_reflector.system",
   "agent_template.research_reader.system",

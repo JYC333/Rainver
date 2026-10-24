@@ -25,7 +25,6 @@ import { PgWorkspaceLocationRepository } from "../src/modules/projectFolders/wor
 import { projectAttentionRegistry } from "../src/modules/projects/attentionRegistry.js";
 import { taskRunAhead } from "../src/modules/runs/agentRunHandler.js";
 import { PgRunRepository } from "../src/modules/runs/repository.js";
-import { headMovedByConversationRun } from "../src/modules/sessions/conversationGitGate.js";
 import type { WorkspaceVerificationOutcome } from "../src/modules/runs/verification/engine.js";
 import { TaskMergeResolutionDispatcher } from "../src/modules/tasks/mergeResolution.js";
 import { PgTaskRunSettler } from "../src/modules/runs/taskRunSettlement.js";
@@ -231,31 +230,6 @@ async function pendingMergeJobs() {
   return (await db.pool.query(`SELECT 1 FROM jobs WHERE job_type = $1 AND status = 'pending'`, [TASK_MERGE_JOB])).rows.length;
 }
 
-/** An initialized Room conversation working in the Location, its Git baseline accepted at `head` on main. */
-async function conversationOnLocation(sessionId: string, head: string) {
-  if (sessionId !== CONVERSATION) {
-    const room = await db.pool.query<{ id: string }>(`SELECT id FROM rooms WHERE space_id = $1 AND is_mainline = true LIMIT 1`, [SPACE]);
-    await db.pool.query(
-      `INSERT INTO sessions (id, space_id, project_id, room_id, status, created_at, updated_at) VALUES ($1, $2, $3, $4, 'active', now(), now())`,
-      [sessionId, SPACE, PROJECT, room.rows[0]!.id],
-    );
-  }
-  await db.pool.query(
-    `INSERT INTO conversation_execution_contexts (id, space_id, session_id, execution_host_id, primary_workspace_mode,
-       primary_project_folder_id, primary_workspace_location_id, state, initialized_at, initialized_by_user_id,
-       git_branch, git_head, git_dirty, git_execution_ready, git_observed_at, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, 'location', $5, $6, 'initialized', now(), $7, 'main', $8, false, true, now(), now(), now())`,
-    [randomUUID(), SPACE, sessionId, HOST, FOLDER, LOCATION, OWNER, head],
-  );
-}
-
-async function conversationGit(sessionId: string) {
-  return (await db.pool.query<{ last_run_git_branch: string | null; last_run_git_head: string | null }>(
-    `SELECT last_run_git_branch, last_run_git_head FROM conversation_execution_contexts WHERE session_id = $1`,
-    [sessionId],
-  )).rows[0]!;
-}
-
 describe("merging a done Task", () => {
   it("squashes, rebases, verifies and fast-forwards, then says so on the timeline and in the conversation", async (ctx) => {
     if (!db.available) return ctx.skip();
@@ -277,31 +251,6 @@ describe("merging a done Task", () => {
     expect(await events("task.merged")).toEqual([expect.objectContaining({ data_json: expect.objectContaining({ main_branch: "main", commit: TASK_COMMIT }) })]);
     expect(await notices()).toEqual([`Task "Fix the parser" is merged into main.`]);
     expect(await attention()).toEqual([]);
-  });
-
-  it("lets the conversation the Task came from take the merge's move of its checkout, and no other", async (ctx) => {
-    if (!db.available) return ctx.skip();
-    const neighbour = randomUUID();
-    await conversationOnLocation(CONVERSATION, MAIN);
-    await conversationOnLocation(neighbour, MAIN);
-    await markDone();
-    const host = scriptedHost({ task_merge_prepare: [rebased()], task_merge_finish: [finished("merged")] });
-
-    await expect(worker(host.registry).processOne()).resolves.toMatchObject({ status: "completed" });
-
-    const checkout = { branch: "main", commit_sha: TASK_COMMIT };
-    expect(await conversationGit(CONVERSATION)).toEqual({ last_run_git_branch: "main", last_run_git_head: TASK_COMMIT });
-    expect(headMovedByConversationRun(await conversationGit(CONVERSATION), checkout)).toBe(true);
-    expect(headMovedByConversationRun(await conversationGit(neighbour), checkout)).toBe(false);
-  });
-
-  it("leaves the origin conversation's gate alone when it had not accepted the commit the merge moved from", async (ctx) => {
-    if (!db.available) return ctx.skip();
-    await conversationOnLocation(CONVERSATION, MOVED_MAIN);
-    await markDone();
-    const host = scriptedHost({ task_merge_prepare: [rebased()], task_merge_finish: [finished("merged")] });
-    await expect(worker(host.registry).processOne()).resolves.toMatchObject({ status: "completed" });
-    expect(await conversationGit(CONVERSATION)).toEqual({ last_run_git_branch: null, last_run_git_head: null });
   });
 
   it("asks once per done write, and a Task closed again replaces only a merge that stopped", async (ctx) => {

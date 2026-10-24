@@ -1,4 +1,5 @@
 import { PgRoomRosterRepository } from "./rosterRepository.js";
+import { defaultRoomDelegationBudget } from "./delegationBudget.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { getDbPool, type Pool, type PoolClient } from "../../db/pool.js";
@@ -23,8 +24,7 @@ import { ProjectOverviewService } from "../projects/overviewService.js";
 import { SpaceAssistantService, type ManagedAssistantPreparation } from "../agents/spaceAssistantService.js";
 import type { ConversationInputPart, RoomAgentPresetRequest, RoomDetail, RuntimeSessionConfigSelection, ThreadReferencePick } from "@rainver/protocol";
 import { contentReadSql } from "../access/contentAccessSql.js";
-import { RoomRosterService } from "./rosterService.js";
-import { RoomConversationSummaryService } from "./conversationSummaryService.js";
+import { RoomRosterService, lockConversationAgentThread } from "./rosterService.js";
 import { requestRoomConversationTitle } from "./conversationTitleService.js";
 import { PgProposalRepository } from "../proposals/repository.js";
 import { createDefaultConversationContinuationRegistry } from "../proposals/continuationRegistry.js";
@@ -277,6 +277,43 @@ export class RoomService {
 
   resetAgentContext(identity: RoomIdentity, roomId: string, agentId: string) {
     return this.rosterService().resetAgentContext(identity, roomId, agentId);
+  }
+
+  /**
+   * A person's request for one Agent to write a summary of the conversation so
+   * far: a handoff-shaped turn into the Agent's current vendor session, which
+   * continues afterwards. The summary is an Artifact on the Project and is
+   * announced in the Room when written (`runs/chatTurnFinalizer.ts`).
+   */
+  async summarizeAgentContext(identity: RoomIdentity, roomId: string, agentId: string): Promise<RoomDetail> {
+    await withDbTransaction(this.pool, async (client) => {
+      const rooms = new PgRoomRepository(client);
+      const room = await requireRoom(rooms, identity, roomId, true);
+      const thread = await lockConversationAgentThread(client, identity, room.id, agentId);
+      if (thread.host_owner_user_id !== identity.userId) {
+        throw new HttpError(403, "Only the execution host owner can ask this Agent for a summary");
+      }
+      if (thread.dispatch_lock_id) {
+        throw new HttpError(409, "The Host-bound Agent is still handling a Room turn; ask for a summary after it finishes");
+      }
+      if (!thread.vendor_session_id) throw new HttpError(409, "This Agent's session has nothing to summarize yet");
+      const content = "Write a summary of this conversation so far, for the record.";
+      await this.dispatchRoomMessage(client, rooms, room, identity, thread.session_id, {
+        content,
+        focus_refs: null,
+        routing_mode: "direct",
+        recipient_segments: [{ recipient_agent_ids: [agentId], content }],
+        backends: [],
+        input_parts: [],
+        kind: "agent_summary",
+        summary_agent_id: agentId,
+      });
+    });
+    return this.getRoom(identity, roomId);
+  }
+
+  restartFromSummary(identity: RoomIdentity, roomId: string, agentId: string) {
+    return this.rosterService().restartFromSummary(identity, roomId, agentId);
   }
 
   inviteUser(identity: RoomIdentity, roomId: string, input: {
@@ -561,16 +598,6 @@ export class RoomService {
       limit: input.limit,
       offset: input.offset,
     };
-  }
-
-  async getConversationSummary(identity: RoomIdentity, roomId: string, sessionId: string) {
-    await requireRoom(new PgRoomRepository(this.pool), identity, roomId);
-    return new RoomConversationSummaryService(this.config, this.pool).getVisibleSummary({
-      spaceId: identity.spaceId,
-      roomId,
-      sessionId,
-      userId: identity.userId,
-    });
   }
 
   /** Speak in an explicitly-created, initialized Conversation in a Room. */
@@ -1146,6 +1173,11 @@ export class RoomService {
           cause: ContinuationCause;
           continuation: { directive: string | null; context?: Record<string, unknown> };
         }
+      | {
+          /** A person asked one Agent to summarize the conversation; the recipient run is a handoff-shaped turn. */
+          kind: "agent_summary";
+          summary_agent_id: string;
+        }
     ),
   ) {
       const roomId = room.id;
@@ -1264,7 +1296,10 @@ export class RoomService {
               continuation_directive: input.continuation.directive,
               ...(input.continuation.context ? { continuation_context: input.continuation.context } : {}),
             }
-          : null;
+          : input.kind === "agent_summary"
+            // The message metadata schema is strict: the Agent asked is the event's key.
+            ? { continuation_event_kind: "conversation_summary", continuation_event_key: input.summary_agent_id }
+            : null;
       const roomMessage = input.kind === "proposal_continuation"
         ? input.existing_internal_message ?? await sessions.addRoomInternalInstruction(
             identity.spaceId,
@@ -1273,7 +1308,7 @@ export class RoomService {
             sessionId,
             { content, metadata: { room_id: roomId, ...continuationMetadata } },
           )
-        : input.kind === "domain_event_continuation"
+        : input.kind === "domain_event_continuation" || input.kind === "agent_summary"
           ? await sessions.addRoomInternalInstruction(
               identity.spaceId,
               identity.userId,
@@ -1348,14 +1383,12 @@ export class RoomService {
         // owns the Primary and attached roots. Keeping this null prevents a
         // managed Primary from inheriting a Room Folder in Run creation.
         project_folder_id: null,
-        // One level of delegation, at most two specialists per turn. There is
+        // One level of delegation, with a Room-roster-scaled budget. There is
         // no concurrency budget: delegated children execute one at a time
         // because the Conversation shares one directory (lifecycle projector),
         // so a number here would describe nothing the runtime does.
-        budget_json: input.delegation_budget ? { ...input.delegation_budget } : {
-          max_depth: 1,
-          max_fanout: 2,
-        },
+        budget_json: input.delegation_budget ? { ...input.delegation_budget } :
+          defaultRoomDelegationBudget(agentMembers.filter(member => member.agent_id !== manager.agent_id).length),
       }, { allowSystemAssistant: true });
       if (input.discussion) {
         // Stamped before the recipients are dispatched, in the same
@@ -1425,6 +1458,7 @@ export class RoomService {
         },
         backends: clientBackends,
         project_state_context: projectStateContext,
+        summary_agent_id: input.kind === "agent_summary" ? input.summary_agent_id : null,
       });
       const metadata = record(dispatched.message.metadata_json);
       const runIds = stringArray(metadata.recipient_run_ids);
@@ -1643,6 +1677,8 @@ export async function groupRootRunId(
 export interface RoomDelegationBudget {
   max_depth: number;
   max_fanout: number;
+  soft_max_fanout?: number;
+  hard_max_fanout?: number;
   /** The task group whose count this chain charges, when it is not this one. */
   container_group_id?: string;
 }
@@ -1779,11 +1815,13 @@ function requiredText(value: string, field: string): string {
  * list that shows it reads as if a person had typed it.
  */
 function continuationGroupTitle(
-  input: { kind: "proposal_continuation" } | { kind: "domain_event_continuation"; event: { kind: string; key: string } },
+  input: { kind: "proposal_continuation" } | { kind: "domain_event_continuation"; event: { kind: string; key: string } } | { kind: "agent_summary" },
 ): string {
   return input.kind === "domain_event_continuation"
     ? `Continuation: ${input.event.kind}`
-    : "Continuation: proposal decision";
+    : input.kind === "agent_summary"
+      ? "Conversation summary"
+      : "Continuation: proposal decision";
 }
 
 function firstLine(value: string): string {
@@ -1854,4 +1892,4 @@ async function describeRoomFocus(
       + `else in the Project normally — this is a hint, not a restriction.`,
   };
 }
-import { assertSelectedSkillsForRecipients } from "../capabilities/selectedSkills.js";
+import { assertSelectedSkillsForRecipients } from "../skills/selectedSkills.js";

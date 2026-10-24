@@ -109,6 +109,7 @@ async function main(): Promise<void> {
     });
     void runBuiltInSeeds(db, {
       info: (msg) => app.log.info(msg),
+      error: (err, msg) => app.log.error(err, msg),
     }, config.catalogRoot).catch((err) => app.log.error(err, "[seeds] built-in seed failed"));
   }
 

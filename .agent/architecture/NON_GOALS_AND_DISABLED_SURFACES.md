@@ -9,7 +9,7 @@ Current absences and product-scope refusals. Unimplemented designs are in
 |---|---|
 | Broad autonomous discovery / crawling | No crawler engine |
 | Connector marketplace / integration lifecycle | No marketplace; Sources connections and recipes exist |
-| Capability marketplace or remote install UX | Built-in definitions in `capabilities/registry.ts`; catalog YAML is diagnostic; skill import is GitHub only; no remote install |
+| Capability marketplace or remote install UX | Catalog YAML is diagnostic; the Skill library imports GitHub, uploads and owned-Host CLI packages without executing them; no marketplace or remote code install |
 | Automatic system self-evolution | No privileged Evolver Agent |
 | App-container self-deployment | Blocked by deployer allowlist |
 | Deployment from an Agent, automation, or Proposal | Blocked; instance admin creates the job |

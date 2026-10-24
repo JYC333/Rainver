@@ -20,6 +20,20 @@
       "version": "7",
       "when": 1792708198694,
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "tag": "0003_vendor_session_owned_conversation",
+      "version": "7",
+      "when": 1792782189752,
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "tag": "0004_remove_capability_layer",
+      "version": "7",
+      "when": 1792793355082,
+      "breakpoints": true
     }
   ],
   "version": "7",

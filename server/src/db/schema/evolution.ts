@@ -3,7 +3,6 @@ import { sql } from "drizzle-orm";
 import { runs } from "./runs.js";
 import { spaces } from "./spaces.js";
 import { proposals } from "./proposals.js";
-import { capabilityVersions } from "./capabilities.js";
 import { users } from "./auth.js";
 
 export const evolutionBundles = pgTable("evolution_bundles", {
@@ -139,11 +138,8 @@ export const evolutionTargets = pgTable("evolution_targets", {
 			foreignColumns: [spaces.id],
 			name: "evolution_targets_space_id_fkey"
 		}),
-	foreignKey({
-			columns: [table.currentVersionId, table.spaceId],
-			foreignColumns: [capabilityVersions.id, capabilityVersions.spaceId],
-			name: "evolution_targets_current_version_fkey"
-		}),
+	// Archived rows retain historical target labels, never active type registrations.
+	check("ck_evolution_targets_target_type", sql`status = 'archived' OR target_type IN ('agent_version', 'memory', 'knowledge', 'workflow', 'project_folder', 'system')`),
 	check("ck_evolution_targets_current_version_space", sql`current_version_id IS NULL OR space_id IS NOT NULL`),
 ]);
 
@@ -188,7 +184,7 @@ export const evolutionStrategyAssets = pgTable("evolution_strategy_assets", {
 	check("ck_evolution_strategy_assets_provenance_type", sql`(provenance_type)::text = ANY (ARRAY[('built_in'::character varying)::text, ('user_authored'::character varying)::text, ('imported'::character varying)::text, ('evolved'::character varying)::text, ('distilled'::character varying)::text])`),
 	check("ck_evolution_strategy_assets_risk_level", sql`(risk_level)::text = ANY (ARRAY[('low'::character varying)::text, ('medium'::character varying)::text, ('high'::character varying)::text, ('critical'::character varying)::text])`),
 	check("ck_evolution_strategy_assets_status", sql`(status)::text = ANY (ARRAY[('draft'::character varying)::text, ('active'::character varying)::text, ('disabled'::character varying)::text, ('archived'::character varying)::text])`),
-	check("ck_evolution_strategy_assets_target_type", sql`(target_type)::text = ANY (ARRAY[('agent_version'::character varying)::text, ('capability'::character varying)::text, ('runtime_skill_binding'::character varying)::text, ('memory'::character varying)::text, ('knowledge'::character varying)::text, ('workflow'::character varying)::text, ('project_folder'::character varying)::text, ('system'::character varying)::text])`),
+	check("ck_evolution_strategy_assets_target_type", sql`status = 'archived' OR (target_type)::text = ANY (ARRAY[('agent_version'::character varying)::text, ('memory'::character varying)::text, ('knowledge'::character varying)::text, ('workflow'::character varying)::text, ('project_folder'::character varying)::text, ('system'::character varying)::text])`),
 ]);
 
 export const evolutionExperiences = pgTable("evolution_experiences", {

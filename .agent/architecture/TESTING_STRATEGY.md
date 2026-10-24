@@ -17,6 +17,12 @@ Seven Vitest suites, one per package, each run from its package root:
 | `packages/outbound-guard/` | `test/**/*.test.ts` | Outbound block list and fetch guard |
 | `apps/web/` | `src/**/*.test.{ts,tsx}` | jsdom by default; pure-logic files opt out |
 
+Web layout has a separate `pnpm run test:layout` Chromium check against the
+built app (`src/__tests__/conversation-layout.browser.mjs`). It uses Playwright
+Core with browser-local API fixtures to protect Room and Agent Work geometry,
+clipping ancestors and Streamdown CSS integration; jsdom cannot measure these.
+Browser setup and an optional hosted-build target are in COMMANDS.
+
 Tests are unit-style (deterministic rules, parsers, state transitions, no
 database or network), route-style (status codes, response shapes, validation,
 side effects across a public boundary), or workflow-style (a multi-step product

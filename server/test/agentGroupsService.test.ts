@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/config.js";
-import { AgentGroupRunService, assertConversationGitBaseline } from "../src/modules/agentGroups/service.js";
+import { AgentGroupRunService } from "../src/modules/agentGroups/service.js";
 import type { QueryResult } from "../src/modules/routeUtils/common.js";
 import type { AgentRunRecord } from "../src/modules/runs/repository.js";
 
@@ -412,53 +412,6 @@ function memberRecord(agentId: string, overrides: Record<string, unknown> = {}) 
 }
 
 describe("AgentGroupRunService", () => {
-  it("rejects a Room dispatch when the current Git workspace no longer matches its baseline", () => {
-    expect(() => assertConversationGitBaseline(
-      {
-        primary_workspace_mode: "location",
-        git_observed_at: "2026-09-13T00:00:00.000Z",
-        git_branch: "main",
-        git_head: "before",
-        git_execution_ready: true,
-      },
-      {
-        source: "workspace_location",
-        workspace_location_id: "location-1",
-        branch: "main",
-        commit_sha: "after",
-        dirty: false,
-        execution_ready: true,
-        observed_at: "2026-09-13T00:00:01.000Z",
-      },
-    )).toThrowError(/Git branch or commit changed/);
-  });
-
-  it("advances a Room's Git baseline only to the HEAD this Conversation's own last Run left", () => {
-    const context = {
-      primary_workspace_mode: "location" as const,
-      git_observed_at: "2026-09-13T00:00:00.000Z",
-      git_branch: "main",
-      git_head: "before",
-      git_execution_ready: true,
-      last_run_git_branch: "main",
-      last_run_git_head: "agent-commit",
-    };
-    const current = (commit: string, executionReady = true) => ({
-      source: "workspace_location" as const,
-      workspace_location_id: "location-1",
-      branch: "main",
-      commit_sha: commit,
-      dirty: false,
-      execution_ready: executionReady,
-      observed_at: "2026-09-13T00:00:01.000Z",
-    });
-    expect(assertConversationGitBaseline(context, current("before"))).toBe("unchanged");
-    expect(assertConversationGitBaseline(context, current("agent-commit"))).toBe("advance");
-    expect(() => assertConversationGitBaseline(context, current("someone-else"))).toThrowError(/Git branch or commit changed/);
-    // Readiness keeps its own comparison.
-    expect(() => assertConversationGitBaseline(context, current("agent-commit", false))).toThrowError(/Git branch or commit changed/);
-  });
-
   it("creates rooms without creating an initial run, job, or message", async () => {
     const db = new AgentGroupServiceDb(null);
     const service = new AgentGroupRunService(
@@ -624,7 +577,7 @@ describe("AgentGroupRunService", () => {
       })
       .find((value): value is string[] =>
         Array.isArray(value) && value.includes("memory.remember"));
-    expect(declared, JSON.stringify(runInsert!.params)).toEqual(["memory.remember", "memory.revise"]);
+    expect(declared, JSON.stringify(runInsert!.params)).toEqual(["memory.remember", "memory.revise", "conversation.search", "conversation.read"]);
     // The Project write surface stays with the Room: its roster is fixed at
     // creation, and advancing a Project is the Room's capability, not a
     // capability of talking to an Agent.

@@ -6,9 +6,9 @@ import { canConfigureAssistant } from "../src/modules/agents/agentAccess.js";
 import { PgAgentRepository } from "../src/modules/agents/repository.js";
 import { resolveContentCreationContext } from "../src/modules/access/creationContext.js";
 import { PgActivityRepository } from "../src/modules/activity/repository.js";
-import { PgCapabilitiesRepository } from "../src/modules/capabilities/repository.js";
-import { registerCapabilityProposalAppliers } from "../src/modules/capabilities/proposalApplier.js";
-import { ProposalApplierRegistry, type ProposalApplyContext } from "../src/modules/proposals/applierRegistry.js";
+import { PgSkillsRepository } from "../src/modules/skills/repository.js";
+import { registerSkillProposalAppliers } from "../src/modules/skills/proposalApplier.js";
+import { ProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
 import { registerProposalDecisionExecutor } from "../src/modules/proposals/proposalDecisionExecutor.js";
 import { insertProposalRow } from "../src/modules/proposals/reviewPackets.js";
@@ -213,7 +213,7 @@ describe("P03 authority matrix (real Postgres)", () => {
        VALUES ($1, $2, $3, 'pkg', '{}'::jsonb, '{}'::jsonb, 'low', 'reviewed', now(), now())`,
       [packageId, SPACE, sourceId],
     );
-    const repo = new PgCapabilitiesRepository(db.pool);
+    const repo = new PgSkillsRepository(db.pool);
     const put = (userId: string, scope_type: "space" | "project" | "agent", scope_id: string | null) =>
       repo.upsertSkillLocalOverlay(as(userId), packageId, { scope_type, scope_id, status: "active", overlay_json: { alias: "x", endpoint_defaults: {}, user_preferences: {} } });
     // Space overlay: a Space owner or admin.
@@ -234,33 +234,16 @@ describe("P03 authority matrix (real Postgres)", () => {
     await expect(put(CREATOR, "agent", PROJECT_ASSISTANT)).rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it("refuses a capability approval whose effect scope differs from the scope it was approved under", async () => {
+  it("refuses a Skill review filed under Project approval authority", async () => {
     const registry = new ProposalApplierRegistry();
-    registerCapabilityProposalAppliers(registry);
+    registerSkillProposalAppliers(registry);
     const unreachable = { query: async () => { throw new Error("must refuse before touching the database"); } };
-    const context = (proposalType: string, projectId: string | null, payload: Record<string, unknown>): ProposalApplyContext => ({
+    await expect(registry.get("skill_import_approve")!({
       config: loadConfig({ SERVER_DATABASE_URL: "postgresql://unused@db:5432/unused" }),
-      db: unreachable as never,
-      userId: PROJECT_OWNER,
-      proposal: { id: randomUUID(), space_id: SPACE, proposal_type: proposalType, project_id: projectId, payload_json: payload } as never,
-    });
-    // Space-wide changes filed under a Project, which a Project owner could approve.
-    for (const [type, payload] of [
-      ["skill_import_approve", { operation: "skill_import_approve", skill_package_id: "p" }],
-      ["capability_install", { operation: "install_from_skill_package", skill_package_id: "p" }],
-      ["capability_update", { operation: "capability_update", capability_version_id: "v" }],
-      ["runtime_skill_binding_update", { operation: "runtime_skill_binding_update", binding_id: "b", enabled: true }],
-    ] as const) {
-      await expect(registry.get(type)!(context(type, PROJECT, payload)), type).rejects.toMatchObject({ statusCode: 422 });
-    }
-    // A Space-wide enablement approved under a Project, and a Project
-    // enablement filed at Space level, are both refused.
-    await expect(registry.get("capability_enable")!(context("capability_enable", PROJECT, {
-      operation: "capability_enable", capability_key: "k",
-    }))).rejects.toMatchObject({ statusCode: 422 });
-    await expect(registry.get("capability_disable")!(context("capability_disable", null, {
-      operation: "capability_disable", capability_key: "k", project_id: PROJECT,
-    }))).rejects.toMatchObject({ statusCode: 422 });
+      db: unreachable as never, userId: PROJECT_OWNER,
+      proposal: { id: randomUUID(), space_id: SPACE, proposal_type: "skill_import_approve", project_id: PROJECT,
+        payload_json: { operation: "skill_import_approve", skill_package_id: "p" } } as never,
+    })).rejects.toMatchObject({ statusCode: 422 });
   });
 
   it("decides an Agent's own Memory by the Agent's owner, whatever the payload claims", async () => {
@@ -363,4 +346,3 @@ describe("P03 authority matrix (real Postgres)", () => {
       .toMatchObject({ rows: [{ status: "pending" }] });
   });
 });
-

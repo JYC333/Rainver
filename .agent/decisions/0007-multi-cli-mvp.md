@@ -88,9 +88,13 @@ read by dispatch.
 ### 5. Usage is accounted exactly where it can be, and labelled where it cannot
 
 Token accounting lives in the canonical usage ledger, attributed to the Run.
-ACP reports exact per-turn usage with cache reads and writes separated;
+ACP reports provider-counted usage with cache reads and writes separated;
 those events carry `usage_accuracy = provider_reported` and the `local_cli`
-execution channel. A provider-bound CLI Run is accounted at the provider
+execution channel. Whether the count covers the whole turn is the adapter's
+to say: Claude Code and OpenCode report the turn, `codex-acp` reports its last
+model request, and the runtime spec's `usage.acp_prompt_usage` labels the
+ledger event's `usage_scope` accordingly
+([runtime-adapters](../modules/runtime-adapters.md)). A provider-bound CLI Run is accounted at the provider
 proxy instead and emits no second CLI event. Usage read from an
 ambient session import is recorded as `provider_reported` with the vendor's
 own counts (`cli.history_usage`, attributed to the imported session rather

@@ -191,7 +191,7 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
     expect(listedForMember.items.map((item) => item.id)).toContain(artifactId);
   });
 
-  it("records where the Run left the checkout on the Run and on its Conversation's gate, and keeps it through finalization", async (ctx) => {
+  it("records where the Run left the checkout on the Run, and keeps it through finalization", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const now = new Date().toISOString();
     const sessionId = "99999999-9999-4999-8999-999999999999";
@@ -213,7 +213,7 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
     const hosts = new PgHostRepository(db.pool);
 
     // No diff could be read, but the checkout could: nothing to review, and
-    // the gate still learns where this Run left HEAD.
+    // the Run still records where it left HEAD.
     const result = accepted(await hosts.recordDiffArtifact(HOST_A, OWNER, RUN_A, {
       launch_id: LAUNCH_A,
       diff: null,
@@ -222,12 +222,6 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
       git_after: { branch: "main", head: "agent-commit" },
     }));
     expect(result.artifact_id).toBeNull();
-    const context = await db.pool.query<{ last_run_git_branch: string; last_run_git_head: string; git_head: string }>(
-      `SELECT last_run_git_branch, last_run_git_head, git_head FROM conversation_execution_contexts WHERE session_id = $1`,
-      [sessionId],
-    );
-    // The baseline itself moves only when a send accepts it.
-    expect(context.rows[0]).toEqual({ last_run_git_branch: "main", last_run_git_head: "agent-commit", git_head: "baseline" });
 
     await new PgRunRepository(db.pool).markRunTerminal({
       run_id: RUN_A,
@@ -243,7 +237,7 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
     });
   });
 
-  it("keeps a Run's diff when its branch name is longer than the record holds", async (ctx) => {
+  it("keeps a Run's diff and its checkout position when the branch name is long", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const now = new Date().toISOString();
     const sessionId = "99999999-9999-4999-8999-999999999997";
@@ -271,67 +265,8 @@ describe("host upload authorization and artifact recording (ADR 0016 D7)", () =>
       git_after: { branch, head: "agent-commit" },
     }));
     expect(result.artifact_id).toBeTruthy();
-    const context = await db.pool.query<{ last_run_git_head: string | null }>(
-      `SELECT last_run_git_head FROM conversation_execution_contexts WHERE session_id = $1`,
-      [sessionId],
-    );
-    expect(context.rows[0]).toEqual({ last_run_git_head: null });
-  });
-
-  it("does not let a Run vouch for a HEAD it may not have moved", async (ctx) => {
-    if (!db.available || !db.pool) return ctx.skip();
-    const now = new Date().toISOString();
-    const sessionId = "99999999-9999-4999-8999-999999999998";
-    await db.pool.query(
-      `INSERT INTO sessions (id, space_id, project_id, user_id, agent_id, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, 'active', $6, $6)`,
-      [sessionId, SPACE, PROJECT, OWNER, AGENT, now],
-    );
-    await db.pool.query(
-      `INSERT INTO conversation_execution_contexts (
-         id, space_id, session_id, execution_host_id, primary_workspace_mode,
-         primary_project_folder_id, primary_workspace_location_id, state, initialized_at,
-         git_branch, git_head, git_execution_ready, git_observed_at, created_at, updated_at
-       ) VALUES (gen_random_uuid()::varchar, $1, $2, $3, 'location', $4, 'location-a', 'initialized', $5,
-                 'main', 'baseline', true, $5, $5, $5)`,
-      [SPACE, sessionId, HOST_A, FOLDER_A, now],
-    );
-    const hosts = new PgHostRepository(db.pool);
-    const lastRun = async () => (await db.pool!.query<{ last_run_git_head: string | null }>(
-      `SELECT last_run_git_head FROM conversation_execution_contexts WHERE session_id = $1`, [sessionId],
-    )).rows[0]!.last_run_git_head;
-    const upload = async (before: { branch: string; head: string } | undefined) => hosts.recordDiffArtifact(HOST_A, OWNER, RUN_A, {
-      launch_id: LAUNCH_A,
-      diff: null,
-      truncated: false,
-      ...(before ? { git_before: before } : {}),
-      git_after: { branch: "main", head: "someone-else" },
-    });
-
-    // A read-only Run holds no lease: the HEAD it finds may be anyone's.
-    await db.pool.query(
-      `UPDATE runs SET session_id = $2, status = 'running', required_sandbox_level = 'read_only' WHERE id = $1`,
-      [RUN_A, sessionId],
-    );
-    await upload({ branch: "main", head: "baseline" });
-    expect(await lastRun()).toBeNull();
-
-    // A writer that started from a HEAD the Conversation never accepted.
-    await db.pool.query(`UPDATE runs SET required_sandbox_level = 'none' WHERE id = $1`, [RUN_A]);
-    await upload({ branch: "main", head: "moved-before-the-run" });
-    expect(await lastRun()).toBeNull();
-    // Or that did not say where it started.
-    await upload(undefined);
-    expect(await lastRun()).toBeNull();
-
-    // A late upload for an attempt that already ended is refused outright.
-    await db.pool.query(`UPDATE runs SET status = 'succeeded' WHERE id = $1`, [RUN_A]);
-    await db.pool.query(`UPDATE run_attempts SET status = 'succeeded' WHERE id = $1`, [ATTEMPT_A]);
-    await expect(upload({ branch: "main", head: "baseline" })).resolves.toEqual({ ok: false, reason: "attempt_ended" });
-    expect(await lastRun()).toBeNull();
-
-    // The Run's own record keeps what the host reported regardless.
-    const recorded = await db.pool.query<{ head: string }>(`SELECT output_json->'workspace_after'->>'head' AS head FROM runs WHERE id = $1`, [RUN_A]);
-    expect(recorded.rows[0]!.head).toBe("someone-else");
+    const recorded = await db.pool.query<{ branch: string }>(`SELECT output_json->'workspace_after'->>'branch' AS branch FROM runs WHERE id = $1`, [RUN_A]);
+    expect(recorded.rows[0]!.branch).toBe(branch);
   });
 
   it("binds every upload to the Run's current open attempt and refuses the rest", async (ctx) => {

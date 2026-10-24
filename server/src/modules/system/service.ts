@@ -14,7 +14,7 @@
  *   such as diary. These are NOT listed here as always-on features.
  *
  *   GET /api/v1/server/catalog lists on-disk catalog manifests. That catalog
- *   is diagnostic. Product capabilities are `/api/v1/capability-definitions`.
+ *   is diagnostic. The original-package Skill library is owned by `modules/skills`.
  *   Neither is a product plugin.
  *
  *   See .agent/architecture/OFFICIAL_OPTIONAL_MODULES.md and ADR 0006.
@@ -88,7 +88,7 @@ export function computeFeatures(config: ServerConfig): string[] {
     "artifacts_server_authority",
     "projects_server_authority",
     "agent_templates_server_authority",
-    "capabilities_server_authority",
+    "skills_server_authority",
     "personal_memory_grants_server_authority",
     "evolution_server_authority",
     "content_publications_server_authority",

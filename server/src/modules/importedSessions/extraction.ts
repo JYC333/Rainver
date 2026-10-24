@@ -1,13 +1,10 @@
 /**
  * Turning imported CLI history into something a Project can act on.
  *
- * The extraction contract is the Runtime Context semantic checkpoint's: the
- * same system prompt and the same strict output schema, so there is one
- * definition of what "a checkpoint of this work" means and not a second one
- * that drifts. What is *not* reused is that extractor's metering, which
- * resolves a Work Context Setup — imported history has no work context scope,
- * and inventing one to satisfy a lookup would be contorting the mechanism to
- * fit rather than reusing it.
+ * The extraction contract is the Runtime Context semantic checkpoint schema
+ * (`SemanticCheckpointExtractionSchema`): one strict definition of what "a
+ * checkpoint of this work" means. This is now its only producer; the ledger
+ * itself is audited, never extracted from (ADR 0014 §11).
  *
  * Two rules the output has to obey:
  *
@@ -35,9 +32,12 @@ import { assertProjectWriter } from "../projects/access.js";
 import { ProjectDefinitionProposalService } from "../projects/projectDefinitionProposalService.js";
 import { ProjectKernelService } from "../projects/kernelService.js";
 import { insertProposalRow } from "../proposals/reviewPackets.js";
-import { SEMANTIC_CHECKPOINT_SYSTEM_PROMPT } from "../runtimeContext/continuity/semanticExtractor.js";
-
 const TASK = "importedSessions.history.extract";
+const SEMANTIC_CHECKPOINT_SYSTEM_PROMPT = `You extract a complete Runtime Context semantic checkpoint.
+Return only strict JSON with arrays: goals, user_intent, decisions, constraints,
+facts, open_questions, tasks, artifact_refs, tool_refs, correction_refs.
+Every semantic entry must cite one or more supplied canonical refs and must use
+confirmation_state "candidate". Never invent refs. Tools and side effects are disabled.`;
 export const IMPORTED_HISTORY_PACKET_PROPOSAL_TYPE = "imported_history_memory_packet";
 /**
  * How many records one extraction reads.

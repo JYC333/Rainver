@@ -196,7 +196,7 @@ what is installed.
 | Transactions | `withTransaction`, `withQueryableTransaction` | `server/src/db/tx.ts`, `server/src/modules/routeUtils/common.ts` |
 | Visibility predicates, role helpers, content-access SQL | `access` support package | `server/src/modules/access/` |
 | Outbound HTTP to model providers and CLI runtimes | `undici` + `ProxyAgent` through the network-profile transport | `server/src/modules/networkProfiles/transport.ts` |
-| Other outbound HTTP (source fetch, skill import, tool download) | `@rainver/outbound-guard`, through `fetchSource` / `fetchGuarded` — see the row below, which is the canonical one. Do not invent a second HTTP client or retry wrapper, and do not call native `fetch` for a URL a member can influence. Skill import adds its GitHub host allowlist before each guarded hop and uses the shared streaming byte ceiling | `server/src/modules/sources/sourceFetch.ts`, `server/src/modules/capabilities/skillSourceFetch.ts`, `packages/host-daemon/src/toolDownload.ts` |
+| Other outbound HTTP (source fetch, skill import, tool download) | `@rainver/outbound-guard`, through `fetchSource` / `fetchGuarded` — see the row below, which is the canonical one. Do not invent a second HTTP client or retry wrapper, and do not call native `fetch` for a URL a member can influence. Skill import adds its GitHub host allowlist before each guarded hop and uses the shared streaming byte ceiling | `server/src/modules/sources/sourceFetch.ts`, `server/src/modules/skills/skillSourceFetch.ts`, `packages/host-daemon/src/toolDownload.ts` |
 | WebSocket server | `@fastify/websocket` — **hosts channel only** | `server/src/modules/hosts/routes.ts` |
 | Multipart request parsing | `@fastify/multipart`, registered once by the gateway shell. Conversation images use the registration limits (10 MB, one file, four fields). Activity capture calls `request.parts()` with its own 25 MB file budget and does not import the package | `server/src/gateway/appShell.ts`, `server/src/modules/sessions/routes.ts`, `server/src/modules/activity/routes.ts` |
 | Server-sent events | `streaming` module | `server/src/modules/streaming/` |
@@ -217,7 +217,7 @@ what is installed.
 | Outbound HTTP to a user-influenced URL (block list, redirect and credential rules, address pinning, body ceiling) | `@rainver/outbound-guard` — the server reaches it through `fetchGuarded`, the host daemon's egress proxy through `isBlockedAddress` | `packages/outbound-guard/src/`, `server/src/modules/sources/outboundUrlSafety.ts` |
 | Full-system backup | `BackupService` | `server/src/modules/backups/service.ts` |
 | XML parsing | `fast-xml-parser` | `server/src/modules/sources/` |
-| Skill ZIP import | `fflate` streaming `Unzip`; entry count and decompressed bytes bounded by the importer, no filesystem extraction | `server/src/modules/capabilities/skillArchive.ts` |
+| Skill ZIP import | `fflate` streaming `Unzip`; entry count and decompressed bytes bounded by the importer, no filesystem extraction | `server/src/modules/skills/skillArchive.ts` |
 | PDF text extraction | `unpdf` — confined to the extractor | `server/src/modules/sources/pdfExtract.ts` |
 | YAML | `yaml` | catalog/manifest readers |
 | Date/time | **no library by design** — native `Date`/`Intl`, `timestamptz` in Postgres, timezone-aware helpers in the owning module. Exception: cron next-run computation, which needs real calendar/DST arithmetic and uses `cron-parser` (see the row above) — everything else (storing, comparing, formatting an instant) stays native. | `server/src/modules/automations/schedule.ts` |

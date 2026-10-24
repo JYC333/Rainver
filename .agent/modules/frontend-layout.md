@@ -45,3 +45,8 @@ detail, Room sidecar) are owned by those pages.
 Agent Work owns a list/detail grid at user-level `/agent-work`. Below `md`, opening
 a detail hides the mounted list, and Back preserves local filters and list scroll.
 It adds no app-level inspector or mobile primary destination.
+
+The Project Room page stacks navigation, conversation and Project state below
+`lg` in an explicit `minmax(0, 1fr)` grid column. This prevents a long truncated
+workspace name in navigation from widening the conversation behind Shell's
+scrolling viewport. At `lg` and `xl` it uses its existing two/three columns.

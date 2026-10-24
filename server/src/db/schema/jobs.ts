@@ -1,4 +1,4 @@
-import { pgTable, index, uniqueIndex, check, foreignKey, varchar, text, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
+import { pgTable, index, check, foreignKey, varchar, text, integer, jsonb, timestamp, type PgTableExtraConfigValue } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { agents } from "./agents.js";
 import { users } from "./auth.js";
@@ -34,12 +34,6 @@ export const jobs = pgTable("jobs", {
 	index("ix_jobs_space_id").using("btree", table.spaceId.asc().nullsLast()),
 	index("ix_jobs_status").using("btree", table.status.asc().nullsLast()),
 	index("ix_jobs_type_claim_pending").using("btree", table.jobType.asc().nullsLast(), table.priority.desc().nullsFirst(), table.scheduledAt.asc().nullsLast()).where(sql`((status)::text = 'pending'::text)`),
-	uniqueIndex("uq_jobs_runtime_context_checkpoint_cursor").using(
-		"btree",
-		table.spaceId.asc().nullsLast(),
-		sql`(payload_json->>'work_context_scope_id')`,
-		sql`(payload_json->>'target_cursor')`,
-	).where(sql`job_type = 'runtime_context_checkpoint' AND status IN ('pending','claimed','running','completed')`),
 	index("ix_jobs_user_id").using("btree", table.userId.asc().nullsLast()),
 	index("ix_jobs_project_folder_id").using("btree", table.projectFolderId.asc().nullsLast()),
 	foreignKey({

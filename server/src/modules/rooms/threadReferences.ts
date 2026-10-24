@@ -309,27 +309,30 @@ async function resolveConversationPick(
     };
   }
 
-  const summary = await db.query<{ summary_text: string }>(
-    `SELECT version.summary_text
-       FROM room_conversation_summary_states state
-       JOIN room_conversation_summary_versions version ON version.id = state.active_summary_id
-      WHERE state.space_id = $1 AND state.session_id = $2`,
+  // A whole thread is carried as the summary an Agent wrote of it — the
+  // document "Summarize context" (or a restart) produced in that conversation
+  // (`agentGroups/sessionHandoff.ts`), newest first. Nothing summarizes a
+  // thread on its own, so a thread nobody asked to summarize has too little to
+  // carry as a whole; the person can still pick its messages, which is the
+  // honest answer rather than copying an empty summary.
+  const summary = await db.query<{ content: string }>(
+    `SELECT content FROM artifacts
+      WHERE space_id = $1 AND artifact_type = 'agent_handoff'
+        AND metadata_json->>'session_id' = $2
+      ORDER BY created_at DESC LIMIT 1`,
     [identity.spaceId, pick.id],
   );
-  const text = summary.rows[0]?.summary_text;
-  // A thread with nothing summarized yet has too little to carry as a whole —
-  // and the person can still pick its messages, which is the honest answer
-  // rather than copying an empty summary.
+  const text = summary.rows[0]?.content?.trim();
   if (!text) {
-    throw new HttpError(409, "That conversation has no summary yet; reference its messages instead", {
+    throw new HttpError(409, "That conversation has no summary yet; ask an Agent in it to summarize its context, or reference its messages instead", {
       code: "reference_summary_unavailable",
-      detail: "A whole-thread reference carries the thread's summary, and this one has not been summarized.",
+      detail: "A whole-thread reference carries the summary an Agent wrote of the thread, and none has been written.",
     } satisfies ThreadReferenceSummaryUnavailable);
   }
   const fitted = fitRoomSummaryToBudget(text, budget);
   // A summary is a model's condensation of the thread, and a thread that held
   // vendor content produced a summary that may echo it — unfenced, because
-  // the summarizer's output carries no markers. So the *thread* is untrusted
+  // the Agent's output carries no markers. So the *thread* is untrusted
   // if anything in it was, and the summary travels labelled and fenced
   // accordingly. Trust follows provenance however many hops back it is.
   return {

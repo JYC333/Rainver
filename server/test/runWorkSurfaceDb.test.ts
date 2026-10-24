@@ -11,7 +11,7 @@ import {
 } from "../src/modules/projectWork/artifactDeclarations.js";
 import { settleTasksForRun } from "../src/modules/projectWork/settlement.js";
 import { resolveAgentActorId } from "../src/db/actorResolver.js";
-import { renderWorkSkill, workSkillContentHash } from "../src/modules/capabilities/workSkill.js";
+import { renderWorkSkill, workSkillContentHash } from "../src/modules/skills/workSkill.js";
 import { dispatchToolAllowance } from "../src/modules/systemActions/scenarioToolAllowance.js";
 import { buildRunToolGrants } from "../src/modules/systemActions/runToolGrants.js";
 import {

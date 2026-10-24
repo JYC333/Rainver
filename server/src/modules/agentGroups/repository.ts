@@ -10,6 +10,7 @@ import {
 } from "../access/contentAccessSql.js";
 import { canReadProject } from "../projects/access.js";
 import { collaborationLimits } from "./collaborationBudgetRepository.js";
+import { roomBudgetContainer, countContainerDelegations } from "../rooms/delegationBudget.js";
 
 export interface AgentRunGroupRecord {
   id: string;
@@ -201,6 +202,14 @@ export class PgAgentGroupRepository {
 
   collaborationLimits(group: AgentRunGroupRecord, input: Parameters<typeof collaborationLimits>[2], persist = false) {
     return collaborationLimits(this.db, group, input, persist);
+  }
+
+  roomBudgetContainer(spaceId: string, groupId: string) {
+    return roomBudgetContainer(this.db, spaceId, groupId);
+  }
+
+  async countContainerDelegations(spaceId: string, containerId: string): Promise<number> {
+    return countContainerDelegations(this.db, spaceId, containerId);
   }
 
   /** The Agent-triggered turns charged to a container group, or to the discussion it is a wave of. */

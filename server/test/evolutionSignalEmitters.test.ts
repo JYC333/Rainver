@@ -42,6 +42,16 @@ function insertedSignals(db: FakeDb): Array<readonly unknown[]> {
 }
 
 describe("EvolutionSignalEmitter", () => {
+  it("does not manufacture an Evolution target from a research stage tag", async () => {
+    const db = new AutoTargetDb();
+    const result = await new EvolutionSignalEmitter(db).emitRunFinalization({
+      run: run({ capability_id: "research.brief_synthesize", status: "failed" }),
+      evaluation: { outcome_status: "failed" },
+    });
+    expect(result).toEqual({ emitted: 0, skipped: 0, target_found: false });
+    expect(db.calls.some(call => call.sql.includes("INSERT INTO evolution_targets"))).toBe(false);
+  });
+
   it("emits finalization, cost, and latency rules from existing run facts", async () => {
     const db = new FakeDb();
     const emitter = new EvolutionSignalEmitter(db, () => new Date("2026-07-11T00:00:00.000Z"));

@@ -131,8 +131,6 @@ async function snapshot() {
                               replay_event_json, status, created_at
                          FROM context_capture_gaps ORDER BY work_context_scope_id, created_at`),
     setups: await query(`SELECT work_context_scope_id, version, retrieval_preferences_json FROM work_context_setups ORDER BY work_context_scope_id, version`),
-    bindings: await query(`SELECT id, status, rotation_reason, host_thread_id, work_context_scope_id, cli_known_cursor
-                             FROM runtime_context_cli_bindings ORDER BY id`),
     jobs: await query(`SELECT id, status, error IS NOT NULL AS has_error FROM jobs ORDER BY id`),
   };
 }
@@ -146,7 +144,15 @@ describe("0002 repairs rows upgraded through the schema-only 0001 (real PostgreS
     await migrate(db.pool, prefix);
     await seedPreUpgradeRows();
 
-    expect((await migrate(db.pool, MIGRATIONS_DIR)).applied).toContain("0002");
+    // The repair is asserted at the end of 0002: 0003 drops the CLI binding
+    // table the repair also re-keys, so its idempotent re-run below needs the
+    // chain to stop there first.
+    const through0002 = join(root, "through-0002");
+    mkdirSync(through0002);
+    for (const file of ["0000_baseline.sql", "0001_agent_workbench.sql", "0002_skill_library_and_upgrade_repairs.sql"]) {
+      cpSync(join(MIGRATIONS_DIR, file), join(through0002, file));
+    }
+    expect((await migrate(db.pool, through0002)).applied).toContain("0002");
     const after = await snapshot();
     const scopes = Object.fromEntries(after.scopes.map((row) => [`${row.session_id}/${row.room_agent_member_id}`, row.id as string]));
     const scope: Record<string, string> = { "conversation-1": scopes["conversation-1/member"]!, "conversation-2": scopes["conversation-2/member"]! };
@@ -191,16 +197,8 @@ describe("0002 repairs rows upgraded through the schema-only 0001 (real PostgreS
       expect(after.setups).toContainEqual({ work_context_scope_id: scope[conversation], version: 1, retrieval_preferences_json: { web: true } });
     }
 
-    expect(after.bindings).toEqual([
-      // Its thread's session was closed: no Host dispatch can find it again.
-      { id: "closed-thread-session", status: "rotated", rotation_reason: "vendor_session_mismatch", host_thread_id: null, work_context_scope_id: "direct-1", cli_known_cursor: 0 },
-      // Keeps resuming its live session, on its Conversation, cursor remapped
-      // from old sequence 3 to the second of that Conversation's events.
-      { id: "follows-thread", status: "active", rotation_reason: null, host_thread_id: "thread-open", work_context_scope_id: scope["conversation-1"], cli_known_cursor: 2 },
-      { id: "room-without-session", status: "rotated", rotation_reason: "new_scope", host_thread_id: null, work_context_scope_id: "member", cli_known_cursor: 0 },
-      // Server-local continuity has no Host thread and stays as it was.
-      { id: "server-local", status: "active", rotation_reason: null, host_thread_id: null, work_context_scope_id: "direct-2", cli_known_cursor: 0 },
-    ]);
+    // The CLI binding rows 0002 re-keyed were dropped with their table in 0003;
+    // the repair itself still ran over them under every constraint.
 
     // Unfinished checkpoints of a whole-Room recipient scope are cancelled;
     // finished ones, other scopes' checkpoints and other job types are not.
@@ -221,5 +219,8 @@ describe("0002 repairs rows upgraded through the schema-only 0001 (real PostgreS
       await client.query("COMMIT");
     } finally { client.release(); }
     expect(await snapshot()).toEqual(after);
+
+    // The rest of the chain applies over the repaired rows.
+    expect((await migrate(db.pool, MIGRATIONS_DIR)).applied).toContain("0003");
   });
 });

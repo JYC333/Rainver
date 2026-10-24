@@ -77,6 +77,7 @@ export interface RunContextRecord {
   capabilities_json: unknown;
   memory_policy_json: unknown;
   model_override_json?: unknown;
+  host_task_thread_id?: string | null;
 }
 
 /**
@@ -118,7 +119,7 @@ export class PgRuntimeContextAcquisitionRepository {
               r.contract_snapshot_json,
               av.system_prompt,
               COALESCE(NULLIF(r.capabilities_json, '[]'::jsonb), av.capabilities_json) AS capabilities_json,
-              av.memory_policy_json, r.model_override_json
+              av.memory_policy_json, r.model_override_json, r.host_task_thread_id
          FROM runs r
          LEFT JOIN agent_versions av
            ON av.id = r.agent_version_id
@@ -134,6 +135,28 @@ export class PgRuntimeContextAcquisitionRepository {
     return result.rows[0] ?? null;
   }
 
+
+  /**
+   * What the Gateway decided about this Run's standing items, kept on the Run
+   * like its identity digest (`hosts/threadDispatchInputs.ts`): the terminal
+   * outcome records `digest` on the thread only when `sent` and the Run landed.
+   */
+  async recordHostThreadStandingDispatch(
+    spaceId: string,
+    runId: string,
+    standing: { digest: string; sent: boolean },
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE runs
+          SET model_override_json = jsonb_set(
+                jsonb_set(model_override_json, '{host_thread,standing_digest}', to_jsonb($3::text)),
+                '{host_thread,standing_sent}', to_jsonb($4::boolean)),
+              updated_at = now()
+        WHERE space_id = $1 AND id = $2
+          AND jsonb_typeof(model_override_json->'host_thread') = 'object'`,
+      [spaceId, runId, standing.digest, standing.sent],
+    );
+  }
   async loadExecutionControlSnapshot(
     spaceId: string,
     runId: string,

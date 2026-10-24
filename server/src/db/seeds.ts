@@ -1,11 +1,19 @@
 import type { Pool } from "./pool.js";
 import { syncBuiltinPrompts } from "../modules/prompts/builtins.js";
+import { syncBuiltinSkillPackages } from "../modules/skills/builtinPackages.js";
 
 interface Logger {
   info: (msg: string) => void;
+  error?: (error: unknown, msg: string) => void;
 }
 
 export async function runBuiltInSeeds(pool: Pool, log: Logger, catalogRoot: string): Promise<void> {
+  const error = log.error ?? ((error: unknown, msg: string) => console.error(msg, error));
+  try {
+    await syncBuiltinSkillPackages(pool, undefined, { error });
+  } catch (err) {
+    error(err, "[seeds] builtin Skill sync failed; continuing other seeds");
+  }
   await seedEvolutionStrategyAssets(pool);
   await seedSourceConnectors(pool);
   const promptSync = await syncBuiltinPrompts(pool, catalogRoot);
@@ -62,7 +70,7 @@ async function seedEvolutionStrategyAssets(pool: Pool): Promise<void> {
     (
       '00000000-0000-4000-8000-000000000103', NULL, 'optimize.prompt_asset',
       'Optimize prompt asset',
-      'Improve prompt-like agent or capability assets through review artifacts and proposal-gated changes.',
+      'Improve prompt-like Agent assets through review artifacts and proposal-gated changes.',
       'optimize', 'agent_version', 'active', 'medium',
       '["stable_preference_missed","user_repeated_same_correction","prompt_gap","proposal_edited"]',
       '{"requires_target_owner_review": true}',
@@ -71,21 +79,6 @@ async function seedEvolutionStrategyAssets(pool: Pool): Promise<void> {
       '{"requires_before_after_review": true}',
       '{"allow_direct_apply": false}',
       '{"preferred_artifact_type": "evolution_plan.v1"}',
-      'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.5,
-      NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
-    ),
-    (
-      '00000000-0000-4000-8000-000000000104', NULL, 'optimize.tool_usage',
-      'Optimize tool usage',
-      'Review tool-use evidence and propose safer or more effective capability/runtime binding changes.',
-      'optimize', 'runtime_skill_binding', 'active', 'high',
-      '["tool_error","tool_overuse","tool_missing","runtime_skill_binding_gap"]',
-      '{"requires_runtime_binding_context": true}',
-      '["summarize_tool_trace","identify_binding_gap","draft_runtime_skill_binding_review","require_proposal_gate"]',
-      '["do_not_grant_new_tools_directly","do_not_expand_permissions_without_proposal"]',
-      '{"requires_policy_review_for_permission_change": true}',
-      '{"allow_direct_apply": false, "permission_expansion_requires_high_risk": true}',
-      '{"preferred_proposal_type": "runtime_skill_binding_update"}',
       'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.5,
       NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
     ),
@@ -102,36 +95,6 @@ async function seedEvolutionStrategyAssets(pool: Pool): Promise<void> {
       '{"allow_direct_apply": false, "force_review": true}',
       '{"preferred_run_status": "waiting_for_review"}',
       'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.65,
-      NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
-    ),
-    (
-      '00000000-0000-4000-8000-000000000106', NULL, 'improve.capability_gap',
-      'Improve capability gap',
-      'Convert repeated capability-gap signals into a reviewed capability install/update/enable plan.',
-      'innovate', 'capability', 'active', 'high',
-      '["capability_gap","missing_capability","workflow_gap","user_improvement_request"]',
-      '{"requires_reviewable_capability_boundary": true}',
-      '["summarize_gap","map_to_existing_capability","draft_capability_change_plan","route_through_capability_proposal"]',
-      '["external_skills_default_disabled","do_not_enable_capability_directly"]',
-      '{"requires_capability_lifecycle": true}',
-      '{"allow_direct_apply": false, "external_source_untrusted": true}',
-      '{"preferred_proposal_types": ["capability_install","capability_update","capability_enable"]}',
-      'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.5,
-      NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
-    ),
-    (
-      '00000000-0000-4000-8000-000000000107', NULL, 'review.open_skill_import',
-      'Review Open Skill import',
-      'Treat external skill material as untrusted source and produce proposal-gated review steps.',
-      'review', 'capability', 'active', 'high',
-      '["open_skill_imported","external_skill_detected","skill_risk_warning","script_files_detected"]',
-      '{"requires_skill_package_snapshot": true}',
-      '["summarize_import_snapshot","surface_risk_warnings","draft_review_packet","keep_capability_disabled_until_approved"]',
-      '["do_not_execute_imported_scripts","do_not_auto_enable_external_skill"]',
-      '{"requires_source_snapshot": true, "requires_risk_scan": true}',
-      '{"allow_direct_apply": false, "scripts_executable": false}',
-      '{"preferred_proposal_types": ["skill_import_approve","capability_install"]}',
-      'built_in', '{"source": "rainver_native_seed"}', 0, 0, 0.6,
       NULL, '2026-06-29 00:00:00+00', '2026-06-29 00:00:00+00'
     ),
     (

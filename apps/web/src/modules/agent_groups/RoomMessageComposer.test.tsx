@@ -6,7 +6,7 @@ import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { sha256Utf8 } from '../project_files/draftController'
 import { RoomMessageComposer, emptyRoomMessageComposerValue, roomMessageRoute } from './RoomMessageComposer'
-import { capabilitiesFrameworkApi, conversationInputApi, projectFoldersApi } from '../../api/client'
+import { skillsApi, conversationInputApi, projectFoldersApi } from '../../api/client'
 import type { ConversationInputPart } from '@rainver/protocol'
 import type { FileNode } from '../../types/api'
 
@@ -14,7 +14,7 @@ import type { FileNode } from '../../types/api'
 vi.mock('../../contexts/SpaceContext', () => ({ useSpace: () => ({ activeSpaceId: 'space-a', preferredSpaceId: 'space-a' }) }))
 
 vi.mock('../../api/client', () => ({
-  capabilitiesFrameworkApi: { availableSkills: vi.fn().mockResolvedValue([]) },
+  skillsApi: { availableSkills: vi.fn().mockResolvedValue([]) },
   conversationInputApi: {
     searchFiles: vi.fn(),
   },
@@ -117,7 +117,7 @@ async function getEditor() {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(capabilitiesFrameworkApi.availableSkills).mockResolvedValue([])
+  vi.mocked(skillsApi.availableSkills).mockResolvedValue([])
   vi.mocked(projectFoldersApi.tree).mockResolvedValue({
     name: 'repo', path: '.', type: 'dir', children: [{ name: 'App.tsx', path: 'src/App.tsx', type: 'file', size: 20 }],
   })
@@ -129,7 +129,7 @@ beforeEach(() => {
 describe('RoomMessageComposer keyboard behavior', () => {
   it('inserts a Skill at a middle caret using the keyboard and keeps surrounding text', async () => {
     const skill = { kind: 'skill' as const, skill_package_id: 'skill-1', package_hash: 'a'.repeat(64), display_name: 'Audit' }
-    vi.mocked(capabilitiesFrameworkApi.availableSkills).mockResolvedValue([skill])
+    vi.mocked(skillsApi.availableSkills).mockResolvedValue([skill])
     const user = userEvent.setup({ delay: null })
     render(<FileHarness />, { wrapper: MemoryRouter })
     const editor = await getEditor()
@@ -158,7 +158,7 @@ describe('RoomMessageComposer keyboard behavior', () => {
 
   it.each(['/', '@'])('selects a pinned Skill through %s without changing Agent routing', async trigger => {
     const skill = { kind: 'skill' as const, skill_package_id: 'skill-1', package_hash: 'a'.repeat(64), display_name: 'Audit' }
-    vi.mocked(capabilitiesFrameworkApi.availableSkills).mockResolvedValue([skill])
+    vi.mocked(skillsApi.availableSkills).mockResolvedValue([skill])
     const user = userEvent.setup({ delay: null })
     render(<FileHarness />, { wrapper: MemoryRouter })
     const editor = await getEditor()
@@ -167,7 +167,7 @@ describe('RoomMessageComposer keyboard behavior', () => {
     await user.type(editor, `${trigger}Aud`, { skipClick: true })
     await user.click(await screen.findByRole('option', { name: /Audit/ }))
     // The menu asked for Skills enabled for the addressed Agent, as sending requires.
-    expect(capabilitiesFrameworkApi.availableSkills).toHaveBeenLastCalledWith(
+    expect(skillsApi.availableSkills).toHaveBeenLastCalledWith(
       expect.objectContaining({ recipient_agent_ids: ['agent-1'] }), expect.anything())
     expect(JSON.parse(screen.getByTestId('room-input-parts').textContent!)).toEqual([skill])
     expect(JSON.parse(screen.getByTestId('room-value').textContent!)).toMatchObject({
@@ -186,8 +186,8 @@ describe('RoomMessageComposer keyboard behavior', () => {
     const user = userEvent.setup({ delay: null })
     render(<FileHarness />, { wrapper: MemoryRouter })
     await user.type(await getEditor(), '/')
-    await waitFor(() => expect(capabilitiesFrameworkApi.availableSkills).toHaveBeenCalled())
-    expect(vi.mocked(capabilitiesFrameworkApi.availableSkills).mock.lastCall![0]).not.toHaveProperty('recipient_agent_ids')
+    await waitFor(() => expect(skillsApi.availableSkills).toHaveBeenCalled())
+    expect(vi.mocked(skillsApi.availableSkills).mock.lastCall![0]).not.toHaveProperty('recipient_agent_ids')
   })
 
   it('points an empty Skill menu to the conversation Space library', async () => {

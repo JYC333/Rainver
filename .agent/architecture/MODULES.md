@@ -28,7 +28,7 @@ Current server ownership is summarized in
 |---|---|
 | `kernel` | Identity, isolation, governance, execution spine. |
 | `infra` | Cross-cutting infrastructure and runtime/host integration. |
-| `capability` | Code-defined agent skills and reviewable evolution surfaces. |
+| `capability` | Skill library, diagnostic manifests and reviewable evolution surfaces. |
 | `product` | User-facing domain feature surface. |
 | `frontend-support` | Backend read models and aggregation endpoints for UI views. |
 | `support-package` | Import-only package with no HTTP module registration. |
@@ -62,8 +62,8 @@ Core modules are `always_on=True`. Optional product routes are still mounted by 
 | `system` | infra | `/health`, `/server/health`, `/status`, `/server/features`, `/features`, `/system/instance-settings` | empty | Server health, component-level runtime status, feature descriptors, and instance-admin operational policy routes. `/health` is a container probe; `/status` reports database, per-scheduled-task liveness, jobs-worker presence, and queue depth, and requires a space owner/admin. |
 | `auth` | kernel | `/auth/*`, `/me`, `/me/spaces` | yes | Users, auth accounts, sessions, feature-gated API keys, Google auth. |
 | `spaces` | kernel | `/spaces`, `/invitations` | hook registry | Spaces, memberships, invitations, space-created hook dispatch. |
-| `catalog` | capability | `/server/catalog*`, `/capabilities*` | yes | Read-only on-disk catalog of capability and template manifests. |
-| `capabilities` | capability | `/capability-definitions*`, `/capability-packs*`, `/skill-sources*`, `/skill-packages*` | yes | Capability/open-skill control plane: canonical definitions, packs, imported skill packages, and runtime skill bindings. Does not execute native capabilities. |
+| `catalog` | capability | `/server/catalog*` | yes | Read-only on-disk catalog of capability and template manifests. |
+| `skills` | capability | `/skill-sources*`, `/skill-packages*`, `/skills*` | yes | Skill library: original imported packages, review, scoped bindings, selection and overlays. No callable authority or capability registry. |
 | `streaming` | infra | `/runs/{runId}/turn/stream` | empty | Agent turn SSE stream, as ordered parts. |
 | `notifications` | infra | `/server/notifications/webhooks/*` | empty | Notification webhook egress policy plus durable operational-alert pointers delivered through Activity Inbox. |
 | `networkProfiles` | infra | `/network-profiles*` | empty | Direct and proxy routing profiles for providers and CLI runtimes. |
@@ -85,11 +85,11 @@ Core modules are `always_on=True`. Optional product routes are still mounted by 
 | `runtimeContext` | kernel | `/runtime-context/*` | yes | Work Context read/create, preview, and checkpoint corrections. The public facade is also the support-package gateway listed below. |
 | `contentAccess` | kernel | `/content-access/*` | empty | Resource visibility, access logs, demotion disclosures, and publication-proposal writes. |
 | `proposals` | kernel | `/proposals*` | yes | Proposal approval/apply orchestration and applier registry; unsupported proposal types fail closed. |
-| `sessions` | product | `/sessions*`, `/rooms/{roomId}/conversations/{sessionId}/execution*` | empty | Conversation identity, canonical messages, destination-scoped drafts at the web edge, execution-context preflight/initialization/Git-baseline refresh and attachment mutations, user × session backend bindings, idempotent manual retry linkage, serialized turn claims, and opaque vendor runtime-session state mappings. The execution-context row is the sole Host/Primary/attachment/Git admission authority; vendor state is an invalidatable replay optimization, while canonical messages and Runtime Context checkpoints remain authoritative. |
+| `sessions` | product | `/sessions*`, `/rooms/{roomId}/conversations/{sessionId}/execution*` | empty | Conversation identity, canonical messages, destination-scoped drafts at the web edge, execution-context preflight/initialization and attachment mutations, user × session backend bindings, idempotent manual retry linkage, and serialized turn claims. The execution-context row is the sole Host/Primary/attachment admission authority; the vendor session a Conversation × Agent continues lives on its Host thread (`hosts`), and canonical messages remain the record. |
 | `agentTemplates` | product | `/agent-templates*` | empty | Catalog-backed template list/read/create-agent surfaces. |
-| `agents` | product | `/agents*` | empty | Agent profiles, versions, assistant chat/settings, direct conversation Host/Git admission and retry routes, template services, agent-scoped run/proposal reads. |
+| `agents` | product | `/agents*` | empty | Agent profiles, versions, assistant chat/settings, direct conversation Host admission and retry routes, template services, agent-scoped run/proposal reads. |
 | `agentGroups` | product | `/agent-groups*` | empty | One-task collaboration records opened by Room messages: timeline, trace, pause/resume/cancel. Not a second conversation UI. |
-| `rooms` | product | `/rooms*`, `/projects/{projectId}/mainline-room`, `/projects/{projectId}/conversations` | empty | Project-bound Rooms, rosters, conversations, Room retry and recipient capability/Git admission. See [modules/rooms.md](../modules/rooms.md). |
+| `rooms` | product | `/rooms*`, `/projects/{projectId}/mainline-room`, `/projects/{projectId}/conversations` | empty | Project-bound Rooms, rosters, conversations, Room retry and recipient capability admission. See [modules/rooms.md](../modules/rooms.md). |
 | `prompts` | capability | `/prompts/assets*` | empty | Prompt asset facade over evolvable assets, built-in manifest sync, immutable prompt versions, rendering/preview, evaluation evidence, labeled deployment refs, production promotion proposals, rollback, and runtime resolution. |
 | `personalMemoryGrants` | kernel | `/personal-memory-grants*` | empty | Personal memory grant preview/create/list/revoke/audit. |
 | `memory` | kernel | `/memory*` | yes, lazy | Memory entries, read logging, search, and memory proposal creation. |
@@ -175,9 +175,8 @@ These routes are not `ServerModule` entries. They are mounted by `PluginHost` af
 - The route registry is the HTTP source of truth. Credential, Home, personal-view,
   and Files & Code routes are owned by `providers`, `frontendSupport`, and
   `projectFolders` as listed above. The `/context/build` route does not
-  exist; Runtime Context HTTP is `/runtime-context/*`. The `/capabilities*`
-  manifest surface is owned by `catalog`; the capability/workflow/open-skill
-  control plane is owned by `capabilities`.
+  exist; Runtime Context HTTP is `/runtime-context/*`. Diagnostic manifests live under `/server/catalog*`; original-package Skill
+  imports, review and bindings are owned by `skills`.
 - The server boundary guard restricts bare runtime package imports and forbids
   web, sandbox, deployer, ops, migration-tooling, and ORM internals from
   `server/src`.

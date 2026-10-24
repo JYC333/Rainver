@@ -115,3 +115,6 @@ export const SecretResponseGuards = {
 
 /** Protocol semantic version. Bump when the contract changes incompatibly. */
 export const PROTOCOL_VERSION = "0.0.0" as const;
+
+/** JSON object shared by Skill, prompt, workflow and turn contracts. */
+export const JsonObjectSchema = z.record(z.unknown());

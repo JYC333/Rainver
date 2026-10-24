@@ -235,19 +235,15 @@ not OS-sandboxed.
 
 Extracted from `CAPABILITY_WORKFLOW_SKILL_SYSTEM.md`.
 
-**Current fact:** built-in definitions in `capabilities/registry.ts`;
-catalog YAML is diagnostic and is not executed; packs and GitHub
-`blob`/`tree` / `raw.githubusercontent.com` `SKILL.md` import preview exist.
-Binary assets are inventory metadata only.
+**Current fact:** the original-package Skill library imports GitHub, uploads
+and owned-Host CLI packages, preserving text and binary bytes. Definitions,
+packs, conversion and normalized renderers were removed in the 2026-10-23
+cleanup. Catalog YAML remains diagnostic and is not executed.
 
-**Extracted design**
-- Native `capability` runtime adapter (declared, disabled).
-- Broader `CapabilityProfile` surfaces (runtime preference, prompt
-  overrides, budget, review policy beyond enablement).
-- Registry / local-workspace / upload / official-catalog skill source
-  types.
-- Binary asset storage.
-- Capability marketplace or remote install UX.
+**Extracted design** (inventory only; not authorized work)
+- Registry or official-catalog package acquisition and marketplace UX.
+- Builtin package source (separate Task B in the capability shrink plan).
+- Research pipeline's future shape (separate research-layer plan).
 
 ---
 
@@ -551,5 +547,4 @@ Current implemented behavior is in [Agent Attention](../modules/agent-attention.
 - [backlog.md](backlog.md)
 - [../tasks/deferred-register.md](../tasks/deferred-register.md)
 - [platform-reuse-cleanup.md](platform-reuse-cleanup.md)
-- [capability-shrink-plan.md](capability-shrink-plan.md)
 - [unattended-execution-hardening-plan.md](unattended-execution-hardening-plan.md)

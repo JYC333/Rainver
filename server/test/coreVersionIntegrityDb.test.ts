@@ -1,10 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { loadConfig } from "../src/config.js";
 import { withTransaction } from "../src/db/tx.js";
 import { PgAgentRepository } from "../src/modules/agents/repository.js";
-import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
-import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import { refreshSourcePostProcessingAgentPrompt } from "../src/modules/sources/postProcessing/service.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
@@ -18,8 +15,6 @@ const PAIRED_MACHINE = "version-integrity-machine";
 const PAIRED_HOST = "version-integrity-paired-host";
 const FOREIGN_SPACE = "version-integrity-foreign-space";
 const FOREIGN_PROVIDER = "version-integrity-foreign-provider";
-const CAPABILITY_KEY = "research.search";
-
 
 const db = useTestDatabase(import.meta.filename);
 
@@ -27,7 +22,7 @@ beforeEach(async () => {
   if (!db.available) return;
   await resetTables(
     db.pool,
-    ["capability_versions", "runs", "workflow_executions", "plan_versions", "evolvable_asset_versions", "evolvable_assets", "agent_runtime_profiles", "agent_versions", "agents", "hosts", "machines", "model_provider_space_grants", "model_providers", "space_memberships", "users", "spaces"],
+    ["runs", "workflow_executions", "plan_versions", "evolvable_asset_versions", "evolvable_assets", "agent_runtime_profiles", "agent_versions", "agents", "hosts", "machines", "model_provider_space_grants", "model_providers", "space_memberships", "users", "spaces"],
     { cascade: true },
   );
   const now = new Date().toISOString();
@@ -719,170 +714,4 @@ describe("core version integrity", () => {
     });
   });
 
-  it("publishes capability versions without rewriting existing scope pins", async (ctx) => {
-    if (!db.available || !db.pool) return ctx.skip();
-    const now = new Date().toISOString();
-    await db.pool.query(
-      `INSERT INTO capability_versions (
-         id, capability_key, space_id, version, source, status,
-         metadata_json, created_at, updated_at
-       ) VALUES
-         ('capability-v1', $1, $2, '1.0.0', 'builtin', 'available', '{}'::jsonb, $3, $3),
-         ('capability-v2', $1, $2, '2.0.0', 'builtin', 'draft', '{}'::jsonb, $3, $3),
-         ('capability-v3', $1, $2, '3.0.0', 'builtin', 'draft', '{}'::jsonb, $3, $3)`,
-      [CAPABILITY_KEY, SPACE, now],
-    );
-    await db.pool.query(
-      `INSERT INTO capability_enablements (
-         id, space_id, project_id, agent_id, user_id, capability_key,
-         capability_version_id, enabled, config_json, created_at, updated_at
-       ) VALUES
-         ('enablement-space', $1, NULL, NULL, NULL, $2, 'capability-v1', true, '{}'::jsonb, $3, $3),
-         ('enablement-user', $1, NULL, NULL, $4, $2, 'capability-v1', true, '{}'::jsonb, $3, $3),
-         ('enablement-follow', $1, NULL, $5, NULL, $2, NULL, true, '{}'::jsonb, $3, $3)`,
-      [SPACE, CAPABILITY_KEY, now, USER, AGENT],
-    );
-    const registry = createDefaultProposalApplierRegistry();
-    const applyAvailable = (versionId: string, proposalId: string) => withTransaction(
-      db.pool,
-      (db) => registry.apply({
-        config: loadConfig({}),
-        db,
-        proposal: capabilityUpdateProposal(versionId, proposalId),
-        userId: USER,
-      }),
-    );
-
-    await Promise.all([
-      applyAvailable("capability-v2", "proposal-v2"),
-      applyAvailable("capability-v3", "proposal-v3"),
-    ]);
-
-    const availableVersions = await db.pool.query<{ id: string }>(
-      `SELECT id
-         FROM capability_versions
-        WHERE capability_key = $1 AND space_id = $2
-          AND status = 'available'`,
-      [CAPABILITY_KEY, SPACE],
-    );
-    expect(availableVersions.rows.map((row) => row.id).sort()).toEqual([
-      "capability-v1",
-      "capability-v2",
-      "capability-v3",
-    ]);
-    const enablements = await db.pool.query<{ id: string; capability_version_id: string | null }>(
-      `SELECT id, capability_version_id
-         FROM capability_enablements
-        WHERE space_id = $1 AND capability_key = $2
-        ORDER BY id`,
-      [SPACE, CAPABILITY_KEY],
-    );
-    expect(enablements.rows).toEqual([
-      { id: "enablement-follow", capability_version_id: null },
-      { id: "enablement-space", capability_version_id: "capability-v1" },
-      { id: "enablement-user", capability_version_id: "capability-v1" },
-    ]);
-  });
-
-  it("concurrently enables different versions without changing another scope's pin", async (ctx) => {
-    if (!db.available || !db.pool) return ctx.skip();
-    const capabilityKey = "research.extract";
-    const now = new Date().toISOString();
-    await db.pool.query(
-      `INSERT INTO capability_versions (
-         id, capability_key, space_id, version, source, status,
-         metadata_json, created_at, updated_at
-       ) VALUES
-         ('extract-v1', $1, $2, '1.0.0', 'builtin', 'available', '{}'::jsonb, $3, $3),
-         ('extract-v2', $1, $2, '2.0.0', 'builtin', 'draft', '{}'::jsonb, $3, $3),
-         ('extract-v3', $1, $2, '3.0.0', 'builtin', 'draft', '{}'::jsonb, $3, $3)`,
-      [capabilityKey, SPACE, now],
-    );
-    await db.pool.query(
-      `INSERT INTO capability_enablements (
-         id, space_id, project_id, agent_id, user_id, capability_key,
-         capability_version_id, enabled, config_json, created_at, updated_at
-       ) VALUES
-         ('extract-space', $1, NULL, NULL, NULL, $2, 'extract-v1', true, '{}'::jsonb, $3, $3),
-         ('extract-user', $1, NULL, NULL, $4, $2, 'extract-v1', true, '{}'::jsonb, $3, $3)`,
-      [SPACE, capabilityKey, now, USER],
-    );
-    const registry = createDefaultProposalApplierRegistry();
-    const applyEnable = (proposal: ApplyProposal) => withTransaction(
-      db.pool,
-      (db) => registry.apply({ config: loadConfig({}), db, proposal, userId: USER }),
-    );
-
-    await Promise.all([
-      applyEnable(capabilityEnableProposal(capabilityKey, "extract-v2", "enable-space", null)),
-      applyEnable(capabilityEnableProposal(capabilityKey, "extract-v3", "enable-user", USER)),
-    ]);
-
-    const availableVersions = await db.pool.query<{ id: string }>(
-      `SELECT id FROM capability_versions
-        WHERE capability_key = $1 AND space_id = $2
-          AND status = 'available'`,
-      [capabilityKey, SPACE],
-    );
-    expect(availableVersions.rows.map((row) => row.id).sort()).toEqual([
-      "extract-v1",
-      "extract-v2",
-      "extract-v3",
-    ]);
-    const enablements = await db.pool.query<{ capability_version_id: string }>(
-      `SELECT capability_version_id FROM capability_enablements
-        WHERE space_id = $1 AND capability_key = $2 ORDER BY id`,
-      [SPACE, capabilityKey],
-    );
-    expect(enablements.rows).toEqual([
-      { capability_version_id: "extract-v2" },
-      { capability_version_id: "extract-v3" },
-    ]);
-  });
 });
-
-function capabilityUpdateProposal(versionId: string, id: string): ApplyProposal {
-  return {
-    id,
-    space_id: SPACE,
-    proposal_type: "capability_update",
-    title: "Publish capability version",
-    payload_json: {
-      proposal_type: "capability_update",
-      operation: "capability_update",
-      capability_version_id: versionId,
-      status: "available",
-    },
-    project_folder_id: null,
-    created_by_user_id: USER,
-    visibility: "space_shared",
-    owner_user_id: null,
-    project_id: null,
-  };
-}
-
-function capabilityEnableProposal(
-  capabilityKey: string,
-  versionId: string,
-  id: string,
-  userId: string | null,
-): ApplyProposal {
-  return {
-    id,
-    space_id: SPACE,
-    proposal_type: "capability_enable",
-    title: "Enable capability version",
-    payload_json: {
-      proposal_type: "capability_enable",
-      operation: "capability_enable",
-      capability_key: capabilityKey,
-      capability_version_id: versionId,
-      ...(userId ? { user_id: userId } : {}),
-    },
-    project_folder_id: null,
-    created_by_user_id: USER,
-    visibility: "space_shared",
-    owner_user_id: null,
-    project_id: null,
-  };
-}

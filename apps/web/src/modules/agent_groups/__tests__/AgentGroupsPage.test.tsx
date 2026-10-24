@@ -56,7 +56,6 @@ vi.mock('../../../api/client', async () => {
     attachReferences: vi.fn(),
     conversations: vi.fn(),
     createConversation: vi.fn(),
-    summary: vi.fn(),
     messages: vi.fn(),
     create: vi.fn(),
     sendMessage: vi.fn(),
@@ -81,6 +80,8 @@ vi.mock('../../../api/client', async () => {
     transferOwner: vi.fn(),
     claimOwner: vi.fn(),
     resetAgentContext: vi.fn(),
+    summarizeAgentContext: vi.fn(),
+    restartFromSummary: vi.fn(),
   },
   sessionsApi: {
     executionContext: vi.fn(),
@@ -311,7 +312,6 @@ describe('Rooms page', () => {
       limit: 200,
       offset: 0,
     })
-    vi.mocked(roomsApi.summary).mockResolvedValue({ state: null, summary: null })
     vi.mocked(roomsApi.conversationQuota).mockResolvedValue({ warn_pct: 70, reserve_pct: 85, logins: [], holds: [] })
     vi.mocked(roomsApi.agentCandidates).mockResolvedValue({ agents: [], presets: [], total: 0, limit: 100, offset: 0 })
     vi.mocked(roomsApi.invitations).mockResolvedValue({ items: [], total: 0, limit: 100, offset: 0 })
@@ -636,6 +636,35 @@ describe('Rooms page', () => {
     expect(await screen.findByRole('dialog')).toHaveTextContent('Reset Remote Reviewer\'s context?')
     fireEvent.click(screen.getByRole('button', { name: 'Reset context' }))
     await waitFor(() => expect(roomsApi.resetAgentContext).toHaveBeenCalledWith('room-1', 'agent-host'))
+  })
+
+  it('lets the host owner ask a specialist for a summary and restart it from that summary', async () => {
+    vi.mocked(roomsApi.get).mockResolvedValue({
+      ...detail,
+      agent_members: [{
+        ...detail.agent_members[0]!,
+        agent_id: 'agent-host',
+        agent_name: 'Remote Reviewer',
+        agent_kind: 'standard',
+        role: 'member',
+        host_name: 'Workstation',
+        host_online: true,
+        host_owner_is_me: true,
+      }],
+    })
+    vi.mocked(roomsApi.summarizeAgentContext).mockResolvedValue(detail as never)
+    vi.mocked(roomsApi.restartFromSummary).mockResolvedValue(detail as never)
+    renderRooms('/rooms?room=room-1&conversation=session-1')
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Summarize context for Remote Reviewer' }))
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Ask Remote Reviewer for a summary?')
+    fireEvent.click(screen.getByRole('button', { name: 'Write summary' }))
+    await waitFor(() => expect(roomsApi.summarizeAgentContext).toHaveBeenCalledWith('room-1', 'agent-host'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Restart Remote Reviewer from its summary' }))
+    expect(await screen.findByRole('dialog')).toHaveTextContent('Restart Remote Reviewer from its summary?')
+    fireEvent.click(screen.getByRole('button', { name: 'Restart from summary' }))
+    await waitFor(() => expect(roomsApi.restartFromSummary).toHaveBeenCalledWith('room-1', 'agent-host'))
   })
 
   it('shows a project-bound Room with persistent conversations and human/agent rosters', async () => {

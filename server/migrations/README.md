@@ -264,6 +264,27 @@ archived source release and normal restore checks, then convert; do not force
 them through the target release's restore preflight. Keep source archives
 until the corresponding backup retention period ends.
 
+## Squashes after 0002
+
+- `0003_vendor_session_owned_conversation.sql` is `prepare --from 0003` over
+  the four development files that retired the server-side conversation
+  mechanisms (CLI bindings, local CLI runtime state and the Git gate, the
+  rolling Room summary tables, then the host-thread standing digest). Archive
+  `089614ce…` in each mode's `db/migration-archives/`; a database that applied
+  the development files (test did) is converted with `cutover`, a fresh one
+  takes the formal file by normal `up`.
+
+- `0004_remove_capability_layer.sql` is `prepare --from 0004` over
+  `0004_remove_capability_layer` (offline: it drops the `capability_*` tables
+  a pre-0004 release reads) and `0005_retire_evolution_targets_and_rename_skills`.
+  Archive `35152e5d…` in each mode's `db/migration-archives/`. Test applied
+  both development files and is converted with `cutover`; dev and prod had no
+  database and take the formal file by normal `up`. The one-off data
+  statements (superseding capability proposals, archiving retired Evolution
+  targets, `converted` → `reviewed`, `capability_overlay` → `skill_overlay`)
+  stay in the composition because conversion requires the exact original
+  SQL; on every database that can still reach this file they match no rows.
+
 ## The 2026-10-22 rebase of 0001 (one-time exception)
 
 `0001_agent_workbench.sql` was first produced by `prepare` as the exact

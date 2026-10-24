@@ -177,4 +177,4 @@ Proposals are the product review and application boundary for durable mutations.
   It is unique among pending proposals of one type in a Space
   (`uq_proposals_pending_operation`), so asking again while that proposal is
   pending returns it, and a decided proposal frees the key for a new request.
-  Skill package Review/Convert use it (`modules/capability.md`).
+  Skill package Review/Convert use it (`modules/skills.md`).

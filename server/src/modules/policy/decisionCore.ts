@@ -698,13 +698,18 @@ const ruleRunSpawnChild: Rule = (ctx) => {
   }
 
   const fanout = num(ctx.fanout_count);
-  const maxFanout = num(ctx.max_fanout);
+  const maxFanout = num(ctx.hard_max_fanout) ?? num(ctx.max_fanout);
+  const softFanout = num(ctx.soft_max_fanout) ?? maxFanout;
+  const turns = num(ctx.container_turns_count);
+  const hardTurns = num(ctx.hard_max_turns);
+  const softTurns = num(ctx.soft_max_turns) ?? hardTurns;
   const concurrency = num(ctx.concurrency_count);
   const maxConcurrency = num(ctx.max_concurrency);
   if (
     ctx.fanout_limit_exceeded === true ||
     ctx.concurrency_limit_exceeded === true ||
     (fanout !== null && maxFanout !== null && fanout > maxFanout) ||
+    (turns !== null && hardTurns !== null && turns > hardTurns) ||
     (concurrency !== null &&
       maxConcurrency !== null &&
       concurrency > maxConcurrency)
@@ -721,35 +726,14 @@ const ruleRunSpawnChild: Rule = (ctx) => {
 
   return makeDecision({
     decision: "allow",
-    message: "run.spawn_child allowed for active same-space group delegation.",
+    message: (fanout !== null && softFanout !== null && fanout > softFanout)
+      || (turns !== null && softTurns !== null && turns > softTurns)
+      ? "run.spawn_child allowed above soft budget within the hard limit."
+      : "run.spawn_child allowed for active same-space group delegation.",
     risk_level: "medium",
     reason_code: "run_spawn_child_allowed",
     policy_rule_id: "run_spawn_child_allowed",
     audit_code: "run_spawn_child_allowed",
-  });
-};
-
-const ruleRuntimeSkillRenderEnabled: Rule = (ctx) => {
-  const action = str(ctx.action);
-  if (action !== "runtime_skill.render") return null;
-  if (ctx.enabled_binding !== true) return null;
-  const capabilityEnablementId = str(ctx.capability_enablement_id);
-  if (!capabilityEnablementId) return null;
-  const raw = ctx.risk_level;
-  const riskLevel: RiskLevel =
-    typeof raw === "string" && VALID_RISK_LEVELS.has(raw) ? (raw as RiskLevel) : "medium";
-  // A binding only reaches render from the context prepare path after the
-  // runtime provider proves an enabled capability_enablement row selected it.
-  // Enablement is the review gate where the owner decides whether a high or
-  // critical capability runs; direct calls without that proof fall through to
-  // the action registry default.
-  return makeDecision({
-    decision: "allow",
-    message: `runtime_skill.render allowed for enabled binding (reviewed at capability enablement, risk_level=${riskLevel})`,
-    risk_level: riskLevel,
-    reason_code: "runtime_skill_render_enabled_binding",
-    policy_rule_id: "runtime_skill_render_enabled_binding",
-    audit_code: "runtime_skill_render_enabled_binding",
   });
 };
 
@@ -959,7 +943,6 @@ const BUILTIN_RULES: readonly Rule[] = [
   ruleAutomation,
   ruleRuntimeExecuteRiskLevel,
   ruleRunSpawnChild,
-  ruleRuntimeSkillRenderEnabled,
   ruleRetrievalToolCall,
   ruleManagedSystemActionGrant,
   ruleUnattendedProjectWrite,

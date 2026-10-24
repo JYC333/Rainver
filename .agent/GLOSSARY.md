@@ -74,13 +74,17 @@ Structured, review-gated Knowledge entry. Backend
 Schema-only spaced-repetition row (`cards` / `card_review_states` /
 `card_reviews`). No server module and no review UI.
 
-**Capability**
-A code-defined skill (`capability.yaml` / capability-definitions). Not
-an official optional module (`package` plugins).
+**Skill**
+Procedural content a model reads and may follow. The imported package owns its
+original bytes; Rainver owns review, bindings and Delivery.
 
-**Tool**
-An action a capability or System Action can perform. Permissions and
-grants are enforced by Policy / SystemActionGateway.
+**Tool / System Action**
+A code-owned atomic operation registered in `systemActions/`, invoked through
+the permission-enforced gateway. A Skill's declarations grant no authority.
+
+**Workflow**
+An enforced process: the server controls order, gates, checkpoints and retries.
+It starts Runs that may receive Skills and invoke Tools.
 
 **Sandbox / execution host**
 CLI Runs execute on a registered host daemon: bubblewrap on the built-in

@@ -595,31 +595,19 @@ async function releaseDispatchLock(db: Queryable, spaceId: string, runId: string
 
 /**
  * Claim the Run's host thread back at admission; false while another turn has
- * it. The lock is held in the name of the Run it was claimed for: a handoff
- * turn runs under the lock of the recipient it prepares (the one whose
- * `handoff_rotation` names it), so it claims in that recipient's name. A Run
- * with no host thread has nothing to claim.
+ * it. A Run with no host thread has nothing to claim.
  */
 async function reclaimDispatchLock(db: Queryable, spaceId: string, runId: string): Promise<boolean> {
-  const row = (await db.query<{ host_task_thread_id: string | null; owner_id: string | null }>(
-    `SELECT run.host_task_thread_id,
-            (SELECT recipient.id FROM runs recipient
-              WHERE recipient.space_id = run.space_id
-                -- A handoff turn is created in its recipient's group: the group's index finds it.
-                AND recipient.run_group_id = run.run_group_id
-                AND recipient.model_override_json->'handoff_rotation'->>'handoff_run_id' = run.id
-              LIMIT 1) AS owner_id
-       FROM runs run
-      WHERE run.space_id = $1 AND run.id = $2`,
+  const row = (await db.query<{ host_task_thread_id: string | null }>(
+    `SELECT host_task_thread_id FROM runs WHERE space_id = $1 AND id = $2`,
     [spaceId, runId],
   )).rows[0];
   if (!row?.host_task_thread_id) return true;
-  const owner = row.owner_id ?? runId;
   const claimed = await db.query(
     `UPDATE host_threads SET dispatch_lock_id = $2, updated_at = now()
       WHERE id = $1 AND (dispatch_lock_id IS NULL OR dispatch_lock_id = $2)
       RETURNING id`,
-    [row.host_task_thread_id, owner],
+    [row.host_task_thread_id, runId],
   );
   return (claimed.rowCount ?? 0) > 0;
 }

@@ -171,7 +171,7 @@ describe("evolutionBundlesDb", () => {
         `INSERT INTO evolution_targets (
            id, space_id, target_type, target_ref_type, target_ref_id, risk_level,
            status, enabled, engine_policy_json, metadata_json, created_at, updated_at
-         ) VALUES ($1, $2, 'workflow_asset', 'proposal', $3, 'medium', 'active', true, '{}'::jsonb, '{}'::jsonb, $4, $4)`,
+         ) VALUES ($1, $2, 'workflow', 'proposal', $3, 'medium', 'active', true, '{}'::jsonb, '{}'::jsonb, $4, $4)`,
         [proposalTargetId, SPACE, secondEval.proposal_id, new Date().toISOString()],
       );
 
@@ -586,23 +586,23 @@ describe("evolutionSelector", () => {
       const selector = new EvolutionSelector();
       const selected = selector.select({
         target: target({
-          target_type: "capability",
+          target_type: "agent_version",
           risk_level: "medium",
           engine_policy_json: { max_strategy_risk: "medium" },
         }),
-        signals: [signal("capability_gap")],
+        signals: [signal("prompt_gap")],
         strategies: [
-          strategy("improve.capability_gap", {
-            target_type: "capability",
+          strategy("optimize.prompt_asset", {
+            target_type: "agent_version",
             risk_level: "high",
-            signals_match_json: ["capability_gap"],
+            signals_match_json: ["prompt_gap"],
           }),
         ],
       });
 
       expect(selected.selectedStrategy).toBeNull();
       expect(selected.rejectedReasons).toContainEqual(expect.objectContaining({
-        strategy_key: "improve.capability_gap",
+        strategy_key: "optimize.prompt_asset",
         reason: "strategy_risk_exceeds_target_policy",
       }));
     });

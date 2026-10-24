@@ -4,7 +4,7 @@ import {
   type MemoryRow,
 } from "../memory/repository.js";
 import type { ServerConfig } from "../../config.js";
-import { registerCapabilityProposalAppliers } from "../capabilities/proposalApplier.js";
+import { registerSkillProposalAppliers } from "../skills/proposalApplier.js";
 import { registerKnowledgeProposalAppliers } from "../knowledge/proposalApplier.js";
 import { registerTaskProposalAppliers } from "../tasks/proposalApplier.js";
 import { registerProjectFolderProposalAppliers } from "../projectFolders/index.js";
@@ -106,7 +106,7 @@ export function createDefaultProposalApplierRegistry(
   for (const proposalType of ["memory_create", "memory_update", "memory_archive"]) {
     registry.register(proposalType, applyMemoryProposal);
   }
-  registerCapabilityProposalAppliers(registry);
+  registerSkillProposalAppliers(registry);
   registerKnowledgeProposalAppliers(registry);
   registerClaimCandidatePacketProposalAppliers(registry);
   registerRelationDiscoveryProposalAppliers(registry);

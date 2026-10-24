@@ -81,6 +81,14 @@ describe('PromptLibraryPage', () => {
     expect(screen.queryByRole('heading', { name: 'Prompt A' })).not.toBeInTheDocument()
   })
 
+  it('labels research pipeline stages in English', async () => {
+    render(<MemoryRouter initialEntries={['/prompts?tab=bundles']}><PromptLibraryPage /></MemoryRouter>)
+    await userEvent.click(await screen.findByRole('tab', { name: 'Bundles' }))
+    expect(await screen.findByText('0 workflow prompts · 5 stages')).toBeInTheDocument()
+    expect(screen.queryByText('5 capabilities')).not.toBeInTheDocument()
+    expect(screen.getAllByText('stage')).toHaveLength(5)
+  })
+
   it('reads in Chinese, with plural counts and the asset date in the Chinese locale', async () => {
     await i18n.changeLanguage('zh-CN')
     try {
@@ -94,7 +102,8 @@ describe('PromptLibraryPage', () => {
       expect(await screen.findByText(formatDateTime('2026-07-01T00:00:00.000Z'))).toBeInTheDocument()
       expect(screen.getAllByText('对话').length).toBeGreaterThan(0)
       await user.click(screen.getByRole('tab', { name: '套件' }))
-      expect(await screen.findByText('0 个工作流提示词 · 5 项能力')).toBeInTheDocument()
+      expect(await screen.findByText('0 个工作流提示词 · 5 个阶段')).toBeInTheDocument()
+      expect(screen.queryByText('5 项能力')).not.toBeInTheDocument()
     } finally {
       await i18n.changeLanguage('en')
     }

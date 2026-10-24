@@ -309,7 +309,7 @@ describe("compose server config", () => {
     const startScript = readFileSync(join(repoRoot, "ops", "scripts", "start.sh"), "utf8");
     expect(startScript).not.toContain("sandbox/Dockerfile");
     expect(startScript).not.toContain('"$REPO_ROOT/sandbox/"');
-    for (const path of ["workspaces", "runtime-tools", "cache/runtime-homes", "cache/conversation-runtime-homes", "cache/login-homes"]) {
+    for (const path of ["workspaces", "runtime-tools", "cache/runtime-homes", "cache/login-homes"]) {
       expect(startScript).toContain(`\"$MODE_ROOT/${path}\"`);
     }
   });

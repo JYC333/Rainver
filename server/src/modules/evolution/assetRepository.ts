@@ -30,7 +30,6 @@ const ASSET_TYPES = new Set([
   "prompt_template",
   "workflow_template",
   "agent_config",
-  "runtime_skill_binding",
   "source_post_processing_rule",
 ]);
 const OWNER_SCOPE_TYPES = new Set(["system", "space", "project", "user", "agent"]);
@@ -294,6 +293,7 @@ export class EvolvableAssetRepository {
     const row = await this.assetRow(identity.spaceId, assetId);
     if (!row) throw new HttpError(404, "Evolvable asset not found");
     await assertCanWriteAssetOwnerScope(this.db, identity, row);
+    if (!ASSET_TYPES.has(row.asset_type)) throw new HttpError(409, "Retired evolvable assets are read-only");
     return row;
   }
 

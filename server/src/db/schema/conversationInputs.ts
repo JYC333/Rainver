@@ -15,7 +15,7 @@ import { sql } from "drizzle-orm";
 import { users } from "./auth.js";
 import { spaces } from "./spaces.js";
 import { sessions, messages } from "./sessions.js";
-import { skillPackages } from "./capabilities.js";
+import { skillPackages } from "./skills.js";
 import { runs } from "./runs.js";
 
 /** Short-lived upload rows. The file is not visible until a message claims it. */

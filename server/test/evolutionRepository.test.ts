@@ -37,6 +37,26 @@ beforeAll(async () => {
 });
 
 describe("EvolutionRepository core", () => {
+  it("rejects retired target kinds while retaining supported target writes", async () => {
+    if (!db.available) return;
+    const identity = await seedIdentity();
+    const repository = new EvolutionRepository(db.pool);
+    const target = await repository.createTarget(identity, { target_type: "workflow", target_name: "Supported" });
+    for (const type of ["capability", "runtime_skill_binding", "custom_legacy_type"]) {
+      await expect(repository.createTarget(identity, { target_type: type })).rejects.toMatchObject({ statusCode: 422 });
+      await expect(repository.updateTarget(identity, String(target.id), { target_type: type })).rejects.toMatchObject({ statusCode: 422 });
+      const archivedId = randomUUID();
+      await db.pool.query(`INSERT INTO evolution_targets
+        (id,space_id,target_type,risk_level,status,enabled,engine_policy_json,metadata_json,created_at,updated_at)
+        VALUES ($1,$2,$3,'low','archived',false,'{}','{}',now(),now())`, [archivedId, identity.spaceId, type]);
+      await expect(repository.updateTarget(identity, archivedId, { status: "active" })).rejects.toMatchObject({ statusCode: 422 });
+      expect(await repository.getTarget(identity, archivedId)).toMatchObject({ target_type: type, status: "archived", enabled: false });
+      expect(await repository.updateTarget(identity, archivedId, { target_name: "Historical target" }))
+        .toMatchObject({ target_type: type, status: "archived", target_name: "Historical target" });
+    }
+    expect(await repository.getTarget(identity, String(target.id))).toMatchObject({ target_type: "workflow", status: "active" });
+  });
+
   it("creates a queued evolution run with selector decision and prompt", async (ctx) => {
     if (!db.available || !db.pool) return ctx.skip();
     const identity = await seedIdentity();
@@ -149,10 +169,7 @@ describe("EvolutionRepository core", () => {
         "repair.runtime_failure",
         "repair.validation_failure",
         "optimize.prompt_asset",
-        "optimize.tool_usage",
         "harden.policy_boundary",
-        "improve.capability_gap",
-        "review.open_skill_import",
         "maintain.memory_health",
         "maintain.knowledge_retrieval",
         "solidifyExperience.successful_run",

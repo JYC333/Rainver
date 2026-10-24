@@ -115,7 +115,7 @@ Rules:
   worker-published `chat_completed` event, then read the durable assistant message. The
   request route never invokes a runtime adapter directly. Chat is not backed by a single
   space-wide default Assistant identity: a Room resolves a per-speaker,
-  per-recipient typed work-scope CLI binding (`modules/rooms.md`), so which
+  per-recipient host thread and vendor session (`modules/rooms.md`), so which
   Agent and runtime a turn runs against remains a per-conversation, per-user
   choice without making the Room session a vendor-state authority.
   A `system_assistant`-kind Agent (system/space-owned, `owner_user_id` NULL,
@@ -295,12 +295,9 @@ the reset to the product default.
 Direct Agent chat and Room chat share the same development-facing controls.
 The first Host-bound direct send creates and pins the Conversation execution
 context; later direct sends resolve the existing Agent × owner Host thread and
-reject a changed branch, commit, or execution-readiness state until the user
-refreshes the Git context. Room dispatch applies the same Git baseline check on
-the server before a send can commit a user message or any Run. The baseline and the
-Run-start `git_snapshot` are immutable audit inputs; refresh changes only the
-current Conversation baseline and never changes a branch or writes to a
-workspace.
+reject a changed Host or workspace pin. Git state is not a send gate: the
+context's initialization-time `git_*` snapshot and the Run-start
+`git_snapshot` are audit inputs, and the CLI reads the checkout itself.
 
 `ConversationRunControls` reuses `PATCH /api/v1/runs/{runId}/stop` for active
 turns and renders cancellation with retained partial output. Terminal
@@ -344,12 +341,13 @@ kept apart deliberately, and they have three different authors:
 | | Author | Where it lives | Reach |
 |---|---|---|---|
 | **Role** (`agents.role_instruction`) | the owner, as a setting | `agents` | wherever the Agent runs |
-| **Persona** (`memory_type = 'persona'`) | the Agent, about itself | `memory_entries`, `scope_type = 'agent'` | every Room and direct chat; one active entry per Agent |
+| **Persona** (`memory_type = 'persona'`) | the Agent, about itself | `memory_entries`, `scope_type = 'agent'` | every Room turn (not direct chat); one active entry per Agent |
 | **Note** (`note` / `decision` / `lesson`) | the Agent, about a Room | the same scope, carrying `origin_room_id` | only where that Room's audience already reached |
 
 The prompt renders role first and persona second. It is delivered through the
-Host-bound ACP Run path — `agentGroups/agentIdentityPrompt.ts` on a Room turn,
-Room delegation and direct chat. There is no server-side Agent loop with a
+Host-bound ACP Run path — `agentGroups/agentIdentityPrompt.ts` on a Room turn
+and Room delegation; a direct chat carries neither (`modules/rooms.md`,
+"Host-bound specialists and direct chat"). There is no server-side Agent loop with a
 separate memory-delivery path. Neither role nor persona is written to a vendor
 context file, and the CLI's own auto-memory is scratch Rainver never reads,
 imports or promotes.

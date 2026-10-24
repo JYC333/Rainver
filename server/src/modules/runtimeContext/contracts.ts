@@ -23,19 +23,8 @@ export interface RuntimeContextInvocationInput extends RuntimeContextPreviewInpu
   providerId?: string | null;
   model?: string | null;
   usageSourceId: string;
-  mode?: "full" | "delta";
   runtimeSessionBindingRef?: { type: string; id: string; version?: string | null } | null;
   rawReplayPayload?: unknown;
-  cliBinding?: {
-    id: string;
-    runtime_state_key: string;
-    vendor_session_id: string | null;
-    cli_known_cursor: number;
-    acknowledged_item_ids: string[];
-    generation: number;
-    rotation_reason: string | null;
-    lease_generation: number;
-  } | null;
 }
 
 export interface RuntimeContextDeliveryAcknowledgement {
@@ -58,7 +47,6 @@ export interface RuntimeContextInvocationGatewayPort {
   preview(input: RuntimeContextPreviewInput): Promise<RuntimeContextEnvelope>;
   prepareInvocation(input: RuntimeContextInvocationInput): Promise<InvocationDelivery>;
   acknowledgeDelivery(input: RuntimeContextDeliveryAcknowledgement): Promise<InvocationSnapshotSafe>;
-  acknowledgeCliContextPhase?(input: { spaceId: string; deliveryId: string; vendorSessionId: string }): Promise<void>;
   finalizeInvocation(input: RuntimeContextFinalizeInput): Promise<InvocationSnapshotSafe>;
 }
 

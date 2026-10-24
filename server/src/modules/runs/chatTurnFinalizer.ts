@@ -11,10 +11,7 @@ import {
   sharedActionPreviews,
 } from "../agents/projectChatActionPreviews.js";
 import { PgSessionRepository } from "../sessions/repository.js";
-import {
-  ManagedSemanticCheckpointProvider,
-  RuntimeContextContinuityService,
-} from "../runtimeContext/index.js";
+import { RuntimeContextContinuityService } from "../runtimeContext/index.js";
 import { runOutputResult } from "./orchestrationResults.js";
 import { askedUserFromRunOutput, awaitingAnswerReply } from "./vendorQuestion.js";
 import {
@@ -22,7 +19,7 @@ import {
   type AgentRunRecord,
   type RunRecord,
 } from "./repository.js";
-import { requestRoomConversationSummary } from "../rooms/conversationSummaryService.js";
+import { handoffArtifactIdForRun } from "../agentGroups/sessionHandoff.js";
 import { RoomDiscussionService } from "../rooms/discussionService.js";
 import { InvocationAuthorityNotFoundError } from "../runtimeContext/continuity/service.js";
 
@@ -124,13 +121,28 @@ export async function finalizeChatTurn(
     : actionPreviews;
   let assistantMessage: AssistantMessage | null = null;
   let terminalMessageId: string | null = null;
-  let terminalMessageCreatedAt: string | null = null;
   // A handoff turn talks to the Agent's next session, not to the Room: what
   // it produced is the handoff Artifact, and its reply is never posted.
   const handoffTurn = recordValue(recordValue(run.model_override_json).chat_turn).kind === "handoff";
 
   if (handoffTurn) {
-    // Completed below like any turn, so nothing waits on it.
+    // Completed below like any turn, so nothing waits on it. A summary the
+    // person asked for is the one handoff turn that is announced: its
+    // document is for them, and the Room is where they asked.
+    const summaryTurn = recordValue(recordValue(run.model_override_json).handoff).manual_summary === true;
+    if (summaryTurn && outcome.ok && isRoomConversationRun(run) && metadata.room_id && config.databaseUrl) {
+      const artifactId = await handoffArtifactIdForRun(getDbPool(config.databaseUrl), run);
+      await PgSessionRepository.fromConfig(config).addRoomSystemNotice(run.space_id, metadata.user_id, metadata.room_id, metadata.session_id, {
+        content: artifactId
+          ? `${run.agent_name ?? "The Agent"} wrote a summary of this conversation`
+          : `${run.agent_name ?? "The Agent"} finished the summary turn without writing a summary`,
+        metadata: {
+          host_thread_id: run.host_task_thread_id ?? null,
+          host_thread_event: "context_summary",
+          ...(artifactId ? { execution_details: { artifact_id: artifactId } } : {}),
+        },
+      });
+    }
   } else if (outcome.ok) {
     const artifactRefs = artifactReferences(run.output_json);
     // The runtime's own question ended this turn: the reply is the
@@ -183,7 +195,6 @@ export async function finalizeChatTurn(
       created_at: stored.created_at,
     };
     terminalMessageId = stored.id;
-    terminalMessageCreatedAt = stored.created_at;
   } else if (isRoomConversationRun(run)) {
     const sessions = deps.sessions ?? PgSessionRepository.fromConfig(config);
     const stored = await requiredRoomMessageWriter(sessions)({
@@ -207,7 +218,6 @@ export async function finalizeChatTurn(
       );
     }
     terminalMessageId = stored.id;
-    terminalMessageCreatedAt = stored.created_at;
   }
 
   const continuity = deps.continuity ?? productionContinuity(config);
@@ -260,20 +270,6 @@ export async function finalizeChatTurn(
   });
   const roomId = isRoomConversationRun(run) ? metadata.room_id ?? null : null;
   await advanceRoomDiscussion(config, run, roomId, deps);
-  if (isRoomConversationRun(run) && outcome.ok && roomId && terminalMessageId && terminalMessageCreatedAt) {
-    try {
-      await requestRoomConversationSummary(getDbPool(config.databaseUrl!), {
-        spaceId: run.space_id,
-        roomId,
-        sessionId: metadata.session_id,
-        throughMessageId: terminalMessageId,
-        throughCreatedAt: terminalMessageCreatedAt,
-      });
-    } catch {
-      // Summary work is auxiliary. The canonical Room turn remains complete;
-      // the freshness scheduler will enqueue it again when the state is due.
-    }
-  }
   return completion;
 }
 
@@ -372,8 +368,7 @@ async function advanceRoomDiscussion(
 
 function productionContinuity(config: ServerConfig): RuntimeContextContinuityService {
   if (!config.databaseUrl) throw new Error("Runtime Context continuity requires the database");
-  const db = getDbPool(config.databaseUrl);
-  return new RuntimeContextContinuityService(db, new ManagedSemanticCheckpointProvider(db, config));
+  return new RuntimeContextContinuityService(getDbPool(config.databaseUrl));
 }
 
 function requiredRoomMessageWriter(

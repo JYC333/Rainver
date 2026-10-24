@@ -17,13 +17,11 @@ import { ExecutionGraphRecoveryService } from "../execution/executionGraphRecove
 import { ProjectResearchPipelineService } from "../projectResearch/index.js";
 import { enqueueDueResearchIntegrityChecks } from "../projectResearch/integrityMonitorService.js";
 import { processAllUnclaimedDomainChangeEvents } from "../knowledgePromotion/revalidationService.js";
-import { sweepConversationRuntimeState } from "../runs/conversationRuntimeState.js";
 import { HOST_USAGE_REFRESH_INTERVAL_SECONDS, refreshAllHostUsage } from "../hosts/usageService.js";
 import { admitTurnParkedRuns, releaseHeldRuns } from "../rooms/quotaGate.js";
 import { setBackgroundServicesStatusSource } from "./runtimeStatus.js";
 import { AutonomyRecoveryService } from "../autonomy/recoveryService.js";
 import { reconcileInformationDigestAutomations } from "../informationDigest/automationProvisioning.js";
-import { RoomConversationSummaryService } from "../rooms/conversationSummaryService.js";
 import { RoomConversationTitleService } from "../rooms/conversationTitleService.js";
 import { readInstanceOperationsPolicy } from "../settings/index.js";
 import { DeploymentService } from "../deployment/service.js";
@@ -84,38 +82,6 @@ export function startBackgroundServices(
         if (!config.databaseUrl) return;
         const failed = await new DeploymentService(getDbPool(config.databaseUrl)).sweepLostJobs();
         if (failed > 0) log?.warn(`[deployment] failed ${failed} job(s) whose deployer stopped reporting`);
-      },
-    },
-    {
-      name: "conversation_runtime_state_retention",
-      intervalSeconds: 3600,
-      runOnStart: false,
-      run: async () => {
-        const protectedRows = config.databaseUrl
-          ? await getDbPool(config.databaseUrl).query<{ runtime_state_key: string }>(
-              `SELECT runtime_state_key
-                 FROM session_conversation_backends
-               UNION
-               SELECT model_override_json->'conversation_runtime'->>'runtime_state_key'
-                 FROM runs
-                WHERE status IN (
-                  'queued', 'running', 'cancelling',
-                  'waiting_for_review', 'waiting_for_dependency'
-                )
-                  AND model_override_json->'conversation_runtime'->>'schema_version'
-                      = 'conversation_runtime.v1'`,
-            )
-          : { rows: [] };
-        const removed = await sweepConversationRuntimeState({
-          rainver_home: config.rainverHome,
-          sandbox_root: config.sandboxRoot,
-          protected_state_keys: new Set(
-            protectedRows.rows.map((row) => row.runtime_state_key),
-          ),
-        });
-        if (removed > 0) {
-          log?.info(`[scheduler] conversation runtime state pruned ${removed} session(s)`);
-        }
       },
     },
     {
@@ -283,21 +249,6 @@ export function startBackgroundServices(
       },
     });
 
-    tasks.push({
-      name: "room_conversation_summary_scheduler",
-      intervalSeconds: 60,
-      runOnStart: true,
-      awaitRunOnStart: false,
-      run: async () => {
-        const service = new RoomConversationSummaryService(config, getDbPool(config.databaseUrl!));
-        const reconciled = await service.reconcileMissingStates();
-        const recovered = await service.recoverExpiredLeases();
-        const enqueued = await service.enqueueDueJobs();
-        if (reconciled > 0 || recovered > 0 || enqueued > 0) {
-          log?.info(`[scheduler] room conversation summaries reconciled=${reconciled} recovered=${recovered} enqueued=${enqueued}`);
-        }
-      },
-    });
   }
 
   if (config.dailyReportSchedulerEnabled && worker) {

@@ -13,7 +13,6 @@
  */
 
 // Primitives + value sets
-export * from "./common.js";
 
 // Zod schemas (single source of truth for data shapes)
 export * from "./schemas.js";
@@ -134,8 +133,8 @@ export * from "./objectSchema.js";
 // Official Optional Module (plugin) control-plane contracts
 export * from "./plugins.js";
 
-// Capability / workflow / Open Skill framework contracts
-export * from "./capabilities.js";
+// Skill / workflow / Open Skill framework contracts
+export * from "./common.js";
 export * from "./workflows.js";
 export * from "./skills.js";
 export * from "./projectResearch.js";

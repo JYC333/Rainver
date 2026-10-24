@@ -39,20 +39,12 @@ export const conversationExecutionContexts = pgTable("conversation_execution_con
 	initializedByUserId: varchar("initialized_by_user_id", { length: 36 }),
 	dispatchLockId: varchar("dispatch_lock_id", { length: 36 }),
 	queuePausedAt: timestamp("queue_paused_at", { withTimezone: true, mode: "string" }),
-	/** Git context captured when the immutable execution selection was initialized. */
+	/** Git context observed when the immutable execution selection was initialized; informational, not a send gate. */
 	gitBranch: varchar("git_branch", { length: 256 }),
 	gitHead: varchar("git_head", { length: 128 }),
 	gitDirty: boolean("git_dirty"),
 	gitExecutionReady: boolean("git_execution_ready"),
 	gitObservedAt: timestamp("git_observed_at", { withTimezone: true, mode: "string" }),
-	/**
-	 * Branch and HEAD the daemon observed at the exit of this Conversation's
-	 * most recent finished Run. A HEAD that moved to exactly this value was
-	 * moved by the Conversation's own Agent, so the send gate advances the
-	 * baseline instead of refusing.
-	 */
-	lastRunGitBranch: varchar("last_run_git_branch", { length: 256 }),
-	lastRunGitHead: varchar("last_run_git_head", { length: 128 }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [

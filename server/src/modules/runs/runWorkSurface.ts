@@ -7,7 +7,7 @@ import {
   renderWorkSkill,
   workSkillContentHash,
   type WorkSkillOptions,
-} from "../capabilities/workSkill.js";
+} from "../skills/workSkill.js";
 import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
 import type { RunRecord } from "./repository.js";
 import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";

@@ -297,7 +297,7 @@ export async function recordRemoteRunBackend(
 ): Promise<void> {
   // Merge, never replace. `model_override_json` is the run's control blob, not
   // a model record: it also carries `execution_mode`, `chat_turn` and
-  // `conversation_runtime`, and a Room conversation turn on a remote
+  // `host_thread`, and a Room conversation turn on a remote
   // Folder reaches this path. Overwriting the document would drop the keys
   // `finalizeChatTurn` reads after the run is re-read from the database, so
   // the agent's reply would never be written back and neither recovery sweep

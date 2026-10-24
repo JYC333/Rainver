@@ -3,7 +3,6 @@ import type { ServerConfig } from "../../config.js";
 import { getDbPool } from "../../db/pool.js";
 import { withQueryableTransaction, type Queryable } from "../routeUtils/common.js";
 import { applyRunArtifactDeclarations } from "../projectWork/artifactDeclarations.js";
-import { recordConversationHeadMove } from "../sessions/conversationGitGate.js";
 import { PgMachineRepository } from "./machineRepository.js";
 import type { AmbientSessionCount, HostRunDiffUpload, HostRunGitAfter, HostRunOutputsUpload, ManagedWorkspaceHeartbeat } from "@rainver/protocol";
 import { PgWorkspaceLocationRepository, type WorkspaceLocationHeartbeat } from "../projectFolders/workspaceLocations.js";
@@ -421,8 +420,7 @@ export class PgHostRepository {
   ): Promise<{ ok: true; run: RunForUpload } | { ok: false; reason: HostUploadRefusal }> {
     const run = await tx.query<RunForUpload>(
       `SELECT r.id, r.space_id, r.owner_user_id, r.project_id, r.project_folder_id,
-              r.session_id, r.workspace_location_id,
-              COALESCE(wl.execution_host_id = $2, false) AS location_on_host
+              r.workspace_location_id
          FROM runs r
          LEFT JOIN workspace_locations wl ON wl.id = r.workspace_location_id
          LEFT JOIN agent_runtime_profiles arp
@@ -483,13 +481,8 @@ export class PgHostRepository {
       );
       if (existing.rows[0]) return { ok: true, result: { artifact_id: existing.rows[0].id } };
       // Recorded first and on its own: a Run whose diff could not be captured
-      // still left its checkout somewhere, and that is what the Conversation's
-      // send gate needs.
-      // A branch name longer than the Conversation's record holds is not kept:
-      // the send gate then treats a moved HEAD as it would with no report at all.
-      const storable = (position: HostRunGitAfter | undefined) => position && (position.branch?.length ?? 0) <= MAX_GIT_BRANCH_LENGTH ? position : undefined;
-      const gitAfter = storable(input.git_after);
-      if (gitAfter) await this.recordGitAfter(tx, run, gitAfter, storable(input.git_before) ?? null);
+      // still left its checkout somewhere.
+      if (input.git_after) await this.recordGitAfter(tx, run, input.git_after);
       if (input.diff === null) return { ok: true, result: { artifact_id: null } };
       const id = randomUUID();
       const now = new Date().toISOString();
@@ -524,46 +517,26 @@ export class PgHostRepository {
   }
 
   /**
-   * Where a Run left its checkout: always on the Run as
-   * `output_json.workspace_after`, and as its Conversation's last-Run HEAD
-   * (`recordConversationHeadMove`, which holds the conditions) only when the
-   * Run belongs to an initialized Conversation whose Primary is the Location
-   * it ran in, that Location is on the uploading host (a profile-bound upload
-   * is not enough), and the host read `git_before` with the lease held — so
-   * the move from there to `git_after` happened while this Run held the
-   * directory.
-   *
-   * One transaction, so a Run's own record and the gate's never disagree.
+   * Where a Run left its checkout, on the Run as `output_json.workspace_after`.
    * The Run's key is merged, not written over: this lands before the Run is
    * finalized, and finalization keeps it (`PgRunRepository`).
    */
-  private async recordGitAfter(tx: Queryable, run: RunForUpload, gitAfter: HostRunGitAfter, gitBefore: HostRunGitAfter | null): Promise<void> {
+  private async recordGitAfter(tx: Queryable, run: RunForUpload, gitAfter: HostRunGitAfter): Promise<void> {
     const workspaceAfter = {
       branch: gitAfter.branch,
       head: gitAfter.head,
       workspace_location_id: run.workspace_location_id ?? null,
       observed_at: new Date().toISOString(),
     };
-    {
-      await tx.query(
-        `UPDATE runs
-            SET output_json = jsonb_set(
-                  CASE WHEN jsonb_typeof(output_json) = 'object' THEN output_json ELSE '{}'::jsonb END,
-                  '{workspace_after}', $3::jsonb, true),
-                updated_at = now()
-          WHERE space_id = $1 AND id = $2`,
-        [run.space_id, run.id, JSON.stringify(workspaceAfter)],
-      );
-      if (!run.session_id || !run.workspace_location_id || !run.location_on_host || !gitBefore) return;
-      await recordConversationHeadMove(tx, {
-        spaceId: run.space_id,
-        sessionId: run.session_id,
-        locationId: run.workspace_location_id,
-        from: gitBefore,
-        to: gitAfter,
-        byRun: run.id,
-      });
-    }
+    await tx.query(
+      `UPDATE runs
+          SET output_json = jsonb_set(
+                CASE WHEN jsonb_typeof(output_json) = 'object' THEN output_json ELSE '{}'::jsonb END,
+                '{workspace_after}', $3::jsonb, true),
+              updated_at = now()
+        WHERE space_id = $1 AND id = $2`,
+      [run.space_id, run.id, JSON.stringify(workspaceAfter)],
+    );
   }
 
   /**
@@ -658,17 +631,11 @@ interface RunForUpload {
   owner_user_id: string | null;
   project_id: string | null;
   project_folder_id: string | null;
-  /** The Conversation this Run belongs to, when it is a Conversation turn. */
-  session_id?: string | null;
   /** The Location it executed in; null for a managed workspace. */
   workspace_location_id?: string | null;
-  /** Whether that Location is on the host that is uploading, not merely the Run's profile. */
-  location_on_host?: boolean;
 }
 
 const MAX_DIFF_BYTES = 1_048_576;
-/** `conversation_execution_contexts.last_run_git_branch` is `varchar(256)`. */
-const MAX_GIT_BRANCH_LENGTH = 256;
 const MAX_OUTPUT_FILE_BYTES = 2_097_152;
 const MAX_OUTPUT_FILES = 20;
 

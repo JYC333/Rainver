@@ -10,7 +10,7 @@ import { acpRuntimeContextPromptBlocks } from "./acpRuntimeContextPrompt.js";
 import { RUN_QUIET_STATUS, stallTimeoutSeconds } from "./stallTimeout.js";
 import { RUN_TIMED_OUT_ERROR_CODE } from "./runTimeLimit.js";
 import { classifyRuntimeFailure } from "./retryPolicy.js";
-import { workSkillPromptPointer, workSkillPromptReminder } from "../capabilities/workSkill.js";
+import { workSkillPromptPointer } from "../skills/workSkill.js";
 import { PgRunToolIdentityRepository } from "./runToolIdentityRepository.js";
 import { assembleRunInputEnvelope } from "./runInputEnvelope.js";
 import { CliRenderError, renderCliCommand } from "./cliCommandRendering.js";
@@ -554,15 +554,13 @@ async function runRemoteHostCliAdapter(
     renewal.unref?.();
     leases.push(() => clearInterval(renewal));
     // An empty prompt stays empty. A pointer on its own would start a turn
-    // nobody asked for.
+    // nobody asked for. A resumed vendor session already holds the pointer
+    // from its first turn and is sent nothing about it again.
     // The daemon substitutes the placeholder with the file's absolute path on
     // that machine (only it knows one); an unexpanded `$RAINVER_SKILL_PATH`
     // is a path a read_file tool cannot open.
-    if (prompt) {
-      // A delta Delivery continues a session that already holds the full pointer.
-      const pointer = input.invocation_delivery?.mode === "delta"
-        ? workSkillPromptReminder(WORK_SKILL_PATH_PLACEHOLDER)
-        : workSkillPromptPointer(WORK_SKILL_PATH_PLACEHOLDER, workSurface.options);
+    if (prompt && !input.resume_session_id) {
+      const pointer = workSkillPromptPointer(WORK_SKILL_PATH_PLACEHOLDER, workSurface.options);
       if (input.invocation_delivery) supplementalInstructions.push(pointer);
       else prompt = `${prompt}\n\n${pointer}`;
     }
@@ -879,6 +877,12 @@ async function runRemoteHostCliAdapter(
         acp_turns: protocolResult.acp_prompt_count ?? null,
         occupancy_used: protocolResult.context_window?.used ?? null,
         occupancy_size: protocolResult.context_window?.size ?? null,
+        usage_updates: protocolResult.usage_updates?.count ?? null,
+        usage_updates_used_total: protocolResult.usage_updates?.used_total ?? null,
+        // Whether this turn continued the thread's vendor session or opened
+        // one: the only continuity fact the Usage page needs now that the
+        // CLI owns the conversation.
+        resumed_session: Boolean(input.resume_session_id) && !resumedSessionInvalid,
       },
     } : {}),
     // Which Skill text this run was given. The Skill changes what an agent

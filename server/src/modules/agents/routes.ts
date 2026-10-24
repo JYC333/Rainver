@@ -26,7 +26,6 @@ import {
   ConversationTurnInProgressError,
   PgConversationRuntimeSessionRepository,
 } from "../sessions/conversationRuntimeSessionRepository.js";
-import { removeConversationRuntimeState } from "../runs/conversationRuntimeState.js";
 import {
   PgRunRepository,
   RunCreateValidationError,
@@ -49,7 +48,6 @@ import { PgAgentChatRepository, PgAgentRepository } from "./repository.js";
 import { isLocalCliRuntimeAdapter } from "../runtimeAdapters/index.js";
 import { resolveContentCreationContext } from "../access/creationContext.js";
 import { prepareHostConversationDispatch } from "../agentGroups/service.js";
-import { renderAgentIdentityPrompt } from "../agentGroups/agentIdentityPrompt.js";
 import { TERMINAL_RUN_STATUSES } from "../runs/orchestrationResults.js";
 import { assertProjectReadable, assertProjectWriterForMutation } from "../projects/access.js";
 import { requireSpaceOwnerOrAdmin } from "../routeUtils/access.js";
@@ -75,7 +73,6 @@ import { conversationToolGrantInput } from "../systemActions/scenarioToolAllowan
 import { ConversationInputError, ConversationInputService } from "../sessions/conversationInputService.js";
 import { ConversationInputCapabilityError, assertConversationInputCapabilities, assertConversationInputResourceTools } from "../sessions/conversationInputCapabilities.js";
 import { PgConversationExecutionContextRepository } from "../sessions/executionContextRepository.js";
-import { headMovedByConversationRun } from "../sessions/conversationGitGate.js";
 import type { RunGitSnapshot } from "../runs/contractSnapshot.js";
 import { conversationRetryFingerprint, requireConversationIdempotencyKey, withConversationRetryIdempotency } from "../sessions/conversationRetry.js";
 
@@ -95,15 +92,12 @@ interface AgentChatUnitOfWork {
     | "createSession"
     | "addMessage"
     | "attachRunToUserMessage"
-  > & Partial<Pick<PgSessionRepository, "listMessages" | "appendRetryRunToUserMessage" | "messageById">>;
+  > & Partial<Pick<PgSessionRepository, "appendRetryRunToUserMessage" | "messageById">>;
   backends: Pick<
     PgConversationBackendRepository,
     "resolveBinding"
   >;
-  runtimeSessions: Pick<
-    PgConversationRuntimeSessionRepository,
-    "claimTurn" | "prepare"
-  >;
+  runtimeSessions: Pick<PgConversationRuntimeSessionRepository, "claimTurn">;
   runs: Pick<PgRunRepository, "createQueuedRun"> & Partial<Pick<PgRunRepository, "getVisibleRun">>;
   hostThreads?: Pick<PgHostThreadRepository, "recordDirectDispatch">;
   jobs: {
@@ -125,7 +119,6 @@ interface AgentChatServices extends AgentChatUnitOfWork {
 
 interface PreparedChatRun {
   run_id: string;
-  retired_runtime_state_keys: string[];
   host_thread_id?: string;
 }
 
@@ -1105,16 +1098,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           });
         }
 
-        const history = hostDispatch && transaction.sessions.listMessages
-          ? (await transaction.sessions.listMessages(
-              creation.spaceId,
-              identity.userId,
-              session.id,
-              40,
-              0,
-            )) ?? []
-          : [];
-
         const prepared = await prepareChatRun(transaction, {
           agentId: agent.id,
           agentVersionId: agent.current_version_id!,
@@ -1129,22 +1112,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           backend,
           sessionConfig,
           hostDispatch,
-          hostPromptContext: hostDispatch
-            ? [
-              // The same identity block the Room turn sends: role, then what
-              // the Agent has become, then what it learned where the audience
-              // already reached — which in a direct chat is this one person.
-              // `transaction.db` is non-null wherever `hostDispatch` is: the
-              // branch that builds one rejects with a 503 without it.
-              await renderAgentIdentityPrompt(transaction.db!, {
-                spaceId: creation.spaceId,
-                agentId: agent.id,
-                roomId: null,
-                directUserId: identity.userId,
-              }),
-              renderDirectHostPrompt(history, userMessage.id),
-            ].filter(Boolean).join("\n\n") || null
-            : null,
         });
         const linked = await transaction.sessions.attachRunToUserMessage({
           space_id: creation.spaceId,
@@ -1220,18 +1187,8 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
           runId: prepared.run_id,
           userMessageId: userMessage.id,
           backend: publicConversationBackend(backend),
-          retiredRuntimeStateKeys: prepared.retired_runtime_state_keys,
         };
       });
-      await Promise.allSettled(
-        accepted.retiredRuntimeStateKeys.map((stateKey) =>
-          removeConversationRuntimeState({
-            rainver_home: context.config.rainverHome,
-            sandbox_root: context.config.sandboxRoot,
-            state_key: stateKey,
-          })
-        ),
-      );
       return reply.code(202).send(
         protocol.ChatTurnAcceptedSchema.parse({
           schema_version: "chat_turn_accepted.v1",
@@ -1372,13 +1329,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               || (original.project_folder_id ?? null) !== (hostDispatch?.project_folder_id ?? null)) {
               throw new ChatContextError("Retry context needs review: the original Host workspace is no longer pinned", 409);
             }
-            const originalGit = recordValue(recordValue(original.contract_snapshot_json)?.git_snapshot);
-            if (originalGit && typeof originalGit.observed_at === "string" && gitSnapshotChanged(originalGit, hostDispatch?.git_snapshot ?? unavailableGitSnapshot())) {
-              throw new ChatContextError("Retry context needs review: the original Git workspace has changed", 409);
-            }
-            const history = transaction.sessions.listMessages
-              ? (await transaction.sessions.listMessages(identity.spaceId, identity.userId, session.id, 40, 0)) ?? []
-              : [];
             await transaction.runtimeSessions.claimTurn({
               space_id: identity.spaceId,
               session_id: session.id,
@@ -1399,17 +1349,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
               sessionConfig,
               hostDispatch,
               retryOfRunId: original.id,
-              hostPromptContext: hostDispatch
-                ? [
-                  await renderAgentIdentityPrompt(transaction.db!, {
-                    spaceId: identity.spaceId,
-                    agentId: agent.id,
-                    roomId: null,
-                    directUserId: identity.userId,
-                  }),
-                  renderDirectHostPrompt(history, originalMessage.id),
-                ].filter(Boolean).join("\n\n") || null
-                : null,
             });
             if (!await appendRetryRunToUserMessage({
               space_id: identity.spaceId,
@@ -1568,7 +1507,6 @@ async function prepareChatRun(
     backend: ResolvedConversationBackend;
     sessionConfig: ResolvedSessionConfig;
     hostDispatch?: PreparedHostConversationDispatch | null;
-    hostPromptContext?: string | null;
     retryOfRunId?: string | null;
   },
 ): Promise<PreparedChatRun> {
@@ -1602,9 +1540,10 @@ async function prepareChatRun(
       project_id: input.projectId ?? null,
       has_input_resources: input.hasInputResources,
     }),
-    prompt: input.hostPromptContext
-      ? `${input.hostPromptContext}\n\n[Assigned direct-chat message]\n${input.message}`
-      : input.message,
+    // The message is the turn's current input, delivered by the Runtime
+    // Context Gateway; a direct chat has no Room prompt of its own, and the
+    // Agent's instruction reaches the session as a standing item.
+    prompt: input.message,
     model_override_json: {
       conversation_backend: {
         schema_version: "conversation_backend.v1",
@@ -1646,11 +1585,6 @@ async function prepareChatRun(
 
   return {
     run_id: created.id,
-    retired_runtime_state_keys: Array.from(
-      new Set([
-        input.backend.retired_runtime_state_key,
-      ].filter((stateKey): stateKey is string => Boolean(stateKey))),
-    ),
     ...(input.hostDispatch ? { host_thread_id: input.hostDispatch.host_thread.id } : {}),
   };
 }
@@ -1699,37 +1633,6 @@ async function ensureDirectHostGitContext(input: {
       || context.primary_workspace_location_id !== locationId) {
       throw new ChatContextError("The direct conversation execution context is pinned to a different Host workspace", 409);
     }
-    const baseline = {
-      source: primaryMode === "managed" ? "managed_workspace" : "workspace_location",
-      workspace_location_id: context.primary_workspace_location_id,
-      branch: context.git_branch,
-      commit_sha: context.git_head,
-      execution_ready: context.git_execution_ready,
-    };
-    const snapshot = input.hostDispatch.git_snapshot;
-    const changed = Boolean(context.git_observed_at) && gitSnapshotChanged(baseline, snapshot);
-    // A HEAD this Conversation's own last Run moved advances the baseline in
-    // place; only branch and commit may differ for that, never the Location
-    // or its readiness (sessions/conversationGitGate.ts).
-    const advance = changed
-      && headMovedByConversationRun(context, snapshot)
-      && !gitSnapshotChanged({ ...baseline, branch: snapshot.branch, commit_sha: snapshot.commit_sha }, snapshot);
-    if (changed && !advance) {
-      throw new ChatContextError("Git branch or commit changed after this Conversation was initialized; refresh the execution context before sending", 409);
-    }
-    if (!context.git_observed_at || advance) {
-      await repository.refreshGitBaseline({
-        spaceId: input.spaceId,
-        sessionId: input.session.id,
-        git: {
-          branch: input.hostDispatch.git_snapshot.branch,
-          commitSha: input.hostDispatch.git_snapshot.commit_sha,
-          dirty: input.hostDispatch.git_snapshot.dirty,
-          executionReady: input.hostDispatch.git_snapshot.execution_ready,
-          observedAt: input.hostDispatch.git_snapshot.observed_at,
-        },
-      });
-    }
     return;
   }
   await repository.initialize({
@@ -1750,13 +1653,6 @@ async function ensureDirectHostGitContext(input: {
   });
 }
 
-function gitSnapshotChanged(expected: Record<string, unknown>, current: RunGitSnapshot): boolean {
-  return (expected.source !== undefined && expected.source !== current.source)
-    || (expected.workspace_location_id !== undefined && (expected.workspace_location_id ?? null) !== current.workspace_location_id)
-    || (expected.branch !== undefined && (expected.branch ?? null) !== current.branch)
-    || (expected.commit_sha !== undefined && (expected.commit_sha ?? null) !== current.commit_sha)
-    || (expected.execution_ready !== undefined && expected.execution_ready !== current.execution_ready);
-}
 
 
 
@@ -1805,19 +1701,6 @@ function publicConversationBackend(
   };
 }
 
-function renderDirectHostPrompt(messages: MessageOut[], currentMessageId: string): string | null {
-  const lines = messages
-    .filter((message) => message.id !== currentMessageId)
-    .slice(-40)
-    .map((message) => {
-      const speaker = message.role === "assistant"
-        ? "Agent"
-        : message.role === "system" ? "Rainver" : "User";
-      return `${speaker}: ${message.content}`;
-    });
-  return lines.length > 0 ? ["[Recent direct-chat history]", ...lines].join("\n") : null;
-}
-
 async function resolveIdentity(
   context: ModuleContext,
   request: FastifyRequest,
@@ -1861,4 +1744,4 @@ function assistantSettingsTarget(
   const projectId = typeof raw === "string" && raw.trim() ? raw.trim() : null;
   return { spaceId: identity.spaceId, projectId };
 }
-import { assertSelectedSkillBindings, assertSelectedSkillsForRecipients } from "../capabilities/selectedSkills.js";
+import { assertSelectedSkillBindings, assertSelectedSkillsForRecipients } from "../skills/selectedSkills.js";

@@ -59,10 +59,6 @@ interface BindingRow {
   runtime_profile_id: string;
   runtime_key: string;
   backend_mode: "runtime_native" | "model_provider";
-  runtime_state_key: string;
-  runtime_session_id: string | null;
-  runtime_context_fingerprint: string | null;
-  runtime_message_cursor_id?: string | null;
   model_name: string | null;
   model_provider_id: string | null;
   runtime_config_json: Record<string, unknown>;
@@ -77,10 +73,6 @@ export interface ResolvedConversationBackend extends ConversationBackendBinding 
   /** Present on a persisted binding. A constructed value may omit it. */
   agent_kind?: string;
   binding_id: string;
-  runtime_state_key: string;
-  runtime_session_id: string | null;
-  runtime_context_fingerprint: string | null;
-  runtime_message_cursor_id?: string | null;
   model_name: string | null;
   model_provider_id: string | null;
   runtime_config_json: Record<string, unknown>;
@@ -89,7 +81,6 @@ export interface ResolvedConversationBackend extends ConversationBackendBinding 
   workspace_location_id: string | null;
   workspace_mode?: "location" | "managed" | null;
   runtime_installation: string | null;
-  retired_runtime_state_key: string | null;
   session_config_options?: RuntimeSessionConfigOption[];
   prompt_capabilities?: RuntimePromptCapabilities | null;
   /** Git snapshot captured with the backend's current execution target. */
@@ -447,7 +438,7 @@ export class PgConversationBackendRepository {
       runtime_profile_id: option.runtime_profile_id,
       runtime_key: option.runtime_key,
     };
-    const resolved = await this.upsertBinding(input, binding, existing?.runtime_state_key ?? null);
+    const resolved = await this.upsertBinding(input, binding);
     return { ...resolved, session_config_options: option.session_config_options ?? [], prompt_capabilities: option.prompt_capabilities ?? null };
   }
 
@@ -491,8 +482,6 @@ export class PgConversationBackendRepository {
               binding.runtime_profile_id,
               binding.runtime_key_snapshot AS runtime_key,
               binding.backend_mode_snapshot AS backend_mode,
-              binding.runtime_state_key, binding.runtime_session_id,
-              binding.runtime_context_fingerprint, binding.runtime_message_cursor_id,
               binding.model_name_snapshot AS model_name,
               binding.model_provider_id_snapshot AS model_provider_id,
               binding.runtime_config_snapshot_json AS runtime_config_json,
@@ -516,9 +505,7 @@ export class PgConversationBackendRepository {
       [spaceId, userId, sessionId, agentId],
     );
     const row = result.rows[0];
-    return row
-      ? { ...projectRuntimeProfileSnapshot(row), retired_runtime_state_key: null }
-      : null;
+    return row ? projectRuntimeProfileSnapshot(row) : null;
   }
 
   private async findConversationResolvedBinding(
@@ -533,8 +520,6 @@ export class PgConversationBackendRepository {
               binding.runtime_profile_id,
               binding.runtime_key_snapshot AS runtime_key,
               binding.backend_mode_snapshot AS backend_mode,
-              binding.runtime_state_key, binding.runtime_session_id,
-              binding.runtime_context_fingerprint, binding.runtime_message_cursor_id,
               binding.model_name_snapshot AS model_name,
               binding.model_provider_id_snapshot AS model_provider_id,
               binding.runtime_config_snapshot_json AS runtime_config_json,
@@ -589,9 +574,7 @@ export class PgConversationBackendRepository {
       [spaceId, sessionId, agentId],
     );
     const row = result.rows[0];
-    return row
-      ? { ...projectRuntimeProfileSnapshot(row), retired_runtime_state_key: null }
-      : null;
+    return row ? projectRuntimeProfileSnapshot(row) : null;
   }
 
   private async upsertBinding(
@@ -602,10 +585,8 @@ export class PgConversationBackendRepository {
       agent_id: string;
     },
     binding: ConversationBackendBinding,
-    previousStateKey: string | null,
   ): Promise<ResolvedConversationBackend> {
     const now = new Date().toISOString();
-    const runtimeStateKey = randomUUID();
     return withQueryableTransaction(this.db, async (db) => {
       const profile = await loadRuntimeProfileSnapshot(db, {
         spaceId: input.space_id,
@@ -620,10 +601,10 @@ export class PgConversationBackendRepository {
             runtime_key_snapshot, backend_mode_snapshot,
             model_name_snapshot, model_provider_id_snapshot,
             runtime_config_snapshot_json, runtime_policy_snapshot_json,
-            runtime_state_key, created_at, updated_at
+            created_at, updated_at
          ) VALUES (
             $1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::varchar, $6::varchar,
-            $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::varchar, $14::timestamptz, $14::timestamptz
+            $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::timestamptz, $13::timestamptz
          )
          ON CONFLICT ON CONSTRAINT uq_session_conversation_backends_session_agent
          DO UPDATE SET
@@ -637,31 +618,6 @@ export class PgConversationBackendRepository {
            session_config_json = CASE
              WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
              THEN session_conversation_backends.session_config_json ELSE NULL
-           END,
-           runtime_state_key = CASE
-             WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
-             THEN session_conversation_backends.runtime_state_key
-             ELSE EXCLUDED.runtime_state_key
-           END,
-           runtime_session_id = CASE
-             WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
-             THEN session_conversation_backends.runtime_session_id
-             ELSE NULL
-           END,
-           runtime_context_fingerprint = CASE
-             WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
-             THEN session_conversation_backends.runtime_context_fingerprint
-             ELSE NULL
-           END,
-           runtime_message_cursor_id = CASE
-             WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
-             THEN session_conversation_backends.runtime_message_cursor_id
-             ELSE NULL
-           END,
-           runtime_session_updated_at = CASE
-             WHEN session_conversation_backends.runtime_profile_id = EXCLUDED.runtime_profile_id
-             THEN session_conversation_backends.runtime_session_updated_at
-             ELSE NULL
            END,
            updated_at = EXCLUDED.updated_at
          RETURNING id AS binding_id`,
@@ -678,7 +634,6 @@ export class PgConversationBackendRepository {
           profile.model_provider_id,
           JSON.stringify(profile.runtime_config_json),
           JSON.stringify(profile.runtime_policy_json),
-          runtimeStateKey,
           now,
         ],
       );
@@ -691,13 +646,7 @@ export class PgConversationBackendRepository {
         db,
       );
       if (!resolved) throw new Error("conversation backend binding was not found after persistence");
-      return {
-        ...resolved,
-        retired_runtime_state_key:
-          previousStateKey && previousStateKey !== resolved.runtime_state_key
-            ? previousStateKey
-            : null,
-      };
+      return resolved;
     });
   }
 }

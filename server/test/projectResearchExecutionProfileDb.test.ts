@@ -5,13 +5,6 @@ import { useTestDatabase } from "./support/testDatabase.js";
 import { ProjectResearchExecutionProfileService } from "../src/modules/projectResearch/executionProfileService.js";
 import type { SpaceUserIdentity } from "../src/modules/routeUtils/common.js";
 
-// The system-managed "Auto Research" agent's capabilities_json is fixed on
-// its current version at first provisioning, with no versioned-edit path.
-// Do not leave a later required capability off an agent that already has a
-// version. Every run of that stage then fails routing with "No runtime
-// candidate passed routing hard filters." resolve() writes the capability
-// onto the current row.
-
 const SPACE = "11111111-1111-4111-8111-111111111111";
 const OWNER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const PROVIDER = "99999999-9999-4999-8999-999999999999";
@@ -41,8 +34,8 @@ beforeAll(async () => {
   );
 });
 
-describe("ProjectResearchExecutionProfileService managed agent capabilities (real Postgres)", () => {
-  it("provisions the full capability set for a new agent and backfills a pre-existing one missing newer capabilities", async () => {
+describe("ProjectResearchExecutionProfileService execution profile (real Postgres)", () => {
+  it("provisions and reuses an Agent without requiring research stage capabilities", async () => {
     if (!db.available) return;
     const config = loadConfig({
       SERVER_DATABASE_URL: db.connectionUri,
@@ -61,28 +54,11 @@ describe("ProjectResearchExecutionProfileService managed agent capabilities (rea
       [agentRow.rows[0]!.current_version_id],
     );
     const freshlyCreated = await versionRow();
-    expect(freshlyCreated.rows[0]!.capabilities_json).toEqual(expect.arrayContaining([
-      "research.source_collect", "research.source_summarize", "research.evidence_extract",
-      "research.brief_synthesize", "research.idea_generate", "research.monitor_compare",
-    ]));
-    // ADR 0022: the bounded notebook entries are `provider_task` Runs that
-    // route to no Agent, so their capabilities are not required here.
-    expect(freshlyCreated.rows[0]!.capabilities_json).not.toContain("research.adhoc_analyze");
-    expect(freshlyCreated.rows[0]!.capabilities_json).not.toContain("research.ask");
-
-    // A space whose capability list does not include research.monitor_compare.
-    await db.pool.query(
-      `UPDATE agent_versions SET capabilities_json=$2::jsonb WHERE id=$1`,
-      [agentRow.rows[0]!.current_version_id, JSON.stringify([
-        "research.source_collect", "research.source_summarize", "research.evidence_extract",
-        "research.brief_synthesize", "research.idea_generate",
-      ])],
-    );
-
+    expect(freshlyCreated.rows[0]!.capabilities_json).toEqual([]);
+    // Reusing a managed profile does not invent or backfill research stage
+    // permissions. Stages are owned by the pipeline, not runtime hard filters.
     await service.resolve(identity, {});
-    const healed = await versionRow();
-    expect(healed.rows[0]!.capabilities_json).toEqual(expect.arrayContaining([
-      "research.monitor_compare",
-    ]));
+    expect((await versionRow()).rows[0]!.capabilities_json).toEqual([]);
+
   });
 });

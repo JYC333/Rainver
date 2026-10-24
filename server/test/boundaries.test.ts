@@ -23,7 +23,7 @@ const ALLOWED_BARE = new Set(["fastify", "fast-xml-parser", "undici", "yaml", "z
  * beneath it.
  */
 const ALLOWED_BARE_BY_FILE = new Map<string, string | string[]>([
-  ["fflate", join("src", "modules", "capabilities", "skillArchive.ts")],
+  ["fflate", join("src", "modules", "skills", "skillArchive.ts")],
   ["pg", join("src", "db")],
   ["@earendil-works/pi-ai", join("src", "modules", "providers", "invocation", "piAiChat.ts")],
   ["unpdf", join("src", "modules", "sources", "pdfExtract.ts")],

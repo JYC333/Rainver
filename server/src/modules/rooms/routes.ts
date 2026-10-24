@@ -24,6 +24,8 @@ type RoomServicePort = Pick<
   | "addAgentPreset"
   | "removeAgent"
   | "resetAgentContext"
+  | "summarizeAgentContext"
+  | "restartFromSummary"
   | "inviteUser"
   | "listInvitations"
   | "listPendingApprovals"
@@ -34,7 +36,6 @@ type RoomServicePort = Pick<
   | "listConversations"
   | "createConversationDraft"
   | "listMessages"
-  | "getConversationSummary"
   | "sendMessage"
   | "sendOrQueueMessage"
   | "withdrawQueuedMessage"
@@ -200,6 +201,26 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
+  app.post("/api/v1/rooms/:roomId/agents/:agentId/summarize-context", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await service(context).summarizeAgentContext(identity, roomId(request), agentId(request)));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
+  app.post("/api/v1/rooms/:roomId/agents/:agentId/restart-from-summary", async (request, reply) => {
+    const identity = await resolveIdentity(context.config, request, reply);
+    if (!identity) return reply;
+    try {
+      return reply.send(await service(context).restartFromSummary(identity, roomId(request), agentId(request)));
+    } catch (error) {
+      return sendRoomError(reply, error);
+    }
+  });
+
   app.get("/api/v1/rooms/:roomId/invitations", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
@@ -322,23 +343,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
             parsePage(query(request), 200),
           ),
         );
-      } catch (error) {
-        return sendRoomError(reply, error);
-      }
-    },
-  );
-
-  app.get(
-    "/api/v1/rooms/:roomId/conversations/:sessionId/summary",
-    async (request, reply) => {
-      const identity = await resolveIdentity(context.config, request, reply);
-      if (!identity) return reply;
-      try {
-        return reply.send(await service(context).getConversationSummary(
-          identity,
-          roomId(request),
-          sessionId(request),
-        ));
       } catch (error) {
         return sendRoomError(reply, error);
       }

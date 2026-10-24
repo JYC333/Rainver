@@ -91,8 +91,12 @@ over-permissive security UI.
 **Mitigations**:
 - New capability code must flow through review-gated workspace changes.
 - The read-only `catalog` module reads manifests only from `catalog/capabilities/` (not agent-writable at runtime).
-- `capability_versions.status` includes `draft`, `proposed`, `testing`, `available`, `disabled`, and `archived`. Enablement goes through a proposal. Applying enable writes the chosen version to `available`. There is no `CapabilityTest` table and no test-pass gate before that write.
-- These controls govern Rainver capability installation, not files an ACP
+- External Skills are immutable original packages, risk-scanned at import and
+  delivered only after review and scope-binding approval. Package declarations
+  of tools, hooks, scripts or MCP servers register nothing and grant no callable
+  authority; only the System Action registry and gateway can grant it. The old
+  capability tables and install/update/enable/disable appliers are removed.
+- These controls govern Rainver Skill delivery and Tool authority, not files an ACP
   runtime writes directly. A runtime can create scripts in a read-write
   workspace; the built-in Host's namespace and the paired Host's machine-owner
   trust boundary constrain what those scripts can reach.

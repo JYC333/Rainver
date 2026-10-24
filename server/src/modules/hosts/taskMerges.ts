@@ -14,7 +14,6 @@ import { agentGitIdentity } from "../runs/agentGitIdentity.js";
 import { PgVerificationEngine, type WorkspaceVerificationOutcome } from "../runs/verification/engine.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import type { VerificationTarget } from "../runs/verification/types.js";
-import { recordConversationHeadMove } from "../sessions/conversationGitGate.js";
 import { PgSessionRepository } from "../sessions/repository.js";
 import { executionRunSql, runInProgressSql } from "../tasks/executionRuns.js";
 import { sharedHostConnectionRegistry, type HostConnectionRegistry, type TaskBranchReply } from "./connectionRegistry.js";
@@ -651,7 +650,6 @@ async function finish(db: Queryable, deps: TaskMergeDeps, context: MergeContext)
         [merge.id, merge.space_id, reply.merged_commit],
       );
       context.merge = landed.rows[0] ?? merge;
-      await advanceOriginConversationGit(db, context, reply.merged_commit);
       await announce(db, context, "merged", {});
       return { status: "merged", commit: reply.merged_commit };
     }
@@ -685,31 +683,6 @@ async function finish(db: Queryable, deps: TaskMergeDeps, context: MergeContext)
 function mainMovesOf(merge: TaskMergeRow): number {
   const moves = merge.detail_json.main_moved;
   return typeof moves === "number" && Number.isFinite(moves) ? moves : 0;
-}
-
-/**
- * A fast-forward in the checkout moves its HEAD, and the Room Git gate
- * refuses a Conversation whose Primary Location's HEAD moved under it. The
- * conversation the Task came from — the one told it merged — takes the move
- * as its own (`recordConversationHeadMove`): its last-Run HEAD becomes the
- * merged commit, exactly as a Conversation Run's own commit is recorded, so
- * its next send advances the baseline. Only when that conversation already
- * accepted the main branch at `onto_commit`: any other state there is
- * someone else's move, and still the person's to refresh. Other conversations
- * on the Location were not told and keep the gate.
- */
-async function advanceOriginConversationGit(db: Queryable, context: MergeSubject, mergedCommit: string | null): Promise<void> {
-  const { merge, task } = context;
-  if (!task.source_run_id || !mergedCommit || !merge.main_branch || !merge.onto_commit) return;
-  const sessionId = await originSessionId(db, context);
-  if (!sessionId) return;
-  await recordConversationHeadMove(db, {
-    spaceId: merge.space_id,
-    sessionId,
-    locationId: merge.workspace_location_id,
-    from: { branch: merge.main_branch, head: merge.onto_commit },
-    to: { branch: merge.main_branch, head: mergedCommit },
-  });
 }
 
 async function handConflictToPerson(

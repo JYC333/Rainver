@@ -167,6 +167,11 @@ describe("projectResearchSynthesisOnlyExecutionDb", () => {
            true,'["json"]'::jsonb,'json',false,$6,$6,'space_shared',$7,'high')`,
         [archiveArtifactId, SPACE, synthesizeRun, PROJECT, JSON.stringify(validReport), now, OWNER],
       );
+      // Stage tags survive the deletion without becoming routing requirements.
+      expect((await db.pool.query(`SELECT capability_id, capabilities_json FROM runs WHERE id=$1`, [synthesizeRun])).rows[0])
+        .toEqual({ capability_id: "research.brief_synthesize", capabilities_json: [] });
+      expect((await db.pool.query(`SELECT capabilities_json FROM agent_versions WHERE id=$1`, [VERSION])).rows[0]?.capabilities_json)
+        .toEqual([]);
       const runs = await dispatchSynthesisRun(synthesizeRun, now);
       await runs.markRunTerminal({
         run_id: synthesizeRun, space_id: SPACE, status: "succeeded",

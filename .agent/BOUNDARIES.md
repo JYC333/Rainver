@@ -283,18 +283,22 @@ launcher/control panel. See [ADR 0005](decisions/0005-desktop-runtime.md).
 
 ---
 
-## Capability Boundaries
+## Skill, Tool And Workflow Boundaries
 
-**B20** — Capability changes require the full lifecycle: draft → proposed → testing → approval → enabled. Self-evolution (an agent modifying its own capabilities) must go through this flow via capability proposals.
+**B20** — Imported Skill review and scoped enablement use the canonical
+proposal appliers. Package bytes are immutable; local overlays cannot grant
+trust or bypass binding approval. New content requires a new reviewed package.
 
-**B21** — Capabilities are code-defined (manifest + code + prompts + tests), not only prompt-defined. A capability without tests or a manifest is incomplete.
+**B21** — Tools / System Actions are code-owned operations with registered
+contracts, gates and tests. Procedural Skill text cannot register or authorize
+an operation; Workflows enforce process order separately.
 
 **B21A** — Open Skill imports are untrusted external packages whose approved,
 immutable snapshot remains the source of truth for that package's procedural
 content. Rainver may fetch, inventory, hash, risk-scan, review, bind, pin,
 and deliver package files, but it must not canonically re-represent their
 instructions, execute scripts, install dependencies, load server/plugin code,
-write active memory, or auto-enable a capability. Vendor declarations of tools,
+write active memory, or auto-enable a Skill binding. Vendor declarations of tools,
 hooks, scripts, dependencies, or MCP servers are requests only and grant no
 callable or execution authority.
 
@@ -302,9 +306,9 @@ callable or execution authority.
 ACP runtimes are generated artifacts, not a second content authority.
 Rainver owns package provenance and snapshot identity, trust and policy,
 scope/Agent binding, pinned-version selection, runtime compatibility, Runtime
-Context Delivery authorization, and audit. The normalized conversion,
-CapabilityDefinition, profile, binding, and rendering paths are not the skill
-model. Do not extend them as one.
+Context Delivery authorization, and audit. Runtime Context resolves the original
+Skill library files through one selection path. Adapter materialization must
+retain their identity and authorized Delivery references.
 
 ---
 
@@ -518,14 +522,16 @@ account instead of the subscription this profile was given.
 
 **B51** — Official optional modules are gated at the route-handler/contribution level via the plugin guard (`requireOfficialPluginEnabled()` or `ctx.http.pluginGuard()`), not by conditionally registering core server modules. Backend routes for bundled official plugins are mounted by `PluginHost`; behavior is gated by DB-backed plugin enablement state. Plugin job handlers and proposal appliers must fail closed when disabled, and scheduled tasks must fan out only to enabled scopes. Frontend entries with `source: 'official_plugin'` must overlay their `enabled`/`visible` state from `GET /api/v1/plugins/effective`, not from static values.
 
-**B52** — Product capabilities (`server/src/modules/capabilities/`, `/api/v1/capability-definitions`) and Official Optional Modules (`/api/v1/plugins`) are distinct and must not be conflated in code, comments, or API design. Catalog YAML under `catalog/capabilities/` is diagnostic. Do not execute it. Official Optional Modules are product feature packages.
+**B52** — The Skill library (`server/src/modules/skills/`) and Official
+Optional Modules (`/api/v1/plugins`) are distinct. Catalog YAML under
+`catalog/capabilities/` is diagnostic and must not be executed. A product plugin
+is a feature package; importing procedural content never loads plugin code.
 
-**B52A** — Open Skill, Capability, Capability Pack, Runtime Skill, and Product
-Plugin are distinct concepts. External Open Skill packages can be normalized
-into capability candidates; Capability Packs group capabilities; Runtime Skills
-are generated runtime bindings; Product Plugins are optional product feature
-packages. An enforced process is a Workflow Definition, which is
-execution-engine data rather than a capability grouping.
+**B52A** — Skill, Tool / System Action, and Workflow have separate authority:
+a Skill is procedural content; a Tool is a registered, gated operation; a
+Workflow is a server-enforced process. Research stage tags are pipeline-owned
+identifiers, not Skills or callable registrations. The required Work Skill is
+a code contract, not an optional library package.
 
 **B53** — Plugin settings and enablement state must be scoped exactly as declared in the descriptor's `scope` field: `space` uses `(plugin_id, space_id)` and requires space owner/admin for writes; `user` uses `(plugin_id, user_id)` and follows the user across spaces. Space-scoped plugin state for space A must never be readable or writable in the context of space B, and user-scoped plugin state must never be readable or writable by another user. The plugin guard must check both plugin existence and descriptor scope.
 
@@ -691,13 +697,22 @@ code.
 
 ## Open-Source Boundary
 
-**B70** — (ADR 0017) A write is gated behind per-instance human approval only when it is self-modification, a long-term belief that widens reach, a real-checkout change, an exposure change, money above a bounded default, a credential or deployment change, or the Project's direction — and the action's registration names which. Every other Project-internal write is governed by trigger origin — the Run's verified root origin through delegation, graph and continuation hops (`effectiveRunTrigger`; a continuation inherits only within its cause's budget, an unverifiable chain is never `manual`) — (`manual` executes; anything unattended is `require_approval`), with one exception — an Agent writing its own persona on an `agent`-scope entry, a first one as much as a revision, which is governed instead by ADR 0003 §5 and named in B10 — and by bounds set before the work runs (fan-out ≤ 5 per turn as an execution ceiling, follow-up Tasks applied for the turn included, with the narrower conversational pacing of ADR 0019; spend at the pipeline's bounded default, the remainder offered once), with review-after: every such write is in Updates with undo, and attention carries only what a person must decide. A default may flip from proposal to direct only after the review it displaces exists.
+**B70** — (ADR 0017) A write is gated behind per-instance human approval only when it is self-modification, a long-term belief that widens reach, a real-checkout change, an exposure change, money above a bounded default, a credential or deployment change, or the Project's direction — and the action's registration names which. Every other Project-internal write is governed by trigger origin — the Run's verified root origin through delegation, graph and continuation hops (`effectiveRunTrigger`; a continuation inherits only within its cause's budget, an unverifiable chain is never `manual`) — (`manual` executes; anything unattended is `require_approval`), with one exception — an Agent writing its own persona on an `agent`-scope entry, a first one as much as a revision, which is governed instead by ADR 0003 §5 and named in B10 — and by bounds set before the work runs (Project-write fan-out ≤ 5 per turn, follow-up Tasks applied for the turn included, with the narrower conversational pacing of ADR 0019; spend at the pipeline's bounded default, the remainder offered once), with review-after: every such write is in Updates with undo, and attention carries only what a person must decide. A default may flip from proposal to direct only after the review it displaces exists.
 
 For explicitly requested sustained task collaboration, repeated handoffs to
 the same fixed specialists use the finite task-scoped budget declared by the
-original manual Room turn, rather than the ad-hoc Agent-turn ceiling. That
-budget cannot renew or widen on a continuation; it ends on task completion,
-hold, stop, lost authority, repeated child failure or exhaustion. This does
+original manual Room turn, rather than the temporary Room budget. Active
+collaboration bounds cannot change or widen. After its Task is done/cancelled,
+the coordinator may declare a new open Task and bounds in the same container,
+including on a completion turn. Holds, stop, lost authority, repeated child
+failure and exhaustion still stop the active collaboration. Temporary Room
+delegation shares a soft ceiling of 5 × max(1, delegatable roster Agents),
+excluding the coordinator, and a hard ceiling twice that; each delegation
+budgets two Agent turns, depth one. An explicit budget passed internally by the
+server overrides the default; Rooms expose no user-facing budget parameter.
+Each subgroup's hard bound can narrow, never widen, the container bound. Crossing
+soft admits and records one visible Room notice; crossing hard is policy-denied
+and audited. This does
 not raise the five-object Project-write ceiling (ADR 0017).
 
 **B22** — The project is open source. Do not put private data, real user memory, or non-shareable credentials into the source repository; see B1/B2.

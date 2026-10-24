@@ -7,7 +7,7 @@
 
 import { z } from "zod";
 import { IdSchema } from "./common.js";
-import { JsonObjectSchema } from "./capabilities.js";
+import { JsonObjectSchema } from "./common.js";
 
 export const WorkflowNodeInputBindingSchema = z
   .object({

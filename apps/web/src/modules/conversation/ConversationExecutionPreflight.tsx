@@ -341,23 +341,6 @@ function ConversationExecutionPreflightContent({
     }
   }
 
-  async function refreshGitContext(): Promise<void> {
-    if (!sessionId) return
-    setBusy(true)
-    setError(null)
-    try {
-      const nextSummary = await sessionsApi.refreshGitContext(sessionId, scope)
-      setPreflight(current => current ? { ...current, summary: nextSummary } : current)
-      onSummaryChange?.(nextSummary)
-      toast.success(t('conversation_ui.preflight.git_refreshed'))
-    } catch (cause) {
-      const message = errMsg(cause)
-      setError(message)
-      toast.error(message)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   async function mutateAttachment(action: 'attach' | 'set_access' | 'revoke', attachmentId?: string, mode?: ConversationAttachmentAccessMode): Promise<void> {
     if (!sessionId) return
@@ -437,7 +420,7 @@ function ConversationExecutionPreflightContent({
         </div>
         <div className="flex items-center gap-1">
           {initialized && <Button size="sm" variant="ghost" aria-label={t('conversation_ui.preflight.collapse')} aria-expanded="true" onClick={() => setExecutionDetailsOpen(false)}><ChevronDown className="size-3.5" /></Button>}
-          <Button size="sm" variant="ghost" aria-label={summary?.blocked_reason?.startsWith('Git branch') ? t('conversation_ui.preflight.refresh_git') : t('conversation_ui.preflight.refresh')} onClick={() => void (summary?.blocked_reason?.startsWith('Git branch') ? refreshGitContext() : reload())} disabled={loading || busy}><RefreshCw className={`size-3.5 ${loading || busy ? 'animate-spin' : ''}`} /></Button>
+          <Button size="sm" variant="ghost" aria-label={t('conversation_ui.preflight.refresh')} onClick={() => void reload()} disabled={loading || busy}><RefreshCw className={`size-3.5 ${loading || busy ? 'animate-spin' : ''}`} /></Button>
         </div>
       </div>
 
@@ -556,6 +539,16 @@ function InitializedSummary({ summary, profiles, participants }: {
               {t('conversation_ui.preflight.session_renewed')}<Link to={`/artifacts/${pinned.handoff_artifact_id}`} className="underline">{t('conversation_ui.preflight.open_handoff')}</Link>
             </div>
           ) : null}
+          {pinned.summary_artifact_id ? (
+            <div className="pl-26 text-muted-foreground">
+              {t('conversation_ui.preflight.summary_written', { tokens: formatTokens(pinned.context_tokens) })}<Link to={`/artifacts/${pinned.summary_artifact_id}`} className="underline">{t('conversation_ui.preflight.open_summary')}</Link>
+            </div>
+          ) : null}
+          {promptCacheCold(pinned) ? (
+            <div className="pl-26 text-muted-foreground">
+              {t('conversation_ui.preflight.cache_cold', { tokens: formatTokens(pinned.context_tokens) })}
+            </div>
+          ) : null}
         </div>
       )) : <SummaryRow label={t('conversation_ui.preflight.agent_cli')} value={t('conversation_ui.preflight.unavailable_value')} />}
     </div>
@@ -620,6 +613,26 @@ function AttachmentControls({ summary, locations, selectedLocationId, onLocation
 }
 
 type PinnedRuntime = ConversationExecutionSummary['runtimes'][number]
+
+/** Below this the notices stay quiet: rewriting a small session costs little. */
+const CACHE_NOTICE_MIN_TOKENS = 60_000
+
+/**
+ * Whether the vendor's prompt cache for this session has gone cold: its last
+ * Run ended longer ago than the runtime's declared cache lifetime, and the
+ * session is large enough for the rewrite to matter. A notice, never an action.
+ */
+function promptCacheCold(pinned: PinnedRuntime): boolean {
+  if (!pinned.last_run_ended_at || !pinned.prompt_cache_ttl_seconds) return false
+  if ((pinned.context_tokens ?? 0) < CACHE_NOTICE_MIN_TOKENS) return false
+  const ended = Date.parse(pinned.last_run_ended_at)
+  return Number.isFinite(ended) && Date.now() - ended > pinned.prompt_cache_ttl_seconds * 1000
+}
+
+function formatTokens(tokens: number | null | undefined): string {
+  if (tokens == null) return i18n.t('conversation_ui.preflight.unknown_tokens')
+  return tokens >= 1000 ? `${Math.round(tokens / 1000)}k` : String(tokens)
+}
 
 /** How full this Agent's vendor session is, as its runtime last reported it. */
 function sessionOccupancy(pinned: PinnedRuntime): string {

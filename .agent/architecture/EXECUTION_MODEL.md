@@ -258,8 +258,13 @@ duplicate the accuracy classification. Anthropic's
 `cache_creation_1h_input_tokens` is retained as a
 priced subset of `cache_creation_input_tokens`; it is never added a second time
 when deriving total tokens. `usage_accuracy` describes token evidence only.
-CLI Run observations aggregate internal model calls. If the runtime does not
-report a call count, the writer records zero as the numeric placeholder plus
+CLI Run observations aggregate internal model calls where the runtime's ACP
+prompt result does (`metadata_json.cli_usage.usage_scope =
+"run_attempt_aggregate"`); where it reports only its last model request
+(Codex, `usage_scope = "last_model_request"`), the buckets are that request's
+and a lower bound for the attempt, and `usage_updates_used_total` records the
+context volume the turn's `usage_update` notifications summed to. If the
+runtime does not report a call count, the writer records zero as the numeric placeholder plus
 `metadata_json.request_count_known=false`. Reads treat old `local_cli` rows
 without affirmative count evidence as unknown too; no historical rows are
 rewritten. The usage API's `request_count` sums only confirmed calls and
@@ -271,7 +276,7 @@ and transcript observations retain their existing counting contract.
 CLI observations attach numeric diagnostics and generic attempt dimensions to
 the same usage ledger: ACP requests sent (not internal model calls), runtime
 occupancy/capacity, the accepted Delivery estimate and allocation buckets,
-full/delta mode, and the reason for a full reconstruction. Attempt id, outcome,
+and whether the turn resumed the thread's vendor session. Attempt id, outcome,
 and task/delegation/handoff purpose are filterable dimensions. When the canonical
 Run attempt number is available, its number and initial/retry classification
 are retained too; a missing number is not guessed. Provider-backed
@@ -475,7 +480,9 @@ Existing Run and Proposal rows use separate nullable `*_user_id` and `*_agent_id
   Agent Profile and Host installation, launches the ACP runtime through the
   daemon, and consumes ACP events. The built-in Server Host and paired Hosts
   share this boundary. The Runtime Context Gateway Delivery is projected into
-  ACP's single user-prompt channel with semantic section labels; tool grants
+  ACP's single user-prompt channel: a follow-up that is only the person's new
+  message goes through verbatim, and section labels are added only when the
+  Delivery also carries instructions or reference material; tool grants
   remain independently enforced by the Server gateway. Persistent Host-thread
   cursor state follows the same opaque ACP session id. `runtime_native` login
   state stays on its execution Host. An eligible ModelProvider backend uses an
@@ -523,50 +530,56 @@ fan-out ceiling and bounded defaults). The implementation is
 `chargeContainer`, `containerTurns`) and `agentGroups/service.ts`
 (`chargeDelegatedChild`).
 
-- **One container per person-originated turn.** A person's message opens one
-  task group; that group is the container, with the default delegation budget
-  `{ max_depth: 1, max_fanout: 2 }` (`rooms/service.ts`). There is no
-  concurrency budget: a group runs one Run at a time because the Conversation
-  shares one directory — children one after another, and a serialized
-  recipient only once the recipients before it, and whatever they delegated
-  without waiting, have finished (`lifecycleProjector.ts`,
-  `groupHasRunnableRun` / `queueSerializedRecipientsIfReady`).
-- **Every Agent-triggered turn is charged to it.** A delegated child is
-  charged when spawned; an `agent_delegation_result` continuation (the
-  Manager's turn after a child it did not wait for finished) is charged when
-  it opens. The count is one counter, `budget_json.container_turns_used`, on
-  the container group; every later group of the chain carries
-  `budget_json.container_group_id` pointing at it, so all branches charge the
-  same counter. A turn's delegation budget is what the container has left —
-  `max_fanout = min(2, 5 − turns used)`, depth 1 — so a completion turn can no
-  longer delegate again with a fresh budget — and every spawn is also held to
-  what the container (or its discussion's `turns_used`) has left, so the
-  recipients of one wave cannot together spawn past the ceiling
-  (`enforceSpawnPolicy`). A research acquisition an Agent starts carries
-  its turn's group (`origin_group_id`), so its result and status turns are
-  charged to that container; one a person starts opens its own.
-- **The emergent fan-out ceiling.** When replies `@`-address other Agents, the
-  container becomes an emergent discussion (`room_discussions`, with the
-  container's count carried into `turns_used`): its waves are charged too,
-  and past 5 Agent-triggered turns (`ROOM_DISCUSSION_MAX_PARTICIPANTS`, the
-  ADR 0017 ceiling) an addressed Agent is held with a notice, not run. Only a
-  person adding rounds grants another budget of the same size.
-- **Explicit task collaboration.** An original manual Room root turn can
-  declare `agent.delegate`'s task-scoped collaboration bounds before its first
-  delegation. One coordinator, one open Project Task and at most two fixed
-  specialists share a finite declared count (up to 128 children), plus at most
-  twice that many charged Agent turns (`collaborationTurnCeiling`); a
-  completion turn's fan-out is the number of declared participants.
-  Completion does not refill it. Three
-  consecutive child failures/cancellations, task holds/completion, access
-  revocation and explicit stop prevent further admission. See
-  [rooms.md](../modules/rooms.md) for the authority and audit details. Ordinary
-  delegation and discussion budgets remain unchanged.
+- **One container per person-originated turn.** The person's message opens a
+  group, which is the shared container for its delegation and continuation
+  chain. The default depth is one. With N active delegatable Room Agents
+  excluding the coordinator (at least one), its temporary soft limit is 5 × N
+  delegations and hard limit 10 × N. Turn limits are twice those counts: one
+  child turn and one completion turn per delegation. Explicit
+  `delegation_budget` passed internally by the server takes precedence (there
+  is no user-facing Room budget parameter); an explicit `max_fanout` remains a
+  hard bound. Each subgroup may narrow but never widen the container bound.
+  A group still runs only one Run at a time because the Conversation
+  shares one directory (`lifecycleProjector.ts`). There is no new concurrency
+  mechanism.
+- **Shared accounting and policy.** Every admitted child and Agent-origin
+  completion charges the same container, named by `container_group_id`.
+  Temporary fanout counts all admitted delegations across its branches, not
+  each parent's separate allowance. Both soft and hard limits reach
+  `decisionCore` in the `run.spawn_child` context. Prospective counts at the
+  hard limit are admitted; requests above it are denied and audited without
+  consuming capacity. The first crossing of soft continues and records one
+  visible Room system notice plus a flag on the container. It uses the
+  existing conversation notice/read mechanism, not a notification channel.
+  Preflight and execution recheck under the container row lock; replaying an
+  already admitted tool call charges nothing again.
+- **Discussions and continuations.** Completion turns inherit the original
+  container's remaining bounds, never a fresh allowance. Emergent discussion
+  waves use its scaled hard turn limit; explicit discussion round, participant
+  and spend caps still apply. Agent-started research results carry their
+  `origin_group_id` and charge this same chain. Human-started work opens a new
+  container.
+- **Explicit task collaboration.** A coordinator can declare one open Project
+  Task, one or two fixed participants and a hard `max_delegations` (1–128).
+  Active bounds remain immutable (409 on changing Task, participants or cap).
+  Once that Task is `done` or `cancelled`, the coordinator may explicitly
+  declare another open Task and bounds in the same container, including on a
+  completion turn. Either the original turn or its coordinator completion can
+  first declare after temporary delegations, rooted in the person's original
+  manual Room turn; accounting begins at declaration. Completing a Run alone
+  never refills a budget. Each declaration records delegation/turn offsets;
+  prior consumption and failure streaks cannot consume the new Task's quota,
+  and previous declarations remain in `collaboration_history` for audit.
+  The declared hard count and twice as many charged turns govern that epoch.
+  Delegations retain their collaboration Task id; a prior Task's late result
+  remains charged to the container without consuming the new Task's turn quota.
+  Task holds, three consecutive children without a result, stop, lost access
+  and exhaustion still prevent admission. See [rooms.md](../modules/rooms.md).
 - **An explicit discussion's caps.** A discussion a person opens is bounded by
   its round cap (default 3 open, 2 debate; one turn per Agent per round, at
   most 5 participants), and on priced Runs by a spend cap (default USD 2);
   its `turns_used` counts only what Agents started on their own (delegations
-  and their results), which still draw on the same 5-turn ceiling. The
+  and their results), which draw on the container's scaled hard turn ceiling. The
   Manager's closing turn is outside the round cap and inside the spend cap.
   Subscription Runs are bounded by rounds and by the account's window, with
   Agent-triggered admissions held at the Space's reserve line
@@ -1049,7 +1062,7 @@ Accepted proposals are applied through `ProposalApplyService`.
   decided after the output is read.
 
 **Unsupported apply types (remain pending-only):**
-- `project_folder_execution_config_update`, `validation_recipe_update`, `policy_update` — no applier is registered, so acceptance fails closed with `UnknownProposalApplierError` (422) and the proposal stays `pending`. `capability_update` is applied by the capabilities module's registered applier (`capabilities/proposalApplier.ts`).
+- `project_folder_execution_config_update`, `validation_recipe_update`, `policy_update` — no applier is registered, so acceptance fails closed with `UnknownProposalApplierError` (422) and the proposal stays `pending`. Legacy capability install/update/enable/disable appliers are removed; migration `0004_remove_capability_layer` supersedes their pending proposals with a reason. Skill review and original-package binding retain their registered appliers.
 
 Automation manual and schedule-triggered fire queue runs through the existing
 runtime gates. The `/automations` UI supports agent-run, maintenance, and

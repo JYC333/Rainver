@@ -242,6 +242,28 @@ describe("host_threads owner constraints", () => {
     });
     expect(await read()).toMatchObject({ identity_digest: "digest-1", identity_digest_run_id: landedRun });
 
+    // The Gateway's standing items follow the same rule: recorded only when
+    // delivered by a Run that landed, kept while a later turn omits them.
+    const standingRun = randomUUID();
+    await repository.recordRunOutcome(thread.id, {
+      lastRunId: standingRun,
+      vendorSessionId: "vendor-1",
+      sessionReset: false,
+      landed: true,
+      identity: { digest: "digest-1", sent: false },
+      standing: { digest: "standing-1", sent: true },
+    });
+    await repository.recordRunOutcome(thread.id, {
+      lastRunId: randomUUID(),
+      vendorSessionId: "vendor-1",
+      sessionReset: false,
+      landed: true,
+      standing: { digest: "standing-1", sent: false },
+    });
+    expect((await db.pool.query<{ standing_digest: string | null; standing_digest_run_id: string | null }>(
+      `SELECT standing_digest, standing_digest_run_id FROM host_threads WHERE id = $1`, [thread.id],
+    )).rows[0]).toEqual({ standing_digest: "standing-1", standing_digest_run_id: standingRun });
+
     // A new vendor session under a Run that did not carry the block holds no
     // identity at all, and its occupancy is unknown.
     await repository.recordRunOutcome(thread.id, {
@@ -252,6 +274,9 @@ describe("host_threads owner constraints", () => {
       identity: { digest: "digest-1", sent: false },
     });
     expect(await read()).toMatchObject({ identity_digest: null, context_tokens: null });
+    expect((await db.pool.query<{ standing_digest: string | null }>(
+      `SELECT standing_digest FROM host_threads WHERE id = $1`, [thread.id],
+    )).rows[0]).toEqual({ standing_digest: null });
 
     // Less in context than last time, in the same session: the vendor
     // compacted it and may have summarized the standing context away.

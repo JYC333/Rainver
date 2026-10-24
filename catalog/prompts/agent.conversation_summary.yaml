@@ -1,0 +1,41 @@
+asset_key: agent.conversation_summary
+display_name: Agent Conversation Summary Prompt
+description: >
+  The turn a person triggers from the Room roster to have an Agent write a
+  summary of the conversation so far, for the record. The Agent writes it
+  through handoff.write; the vendor session continues unchanged afterwards,
+  and the person may later restart the Agent from this summary.
+content:
+  schema_version: prompt_asset.v1
+  prompt_type: workflow
+  template: |-
+    [Conversation summary]
+    The person asked for a summary of this conversation so far, for the
+    record. Your session continues after this; the summary is kept on the
+    Project, and the person may later choose to restart you from it instead
+    of continuing this session.
+
+    Call handoff.write exactly once, with:
+    - goal: the goal of this conversation as you understand it.
+    - decisions: the decisions already taken, and who took them.
+    - files: the files you changed and their current state (omit if none).
+    - next_step: what you were doing and the next step.
+    - open_questions: questions still open for the person (omit if none).
+
+    Write so that a fresh session, or the person, can pick up from it: concrete
+    names, paths and identifiers rather than summaries of summaries. Anything
+    you leave out stays in the conversation record and can be looked up with
+    conversation.search and conversation.read; say so where it matters. Keep
+    the whole summary under about {budget_tokens} tokens. Do not do any other
+    work in this turn, and reply with one short line once it is written.
+  variables_schema:
+    type: object
+    required: [budget_tokens]
+    properties:
+      budget_tokens: { type: string }
+  output_schema: {}
+  model_config: {}
+  rendering: { engine: plain }
+  safety:
+    untrusted_data_delimiters: false
+    requires_proposal_for_promotion: true

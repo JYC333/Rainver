@@ -109,6 +109,12 @@ export const ConversationPinnedRuntimeSchema = ConversationRuntimeSelectionSchem
   context_tokens: z.number().int().nonnegative().nullable().optional(),
   context_window_tokens: z.number().int().positive().nullable().optional(),
   handoff_artifact_id: IdSchema.nullable().optional(),
+  /** The conversation summary the Agent wrote in the vendor session it is still in, if any. */
+  summary_artifact_id: IdSchema.nullable().optional(),
+  /** When the thread's last Run ended; with the TTL, whether the vendor's prompt cache is still warm. */
+  last_run_ended_at: ISODateTimeSchema.nullable().optional(),
+  /** The runtime's prompt-cache lifetime as its spec declares it; null when unknown. */
+  prompt_cache_ttl_seconds: z.number().int().positive().nullable().optional(),
 }).strict();
 export type ConversationPinnedRuntime = z.infer<typeof ConversationPinnedRuntimeSchema>;
 

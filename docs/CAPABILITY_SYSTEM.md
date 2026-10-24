@@ -1,112 +1,33 @@
-# Capability System
+# Skills, Tools And Workflows
 
-> **Capability ≠ Official Optional Module.**
-> A product capability is a definition in `server/src/modules/capabilities/`.
-> Catalog YAML is diagnostic and is not executed.
-> An Official Optional Module is a product feature package with DB-backed enable/disable state per space/user.
-> They are separate concepts. See `.agent/architecture/OFFICIAL_OPTIONAL_MODULES.md` and ADR 0009.
-
-## What is a capability?
-
-A product capability is a definition owned by
-`server/src/modules/capabilities/`. The YAML under `catalog/capabilities/`
-is a read-only diagnostic catalog. It is not the product capability path.
-Do not execute a catalog manifest.
-
-A catalog directory may hold `capability.yaml`, a README, and prompt files.
-Those files are metadata.
-
-## capability.yaml fields
-
-```yaml
-id: research_intake
-name: Research Intake
-version: 0.1.0
-description: Parse an intake payload into structured research output
-enabled: false
-
-entrypoint:
-  type: none
-
-permissions:
-  network:
-    allow: []
-  filesystem:
-    read: []
-    write: []
-  subprocess:
-    allow: false
-
-outputs:
-  artifact_types:
-    - research_intake.result.v1
-```
-
-`entrypoint.type: none` means the catalog entry is not directly executable.
-The `capability` runtime key is `implementation_status: "planned"` and is not
-enabled. Do not route a catalog manifest through `runtimeAdapters`. Shell
-commands, remote code loading, broad filesystem access, and subprocess
-execution are not supported.
-
-## Catalog
-
-The `catalog` server module reads the bundled manifests under
-`catalog/capabilities/` (and agent template specs under
-`catalog/agent-templates/`) read-only. Its routes are
-`GET /api/v1/server/catalog`, `GET /api/v1/server/catalog/capabilities`, and
-`GET /api/v1/server/catalog/agent-templates`. There is no reload route and no
-external or workspace capability source.
-
-This is not a marketplace or remote install system.
-
-## Capability / Workflow / Open Skill Framework
-
-The product control plane for canonical capability definitions, capability
-packs, imported Open Skill packages, and runtime skill bindings is the
-`capabilities` server module.
-`catalog` remains the raw on-disk manifest reader.
-
-Key distinctions:
-
-| Concept | Meaning |
+| Concept | Meaning and authority |
 |---|---|
-| Open Skill | External portable source package, usually `SKILL.md`; untrusted by default. |
-| NormalizedSkill | Internal intermediate representation produced from imported skill content. |
-| CapabilityDefinition | Rainver canonical ability object and source of truth. |
-| CapabilityPack | Grouping of related capabilities, artifact types, docs/tests/examples. |
-| Runtime Skill | Generated Claude/Codex/OpenCode ACP content; not source of truth. |
-| Product Plugin | Optional product feature package; separate from capabilities. |
+| Skill | Procedural content read by a model. Imported original package files remain authoritative. |
+| Tool / System Action | Code-owned, registered operation, gated on every invocation. |
+| Workflow / pipeline | Server-enforced order, gates, checkpoints and retries that start Runs. |
+| Official Optional Module | Product feature package with its own per-Space or per-user enablement. |
 
-Open Skill import must not execute scripts, install dependencies, load
-third-party server code, write active memory, or auto-enable capabilities.
-Imported Skills retain their original package bytes and are risk-scanned.
-The unified library reviews and binds packages directly; normalized conversion
-remains a legacy API and is not required for invocation.
+Rainver owns a Skill's provenance, risk review, scoped bindings and Runtime
+Context Delivery authorization. It does not convert the package into a canonical
+ability definition. `NormalizedSkill` is the parser and scan result, not a new
+content authority. The Skill library lives in `server/src/modules/skills/`
+and `/skills`; the legacy definitions, packs, conversion APIs and `/capabilities`
+page are removed. One resolver selects reviewed original packages for Delivery;
+Hosts materialize their authorized original bytes. Declared tools, hooks,
+scripts, dependencies and MCP servers install nothing and grant no permissions.
 
-## Catalog entries
+The required Rainver Work Skill is a code module defining the work-surface
+contract, not an optional library package. Auto Research's eight stage tags
+belong to its pipeline, not the Skill library. Its future process shape is a
+separate decision. Builtin library packages are not implemented by this cleanup.
 
-`catalog/capabilities/` holds `memory.reflect` and
-`capture-memory-extraction`. They are manifest metadata. Session reflection
-(`POST /api/v1/sessions/:sessionId/reflect`) writes a `memory_create`
-proposal from the recent transcript. It does not run `memory.reflect`.
+## Diagnostic catalog
 
-## Execution
-
-The `capability` runtime (`runtime_key="capability"` in
-`runtimeAdapters/specs.ts`) has `implementation_status: "planned"` and is not
-enabled by default. It is not a selectable ACP Agent runtime. Server routes
-expose capability manifest metadata for catalog and UI use.
-
-Explicitly selected Skills reach Claude Code, Codex and other Host ACP
-runtimes as original package files through authorized Runtime Context Delivery.
-Builtin capability renderings remain a separate path. Approved original
-package snapshots are the content authority for imported Skills.
-
-## Related code
-
-- `server/src/modules/catalog/`
-- `server/src/modules/capabilities/`
-- `server/src/modules/runtimeAdapters/specs.ts`
+`catalog/capabilities/` retains read-only manifest metadata. Its routes are
+`GET /api/v1/server/catalog`, `/server/catalog/capabilities` and
+`/server/catalog/agent-templates`. It is not a callable registry or marketplace;
+no catalog manifest is executed. Session reflection writes a Memory proposal
+through its own service rather than executing the `memory.reflect` manifest.
 
 ## Using the unified Skill library
 
@@ -156,4 +77,4 @@ not available. Hooks and dependencies are not installed automatically; existing
 runtime permissions continue to apply. Execution Hosts require daemon **0.4.3+**.
 
 API and storage details:
-[Capability/Skill architecture](../.agent/architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md).
+[Skill, Tool and Workflow architecture](../.agent/architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md).

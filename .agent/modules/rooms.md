@@ -29,8 +29,6 @@ task/audit authority, not a second conversation UI.
   (`room_agent_access_grants`, `room_user_invitations`,
   `room_invitation_agent_approvals`, `room_agent_preset_idempotencies`)
 - `RoomService` — room/conversation creation, membership, message dispatch (`server/src/modules/rooms/service.ts`)
-- `RoomConversationSummaryService` — owner-funded asynchronous rolling summaries and
-  member-visible freshness (`server/src/modules/rooms/conversationSummaryService.ts`)
 - Thread references — content picked from another thread or an imported
   session, copied once with provenance and a disclosure gate
   (`server/src/modules/rooms/threadReferences.ts` resolves and gates;
@@ -143,42 +141,20 @@ messages (Room conversation message):
 
 Room conversation summaries:
 
-- `room_conversation_summary_versions` is append-only and keeps one active
-  version per conversation. Each version carries an exclusive
-  `covered_through_message_id`/timestamp cursor, provider/model audit metadata,
-  and the owner-attributed usage snapshot.
-- `room_conversation_summary_states` is mutable scheduling state with a lease,
-  retry/backoff, and `waiting_provider` status. Summary model calls are queued
-  only after the uncompacted prefix crosses the raw 6,000-token threshold and
-  never run in the send transaction. A missing or no-longer-eligible owner
-  provider leaves the state waiting with an actionable setup status.
-- Runtime Context renders the active summary plus only uncaptured recent
-  turns. For a Room turn both budgets are shares of the recipient's model
-  window — summary 3 %, recent 15 %, one summary batch 30 %
-  (`roomContextBudgets`) — never below the 2,000 / 6,000 / 12,000-token floors
-  a small or unknown model gets; the window is the one the runtime reported for
-  the thread, else the catalog entry for the pinned model. When no summary is
-  coming (the state is `waiting_provider` or `failed`) the recent window widens
-  by one summary batch rather than dropping what a summary would have covered
-  — at most to half the share at which the session rotates (30 % of the
-  window at the default 60 %), so a fresh session does not start next to the
-  rotation line — and the Room shows "Summary not configured" to every member. While
-  summaries run, the tail a summary leaves uncovered is the 6,000-token floor
-  for every recipient, since the summary is one per conversation; a larger
-  recent budget matters on a fresh session, before the first summary, and
-  when no summary is coming. The cursor is
-  exclusive and the assembler asserts that the two ranges do not overlap. The
-  current trigger message is never silently truncated. Tokens are the shared
-  character-class estimate (`usage/modelCatalog.estimateModelTokens`: a
-  run of ASCII letters, and whitespace, a quarter token a character; a run of
-  ASCII letters and digits that holds a digit — numbers, hashes, UUIDs,
-  base64 — three quarters; other ASCII punctuation half; any other character
-  one), not UTF-8 bytes. The estimate is an approximate upper bound (CJK can
-  sit slightly under). The summary
-  scheduler's SQL threshold gate (`conversationSummaryService.ts`)
-  approximates it in the database: every ASCII character a quarter, every
-  multi-byte character one. It under-counts digits and punctuation, which only
-  delays a summary; the provider path measures the exact batch.
+- There is no automatic rolling summary and no summary job. A vendor CLI
+  compacts its own session; the summary Rainver keeps is the one an Agent
+  writes when a person asks (`modules/hosts.md`, "Conversation summary and
+  restart"), kept as an `agent_handoff` Artifact in the Project. A whole-thread
+  reference carries the newest such Artifact (`threadReferences.ts`).
+- Runtime Context gives an API-provider Run only the uncaptured recent tail
+  (`assembleRoomConversationContext`, 6,000-token floor); the current trigger
+  message is never silently truncated. Tokens are the shared character-class
+  estimate (`usage/modelCatalog.estimateModelTokens`: a run of ASCII letters,
+  and whitespace, a quarter token a character; a run of ASCII letters and
+  digits that holds a digit — numbers, hashes, UUIDs, base64 — three
+  quarters; other ASCII punctuation half; any other character one), not UTF-8
+  bytes. The estimate is an approximate upper bound (CJK can sit slightly
+  under).
 - Every Room turn closes visibly in the conversation. A terminal execution
   failure produces an Agent reply with the sanitized reason; it is not
   converted into a generic review hold. A genuine authorization pause writes
@@ -298,27 +274,11 @@ configuration/policy snapshot. Later profile/Host changes cannot reconfigure
 or rebind that Conversation; incompatible Host/CLI changes block the Run.
 There is no server fallback to a different Host, CLI, or workspace.
 
-Before a Room send can commit, the server locks the Conversation execution
-context and compares the current Primary Workspace's Git branch, commit, and
-readiness with the persisted baseline (`assertConversationGitBaseline`). When
-branch and commit moved to exactly the values the host reported at the exit
-of this Conversation's most recent writing Run in that Location
-(`last_run_git_branch/head`, from the diff upload's `git_after`, recorded only
-when that Run started from the accepted HEAD with the directory's lease held —
-`modules/hosts.md`), the Conversation's own Agent moved them: the send
-advances the baseline in place — the same write as the refresh route, which
-also clears the last-Run HEAD — and continues. A done Task's merge that
-fast-forwards the checkout records its merged commit there the same way for
-the conversation the Task came from, when that conversation had accepted the
-main branch's previous tip (`modules/hosts.md`, "Merging a done Task"). Any
-other move, and
-any readiness change, returns `409` and rolls back the send transaction, so
-no Room message, group, or recipient Run is persisted; the explicit
-execution-context Git refresh route is the only other way to advance the
-baseline. Uncommitted changes are never compared. The direct-chat send and
-the execution-context summary's `can_send` apply the same rule
-(`sessions/conversationGitGate.ts`). This remains true for direct API callers
-and for image-only messages, not only for the preflight UI.
+A Room send does not compare the Primary Workspace's current Git state with
+anything: the execution context's `git_*` columns are the state observed at
+initialization, kept for display and audit, and the vendor CLI reads the
+checkout itself. The execution-context summary's `can_send` is about the
+Host, runtime and workspace being available, never about HEAD having moved.
 
 The shared conversation turn controls stop active Runs through the canonical
 Run stop route, retain partial output on cancellation, and show the exact
@@ -372,12 +332,23 @@ Discussions).
 Each Conversation × Agent owns one live `host_threads` row. It pins the
 Location or managed mode, Agent/container identity, adapter, installation, and
 opaque vendor session. A first turn, a changed conversation, or a reset sends
-Project state plus that conversation's summary and uncovered messages,
-preceded by the conversation title. Later turns in the same conversation send
-only messages since that Agent's previous turn. Reset context clears the
+the standing context, Project state and the conversation title, and nothing of
+the transcript: a fresh session starts empty, as a cleared CLI session does,
+and the Agent reads history it needs with `conversation.search` /
+`conversation.read`; a restart from a summary adds that summary. Later turns
+in the same conversation send only what others said since that Agent's
+previous turn. Reset context clears the
 vendor session and marks the thread `session_reset`; the directory stays.
+Summarize context (`summarize-context`) has the Agent write a summary of the
+conversation so far into its current session, kept as an Artifact on the
+Project and announced in the Room; the session continues, and the preflight
+says so before the next send. Restart from summary (`restart-from-summary`)
+retires that session so the next turn opens from the summary. Both are the
+Host owner's actions, from the roster beside reset. Neither runs on its own:
+Rainver never rotates a vendor session by occupancy; the runtime compacts it
+(`modules/hosts.md`, "Conversation summary and restart").
 Runtime Context keeps the same boundary: a Room recipient's Work Context scope
-is one Conversation with it, so its ledger, checkpoints, CLI continuity and
+is one Conversation with it, so its ledger, checkpoints, host thread and
 knowledge-retrieval switch never carry another Conversation's (see
 [runtime-context](runtime-context.md#continuity)).
 
@@ -407,7 +378,11 @@ reached the runtime, or failed, records nothing and the next turn sends the
 block again — a digest that said "sent" for a turn that never landed would
 silently withhold the Agent's identity, which is the worse failure. A vendor
 session replaced under a Run that did not carry the block clears the digest,
-and a reset clears it outright.
+and a reset clears it outright. The Runtime Context Gateway applies the same
+rule to its own standing items — the Agent instruction, Project Instruction
+and Brief, bound Skills — through `host_threads.standing_digest`
+(`modules/runtime-context.md`, "What an ACP Run is sent"), so a resumed turn
+with nothing changed carries the message alone.
 
 What re-sending cannot do is **retract**: a note delivered on turn 1 is in the
 vendor session, and adding a member to the Room afterwards stops it being sent
@@ -426,9 +401,10 @@ A sibling Agent waiting on another's Run is shown that Run's **task**, never
 its prompt (`runs/runAssignedTask.ts`): the prompt carries the other Agent's
 persona and notes, and the Agent is the memory boundary.
 
-Direct chat sends the same block, with the person in that chat as the audience:
-they receive the persona and the notes learned in Rooms whose roster still
-contains them, plus notes taken in that chat when they are the Agent's owner.
+Direct chat sends no identity block and no Room rules: its Run prompt is the
+message alone, and the Agent's instruction reaches the session as a Runtime
+Context standing item (`modules/runtime-context.md`). Notes an Agent learned
+in Rooms are not delivered into a direct chat.
 
 When the standing context is due on a turn, `roomRunPrompt` includes it in
 the Run prompt with the assigned task. The Runtime Context Gateway acquires
@@ -440,12 +416,14 @@ still decide when standing context is included. Both server and remote Host
 Agent Runs pass through this Gateway.
 
 The person's message is delivered once, as the Delivery's current input. The
-Room conversation window and increment end before it, and when this Run's
-assigned task is that whole message the `[Assigned task for this Room turn]`
-section points at the current input instead of repeating it. A routed segment
-that differs from the message is stated in full. A Run without a Room
-conversation backend has no `chat_turn` message, so its current input is its
-own Run request and the task stays in the prompt. Routing context is omitted
+Room increment ends before it, and when this Run's assigned task is that whole
+message the prompt says nothing about it: a resumed turn with nothing said
+by others since the Agent's last reply has no Room prompt at all, and the ACP
+adapter then sends the message verbatim. A
+routed segment that differs from the message is stated in full under
+`[Assigned task for this Room turn]`. A Run without a Room conversation
+backend has no `chat_turn` message, so its current input is its own Run
+request and the task stays in the prompt. Routing context is omitted
 for a single-segment message, and names the current Run's segment by reference
 to the assigned-task section (`agentGroups/service.ts`,
 `roomRoutingInstruction`).
@@ -462,7 +440,7 @@ delegated scratch it never reads or imports.
 
 The same owner-only gate permits a direct chat with a host-bound Agent. Direct
 chat has one `host_threads` container per Agent × owner, renders recent messages
-from that session (not a Room summary), and exposes
+from that session, and exposes
 `POST /api/v1/agents/:agentId/chat/reset-context`. Deleting the person's last
 active direct session of the Agent (several direct sessions share the one
 container) closes and archives both the Agent's runtime profile and, when
@@ -858,31 +836,40 @@ The allowance (`ROOM_PROJECT_TOOL_ALLOWANCE` plus the memory actions, in
 `proposal.list_pending`; `proposal.decide`; and the directly-executed,
 idempotency-guarded `agent.delegate` / `agent.wait_for_results` and
 `research.start_acquisition` / `research.cancel_acquisition`. Delegation
-is bounded to one level and two specialists per turn (`max_depth: 1`,
-`max_fanout: 2`, prospective counts — the third request is refused and
-recorded as refused, and a refused request does not consume the budget).
+is bounded to one level. Temporary Room delegation shares a container soft
+limit of 5 × max(1, active delegatable roster Agents excluding the coordinator),
+and a hard limit twice that. Every delegation budgets two Agent turns. An explicit
+`delegation_budget` passed internally by the server overrides the default; the
+Room API exposes no user-facing budget parameter. A subgroup's hard bound and
+the container's bound apply together, taking the smaller value (zero stops
+delegation). Crossing soft admits with one visible
+Room system notice per container; crossing hard is refused by the policy layer
+and audited. Refused calls do not consume budget. The service sends both limits
+and prospective counts to `decisionCore`; preflight is rechecked at execution.
+
 For sustained implementation/review work explicitly requested by the person,
-the first `agent.delegate` can declare `budget.collaboration`: an open
-`task_id` in this Room's Project, one or two fixed `participant_agent_ids`,
-and a total `max_delegations` (1–128, chosen and announced before work starts).
-For a phased plan, bind the Task covering the whole authorized workflow, so
-completing one stage does not terminate the remaining authorized stages.
-Only the original manual root turn of a Project writer can establish it,
-before any delegation is admitted. The server records the coordinator on the
-original container. Subsequent calls and completion turns reuse that one
-budget; they cannot reset it, change tasks, add participants, or delegate
-through another specialist. Failed/cancelled children count; policy refusals
-do not. Three consecutive children that produced nothing (failed, cancelled,
-orphaned) stop further admission; a degraded child — one that replied but
-had a governed call of its own refused — is a result for the coordinator
-to judge and does not count toward that stop.
-A task that is done, cancelled, blocked, awaiting review or no longer readable,
-revoked Project write access, or a paused/cancelled container also stops it.
-The container bounds completion turns to twice the declared delegation count.
-The coordinator must report the stopping reason and request the person's
-decision when needed; it must not silently substitute its own review.
-This is an exception to the ad-hoc delegation counts, not to tool permissions,
-the five-object write ceiling, subscription admission or filesystem serialization.
+`agent.delegate` can declare `budget.collaboration`: an open `task_id` in this
+Room's Project, one or two fixed `participant_agent_ids`, and a hard total
+`max_delegations` (1–128). Bind the Task covering the authorized workflow rather
+than a single intermediate stage. A declaration requires the original human
+manual container, its coordinator and Project writer authority. The original
+turn or a coordinator completion turn may make the first declaration, including
+after temporary delegations. Counting starts at declaration: earlier temporary
+delegations and their late completions do not consume the collaboration quota.
+An active declaration cannot change or widen
+(409). When its Task is `done`/`cancelled`, an explicit new declaration can
+select another open Task, participants and count on that same container, also
+from a completion. New delegation/turn offsets isolate each declaration's
+consumption and failure streak; old bounds remain in `collaboration_history`.
+Completion alone never renews it.
+
+Failed/cancelled children count; policy refusals do not. Three consecutive
+children with no result stop further admission. A degraded child that replied
+is a result for the coordinator to judge. Task holds/review waits, revoked
+Project access, explicit stop and paused/cancelled containers remain stopping
+conditions. Collaboration turn capacity is twice its declared delegation
+count, measured from its recorded offset. This changes no tool permissions,
+Project-write five-object ceiling, subscription gate or filesystem serialization.
 
 Reuse / Dependency Check: this extends the existing group budget JSON,
 container counter, PostgreSQL row locks and spawn-policy audit. Validation uses
@@ -967,8 +954,8 @@ speaks in it
 It lands as a `role: 'system'` message with `metadata_json.room_display =
 'reference'` and the provenance in `metadata_json.reference`. Being a message
 is the whole design: it is then the thread's own content — rendered in the
-transcript with its origin, compacted by the thread's own summary job,
-archived with the thread — and needs no per-thread slot, no per-turn injection
+transcript with its origin, part of any summary an Agent later writes of the
+thread, archived with the thread — and needs no per-thread slot, no per-turn injection
 and no new acquisition path.
 
 Grains: a whole conversation (carried as its summary), specific messages, a
@@ -1057,8 +1044,9 @@ is charged to a container a person started, and past its budget an Agent's
 discussions are one mechanism at two budget levels, not two features. A round
 is a wave and an Agent speaks at most once per wave (the one-segment-per-Agent
 rule), so turns per round ≤ participants and a discussion's turns are bounded
-by rounds × participants with no separate turn cap; the fan-out ceiling of 5
-(ADR 0017) caps participants. Waves run one after another because the
+by rounds × participants; an explicit discussion still permits at most five
+participants. Shared delegation/Agent-turn capacity is governed separately by
+the container soft/hard limits. Waves run one after another because the
 Conversation's Agents share one directory (the serial chain below, and the
 Location lease in [hosts.md](hosts.md)); parallel participants would need a
 worktree each and a merge, which is deferred. Whether to delegate a sub-task
@@ -1087,8 +1075,10 @@ wave started by a delegation or research result that is the continuation's
 hidden instruction, not the person's message — kept so, because marking
 the person's message instead would put a discussion boundary before the
 Manager's own reply): round cap 2 (the
-person's round plus one the Agents opened) and the fan-out ceiling of 5 Agent-triggered turns
-(ADR 0017). Two replies of one wave addressing the same Agent give it one
+person's round plus one the Agents opened) and the originating container's
+scaled hard Agent-turn ceiling, replacing the fixed five-turn limit. With two
+delegatable Agents this is 40 turns; the two-round limit and participant caps
+are unchanged. Two replies of one wave addressing the same Agent give it one
 turn whose content is both addressed parts. A person opens an **explicit**
 discussion with `POST …/discussions` — topic, participants (explicit, or
 `"all"`, refused above five), shape `open`/`debate`, round cap (default 3 open,
@@ -1107,11 +1097,13 @@ a discussion's spend cap. Inside a discussion the count is the row's
 bounded by rounds); otherwise it is one counter on the task group of the
 person's message, `budget_json.container_turns_used`, which every branch of
 the chain charges through its `budget_json.container_group_id` pointer. A
-completion turn cannot delegate again with a fresh budget.
+completion turn inherits the same shared budget, never a fresh allowance.
 An explicitly declared task collaboration instead shares its declared total
-across those containers; its continuation cause remains the original human
-Run, avoiding an ever-growing lineage chain. Its charged turns are capped at
-`collaborationTurnCeiling` — two per declared delegation, one for the child
+across those containers. A newly declared Task after the previous one closes
+starts a new accounting epoch without resetting old audit history; its
+continuation cause remains the original human Run, avoiding an ever-growing
+lineage chain. Its charged turns are capped at
+`collaborationTurnCeiling` — its turn offset plus two per declared delegation, one for the child
 and one for the completion turn it causes
 (`agentGroups/collaborationBudgetRepository.ts`), judged on the count after
 the turn's own charge — and a completion turn may delegate to at most as
@@ -1256,7 +1248,7 @@ release the turn without requiring an event that a failed worker may never
 have written. Non-chat Runs do not acquire this completion requirement.
 Already serialized recipients of the same group may still advance from their
 predecessors' terminal results through the group's lifecycle projector,
-including internal handoff turns with no visible reply. Quota-held and
+including internal summary turns with no visible reply. Quota-held and
 jobless parked Runs retain their existing turn-release exceptions.
 
 **Cost lines, by funding source.** The two ways a Run is paid for are bounded
@@ -1312,8 +1304,7 @@ that has its job again is about to run and holds the turn. So a person's
 message goes ahead at once while Agents wait. Those Runs also let go of their
 Agents' host threads (`dispatch_lock_id`, claimed when each was created), so a
 person may address any of those Agents meanwhile; a lock is claimed back in
-the name of the Run it was taken for — a handoff turn runs under the lock of
-the recipient it prepares, and claims in that recipient's name. Whenever a
+the name of the Run it was taken for. Whenever a
 Run's job is enqueued its waiting markers are cleared. Admission takes both back: a held Run is admitted only when no
 other Run holds the conversation — its own group's running Runs and queued
 ones with a job included, since a group runs one Run at a time — and its host
@@ -1364,7 +1355,7 @@ are given up and a closing turn still waiting for the window is cancelled, so
 no conclusion arrives hours later; a person who wants one asks for it.
 Adding rounds to a discussion stopped at its cap, or opening a new one over
 it, cancels a closing turn still held from that cap — the whole closing group
-that has not started, a handoff turn before the Manager's included — (and frees
+that has not started — (and frees
 its Agents' host
 thread), which would otherwise run first once the window resets. A delegation
 result that meets a taken turn, a busy Agent or a transient database error is
@@ -1440,6 +1431,15 @@ is slow to answer is decided on the cached reading.
   outcome per archived thread
 - `POST /api/v1/rooms/:roomId/agents/:agentId/reset-context` — reset a
   host-bound specialist's vendor session (Host owner and Project writer)
+- `POST /api/v1/rooms/:roomId/agents/:agentId/summarize-context` — ask a
+  host-bound specialist to write a summary of the conversation so far into its
+  current vendor session (Host owner and Project writer; 409 while the Agent
+  is handling a turn or has no session yet). A handoff-shaped turn
+  (`modules/hosts.md`, "Conversation summary and restart") whose
+  document is an `agent_handoff` Artifact on the Project; the session continues
+- `POST /api/v1/rooms/:roomId/agents/:agentId/restart-from-summary` — retire
+  that session and start the Agent's next turn from the summary it wrote in it
+  (409 when the current session has none)
 - `GET/POST /api/v1/rooms/:roomId/invitations` — list or create human
   invitations; pending invitations carry owner approvals. The list answers the
   Room-not-found 404 to a Project reader who is neither an active member nor
@@ -1457,8 +1457,6 @@ is slow to answer is decided on the cached reading.
   Room-not-found 404 unless they can already see the Room, in which case 403
 - `GET /api/v1/rooms/:roomId/conversations` — list conversations
 - `GET /api/v1/rooms/:roomId/conversations/:sessionId/messages` — paged history
-- `GET /api/v1/rooms/:roomId/conversations/:sessionId/summary` — active summary,
-  cursor, freshness/retry state, and owner-only provider/usage metadata
 - `POST /api/v1/rooms/:roomId/conversations/:sessionId/messages` — send a
   message; supports direct `@agent` recipient segmentation or manager
   coordination with optional `coordination_target_agent_ids` (active Agent
@@ -1476,10 +1474,6 @@ is slow to answer is decided on the cached reading.
   subscription lines, the windows of the logins the conversation's Agents run
   on (cached), and the Agent-triggered Runs held at the reserve line;
   `POST …/quota/continue` (Project writer) admits them now ("continue anyway")
-- `POST /api/v1/sessions/:sessionId/execution-context/refresh-git` — explicitly
-  advance the initialized Conversation's Git admission baseline (a send
-  advances it itself when HEAD is where the Conversation's own last Run left
-  it)
 - `GET /api/v1/projects/:projectId/host-execution-targets` — the caller's
   online remote Hosts, this Project's Locations, and reported CLI
   adapter/installation choices for the host-bound Agent selector

@@ -1,3 +1,4 @@
+import { RESEARCH_STAGES } from "./researchStages.js";
 import { randomUUID } from "node:crypto";
 import type { ServerConfig } from "../../config.js";
 import { contentReadSql } from "../access/contentAccessSql.js";
@@ -490,7 +491,7 @@ async function standingRunsUsedToday(db: Queryable, spaceId: string, projectId: 
   dayEnd.setUTCDate(dayEnd.getUTCDate() + 1);
   const row = await db.query<{ count: number }>(
     `SELECT count(*)::int AS count FROM runs
-      WHERE space_id=$1 AND project_id=$2 AND capability_id='research.monitor_compare'
+      WHERE space_id=$1 AND project_id=$2 AND capability_id='${RESEARCH_STAGES.monitor_compare}'
         AND contract_snapshot_json->'workflow_input_json' ? 'project_research_standing'
         AND created_at >= $3::timestamptz AND created_at < $4::timestamptz`,
     [spaceId, projectId, dayStart.toISOString(), dayEnd.toISOString()],

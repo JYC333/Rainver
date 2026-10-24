@@ -17,7 +17,7 @@ import { systemModule } from "../modules/system/index.js";
 import { authModule } from "../modules/auth/index.js";
 import { spacesModule } from "../modules/spaces/index.js";
 import { catalogModule } from "../modules/catalog/index.js";
-import { capabilitiesModule } from "../modules/capabilities/index.js";
+import { skillsModule } from "../modules/skills/index.js";
 import { streamingModule } from "../modules/streaming/index.js";
 import { notificationsModule } from "../modules/notifications/index.js";
 import { jobsModule } from "../modules/jobs/index.js";
@@ -113,7 +113,7 @@ export const SERVER_MODULES: readonly ServerModule[] = [
   authModule,
   spacesModule,
   catalogModule,
-  capabilitiesModule,
+  skillsModule,
   streamingModule,
   notificationsModule,
   networkProfilesModule,

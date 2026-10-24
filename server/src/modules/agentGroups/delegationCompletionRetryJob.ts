@@ -15,7 +15,7 @@ const TURN_BUSY_RETRY_DELAY_MS = 8_000;
  * (`AgentGroupRunLifecycleProjector.notifyRoomOfDelegationCompletion`) when
  * its first attempt lost the conversation's turn-claim to a concurrent
  * notification — the case a Room fanning out to more than one specialist
- * without waiting produces routinely (budget allows `max_fanout: 2`). The
+ * without waiting produces routinely (within the shared container budget). The
  * original attempt's SAVEPOINT rollback only protects the delegation's own
  * bookkeeping from this failure; it does not retry the notification itself,
  * which is this job's entire job. `continueAfterDomainEventInTransaction`'s
@@ -63,7 +63,7 @@ export function registerRoomDelegationCompletionRetryHandler(
               result_summary: delegation.result_summary ?? "",
               status: delegation.status,
             },
-            ...await agentOriginContinuation(client, group.space_id, group.id),
+            ...await agentOriginContinuation(client, group.space_id, group.id, delegation.id),
           },
         );
         await client.query("RELEASE SAVEPOINT delegation_result_retry");

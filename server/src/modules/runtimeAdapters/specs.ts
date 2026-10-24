@@ -211,6 +211,23 @@ export interface RuntimeAdapterSpec {
   };
   usage: {
     usage_accuracy: "precise" | "estimated" | "unknown";
+    /**
+     * What the token usage on an ACP prompt result covers. `turn` is the sum
+     * over every model request the turn made (Claude Code, OpenCode).
+     * `last_request` is the last request's count alone, as `codex-acp`
+     * 1.12 builds it from Codex's `tokenUsage.last`: a lower bound for the
+     * turn, recorded as `usage_scope: "last_model_request"` on the ledger.
+     * Absent means `turn`.
+     */
+    acp_prompt_usage?: "turn" | "last_request";
+    /**
+     * How long the vendor keeps a prompt cache warm after a request, in
+     * seconds (Claude Code on a subscription: one hour; Codex: OpenAI's
+     * in-memory default, five to ten minutes). A resumed session whose last
+     * request is older rewrites its whole context. Shown as a notice before
+     * sending; never acted on automatically.
+     */
+    prompt_cache_ttl_seconds?: number;
     supports_usage_probe: boolean;
     usage_probe_kind?: string;
     /**
@@ -384,6 +401,10 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     },
     usage: {
       usage_accuracy: "precise",
+      // Measured on the test instance (2026-10-23): same-session turns up
+      // to 51 minutes apart rewrote 1–19 % of the context, turns 106 and 525
+      // minutes apart rewrote 84–92 %.
+      prompt_cache_ttl_seconds: 60 * 60,
       supports_usage_probe: false,
       usage_probe_kind: "cached_claude_quota",
       // "Claude AI usage limit reached|<epoch>", "5-hour limit reached ∙
@@ -476,6 +497,10 @@ export const BUILTIN_RUNTIME_ADAPTER_SPECS: Readonly<Record<RuntimeKey, RuntimeA
     },
     usage: {
       usage_accuracy: "precise",
+      // codex-acp 1.12 builds the prompt result's usage from Codex's
+      // `tokenUsage.last`: the turn's last model request, not its sum.
+      acp_prompt_usage: "last_request",
+      prompt_cache_ttl_seconds: 10 * 60,
       supports_usage_probe: false,
       // `usage_limit_reached`; "You've hit your usage limit. … try again in 2 hours".
       quota_exhausted_patterns: [

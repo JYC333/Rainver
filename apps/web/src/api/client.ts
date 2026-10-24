@@ -42,8 +42,6 @@ import type {
   AutomationOut,
   AutomationUpdateBody,
   Board,
-  CapabilityDefinition,
-  CapabilityPackDescriptor,
   CaptureRequest,
   CaptureResponse,
   ChatTurnAccepted,
@@ -328,7 +326,6 @@ import type {
   RetrievalSearchResponse,
   Room,
   RoomConversation,
-  RoomConversationSummaryResponse,
   RoomDetail,
   RoomInvitation,
   RoomInvitationCreateRequest,
@@ -1273,8 +1270,6 @@ export const sessionsApi = {
     post<ConversationExecutionPreflightResponse>(`/sessions/${encodeURIComponent(id)}/execution-context/preflight`, body, options),
   initializeExecution: (id: string, body: ConversationExecutionInitializeRequest, options: RequestOptions = {}) =>
     post<ConversationExecutionSummary>(`/sessions/${encodeURIComponent(id)}/execution-context/initialize`, body, options),
-  refreshGitContext: (id: string, options: RequestOptions = {}) =>
-    post<ConversationExecutionSummary>(`/sessions/${encodeURIComponent(id)}/execution-context/refresh-git`, {}, options),
   mutateExecutionAttachments: (id: string, body: ConversationAttachmentMutation, options: RequestOptions = {}) =>
     post<ConversationAttachmentMutationResponse>(`/sessions/${encodeURIComponent(id)}/execution-context/attachments`, body, options),
   remove:     (id: string)                          => del<Session>(`/sessions/${id}`),
@@ -1530,6 +1525,10 @@ export const roomsApi = {
     post<RoomAgentMutationResponse>(`/rooms/${roomId}/owner-claim`, {}),
   resetAgentContext: (roomId: string, agentId: string) =>
     post<RoomAgentMutationResponse>(`/rooms/${roomId}/agents/${agentId}/reset-context`, {}),
+  summarizeAgentContext: (roomId: string, agentId: string) =>
+    post<RoomAgentMutationResponse>(`/rooms/${roomId}/agents/${agentId}/summarize-context`, {}),
+  restartFromSummary: (roomId: string, agentId: string) =>
+    post<RoomAgentMutationResponse>(`/rooms/${roomId}/agents/${agentId}/restart-from-summary`, {}),
   conversations: (roomId: string, params: { limit?: number; offset?: number } = {}, options: RequestOptions = {}) => {
     const q = new URLSearchParams()
     if (params.limit !== undefined) q.set('limit', String(params.limit))
@@ -1538,8 +1537,6 @@ export const roomsApi = {
   },
   createConversation: (roomId: string, options: RequestOptions = {}) =>
     post<RoomConversation>(`/rooms/${roomId}/conversations`, {}, options),
-  summary: (roomId: string, sessionId: string, options: RequestOptions = {}) =>
-    get<RoomConversationSummaryResponse>(`/rooms/${roomId}/conversations/${sessionId}/summary`, options),
   messages: (
     roomId: string,
     sessionId: string,
@@ -2268,7 +2265,7 @@ export const hostsApi = {
     ),
 }
 
-export const capabilitiesFrameworkApi = {
+export const skillsApi = {
   scanHostSkills: (hostId: string, options?: RequestOptions) =>
     post<import('@rainver/protocol').HostSkillScan>(`/skill-sources/hosts/${encodeURIComponent(hostId)}/scan`, {}, options),
   /** Skills enabled for every addressed recipient; a Room menu names them in `recipient_agent_ids` (none means the manager). */
@@ -2278,16 +2275,8 @@ export const capabilitiesFrameworkApi = {
       const text = typeof value === 'string' || value == null ? value : value.join(',')
       if (text) params.set(key, text)
     }
-    return get<import('@rainver/protocol').ConversationInputSkillPart[]>(`/capabilities/skills/available?${params}`, options)
+    return get<import('@rainver/protocol').ConversationInputSkillPart[]>(`/skills/available?${params}`, options)
   },
-  listCapabilityDefinitions: () =>
-    get<CapabilityDefinition[]>('/capability-definitions'),
-  getCapabilityDefinition: (id: string) =>
-    get<CapabilityDefinition>(`/capability-definitions/${encodeURIComponent(id)}`),
-  listCapabilityPacks: () =>
-    get<CapabilityPackDescriptor[]>('/capability-packs'),
-  getCapabilityPack: (id: string) =>
-    get<CapabilityPackDescriptor>(`/capability-packs/${encodeURIComponent(id)}`),
   previewSkillImport: (data: import('@rainver/protocol').SkillImportPreviewRequest, options?: RequestOptions) =>
     post<SkillImportPreviewResponse>('/skill-sources/import-preview', data, options),
   /** Imports the previewed package; `package_hash` is the preview's, and a changed package answers 409 `skill_package_changed`. */
@@ -2306,10 +2295,7 @@ export const capabilitiesFrameworkApi = {
   /** Files the review; an enabling `binding` makes the same approval enable the package for that scope. */
   createSkillReviewProposal: (skillPackageId: string, data: import('@rainver/protocol').SkillReviewProposalRequest = {}, options?: RequestOptions) =>
     post<SkillImportApprovalProposalResponse>(`/skill-packages/${encodeURIComponent(skillPackageId)}/review-proposal`, data, options),
-  createCapabilityEnableProposal: (capabilityId: string, data: { capability_version_id?: string; project_id?: string; agent_id?: string; user_id?: string; config_json?: Record<string, unknown> } = {}) =>
-    post<Proposal>(`/capability-definitions/${encodeURIComponent(capabilityId)}/enable-proposal`, data),
-  createCapabilityDisableProposal: (capabilityId: string, data: { capability_version_id?: string; project_id?: string; agent_id?: string; user_id?: string } = {}) =>
-    post<Proposal>(`/capability-definitions/${encodeURIComponent(capabilityId)}/disable-proposal`, data),
+
 }
 
 export const contextOpsApi = {

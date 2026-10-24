@@ -10,7 +10,6 @@ const DELIVERY: InvocationDelivery = {
   provider_id: null,
   model: null,
   renderer_version: "managed-semantic.v1",
-  mode: "full",
   planned_items: [
     { item_id: "agent-instructions", semantic_role: "delegated_instruction", required: true },
     { item_id: "retrieved-reference", semantic_role: "reference_data", required: false },
@@ -31,19 +30,8 @@ const DELIVERY: InvocationDelivery = {
       semantic_role: "user_input",
       content: "Summarize the authorized material.",
       source_item_ids: ["current-request"],
-      delivery_phase: "current_user",
     },
   ],
-  cli_session: {
-    binding_ref: { type: "runtime_context_cli_binding", id: "40000000-0000-4000-8000-000000000003", version: "1" },
-    runtime_state_key: "40000000-0000-4000-8000-000000000004",
-    vendor_session_id: null,
-    cursor_from: 0,
-    cursor_through: 1,
-    generation: 1,
-    rotation_reason: "new_scope",
-    lease_generation: 1,
-  },
   control_ref: { type: "execution_control_snapshot", id: "40000000-0000-4000-8000-000000000005" },
   sandbox_ref: null,
   tool_grant_refs: [],
@@ -70,6 +58,19 @@ describe("ACP Runtime Context prompt projection", () => {
         uri: "rainver:skill-root/50000000-0000-4000-8000-000000000001/SKILL.md", name: "portable", mimeType: "text/markdown" });
     }
   });
+  it("sends a lone current message verbatim, as any ACP client sends a follow-up", () => {
+    const followUp: InvocationDelivery = {
+      ...DELIVERY,
+      planned_items: [{ item_id: "current-request", semantic_role: "user_input", required: true }],
+      message_blocks: [{ semantic_role: "user_input", content: "Now also handle the empty case.", source_item_ids: ["current-request"] }],
+    };
+    const blocks = acpRuntimeContextPromptBlocks(followUp, [], ["Read the Rainver work-surface guide."]);
+    expect(blocks).toEqual([
+      { type: "text", text: "Now also handle the empty case." },
+      { type: "text", text: "Read the Rainver work-surface guide." },
+    ]);
+  });
+
   it("preserves delivery order and labels instructions, reference data, and current input", () => {
     const blocks = acpRuntimeContextPromptBlocks(DELIVERY);
     const text = blocks.map((block) => block.type === "text" ? block.text : "").join("\n");
@@ -113,7 +114,6 @@ describe("ACP Runtime Context prompt projection", () => {
           semantic_role: "user_input",
           content: "Summarize the authorized material.",
           source_item_ids: ["current-request"],
-          delivery_phase: "current_user",
         },
       ],
     };
@@ -143,15 +143,5 @@ describe("ACP Runtime Context prompt projection", () => {
     expect(blocks.at(-2)).toEqual({ type: "text", text: "Read the Rainver work-surface guide." });
     expect(blocks.filter((block) => block.type === "text").map((block) => block.text).join("\n"))
       .toContain("Read the Rainver work-surface guide.");
-  });
-});
-
-describe("delta delivery notice", () => {
-  it("replaces the full channel notice with a one-line continuation on a delta delivery", () => {
-    const full = acpRuntimeContextPromptBlocks(DELIVERY);
-    const delta = acpRuntimeContextPromptBlocks({ ...DELIVERY, mode: "delta" });
-    expect(full[0]).toMatchObject({ type: "text", text: expect.stringContaining("ACP has one user-prompt channel") });
-    expect(delta[0]).toMatchObject({ type: "text", text: "Rainver context continuation for this Agent Run; the section rules of this session's first delivery still apply." });
-    expect(delta.slice(1)).toEqual(full.slice(1));
   });
 });

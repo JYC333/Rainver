@@ -218,6 +218,43 @@ describe("run turn", () => {
     expect(response.headers["x-accel-buffering"]).toBe("no");
   });
 
+  it("keeps a quiet running turn connected without inventing progress events", async (ctx) => {
+    if (!db.available || !app) return ctx.skip();
+    await seedManagedRun("run-quiet-stream");
+    await db.pool.query("UPDATE runs SET status='running' WHERE id='run-quiet-stream'");
+    const baseUrl = await app.listen({ host: "127.0.0.1", port: 0 });
+    const controller = new AbortController();
+    try {
+      const response = await fetch(`${baseUrl}/api/v1/runs/run-quiet-stream/turn/stream`, { signal: controller.signal });
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      let body = "";
+      // Wait for two real poll cycles with no new output or state changes.
+      // This proves keepalive bytes reach the client while the Run is quiet,
+      // rather than merely arriving alongside its final state.
+      while ((body.match(/: keepalive\n\n/g) ?? []).length < 2) {
+        const chunk = await reader.read();
+        expect(chunk.done).toBe(false);
+        body += decoder.decode(chunk.value, { stream: true });
+      }
+      expect(body.match(/event: /g)).toHaveLength(1);
+      expect(body).toContain('"state":"working"');
+      expect(body).toContain('"cursor":0');
+
+      await db.pool.query("UPDATE runs SET status='succeeded' WHERE id='run-quiet-stream'");
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        body += decoder.decode(chunk.value, { stream: true });
+      }
+      expect(body).not.toMatch(/event: turn.part_(?:appended|updated)/);
+      expect(body).toContain('"state":"done"');
+    } finally {
+      controller.abort();
+    }
+  });
+
   it("streams a snapshot, then a frame per change, and stops when the turn ends", async (ctx) => {
     if (!db.available || !app) return ctx.skip();
     await seedManagedRun("run-4");

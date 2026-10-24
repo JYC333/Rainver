@@ -4,7 +4,9 @@ Date: 2026-06-20
 
 ## Status
 
-Accepted. Current state lives in
+Accepted; capability-definition, pack, conversion and renderer decisions were
+superseded by the 2026-10-23 capability-layer removal. Untrusted-import and
+original-package authority boundaries remain accepted. Current state lives in
 [`architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md`](../architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md).
 
 ## Context
@@ -71,25 +73,22 @@ evolvable asset and executed by the Workflow execution engine
 ([ADR 0011](0011-inquiry-domain-model.md) decision 4). It is not a capability
 grouping.
 
-### 5. Transitional state
+### 5. Capability-layer removal (2026-10-23)
 
-`NormalizedSkill`, imported-skill conversion, capability binding, pack, and
-renderer paths still exist as transitional implementation. Decision 3 sets
-their replacement direction; their removal is the parked capability-shrink
-plan (trigger recorded in
-[`tasks/deferred-register.md`](../tasks/deferred-register.md)). Until it
-lands, existing import, proposal, policy, Delivery, and audit checks remain
-mandatory and `NormalizedSkill` must gain no new consumers.
+The Skill library now resolves reviewed original packages through one Runtime
+Context path. Definitions, packs, conversion, legacy runtime renderers and the
+three capability tables are removed; `NormalizedSkill` remains a parser result.
+Research identifiers are pipeline-owned stage tags, not registrations. The
+required Work Skill remains a code module. Builtin library packages and the
+research pipeline's future shape are separate work.
 
 ## Consequences
 
-- Capability lifecycle stays reviewable and may later use proposal types such
-  as `capability_install`, `capability_update`, `capability_enable`.
-- Research is modelled as a capability pack, not a product plugin.
-- Imported skills can be stored, inspected, risk-scanned, and bound without
-  enabling execution.
-- The native `capability` runtime adapter remains `planned` and disabled
-  until a separate executor design is approved.
+- Imported Skills can be inspected, risk-scanned, reviewed, bound and delivered
+  without registering an executable operation.
+- Only the System Action registry and gateway grant callable authority.
+- Review and bindings use the canonical proposal appliers; no capability
+  install/update/enable/disable mutation path remains.
 
 ## Non-goals
 

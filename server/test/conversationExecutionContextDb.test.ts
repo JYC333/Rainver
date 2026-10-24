@@ -210,9 +210,9 @@ describe("Conversation execution schema", () => {
         `INSERT INTO session_conversation_backends (
            id, space_id, session_id, bound_by_user_id, agent_id, runtime_profile_id,
            runtime_key_snapshot, backend_mode_snapshot, runtime_config_snapshot_json, runtime_policy_snapshot_json,
-           runtime_state_key, created_at, updated_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, 'claude_code', 'runtime_native', '{}', '{}', $7, $8, $8)`,
-        [randomUUID(), SPACE, id, OWNER, AGENT, RUNTIME, randomUUID(), now],
+           created_at, updated_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, 'claude_code', 'runtime_native', '{}', '{}', $7, $7)`,
+        [randomUUID(), SPACE, id, OWNER, AGENT, RUNTIME, now],
       );
     }
     const threads = new PgHostThreadRepository(db.pool);
@@ -769,9 +769,9 @@ describe("Conversation execution schema", () => {
     await expect(db.pool.query(
       `INSERT INTO session_conversation_backends (
          id, space_id, session_id, bound_by_user_id, agent_id, runtime_profile_id,
-         runtime_key_snapshot, backend_mode_snapshot, runtime_state_key, created_at, updated_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, 'claude_code', 'runtime_native', $7, $8, $8)`,
-      [randomUUID(), SPACE, SESSION, VIEWER, AGENT, RUNTIME, randomUUID(), now],
+         runtime_key_snapshot, backend_mode_snapshot, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, 'claude_code', 'runtime_native', $7, $7)`,
+      [randomUUID(), SPACE, SESSION, VIEWER, AGENT, RUNTIME, now],
     )).rejects.toMatchObject({ code: "23505" });
     const constraints = await db.pool.query<{ conname: string; confdeltype: string }>(
       `SELECT conname, confdeltype

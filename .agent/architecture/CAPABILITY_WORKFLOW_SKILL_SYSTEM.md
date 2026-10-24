@@ -1,74 +1,81 @@
-# Capability, Workflow, And Open Skill System
-
-This document defines the capability/workflow/open-skill control-plane model.
-It describes the framework, not a fully active capability executor.
+# Skills, Tools, And Workflows
 
 ## Position
 
-An external Agent Skill package is the source of truth for its own procedural
-content. Rainver owns the immutable import snapshot and provenance, risk and
-trust review, requested and granted policy, scope/Agent binding, pinned version,
-runtime compatibility, Runtime Context Delivery authorization, and audit. It
-does not own a canonical re-representation of imported skill content.
+Three layers have separate owners:
 
-Implemented and planned ACP runtimes are execution adapters. Runtime-specific
-files or prompt projections are generated adapter artifacts, not content
-authorities. Skill content is model-visible durable context and reaches an
-Agent Run only through Runtime Context Delivery; bounded provider calls remain
-ProviderTask operations, not another Agent runtime.
+| Layer | Meaning | Authority |
+|---|---|---|
+| Tool / System Action | An atomic gated operation on Rainver state | `systemActions/` registry and gateway |
+| Skill | Procedural content the model reads and may follow | Original immutable package, selected through the Skill library |
+| Workflow / pipeline | Server-enforced order, gates, checkpoints and retries | `automations/` executor or `projectResearch/` state machine |
 
-A Skill is a procedure for a model. A System Action / Tool is an
-rainver-owned callable operation exposed through the policy-enforced
-gateway. A package's tool, hook, script, dependency, or MCP declaration is a
-request only and grants no callable or execution authority. A Workflow is a
-third concept: an enforced process definition, not a soft instruction package.
+A Workflow starts Runs. A Run may receive Skills and call Tools. Reading a
+Skill grants no callable authority. Rainver owns provenance, risk review,
+policy, scope bindings and Runtime Context Delivery authorization; the package
+remains the authority for its own content. There is no capability-definition,
+pack, conversion or normalized-rendering layer.
 
-The current paths are canonical capability definitions, packs,
-`NormalizedSkill`, imported skill conversion, capability runtime bindings,
-and renderers built from the normalized representation. They stay under the
-existing proposal, policy, Delivery, and audit checks. Do not treat them as
-the authority model, and do not add callers that extend them. The native
-`capability` runtime remains disabled.
+The Skill library module and its selection/overlay API namespace are `skills`. Diagnostic YAML in `catalog/capabilities/` is not an
+execution registry. `/skills` is the product surface; `/capabilities` is absent.
+See [GLOSSARY.md](GLOSSARY.md) for runtime and extension terms.
 
-Terminology for runtime binaries, adapters, extensions, tool bindings, skill
-bindings, and product plugins is defined in
-[GLOSSARY.md](GLOSSARY.md). These are separate ownership boundaries; an
-imported Open Skill is source material and is not a plugin or a runtime
-permission grant.
+## Rainver Work Skill
 
-## Concepts
+`skills/workSkill.ts` is a required code module defining the work-surface
+contract: how a dispatched Agent lists authorized actions, reports progress and
+hands decisions back. `runWorkSurface.ts` and `remoteHostCliAdapter.ts` deliver
+it as a file only when a work surface exists. Tool-free Runs stay tool-free.
+It is not an optional library package or binding, and cannot be disabled by
+turning off an imported Skill.
 
-### The builtin Work Skill
+Judgment rules reuse `systemActions/conversationPolicy.ts`; command mechanics
+and the bounded direct-write rules remain in the Work Skill. A Run records its
+content hash. Actual authority is always the Run's snapshotted tool grants,
+checked on every call. Builtin library packages are separately optional content,
+described below; the Work Skill is never registered as one.
 
-The Rainver Work Skill (`capabilities/workSkill.ts`) is the harness contract a
-dispatched agent works under: how to reach the tool surface, when to report,
-how to hand a decision back. It is a builtin skill: `SkillSourceType`
-`"builtin"` is content Rainver owns and versions with the server,
-with no provenance, risk, or approval state, because there is no third party to
-trust. It is not an enablement: a Run that has tool grants gets it, with nothing to
-turn on and nothing that can turn it off, because a Run that can act and
-cannot report is an error state rather than a configuration. A Run with no
-grants gets no Skill and no surface, which is the same fail-closed answer
-`SYSTEM_ACTIONS.md` states as "tool-free Runs remain tool-free".
+## Skill library
 
-Its judgement rules come from `systemActions/conversationPolicy.ts`, the same
-constants the conversational surfaces assemble — `IDENTIFIER_POLICY`,
-`DURABLE_ACTION_CLAIM_POLICY` and `ACTION_RESULT_REPORTING_POLICY`, which is
-the set the Room dispatch prompt uses (`agentGroups/roomStandingContext.ts`).
-Editing one of those constants changes
-what every surface that includes it tells an agent. What
-is Skill-specific and hand-written is the command mechanics and the ADR 0017
-§2 paragraph on direct writes and bounds — the latter restates substance
-`QUESTION_DECOMPOSITION_ACTION_POLICY` also carries, and is the one place this
-arrangement still has two copies of a rule. What an agent may actually call is
-unchanged by it — the Run's
-`permission_snapshot_json.tool_grants`, enforced call by call — and the Skill
-points at `list` rather than naming a fixed set. Each Run records the content
-hash of the Skill it was given.
+### Builtin package source
 
-The Work Skill is delivered as a file. Explicitly selected imported Skills
-are delivered as their original package files, separately from builtin
-capability renderings; see the unified library below.
+`skills/builtinPackages.ts` owns the server-shipped package catalog and startup
+sync. The catalog is intentionally empty (D9); the only sample package lives in
+`server/test/support/builtinSkillFixture.ts`, with no product instructions.
+Packages come from code-owned file bytes and an explicit key/release version.
+`skill_sources.source_type = 'builtin'` is the existing schema's source-kind
+column; no additional `kind` column, table or migration is needed.
+
+Startup `runBuiltInSeeds` syncs each existing Space; `seedSpaceDefaults` also
+syncs new Spaces, including registration's personal Space, in its creation
+transaction. Each Space gets its own immutable package/source per key and
+release, preserving the existing package/binding composite foreign key and
+Space read predicates. Stable ids plus a transaction advisory lock serialize
+concurrent syncs. Repeating a release leaves its rows and timestamps unchanged;
+different bytes under that release are refused, and a new release adds rows
+without rewriting prior versions or moving their bindings. Startup validates
+the original stored files with the same integrity reader used by Delivery.
+Startup sync isolates each Space/release in its own transaction, logs its
+failure with Space, package key and version, and continues with other packages
+and Spaces. The startup seed runner also catches a sync-level failure so
+Evolution, Source and Prompt seeding still runs. New-Space bootstrap remains
+strict within the creation transaction; the production-catalog unit test
+parses every shipped entry and verifies that its release matches `SKILL.md`.
+
+The shared pure `prepareSkillPackageFiles` builder applies existing path/size
+limits, Markdown parsing, inventory hashes and risk scanning. The same atomic
+snapshot writer persists source, package and original files. Builtin packages
+enter the existing `reviewed` deliverable state as server-provided content,
+without external acquisition, import preview, import or review proposals and
+without a fabricated human review record. Public import requests cannot claim
+this source kind. No scripts, tools, hooks or MCP declarations acquire authority.
+
+Seeding creates **no bindings or proposals** (D10). The library labels the
+source **Built-in**, offers no import/content-review controls for it, and keeps
+the normal scope binding/enable/disable proposal flow. Only an accepted
+`runtime_skill_binding_update` proposal enables it; Runtime Context then uses
+the unchanged original-package selection, authorization and Delivery path.
+Upgrading a shipped version never enables it or repins an existing binding.
 
 ### Open Skill
 
@@ -78,7 +85,7 @@ global CLI Skill directories of an owned Host. Remote URL acquisition supports G
 websites and registries are not fetched. A package usually contains `SKILL.md` plus optional references, assets, scripts, and
 vendor metadata.
 
-`capabilities/skillSourceFetch.ts` uses the shared `sources/outboundUrlSafety`
+`skills/skillSourceFetch.ts` uses the shared `sources/outboundUrlSafety`
 `fetchGuarded` boundary for content and GitHub API metadata. The original host
 must remain unchanged on every redirect (`raw.githubusercontent.com` for files,
 `api.github.com` for metadata); each hop is checked before connecting. The shared
@@ -97,8 +104,8 @@ whether and where the content may be delivered, not whether Rainver owns it.
 
 ### NormalizedSkill
 
-`NormalizedSkill` is an internal representation used by the importer and the
-conversion path. Do not extend it. It captures:
+`NormalizedSkill` is the parser, inventory and risk-scan result used by the
+importer and content reader. It captures:
 
 - instructions
 - package-root-relative resource inventory
@@ -108,7 +115,7 @@ conversion path. Do not extend it. It captures:
 - vendor extensions
 - deterministic risk analysis
 
-It is not a content authority and must not gain new consumers. Vendor
+It is not a content authority; runtime delivery reads original package files. Vendor
 declarations such as `allowed-tools` remain permission requests, not grants.
 
 ### SkillPackageFile
@@ -174,7 +181,7 @@ proposal-type risk ceiling still leaves critical-risk packages to the owner.
 Applying an Agent binding re-checks that the Agent exists, is not archived and
 is still managed by the proposer.
 
-`GET /api/v1/capabilities/skills/available` takes optional conversation,
+`GET /api/v1/skills/available` takes optional conversation,
 Project and Agent ids and returns eligible typed selections. For a Room
 conversation it also takes `recipient_agent_ids` (comma-separated active Room
 Agents; none means the manager, who receives an unaddressed message) and returns
@@ -217,8 +224,7 @@ Hosts fail the existing compatibility gate before accepting work.
 
 Scripts, hooks, dependency declarations and vendor tool hints are retained as
 content, not installed or automatically executed. Existing execution and tool
-authority continues to govern every action. Original-package selection does
-not invoke the legacy normalized conversion/rendering path.
+authority continues to govern every action. Original-package selection reads the immutable files directly.
 
 ### Global CLI discovery and library UI
 
@@ -269,305 +275,87 @@ binding choices and private environment names.
 
 API:
 
-- `GET /api/v1/capabilities/skills/index` returns a lightweight Skill Library
+- `GET /api/v1/skills/index` returns a lightweight Skill Library
   Index with effective name/alias plus the active space overlay.
-- `GET /api/v1/capabilities/skills/:skillPackageId/local-overlay` reads the
+- `GET /api/v1/skills/:skillPackageId/local-overlay` reads the
   active overlay for the requested scope.
-- `PUT /api/v1/capabilities/skills/:skillPackageId/local-overlay` upserts or
+- `PUT /api/v1/skills/:skillPackageId/local-overlay` upserts or
   archives the local overlay. It does not mutate `normalized_json` and does not
-  create/enable capabilities.
+  approve or enable a Skill binding.
 
 Overlay authority follows the scope it configures
-(`PgCapabilitiesRepository.assertOverlayScopeAuthority`). Reading needs read
+(`PgSkillsRepository.assertOverlayScopeAuthority`). Reading needs read
 access to the scope's object, and an unreadable one is answered 404. Writing a
 `space` overlay needs a Space owner/admin; a `project` or `project_folder`
 overlay a Project writer who also reads the Project; a `user` overlay is that
 person's; an ordinary `agent` overlay its manager's (`canChangeAgent`); a
 managed Assistant's overlay its configurer's (`canConfigureAssistant`), so a
 Space admin's general overlay authority does not reach a creator's or Project
-owner's Assistant. An overlay grants no capability trust, egress or credential
-use.
+owner's Assistant. An overlay grants no trust, egress or credential use.
 
-Capability proposal approval follows the scope its effect lands in. A Skill
-import review, an installation, a shared version update and a shared runtime
-binding change the Space and are refused at apply when filed under a Project
-(a Project owner could otherwise approve them); a capability enablement's
-payload `project_id` must equal the proposal's own `project_id`, so a
-Space-wide enablement cannot be approved under a Project's authority nor a
-Project enablement at Space level.
+## One Runtime Context delivery path
 
-### CapabilityDefinition
+`PgRuntimeSkillProvider.loadCandidatesForRun` delegates to `loadSelectedSkills`
+for reviewed packages and effective `skill_bindings`, including canonical
+message selections. Acquisition and both Gateway authorization passes use this
+same resolver. They retain the execution control's Space, Run, Project, Agent,
+viewer, session and canonical message scope; the final pass locks package
+selection against concurrent binding/review changes. The Gateway rejects stale
+binding ids, versions, instruction text and original-file payloads. An old
+`runtime_skill_binding` plan must be rebuilt, never silently accepted.
 
-`CapabilityDefinition` is the current Rainver ability object. It defines
-the semantic ability, input/output contracts, permissions, artifact types,
-proposal policy, supported execution modes, runtime support, and lifecycle
-status.
+Items are required delegated instructions with `skill_package_binding` source
+references and Run-specific hash versions. Original bytes reach Hosts only in
+an accepted `Delivery.skill_packages`, tied to authorized planned-item and
+source-item references. Hosts materialize those files, not a normalized
+re-rendering. Continuation turns retain the same governed delivery path.
 
-Definitions may currently be built in, official, generated, or converted from
-an imported skill. Do not extend imported-skill conversion: an external Skill
-remains a `SkillPackage`, while rainver-owned
-System Actions retain their own registry and gateway. Users do not directly
-mutate definitions.
+## Review, policy and security
 
-### CapabilityProfile
+Imports start `imported`, unreviewed and unbound. Review sets `reviewed`;
+`rejected`, `archived` and `superseded` remain non-deliverable. The retired
+`converted` status is migrated to `reviewed`. Changed external content requires
+a new import and hash; changed builtin content requires a new shipped release
+and package row. Local overlays cannot change package bytes or grant trust.
 
-`CapabilityProfile` is user-, space-, project-, or agent-specific configuration
-for a capability. It can store runtime preference, prompt overrides, source
-mode, output policy, budget, and review policy.
+Review uses `skill_import_approve`; bindings use `runtime_skill_binding_update`
+with operation `skill_package_binding_update`. Both apply through the canonical
+proposal registry. Review is a Space decision and cannot be filed under a
+Project; binding effects re-check their own scope authority. Pending reviews
+are idempotent per person, package hash and operation. No install, conversion,
+capability update or capability enable/disable applier remains.
 
-The implementation stores capability enablement configuration. Broader
-profile surfaces are not implemented.
+Scripts and dependencies are never executed or installed during import.
+Declared tools, hooks and MCP servers register nothing and confer no permission.
+Only code-owned System Action entries, Run grants and the gateway can authorize
+a call. Imported content is untrusted and cannot directly write active Memory;
+Memory retains its own canonical authorization and apply boundary. GitHub
+acquisition uses the shared outbound guard; unsupported hosts and private
+network destinations fail closed. Preview hashes bind approval to the exact
+bounded file inventory that was inspected.
 
-### CapabilityPack
+## Workflows and research stages
 
-`CapabilityPack` is a grouping and distribution unit. It contains related
-capabilities, docs/tests/examples, artifact types, and possibly artifact
-renderer mappings.
+Reusable enforced processes are approved `workflow_definition.v1` versions,
+owned by the Workflow executor, not the Skill library. Auto Research remains a
+code-enforced pipeline. Its eight frozen identifiers in
+`projectResearch/researchStages.ts` are stage tags, including historical
+`runs.capability_id` values; they are neither Skills nor Tools. Research Agents
+need no stage ids in `capabilities_json`, and stages deliver no stub Skills.
+Procedures remain in `projectResearch/promptRegistry.ts`. The pipeline's future
+shape is a separate research-layer plan, not decided by this cleanup.
 
-Packs are static built-in packs and imported skill-derived capability
-candidates. There is no marketplace.
+## Ownership and limits
 
-### WorkflowDefinition v1
+- `skills`: safe imports, builtin source seeding, original files, risk scan,
+  overlays, review and bindings.
+- `runtimeContext`: selection acquisition, planning, authorization and Delivery.
+- Host adapters: materialization of authorized original files.
+- `systemActions`: callable registry and permission-enforced dispatch.
+- `automations` / `projectResearch`: enforced process execution.
+- `catalog`: read-only diagnostic manifests; `proposals`: review/apply orchestration.
 
-`workflow_definition.v1` is the versioned workflow-as-data shape stored in an
-`evolvable_asset_versions.content_json` row whose asset type is
-`workflow_template`. It contains bounded nodes, explicit dependency edges,
-capability/prompt/agent/runtime bindings, verification-recipe references, node
-contract metadata, and approval checkpoints. The protocol schema rejects
-duplicate/unknown dependencies and cycles, and caps definitions at 30 nodes.
-
-Project Research does not publish built-in workflow presets from its capability
-pack. Its internal immutable execution-per-pass definitions are created under
-`project_research.*` asset keys when a managed pass needs them; they are
-execution provenance, not user-selectable domain Templates. User or space
-workflow versions use the draft → evaluation →
-promotion-proposal → approval path; the generic evolvable asset APIs do not
-grant approval directly.
-
-### RuntimeSkillBinding
-
-`RuntimeSkillBinding` selects skill content for a runtime. Rows map
-capability versions to these runtime-specific forms:
-
-- Claude Code skill layout
-- Codex skill layout
-
-Runtime skill files are generated adapter files. They are not source of truth.
-Built-in capabilities can use their default runtime bindings after an enabled
-capability enablement is selected. Imported skill capabilities use persisted
-`capability_runtime_bindings` rows attached to reviewed capability versions.
-`capability_versions.status = 'available'` is a lifecycle state and may apply
-to multiple reviewed versions in one Space. The approved version for a Space,
-Project, Agent, or User scope is pinned only by that scope's
-`capability_enablements.capability_version_id`; publishing or enabling another
-version never rewrites other scopes' pins. A null version pin is reserved for
-the matching built-in definition and never selects persisted imported runtime
-bindings; imported conversion also rejects ids that collide with built-in keys.
-
-### Runtime skill render
-
-`renderClaudeSkill` and `renderCodexSkill` (`capabilities/runtimeRenderers.ts`),
-reached through `renderRuntimeSkillCandidate`, render canonical capability
-data, normalized skill data, and profile configuration into runtime target
-content. That input is not a canonical content representation. The
-renderers are pure functions that produce deterministic:
-
-- Claude Code generated skill directory suggestions with `SKILL.md`
-- Codex generated skill directory suggestions with `SKILL.md` and optional
-  `agents/openai.yaml`
-
-Runtime Context turns selected Claude/Codex skill renderings into typed,
-mandatory delegated-instruction items and persists them through the Gateway as
-ordered Delivery message blocks. No vendor instruction file is written.
-
-Run creation persists `capabilities_json` as run-scoped execution context.
-Context preparation prefers a non-empty run-level capability list and falls
-back to the AgentVersion `capabilities_json` for ordinary agent runs, while
-`runs.capability_id` remains the single primary capability field.
-
-## Frontend Surfaces
-
-The framework is exposed through existing product areas rather than a separate
-plugin boundary:
-
-- Project Research uses its own governed standing and Thread-scoped focus
-  services. Internal passes still execute through immutable Workflow Executions,
-  while user-facing Project Research controls call the domain application
-  service rather than constructing generic run drafts in the browser.
-- The Capabilities page shows builtin definitions and packs. The separate
-  `/skills` page owns import preview, original-file inspection, review proposals
-  and scope-binding proposals. Import defaults to filing a review-and-enable
-  proposal for the Space when the person is a Space owner or admin and for
-  themselves otherwise (the Space scope is offered only to owners/admins), or
-  "import only". If filing the enabling review fails after import, the dialog
-  files the review alone and explains the outcome inline. The package panel
-  decides a pending review or binding proposal in place through the normal
-  proposal accept/reject API, and the server still enforces the approver role.
-  Empty `/` and `@` Skill menus link to the conversation Space's library.
-  Conversion remains a legacy API with no web client, not the new library
-  workflow.
-- The Skill Library Index and local-overlay APIs have no web consumer; they
-  remain server APIs only.
-- Project Research materializes `research_report.v1` into its domain Reader.
-  Its `research_report.archive.v1` Artifact is a hidden audit/export backup;
-  Artifact Detail does not render it as the report.
-
-The frontend does not bypass proposal or run boundaries. Skill review,
-conversion, and capability enablement remain proposal-governed; Research
-execution remains a normal queued agent run.
-
-## Research Example
-
-Research starts as a capability pack with reusable actions and artifact type
-mappings, not as a product plugin.
-
-The built-in `research` pack includes:
-
-- `research.source_collect`
-- `research.source_summarize`
-- `research.evidence_extract`
-- `research.brief_synthesize`
-- `research.idea_generate`
-
-It declares no workflow presets. A preset is admitted only when it changes
-concrete behaviour or configuration.
-
-The synthesis output artifact type is `research_report.archive.v1`; the
-user-facing report is the corresponding `project_research_reports` row.
-
-## Security And Governance
-
-- External skills default to imported, unreviewed, and disabled.
-- Scripts are never executed during import.
-- Import does not install npm, pnpm, Python, or other dependencies.
-- Vendor tool declarations are permission requests, not permission grants.
-- Actual runtime permissions are the intersection of the skill request,
-  capability definition, profile configuration, and Rainver policy.
-- Skill import records source URL, source ref, commit SHA when available, fetch
-  time, package hash, package root, and bounded same-repository file inventory.
-- GitHub imports must pin a commit SHA when available or at least record source
-  ref plus content hash.
-- Import is bound to the preview the person looked at. Preview returns
-  `package_hash`, the hash of the package inventory with each fetched file's
-  SHA-256. `POST /api/v1/skill-sources/import` must carry that
-  `package_hash`, re-fetches the source, and saves the snapshot only when the
-  bytes it fetched hash to it. Otherwise it answers 409
-  `skill_package_changed`, and the Skills page withdraws the preview and
-  asks for a new one. Approval of one preview never applies to other content.
-- An imported Skill's capability version carries its reviewed snapshot in
-  `metadata_json`: `normalized_skill`, the `capability_definition` derived
-  from it, `skill_package_id` and `created_from_proposal_id`. `content_ref` and
-  `content_hash` name the package and its hash. Runtime rendering reads these
-  keys. `capability_update` refuses to change any of them on a
-  `source = 'imported_skill'` version (422
-  `imported_skill_snapshot_immutable`); new content comes only from a new
-  import, which produces a new snapshot and hash. Status and other metadata
-  remain updatable.
-- Package imports are limited to files under the selected Skill root. Both
-  text and binary bytes are retained within bounds. Unsafe, colliding or
-  nonportable paths and incomplete packages fail closed.
-- Truncated or over-limit GitHub package trees fail closed because an incomplete
-  inventory cannot be treated as a reviewed package snapshot.
-- Raw external content remains untrusted.
-- Untrusted external content must not directly enter active Memory.
-- Memory writes remain proposal-based.
-- Skill import approval, capability install/update/enable/disable, and runtime
-  skill binding changes go through `proposal.apply` and registered proposal
-  appliers.
-- Skill local overlays are configuration, not capability trust grants. They do
-  not approve a skill, convert a skill, enable a capability, or bypass proposal
-  review. Capability conversion and enablement continue through
-  `capability_enablements` and proposal boundaries.
-- Review (`skill_import_approve`) and Convert (`capability_install`) are
-  idempotent per person, package snapshot and operation. The proposal's
-  `pending_operation_key` is `skill_package:<package>:<package_hash>:<operation>:<person>`,
-  unique among pending proposals of its type in a Space
-  (`uq_proposals_pending_operation`). Asking again while that proposal is
-  pending returns it with 200 instead of 201, and two concurrent requests
-  file one proposal. A review request whose binding differs from the pending
-  one answers 409 `skill_review_pending` instead. Once it is decided, a new
-  request files a new one. Skill package reads include the caller's
-  `pending_proposal` (`{id, operation}` or null), counting a review only while
-  the package is `imported` and a Convert only while it is `reviewed`. The
-  `/skills` package panel shows it as pending and disables the scope actions.
-- Conversion requests create a `capability_install` proposal. Applying it
-  produces a disabled draft capability version plus disabled runtime bindings;
-  requesting direct enablement during conversion (`enable_for_project_id`) fails
-  closed.
-- Skill import and conversion are atomic units of work: a partial failure leaves
-  no orphaned source, draft version, or runtime binding behind.
-- Claude/Codex renderer file representations are converted to Delivery content;
-  they are never written into the runtime sandbox.
-- `runtime_skill.render` is checked before rendering. The runtime provider must
-  prove that an enabled capability enablement selected the binding. Enabled
-  bindings of any risk may render because high/critical review happens at the
-  owner-approved `capability_enable` proposal. Direct render policy checks
-  without enablement proof fall back to registry approval.
-- Safe Invocation Snapshots record the selected binding/version source ref and
-  delivered content hash, not raw rendered instructions.
-- Unsupported source hosts fail closed.
-- Private-network URL import is rejected.
-
-## Proposal And Policy Integration
-
-Registered proposal types:
-
-- `capability_install`
-- `capability_update`
-- `capability_enable`
-- `capability_disable`
-- `skill_import_approve`
-- `runtime_skill_binding_update`
-
-Policy actions:
-
-- `capability.update`
-- `capability.enable`
-- `capability.disable`
-- `skill.import`
-- `skill.convert`
-- `runtime_skill.binding_update`
-- `runtime_skill.render`
-- `runtime_skill.execute`
-
-`skill.import`, `skill.convert`, `capability.update`, `capability.enable`,
-`capability.disable`, and `runtime_skill.binding_update` are proposal-governed
-actions enforced through `proposal.apply`. `runtime_skill.render` is enforced
-during Runtime Context acquisition before Gateway Delivery. `runtime_skill.execute` remains reserved until
-a native execution path exists.
-
-## Module Ownership
-
-- `catalog` remains the raw on-disk catalog reader for bundled manifests.
-- `capabilities` is the product/control-plane module for canonical capability
-  definitions, packs, safe skill import, and runtime bindings.
-- `runtimeAdapters` remains the adapter type/spec registry.
-- `runs` remains the execution lifecycle owner.
-- `runtimeContext` remains the sole typed acquisition, planning, Delivery, and continuity authority.
-- `proposals` remains the review/apply orchestrator.
-
-## Current Limitations
-
-- The native `capability` runtime adapter is declared and disabled.
-- Import preview supports safe GitHub `blob`/`tree` package roots and
-  `raw.githubusercontent.com` URLs that resolve to `SKILL.md`.
-- Registry and official-catalog acquisition are not implemented. GitHub,
-  uploads and global CLI discovery on an owned Host share the same preview path.
-  Project Folder acquisition is not an import source.
-- Host acquisition follows the daemon's folder-read policy; forbidden paths,
-  symlinks and dependency directories omitted by that policy are not copied. No
-  arbitrary server-local path import exists.
-- No native web search service is implemented.
-- Workflow drafts set one primary `runs.capability_id` and
-  persist the full workflow capability list in `runs.capabilities_json`.
-- Native runtime skill execution is not implemented; rendering only supplies
-  adapter-specific instructions or prompt blocks.
-- `RuntimeAdapterSpec` entries declare the executor family consumed by runs
-  orchestration. Adapter capability and trust declarations are conservative.
-  There is no conformance-backed route gate. Do not treat a static declaration
-  as one.
-- Runtime-internal CLI subagents are not represented uniformly by the current
-  capability model. Managed API delegation remains group-scoped and
-  policy-gated. Claude runs render and verify a run-scoped settings file that
-  denies the `Task` tool. Codex has no equivalent verified control, so it stays
-  `unknown`. Planned runtimes are not executable by declaration.
+The Skill library does not execute scripts, install dependencies, serve a
+marketplace or arbitrary URL importer, or discover ambient runtime Skills.
+Runtime compatibility and ambient-discovery rules
+remain properties of each adapter. See [runtime-adapters.md](../modules/runtime-adapters.md).

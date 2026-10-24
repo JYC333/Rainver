@@ -96,7 +96,7 @@ function agentDelegateToolDefinition(targets: readonly AgentDelegationTarget[]):
           budget: {
             type: "object",
             additionalProperties: true,
-            description: "Optional trace-safe hints. Only when the person explicitly requests sustained task collaboration, announce and declare collaboration on the first delegation: task_id from task.list covering the entire authorized workflow (not just its current stage), 1–2 fixed participant_agent_ids, and max_delegations (1–128) for the entire task. The original human turn sets it once; completion turns cannot reset or widen it. Ordinary ad-hoc delegation keeps its small default budget.",
+            description: "Optional trace-safe hints. Only when the person explicitly requests sustained task collaboration, announce and declare collaboration on that Task's first delegation: task_id from task.list covering the entire authorized workflow (not just its current stage), 1–2 fixed participant_agent_ids, and max_delegations (1–128) for the entire task. The original or coordinator completion turn may declare after temporary delegations; accounting starts at declaration. An active collaboration cannot be reset or widened. Once its Task is done/cancelled, declare a new open Task and fixed bounds in the same container, including on a completion turn. Temporary Room delegation shares a roster-scaled soft budget and a hard limit twice that size; a soft warning permits continued work.",
             properties: {
               collaboration: protocol.systemActionInputJsonSchema({ input_schema: CollaborationBudgetSchema }),
             },

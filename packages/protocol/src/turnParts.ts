@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema } from "./common.js";
-import { JsonObjectSchema } from "./capabilities.js";
+import { JsonObjectSchema } from "./common.js";
 import { AgentWaitForResultsScopeSchema } from "./agentGroupRuns.js";
 import { RunStatusSchema } from "./runOrchestration.js";
 import { RuntimeSessionConfigDroppedSelectionSchema } from "./hosts.js";

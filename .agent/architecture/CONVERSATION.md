@@ -100,7 +100,11 @@ failure; only a provider-reported failed status is one.
 
 Tool output is displayed separately from the provider-reported failure status;
 ordinary output and warnings do not become error messages just because a call
-failed. Host command summaries preserve a reported numeric exit code outside
+failed. A command with a reported nonzero exit has a neutral "Command returned"
+summary; its exit code and explanation are available in the expanded details,
+since the code alone does not establish a failed turn. Tool failures without
+a reported process exit code retain their error indicator.
+Host command summaries preserve a reported numeric exit code outside
 the bounded output text. New output summaries retain up to 4,000 characters,
 keeping the beginning and end with an explicit omitted-middle marker. Input
 and output summaries pass the canonical `redactSecretPatterns`
@@ -200,6 +204,10 @@ an idle timeout on that connection is the ordinary ending rather than a fault.
 A client that treats a blocked ending as an error drops the one turn carrying
 the approval link.
 
+The server writes an SSE keepalive comment on every turn poll, even when no
+part or state changed, so long commands and approval waits do not leave the
+response idle. Comments do not change the turn cursor or create transcript parts.
+
 ## What each turn reads
 
 A Room turn's reading model is bound to the action that created it, never to a
@@ -209,9 +217,10 @@ a discussion — and the Manager's own judgment decides whether to delegate.
 
 - **A participant** — an Agent a person addressed, or one a discussion wave
   addressed — reads the **shared window**: on a fresh or reset vendor session
-  the standing context, Project state, the rolling summary and the messages it
-  does not cover; on a resumed session only the messages since its own last
-  turn, plus the standing context when it changed (`modules/rooms.md`, "Host-bound
+  the standing context, Project state and the conversation title, with no
+  transcript (history is read on demand with `conversation.search` /
+  `conversation.read`); on a resumed session only the messages since its own
+  last turn, plus the standing context when it changed (`modules/rooms.md`, "Host-bound
   specialists and direct chat"). A recipient serialized behind others also gets the
   replies already given to the same message, each with its `[Changes]` block.
 - **A debate** starts independent: in its first round that "replies already
@@ -223,7 +232,8 @@ a discussion — and the Manager's own judgment decides whether to delegate.
   session was just renewed, and the Manager's instruction — no conversation
   window. What it changed comes back to the Manager as a `[Changes]` block in
   the delegation result.
-- **A handoff turn** reads only its own request; the session it resumes
+- **A summary turn** (the person asked the Agent to summarize the
+  conversation) reads only its own request; the session it resumes
   already holds the conversation.
 
 ## Rendering
@@ -236,7 +246,20 @@ renderer. Where a Room message goes is decided in the shared Room composer
 (`RoomMessageComposer`), so both callers show the same route line; see
 `modules/rooms.md`, "Addressing and routing a message".
 `ConversationTurn` renders one Agent turn in whichever of its four states it
-is in. Room and Project surfaces keep a compact `ConversationActivity` strip
+is in. Shared `MessageResponse` constrains Markdown to its available width and
+allows long words, URLs and inline code to wrap, including inside indented
+progress text and narrow embedded panels. Wide fenced code and tables keep
+their own scrolling; transcript containers must not hide horizontal overflow
+to compensate for prose that cannot wrap.
+`index.css` scans the installed Streamdown `dist/*.js` with Tailwind's
+`@source`, so list indentation and code/table scrolling utilities are generated
+from the renderer itself rather than incidentally from other app components.
+The Room page uses an explicit `minmax(0, 1fr)` single grid column below `lg`;
+an implicit `auto` column lets unbroken navigation labels widen the entire
+conversation even when individual Markdown elements fit their bubble.
+`pnpm run test:layout` in `apps/web` checks the built Room and Agent Work routes
+in Chromium, including clipping ancestors that root `scrollWidth` cannot reveal.
+Room and Project surfaces keep a compact `ConversationActivity` strip
 outside the scrolling transcript, above the composer, so later specialist replies
 cannot push unfinished work out of view. It names queued, working, cancelling and
 blocked Agents using the existing Run/Turn facts; it adds no polling or execution
@@ -291,19 +314,13 @@ send. A native copy with no signed-in account remains usable when its ACP
 profiles use the same installation gate; an unavailable ACP session does not
 turn a signed-out copy into a selectable runtime.
 
-The execution context also stores the Primary Workspace Git baseline. Direct
-Host sends and Room dispatch compare the current branch, commit, and readiness
-to that baseline on the server before a send can commit its user message or
-Run; a changed workspace returns a refresh-required conflict. The one
-exception is a HEAD this Conversation's own Agent moved: the host reports the
-branch and HEAD before and after every Run with its diff, the context keeps
-the exit HEAD of the last writing Run that started from the accepted HEAD
-(`last_run_git_branch/head`), and when the current branch and commit equal it
-the send advances the baseline itself — clearing that record — and proceeds. The Run's immutable
+The execution context records the Primary Workspace's Git branch, commit,
+and readiness as observed at initialization, for display and audit only. No
+send compares the current checkout to it: the vendor CLI works in the
+directory and reads its Git state itself when it needs to. The Run's immutable
 contract records the Git snapshot observed at its start, and the Run's
-`output_json.workspace_after` where it left the checkout. A user may refresh
-the baseline explicitly, but conversation controls do not switch branches,
-commit, push, or deploy.
+`output_json.workspace_after` where it left the checkout. Conversation
+controls do not switch branches, commit, push, or deploy.
 
 Conversation turns expose shared Run controls: active Runs can be stopped via
 the canonical Run API and finish visibly as cancelled with partial output;

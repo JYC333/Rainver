@@ -1,3 +1,4 @@
+import { RESEARCH_STAGES } from "./researchStages.js";
 import { randomUUID } from "node:crypto";
 import { HttpError, objectValue, optionalString, type Queryable, type SpaceUserIdentity } from "../routeUtils/common.js";
 import { contentAccessLevelSql, contentReadSql } from "../access/contentAccessSql.js";
@@ -37,7 +38,7 @@ export const RESEARCH_ADHOC_DAILY_RUN_LIMIT = 20;
  * labels for the two entries.
  */
 const RESEARCH_ADHOC_TASK = "project_research_adhoc_analyze";
-const RESEARCH_ADHOC_CAPABILITY_ID = "research.adhoc_analyze";
+const RESEARCH_ADHOC_STAGE_ID = RESEARCH_STAGES.adhoc_analyze;
 const RESEARCH_NOTEBOOK_CHAT_TASK = "project_research_notebook_chat";
 const RESEARCH_BOUNDED_SYSTEM_PROMPT =
   "You are the Project Research bounded analysis task. Work only on the supplied notes and evidence context, "
@@ -308,7 +309,7 @@ export class ProjectResearchAreaService {
         prompt,
         instruction,
         project_id: projectId,
-        capability_id: RESEARCH_ADHOC_CAPABILITY_ID,
+        capability_id: RESEARCH_ADHOC_STAGE_ID,
         contract_snapshot: {
           source: { kind: "direct", id: note.id }, project_id: projectId,
           policy_context_json: createManagedExecutionPolicy("project_research", true),
@@ -411,7 +412,7 @@ export class ProjectResearchAreaService {
       completion: "structured",
       runType: "agent", triggerOrigin: "manual",
       spaceId: identity.spaceId, userId: identity.userId, projectId,
-      task: RESEARCH_NOTEBOOK_CHAT_TASK, capabilityId: "research.ask",
+      task: RESEARCH_NOTEBOOK_CHAT_TASK, capabilityId: RESEARCH_STAGES.ask,
       providerId: resolved.modelProviderId, model: resolved.modelName,
       system: RESEARCH_BOUNDED_SYSTEM_PROMPT,
       messages: [{ role: "user", content: instruction }],
@@ -611,7 +612,7 @@ export class ProjectResearchAreaService {
   private async adhocRunsUsedToday(spaceId: string, projectId: string): Promise<number> {
     const result = await this.db.query<{ used: number }>(
       `SELECT count(*)::int AS used FROM runs
-        WHERE space_id=$1 AND project_id=$2 AND capability_id IN ('research.adhoc_analyze','research.ask')
+        WHERE space_id=$1 AND project_id=$2 AND capability_id IN ('${RESEARCH_STAGES.adhoc_analyze}','${RESEARCH_STAGES.ask}')
           AND created_at >= date_trunc('day', now())`,
       [spaceId, projectId],
     );
@@ -830,7 +831,7 @@ function adhocAnalysisInstruction(input: {
  * what a queued Run runs on.
  */
 export function registerResearchProviderTaskRuns(): void {
-  providerTaskRunPreparers.register(RESEARCH_ADHOC_CAPABILITY_ID, async ({ db, config, run }) => {
+  providerTaskRunPreparers.register(RESEARCH_ADHOC_STAGE_ID, async ({ db, config, run }) => {
     const contract = objectValue(run.contract_snapshot_json);
     const hints = objectValue(contract.route_hints_json);
     const providerId = optionalString(hints.provider_id);
@@ -849,7 +850,7 @@ export function registerResearchProviderTaskRuns(): void {
       userId,
       projectId: run.project_id ?? null,
       task: RESEARCH_ADHOC_TASK,
-      capabilityId: RESEARCH_ADHOC_CAPABILITY_ID,
+      capabilityId: RESEARCH_ADHOC_STAGE_ID,
       providerId,
       model: optionalString(hints.model),
       system: RESEARCH_BOUNDED_SYSTEM_PROMPT,

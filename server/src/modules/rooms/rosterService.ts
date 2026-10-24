@@ -26,6 +26,7 @@ import { listRoomAgentPresets, roomAgentPresetById } from "./presets.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
 import { sharedHostConnectionRegistry } from "../hosts/connectionRegistry.js";
 import { PgSessionRepository } from "../sessions/repository.js";
+import { latestSummaryArtifactId } from "../agentGroups/sessionHandoff.js";
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -412,6 +413,48 @@ export class RoomRosterService {
           },
         );
       }
+      return this.roomDetail(client, identity, room.id);
+    });
+  }
+
+  /**
+   * Start the Agent's next turn from the summary it wrote in its current
+   * session, instead of resuming that session: the same rotation Rainver's
+   * own handoff performs (`rotateAfterHandoff`), chosen by the person.
+   */
+  async restartFromSummary(identity: RoomIdentity, roomId: string, agentId: string) {
+    return this.withRoomWriter(identity, roomId, async (client, room) => {
+      const current = await lockConversationAgentThread(client, identity, room.id, agentId);
+      if (current.host_owner_user_id !== identity.userId) {
+        throw new HttpError(403, "Only the execution host owner can restart this Agent from its summary");
+      }
+      if (current.dispatch_lock_id) {
+        throw new HttpError(409, "The Host-bound Agent is still handling a Room turn; restart it after it finishes");
+      }
+      const summaryArtifactId = await latestSummaryArtifactId(client, {
+        spaceId: identity.spaceId, threadId: current.id, vendorSessionId: current.vendor_session_id,
+      });
+      if (!summaryArtifactId || !current.vendor_session_id) {
+        throw new HttpError(409, "This Agent has no summary of its current session to restart from");
+      }
+      const rotated = await new PgHostThreadRepository(client).rotateAfterHandoff(current.id, summaryArtifactId, current.vendor_session_id);
+      if (!rotated) throw new HttpError(409, "Host Agent context changed before it could be restarted");
+      await new PgSessionRepository(client).addRoomSystemNotice(
+        identity.spaceId,
+        identity.userId,
+        room.id,
+        current.session_id,
+        {
+          content: `${current.agent_name}'s next turn starts from its summary`,
+          metadata: {
+            room_id: room.id,
+            host_thread_id: current.id,
+            host_thread_event: "session_reset",
+            host_thread_reset_reason: "summary",
+            execution_details: { artifact_id: summaryArtifactId },
+          },
+        },
+      );
       return this.roomDetail(client, identity, room.id);
     });
   }
@@ -1145,4 +1188,48 @@ interface PresetRuntimeProfile {
   runtime_config_json: Record<string, unknown>;
   runtime_policy_json: Record<string, unknown>;
   is_default: boolean;
+}
+
+/**
+ * The host-bound Conversation thread a Room roster action acts on: the
+ * Agent's thread in the Room's most recently touched Conversation, locked.
+ */
+export async function lockConversationAgentThread(
+  client: PoolClient,
+  identity: RoomIdentity,
+  roomId: string,
+  agentId: string,
+): Promise<{
+  id: string;
+  session_id: string;
+  host_owner_user_id: string | null;
+  agent_name: string;
+  dispatch_lock_id: string | null;
+  vendor_session_id: string | null;
+}> {
+  const thread = await client.query<{
+    id: string;
+    session_id: string;
+    host_owner_user_id: string | null;
+    agent_name: string;
+    dispatch_lock_id: string | null;
+    vendor_session_id: string | null;
+  }>(
+    `SELECT thread.id, thread.session_id, host.owner_user_id AS host_owner_user_id, agent.name AS agent_name,
+            thread.dispatch_lock_id, thread.vendor_session_id
+       FROM host_threads thread
+       JOIN sessions conversation ON conversation.id = thread.session_id AND conversation.space_id = thread.space_id
+       JOIN hosts host ON host.id = thread.execution_host_id
+       JOIN agents agent ON agent.id = thread.agent_id
+      WHERE conversation.space_id = $3 AND conversation.room_id = $1 AND thread.agent_id = $2
+        AND thread.container_kind = 'conversation'
+        AND thread.status IN ('active', 'session_reset')
+      ORDER BY conversation.updated_at DESC, conversation.created_at DESC, conversation.id DESC
+      LIMIT 1
+      FOR UPDATE OF thread`,
+    [roomId, agentId, identity.spaceId],
+  );
+  const current = thread.rows[0];
+  if (!current) throw new HttpError(404, "Host-bound Conversation Agent thread not found");
+  return current;
 }

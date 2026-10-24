@@ -38,8 +38,10 @@ describe("maintenance-only migrations", () => {
   it("keeps the current epoch as one ordinary baseline migration", async () => {
     const chain = loadMigrations(join(import.meta.dirname, "..", "migrations"));
     expect(chain[0]).toMatchObject({ version: "0000", name: "baseline" });
-    // Nothing appended to this epoch so far removes what a running release reads.
-    expect(chain.map((migration) => requiresMaintenance(migration.sql))).toEqual(chain.map(() => false));
+    // 0004 drops the capability tables a pre-0004 release still reads, so it
+    // is the one offline migration in this epoch; everything else applies live.
+    expect(chain.map((migration) => requiresMaintenance(migration.sql)))
+      .toEqual(chain.map((migration) => migration.version === "0004"));
     expect(chain[0]!.sql).not.toContain("cli_credential_profiles");
     expect(chain[0]!.sql).toContain('CREATE TABLE "auth_accounts"');
     expect(chain[0]!.sql).toContain('CREATE TABLE "registration_intents"');

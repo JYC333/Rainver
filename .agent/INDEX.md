@@ -74,7 +74,7 @@ reports in `.agent/reports/` are not source of truth and should be deleted after
 | [architecture/PRODUCT_ACCEPTANCE.md](architecture/PRODUCT_ACCEPTANCE.md) | Deterministic gate, manual Project acceptance procedure, evidence requirements, and opt-in real integration smoke |
 | [architecture/NON_GOALS_AND_DISABLED_SURFACES.md](architecture/NON_GOALS_AND_DISABLED_SURFACES.md) | Disabled surfaces, allowed surfaces, non-goals |
 | [architecture/ROADMAP_AND_FUTURE_RISKS.md](architecture/ROADMAP_AND_FUTURE_RISKS.md) | Current-state source pointers; unimplemented ideas live in plans/unimplemented-from-guides.md |
-| [architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md](architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md) | Capability definitions, packs, workflows, Open Skill import, runtime skill rendering |
+| [architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md](architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md) | Original Skill library, Tool authority, enforced Workflows and governed package Delivery |
 | [architecture/CONTEXT_AND_RETRIEVAL_LAYER.md](architecture/CONTEXT_AND_RETRIEVAL_LAYER.md) | Current-state architecture for knowledge retrieval + the context layer: engine/adapter boundary, recall arms (exact/lexical/multi-hop graph/vector+ANN, max-pool, RRF, intent ranking), gated LLM stages (rerank/rewrite/synthesis), Context Brief + gap analysis, maintenance scans, explicit artifact-backed context attachments, Context Ops read models/page, egress governance, agent tool surface, invariants, Object Schema Registry/object schema implementation, and source-of-truth boundaries |
 | [architecture/PROJECT_WORK.md](architecture/PROJECT_WORK.md) | Current-state Project advancement: the four state axes, the five Loop stages, the append-only work event stream and its single writer, Run settlement, and who a held Task interrupts |
 | [architecture/ONTOLOGY.md](architecture/ONTOLOGY.md) | Current-state ontology layer: Entity registry and Interfaces, which domains join the ontology and why, `space_objects` root contract, link-type endpoints and per-edge governance, the single write path and its guards |
@@ -203,7 +203,7 @@ Load only the module docs relevant to your task.
 | Memory review UI | [modules/memory-review.md](modules/memory-review.md) |
 | Policy and permission engine | [modules/policy.md](modules/policy.md) |
 | Proposal / approval system | [modules/proposals.md](modules/proposals.md) |
-| Capability lifecycle | [modules/capability.md](modules/capability.md) |
+| Skill library / review / bindings | [modules/skills.md](modules/skills.md) |
 | Runtime Context acquisition, planning, delivery, and continuity | [modules/runtime-context.md](modules/runtime-context.md) |
 | Execution hosts (control plane + host daemon), pairing, workspace registration | [modules/hosts.md](modules/hosts.md) |
 | Imported CLI sessions and thread references | [modules/imported-sessions.md](modules/imported-sessions.md) |

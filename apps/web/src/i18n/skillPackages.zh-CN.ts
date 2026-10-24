@@ -1,7 +1,9 @@
-/** 技能包导入、审核与转换的界面文案。 */
+/** Skill 来源、审核与使用范围启用的界面文案。 */
 export const skillPackagesZhCN = {
   skill_packages: {
-    status_imported: '待审核', status_reviewed: '已审核', status_rejected: '已拒绝', status_converted: '已审核（旧版）', status_archived: '已归档', status_superseded: '已有新版本',
+    builtin_source: '内置',
+    builtin_description: '由服务端随版本提供，无需导入或内容审核。默认不启用；选择使用范围，通过绑定提案启用。',
+    status_imported: '待审核', status_reviewed: '已审核', status_rejected: '已拒绝', status_archived: '已归档', status_superseded: '已有新版本',
     risk_low: '低', risk_medium: '中', risk_high: '高', risk_critical: '严重',
     uploaded_package: '上传的包', local_source: '本地来源', review_before_enable: '这个 Skill 还未审核，暂不会出现在对话的 @ 和 / 菜单中。选择使用范围后点“审核并启用”，批准一次即可使用。',
     choose_host: '选择在线主机', offline_hint: '主机目前离线。连接主机后重新打开此窗口，即可扫描其中的全局 Skill。',
@@ -41,8 +43,8 @@ export const skillPackagesZhCN = {
     loading_library: "正在加载技能库…",
     empty_title: "技能库还没有 Skill",
     empty_description: "从 CLI 全局目录、GitHub、Markdown 或 ZIP 导入，在 Claude Code 和 Codex 中复用同一份 Skill。",
-    library: "已导入 Skill",
-    search: "搜索已导入 Skill",
+    library: "Skill 包",
+    search: "搜索 Skill",
     no_matches: "没有匹配的 Skill。",
 
     title: '技能库', subtitle: '统一管理 Claude Code、Codex 和其他对话 Agent 使用的 Skill。',

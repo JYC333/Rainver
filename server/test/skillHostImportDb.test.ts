@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { seedServerHost, seedSpaceMember } from "./support/domainSeeds.js";
-import { scanHostSkillSource, previewHostSkillSource } from "../src/modules/capabilities/skillHostImport.js";
+import { scanHostSkillSource, previewHostSkillSource } from "../src/modules/skills/skillHostImport.js";
 import { sharedHostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
 import { MIN_HOST_DAEMON_VERSION } from "../src/modules/hosts/daemonCompatibility.js";
 import { loadConfig } from "../src/config.js";
-import { CapabilitiesService } from "../src/modules/capabilities/service.js";
-import { PgCapabilitiesRepository } from "../src/modules/capabilities/repository.js";
+import { SkillsService } from "../src/modules/skills/service.js";
+import { PgSkillsRepository } from "../src/modules/skills/repository.js";
 
 const db = useTestDatabase(import.meta.filename);
 const identity = { spaceId: "skill-space", userId: "skill-owner" };
@@ -44,7 +44,7 @@ describe("global Skill acquisition authorization (PostgreSQL)", () => {
     const source = { source_type: "local_workspace" as const, host_id: "skill-host", skill_id: candidate.id };
     const preview = await previewHostSkillSource(config, identity, source);
     expect(preview.package_contents?.["SKILL.md"]).toBe(files[0]!.content_base64);
-    const service = new CapabilitiesService(new PgCapabilitiesRepository(db.pool), undefined, config);
+    const service = new SkillsService(new PgSkillsRepository(db.pool), undefined, config);
     const imported = await service.importSkill(identity, { ...source, package_hash: preview.package_hash });
     expect(imported.status).toBe("imported");
     expect((await db.pool.query("SELECT content_base64 FROM skill_package_files WHERE skill_package_id=$1", [imported.id])).rows[0]?.content_base64).toBe(files[0]!.content_base64);

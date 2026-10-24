@@ -281,6 +281,28 @@ describe('ConversationExecutionPreflight', () => {
     }), expect.any(Object)))
   })
 
+  it('tells the person a summary exists and that the prompt cache has gone cold before they send', async () => {
+    const initialized = initializedResponse(true)
+    vi.mocked(sessionsApi.executionContext).mockResolvedValue({
+      ...initialized,
+      summary: {
+        ...initialized.summary,
+        runtimes: [{
+          agent_id: 'agent-1', runtime_profile_id: 'runtime-1', runtime_key: 'claude_cli', runtime_installation: 'claude',
+          context_tokens: 300000, context_window_tokens: 1000000,
+          summary_artifact_id: 'artifact-summary',
+          last_run_ended_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+          prompt_cache_ttl_seconds: 3600,
+        }],
+      },
+    } as never)
+    renderPanel()
+    fireEvent.click(await screen.findByRole('button', { name: 'Execution context configured' }))
+    expect(await screen.findByText(/Summary written in this session \(300k tokens of context\)/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Open summary' })).toHaveAttribute('href', '/artifacts/artifact-summary')
+    expect(screen.getByText(/prompt cache for this session has expired; the next turn rewrites about 300k tokens/)).toBeInTheDocument()
+  })
+
   it('reports an Agent with several CLIs as ready once one is chosen', async () => {
     const multiDetail = {
       ...detail,

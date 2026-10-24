@@ -233,6 +233,7 @@ async function handleAgentRun(
                 currentTerminal,
                 hostThread.resume_attempted,
                 hostThread.identity,
+                hostThread.standing,
               );
             }
             await finalizeChatTurn(config, repository, currentTerminal);
@@ -283,6 +284,7 @@ async function handleAgentRun(
       completedRun,
       hostThread.resume_attempted,
       hostThread.identity,
+      hostThread.standing,
     );
   }
   if (completedRun) {

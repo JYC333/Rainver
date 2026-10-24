@@ -901,7 +901,7 @@ describe("runTimeLimitDb", () => {
           async prepareInvocation() {
             return {
               id: "delivery-1", invocation_id: runId, delivery_kind: "agent_task", runtime_key: "codex_cli",
-              provider_id: null, model: null, renderer_version: "acp.v1", mode: "full",
+              provider_id: null, model: null, renderer_version: "acp.v1",
               planned_items: [{ item_id: "user-item", semantic_role: "user_input", required: true }],
               message_blocks: [{ semantic_role: "user_input", content: "Work for a long time", source_item_ids: ["user-item"] }],
               control_ref: { type: "execution_control_snapshot", id: "control-1" }, sandbox_ref: null, tool_grant_refs: [],

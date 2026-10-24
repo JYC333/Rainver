@@ -15,8 +15,6 @@ import {
 } from "../src/modules/hosts/serverOpenCodeProvisioner.js";
 import type { HostConnectionRegistry } from "../src/modules/hosts/connectionRegistry.js";
 import { SERVER_OPENCODE_RELEASE } from "../src/modules/runtimeAdapters/opencodeRelease.js";
-import { PgRuntimeSkillProvider, renderRuntimeSkillCandidate } from "../src/modules/capabilities/runtimeSkillProvider.js";
-import type { Queryable, QueryResult } from "../src/modules/routeUtils/common.js";
 import { normalizeVendorEvents } from "../src/modules/runs/runtimeEventNormalization.js";
 import { getLocalCliRuntimeAdapterSpec, getRuntimeAdapterSpec, isVendorCliAdapter, listRuntimeAdapterSpecs } from "../src/modules/runtimeAdapters/specs.js";
 import { supportsRuntimeBackendMode } from "../src/modules/runtimeAdapters/runtimeDefinitions.js";
@@ -51,7 +49,6 @@ describe("runtimeAdapters", () => {
       expect(isVendorCliAdapter("gemini_cli")).toBe(false);
       expect(getLocalCliRuntimeAdapterSpec("opencode")?.implementation_status).toBe("implemented");
     });
-
 
     it("does not register an in-process Agent runtime", () => {
       expect(getRuntimeAdapterSpec("model_api")).toBeNull();
@@ -210,67 +207,6 @@ describe("runtimeEventNormalization", () => {
       ], "2026-07-25T00:00:00.000Z");
 
       expect(events).toEqual([]);
-    });
-  });
-});
-
-describe("runtimeSkillProvider", () => {
-  class FakeQueryable implements Queryable {
-    readonly queries: string[] = [];
-
-    constructor(
-      private readonly dbBindingRows: Record<string, unknown>[],
-      private readonly enablementRows: Record<string, unknown>[],
-    ) {}
-
-    async query<Row = Record<string, unknown>>(sql: string): Promise<QueryResult<Row>> {
-      this.queries.push(sql);
-      const rows = sql.includes("JOIN capability_runtime_bindings")
-        ? this.dbBindingRows
-        : this.enablementRows;
-      return { rows: rows as Row[], rowCount: rows.length };
-    }
-  }
-
-  describe("PgRuntimeSkillProvider", () => {
-    it("loads default runtime bindings for enabled built-in capabilities", async () => {
-      const db = new FakeQueryable([], [
-          {
-            capability_enablement_id: "enable-1",
-            capability_key: "research.source_collect",
-            capability_version_id: null,
-            enabled: true,
-            config_json: { source_mode: "project_sources" },
-          },
-        ]);
-      const provider = new PgRuntimeSkillProvider(db);
-
-      const candidates = await provider.loadCandidatesForRun({
-        space_id: "space-1",
-        run_id: "run-1",
-        runtime_key: "codex_cli",
-        capability_id: "research.source_collect",
-        agent_id: "agent-1",
-        project_id: "project-1",
-        instructed_by_user_id: "user-1",
-      });
-
-      expect(candidates).toHaveLength(1);
-      expect(candidates[0]).toMatchObject({
-        binding_id: "research.source_collect:codex_cli:render_skill",
-        capability_id: "research.source_collect",
-        capability_version_id: null,
-        capability_enablement_id: "enable-1",
-        capability: { source_kind: "builtin" },
-        enablement_config_json: { source_mode: "project_sources" },
-      });
-
-      const rendered = renderRuntimeSkillCandidate(candidates[0]!);
-      expect(rendered?.rendered.files.map((file) => file.path)).toContain(
-        ".rainver/generated-skills/codex/research-source-collect/SKILL.md",
-      );
-      expect(db.queries.find((sql) => sql.includes("JOIN capability_runtime_bindings")))
-        .toContain("se.capability_version_id IS NOT NULL");
     });
   });
 });

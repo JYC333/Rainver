@@ -10,6 +10,14 @@ export function requiredBodyString(value: unknown, field: string): string {
   return text;
 }
 
+const TARGET_TYPES = new Set(["agent_version", "memory", "knowledge", "workflow", "project_folder", "system"]);
+
+export function evolutionTargetType(value: unknown): string {
+  const type = requiredBodyString(value, "target_type");
+  if (!TARGET_TYPES.has(type)) throw new HttpError(422, "target_type is invalid");
+  return type;
+}
+
 export function assertTargetRunnable(target: EvolutionTargetRow): void {
   if (!target.enabled) throw new HttpError(409, "Evolution target is disabled");
   if (target.status !== "active") throw new HttpError(409, "Evolution target is not active");

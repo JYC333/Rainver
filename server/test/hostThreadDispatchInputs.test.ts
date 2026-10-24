@@ -13,7 +13,7 @@ describe("hostThreadDispatchInputs", () => {
         model: "m",
         host_thread: { schema_version: "host_thread.v1", thread_id: "thread-1", runtime_session_id: "sess-9", fresh: false },
       },
-    })).toEqual({ thread_id: "thread-1", resume_session_id: "sess-9", resume_attempted: true, identity: null });
+    })).toEqual({ thread_id: "thread-1", resume_session_id: "sess-9", resume_attempted: true, identity: null, standing: null });
   });
 
   it("reads the standing-context digest the Run was dispatched with", () => {
@@ -26,6 +26,10 @@ describe("hostThreadDispatchInputs", () => {
     expect(hostThreadDispatchInputs(run({ identity_digest: "d1", identity_sent: false })).identity)
       .toEqual({ digest: "d1", sent: false });
     expect(hostThreadDispatchInputs(run({ identity_sent: true })).identity).toBeNull();
+    // The Gateway's standing-items decision travels the same way.
+    expect(hostThreadDispatchInputs(run({ standing_digest: "s1", standing_sent: false })).standing)
+      .toEqual({ digest: "s1", sent: false });
+    expect(hostThreadDispatchInputs(run({ standing_sent: true })).standing).toBeNull();
   });
 
   it("marks a thread's first dispatch as not attempting a resume", () => {
@@ -37,7 +41,7 @@ describe("hostThreadDispatchInputs", () => {
       { host_thread: "malformed" },
     ]) {
       expect(hostThreadDispatchInputs({ host_task_thread_id: "thread-1", model_override_json: override }), JSON.stringify(override))
-        .toEqual({ thread_id: "thread-1", resume_session_id: null, resume_attempted: false, identity: null });
+        .toEqual({ thread_id: "thread-1", resume_session_id: null, resume_attempted: false, identity: null, standing: null });
     }
   });
 
@@ -45,6 +49,6 @@ describe("hostThreadDispatchInputs", () => {
     expect(hostThreadDispatchInputs({
       host_task_thread_id: null,
       model_override_json: { host_thread: { runtime_session_id: "sess-9" } },
-    })).toEqual({ thread_id: null, resume_session_id: null, resume_attempted: false, identity: null });
+    })).toEqual({ thread_id: null, resume_session_id: null, resume_attempted: false, identity: null, standing: null });
   });
 });

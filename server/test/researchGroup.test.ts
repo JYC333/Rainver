@@ -90,14 +90,14 @@ describe("researchGeneralizationGuard", () => {
 
   describe("Project Research generalization boundaries", () => {
     it("does not restore label-only research workflow presets or academic execution ids", () => {
-      const pack = source("server/src/modules/capabilities/researchPack.ts");
+      // The research pack is gone; the stage ids live with the pipeline. There
+      // is no preset field for a label-only workflow to be declared in.
+      const pack = source("server/src/modules/projectResearch/researchStages.ts");
       const execution = [
         source("server/src/modules/projectResearch/researchPassExecution.ts"),
         source("server/src/modules/projectResearch/synthesisOnlyExecution.ts"),
       ].join("\n");
 
-      // The pack does not declare `workflow_template_ids`. There is no preset
-      // field for a label-only workflow to be declared in.
       expect(pack).not.toContain("workflow_template_ids");
       for (const retired of [
         "research.academic_literature_review",

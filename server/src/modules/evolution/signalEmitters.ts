@@ -82,7 +82,7 @@ interface SignalEmissionResult {
 }
 
 interface AutoTargetDescriptor {
-  targetType: "capability" | "workflow" | "project_folder";
+  targetType: "workflow" | "project_folder";
   targetRefType: string;
   targetRefId: string;
   capabilityKey: string | null;
@@ -461,7 +461,6 @@ function autoTargetDescriptor(run: RunRecord): AutoTargetDescriptor | null {
   const source = recordValue(contract.source);
   const sourceKind = typeof source.kind === "string" ? source.kind : null;
   const sourceId = typeof source.id === "string" && source.id.length > 0 ? source.id : null;
-  const routeHints = recordValue(contract.route_hints_json);
   if (sourceKind === "workflow" && sourceId) {
     return {
       targetType: "workflow",
@@ -478,16 +477,6 @@ function autoTargetDescriptor(run: RunRecord): AutoTargetDescriptor | null {
       targetRefId: sourceId,
       capabilityKey: null,
       targetName: `Automation ${sourceId}`,
-    };
-  }
-  const capabilityKey = run.capability_id ?? stringValue(routeHints.capability_id);
-  if (capabilityKey) {
-    return {
-      targetType: "capability",
-      targetRefType: "capability",
-      targetRefId: capabilityKey,
-      capabilityKey,
-      targetName: `Capability ${capabilityKey}`,
     };
   }
   if (sourceKind === "task" && sourceId) {

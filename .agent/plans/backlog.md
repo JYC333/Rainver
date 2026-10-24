@@ -210,10 +210,25 @@ tests assert both tool behavior and the guidance delivered with those tools.
 - [ ] Page the Domain aggregation and classification pickers: the Domain page
   still caps listed objects at 200 and its older pickers at the first 100 Notes
   and Knowledge Items. These lists are incomplete for large Spaces.
-- [ ] [capability-shrink-plan.md](capability-shrink-plan.md) — the authority
-  documents and the workflow template layer landed on 2026-08-14. The remaining
-  items collapse the implementation to
-  `SkillPackage + SkillBinding + SkillPolicy`.
+- [x] Capability shrink — retired 2026-10-24; Git history holds the plan
+  (`.agent/plans/capability-shrink-plan.md` up to `7092d70b`). The authority
+  documents and the workflow template layer landed on 2026-08-14 (`a0c1e5c4`,
+  `4009c281`), the unified Skill library on 2026-10-23 (`01e3464e`), the
+  capability layer removal and `skills` rename on 2026-10-23 (`bcad8183`), and
+  the builtin Skill package source on 2026-10-24 (`75846283`). Skill, Tool /
+  System Action and Workflow are the three layers; see
+  [CAPABILITY_WORKFLOW_SKILL_SYSTEM.md](../architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md)
+  and the GLOSSARY.
+- [ ] Project Research layer rework — the follow-on the retired capability
+  shrink plan named and did not authorize. Auto Research is a code-enforced
+  stage machine with its own managed Agent and runtime; the conversational
+  path (Room Agent + research System Actions + Project Operations) reaches
+  the same outcome. Map Auto Research onto Task, Agent Plan and a reference
+  Workflow version; list what does not map; only then decide whether a new
+  object is needed. The eight stage constants in
+  `projectResearch/researchStages.ts` go with the pipeline. Decide on usage
+  evidence (focus workflows started versus Operations run), not on the
+  current shape. See also deferred-register's "Project kernel — P2" note.
 
 ### H2 — Prompt provenance across ACP and conversation inputs
 
@@ -393,9 +408,12 @@ orchestration) and the declared-output verification / Supervisor retry path.
   and `standingComparisonService`) to `createQueuedProviderTaskRun` +
   `provider_task_run` in one change; register their preparers by
   `capability_id`.
-- [ ] Delete the Agent/Profile manufacturing in `executionProfileService.ts`
-  and shrink `RESEARCH_AGENT_CAPABILITY_IDS` to nothing, then remove the
-  `system_research` Agent kind if no consumer remains.
+- [x] Remove the research stage capability requirement and backfill from
+  `executionProfileService.ts` (capability-layer cleanup A, 2026-10-23).
+  Stage ids now live in `projectResearch/researchStages.ts`.
+- [ ] Delete Agent/Profile manufacturing in `executionProfileService.ts` when
+  the remaining Agent stages migrate; remove the `system_research` Agent kind
+  only if no consumer remains.
 
 Constraint: no half-migrated writer; every research Run must satisfy
 `ck_runs_execution_shape` at every step.

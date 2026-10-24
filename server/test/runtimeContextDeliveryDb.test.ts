@@ -1,14 +1,15 @@
-import { assertSelectedSkillBindings } from "../src/modules/capabilities/selectedSkills.js";
+import { assertSelectedSkillBindings } from "../src/modules/skills/selectedSkills.js";
 import { SkillPackageSchema } from "@rainver/protocol";
-import { previewSkillFiles } from "../src/modules/capabilities/skillImporter.js";
-import { applySkillPackageBinding } from "../src/modules/capabilities/skillBindings.js";
+import { previewSkillFiles } from "../src/modules/skills/skillImporter.js";
+import { applySkillPackageBinding } from "../src/modules/skills/skillBindings.js";
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
 import { loadConfig } from "../src/config.js";
 import { withTransaction } from "../src/db/tx.js";
-import { PgCapabilitiesRepository, approveSkillImportInTransaction } from "../src/modules/capabilities/repository.js";
+import { PgSkillsRepository, approveSkillImportInTransaction } from "../src/modules/skills/repository.js";
 import { createHash, randomUUID } from "node:crypto";
-import { seedServerHost, seedMainlineRoomsForAllProjects, seedProjectMainlineRoom, seedRoomManager } from "./support/domainSeeds.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { seedServerHost, seedMainlineRoomsForAllProjects } from "./support/domainSeeds.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PgRuntimeSkillProvider } from "../src/modules/skills/runtimeSkillProvider.js";
 import type { ExecutionControlSnapshot } from "@rainver/protocol";
 import { InvocationSnapshotService, SealedPayloadService } from "../src/modules/runtimeContext/invocationSnapshotService.js";
 import { PgInvocationDeliveryAuthorizer, createProductionRuntimeContextInvocationGateway } from "../src/modules/runtimeContext/gateway.js";
@@ -20,7 +21,11 @@ import { loadConversationContinuityThroughMessage } from "../src/modules/runtime
 import { normalizeContextItem } from "../src/modules/runtimeContext/itemNormalizer.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
+import { buildRunToolGrants } from "../src/modules/systemActions/runToolGrants.js";
 import { seedConversationMessages } from "./support/domainSeeds.js";
+import { syncBuiltinSkillPackages } from "../src/modules/skills/builtinPackages.js";
+import { builtinSkillFixture } from "./support/builtinSkillFixture.js";
+import { PgProposalApplyService } from "../src/modules/proposals/applyService.js";
 
 const SPACE = "30000000-0000-4000-8000-000000000001";
 const USER = "30000000-0000-4000-8000-000000000002";
@@ -39,6 +44,7 @@ const PROFILE = "30000000-0000-4000-8000-000000000015";
 
 
 const db = useTestDatabase(import.meta.filename, { max: 2 });
+afterEach(() => vi.restoreAllMocks());
 
 beforeEach(async () => {
   if (!db.available) return;
@@ -223,14 +229,13 @@ describe("Context Event continuity and checkpoints", () => {
       [SPACE, RUN],
     );
     expect(state.rows[0]).toMatchObject({ event_head_cursor: 2, checkpoint_cursor: 0, capture_status: "partial" });
-    expect(await continuity.recoverOpenCaptureGaps(SPACE, RUN)).toBe(1);
-    const recovered = await db.pool.query<{ scope_sequence: number; capture_status: string }>(
-      `SELECT scope_sequence,capture_status FROM context_events
-        WHERE space_id=$1 AND work_context_scope_id=$2 AND event_type='buffered_runtime_notice'`,
+    // The gap stays on record with the event it buffered: the ledger is an
+    // audit of what was captured, and nothing rewrites it afterwards.
+    const gap = await db.pool.query<{ status: string; replay_event_json: { event_type: string } }>(
+      `SELECT status,replay_event_json FROM context_capture_gaps WHERE space_id=$1 AND work_context_scope_id=$2`,
       [SPACE, RUN],
     );
-    expect(recovered.rows[0]).toMatchObject({ scope_sequence: 3, capture_status: "recovered" });
-    expect(await continuity.reconcileScope(SPACE, RUN)).toBe("recovered");
+    expect(gap.rows[0]).toMatchObject({ status: "open", replay_event_json: { event_type: "buffered_runtime_notice" } });
   });
 
   it("marks a snapshot complete only with its committed terminal event and checkpoint", async () => {
@@ -275,149 +280,11 @@ describe("Context Event continuity and checkpoints", () => {
          FROM context_events WHERE space_id=$1 AND work_context_scope_id=$2`,
       [SPACE, RUN],
     )).rows).toEqual([{ scope_sequence: 1, event_type: "invocation_finalized", ref_id: created.snapshot.id }]);
+    // The ledger is audited, not extracted from: finalization schedules no job.
     expect((await db.pool.query<{ count: number }>(
-      `SELECT count(*)::int AS count FROM jobs WHERE space_id=$1 AND job_type='runtime_context_checkpoint'`,
+      `SELECT count(*)::int AS count FROM jobs WHERE space_id=$1 AND job_type LIKE 'runtime_context%'`,
       [SPACE],
-    )).rows[0]?.count).toBe(1);
-    let semanticCalls = 0;
-    const semanticContinuity = new RuntimeContextContinuityService(db.pool, {
-      async extract() {
-        semanticCalls += 1;
-        throw new Error("terminal-only continuity must not invoke semantic extraction");
-      },
-    });
-    await expect(semanticContinuity.runSemanticExtraction({
-      spaceId: SPACE,
-      workContextScopeId: RUN,
-    })).resolves.toBeNull();
-    expect(semanticCalls).toBe(0);
-  });
-
-  it("validates extractor citations and derives confirmation only from canonical user evidence", async () => {
-    if (!db.available) return;
-    const sessionId = randomUUID();
-    const messageId = randomUUID();
-    await db.pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
-    await seedConversationMessages(db.pool, {
-      space: SPACE, session: sessionId,
-      messages: [{ id: messageId, role: "user", content: "Use the unified gateway.", userId: USER }],
-    });
-    await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
-    const setupDecisionId = randomUUID();
-    await db.pool.query(
-      `INSERT INTO policy_decision_records (
-         id,space_id,actor_type,actor_id,action,resource_type,resource_id,
-         decision,risk_level,policy_source,metadata_json,created_at
-       ) VALUES ($1,$2,'user',$3,'work_context_setup.change','work_context_setup',$4,
-                 'allow','medium','test','{}',now())`,
-      [setupDecisionId, SPACE, USER, SETUP],
-    );
-    await db.pool.query(
-      `INSERT INTO work_context_setups (
-         id,space_id,work_context_scope_id,scope_kind,version,user_id,agent_id,
-         runtime_ref_json,pinned_refs_json,excluded_refs_json,retrieval_preferences_json,
-         continuity_preferences_json,project_instruction_enabled,governing_policy_refs_json,
-         setup_fingerprint,base_version,typed_diff_json,reason,policy_decision_record_id,
-         created_by_user_id,created_at
-       ) VALUES ($1,$2,$3,'root_task',1,$4,$5,NULL,'[]','[]','{}','{}',FALSE,'[]',
-                 'correction-authority',NULL,'{}','test',$6,$4,now())`,
-      [SETUP, SPACE, RUN, USER, AGENT, setupDecisionId],
-    );
-    const observedEgress: boolean[] = [];
-    const continuity = new RuntimeContextContinuityService(db.pool, {
-      async extract({ events, egressPolicy }) {
-        observedEgress.push(egressPolicy.externalEgressEnabled);
-        const correction = events.find((event) => event.event_type === "checkpoint_corrected");
-        const sourceRef = correction?.canonical_ref ?? events[0]!.canonical_ref;
-        return {
-          extraction: {
-            goals: [], user_intent: [], constraints: [], facts: [], open_questions: [], tasks: [],
-            artifact_refs: [], tool_refs: [], correction_refs: correction ? [sourceRef] : [],
-            decisions: [{
-              id: randomUUID(),
-              text: correction ? "Use the corrected gateway decision." : "Use the unified gateway.",
-              confirmation_state: "candidate",
-              source_refs: [sourceRef],
-            }],
-          },
-          extractorRef: { type: "provider_task", id: randomUUID(), version: "test.v1" },
-        };
-      },
-    });
-    await continuity.ingest({
-      invocation_id: RUN,
-      event_type: "user_decision_confirmed",
-      canonical_ref: { type: "message", id: messageId },
-      semantic_role: "user_input",
-      token_estimate: 6,
-    });
-    const checkpoint = await continuity.runSemanticExtraction({
-      spaceId: SPACE,
-      workContextScopeId: RUN,
-      force: true,
-    });
-    expect(checkpoint?.decisions[0]).toMatchObject({ confirmation_state: "confirmed" });
-    expect(checkpoint?.source_refs).toEqual([
-      expect.objectContaining({ confirmation_authority: "canonical_user" }),
-    ]);
-    expect(observedEgress).toEqual([true]);
-    const authorityLock = await db.pool.connect();
-    await authorityLock.query("BEGIN");
-    await authorityLock.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [
-      `work-context:${SPACE}:${RUN}`,
-    ]);
-    let correctionSettled = false;
-    const correctionPromise = continuity.correctSemanticCheckpoint({
-      spaceId: SPACE,
-      workContextScopeId: RUN,
-      checkpointId: checkpoint!.id,
-      identity: { spaceId: SPACE, userId: USER },
-      canonicalRef: { type: "message", id: messageId },
-      correction: { decision: "Use the corrected gateway decision." },
-    }).finally(() => { correctionSettled = true; });
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const settledWhileAuthorityLocked = correctionSettled;
-    await authorityLock.query("COMMIT");
-    authorityLock.release();
-    expect(settledWhileAuthorityLocked).toBe(false);
-    const correctionId = await correctionPromise;
-    expect((await db.pool.query<{ jobs: number; micros: number }>(
-      `SELECT
-        (SELECT count(*)::int FROM jobs WHERE space_id=$1 AND job_type='runtime_context_checkpoint') AS jobs,
-        (SELECT count(*)::int FROM context_micro_checkpoints WHERE space_id=$1 AND work_context_scope_id=$2) AS micros`,
-      [SPACE, RUN],
-    )).rows[0]).toEqual({ jobs: 1, micros: 1 });
-    const corrected = await continuity.runSemanticExtraction({
-      spaceId: SPACE,
-      workContextScopeId: RUN,
-      force: true,
-    });
-    expect(corrected).toMatchObject({
-      version: 2,
-      decisions: [{ text: "Use the corrected gateway decision.", confirmation_state: "corrected" }],
-      correction_refs: [{ type: "checkpoint_correction", id: correctionId }],
-    });
-    await db.pool.query(
-      `UPDATE runs SET owner_user_id=NULL,instructed_by_user_id=NULL WHERE id=$1`,
-      [RUN],
-    );
-    await expect(continuity.correctSemanticCheckpoint({
-      spaceId: SPACE,
-      workContextScopeId: RUN,
-      checkpointId: corrected!.id,
-      identity: { spaceId: SPACE, userId: USER },
-      canonicalRef: { type: "message", id: messageId },
-      correction: { decision: "This revoked mutation must not commit." },
-    })).rejects.toMatchObject({ statusCode: 404 });
-    const versions = await db.pool.query<{ id: string; status: string; supersedes_id: string | null }>(
-      `SELECT id,status,supersedes_id FROM context_semantic_checkpoints
-        WHERE space_id=$1 AND work_context_scope_id=$2 ORDER BY version`,
-      [SPACE, RUN],
-    );
-    expect(versions.rows).toEqual([
-      expect.objectContaining({ id: checkpoint!.id, status: "superseded", supersedes_id: null }),
-      expect.objectContaining({ id: corrected!.id, status: "active", supersedes_id: checkpoint!.id }),
-    ]);
+    )).rows[0]?.count).toBe(0);
   });
 
   it("rejects canonical Messages that belong to a different work scope", async () => {
@@ -441,148 +308,6 @@ describe("Context Event continuity and checkpoints", () => {
       semantic_role: "user_input",
       token_estimate: 0,
     })).rejects.toMatchObject({ statusCode: 422 });
-  });
-
-  it("reconciles a Conversation scope split from its Room recipient scope without rewriting audit snapshots", async () => {
-    if (!db.available) return;
-    // Before per-Conversation scopes, every Room Run's control snapshot named
-    // the recipient scope. The split moves those Runs' events, not their
-    // immutable snapshots.
-    const [room, member, conversationA, conversationB, runB] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
-    const [scopeA, scopeB, messageA] = [randomUUID(), randomUUID(), randomUUID()];
-    await db.pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Split','active',now(),now())`, [PROJECT, SPACE, USER]);
-    await seedProjectMainlineRoom(db.pool, { space: SPACE, project: PROJECT, owner: USER, roomId: room });
-    await seedRoomManager(db.pool, { space: SPACE, room, agent: AGENT, id: member });
-    await db.pool.query(
-      `INSERT INTO sessions (id,space_id,room_id,project_id,status,created_at,updated_at)
-       VALUES ($1,$3,$4,$5,'active',now(),now()), ($2,$3,$4,$5,'active',now(),now())`,
-      [conversationA, conversationB, SPACE, room, PROJECT],
-    );
-    await db.pool.query(
-      `INSERT INTO runs (id,space_id,session_id,agent_id,agent_version_id,run_type,trigger_origin,status,mode,
-         runtime_profile_id,runtime_profile_selection_source,runtime_key,runtime_profile_snapshot_json,
-         required_sandbox_level,instructed_by_user_id,owner_user_id,created_at,updated_at,execution_kind)
-       SELECT $1,space_id,$2,agent_id,agent_version_id,run_type,trigger_origin,status,mode,
-              runtime_profile_id,runtime_profile_selection_source,runtime_key,runtime_profile_snapshot_json,
-              required_sandbox_level,instructed_by_user_id,owner_user_id,now(),now(),execution_kind
-         FROM runs WHERE id=$3`,
-      [runB, conversationB, RUN],
-    );
-    await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, conversationA]);
-    const recipientControl = { ...control(), work_context_scope_id: member };
-    await db.pool.query(`UPDATE execution_control_snapshots SET snapshot_json=$2::jsonb WHERE id=$1`, [CONTROL, JSON.stringify(recipientControl)]);
-    await db.pool.query(
-      `INSERT INTO execution_control_snapshots (id,space_id,run_id,snapshot_json,created_at) VALUES ($1,$2,$3,$4::jsonb,now())`,
-      [randomUUID(), SPACE, runB, JSON.stringify({ ...recipientControl, id: randomUUID() })],
-    );
-    await seedConversationMessages(db.pool, {
-      space: SPACE, session: conversationA,
-      messages: [{ id: messageA, role: "user", content: "before the split", userId: USER }],
-    });
-    const continuity = new RuntimeContextContinuityService(db.pool);
-    const event = (invocation: string, type: string, ref: { type: string; id: string }) => ({
-      invocation_id: invocation, event_type: type, canonical_ref: ref, semantic_role: null, token_estimate: 0,
-    }) as const;
-    await continuity.ingest(event(RUN, "run_observed", { type: "run", id: RUN }));
-    await continuity.ingest(event(RUN, "user_message_received", { type: "message", id: messageA }));
-    await continuity.ingest(event(runB, "run_observed", { type: "run", id: runB }));
-    await continuity.recordCaptureGap({
-      invocationId: RUN, code: "adapter_event_missing",
-      event: event(RUN, "buffered_runtime_notice", { type: "run_request", id: RUN }),
-    });
-    // The split as 0003 performs it: events and the Run's replayable gap move
-    // to each Conversation's scope; the snapshots keep naming `member`.
-    await db.pool.query(
-      `INSERT INTO room_conversation_recipients (id,space_id,session_id,room_agent_member_id,created_at)
-       VALUES ($1,$3,$4,$6,now()), ($2,$3,$5,$6,now())`,
-      [scopeA, scopeB, SPACE, conversationA, conversationB, member],
-    );
-    await db.pool.query(
-      `UPDATE context_events SET work_context_scope_id = CASE WHEN invocation_id=$1 THEN $2 ELSE $3 END,
-              scope_sequence = CASE WHEN invocation_id=$1 THEN scope_sequence ELSE 1 END
-        WHERE work_context_scope_id=$4`,
-      [RUN, scopeA, scopeB, member],
-    );
-    await db.pool.query(
-      `INSERT INTO context_event_scopes (space_id,work_context_scope_id,event_head_cursor,capture_status,updated_at)
-       VALUES ($1,$2,2,'partial',now()), ($1,$3,1,'complete',now())`,
-      [SPACE, scopeA, scopeB],
-    );
-    await db.pool.query(`UPDATE context_capture_gaps SET work_context_scope_id=$1 WHERE work_context_scope_id=$2`, [scopeA, member]);
-
-    // Moved events whose Run belongs to that Conversation are in scope.
-    expect(await continuity.reconcileScope(SPACE, scopeB)).toBe("complete");
-    // The moved gap replays into the Conversation scope it now belongs to.
-    expect(await continuity.reconcileScope(SPACE, scopeA)).toBe("partial");
-    expect(await continuity.recoverOpenCaptureGaps(SPACE, scopeA)).toBe(1);
-    expect((await db.pool.query(
-      `SELECT scope_sequence,capture_status FROM context_events WHERE work_context_scope_id=$1 AND event_type='buffered_runtime_notice'`,
-      [scopeA],
-    )).rows).toEqual([{ scope_sequence: 3, capture_status: "recovered" }]);
-    expect(await continuity.reconcileScope(SPACE, scopeA)).toBe("recovered");
-
-    // A Run of another Conversation of the same recipient is still foreign.
-    await db.pool.query(
-      `INSERT INTO context_events (id,space_id,work_context_scope_id,scope_sequence,event_type,canonical_ref_json,
-         canonical_ref_key,trust,sensitivity,token_estimate,confirmation_state,source_refs_json,capture_status,created_at)
-       VALUES ($1,$2,$3,2,'run_observed',$4::jsonb,$5,'domain_approved','normal',0,'observed','[]','complete',now())`,
-      [randomUUID(), SPACE, scopeB, JSON.stringify({ type: "run", id: RUN }), `run\u001f${RUN}\u001f`],
-    );
-    await db.pool.query(`UPDATE context_event_scopes SET event_head_cursor=2 WHERE work_context_scope_id=$1`, [scopeB]);
-    expect(await continuity.reconcileScope(SPACE, scopeB)).toBe("partial");
-    const mismatch = await db.pool.query<{ status: string; detail: string }>(
-      `SELECT status,detail FROM context_capture_gaps WHERE work_context_scope_id=$1 AND code='reconciliation_mismatch'`, [scopeB],
-    );
-    expect(mismatch.rows).toEqual([expect.objectContaining({ status: "open", detail: expect.stringMatching(/bad_ref=(?!none)/) })]);
-    // Once the ledger is consistent again, a clean rescan resolves its own finding.
-    await db.pool.query(
-      `UPDATE context_events SET canonical_ref_json=$2::jsonb WHERE work_context_scope_id=$1 AND scope_sequence=2`,
-      [scopeB, JSON.stringify({ type: "run_request", id: runB })],
-    );
-    expect(await continuity.reconcileScope(SPACE, scopeB)).toBe("recovered");
-    expect((await db.pool.query(
-      `SELECT status FROM context_capture_gaps WHERE work_context_scope_id=$1`, [scopeB],
-    )).rows).toEqual([{ status: "recovered" }]);
-  });
-
-  it("loads the checkpoint and raw tail at the triggering Message watermark", async () => {
-    if (!db.available) return;
-    const sessionId = randomUUID();
-    const earlierId = randomUUID();
-    const currentId = randomUUID();
-    const futureId = randomUUID();
-    await db.pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
-    await seedConversationMessages(db.pool, {
-      space: SPACE, session: sessionId,
-      messages: [
-        { id: earlierId, role: "user", content: "earlier", userId: USER },
-        { id: currentId, role: "user", content: "current", userId: USER },
-        { id: futureId, role: "user", content: "future", userId: USER },
-      ],
-    });
-    await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
-    const continuity = new RuntimeContextContinuityService(db.pool, {
-      async extract() {
-        return {
-          extraction: { goals: [], user_intent: [], decisions: [], constraints: [], facts: [], open_questions: [], tasks: [], artifact_refs: [], tool_refs: [], correction_refs: [] },
-          extractorRef: { type: "provider_task", id: randomUUID(), version: "test.v1" },
-        };
-      },
-    });
-    const ingestMessage = (id: string) => continuity.ingest({
-      invocation_id: RUN, event_type: "user_message_received",
-      canonical_ref: { type: "message", id }, semantic_role: "user_input", token_estimate: 1,
-    });
-    await ingestMessage(earlierId);
-    const earlierCheckpoint = await continuity.runSemanticExtraction({ spaceId: SPACE, workContextScopeId: RUN, force: true });
-    await ingestMessage(currentId);
-    await ingestMessage(futureId);
-    await continuity.runSemanticExtraction({ spaceId: SPACE, workContextScopeId: RUN, force: true });
-    const visible = await loadConversationContinuityThroughMessage(db.pool, {
-      spaceId: SPACE, sessionId, workContextScopeId: RUN, currentMessageId: currentId,
-    });
-    expect(visible.checkpoint?.id).toBe(earlierCheckpoint?.id);
-    expect(visible.messages.map((message) => message.content)).toEqual(["current"]);
   });
 
   it("keeps earlier messages that share the triggering message timestamp", async () => {
@@ -649,83 +374,6 @@ describe("Context Event continuity and checkpoints", () => {
     expect(visible.messages.map((message) => message.content)).toEqual(["earlier on the path", "current trigger"]);
   });
 
-  it("does not use a checkpoint that captured a later message before the trigger's delayed event", async () => {
-    if (!db.available) return;
-    const sessionId = randomUUID();
-    const currentId = randomUUID();
-    const futureId = randomUUID();
-    await db.pool.query(`INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`, [sessionId, SPACE, USER]);
-    await seedConversationMessages(db.pool, {
-      space: SPACE, session: sessionId,
-      messages: [
-        { id: currentId, role: "user", content: "current trigger", userId: USER },
-        { id: futureId, role: "user", content: "a later decision", userId: USER },
-      ],
-    });
-    await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
-    const continuity = new RuntimeContextContinuityService(db.pool, {
-      async extract() {
-        return {
-          extraction: { goals: [], user_intent: [], decisions: [], constraints: [], facts: [], open_questions: [], tasks: [], artifact_refs: [], tool_refs: [], correction_refs: [] },
-          extractorRef: { type: "provider_task", id: randomUUID(), version: "test.v1" },
-        };
-      },
-    });
-    const ingest = (id: string) => continuity.ingest({
-      invocation_id: RUN, event_type: "user_message_received",
-      canonical_ref: { type: "message", id }, semantic_role: "user_input", token_estimate: 1,
-    });
-    await ingest(futureId);
-    expect(await continuity.runSemanticExtraction({ spaceId: SPACE, workContextScopeId: RUN, force: true })).not.toBeNull();
-    await ingest(currentId);
-    const visible = await loadConversationContinuityThroughMessage(db.pool, {
-      spaceId: SPACE, sessionId, workContextScopeId: RUN, currentMessageId: currentId,
-    });
-    expect(visible.checkpoint).toBeNull();
-    expect(visible.messages.map((message) => message.content)).toEqual(["current trigger"]);
-  });
-
-  it("rejects concurrent extraction output based on a superseded checkpoint", async () => {
-    if (!db.available) return;
-    const releases: Array<() => void> = [];
-    const continuity = new RuntimeContextContinuityService(db.pool, {
-      async extract() {
-        await new Promise<void>((resolve) => releases.push(resolve));
-        return {
-          extraction: { goals: [], user_intent: [], decisions: [], constraints: [], facts: [], open_questions: [], tasks: [], artifact_refs: [], tool_refs: [], correction_refs: [] },
-          extractorRef: { type: "provider_task", id: randomUUID(), version: "test.v1" },
-        };
-      },
-    });
-    await continuity.ingest({
-      invocation_id: RUN, event_type: "invocation_finalized",
-      canonical_ref: { type: "run", id: RUN }, semantic_role: null, token_estimate: 0,
-    });
-    const first = continuity.runSemanticExtraction({ spaceId: SPACE, workContextScopeId: RUN, force: true });
-    const second = continuity.runSemanticExtraction({ spaceId: SPACE, workContextScopeId: RUN, force: true });
-    // If either run fails before reaching the extractor, say so instead of
-    // waiting on a second release that will never come.
-    let early: unknown;
-    for (const run of [first, second]) run.catch((err) => { early ??= err; });
-    await vi.waitUntil(() => {
-      if (early !== undefined && releases.length < 2) throw early;
-      return releases.length === 2;
-    }, { timeout: 20_000, interval: 5 });
-    // Which run reached the extractor first is a scheduling accident, so
-    // release them one at a time without assuming an order: whichever
-    // persists first wins and the other must be rejected as stale.
-    releases[0]!();
-    await Promise.race([first, second].map((run) => run.then(() => undefined, () => undefined)));
-    releases[1]!();
-    const outcomes = await Promise.allSettled([first, second]);
-    const won = outcomes.filter((outcome) => outcome.status === "fulfilled");
-    const lost = outcomes.filter((outcome) => outcome.status === "rejected");
-    expect(won).toHaveLength(1);
-    expect((won[0] as PromiseFulfilledResult<unknown>).value).toBeDefined();
-    expect(lost).toHaveLength(1);
-    expect((lost[0] as PromiseRejectedResult).reason).toMatchObject({ statusCode: 409 });
-  });
-
   it("builds each Micro Checkpoint from the prior Micro event head", async () => {
     if (!db.available) return;
     const sessionId = randomUUID();
@@ -738,26 +386,18 @@ describe("Context Event continuity and checkpoints", () => {
     await db.pool.query(`UPDATE runs SET session_id=$2 WHERE id=$1`, [RUN, sessionId]);
     const continuity = new RuntimeContextContinuityService(db.pool);
     const first = await continuity.finalizeChatTurn({ invocationId: RUN, messageId: assistantId });
-    await db.pool.query(
-      `UPDATE jobs SET status='failed' WHERE space_id=$1 AND job_type='runtime_context_checkpoint'`,
-      [SPACE],
-    );
     const second = await continuity.finalizeChatTurn({ invocationId: RUN, messageId: assistantId });
     expect(first.message_refs).toEqual([{ type: "message", id: assistantId }]);
     expect(second.message_refs).toEqual([]);
     expect(second.event_head_cursor).toBe(first.event_head_cursor);
-    expect((await db.pool.query<{ count: number }>(
-      `SELECT count(*)::int AS count FROM jobs
-        WHERE space_id=$1 AND job_type='runtime_context_checkpoint'`,
-      [SPACE],
-    )).rows[0]?.count).toBe(2);
   });
 });
 
 describe("Invocation Delivery and Snapshot persistence", () => {
-  it.each(["none", "saved", "draft", "skill", "skill_project"] as const)("authorizes direct Chat with %s input resources and prior session turns", async (sourceState) => {
+  it.each(["none", "saved", "draft", "skill", "skill_project", "builtin_skill"] as const)("authorizes direct Chat with %s input resources and prior session turns", async (sourceState) => {
     if (!db.available) return;
-    const skillMode = sourceState === "skill" || sourceState === "skill_project";
+    const skillMode = sourceState === "skill" || sourceState === "skill_project" || sourceState === "builtin_skill";
+    const candidates = skillMode ? vi.spyOn(PgRuntimeSkillProvider.prototype, "loadCandidatesForRun") : null;
     const sessionId = randomUUID();
     const priorMessageId = randomUUID();
     const priorReplyId = randomUUID();
@@ -812,7 +452,9 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       );
     }
     let skillPackageId: string | undefined;
-    const originalSkill = Buffer.from("\ufeff---\r\nname: delivery-skill\r\ndescription: Follow this original package.\r\n---\r\nRead references/note.bin.\r\n");
+    const declaredActions = ["package.private_tool", "package.private_hook", "package.private_mcp"];
+    const originalSkill = sourceState === "builtin_skill" ? Buffer.from(builtinSkillFixture().files[0]!.content_base64, "base64")
+      : Buffer.from("\ufeff---\r\nname: delivery-skill\r\ndescription: Follow this original package.\r\nallowed-tools: [package.private_tool]\r\nhooks:\r\n  SessionStart: package.private_hook\r\nmcpServers:\r\n  package-private:\r\n    command: package.private_mcp\r\n---\r\nRead references/note.bin.\r\n");
     if (skillMode) {
       if (sourceState === "skill_project") {
         await db.pool.query(`INSERT INTO projects (id,space_id,owner_user_id,name,status,created_at,updated_at) VALUES ($1,$2,$3,'Skill Project','active',now(),now())`, [PROJECT, SPACE, USER]);
@@ -822,18 +464,43 @@ describe("Invocation Delivery and Snapshot persistence", () => {
         { path: "SKILL.md", content_base64: originalSkill.toString("base64") },
         { path: "references/note.bin", content_base64: "AP+A" },
       ] });
-      const pkg = SkillPackageSchema.parse(await new PgCapabilitiesRepository(db.pool).saveImportedSkill({ spaceId: SPACE, userId: USER }, preview));
+      const repo = new PgSkillsRepository(db.pool);
+      const identity = { spaceId: SPACE, userId: USER };
+      let pkg: ReturnType<typeof SkillPackageSchema.parse>;
+      if (sourceState === "builtin_skill") {
+        await syncBuiltinSkillPackages(db.pool, [builtinSkillFixture()]);
+        const seeded = (await db.pool.query(`SELECT sp.id FROM skill_packages sp JOIN skill_sources ss ON ss.id=sp.source_id
+          WHERE sp.space_id=$1 AND ss.source_type='builtin' AND sp.version='1.0.0'`, [SPACE])).rows[0]!;
+        pkg = SkillPackageSchema.parse(await repo.getSkillPackage(identity, seeded.id));
+        expect(pkg.source?.source_type).toBe("builtin");
+        expect(await repo.listAvailableSkills(identity, {})).toEqual([]);
+        expect((await db.pool.query("SELECT id FROM skill_bindings")).rows).toEqual([]);
+      } else {
+        pkg = SkillPackageSchema.parse(await repo.saveImportedSkill(identity, preview));
+        await approveSkillImportInTransaction({ db: db.pool, spaceId: SPACE, userId: USER, proposalId: randomUUID(), skillPackageId: pkg.id });
+      }
       skillPackageId = pkg.id;
-      await approveSkillImportInTransaction({ db: db.pool, spaceId: SPACE, userId: USER, proposalId: randomUUID(), skillPackageId: pkg.id });
       // Agent-bound selection must work even though a direct session has no agent_id.
-      const proposal = await new PgCapabilitiesRepository(db.pool).createSkillBindingProposal({ spaceId: SPACE, userId: USER }, pkg.id, { scope_type: sourceState === "skill_project" ? "project" : "agent", scope_id: sourceState === "skill_project" ? PROJECT : AGENT, enabled: true });
-      await withTransaction(db.pool, async client => {
+      const proposal = await new PgSkillsRepository(db.pool).createSkillBindingProposal({ spaceId: SPACE, userId: USER }, pkg.id, { scope_type: sourceState === "skill_project" ? "project" : "agent", scope_id: sourceState === "skill_project" ? PROJECT : AGENT, enabled: true });
+      if (sourceState === "builtin_skill") {
+        expect((await db.pool.query("SELECT id FROM skill_bindings")).rows).toEqual([]);
+        await new PgProposalApplyService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri })).accept(proposal.id, identity);
+        // Upgrading the shipped release must not move the accepted binding.
+        await syncBuiltinSkillPackages(db.pool, [builtinSkillFixture("2.0.0")]);
+        expect((await repo.listSkillBindings(identity, pkg.id))[0]).toMatchObject({ skill_package_id: pkg.id, enabled: true, proposal_id: proposal.id });
+      } else await withTransaction(db.pool, async client => {
         const row = (await client.query<ApplyProposal>("SELECT * FROM proposals WHERE id=$1", [proposal.id])).rows[0]!;
         await applySkillPackageBinding({ db: client, proposal: row, userId: USER, config: loadConfig({ SERVER_DATABASE_URL: db.connectionUri }) });
         await client.query("UPDATE proposals SET status='accepted' WHERE id=$1", [proposal.id]);
       });
       await db.pool.query(`UPDATE messages SET content='' WHERE id=$1`, [MESSAGE]);
       await db.pool.query(`INSERT INTO message_input_parts (id,space_id,session_id,message_id,position,kind,skill_package_id,display_name,media_type,byte_size,sha256) VALUES ($1,$2,$3,$4,0,'skill',$5,'delivery-skill','application/vnd.rainver.skill',0,$6)`, [randomUUID(), SPACE, sessionId, MESSAGE, pkg.id, preview.package_hash]);
+      // Even a permissive Agent declaration cannot register package actions.
+      // Keep one genuine grant so the check cannot pass on an empty snapshot.
+      const requested = ["retrieval.search", ...declaredActions];
+      const grants = await buildRunToolGrants(requested, { allowed_tools: requested });
+      await db.pool.query(`UPDATE runs SET permission_snapshot_json=$2::jsonb WHERE id=$1`,
+        [RUN, JSON.stringify({ tool_grants: grants })]);
     }
     await db.pool.query(
       `INSERT INTO policy_decision_records (
@@ -862,7 +529,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     if (skillMode) {
       const selections = [{ kind: "skill", skill_package_id: skillPackageId!, package_hash: String((await db.pool.query("SELECT manifest_json->>'package_hash' AS hash FROM skill_packages WHERE id=$1", [skillPackageId])).rows[0]!.hash), display_name: "delivery-skill" }];
       await expect(assertSelectedSkillBindings(db.pool, { space_id: SPACE, user_id: USER, project_id: null, agent_id: AGENT, session_id: sessionId }, selections)).resolves.toBeUndefined();
-      expect(await new PgCapabilitiesRepository(db.pool).listAvailableSkills({ spaceId: SPACE, userId: USER }, { session_id: sessionId, agent_id: AGENT })).toEqual(selections);
+      expect(await new PgSkillsRepository(db.pool).listAvailableSkills({ spaceId: SPACE, userId: USER }, { session_id: sessionId, agent_id: AGENT })).toEqual(selections);
     }
     await db.pool.query(
       `INSERT INTO model_providers (
@@ -944,15 +611,9 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       expect(messageText).toContain('"relative_path":"README.md"');
       expect(messageText).not.toContain("Captured file body");
     }
-    const continuity = result.envelope.items.find((item) => item.acquisition === "continuity");
-    expect(continuity?.source_ref).toEqual({
-      type: "session",
-      id: sessionId,
-    });
-    expect(continuity?.payload.text).toContain("Remember the blue launch code.");
-    expect(continuity?.payload.text).toContain("I will remember blue.");
-    expect(continuity?.payload.text).not.toContain("This later turn must stay invisible.");
-    expect(continuity?.payload.text).not.toContain("What code did I choose?");
+    // A vendor CLI Run's session holds the conversation: the Delivery carries
+    // no continuity replay of earlier turns (ADR 0014 §11).
+    expect(result.envelope.items.some((item) => item.acquisition === "continuity")).toBe(false);
     const snapshots = new InvocationSnapshotService(
       db.pool,
       undefined,
@@ -972,10 +633,40 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     });
     const accepted = await create();
     if (skillMode) {
+      // Acquisition, initial Delivery validation and its locked authoritative
+      // reload must all resolve the same original package under live scope.
+      const resolutions = await Promise.all(candidates!.mock.results.map(result => result.value));
+      expect(resolutions).toHaveLength(3);
+      for (const resolution of resolutions) {
+        expect(resolution).toEqual([expect.objectContaining({
+          content: expect.objectContaining({ skill_package_id: skillPackageId }),
+        })]);
+      }
+      expect(candidates!.mock.calls.map(([scope]) => scope)).toEqual([
+        expect.objectContaining({ space_id: SPACE, run_id: RUN, agent_id: AGENT,
+          project_id: sourceState === "skill_project" ? PROJECT : null, session_id: sessionId, message_id: MESSAGE }),
+        expect.objectContaining({ space_id: SPACE, run_id: RUN, session_id: sessionId, message_id: MESSAGE }),
+        expect.objectContaining({ space_id: SPACE, run_id: RUN, session_id: sessionId, message_id: MESSAGE, lock: true }),
+      ]);
+      const plannedSkill = result.envelope.items.find(item => item.source_ref.type === "skill_package_binding")!;
+      expect(plannedSkill).toMatchObject({ selection: "required", semantic_role: "delegated_instruction", trust: "system_approved" });
+      expect(accepted.delivery.skill_packages?.[0]?.source_item_id).toBe(plannedSkill.id);
+      expect(accepted.delivery.planned_items).toContainEqual(expect.objectContaining({
+        item_id: plannedSkill.id, required: true, semantic_role: "delegated_instruction",
+      }));
       expect(accepted.delivery.skill_packages?.[0]?.content.files).toEqual(expect.arrayContaining([
         expect.objectContaining({ path: "SKILL.md", content_base64: originalSkill.toString("base64") }),
         expect.objectContaining({ path: "references/note.bin", content_base64: "AP+A" }),
       ]));
+      const permissions = (await db.pool.query(`SELECT permission_snapshot_json FROM runs WHERE id=$1`, [RUN]))
+        .rows[0]!.permission_snapshot_json;
+      expect(permissions.tool_grants).toContainEqual(expect.objectContaining({ action_id: "retrieval.search" }));
+      for (const name of declaredActions) {
+        // Declaration bytes deliberately remain in the delivered package;
+        // neither they nor review/binding can add callable authority.
+        expect(JSON.stringify(permissions)).not.toContain(name);
+        expect(JSON.stringify(accepted.delivery.tool_grant_refs)).not.toContain(name);
+      }
       const forged = structuredClone(result.envelope);
       const skillItem = forged.items.find(item => item.source_ref.type === "skill_package_binding")!;
       (skillItem.payload.skill_package as { files: Array<{ content_base64: string }> }).files[0]!.content_base64 = "Zm9yZ2Vk";
@@ -1003,33 +694,6 @@ describe("Invocation Delivery and Snapshot persistence", () => {
         WHERE id=$1`,
       [RUN, JSON.stringify(MESSAGE)],
     );
-    const requiredTokens = result.envelope.items
-      .filter((item) => item.selection !== "ranked")
-      .reduce((sum, item) => sum + item.token_estimate, 0);
-    const trimmedEnvelope = new RuntimeContextPlanner().plan({
-      executionControlSnapshotId: CONTROL,
-      setupRef: authoritative.work_context_setup_ref,
-      turn: result.envelope.turn_request,
-      model: "gpt-4o",
-      outputReserveTokens: 0,
-      modelWindowOverride: {
-        // The planner fills 90 % of the window after reserve and overhead.
-        contextWindowTokens: Math.ceil((requiredTokens + 12) / 0.9),
-        defaultOutputReserveTokens: 0,
-        providerOverheadTokens: 0,
-        catalogVersion: "test.trimmed-continuity.v1",
-      },
-      directItems: result.envelope.items.filter((item) => item.acquisition === "direct"),
-      explicitItems: result.envelope.items.filter((item) => item.acquisition === "explicit"),
-      continuityItems: result.envelope.items.filter((item) => item.acquisition === "continuity"),
-      retrievalItems: result.envelope.items.filter((item) => item.acquisition === "retrieval"),
-    });
-    expect(trimmedEnvelope.window_plan.decisions.find((entry) => entry.item_id === continuity?.id))
-      .toMatchObject({
-        decision: "trimmed",
-        planned_tokens: Math.floor(Math.ceil((requiredTokens + 12) / 0.9) * 0.9) - requiredTokens,
-      });
-    await expect(create(trimmedEnvelope)).resolves.toBeDefined();
     if (sourceState === "saved" || sourceState === "draft") {
       const missingAttachment = structuredClone(result.envelope);
       missingAttachment.items.find((item) => item.source_ref.id === MESSAGE)!.payload.text = "What code did I choose?";
@@ -1189,6 +853,119 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       viewerUserId: USER,
       reason: "tamper check",
     })).rejects.toThrow();
+  });
+
+  it("sends the standing items into a fresh session and into a resumed one only when their versions changed", async () => {
+    if (!db.available) return;
+    const sessionId = randomUUID();
+    const decisionId = randomUUID();
+    const vendorSession = "vendor-standing";
+    await db.pool.query(
+      `INSERT INTO sessions (id,space_id,user_id,status,created_at,updated_at) VALUES ($1,$2,$3,'active',now(),now())`,
+      [sessionId, SPACE, USER],
+    );
+    await seedConversationMessages(db.pool, {
+      space: SPACE, session: sessionId,
+      messages: [{ id: MESSAGE, role: "user", content: "Carry on.", userId: USER, runId: RUN, metadata: {} }],
+    });
+    await db.pool.query(
+      `INSERT INTO policy_decision_records (
+         id,space_id,actor_type,actor_id,action,resource_type,resource_id,
+         decision,risk_level,policy_source,metadata_json,created_at
+       ) VALUES ($1,$2,'user',$3,'work_context_setup.change','work_context_setup',$4,
+                 'allow','medium','test','{}',now())`,
+      [decisionId, SPACE, USER, SETUP],
+    );
+    await db.pool.query(
+      `INSERT INTO work_context_setups (
+         id,space_id,work_context_scope_id,scope_kind,version,user_id,
+         project_id,project_folder_id,agent_id,runtime_ref_json,pinned_refs_json,
+         excluded_refs_json,retrieval_preferences_json,continuity_preferences_json,
+         project_brief_version_id,project_instruction_version_id,project_instruction_enabled,
+         governing_policy_refs_json,setup_fingerprint,base_version,typed_diff_json,reason,
+         policy_decision_record_id,created_by_user_id,created_at
+       ) VALUES ($1,$2,$3,'direct_session',1,$4,NULL,NULL,$5,NULL,'[]','[]',
+                 '{"enabled":false}','{}',NULL,NULL,TRUE,'[]','standing-setup',NULL,'{}',
+                 'test',$6,$4,now())`,
+      [SETUP, SPACE, sessionId, USER, AGENT, decisionId],
+    );
+    await db.pool.query(
+      `INSERT INTO host_threads (id, space_id, execution_host_id, workspace_mode, session_id, agent_id,
+         container_kind, runtime_key, vendor_session_id, retired_vendor_session_ids, status,
+         created_by_user_id, created_at, updated_at)
+       VALUES ($1, $2, $3, 'managed', $4, $5, 'conversation', 'opencode', $6, '[]', 'active', $7, now(), now())`,
+      [THREAD, SPACE, HOST, sessionId, AGENT, vendorSession, USER],
+    );
+    const hostThread = (runtimeSessionId: string | null) => ({
+      chat_turn: { schema_version: "chat_turn.v1", session_id: sessionId, user_id: USER, user_message_id: MESSAGE, agent_id: AGENT, agent_version_id: VERSION, project_id: null },
+      host_thread: { schema_version: "host_thread.v1", thread_id: THREAD, runtime_session_id: runtimeSessionId, fresh: runtimeSessionId === null },
+    });
+    await db.pool.query(
+      `INSERT INTO model_providers (
+         id,space_id,owner_user_id,name,provider_type,base_url,enabled,
+         capabilities_json,config_json,created_at,updated_at
+       ) VALUES ($1,$2,$3,'Local','ollama','http://localhost:11434',TRUE,'{}','{"deployment":"trusted_local"}',now(),now())`,
+      [PROVIDER, SPACE, USER],
+    );
+    await db.pool.query(
+      `INSERT INTO model_provider_space_grants (
+         id,provider_id,space_id,owner_user_id,granted_by_user_id,enabled,is_default,created_at,updated_at
+       ) VALUES ($1,$2,$3,$4,$4,TRUE,FALSE,now(),now())`,
+      [randomUUID(), PROVIDER, SPACE, USER],
+    );
+    await db.pool.query(
+      `UPDATE agent_runtime_profiles SET backend_mode='model_provider', model_provider_id=$2, model_name='gpt-4o' WHERE id=$1`,
+      [PROFILE, PROVIDER],
+    );
+    await db.pool.query(
+      `UPDATE runs SET session_id=$2, host_task_thread_id=$3, prompt='Carry on.', model_provider_id=$5,
+         runtime_profile_snapshot_json = runtime_profile_snapshot_json ||
+           jsonb_build_object('backend_mode','model_provider','model_provider_id',$5::varchar(36),'model_name','gpt-4o'),
+         model_override_json=$4::jsonb WHERE id=$1`,
+      [RUN, sessionId, THREAD, JSON.stringify(hostThread(vendorSession)), PROVIDER],
+    );
+    const authoritative = control();
+    authoritative.work_context_scope_id = sessionId;
+    authoritative.work_context_setup_ref = { type: "work_context_setup", id: SETUP, version: "1" };
+    authoritative.egress.sensitivity_ceiling = "highly_restricted";
+    authoritative.readable_scope.sensitivity_ceiling = "highly_restricted";
+    await db.pool.query(`UPDATE execution_control_snapshots SET snapshot_json=$2::jsonb WHERE id=$1`, [CONTROL, JSON.stringify(authoritative)]);
+    const plan = async () => (await createProductionRuntimeContextPlanningService(db.pool).planExecution({
+      identity: { spaceId: SPACE, userId: USER },
+      invocationId: RUN,
+      deliveryId: randomUUID(),
+      turn: { work_context_scope_id: sessionId, expected_setup_version: 1, current_message_ref: { type: "message", id: MESSAGE }, one_off_refs: [], invocation_purpose: "agent_task" },
+    })).envelope.items.map((item) => item.source_ref.type).sort();
+    const dispatched = async () => (await db.pool.query<{ standing: { digest: string; sent: boolean } }>(
+      `SELECT jsonb_build_object('digest', model_override_json->'host_thread'->>'standing_digest',
+                                 'sent', (model_override_json->'host_thread'->>'standing_sent')::boolean) AS standing
+         FROM runs WHERE id=$1`, [RUN],
+    )).rows[0]!.standing;
+
+    // The session holds nothing yet: the Agent instruction goes with the message.
+    expect(await plan()).toEqual(["agent_version", "message"]);
+    const first = await dispatched();
+    expect(first.sent).toBe(true);
+
+    // The Run landed; the thread now records what that session holds.
+    await db.pool.query(`UPDATE host_threads SET standing_digest=$2, standing_digest_run_id=$3 WHERE id=$1`, [THREAD, first.digest, RUN]);
+    expect(await plan()).toEqual(["message"]);
+    expect(await dispatched()).toEqual({ digest: first.digest, sent: false });
+
+    // A revised Agent instruction is a new version, and goes out again.
+    const revised = randomUUID();
+    await db.pool.query(
+      `INSERT INTO agent_versions (id,agent_id,space_id,version_label,system_prompt,context_policy_json,memory_policy_json,capabilities_json,tool_permissions_json,created_at)
+       VALUES ($1,$2,$3,'v2','revised','{}','{}','[]','{}',now())`,
+      [revised, AGENT, SPACE],
+    );
+    await db.pool.query(`UPDATE runs SET agent_version_id=$2 WHERE id=$1`, [RUN, revised]);
+    expect(await plan()).toEqual(["agent_version", "message"]);
+    expect((await dispatched()).digest).not.toBe(first.digest);
+
+    // A fresh session holds nothing, whatever the thread recorded for the old one.
+    await db.pool.query(`UPDATE runs SET agent_version_id=$2, model_override_json=$3::jsonb WHERE id=$1`, [RUN, VERSION, JSON.stringify(hostThread(null))]);
+    expect(await plan()).toEqual(["agent_version", "message"]);
   });
 
   it("rejects caller controls that differ from the persisted authority", async () => {
@@ -1898,7 +1675,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
       await expect(snapshots.createAttempt({
         spaceId: SPACE, invocationId: RUN, envelope: plan.envelope, control: authoritative,
         runtimeKey: "opencode", providerId: null, model: null, usageSourceId: "deduplicated-race",
-        mode: "full", viewerUserId: USER, requireLiveAuthorization: true,
+        viewerUserId: USER, requireLiveAuthorization: true,
       })).rejects.toMatchObject({ statusCode: 409 });
     }
   });
@@ -2012,7 +1789,7 @@ describe("Invocation Delivery and Snapshot persistence", () => {
     await expect(snapshots.createAttempt({
       spaceId: SPACE, invocationId: RUN, envelope: plan.envelope, control: authoritative,
       runtimeKey: "opencode", providerId: null, model: null, usageSourceId: "renamed-agent",
-      mode: "full", viewerUserId: USER, requireLiveAuthorization: true,
+      viewerUserId: USER, requireLiveAuthorization: true,
     })).rejects.toMatchObject({ statusCode: 409 });
   });
 

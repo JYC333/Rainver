@@ -173,13 +173,21 @@ describe("Evolvable asset/version/pin (real Postgres)", () => {
     await expect(assertCanResolveForScopes(db.pool, outsider, { projectId: null, agentId: null })).resolves.toBeUndefined();
   });
 
-  it("rejects capability rows because CapabilityVersion is the canonical model", async () => {
+  it("rejects retired asset kinds instead of treating Skills as evolvable assets", async () => {
     if (!db.available) return;
     await expect(repo().createAsset(identity, {
       asset_type: "capability",
       asset_key: "research.search",
       display_name: "Research search",
     })).rejects.toMatchObject({ statusCode: 422 });
+    const archived = randomUUID();
+    await db.pool.query(`INSERT INTO evolvable_assets
+      (id,space_id,asset_type,asset_key,display_name,owner_scope_type,owner_scope_id,status,metadata_json,created_at,updated_at)
+      VALUES ($1,$2,'runtime_skill_binding','legacy.binding','Legacy binding','space',$2,'archived',
+        '{"archive_reason":"Retired"}',now(),now())`, [archived, SPACE]);
+    await expect(repo().getAsset(identity, archived)).resolves.toMatchObject({ status: "archived" });
+    await expect(repo().createVersion(identity, archived, { scope_type: "space", scope_id: SPACE }))
+      .rejects.toMatchObject({ statusCode: 409 });
   });
 
   it("rejects a duplicate asset_key in the same space", async () => {

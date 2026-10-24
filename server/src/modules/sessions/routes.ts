@@ -28,7 +28,7 @@ interface SessionServices {
 type SessionServicesFactory = (context: ModuleContext) => SessionServices;
 type ExecutionContextService = Pick<
   ConversationExecutionContextService,
-  "preflight" | "initialize" | "refreshGit" | "mutateAttachment"
+  "preflight" | "initialize" | "mutateAttachment"
 >;
 type ExecutionContextServiceFactory = (context: ModuleContext) => ExecutionContextService;
 type SessionIdentity = { spaceId: string; userId: string };
@@ -248,19 +248,6 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
         parsed.data,
       );
       return reply.send(result);
-    } catch (error) {
-      return sendRouteError(reply, error);
-    }
-  });
-
-  app.post("/api/v1/sessions/:sessionId/execution-context/refresh-git", async (request, reply) => {
-    const identity = await resolveIdentity(context, request, reply);
-    if (!identity) return reply;
-    try {
-      return reply.send(await executionContextService(context).refreshGit(
-        identity,
-        params(request).sessionId ?? "",
-      ));
     } catch (error) {
       return sendRouteError(reply, error);
     }

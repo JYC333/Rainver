@@ -131,7 +131,7 @@ a bounded `authorization_requests` row.
 variables and the files behind them — the command, reachable at `RAINVER_CLI`
 (the daemon resolves its own copy and writes a launcher into the Run's
 directory), the Rainver Work Skill
-(`capabilities/workSkill.ts`, rendered from `systemActions/conversationPolicy.ts`
+(`skills/workSkill.ts`, rendered from `systemActions/conversationPolicy.ts`
 constants the conversational surfaces share),
 and a pointer to the Skill appended to the prompt the runtime is actually
 sent. There is no per-vendor branch anywhere in that path. Do not add a
@@ -263,7 +263,7 @@ dispatched to work on a Task may call (the Task write surface plus read-only
 `trusted_host`). `RunCreateInput.scenario_tool_allowance` supplies the
 applicable one in place of the AgentVersion's for every conversation Run (via
 `conversationToolGrantInput`) and every Task-dispatched Run
-(`tasks/repository.ts`); the session-handoff turn carries
+(`tasks/repository.ts`); the conversation-summary turn carries
 `HANDOFF_TOOL_ALLOWANCE` (`agentGroups/sessionHandoff.ts`). A
 delegated child spawned inside a group carries the same conversation allowance
 as its Room's turns — `createDelegatedChildRun` expands
@@ -276,6 +276,15 @@ The allowance also carries the four id-discovery reads (`inquiry.list_threads`,
 `task.list`, `proposal.list_pending`, `research.list_operations`), without
 which the id-taking actions below could only be called with a composed id —
 see "Where an Agent gets an id".
+
+`CONVERSATION_TOOL_ALLOWANCE` also carries the conversation's own record:
+`conversation.search` (words, optional time window; excerpts from messages
+and Agent events, newest first) and `conversation.read` (whole messages by id
+or window, bounded). Both read only the Run's conversation along its visible
+message path (`sessions/conversationHistorySystemActionExecutors.ts`, policy
+action `conversation.history.read`). The vendor session is the Agent's
+working memory and Rainver keeps the record; a summary or a renewed session
+points here for what it left out, instead of the transcript being replayed.
 
 Part of the allowance is proposal-gated (`project.propose_definition`,
 `inquiry.promote_knowledge`); `inquiry.create_thread`,
@@ -299,8 +308,7 @@ the user to see why. Non-Room agent groups keep the AgentVersion allowance
 unchanged.
 
 The allowance is also written to the Run's `capabilities_json`, because the
-declaration side of the intersection has to be satisfied too. That field is
-overloaded. The coupling runs in two directions:
+declaration side of the intersection has to be satisfied too. That field also carries retrieval-domain allowance:
 
 - `explicitRetrievalToolDomainsFromRun` (`runs/managedRetrievalTools.ts`)
   treats a retrieval action id in `capabilities_json` as the *enablement
@@ -310,10 +318,11 @@ overloaded. The coupling runs in two directions:
   conversation allowance does not include them: a Room reply is visible to
   every Room member, and the sender's private reads would otherwise surface
   in that shared reply.
-- `capabilityIdsForRun` selects runtime-skill bindings from the Run's
-  `capability_id` and `capabilities_json`. A scenario allowance written into
-  that field is what the lookup sees. It does not read
-  `agent_versions.capabilities_json`.
+
+Skill selection is separate: `PgRuntimeSkillProvider` delegates to the library's
+`loadSelectedSkills`, using scoped bindings and canonical message selections.
+Neither `runs.capability_id` stage tags nor `capabilities_json` select Skills.
+Reading a package never grants a System Action.
 
 The allowance and its resulting grants are persisted together in
 `permission_snapshot_json`. Production execution binds queued Runs to their
@@ -393,9 +402,9 @@ with a one-click undo, and attention carries only what a person must decide
 `task.request_review` are ungated at any origin because they are append-only
 or self-limiting — a report only records, a handoff can only give work away, a
 review request can only stop work. `handoff.write` is ungated for the same
-reason and granted to one kind of Run only — the handoff turn before a
-Conversation × Agent session rotates (`modules/hosts.md`): it writes one
-Artifact on the Agent's own thread and nothing else.
+reason and granted to one kind of Run only — the summary turn a person asks
+of a Conversation × Agent (`modules/hosts.md`, "Conversation summary and
+restart"): it writes one Artifact on the Agent's own thread and nothing else.
 
 **Inquiry writes.** `inquiry.create_thread` and `inquiry.record_conclusion`
 are direct writes. Still gated, each

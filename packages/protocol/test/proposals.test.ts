@@ -66,6 +66,13 @@ describe("proposal review contracts", () => {
   });
 
   it("parses accept response variants", () => {
+    const skillReview = {
+      proposal: { ...proposal(), status: "accepted", proposal_type: "skill_import_approve" },
+      result_type: "skill_overlay",
+      result: { action: "skill_import_approve", resulting_status: "reviewed" },
+    };
+    expect(ProposalAcceptOutSchema.parse(skillReview).result_type).toBe("skill_overlay");
+    expect(ProposalAcceptOutSchema.safeParse({ ...skillReview, result_type: "capability_overlay" }).success).toBe(false);
     const parsed = ProposalAcceptOutSchema.parse({
       proposal: { ...proposal(), status: "accepted" },
       result_type: "code_patch_apply",

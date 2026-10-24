@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { personLabel } from './audience'
-import { Loader2, Plus, RefreshCw, Settings2, UserPlus, UserRoundMinus, UserRoundX } from 'lucide-react'
+import { Loader2, NotebookPen, Plus, RefreshCw, RotateCcw, Settings2, UserPlus, UserRoundMinus, UserRoundX } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError, roomsApi } from '../../api/client'
 import { errMsg } from '../../lib/utils'
@@ -224,6 +224,26 @@ export function RoomRosterPanel({
     await mutate(() => roomsApi.removeAgent(detail.room.id, agentId))
   }
 
+  async function summarizeAgentContext(agentId: string, name: string) {
+    if (!await ask({
+      title: `Ask ${name} for a summary?`,
+      description: 'The Agent writes a summary of this conversation so far, kept on the Project. Its session continues; you can restart it from the summary later.',
+      confirmLabel: 'Write summary',
+      variant: 'default',
+    })) return
+    await mutate(() => roomsApi.summarizeAgentContext(detail.room.id, agentId))
+  }
+
+  async function restartFromSummary(agentId: string, name: string) {
+    if (!await ask({
+      title: `Restart ${name} from its summary?`,
+      description: 'The host runtime session is cleared. The next turn starts fresh from the summary the Agent wrote in this session.',
+      confirmLabel: 'Restart from summary',
+      variant: 'destructive',
+    })) return
+    await mutate(() => roomsApi.restartFromSummary(detail.room.id, agentId))
+  }
+
   async function resetAgentContext(agentId: string, name: string) {
     if (!await ask({
       title: `Reset ${name}'s context?`,
@@ -348,9 +368,17 @@ export function RoomRosterPanel({
                 </Button>
               )}
               {canAdminister && member.host_name && member.host_owner_is_me && (
-                <Button variant="ghost" size="sm" disabled={busy} aria-label={`Reset context for ${member.agent_name}`} onClick={() => void resetAgentContext(member.agent_id, member.agent_name)}>
-                  <RefreshCw className="size-3.5" />
-                </Button>
+                <>
+                  <Button variant="ghost" size="sm" disabled={busy} aria-label={`Summarize context for ${member.agent_name}`} onClick={() => void summarizeAgentContext(member.agent_id, member.agent_name)}>
+                    <NotebookPen className="size-3.5" />
+                  </Button>
+                  <Button variant="ghost" size="sm" disabled={busy} aria-label={`Restart ${member.agent_name} from its summary`} onClick={() => void restartFromSummary(member.agent_id, member.agent_name)}>
+                    <RotateCcw className="size-3.5" />
+                  </Button>
+                  <Button variant="ghost" size="sm" disabled={busy} aria-label={`Reset context for ${member.agent_name}`} onClick={() => void resetAgentContext(member.agent_id, member.agent_name)}>
+                    <RefreshCw className="size-3.5" />
+                  </Button>
+                </>
               )}
             </span>
           </div>

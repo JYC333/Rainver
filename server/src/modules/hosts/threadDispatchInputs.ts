@@ -24,6 +24,12 @@ interface HostThreadDispatchInputs {
    * block was in its prompt. Null for Runs that carry no identity block.
    */
   identity: { digest: string; sent: boolean } | null;
+  /**
+   * The standing Runtime Context digest the Run was dispatched with, and
+   * whether those items were in its Delivery (`productionAcquisition.ts`).
+   * Null for Runs the Gateway has not prepared.
+   */
+  standing: { digest: string; sent: boolean } | null;
 }
 
 export function hostThreadDispatchInputs(
@@ -32,7 +38,7 @@ export function hostThreadDispatchInputs(
   const threadId = typeof run.host_task_thread_id === "string" && run.host_task_thread_id
     ? run.host_task_thread_id
     : null;
-  if (!threadId) return { thread_id: null, resume_session_id: null, resume_attempted: false, identity: null };
+  if (!threadId) return { thread_id: null, resume_session_id: null, resume_attempted: false, identity: null, standing: null };
   const override = run.model_override_json;
   const hostThread = override && typeof override === "object" && !Array.isArray(override)
     ? (override as Record<string, unknown>).host_thread
@@ -47,10 +53,14 @@ export function hostThreadDispatchInputs(
   const identity = typeof thread.identity_digest === "string" && thread.identity_digest
     ? { digest: thread.identity_digest, sent: thread.identity_sent === true }
     : null;
+  const standing = typeof thread.standing_digest === "string" && thread.standing_digest
+    ? { digest: thread.standing_digest, sent: thread.standing_sent === true }
+    : null;
   return {
     thread_id: threadId,
     resume_session_id: resumeSessionId,
     resume_attempted: resumeSessionId !== null,
     identity,
+    standing,
   };
 }

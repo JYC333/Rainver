@@ -1,3 +1,4 @@
+import { RESEARCH_STAGES } from "../researchStages.js";
 import { randomUUID } from "node:crypto";
 import type { Queryable } from "../../routeUtils/common.js";
 import { dateIso, HttpError, objectValue, optionalString, withQueryableTransaction } from "../../routeUtils/common.js";
@@ -26,14 +27,6 @@ import type { ResearchOperationState, ResearchStage, ResearchMutationResult } fr
 import { researchStage, researchState, advanceOperation as advanceResearchOperation } from "../operationProjection.js";
 import { deriveStepStates } from "../operationProjection.js";
 import { setResearchOperationState } from "./operationProjectionWriter.js";
-
-const RESEARCH_SYNTHESIS_CAPABILITIES = [
-  "research.source_collect",
-  "research.source_summarize",
-  "research.evidence_extract",
-  "research.brief_synthesize",
-  "research.idea_generate",
-];
 
 interface SynthesisOperationRow {
   id: string;
@@ -142,8 +135,8 @@ export class ProjectResearchSynthesisCoordinator {
           runtime_profile_id: current.runtime_profile_id || null,
           prompt: `${input.stageKey === "synthesis_revision" ? "Revise" : "Synthesize"} the approved project research corpus for: ${researchQueryText(current)}`,
           instruction: resolvedPrompt.instruction,
-          capability_id: "research.brief_synthesize",
-          capabilities_json: RESEARCH_SYNTHESIS_CAPABILITIES,
+          capability_id: RESEARCH_STAGES.brief_synthesize,
+          capabilities_json: [],
           contract_snapshot: {
             source: { kind: "workflow", id: workflowId },
             project_id: projectId,
@@ -255,8 +248,8 @@ export class ProjectResearchSynthesisCoordinator {
           runtime_profile_id: state.runtime_profile_id || null,
           prompt: `Critique the Project Research report for: ${researchQueryText(state)}`,
           instruction: resolved.instruction,
-          capability_id: "research.brief_synthesize",
-          capabilities_json: RESEARCH_SYNTHESIS_CAPABILITIES,
+          capability_id: RESEARCH_STAGES.brief_synthesize,
+          capabilities_json: [],
           contract_snapshot: {
             source: { kind: "workflow", id: input.workflowId },
             project_id: input.projectId,

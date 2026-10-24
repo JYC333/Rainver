@@ -1,5 +1,5 @@
 import type { ConversationInputSkillPart } from "@rainver/protocol";
-import { loadSkillPackageContent } from "../capabilities/skillPackageContent.js";
+import { loadSkillPackageContent } from "../skills/skillPackageContent.js";
 import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile, realpath, rename, stat, unlink } from "node:fs/promises";

@@ -13,6 +13,7 @@ import { registerPlansSystemActionExecutors } from "../plans/plansSystemActionEx
 import { registerProjectWorkSystemActionExecutors } from "../projectWork/projectWorkSystemActionExecutors.js";
 import { registerPolicySystemActionExecutors } from "../policy/policySystemActionExecutors.js";
 import { registerConversationInputResourceExecutors } from "../sessions/conversationInputResourceService.js";
+import { registerConversationHistoryExecutors } from "../sessions/conversationHistorySystemActionExecutors.js";
 import { registerAgentHandoffExecutors } from "../agentGroups/sessionHandoff.js";
 
 /**
@@ -53,6 +54,8 @@ export function registerModuleSystemActionExecutors(
     registerMemoryDirectWriteExecutors(executors, config, run);
     // Registers only for a Room handoff turn; every other Run is left without it.
     registerAgentHandoffExecutors(executors, config, run);
+    // The conversation's recorded history, for any Run that belongs to one.
+    registerConversationHistoryExecutors(executors, config, run);
     if (context.messageId) {
       registerConversationInputResourceExecutors(executors, config, run, context.messageId);
     }

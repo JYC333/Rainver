@@ -29,22 +29,6 @@ const skillImportApprove = z
   .object({ proposal_type: z.literal("skill_import_approve") })
   .passthrough();
 
-const capabilityInstall = z
-  .object({ proposal_type: z.literal("capability_install") })
-  .passthrough();
-
-const capabilityUpdate = z
-  .object({ proposal_type: z.literal("capability_update") })
-  .passthrough();
-
-const capabilityEnable = z
-  .object({ proposal_type: z.literal("capability_enable") })
-  .passthrough();
-
-const capabilityDisable = z
-  .object({ proposal_type: z.literal("capability_disable") })
-  .passthrough();
-
 const runtimeSkillBindingUpdate = z
   .object({ proposal_type: z.literal("runtime_skill_binding_update") })
   .passthrough();
@@ -402,10 +386,6 @@ const ProposalPayloadSchema = z.discriminatedUnion("proposal_type", [
   memoryUpdate,
   memoryArchive,
   skillImportApprove,
-  capabilityInstall,
-  capabilityUpdate,
-  capabilityEnable,
-  capabilityDisable,
   runtimeSkillBindingUpdate,
   knowledgeCreate,
   knowledgeUpdate,

@@ -130,7 +130,7 @@ export const zhCN = {
     pdfs: 'PDF', digests: '摘要', proposals: '提案', memory: '记忆',
     my_agents: '我的智能体', chat_history: '聊天记录', templates: '模板',
     runs: '运行', plans: '计划', automations: '自动化',
-    skills: '技能库', capabilities: '能力', artifacts: '产物',
+    skills: '技能库', artifacts: '产物',
   },
   shell: {
     switch_to_light: '切换到浅色主题', switch_to_dark: '切换到深色主题',
@@ -210,7 +210,7 @@ export const zhCN = {
     instance_settings: '实例设置', job_queue: '作业队列', evolution: '演进',
     prompt_library: '提示词库', retrieval_settings: '检索设置',
     plugins: '可选模块', settings: '设置', space_settings: '空间设置',
-    skills: '技能库', capabilities: '能力', agents_mgmt: '智能体', providers: '提供方',
+    skills: '技能库', agents_mgmt: '智能体', providers: '提供方',
     usage: 'Token 用量', network_profiles: '网络', automations: '自动化',
   },
 } satisfies TranslateShape<typeof en>

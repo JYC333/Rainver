@@ -181,7 +181,6 @@ init_data_dirs() {
   private_dir "$MODE_ROOT/artifacts"
   private_dir "$MODE_ROOT/cache"
   private_dir "$MODE_ROOT/cache/runtime-homes"
-  private_dir "$MODE_ROOT/cache/conversation-runtime-homes"
   private_dir "$MODE_ROOT/cache/login-homes"
   # The built-in execution host: where the server publishes its registration
   # credential, and where its daemon keeps everything it owns. Created here

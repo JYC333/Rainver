@@ -1,7 +1,6 @@
 import type { MessageOut, SemanticCheckpoint } from "@rainver/protocol";
 import * as protocol from "@rainver/protocol";
 import type { Queryable } from "../routeUtils/common.js";
-import type { RoomSummaryCoverage } from "../rooms/conversationContext.js";
 import { nonSupersededMessageSql, visibleMessagePathSql } from "../sessions/messagePath.js";
 
 interface MessageRow {
@@ -26,7 +25,7 @@ export async function loadConversationContinuityThroughMessage(
     currentMessageId: string;
     limit?: number;
   },
-): Promise<{ messages: MessageOut[]; checkpoint: SemanticCheckpoint | null; room_summary: RoomSummaryCoverage | null; room_conversation: boolean }> {
+): Promise<{ messages: MessageOut[]; checkpoint: SemanticCheckpoint | null; room_conversation: boolean }> {
   const limit = Math.max(1, Math.floor(input.limit ?? 80));
   const checkpointResult = await db.query<{ checkpoint_json: unknown; covered_cursor: number; watermark: number }>(
     `WITH message_window AS (
@@ -64,27 +63,11 @@ export async function loadConversationContinuityThroughMessage(
     [input.sessionId, input.spaceId],
   );
   const roomId = roomResult.rows[0]?.room_id ?? null;
-  const roomSummaryResult = roomId
-    ? await db.query<RoomSummaryCoverage>(
-        `SELECT id,version,summary_text,covered_through_message_id,covered_through_created_at
-           FROM room_conversation_summary_versions
-          WHERE space_id=$1 AND room_id=$2 AND session_id=$3 AND status='active'
-          ORDER BY version DESC LIMIT 1`,
-        [input.spaceId, roomId, input.sessionId],
-      )
-    : { rows: [] as RoomSummaryCoverage[] };
-  const roomSummary = roomSummaryResult.rows[0]
-    ? {
-        ...roomSummaryResult.rows[0],
-        covered_through_created_at: isoDate(roomSummaryResult.rows[0].covered_through_created_at),
-      }
-    : null;
   const messagesResult = roomId
     ? await loadRoomMessagesThrough(db, {
         spaceId: input.spaceId,
         sessionId: input.sessionId,
         currentMessageId: input.currentMessageId,
-        summary: roomSummary,
       })
     : await db.query<MessageRow>(
       // The window is the visible path up to the triggering message, in path
@@ -120,102 +103,25 @@ export async function loadConversationContinuityThroughMessage(
     checkpoint: checkpointResult.rows[0]?.checkpoint_json
       ? protocol.SemanticCheckpointSchema.parse(checkpointResult.rows[0].checkpoint_json) as SemanticCheckpoint
       : null,
-    room_summary: roomSummary,
     room_conversation: Boolean(roomId),
   };
 }
 
-/** Load the summary-aware Room tail when the current turn is a run request. */
+/** Load the Room tail, newest last, when the current turn is a run request. */
 export async function loadRoomContinuityForRunRequest(
   db: Queryable,
   input: { spaceId: string; sessionId: string; limit?: number },
-): Promise<{ messages: MessageOut[]; room_summary: RoomSummaryCoverage | null; room_conversation: true }> {
-  const summaryResult = await db.query<RoomSummaryCoverage>(
-    `SELECT summary.id,summary.version,summary.summary_text,
-            summary.covered_through_message_id,summary.covered_through_created_at
-       FROM room_conversation_summary_versions summary
-       JOIN sessions session_row
-         ON session_row.id=summary.session_id AND session_row.space_id=summary.space_id
-        AND session_row.room_id=summary.room_id
-      WHERE summary.space_id=$1 AND summary.session_id=$2 AND summary.status='active'
-      ORDER BY summary.version DESC LIMIT 1`,
-    [input.spaceId, input.sessionId],
-  );
-  const row = summaryResult.rows[0];
-  const roomSummary = row
-    ? { ...row, covered_through_created_at: isoDate(row.covered_through_created_at) }
-    : null;
+): Promise<{ messages: MessageOut[]; room_conversation: true }> {
   const result = await db.query<MessageRow>(
     `SELECT m.id,m.session_id,m.space_id,m.user_id,m.sender_agent_id,m.role,m.content,m.metadata_json,m.path_depth,m.created_at
        FROM messages m
       WHERE m.space_id=$1 AND m.session_id=$2
         AND ${visibleMessagePathSql({ alias: "m", spaceParam: "$1", sessionParam: "$2" })}
         AND ${nonSupersededMessageSql("m")}
-        -- The coverage cursor names a message; what matters is everything
-        -- after that message *on the path*. Filtering by its timestamp while
-        -- taking the newest N by position mixes two keys, and the LIMIT can
-        -- then clip a different row than the filter admitted — reachable
-        -- because attaching references stamps timestamps past the wall clock
-        -- (see referenceService), so clock order and path order can invert.
-        AND ($3::varchar IS NULL OR m.path_depth > COALESCE((
-              SELECT covered.path_depth FROM messages covered
-               WHERE covered.id=$3 AND covered.space_id=$1 AND covered.session_id=$2
-            ), -1))
-      ORDER BY m.path_depth DESC,m.id DESC LIMIT $4`,
-    [input.spaceId, input.sessionId,
-      roomSummary?.covered_through_message_id ?? null,
-      Math.max(1, Math.min(2048, Math.floor(input.limit ?? 2048)))],
+      ORDER BY m.path_depth DESC,m.id DESC LIMIT $3`,
+    [input.spaceId, input.sessionId, Math.max(1, Math.min(2048, Math.floor(input.limit ?? 2048)))],
   );
-  return { messages: result.rows.reverse().map(messageOut), room_summary: roomSummary, room_conversation: true };
-}
-
-/**
- * Load the canonical Room replay window through a trigger message.  The
- * caller still decides how to render the result, but the database boundary
- * is shared with Runtime Context so managed replay cannot drift back to a
- * second fixed-size history implementation.
- */
-export async function loadRoomConversationReplayThroughMessage(
-  db: Queryable,
-  input: { spaceId: string; sessionId: string; currentMessageId: string },
-): Promise<{ messages: MessageOut[]; summary: RoomSummaryCoverage | null; summary_unavailable: boolean }> {
-  // `waiting_provider` (the Room owner has no eligible provider) and `failed`
-  // (retries exhausted) both mean no summary is coming for the uncovered
-  // prefix, which is what lets the replay window widen instead of dropping it.
-  const stateResult = await db.query<{ status: string }>(
-    `SELECT status FROM room_conversation_summary_states
-      WHERE space_id=$1 AND session_id=$2 LIMIT 1`,
-    [input.spaceId, input.sessionId],
-  );
-  const summaryStatus = stateResult.rows[0]?.status ?? null;
-  const summaryResult = await db.query<RoomSummaryCoverage>(
-    `SELECT summary.id,summary.version,summary.summary_text,
-            summary.covered_through_message_id,summary.covered_through_created_at
-       FROM room_conversation_summary_versions summary
-       JOIN sessions session_row
-         ON session_row.id=summary.session_id AND session_row.space_id=summary.space_id
-        AND session_row.room_id=summary.room_id
-      WHERE summary.space_id=$1 AND summary.session_id=$2 AND summary.status='active'
-      ORDER BY summary.version DESC LIMIT 1`,
-    [input.spaceId, input.sessionId],
-  );
-  const summary = summaryResult.rows[0]
-    ? {
-        ...summaryResult.rows[0],
-        covered_through_created_at: isoDate(summaryResult.rows[0].covered_through_created_at),
-      }
-    : null;
-  const messages = await loadRoomMessagesThrough(db, {
-    spaceId: input.spaceId,
-    sessionId: input.sessionId,
-    currentMessageId: input.currentMessageId,
-    summary,
-  });
-  return {
-    messages: messages.rows.map(messageOut),
-    summary,
-    summary_unavailable: summaryStatus === "waiting_provider" || summaryStatus === "failed",
-  };
+  return { messages: result.rows.reverse().map(messageOut), room_conversation: true };
 }
 
 async function loadRoomMessagesThrough(
@@ -224,7 +130,6 @@ async function loadRoomMessagesThrough(
     spaceId: string;
     sessionId: string;
     currentMessageId: string;
-    summary: RoomSummaryCoverage | null;
   },
 ): Promise<{ rows: MessageRow[] }> {
   const result = await db.query<MessageRow>(
@@ -243,26 +148,11 @@ async function loadRoomMessagesThrough(
               message.path_depth < boundary.path_depth
               OR (message.path_depth = boundary.path_depth AND message.id <= boundary.id)
             )
-            -- The coverage cursor names a message; the window is everything
-            -- after it on the path. Comparing its timestamp instead drops an
-            -- on-path message whose clock is behind the cursor's, which a
-            -- reference stamped past the wall clock produces (see
-            -- referenceService) — and that message is then missing from the
-            -- Agent's prompt while the transcript still shows it.
-            AND (
-              message.id=boundary.id
-              OR $4::varchar IS NULL
-              OR message.path_depth > COALESCE((
-                   SELECT covered.path_depth FROM messages covered
-                    WHERE covered.id=$4 AND covered.space_id=$1 AND covered.session_id=$2
-                 ), -1)
-            )
           ORDER BY message.path_depth DESC,message.id DESC
           LIMIT 2048
        ) bounded
       ORDER BY bounded.path_depth ASC,bounded.id ASC`,
-    [input.spaceId, input.sessionId, input.currentMessageId,
-      input.summary?.covered_through_message_id ?? null],
+    [input.spaceId, input.sessionId, input.currentMessageId],
   );
   return result;
 }
@@ -294,8 +184,4 @@ function messageOut(row: MessageRow): MessageOut {
 
 function recordOrNull(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function isoDate(value: Date | string): string {
-  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }

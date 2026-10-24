@@ -159,7 +159,7 @@ context.
 
 Each provider invocation or CLI delivery receives an immutable Invocation
 Snapshot after payload validation; managed tool loops snapshot each provider
-call; stateful CLI snapshots record the full or delta delivery actually sent.
+call; CLI snapshots record the Delivery actually sent.
 Long-term snapshot data is safe metadata, references, hashes, budget
 decisions, control references, and outcome. Raw rendered payloads, where
 policy permits, live only in a short-retention encrypted Sealed Payload with
@@ -174,45 +174,50 @@ to canonical Message, Run, Artifact, Snapshot, Tool Result, and policy
 records; it does not persist streaming deltas.
 
 Every turn receives a deterministic Micro Checkpoint (cursors, references,
-capture status). A structured Semantic Checkpoint is produced by a one-shot
-task, normally through the managed API, only on a threshold or meaningful
-boundary. Extraction never computes the delta: the server selects ledger
-events after `checkpoint_cursor`, supplies the previous validated checkpoint,
-and the extractor rolls both into a complete new checkpoint under a strict
-schema. Only canonical confirmation events create confirmed facts or
-decisions; corrections append an immutable correction event. A validated
-checkpoint becomes the active continuity reference automatically, which
-grants no authority to write memory, Project Brief, Instructions, or Policy
-([ADR 0003](0003-memory-proposal-flow.md)).
+capture status). The Semantic Checkpoint extraction this decision originally
+scheduled — a one-shot provider task on a threshold or meaningful boundary —
+is retired along with replay (§11): the vendor session holds the
+conversation, and the summary a person asks for is written by the Agent
+itself. The `SemanticCheckpointExtraction` schema survives as the contract for
+extracting imported CLI history (`modules/imported-sessions.md`); corrections
+still append an immutable correction event against a checkpoint that exists.
+No checkpoint grants authority to write memory, Project Brief, Instructions,
+or Policy ([ADR 0003](0003-memory-proposal-flow.md)).
 
 Task outcome and context capture outcome are independent
 (`context_capture_status` may be `partial` on a succeeded task), derived from
 acknowledgements, committed records, cursor checks, and reconciliation.
 
-### 11. Vendor sessions are disposable continuity caches
+### 11. Vendor sessions hold the conversation; the ledger audits it
 
 A `work_context_scope` identifies one direct conversation, one Room recipient
 in one Conversation and instructing user, one root task, or one workflow
-execution, and normally continues in the same vendor session including across
-vendor compaction.
+execution. A Room holds several Conversations, and a scope keyed by the Room
+recipient alone would splice the raw history of every one of them into each;
+a Room recipient's scope is therefore its `room_conversation_recipients` row
+(Conversation × recipient), so one Conversation's ledger, checkpoints and
+Setup never carry another's. What should reach across Conversations does so
+through governed channels — Memory, Project state, Knowledge — never through
+another Conversation's transcript.
 
-Amended 2026-10-22: a Room holds several Conversations, and a scope keyed by
-the Room recipient alone spliced the raw history of every one of them into
-each. A Room recipient's scope is now its `room_conversation_recipients` row
-(Conversation × recipient), so one Conversation's ledger, checkpoints, CLI
-continuity and Setup never carry another's. What should reach across
-Conversations does so through governed channels — Memory, Project state,
-Knowledge — never through another Conversation's transcript. The
-authoritative state is ledger plus checkpoints; a missing, corrupt, reset, or
-incompatible vendor session is rebuilt from the latest checkpoint, uncovered
-tail, and current context. Two cursors are tracked: `checkpoint_cursor` and
-`cli_known_cursor`. New CLI sessions receive a Rainver-authored context
-bootstrap as the first ordinary message, then the user message separately;
-existing sessions receive only a non-empty deterministic delta before the
-user message. No LLM computes the delivery delta, and the checkpoint
-extractor never sends its output directly to a continuing session.
-Vendor-local transcripts remain an implementation cache, never the ledger
-and never the source read by a checkpoint task.
+The vendor CLI session is the conversation's working memory, and the host
+thread's `vendor_session_id` is the one record of it. A turn resumes that
+session and sends only its current input; Rainver never replays ledger
+history, checkpoints or deltas into a resumed session, and keeps no second
+cursor over the vendor transcript. The ledger plus checkpoints remain the
+audited record and the sources that summaries, semantic checkpoints and
+handoff documents are made from. A missing, reset or deliberately rotated
+session starts fresh from the Room-built prompt (standing context, and the
+summary the Agent wrote when it is a restart), not from a replay of the
+transcript or a ledger reconstruction. This is the
+pattern every ACP client and CLI orchestrator surveyed follows — Zed,
+JetBrains, Vibe Kanban, Paperclip, OpenAI's Symphony — and the one the Claude
+Agent SDK documents: the agent process owns the transcript, the client sends
+new input and keeps its own records for retrieval. Vendor compaction inside
+the session is the vendor's, and Rainver does not rotate the session by
+occupancy either; a person may ask the Agent for a summary of the conversation
+and later restart it from that summary, and the Agent reads the record on
+demand through `conversation.search` / `conversation.read`.
 
 ### 12. On the server host, every work scope gets an isolated runtime
 

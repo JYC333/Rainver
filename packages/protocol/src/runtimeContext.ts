@@ -647,7 +647,6 @@ export const InvocationDeliverySchema = z.object({
   provider_id: IdSchema.nullable(),
   model: z.string().nullable(),
   renderer_version: z.string().min(1),
-  mode: z.enum(["full", "delta"]),
   planned_items: z.array(z.object({
     item_id: z.string().min(1),
     semantic_role: RuntimeContextSemanticRoleSchema,
@@ -657,22 +656,10 @@ export const InvocationDeliverySchema = z.object({
     semantic_role: RuntimeContextSemanticRoleSchema,
     content: z.string().refine((content) => content.trim().length > 0, "content cannot be blank"),
     source_item_ids: z.array(z.string().min(1)).min(1),
-    delivery_phase: z.enum(["bootstrap_context", "context_delta", "current_user"]).optional(),
   }).strict()),
   skill_packages: z.array(z.object({
     source_item_id: z.string().min(1), content: SkillPackageContentSchema,
   }).strict()).max(4).optional(),
-  cli_session: z.object({
-    binding_ref: RefSchema,
-    runtime_state_key: IdSchema,
-    vendor_session_id: z.string().trim().min(1).max(512).nullable(),
-    cursor_from: z.number().int().nonnegative(),
-    cursor_through: z.number().int().nonnegative(),
-    generation: z.number().int().positive(),
-    rotation_reason: z.string().trim().min(1).max(64).nullable(),
-    /** The binding's execution-lease fencing token this Delivery was planned under. */
-    lease_generation: z.number().int().nonnegative(),
-  }).strict().nullable().optional(),
   control_ref: RefSchema,
   sandbox_ref: RefSchema.nullable(),
   tool_grant_refs: z.array(RefSchema),
@@ -746,23 +733,6 @@ export const InvocationDeliverySchema = z.object({
       path: ["planned_items"],
     });
   }
-  if (delivery.cli_session) {
-    if (delivery.cli_session.cursor_through < delivery.cli_session.cursor_from) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "CLI Delivery cursor cannot move backwards",
-        path: ["cli_session", "cursor_through"],
-      });
-    }
-    const currentBlocks = delivery.message_blocks.filter((block) => block.delivery_phase === "current_user");
-    if (currentBlocks.length !== 1 || delivery.message_blocks.at(-1)?.delivery_phase !== "current_user") {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "CLI Delivery requires exactly one final current-user block",
-        path: ["message_blocks"],
-      });
-    }
-  }
   if (delivery.audit_refs.delivery_id !== delivery.id) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -822,7 +792,6 @@ export const InvocationSnapshotSafeSchema = z.object({
   delivered_at: ISODateTimeSchema.nullable(),
   acknowledgement: DeliveryAcknowledgementSchema.nullable(),
   checkpoint_cursor: z.number().int().nonnegative().nullable(),
-  cli_known_cursor: z.number().int().nonnegative().nullable(),
   capture_status: ContextCaptureStatusSchema,
   error_code: z.string().nullable(),
   created_at: ISODateTimeSchema,
@@ -923,7 +892,6 @@ export const MicroCheckpointSchema = z.object({
   version: z.number().int().positive(),
   event_head_cursor: z.number().int().nonnegative(),
   checkpoint_cursor: z.number().int().nonnegative(),
-  cli_known_cursor: z.number().int().nonnegative().nullable(),
   capture_status: ContextCaptureStatusSchema,
   message_refs: z.array(RefSchema),
   artifact_refs: z.array(RefSchema),
@@ -937,13 +905,6 @@ export const MicroCheckpointSchema = z.object({
       code: z.ZodIssueCode.custom,
       message: "checkpoint_cursor cannot exceed event_head_cursor",
       path: ["checkpoint_cursor"],
-    });
-  }
-  if (checkpoint.cli_known_cursor !== null && checkpoint.cli_known_cursor > checkpoint.event_head_cursor) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "cli_known_cursor cannot exceed event_head_cursor",
-      path: ["cli_known_cursor"],
     });
   }
   if (checkpoint.capture_status === "complete" && checkpoint.capture_gaps.length > 0) {

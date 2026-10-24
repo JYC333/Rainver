@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ConversationInputPart, ConversationInputSkillPart } from '@rainver/protocol'
-import { capabilitiesFrameworkApi } from '../../api/client'
+import { skillsApi } from '../../api/client'
 import { useAppTranslation } from '../../i18n'
 import { errMsg } from '../../lib/utils'
 import { ConversationLink, useConversationScope } from './ConversationScope'
@@ -51,7 +51,7 @@ export function useAvailableSkills({ sessionId, projectId, agentId, recipientAge
     if (!enabled) { setLoading(false); return }
     let active = true
     setLoading(true)
-    capabilitiesFrameworkApi.availableSkills({
+    skillsApi.availableSkills({
       session_id: sessionId, project_id: projectId, agent_id: agentId,
       ...(recipients ? { recipient_agent_ids: recipients.split(',') } : {}),
     }, scope)

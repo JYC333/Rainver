@@ -1,11 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { agentsApi, authorizationRequestsApi, conversationInputApi, projectFoldersApi, proposalsApi, roomsApi, runsApi, sessionsApi, setSpaceContext } from '../api/client'
+import { agentsApi, authorizationRequestsApi, conversationInputApi, projectFoldersApi, proposalsApi, roomsApi, runsApi, sessionsApi, skillsApi, setSpaceContext } from '../api/client'
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })))
   setSpaceContext('active-space')
 })
 describe('conversation source Space transport', () => {
+  it('loads recipient Skills through the skills namespace with the source Space', async () => {
+    await skillsApi.availableSkills({ session_id: 'session', recipient_agent_ids: ['agent-a', 'agent-b'] }, { spaceId: 'source-a' })
+    const [url, options] = vi.mocked(fetch).mock.calls[0]!
+    expect(String(url)).toBe('/api/v1/skills/available?session_id=session&recipient_agent_ids=agent-a%2Cagent-b')
+    expect(new Headers(options?.headers).get('X-Rainver-Space-Id')).toBe('source-a')
+  })
+
   it.each(['source-a', 'source-b'])('keeps all reads and commands in %s while URL context stays elsewhere', async spaceId => {
     const options = { spaceId, signal: new AbortController().signal }
     await roomsApi.get('room', options)

@@ -28,18 +28,6 @@ export interface Module {
   group: AppGroup       // stored on the entry; navigation does not read it
   section: NavSection   // stored on the entry; navigation does not read it
 
-  // ── Capability link ────────────────────────────────────────────────────────
-  /**
-   * Backend capability ID this entry is backed by.
-   * undefined = no formal capability (core UI feature).
-   *
-   * NOTE: Capability is an agent AI skill descriptor
-   * (capability-definitions / workflow framework).
-   * It is NOT the same as an official optional module. Do not use this field
-   * to represent official optional module enablement — use pluginId for that.
-   */
-  capabilityId?: string
-
   /**
    * Official optional module plugin ID this entry belongs to.
    * Set for entries with source: 'official_plugin'.
@@ -105,8 +93,6 @@ export interface Module {
  * Enabled official plugins also appear on the Global Rail (`Shell.tsx`).
  * Navigation tiers live in `core/navigation.tsx`. There is no home gallery.
  *
- * capabilityId names an agent skill, not a product module.
- *
  * ── Extension boundary ──────────────────────────────────────────────────────
  * To add a new BUILT-IN app:
  *   1. Create src/modules/<id>/<PageName>.tsx
@@ -127,9 +113,8 @@ export interface Module {
  * Third-party plugin packages are not loaded here. Do not implement
  * third-party plugin loading in this registry.
  *
- * NOTE: Capabilities are agent AI skills, NOT product modules. Do not confuse
- * GET /api/v1/capability-definitions (agent skill framework) with
- * GET /api/v1/plugins/effective (official module control plane).
+ * Skill packages are procedural content; pluginId controls optional product
+ * modules and never denotes a Skill or callable Tool.
  *
  * ── State semantics ─────────────────────────────────────────────────────────
  *   enabled   = official plugins appear on the Global Rail only when true
@@ -157,7 +142,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'diary', label: 'Diary', path: '/diary',
     section: 'capture', group: 'daily', icon: 'book',
     description: 'Personal diary with same-day history across years. Supports AI reflection, daily reminders, and opt-in memory proposals after your review.',
-    source: 'official_plugin', pluginId: 'diary', capabilityId: undefined,
+    source: 'official_plugin', pluginId: 'diary',
     enabled: false, visible: true, planned: false,
     perspectiveType: 'personal',
     component: lazy(() => import('../plugins/diary/DiaryPageAdapter')),
@@ -166,7 +151,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'finance', label: 'Finance', path: '/finance',
     section: 'knowledge', group: 'work', icon: 'landmark',
     description: 'Double-entry finance ledger for this space: books, accounts, commodities, and transactions with Beancount import/export.',
-    source: 'official_plugin', pluginId: 'finance_ledger', capabilityId: undefined,
+    source: 'official_plugin', pluginId: 'finance_ledger',
     enabled: false, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('../plugins/finance_ledger/FinancePageAdapter')),
@@ -176,7 +161,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'today', label: 'Today', path: '/today',
     section: 'capture', group: 'daily', icon: 'sun', accent: true,
     description: "This space's daily overview, active items, and suggested actions.",
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./today/TodayPage')),
@@ -185,7 +170,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'capture', label: 'Capture', path: '/capture',
     section: 'capture', group: 'daily', icon: 'plus',
     description: 'Quickly save thoughts, ideas, notes, and external content.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./capture/CapturePage')),
@@ -194,7 +179,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'activity', label: 'Inbox', path: '/activity',
     section: 'capture', group: 'daily', icon: 'inbox',
     description: 'Everything awaiting your attention: new briefings and records to review.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     hasSubRoutes: true,
@@ -204,7 +189,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'library', label: 'Library', path: '/library',
     section: 'capture', group: 'daily', icon: 'library',
     description: 'Read, filter, and triage the articles, papers, and digests your sources bring in.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     hasSubRoutes: true,
@@ -214,7 +199,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'daily_reports', label: 'Daily Report', path: '/daily-report',
     section: 'capture', group: 'daily', icon: 'calendar-check',
     description: 'Automatically generate a structured daily report from your captures. Experience and memory proposals require your review.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./daily_reports/DailyReportSettingsPage')),
@@ -223,7 +208,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'sessions', label: 'Sessions', path: '/sessions',
     section: 'capture', group: 'daily', icon: 'message-square',
     description: 'Manage and continue agent sessions and conversations.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./sessions/SessionsPage')),
@@ -232,7 +217,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'time', label: 'Time', path: '/time',
     section: 'capture', group: 'daily', icon: 'clock',
     description: 'Track time records and convert them into activity summaries.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: true,
     perspectiveType: 'neutral',
     component: lazy(() => import('./time/TimePage')),
@@ -241,7 +226,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'source', label: 'Sources', path: '/sources',
     section: 'capture', group: 'daily', icon: 'rss',
     description: 'Manage information subscriptions: connections, scan schedules, and screening rules.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     hasSubRoutes: true,
@@ -253,7 +238,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'projects', label: 'Projects', path: '/projects',
     section: 'agents', group: 'work', icon: 'folder-kanban', accent: true,
     description: 'Goal and knowledge context. Organize objectives, artifacts, proposals, memory, and Project Folders.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     order: 5,
@@ -264,7 +249,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'tasks', label: 'Tasks', path: '/tasks',
     section: 'agents', group: 'work', icon: 'list-todo',
     description: 'Plan work, start runs, and review linked outputs.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     order: 10,
@@ -275,7 +260,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'plans', label: 'Plans', path: '/plans',
     section: 'agents', group: 'work', icon: 'list-tree',
     description: 'Review Agent-generated Plans linked to source Tasks without a canvas.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     hasSubRoutes: true,
@@ -285,7 +270,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'command_center', label: 'Command Center', path: '/command-center',
     section: 'agents', group: 'work', icon: 'server', accent: true,
     description: 'Pair machines, bind their providers, and manage what runs on them (ADR 0016).',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     order: 5,
@@ -295,7 +280,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'runs', label: 'Runs', path: '/runs',
     section: 'agents', group: 'work', icon: 'cpu', accent: true,
     description: 'Inspect agent runs, status, activities, artifacts, and proposals.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     order: 20,
@@ -306,7 +291,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'proposals', label: 'Review', path: '/proposals',
     section: 'knowledge', group: 'work', icon: 'check-circle',
     description: 'Review memory, knowledge, card, code, and system proposals.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     order: 30,
@@ -317,7 +302,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'artifacts', label: 'Artifacts', path: '/artifacts',
     section: 'agents', group: 'work', icon: 'package',
     description: 'Browse and export outputs produced by runs.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     order: 40,
@@ -328,7 +313,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'publications', label: 'Shared', path: '/publications',
     section: 'knowledge', group: 'work', icon: 'share-2',
     description: 'Review targeted snapshots shared with this space and manage publications from this space.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./publications/PublicationsPage')),
@@ -339,7 +324,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'knowledge', label: 'Knowledge', path: '/knowledge',
     section: 'knowledge', group: 'knowledge', icon: 'book-open', accent: true,
     description: 'Working notes, canonical wiki knowledge, sources, and review material.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     hasSubRoutes: true,
@@ -349,7 +334,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'graph', label: 'Graph', path: '/graph',
     section: 'knowledge', group: 'knowledge', icon: 'network',
     description: 'Explore visible Knowledge relationships through the shared graph projection.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./graph/GraphPage')),
@@ -358,7 +343,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'cards', label: 'Cards', path: '/cards',
     section: 'knowledge', group: 'knowledge', icon: 'layers',
     description: 'Review and manage spaced-repetition flashcards.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: false, visible: false, planned: true,
     perspectiveType: 'neutral',
     component: lazy(() => import('./cards/CardReviewPage')),
@@ -367,7 +352,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'memory', label: 'Memory', path: '/memory',
     section: 'knowledge', group: 'knowledge', icon: 'database',
     description: 'Review scoped memories, visibility, and long-term context.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     hasSubRoutes: true,
@@ -377,7 +362,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'ask_space', label: 'Ask Space', path: '/ask-space',
     section: 'knowledge', group: 'knowledge', icon: 'sparkles', accent: true,
     description: 'Ask one question and get a cited, gap-aware answer across Knowledge, Memory, and Project summaries.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./ask_space/AskSpacePage')),
@@ -386,7 +371,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'context_ops', label: 'Context Health', path: '/context-ops',
     section: 'knowledge', group: 'knowledge', icon: 'activity',
     description: 'Inspect retrieval health, diagnostics, maintenance, feedback, and memory provenance aggregates.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./context_ops/ContextOpsPage')),
@@ -397,7 +382,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'instance_settings', label: 'Instance Settings', path: '/instance-settings',
     section: 'dev', group: 'system', icon: 'server-cog',
     description: 'Manage server-wide instance configuration.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: false, planned: false,
     perspectiveType: 'neutral',
     requiresInstanceAdmin: true,
@@ -407,7 +392,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'job_queue', label: 'Job Queue', path: '/jobs',
     section: 'agents', group: 'agents', icon: 'list-checks',
     description: 'Inspect infrastructure jobs, retries, and worker status.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./job_queue/JobQueuePage')),
@@ -416,7 +401,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'evolution', label: 'Evolution', path: '/evolution',
     section: 'agents', group: 'agents', icon: 'git-branch',
     description: 'Review evolution targets, signals, runs, proposals, and validation metrics.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'neutral',
     hasSubRoutes: true,
@@ -426,7 +411,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'prompt_library', label: 'Prompt Library', path: '/prompts',
     section: 'dev', group: 'system', icon: 'scroll-text',
     description: 'Inspect prompt assets, versions, previews, evaluation evidence, and deployment state.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     requiresSpaceAdmin: true,
@@ -438,7 +423,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'retrieval_settings', label: 'Retrieval Settings', path: '/retrieval-settings',
     section: 'dev', group: 'system', icon: 'search',
     description: 'Configure retrieval search mode, rewrite, rerank, cache, trace, and result defaults.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: false, planned: false,
     perspectiveType: 'space-scoped',
     requiresSpaceAdmin: true,
@@ -450,7 +435,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'plugins', label: 'Optional Modules', path: '/plugins',
     section: 'dev', group: 'system', icon: 'puzzle',
     description: 'Manage official optional modules — enable or disable per-space features.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     requiresSpaceAdmin: true,
@@ -462,7 +447,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'settings', label: 'Settings', path: '/settings',
     section: 'dev', group: 'system', icon: 'settings', accent: true,
     description: 'Configure personal credentials, spaces, and preferences.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'neutral',
     component: lazy(() => import('./settings/SettingsPage')),
@@ -471,35 +456,26 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'space_settings', label: 'Space Settings', path: '/space-settings',
     section: 'dev', group: 'system', icon: 'settings',
     description: 'Manage members and space-level system settings.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: false, planned: false,
     perspectiveType: 'space-scoped',
     requiresSpaceAdmin: true,
     component: lazy(() => import('./space_settings/SpaceSettingsPage')),
   },
   {
-    id: 'capabilities', label: 'Capabilities', path: '/capabilities',
-    section: 'agents', group: 'system', icon: 'zap',
-    description: 'Browse registered capability manifests and permissions.',
-    source: 'built_in', capabilityId: undefined,
-    enabled: true, visible: true, planned: false,
-    perspectiveType: 'space-scoped',
-    component: lazy(() => import('./capabilities/CapabilitiesPage')),
-  },
-  {
     id: 'skills', label: 'Skills', path: '/skills',
     section: 'agents', group: 'agents', icon: 'zap',
     description: 'Import, review and bind shared Skills for conversation runtimes.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
-    component: lazy(() => import('./capabilities/SkillsPage')),
+    component: lazy(() => import('./skills/SkillsPage')),
   },
   {
     id: 'agents_mgmt', label: 'Agents', path: '/agents',
     section: 'agents', group: 'agents', icon: 'bot',
     description: 'Create agents and configure default model providers.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     hasSubRoutes: true,
@@ -509,7 +485,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'providers', label: 'Providers', path: '/providers',
     section: 'dev', group: 'system', icon: 'key',
     description: 'Configure API keys for LLM model providers.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./providers/ModelProvidersPage')),
@@ -518,7 +494,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'usage', label: 'Token Usage', path: '/usage',
     section: 'dev', group: 'system', icon: 'bar-chart-3',
     description: 'Inspect model token usage, accuracy, platform attribution, sessions, dimensions, and local CLI history imports.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./usage/UsagePage')),
@@ -527,7 +503,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'network_profiles', label: 'Network', path: '/network-profiles',
     section: 'dev', group: 'system', icon: 'globe',
     description: 'Configure direct and proxy routing profiles for providers and CLI runtimes.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: false, planned: false,
     perspectiveType: 'space-scoped',
     requiresSpaceAdmin: true,
@@ -537,7 +513,7 @@ export const MODULE_REGISTRY: Module[] = [
     id: 'automations', label: 'Automations', path: '/automations',
     section: 'agents', group: 'agents', icon: 'clock',
     description: 'Schedule agent runs and Knowledge maintenance scans, or trigger them manually.',
-    source: 'built_in', capabilityId: undefined,
+    source: 'built_in',
     enabled: true, visible: true, planned: false,
     perspectiveType: 'space-scoped',
     component: lazy(() => import('./automations/AutomationsPage')),

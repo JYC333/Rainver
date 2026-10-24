@@ -19,7 +19,6 @@ const OPERATION_B = "tenant-integrity-operation-b";
 const RUN_A = "tenant-integrity-run-a";
 const RUN_B = "tenant-integrity-run-b";
 
-
 const db = useTestDatabase(import.meta.filename);
 
 beforeEach(async () => {
@@ -168,41 +167,6 @@ describe("tenant reference integrity", () => {
     );
     await expect(db.pool.query(
       `DELETE FROM agent_versions WHERE id = 'tenant-current-only-v2'`,
-    )).rejects.toMatchObject({ code: "23503" });
-  });
-
-  it("binds capability versions, enablements, and runtime bindings to one Space", async (ctx) => {
-    if (!db.available || !db.pool) return ctx.skip();
-    const now = new Date().toISOString();
-    await db.pool.query(
-      `INSERT INTO capability_versions (
-         id, capability_key, space_id, version, source, status,
-         metadata_json, created_at, updated_at
-       ) VALUES
-         ('tenant-capability-a', 'research.search', $1, '1.0.0', 'builtin',
-          'draft', '{}'::jsonb, $3, $3),
-         ('tenant-capability-b', 'research.search', $2, '1.0.0', 'builtin',
-          'draft', '{}'::jsonb, $3, $3)`,
-      [SPACE_A, SPACE_B, now],
-    );
-
-    await expect(db.pool.query(
-      `INSERT INTO capability_enablements (
-         id, space_id, capability_key, capability_version_id, enabled,
-         config_json, created_at, updated_at
-       ) VALUES ('cross-space-capability-enablement', $1, 'research.search',
-                 'tenant-capability-b', true, '{}'::jsonb, $2, $2)`,
-      [SPACE_A, now],
-    )).rejects.toMatchObject({ code: "23503" });
-    await expect(db.pool.query(
-      `INSERT INTO capability_runtime_bindings (
-         id, space_id, capability_key, capability_version_id,
-         runtime_key, render_mode, binding_json, enabled,
-         created_at, updated_at
-       ) VALUES ('cross-space-runtime-binding', $1, 'research.search',
-                 'tenant-capability-b', 'opencode', 'inline_prompt',
-                 '{}'::jsonb, true, $2, $2)`,
-      [SPACE_A, now],
     )).rejects.toMatchObject({ code: "23503" });
   });
 

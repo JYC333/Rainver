@@ -106,7 +106,7 @@ export const ProposalAcceptResultTypeSchema = z.enum([
   "egress_review",
   "follow_up_task",
   "agent_version",
-  "capability_overlay",
+  "skill_overlay",
   "knowledge_item",
   "claim",
   "object_relation",

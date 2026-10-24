@@ -115,6 +115,11 @@ export async function streamRunTurn(
       await sleep(config.runEventStreamPollIntervalMs);
       if (closed) break;
 
+      // A long command or an approval wait can leave the turn unchanged for
+      // minutes. SSE comments keep intermediaries from timing out an idle
+      // response without inventing a turn update or changing its cursor.
+      if (!raw.destroyed) raw.write(": keepalive\n\n");
+
       let turn;
       try {
         turn = await loadRunTurn(db, { spaceId: identity.spaceId, runId });

@@ -326,7 +326,6 @@ describe("runtime context contracts", () => {
       version: 1,
       event_head_cursor: 9,
       checkpoint_cursor: 8,
-      cli_known_cursor: 7,
       capture_status: "partial",
       message_refs: [],
       artifact_refs: [],
@@ -337,7 +336,6 @@ describe("runtime context contracts", () => {
     };
     expect(MicroCheckpointSchema.safeParse(checkpoint).success).toBe(true);
     expect(MicroCheckpointSchema.safeParse({ ...checkpoint, checkpoint_cursor: 10 }).success).toBe(false);
-    expect(MicroCheckpointSchema.safeParse({ ...checkpoint, cli_known_cursor: 10 }).success).toBe(false);
     expect(MicroCheckpointSchema.safeParse({
       ...checkpoint,
       capture_gaps: [{ code: "missing_event", after_cursor: 10, before_cursor: 5, detail: null }],
@@ -464,7 +462,6 @@ describe("runtime context contracts", () => {
       provider_id: "provider-1",
       model: "model-1",
       renderer_version: "v1",
-      mode: "full",
       planned_items: [{ item_id: "item-1", semantic_role: "user_input", required: true }],
       message_blocks: [{
         semantic_role: "user_input",
@@ -726,7 +723,6 @@ describe("runtime context contracts", () => {
       delivered_at: null,
       acknowledgement: null,
       checkpoint_cursor: 0,
-      cli_known_cursor: null,
       capture_status: "complete",
       error_code: null,
       created_at: "2026-08-08T00:00:00.000Z",

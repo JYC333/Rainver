@@ -46,7 +46,6 @@ import {
   type RunStepInput,
   type RunStepRecord,
   type RunTerminalUpdate,
-  type ConversationRuntimeTerminalSync,
 } from "./runRepositoryTypes.js";
 import {
   taskChecklistFromRunEvaluation,
@@ -93,7 +92,6 @@ export {
   type RunStepInput,
   type RunStepRecord,
   type RunTerminalUpdate,
-  type ConversationRuntimeTerminalSync,
 } from "./runRepositoryTypes.js";
 
 export type { VerificationResultRecord } from "./verification/types.js";
@@ -1995,30 +1993,15 @@ export class PgRunRepository {
   }
 
   async markRunTerminal(input: RunTerminalUpdate): Promise<RunRecord | null> {
-    return this.markRunTerminalInternal(input, null, false);
-  }
-
-  async markRunTerminalWithConversationSession(
-    input: RunTerminalUpdate,
-    conversation: ConversationRuntimeTerminalSync,
-  ): Promise<RunRecord | null> {
-    return this.markRunTerminalInternal(input, conversation, false);
+    return this.markRunTerminalInternal(input, false);
   }
 
   async publishRunTerminal(input: RunTerminalUpdate): Promise<RunRecord | null> {
-    return this.markRunTerminalInternal(input, null, true);
-  }
-
-  async publishRunTerminalWithConversationSession(
-    input: RunTerminalUpdate,
-    conversation: ConversationRuntimeTerminalSync,
-  ): Promise<RunRecord | null> {
-    return this.markRunTerminalInternal(input, conversation, true);
+    return this.markRunTerminalInternal(input, true);
   }
 
   private async markRunTerminalInternal(
     input: RunTerminalUpdate,
-    conversation: ConversationRuntimeTerminalSync | null,
     executionOwner: boolean,
   ): Promise<RunRecord | null> {
     const outputJson = sanitizeEvidenceJson(recordValue(input.output_json));
@@ -2026,7 +2009,6 @@ export class PgRunRepository {
     const terminalErrorCode = typeof recordValue(errorJson).error_code === "string"
       ? recordValue(errorJson).error_code as string
       : null;
-    const replacementStateKey = randomUUID();
     return withQueryableTransaction(this.db, async (db) => {
     const result = await db.query<RunRecord>(
       `WITH candidate AS (
@@ -2035,30 +2017,12 @@ export class PgRunRepository {
           WHERE space_id = $1
             AND id = $2
             AND status NOT IN ('succeeded', 'failed', 'degraded', 'cancelled', 'orphaned')
-            AND ($18::boolean OR NOT EXISTS (
+            AND ($10::boolean OR NOT EXISTS (
               SELECT 1 FROM run_execution_locks active_lock
                WHERE active_lock.run_id = runs.id
             ))
-            AND (NOT $18::boolean OR $3 = 'cancelled' OR status <> 'cancelling')
+            AND (NOT $10::boolean OR $3 = 'cancelled' OR status <> 'cancelling')
           FOR UPDATE
-       ), synchronized_session AS (
-         UPDATE session_conversation_backends
-            SET runtime_state_key = CASE WHEN $11::boolean
-                  THEN runtime_state_key ELSE $16 END,
-                runtime_session_id = CASE WHEN $11::boolean
-                  THEN $14 ELSE NULL END,
-                runtime_context_fingerprint = CASE WHEN $11::boolean
-                  THEN $15 ELSE NULL END,
-                runtime_message_cursor_id = CASE WHEN $11::boolean
-                  THEN $17 ELSE NULL END,
-                runtime_session_updated_at = CASE WHEN $11::boolean
-                  THEN $7::timestamptz ELSE NULL END,
-                updated_at = $7
-          WHERE $10::boolean
-            AND id = $12
-            AND runtime_state_key = $13
-            AND EXISTS (SELECT 1 FROM candidate)
-          RETURNING runtime_state_key
        ), updated AS (
          UPDATE runs run_row
           SET status = $3,
@@ -2075,26 +2039,7 @@ export class PgRunRepository {
               exit_code = $6,
               ended_at = $7,
               updated_at = $7,
-              error_message = $8,
-              model_override_json = CASE
-                WHEN $10::boolean
-                 AND NOT $11::boolean
-                 AND EXISTS (SELECT 1 FROM synchronized_session)
-                THEN jsonb_set(
-                  jsonb_set(
-                    run_row.model_override_json,
-                    '{conversation_runtime,runtime_state_key}',
-                    to_jsonb((
-                      SELECT runtime_state_key
-                        FROM synchronized_session
-                       LIMIT 1
-                    ))
-                  ),
-                  '{conversation_runtime,runtime_session_id}',
-                  'null'::jsonb
-                )
-                ELSE run_row.model_override_json
-              END
+              error_message = $8
           FROM candidate
          WHERE run_row.id = candidate.id
         RETURNING run_row.id, run_row.space_id, run_row.agent_id,
@@ -2122,7 +2067,7 @@ export class PgRunRepository {
        ), released_lock AS (
          DELETE FROM run_execution_locks execution_lock
           USING updated u
-          WHERE $18::boolean
+          WHERE $10::boolean
             AND execution_lock.run_id = u.id
        ), updated_attempt AS (
          UPDATE run_attempts a
@@ -2154,14 +2099,6 @@ export class PgRunRepository {
         input.completed_at,
         redactEvidenceText(extractErrorMessage(errorJson)),
         terminalErrorCode,
-        conversation !== null,
-        conversation?.keep_session ?? false,
-        conversation?.binding_id ?? null,
-        conversation?.runtime_state_key ?? null,
-        conversation?.runtime_session_id ?? null,
-        conversation?.context_fingerprint ?? null,
-        replacementStateKey,
-        conversation?.message_cursor_id ?? null,
         executionOwner,
       ],
     );
@@ -2657,17 +2594,7 @@ export class PgRunRepository {
        UPDATE runs
           SET status = 'queued',
               prompt = $3,
-              model_override_json = CASE
-                WHEN $6::jsonb IS NOT NULL THEN $6::jsonb
-                WHEN model_override_json->'conversation_runtime'->>'schema_version'
-                     = 'conversation_runtime.v1'
-                THEN jsonb_set(
-                  model_override_json,
-                  '{conversation_runtime,replay_prompt}',
-                  to_jsonb($3::text)
-                )
-                ELSE model_override_json
-              END,
+              model_override_json = COALESCE($6::jsonb, model_override_json),
               output_json = jsonb_set(
                 COALESCE(output_json, '{}'::jsonb),
                 '{waiting_for_results}',

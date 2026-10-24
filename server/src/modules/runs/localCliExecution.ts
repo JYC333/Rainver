@@ -120,6 +120,8 @@ export interface CliStdioController {
       is_using_overage: boolean;
     } | null;
     context_window?: { used: number; size: number } | null;
+    /** `usage_update` notifications received this turn and the sum of their `used`. */
+    usage_updates?: { count: number; used_total: number } | null;
     /** ACP prompts sent, not the model calls inside those prompts. */
     acp_prompt_count?: number;
     /** The runtime's own question that ended the turn (`vendorQuestion.ts`). */

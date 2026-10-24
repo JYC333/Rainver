@@ -1,6 +1,6 @@
-import { previewSkillFiles } from "../src/modules/capabilities/skillImporter.js";
-import { PgCapabilitiesRepository, approveSkillImportInTransaction } from "../src/modules/capabilities/repository.js";
-import { applySkillPackageBinding } from "../src/modules/capabilities/skillBindings.js";
+import { previewSkillFiles } from "../src/modules/skills/skillImporter.js";
+import { PgSkillsRepository, approveSkillImportInTransaction } from "../src/modules/skills/repository.js";
+import { applySkillPackageBinding } from "../src/modules/skills/skillBindings.js";
 import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.js";
 import { SkillPackageSchema, agentMentionRoute, normalizeMentionText, renderMentionTokens, type AgentMentionToken } from "@rainver/protocol";
 import { agentsModule } from "../src/modules/agents/index.js";
@@ -29,7 +29,6 @@ import { loadRunTurn } from "../src/modules/runs/turnReadModel.js";
 import { runAssignedTask } from "../src/modules/runs/runAssignedTask.js";
 import { PgAgentRepository } from "../src/modules/agents/repository.js";
 import { PgHostThreadRepository } from "../src/modules/hosts/threadRepository.js";
-import { PgHostRepository } from "../src/modules/hosts/repository.js";
 import { PgProjectRepository } from "../src/modules/projects/repository.js";
 import { ProjectPublicSummaryGenerator } from "../src/modules/projects/publicSummaryGenerator.js";
 import { seedProjectMainlineRoom, seedRoomManager } from "./support/domainSeeds.js";
@@ -49,7 +48,7 @@ import { roomsModule } from "../src/modules/rooms/index.js";
 import { providersModule } from "../src/modules/providers/index.js";
 import { withDbTransaction } from "../src/modules/routeUtils/common.js";
 import type { QuotaSource } from "../src/modules/rooms/subscriptionLogins.js";
-import { registerAgentHandoffExecutors } from "../src/modules/agentGroups/sessionHandoff.js";
+import { latestSummaryArtifactId, registerAgentHandoffExecutors } from "../src/modules/agentGroups/sessionHandoff.js";
 import { resolveAgentDelegationToolBinding, runAgentRoomToolCall } from "../src/modules/runs/managedAgentDelegationTools.js";
 import {
   ROOM_DELEGATION_COMPLETION_RETRY_JOB,
@@ -64,26 +63,17 @@ import { ConversationInputResourceService } from "../src/modules/sessions/conver
 import { finalizeChatTurn } from "../src/modules/runs/chatTurnFinalizer.js";
 import { syncBuiltinPrompts } from "../src/modules/prompts/builtins.js";
 import {
-  RoomConversationSummaryService,
-  requestRoomConversationSummary,
-  type RoomConversationSummaryDependencies,
-} from "../src/modules/rooms/conversationSummaryService.js";
-import {
   requestRoomConversationTitle,
   RoomConversationTitleService,
 } from "../src/modules/rooms/conversationTitleService.js";
 
-import {
-  loadRoomContinuityForRunRequest,
-  loadRoomConversationReplayThroughMessage,
-} from "../src/modules/runtimeContext/conversationContinuity.js";
+import { loadRoomContinuityForRunRequest } from "../src/modules/runtimeContext/conversationContinuity.js";
 import { loadAuthorizedCurrentContextMessage } from "../src/modules/runtimeContext/productionAcquisition.js";
 import type { ProviderCommandStore } from "../src/modules/providers/commands/store.js";
 import { useTestDatabase } from "./support/testDatabase.js";
 import { resetTables } from "./support/resetTables.js";
 import { InquiryThreadService } from "../src/modules/inquiry/threadService.js";
 import { ROOM_CONVERSATION_TOOL_ALLOWANCE } from "../src/modules/systemActions/scenarioToolAllowance.js";
-import type { CredentialSpendBasis } from "../src/modules/policy/credentialSpend.js";
 import { effectiveRunTrigger } from "../src/modules/systemActions/effectiveRunTrigger.js";
 import { PgTaskRepository } from "../src/modules/tasks/repository.js";
 
@@ -596,10 +586,9 @@ describe("Room workflow (real Postgres)", () => {
       last_message_preview: "Define the Project.",
     });
     expect(row?.last_message_preview).not.toContain("Continue after the accepted definition.");
-    const replay = await loadRoomConversationReplayThroughMessage(db.pool, {
+    const replay = await loadRoomContinuityForRunRequest(db.pool, {
       spaceId: owner.spaceId,
       sessionId: conversation.id,
-      currentMessageId: internal!.id,
     });
     expect(replay.messages.map(message => message.content)).toEqual([
       "Conversation initialized on server with 1 Agent runtime.",
@@ -1259,7 +1248,6 @@ describe("Room workflow (real Postgres)", () => {
       async finalizeChatTurn() {
         return { space_id: "space-1", work_context_scope_id: runId } as never;
       },
-      async runSemanticExtraction() { return null; },
     };
     await dispatchQueuedRoomRuns([runId]);
     await db.pool.query(
@@ -1674,13 +1662,11 @@ describe("Room workflow (real Postgres)", () => {
     expect(prompt).toContain("treat that as an execution instruction");
     expect(prompt).toContain("whichever research-execution tool is available");
     expect(prompt).not.toContain("[Current turn execution mode]");
-    expect(prompt).toContain("[Assigned task for this Room turn]");
-    // The message is delivered once, as the current input; the assigned task
-    // names it instead of repeating it, and the increment does not carry it.
-    expect(prompt.endsWith("This run's task is the current user input below.")).toBe(true);
+    // The message is delivered once, as the current input; a task that is the
+    // whole message adds nothing to the prompt, and the increment does not
+    // carry it.
+    expect(prompt).not.toContain("[Assigned task for this Room turn]");
     expect(prompt).not.toContain("What should I do next?");
-    // Context precedes the assigned task, never the other way around.
-    expect(prompt.indexOf("[Project state]")).toBeLessThan(prompt.indexOf("[Assigned task for this Room turn]"));
   });
 
   it("states the Task the person is looking at, and stays silent about one they cannot read", async (ctx) => {
@@ -1985,7 +1971,7 @@ describe("Room workflow (real Postgres)", () => {
     const owner = { spaceId: "space-1", userId: "user-1" };
     const created = await service.createRoom(owner, { project_id: "project-1", title: "Skill Room" });
     const conversation = await seedConversation(owner, created.room.id, "Skill turn");
-    const repo = new PgCapabilitiesRepository(db.pool);
+    const repo = new PgSkillsRepository(db.pool);
     const preview = previewSkillFiles({ files: [{ path: "SKILL.md", content_base64: Buffer.from("---\nname: room-skill\ndescription: Test the original Skill.\n---\nFollow the request.").toString("base64") }] });
     const pkg = SkillPackageSchema.parse(await repo.saveImportedSkill(owner, preview));
     await approveSkillImportInTransaction({ db: db.pool, spaceId: owner.spaceId, userId: owner.userId, proposalId: randomUUID(), skillPackageId: pkg.id });
@@ -2148,7 +2134,7 @@ describe("Room workflow (real Postgres)", () => {
     })).rejects.toMatchObject({ code: "resource_not_found" });
   });
 
-  it("keeps healthy CLI state stable as bounded raw history advances", async (ctx) => {
+  it("resumes the Host thread with only the increment after its last completed turn", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
     const member = { spaceId: "space-1", userId: "user-2" };
@@ -2165,23 +2151,7 @@ describe("Room workflow (real Postgres)", () => {
         runtime_profile_id: "runtime-cli",
       }],
     });
-    const firstRun = await db.pool.query<{
-      id: string;
-      context_fingerprint: string;
-      binding_id: string;
-      runtime_state_key: string;
-    }>(
-      `SELECT id,
-              model_override_json->'conversation_runtime'->>'context_fingerprint'
-                AS context_fingerprint,
-              model_override_json->'conversation_runtime'->>'binding_id' AS binding_id,
-              model_override_json->'conversation_runtime'->>'runtime_state_key'
-                AS runtime_state_key
-         FROM runs
-        WHERE id = $1`,
-      [first.run_ids[0]],
-    );
-    const firstRuntime = firstRun.rows[0]!;
+    const firstRuntime = { id: first.run_ids[0]! };
     await dispatchQueuedRoomRuns([firstRuntime.id]);
     await db.pool.query(
       `UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now()
@@ -2195,21 +2165,6 @@ describe("Room workflow (real Postgres)", () => {
           SET created_at = '2026-01-01T00:00:00.000Z'
         WHERE id = $1`,
       [first.message.id],
-    );
-    await db.pool.query(
-      `UPDATE session_conversation_backends
-          SET runtime_session_id = 'vendor-session-1',
-              runtime_context_fingerprint = $2,
-              runtime_message_cursor_id = $3,
-              runtime_session_updated_at = now(),
-              updated_at = now()
-        WHERE id = $1 AND runtime_state_key = $4`,
-      [
-        firstRuntime.binding_id,
-        firstRuntime.context_fingerprint,
-        first.message.id,
-        firstRuntime.runtime_state_key,
-      ],
     );
     await db.pool.query(
       `UPDATE host_threads
@@ -2411,9 +2366,13 @@ describe("Room workflow (real Postgres)", () => {
     expect(second.sent).toBe("false");
     expect(second.prompt).not.toContain("Separate evidence from assumption.");
     expect(second.prompt).not.toContain("[Room execution rules]");
-    // The message is the current input; the prompt names it instead of repeating it.
-    expect(second.prompt.endsWith("This run's task is the current user input below.")).toBe(true);
+    // The message is the current input, delivered on its own; the prompt
+    // carries only what was said since this Agent's last reply (there was
+    // none here, so the first question), never the current message.
+    expect(second.prompt.startsWith("[Room conversation increment")).toBe(true);
+    expect(second.prompt).toContain("First question.");
     expect(second.prompt).not.toContain("Second question.");
+    expect(second.prompt).not.toContain("[Assigned task for this Room turn]");
     await finish(second, true);
 
     // A revised role is a different block, sent again.
@@ -2429,11 +2388,28 @@ describe("Room workflow (real Postgres)", () => {
     expect(fourth.prompt).toContain("Answer in French.");
   });
 
-  describe("session rotation with a self-written handoff", () => {
-    async function fullSessionTurn() {
+  describe("conversation summary and restart from it", () => {
+    /**
+     * A live session on the person's own paired host: the roster's summary
+     * and restart actions are the Host owner's, and a server host has no owner.
+     */
+    async function liveSessionTurn() {
       const owner = { spaceId: "space-1", userId: "user-1" };
-      const created = await service!.createRoom(owner, { project_id: "project-1", title: "Rotation Room" });
-      const conversation = await seedConversation(owner, created.room.id, "Rotation");
+      const created = await service!.createRoom(owner, { project_id: "project-1", title: "Summary Room" });
+      await db.pool.query(
+        `UPDATE machines SET owner_user_id = 'user-1' WHERE id = 'machine-1';
+         INSERT INTO hosts (
+           id, owner_user_id, machine_id, name, kind, environment_kind, status,
+           last_heartbeat_at, capabilities_json, created_at, updated_at
+         ) VALUES (
+           'host-summary', 'user-1', 'machine-1', 'Summary host', 'remote',
+           'linux_native', 'online', now(),
+           '{"installations":{"claude_code":[{"id":"managed:1.0.0","version":"1.0.0","logged_in":true,"health_check_protocol":"acp"}]}}'::jsonb,
+           now(), now()
+         );
+         UPDATE agent_runtime_profiles SET execution_host_id = 'host-summary' WHERE id = 'runtime-cli'`,
+      );
+      const conversation = await seedConversation(owner, created.room.id, "Summary", { hostId: "host-summary", primary: { kind: "managed" } });
       const first = await service!.sendMessage(owner, created.room.id, conversation.id, {
         content: "Start the refactor.",
         backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }],
@@ -2446,293 +2422,95 @@ describe("Room workflow (real Postgres)", () => {
            FROM runs WHERE id = $1`,
         [firstRunId],
       )).rows[0]!;
-      // The runtime reported a session at 75 % of a 200k window.
       await new PgHostThreadRepository(db.pool).recordRunOutcome(thread.id, {
         lastRunId: firstRunId,
-        vendorSessionId: "vendor-full",
+        vendorSessionId: "vendor-live",
         sessionReset: false,
         landed: true,
         identity: { digest: thread.digest, sent: true },
-        contextWindow: { used: 150_000, size: 200_000 },
+        contextWindow: { used: 50_000, size: 200_000 },
       });
       await seedChatCompletion(firstRunId);
-      const second = await service!.sendMessage(owner, created.room.id, conversation.id, {
-        content: "Now the tests.",
-        backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }],
-      });
+      return { owner, created, conversation, thread };
+    }
+
+    it("writes the summary a person asks for into the current session, keeps the session, and can restart from it", async (ctx) => {
+      if (!db.available || !service) return ctx.skip();
+      const { owner, created, conversation, thread } = await liveSessionTurn();
+      const threadRow = async () => (await db.pool.query<{
+        status: string; vendor_session_id: string | null; handoff_artifact_id: string | null;
+      }>(`SELECT status, vendor_session_id, handoff_artifact_id FROM host_threads WHERE id = $1`, [thread.id])).rows[0]!;
+
+      // Nothing to restart from yet.
+      await expect(service.restartFromSummary(owner, created.room.id, "agent-1")).rejects.toMatchObject({ statusCode: 409 });
+
+      await service.summarizeAgentContext(owner, created.room.id, "agent-1");
       const runs = await db.pool.query<RunRecord & { kind: string | null }>(
         `SELECT id, status, prompt, capabilities_json, model_override_json, output_json,
                 model_override_json->'chat_turn'->>'kind' AS kind
-           FROM runs WHERE run_group_id = $1 ORDER BY created_at, id`,
-        [second.task_group_ids[0]],
-      );
-      const handoff = runs.rows.find((run) => run.kind === "handoff")!;
-      const turn = runs.rows.find((run) => run.id === second.run_ids[0])!;
-      return { owner, created, conversation, thread, handoff, turn, groupId: second.task_group_ids[0]! };
-    }
-
-    function projector() {
-      return new AgentGroupRunLifecycleProjector(db.pool, loadConfig({
-        SERVER_DATABASE_URL: db.connectionUri,
-        RAINVER_HOME: testRoot,
-      }));
-    }
-
-    async function finishHandoff(handoffRunId: string, status: "succeeded" | "failed") {
-      await dispatchQueuedRoomRuns([handoffRunId]);
-      await db.pool.query(`UPDATE runs SET status = $2, ended_at = now(), updated_at = now() WHERE id = $1`, [handoffRunId, status]);
-      const run = await new PgRunRepository(db.pool).getRun("space-1", handoffRunId);
-      await projector().markDelegatedRunTerminal(run!);
-      if (status === "succeeded") await seedChatCompletion(handoffRunId);
-    }
-
-    it("parks the person's turn behind a handoff turn once the session passes the rotation share", async (ctx) => {
-      if (!db.available || !service) return ctx.skip();
-      const { handoff, turn, thread } = await fullSessionTurn();
-      expect(handoff).toBeDefined();
-      expect(handoff.status).toBe("queued");
-      expect(handoff.prompt).toContain("[Session handoff]");
-      expect(handoff.capabilities_json).toEqual(["handoff.write"]);
-      expect(recordOf(recordOf(handoff.model_override_json).host_thread)).toMatchObject({
-        thread_id: thread.id,
-        runtime_session_id: "vendor-full",
-      });
-      expect(recordOf(handoff.model_override_json).handoff).toMatchObject({ context_tokens: 150_000, budget_tokens: 8_000 });
-      expect(turn.status).toBe("waiting_for_dependency");
-      expect(recordOf(recordOf(turn.output_json).waiting_for_results).depends_on_run_ids).toEqual([handoff.id]);
-      expect(recordOf(recordOf(turn.model_override_json).handoff_rotation).handoff_run_id).toBe(handoff.id);
-      // Only the handoff runs now; the person's turn follows it.
-      const jobs = await db.pool.query<{ run_id: string }>(
-        `SELECT payload_json->>'run_id' AS run_id FROM jobs WHERE job_type = 'agent_run' AND payload_json->>'run_id' = ANY($1::varchar[])`,
-        [[handoff.id, turn.id]],
-      );
-      expect(jobs.rows.map((row) => row.run_id)).toEqual([handoff.id]);
-    });
-
-    it("renews the session from the handoff the Agent wrote, and the late handoff outcome cannot undo it", async (ctx) => {
-      if (!db.available || !service) return ctx.skip();
-      const { handoff, turn, thread, conversation } = await fullSessionTurn();
-      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
-      const executors = new Map<SystemActionId, SystemActionExecutor>();
-      const handoffRecord = (await new PgRunRepository(db.pool).getRun("space-1", handoff.id))!;
-      registerAgentHandoffExecutors(executors, config, handoffRecord);
-      const write = executors.get("handoff.write" as SystemActionId)!;
-      const context = { actor: { type: "agent" as const, space_id: "space-1" }, visibility: "agent_tool" as const };
-      const firstWrite = await write({ goal: "Refactor the parser.", decisions: "Keep the public API.", next_step: "Write the tests." }, context);
-      // A second call in the same turn corrects the first rather than adding one.
-      const secondWrite = await write({
-        goal: "Refactor the parser.",
-        decisions: "Keep the public API; drop the legacy flag.",
-        files: "src/parser.ts — split into lexer and parser.",
-        next_step: "Write the tests for the lexer.",
-      }, context);
-      expect(recordOf(recordOf(secondWrite).modelResult).artifact_id).toBe(recordOf(recordOf(firstWrite).modelResult).artifact_id);
-      const artifacts = await db.pool.query<{ id: string; content: string; visibility: string }>(
-        `SELECT id, content, visibility FROM artifacts WHERE artifact_type = 'agent_handoff' AND run_id = $1`,
-        [handoff.id],
-      );
-      expect(artifacts.rows).toHaveLength(1);
-      expect(artifacts.rows[0]!.content).toContain("drop the legacy flag");
-      expect(artifacts.rows[0]!.visibility).toBe("selected_users");
-
-      await finishHandoff(handoff.id, "succeeded");
-
-      const renewed = (await new PgRunRepository(db.pool).getRun("space-1", turn.id))!;
-      expect(renewed.status).toBe("queued");
-      expect(renewed.prompt).toContain("[Handoff you wrote before this session was renewed]");
-      expect(renewed.prompt).toContain("Write the tests for the lexer.");
-      expect(renewed.prompt).toContain("[Room execution rules]");
-      expect(renewed.prompt).toContain("You are now in");
-      expect(renewed.prompt?.endsWith("Now the tests.")).toBe(true);
-      expect(renewed.prompt).not.toContain("[Replies already given to this same message]");
-      expect(recordOf(recordOf(renewed.model_override_json).host_thread)).toMatchObject({
-        runtime_session_id: null,
-        fresh: true,
-        identity_sent: true,
-      });
-      const threadRow = async () => (await db.pool.query<{
-        status: string; vendor_session_id: string | null; handoff_artifact_id: string | null; context_tokens: number | null;
-      }>(
-        `SELECT status, vendor_session_id, handoff_artifact_id, context_tokens FROM host_threads WHERE id = $1`,
-        [thread.id],
-      )).rows[0];
-      expect(await threadRow()).toMatchObject({
-        status: "session_reset",
-        vendor_session_id: null,
-        handoff_artifact_id: artifacts.rows[0]!.id,
-        context_tokens: null,
-      });
-      const marker = await db.pool.query(
-        `SELECT 1 FROM messages WHERE session_id = $1 AND metadata_json->>'room_display' = 'internal'
-            AND metadata_json->>'continuation_event_kind' = 'session_handoff'`,
+           FROM runs WHERE session_id = $1 AND model_override_json->'chat_turn'->>'kind' = 'handoff'
+           ORDER BY created_at, id`,
         [conversation.id],
       );
-      expect(marker.rowCount).toBe(1);
-
-      // The handoff Run's own outcome is recorded after its successor was
-      // admitted; it must not write the retired session back.
-      await new PgHostThreadRepository(db.pool).recordRunOutcome(thread.id, {
-        lastRunId: handoff.id,
-        vendorSessionId: "vendor-full",
-        sessionReset: false,
-        landed: true,
-        identity: null,
-      });
-      expect(await threadRow()).toMatchObject({ status: "session_reset", vendor_session_id: null });
-    });
-
-    it("keeps the old session when the handoff fails, and retries only once the session has grown", async (ctx) => {
-      if (!db.available || !service) return ctx.skip();
-      const { handoff, turn, thread, owner, created, conversation } = await fullSessionTurn();
-      await finishHandoff(handoff.id, "failed");
-
-      const resumed = (await new PgRunRepository(db.pool).getRun("space-1", turn.id))!;
-      expect(resumed.status).toBe("queued");
-      expect(resumed.prompt).not.toContain("[Handoff you wrote");
-      expect(recordOf(recordOf(resumed.model_override_json).host_thread).runtime_session_id).toBe("vendor-full");
-      const warning = await db.pool.query(
-        `SELECT 1 FROM run_events WHERE run_id = $1 AND event_type = 'warning' AND metadata_json->>'handoff_run_id' = $2`,
-        [turn.id, handoff.id],
+      // One handoff-shaped turn, into the live session, with the summary prompt
+      // and the handoff tool alone; no turn waits behind it to rotate.
+      expect(runs.rows).toHaveLength(1);
+      const summary = runs.rows[0]!;
+      expect(summary.status).toBe("queued");
+      expect(summary.prompt).toContain("[Conversation summary]");
+      expect(summary.prompt).toContain("conversation.search");
+      expect(summary.capabilities_json).toEqual(["handoff.write"]);
+      expect(recordOf(recordOf(summary.model_override_json).host_thread)).toMatchObject({ thread_id: thread.id, runtime_session_id: "vendor-live" });
+      expect(recordOf(summary.model_override_json).handoff).toMatchObject({ thread_id: thread.id, context_tokens: 50_000, budget_tokens: 8_000, manual_summary: true });
+      expect(recordOf(summary.model_override_json).handoff_rotation).toBeUndefined();
+      const request = await db.pool.query<{ role: string; metadata_json: Record<string, unknown> }>(
+        `SELECT role, metadata_json FROM messages WHERE session_id = $1 AND metadata_json->>'continuation_event_kind' = 'conversation_summary'`,
+        [conversation.id],
       );
-      expect(warning.rowCount).toBe(1);
-      await expect(db.pool.query(`SELECT vendor_session_id FROM host_threads WHERE id = $1`, [thread.id]))
-        .resolves.toMatchObject({ rows: [{ vendor_session_id: "vendor-full" }] });
+      expect(request.rows).toHaveLength(1);
+      expect(request.rows[0]!.metadata_json).toMatchObject({ room_display: "internal", continuation_event_key: "agent-1" });
 
-      // Each turn grows the session a little; the failed handoff is not
-      // retried until it has grown by a tenth of the window.
-      const finishTurn = async (runId: string, used: number) => {
-        await dispatchQueuedRoomRuns([runId]);
-        await db.pool.query(`UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now() WHERE id = $1`, [runId]);
-        await new PgHostThreadRepository(db.pool).recordRunOutcome(thread.id, {
-          lastRunId: runId, vendorSessionId: "vendor-full", sessionReset: false, landed: true, identity: null,
-          contextWindow: { used, size: 200_000 },
-        });
-        await seedChatCompletion(runId);
-      };
-      const nextKinds = async (content: string) => {
-        const next = await service!.sendMessage(owner, created.room.id, conversation.id, {
-          content,
-          backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }],
-        });
-        const rows = await db.pool.query<{ id: string; kind: string | null }>(
-          `SELECT id, model_override_json->'chat_turn'->>'kind' AS kind FROM runs WHERE run_group_id = $1 ORDER BY created_at, id`,
-          [next.task_group_ids[0]],
-        );
-        return { runId: next.run_ids[0]!, kinds: rows.rows.map((row) => row.kind) };
-      };
-      await finishTurn(turn.id, 158_000);
-      const quiet = await nextKinds("Keep going.");
-      expect(quiet.kinds).toEqual([null]);
-      await finishTurn(quiet.runId, 171_000);
-      const retried = await nextKinds("And the docs.");
-      expect([...retried.kinds].sort()).toEqual(["handoff", null]);
-    });
-
-    it("keeps a later recipient's handoff out of the replies and off the group timeline", async (ctx) => {
-      if (!db.available || !service) return ctx.skip();
-      const owner = { spaceId: "space-1", userId: "user-1" };
-      const now = new Date().toISOString();
-      await seedSpecialist(now, "agent-2", "version-2", "Research Specialist");
-      const created = await service.createRoom(owner, { project_id: "project-1", title: "Chain Room" });
-      await db.pool.query(
-        `INSERT INTO room_agent_members (id, space_id, room_id, agent_id, role, status, created_at, updated_at)
-         VALUES ($1, 'space-1', $2, 'agent-2', 'member', 'active', $3, $3)`,
-        [randomUUID(), created.room.id, now],
-      );
-      const conversation = await seedConversation(owner, created.room.id, "Chain");
-      const send = (content: string) => service!.sendMessage(owner, created.room.id, conversation.id, {
-        content,
-        recipient_segments: [{ recipient_agent_ids: ["agent-1", "agent-2"], content }],
-        backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }],
-      });
-      const finish = async (runId: string, used: number | null) => {
-        await dispatchQueuedRoomRuns([runId]);
-        await db.pool.query(`UPDATE runs SET status = 'succeeded', output_json = $2::jsonb, ended_at = now(), updated_at = now() WHERE id = $1`,
-          [runId, JSON.stringify({ schema_version: "run_output.v1", status: "succeeded", summary: `reply of ${runId}`, result: {}, output_manifest: [] })]);
-        const run = (await new PgRunRepository(db.pool).getRun("space-1", runId))!;
-        await new PgHostThreadRepository(db.pool).recordRunOutcome(run.host_task_thread_id!, {
-          lastRunId: runId, vendorSessionId: `vendor-${run.agent_id}`, sessionReset: false, landed: true, identity: null,
-          ...(used === null ? {} : { contextWindow: { used, size: 200_000 } }),
-        });
-        await projector().markDelegatedRunTerminal(run);
-        await seedChatCompletion(runId);
-      };
-      const first = await send("First round.");
-      await finish(first.run_ids[0]!, 10_000);
-      await finish(first.run_ids[1]!, 150_000);
-
-      const second = await send("Second round.");
-      const [lead, specialist] = second.run_ids as [string, string];
-      const handoff = (await db.pool.query<{ id: string; prompt: string }>(
-        `SELECT id, prompt FROM runs WHERE run_group_id = $1 AND model_override_json->'chat_turn'->>'kind' = 'handoff'`,
-        [second.task_group_ids[0]],
-      )).rows[0]!;
-      expect(handoff).toBeDefined();
-      await finish(lead, 12_000);
-      const admittedHandoff = (await new PgRunRepository(db.pool).getRun("space-1", handoff.id))!;
-      expect(admittedHandoff.status).toBe("queued");
-      expect(admittedHandoff.prompt).toBe(handoff.prompt);
-
-      await dispatchQueuedRoomRuns([handoff.id]);
-      await db.pool.query(`UPDATE runs SET status = 'succeeded', output_json = $2::jsonb, ended_at = now(), updated_at = now() WHERE id = $1`,
-        [handoff.id, JSON.stringify({ schema_version: "run_output.v1", status: "succeeded", summary: "handoff done", result: {}, output_manifest: [] })]);
-      await projector().markDelegatedRunTerminal((await new PgRunRepository(db.pool).getRun("space-1", handoff.id))!);
-      const admittedSpecialist = (await new PgRunRepository(db.pool).getRun("space-1", specialist))!;
-      expect(admittedSpecialist.prompt).toContain(`reply of ${lead}`);
-      expect(admittedSpecialist.prompt).not.toContain("handoff done");
-      const timeline = await db.pool.query<{ run_id: string | null }>(
-        `SELECT run_id FROM agent_run_messages WHERE group_id = $1`,
-        [second.task_group_ids[0]],
-      );
-      expect(timeline.rows.map((row) => row.run_id)).not.toContain(handoff.id);
-    });
-
-    it("does not rotate a session that changed while its handoff ran", async (ctx) => {
-      if (!db.available || !service) return ctx.skip();
-      const { handoff, turn, thread } = await fullSessionTurn();
+      // The Agent writes the document; it is a summary of this very session.
       const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
       const executors = new Map<SystemActionId, SystemActionExecutor>();
-      registerAgentHandoffExecutors(executors, config, (await new PgRunRepository(db.pool).getRun("space-1", handoff.id))!);
-      await executors.get("handoff.write" as SystemActionId)!(
-        { goal: "g", decisions: "d", next_step: "n" },
-        { actor: { type: "agent", space_id: "space-1" }, visibility: "agent_tool" },
+      const summaryRecord = (await new PgRunRepository(db.pool).getRun("space-1", summary.id))!;
+      registerAgentHandoffExecutors(executors, config, summaryRecord);
+      const written = await executors.get("handoff.write" as SystemActionId)!(
+        { goal: "Refactor the parser.", decisions: "Keep the public API.", next_step: "Write the tests." },
+        { actor: { type: "agent" as const, space_id: "space-1" }, visibility: "agent_tool" as const },
       );
-      // The person reset the Agent's context while the handoff was running.
-      await new PgHostThreadRepository(db.pool).resetConversationAgent(thread.id);
-      await finishHandoff(handoff.id, "succeeded");
-      const admitted = (await new PgRunRepository(db.pool).getRun("space-1", turn.id))!;
-      expect(admitted.prompt).not.toContain("[Handoff you wrote");
-      await expect(db.pool.query(`SELECT handoff_artifact_id FROM host_threads WHERE id = $1`, [thread.id]))
-        .resolves.toMatchObject({ rows: [{ handoff_artifact_id: null }] });
+      const artifactId = recordOf(recordOf(written).modelResult).artifact_id as string;
+      const artifact = await db.pool.query<{ title: string; project_id: string | null; metadata_json: Record<string, unknown> }>(
+        `SELECT title, project_id, metadata_json FROM artifacts WHERE id = $1`,
+        [artifactId],
+      );
+      expect(artifact.rows[0]!.title).toMatch(/^Conversation summary by /);
+      expect(artifact.rows[0]!.project_id).toBe("project-1");
+      expect(artifact.rows[0]!.metadata_json).toMatchObject({ manual_summary: true, vendor_session_id: "vendor-live", host_thread_id: thread.id });
+
+      await dispatchQueuedRoomRuns([summary.id]);
+      await db.pool.query(`UPDATE runs SET status = 'succeeded', ended_at = now(), updated_at = now() WHERE id = $1`, [summary.id]);
+      await new PgHostThreadRepository(db.pool).recordRunOutcome(thread.id, {
+        lastRunId: summary.id, vendorSessionId: "vendor-live", sessionReset: false, landed: true,
+        contextWindow: { used: 52_000, size: 200_000 },
+      });
+      // The session continues: the summary is a record, not a rotation.
+      expect(await threadRow()).toMatchObject({ status: "active", vendor_session_id: "vendor-live", handoff_artifact_id: null });
+      expect(await latestSummaryArtifactId(db.pool, { spaceId: "space-1", threadId: thread.id, vendorSessionId: "vendor-live" })).toBe(artifactId);
+
+      // Chosen by the person: the next turn starts from the summary instead.
+      await service.restartFromSummary(owner, created.room.id, "agent-1");
+      expect(await threadRow()).toMatchObject({ status: "session_reset", vendor_session_id: null, handoff_artifact_id: artifactId });
+      const notice = await db.pool.query<{ metadata_json: Record<string, unknown> }>(
+        `SELECT metadata_json FROM messages WHERE session_id = $1 AND metadata_json->>'host_thread_reset_reason' = 'summary'`,
+        [conversation.id],
+      );
+      expect(notice.rows).toHaveLength(1);
+      expect(notice.rows[0]!.metadata_json).toMatchObject({ execution_details: { artifact_id: artifactId } });
+      // A reset session has nothing to summarize.
+      await expect(service.summarizeAgentContext(owner, created.room.id, "agent-1")).rejects.toMatchObject({ statusCode: 409 });
     });
 
-    it("replays from the handoff when the renewed session's first turn never started one", async (ctx) => {
-      if (!db.available || !service) return ctx.skip();
-      const { handoff, turn, thread, owner, created, conversation } = await fullSessionTurn();
-      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
-      const executors = new Map<SystemActionId, SystemActionExecutor>();
-      registerAgentHandoffExecutors(executors, config, (await new PgRunRepository(db.pool).getRun("space-1", handoff.id))!);
-      await executors.get("handoff.write" as SystemActionId)!(
-        { goal: "Refactor the parser.", decisions: "Keep the API.", next_step: "Lexer tests." },
-        { actor: { type: "agent", space_id: "space-1" }, visibility: "agent_tool" },
-      );
-      await finishHandoff(handoff.id, "succeeded");
-      // The renewed turn fails before the runtime opened a session.
-      await dispatchQueuedRoomRuns([turn.id]);
-      await db.pool.query(`UPDATE runs SET status = 'failed', ended_at = now(), updated_at = now() WHERE id = $1`, [turn.id]);
-      await new PgHostThreadRepository(db.pool).recordRunOutcome(thread.id, {
-        lastRunId: turn.id, vendorSessionId: null, sessionReset: false, landed: false, identity: null,
-      });
-      const next = await service!.sendMessage(owner, created.room.id, conversation.id, {
-        content: "Try again.",
-        backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }],
-      });
-      const prompt = (await db.pool.query<{ prompt: string }>(`SELECT prompt FROM runs WHERE id = $1`, [next.run_ids[0]])).rows[0]!.prompt;
-      expect(prompt).toContain("You are now in");
-      expect(prompt).toContain("[Handoff you wrote before this session was renewed]");
-      expect(prompt).toContain("Lexer tests.");
-      expect(prompt).toContain("[Room execution rules]");
-    });
   });
 
   describe("bounded discussions among a conversation's Agents", () => {
@@ -2740,7 +2518,6 @@ describe("Room workflow (real Postgres)", () => {
       loadActionPreviews: async () => [],
       continuity: {
         async finalizeChatTurn() { return {} as never; },
-        async runSemanticExtraction() { return null; },
       },
     };
 
@@ -2943,7 +2720,7 @@ describe("Room workflow (real Postgres)", () => {
       await dispatchQueuedRoomRuns([managerRun]);
       const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
       await db.pool.query(
-        `UPDATE agent_run_groups SET budget_json = COALESCE(budget_json, '{}'::jsonb) || '{"max_fanout":1}'::jsonb WHERE id = $1`,
+        `UPDATE agent_run_groups SET budget_json = '{"max_depth":1,"max_fanout":1}'::jsonb WHERE id = $1`,
         [group.id],
       );
       const input = {
@@ -2976,7 +2753,7 @@ describe("Room workflow (real Postgres)", () => {
       await dispatchQueuedRoomRuns([managerRun]);
       const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
       await db.pool.query(
-        `UPDATE agent_run_groups SET budget_json = COALESCE(budget_json, '{}'::jsonb) || '{"max_fanout":1}'::jsonb WHERE id = $1`,
+        `UPDATE agent_run_groups SET budget_json = '{"max_depth":1,"max_fanout":1}'::jsonb WHERE id = $1`,
         [group.id],
       );
       const input = (toolCallId: string) => ({
@@ -3239,6 +3016,13 @@ describe("Room workflow (real Postgres)", () => {
       const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
       await new AgentGroupRunLifecycleProjector(db.pool, config).markDelegatedRunTerminal((await runs.getRun("space-1", asking!.id))!);
       await releaseConversationTurn(asking!.id);
+      // The Manager's session continues, as it does after a real first turn:
+      // its closing turn resumes it and is sent what the specialist said since.
+      await db.pool.query(
+        `UPDATE host_threads SET vendor_session_id = 'vendor-manager', updated_at = now()
+          WHERE space_id = 'space-1' AND session_id = $1 AND agent_id = 'agent-1' AND container_kind = 'conversation'`,
+        [conversation.id],
+      );
       await expect(finalizeChatTurn(config, runs, (await runs.getRun("space-1", asking!.id))!, finalizerDeps))
         .resolves.toMatchObject({ ok: true, reply: expect.stringContaining("Which build should ship?") });
 
@@ -3505,8 +3289,8 @@ describe("Room workflow (real Postgres)", () => {
       expect(page.queued).toEqual([]);
       const posted = page.items.find(message => message.content === "Review that recommendation.")!;
       expect(posted).toBeDefined();
-      const replay = await loadRoomConversationReplayThroughMessage(db.pool, {
-        spaceId: "space-1", sessionId: conversation.id, currentMessageId: posted.id,
+      const replay = await loadRoomContinuityForRunRequest(db.pool, {
+        spaceId: "space-1", sessionId: conversation.id,
       });
       expect(replay.messages.map(message => message.content)).toContain("Use the incremental approach.");
       expect((await queuedRunsFor(conversation.id, "agent-2"))).toHaveLength(1);
@@ -3728,6 +3512,252 @@ describe("Room workflow (real Postgres)", () => {
       expect(charged).toBe("1");
     });
 
+    /** A published terminal turn, used to exercise completion dispatch rather than finalization. */
+    async function publishBudgetTurn(runId: string, delegated = false) {
+      await dispatchQueuedRoomRuns([runId]);
+      await db.pool.query("UPDATE runs SET status='succeeded',ended_at=now(),output_json='{\"summary\":\"Reviewed\"}'::jsonb WHERE id=$1", [runId]);
+      await releaseConversationTurn(runId);
+      await seedChatCompletion(runId);
+      if (delegated) await new AgentGroupRunLifecycleProjector(db.pool, loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }))
+        .markDelegatedRunTerminal((await new PgRunRepository(db.pool).getRun("space-1", runId))!);
+    }
+
+    it.for([0, 1, 2, 5])("scales temporary limits for %i specialists, admits above soft and audits the hard refusal", async (agents, ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const owner = { spaceId: "space-1", userId: "user-1" };
+      const created = await service.createRoom(owner, { project_id: "project-1", title: "Scaled temporary budget" });
+      for (let i = 0; i < agents; i += 1) {
+        await seedSpecialist(new Date().toISOString(), `agent-${i + 2}`, `version-${i + 2}`, `Specialist ${i + 2}`);
+        await db.pool.query(`INSERT INTO room_agent_members (id,space_id,room_id,agent_id,role,status,created_at,updated_at)
+          VALUES ($1,'space-1',$2,$3,'member','active',now(),now())`, [randomUUID(), created.room.id, `agent-${i + 2}`]);
+      }
+      const conversation = await seedConversation(owner, created.room.id, "Budget");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Work with the specialists." });
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
+      const soft = 5 * Math.max(1, agents), hard = soft * 2;
+      expect(group.budget_json).toMatchObject({ max_depth: 1, max_fanout: soft, soft_max_fanout: soft, hard_max_fanout: hard });
+      if (agents === 5) {
+        for (let i = 0; i < agents; i += 1) {
+          const child = await groupService.spawnChildRun(owner, { space_id: "space-1", group_id: group.id,
+            parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!, requesting_agent_id: "agent-1",
+            target_agent_id: `agent-${i + 2}`, manager_user_id: "user-1", instruction: "Queue this specialist's work." });
+          expect(child.child_run_id).toBeTruthy();
+        }
+      }
+      if (agents !== 2) return;
+      const spawn = () => groupService!.spawnChildRun(owner, { space_id: "space-1", group_id: group.id,
+        parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!, requesting_agent_id: "agent-1",
+        target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review the next item." });
+      for (let i = 1; i <= hard; i += 1) {
+        const child = await spawn();
+        expect(child.child_run_id).toBeTruthy();
+        if (i === soft || i === soft + 1) {
+          expect((await db.pool.query(`SELECT id FROM messages WHERE session_id=$1
+            AND metadata_json->>'execution_event'='delegation_soft_budget_exceeded'`, [conversation.id])).rows)
+            .toHaveLength(i === soft ? 0 : 1);
+        }
+        await dispatchQueuedRoomRuns([child.child_run_id!]);
+        await db.pool.query("UPDATE run_delegations SET status='succeeded' WHERE id=$1", [child.delegation.id]);
+        await db.pool.query("UPDATE runs SET status='succeeded',ended_at=now() WHERE id=$1", [child.child_run_id]);
+        await releaseConversationTurn(child.child_run_id!);
+      }
+      const notices = (await db.pool.query(`SELECT role,metadata_json,content FROM messages WHERE session_id=$1
+        AND metadata_json->>'execution_event'='delegation_soft_budget_exceeded'`, [conversation.id])).rows;
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toMatchObject({ role: "system", metadata_json: { room_display: "system_notice",
+        execution_details: { soft_limit: soft, hard_limit: hard } } });
+      const denied = await spawn();
+      expect(denied).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+      expect((await db.pool.query(`SELECT decision,audit_code FROM policy_decision_records WHERE id=$1`,
+        [denied.policy_decision_record_id])).rows[0]).toMatchObject({ decision: "deny", audit_code: "run_spawn_child_capacity_limit" });
+      expect((await db.pool.query(`SELECT count(*)::int AS count FROM run_delegations WHERE group_id=$1 AND status<>'policy_denied'`,
+        [group.id])).rows[0]?.count).toBe(hard);
+    });
+
+    it.for([0, 2, 100])("intersects a completion subgroup's hard bound %i with its container", async (limit, ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Subgroup bound");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Review this." });
+      const groupId = sent.task_group_ids[0]!;
+      // Internal callers may supply a tighter budget than the Room default.
+      await db.pool.query("UPDATE agent_run_groups SET budget_json=$2::jsonb WHERE id=$1",
+        [groupId, JSON.stringify({ max_depth: 1, max_fanout: 3 })]);
+      const input = { space_id: "space-1", group_id: groupId, parent_run_id: sent.run_ids[0]!, root_run_id: sent.run_ids[0]!,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review." };
+      const first = await groupService.spawnChildRun(owner, input);
+      await publishBudgetTurn(input.parent_run_id);
+      await publishBudgetTurn(first.child_run_id!, true);
+      const completion = (await db.pool.query<{ id: string; root_run_id: string }>(`SELECT id,root_run_id FROM agent_run_groups
+        WHERE budget_json->>'container_group_id'=$1 ORDER BY created_at DESC LIMIT 1`, [groupId])).rows[0]!;
+      await db.pool.query("UPDATE agent_run_groups SET budget_json=$2::jsonb WHERE id=$1",
+        [completion.id, JSON.stringify({ max_depth: 1, max_fanout: limit, container_group_id: groupId })]);
+      const spawn = () => groupService!.spawnChildRun(owner, { ...input, group_id: completion.id,
+        parent_run_id: completion.root_run_id, root_run_id: completion.root_run_id });
+      const effectiveLimit = Math.min(3, limit);
+      for (let count = 2; count <= effectiveLimit; count += 1) {
+        const child = await spawn();
+        expect(child.child_run_id).toBeTruthy();
+        await publishBudgetTurn(child.child_run_id!);
+        await db.pool.query("UPDATE run_delegations SET status='succeeded' WHERE id=$1", [child.delegation.id]);
+      }
+      const denied = await spawn();
+      expect(denied).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+      expect((await db.pool.query("SELECT decision,audit_code FROM policy_decision_records WHERE id=$1",
+        [denied.policy_decision_record_id])).rows[0]).toMatchObject({ decision: "deny", audit_code: "run_spawn_child_capacity_limit" });
+      expect((await db.pool.query(`SELECT count(*)::int AS count FROM run_delegations d JOIN agent_run_groups g ON g.id=d.group_id
+        WHERE (g.id=$1 OR g.budget_json->>'container_group_id'=$1) AND d.status<>'policy_denied'`, [groupId])).rows[0]?.count)
+        .toBe(Math.max(1, effectiveLimit));
+    });
+
+    it("audits a spawn refused by hard turn capacity after real completion turns, with fanout still available", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Hard turn ceiling");
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Research, then review." });
+      const containerId = sent.task_group_ids[0]!;
+      await publishBudgetTurn(sent.run_ids[0]!);
+      let current = { id: containerId, root_run_id: sent.run_ids[0]! };
+      // Research result turns share capacity but consume no delegation slots.
+      for (let result = 0; result < 2; result += 1) {
+        const completed = await withDbTransaction(db.pool, async client => service!.continueAfterDomainEventInTransaction(
+          client, owner, created.room.id, conversation.id, { kind: "research_workflow_terminal", key: randomUUID(),
+            payload: { status: "completed", operation_id: randomUUID() },
+            ...await agentOriginContinuation(client, "space-1", current.id) }));
+        current = { id: completed.task_group_ids[0]!, root_run_id: completed.run_ids[0]! };
+        if (result === 0) await publishBudgetTurn(current.root_run_id);
+      }
+      for (let delegation = 0; delegation < 9; delegation += 1) {
+        const child = await groupService.spawnChildRun(owner, { space_id: "space-1", group_id: current.id,
+          parent_run_id: current.root_run_id, root_run_id: current.root_run_id, requesting_agent_id: "agent-1",
+          target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review the next item." });
+        expect(child.child_run_id).toBeTruthy();
+        await publishBudgetTurn(current.root_run_id);
+        await publishBudgetTurn(child.child_run_id!, true);
+        current = (await db.pool.query<{ id: string; root_run_id: string }>(`SELECT g.id,g.root_run_id FROM agent_run_groups g
+          JOIN messages m ON m.id=g.trigger_message_id AND m.space_id=g.space_id
+          WHERE g.budget_json->>'container_group_id'=$1 AND m.metadata_json->>'continuation_event_kind'='agent_delegation_result'
+          ORDER BY g.created_at DESC LIMIT 1`, [containerId])).rows[0]!;
+      }
+      const before = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", containerId))!.budget_json!;
+      expect(before).toMatchObject({ hard_max_fanout: 10, container_turns_used: 20 });
+      const accepted = (await db.pool.query(`SELECT count(*)::int AS count FROM run_delegations d JOIN agent_run_groups g ON g.id=d.group_id
+        WHERE (g.id=$1 OR g.budget_json->>'container_group_id'=$1) AND d.status<>'policy_denied'`, [containerId])).rows[0]!.count;
+      expect(accepted).toBe(9); // The tenth delegation fits fanout but would cost turn 21.
+      // Probe the original group, whose fanout bound is still ten, so a zero
+      // completion-subgroup bound cannot be the reason for this refusal.
+      const denied = await groupService.spawnChildRun(owner, { space_id: "space-1", group_id: containerId,
+        parent_run_id: sent.run_ids[0]!, root_run_id: sent.run_ids[0]!, requesting_agent_id: "agent-1",
+        target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "One more review." });
+      expect(denied).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+      expect((await db.pool.query("SELECT action,decision,audit_code FROM policy_decision_records WHERE id=$1",
+        [denied.policy_decision_record_id])).rows[0]).toMatchObject({ action: "run.spawn_child", decision: "deny", audit_code: "run_spawn_child_capacity_limit" });
+      expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", containerId))!.budget_json).toEqual(before);
+    });
+
+    it.for(["done", "cancelled"])("declares a fresh task collaboration on a completion after the prior Task is %s", async (status, ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Renew collaboration");
+      const tasks = new PgTaskRepository(db.pool);
+      const firstTask = await tasks.createTask(owner, { title: "First task", project_id: "project-1" });
+      const nextTask = await tasks.createTask(owner, { title: "Next task", project_id: "project-1" });
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Implement and review the authorized tasks." });
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
+      const input = { space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review this task." };
+      const bounds = { task_id: firstTask.id, participant_agent_ids: ["agent-2"], max_delegations: 1 };
+      const child = await groupService.spawnChildRun(owner, { ...input, budget_json: { collaboration: bounds } });
+      await expect(groupService.spawnChildRun(owner, { ...input, budget_json: { collaboration: { ...bounds, task_id: nextTask.id } } }))
+        .rejects.toMatchObject({ statusCode: 409 });
+      await publishBudgetTurn(input.parent_run_id);
+      await db.pool.query("UPDATE tasks SET status=$2 WHERE id=$1", [firstTask.id, status]);
+      await publishBudgetTurn(child.child_run_id!, true);
+      const continuation = (await db.pool.query<{ id: string; root_run_id: string }>(`SELECT g.id,g.root_run_id FROM agent_run_groups g
+        JOIN messages m ON m.space_id=g.space_id AND m.id=g.trigger_message_id
+        WHERE g.session_id=$1 AND m.metadata_json->>'continuation_event_kind'='agent_delegation_result'
+        ORDER BY g.created_at DESC LIMIT 1`, [conversation.id])).rows[0]!;
+      expect(continuation).toBeDefined();
+      const renewed = await groupService.spawnChildRun(owner, { ...input, group_id: continuation.id,
+        parent_run_id: continuation.root_run_id, root_run_id: continuation.root_run_id,
+        budget_json: { collaboration: { ...bounds, task_id: nextTask.id } } });
+      expect(renewed.child_run_id).toBeTruthy();
+      const stored = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", group.id))!.budget_json!;
+      expect(stored.collaboration).toMatchObject({ task_id: nextTask.id, max_delegations: 1, delegations_offset: 1 });
+      expect(stored.collaboration_history).toEqual([expect.objectContaining({ task_id: firstTask.id })]);
+      const denied = await groupService.spawnChildRun(owner, { ...input, group_id: continuation.id,
+        parent_run_id: continuation.root_run_id, root_run_id: continuation.root_run_id });
+      expect(denied).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+    });
+
+    it("keeps a prior Task's late completion outside the renewed Task's turn quota", async (ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Late task result");
+      const tasks = new PgTaskRepository(db.pool);
+      const oldTask = await tasks.createTask(owner, { title: "Old task", project_id: "project-1" });
+      const nextTask = await tasks.createTask(owner, { title: "Next task", project_id: "project-1" });
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Work on the authorized tasks." });
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
+      const input = { space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review." };
+      const bounds = { task_id: oldTask.id, participant_agent_ids: ["agent-2"], max_delegations: 1 };
+      const prior = await groupService.spawnChildRun(owner, { ...input, budget_json: { collaboration: bounds } });
+      await publishBudgetTurn(prior.child_run_id!);
+      await db.pool.query("UPDATE run_delegations SET status='succeeded' WHERE id=$1", [prior.delegation.id]);
+      await db.pool.query("UPDATE tasks SET status='done' WHERE id=$1", [oldTask.id]);
+      const current = await groupService.spawnChildRun(owner, { ...input,
+        budget_json: { collaboration: { ...bounds, task_id: nextTask.id } } });
+      expect(current.child_run_id).toBeTruthy();
+      const late = await withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", group.id, prior.delegation.id));
+      expect(late.cause.within_budget).toBe(true);
+      await publishBudgetTurn(current.child_run_id!);
+      const finished = await withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", group.id, current.delegation.id));
+      expect(finished.cause.within_budget).toBe(true);
+      expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", group.id))!.budget_json!.collaboration)
+        .toMatchObject({ task_id: nextTask.id, turns_offset: 2, delegations_offset: 1 });
+    });
+
+    it.for(["original", "completion"])("allows first collaboration after temporary delegations on the %s turn", async (turn, ctx) => {
+      if (!db.available || !service || !groupService) return ctx.skip();
+      const { owner, created, conversation } = await roomWithSpecialist("Declare on completion");
+      const task = await new PgTaskRepository(db.pool).createTask(owner, { title: "Follow-up task", project_id: "project-1" });
+      const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Review and follow up." });
+      const group = (await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!))!;
+      const input = { space_id: "space-1", group_id: group.id, parent_run_id: sent.run_ids[0]!, root_run_id: group.root_run_id!,
+        requesting_agent_id: "agent-1", target_agent_id: "agent-2", manager_user_id: "user-1", instruction: "Review." };
+      const child = await groupService.spawnChildRun(owner, input);
+      let continuation = { id: group.id, root_run_id: input.parent_run_id };
+      if (turn === "completion") {
+        await publishBudgetTurn(input.parent_run_id);
+        await publishBudgetTurn(child.child_run_id!, true);
+        continuation = (await db.pool.query<{ id: string; root_run_id: string }>(`SELECT id,root_run_id FROM agent_run_groups
+          WHERE budget_json->>'container_group_id'=$1 ORDER BY created_at DESC LIMIT 1`, [group.id])).rows[0]!;
+      } else {
+        await publishBudgetTurn(child.child_run_id!);
+        await db.pool.query("UPDATE run_delegations SET status='succeeded' WHERE id=$1", [child.delegation.id]);
+      }
+      const bounds = { task_id: task.id, participant_agent_ids: ["agent-2"], max_delegations: 1 };
+      const next = await groupService.spawnChildRun(owner, { ...input, group_id: continuation.id,
+        parent_run_id: continuation.root_run_id, root_run_id: continuation.root_run_id,
+        budget_json: { collaboration: bounds } });
+      expect(next.child_run_id).toBeTruthy();
+      expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", group.id))!.budget_json!.collaboration)
+        .toMatchObject({ ...bounds, delegations_offset: 1, turns_offset: turn === "original" ? 1 : 2 });
+      // The admitted temporary child and any late result cannot spend this Task's allowance.
+      if (turn === "original") {
+        const late = await withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", group.id, child.delegation.id));
+        expect(late.cause.within_budget).toBe(true);
+      }
+      const denied = await groupService.spawnChildRun(owner, { ...input, group_id: continuation.id,
+        parent_run_id: continuation.root_run_id, root_run_id: continuation.root_run_id });
+      expect(denied).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
+      await expect(groupService.spawnChildRun(owner, { ...input, group_id: continuation.id,
+        parent_run_id: continuation.root_run_id, root_run_id: continuation.root_run_id,
+        budget_json: { collaboration: { ...bounds, max_delegations: 2 } } })).rejects.toMatchObject({ statusCode: 409 });
+      await publishBudgetTurn(next.child_run_id!);
+      const finished = await withDbTransaction(db.pool, client => agentOriginContinuation(client, "space-1", continuation.id, next.delegation.id));
+      expect(finished.cause.within_budget).toBe(true);
+      expect((await new PgAgentGroupRepository(db.pool).getGroup("space-1", group.id))!.budget_json!.collaboration)
+        .toMatchObject({ turns_offset: 2 });
+    });
+
     it.for(["budget", "failures", "degraded", "task_closed", "task_missing", "task_review", "reset", "origin", "participants", "stop", "turns"])("bounds task collaboration by %s without the ad-hoc two-call cap", async (mode, ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       const { owner, created, conversation } = await roomWithSpecialist("Task collaboration");
@@ -3780,7 +3810,7 @@ describe("Room workflow (real Postgres)", () => {
       if (mode === "task_closed") await db.pool.query("UPDATE tasks SET status = 'done' WHERE id = $1", [task.id]);
       if (mode === "task_review") await db.pool.query("UPDATE tasks SET status = 'waiting_for_review' WHERE id = $1", [task.id]);
       if (mode === "stop") await db.pool.query("UPDATE runs SET status = 'cancelled' WHERE id = $1", [parentId]);
-      if (mode === "turns") await db.pool.query("UPDATE agent_run_groups SET budget_json = budget_json || '{\"container_turns_used\":21}'::jsonb WHERE id = $1", [groupId]);
+      if (mode === "turns") await db.pool.query("UPDATE agent_run_groups SET budget_json = budget_json || '{\"container_turns_used\":20}'::jsonb WHERE id = $1", [groupId]);
       const next = await spawn();
       expect(next).toMatchObject({ child_run_id: null, delegation: { status: "policy_denied" } });
       if (mode === "budget") {
@@ -3811,7 +3841,7 @@ describe("Room workflow (real Postgres)", () => {
       const sent = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Research this." });
       const groupId = sent.task_group_ids[0]!;
       const budgets = [];
-      for (let branch = 0; branch < 6; branch += 1) {
+      for (let branch = 0; branch < 21; branch += 1) {
         const client = await db.pool.connect();
         try {
           budgets.push((await agentOriginContinuation(client, "space-1", groupId)).delegation_budget);
@@ -3819,7 +3849,7 @@ describe("Room workflow (real Postgres)", () => {
           client.release();
         }
       }
-      expect(budgets.map((budget) => budget.max_fanout)).toEqual([2, 2, 2, 1, 0, 0]);
+      expect(budgets.map((budget) => budget.max_fanout)).toEqual([...Array(19).fill(5), 0, 0]);
       expect(budgets.every((budget) => budget.container_group_id === groupId)).toBe(true);
     });
 
@@ -4016,65 +4046,6 @@ describe("Room workflow (real Postgres)", () => {
       expect(lock.rows[0]!.dispatch_lock_id).toBe(held!.id);
     });
 
-    it("admits a handoff turn serialized behind an earlier recipient, under the lock of the recipient it prepares", async (ctx) => {
-      if (!db.available || !service) return ctx.skip();
-      const { owner, created, conversation } = await roomWithSpecialist("Serialized handoff");
-      const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot });
-      const send = (content: string) => service!.sendMessage(owner, created.room.id, conversation.id, {
-        content,
-        recipient_segments: [{ recipient_agent_ids: ["agent-1", "agent-2"], content }],
-      });
-      // Finishes a Run as its host would report it, with the session's occupancy.
-      const finish = async (runId: string, used: number) => {
-        await dispatchQueuedRoomRuns([runId]);
-        await db.pool.query(`UPDATE runs SET status = 'succeeded', output_json = $2::jsonb, ended_at = now(), updated_at = now() WHERE id = $1`,
-          [runId, JSON.stringify({ schema_version: "run_output.v1", status: "succeeded", summary: `reply of ${runId}`, result: {}, output_manifest: [] })]);
-        const run = (await new PgRunRepository(db.pool).getRun("space-1", runId))!;
-        await new PgHostThreadRepository(db.pool).recordRunOutcome(run.host_task_thread_id!, {
-          lastRunId: runId, vendorSessionId: `vendor-${run.agent_id}`, sessionReset: false, landed: true, identity: null,
-          contextWindow: { used, size: 200_000 },
-        });
-        await new AgentGroupRunLifecycleProjector(db.pool, config, fixedQuota(10)).markDelegatedRunTerminal(run);
-        await seedChatCompletion(runId);
-      };
-      const first = await send("First round.");
-      await finish(first.run_ids[0]!, 10_000);
-      await finish(first.run_ids[1]!, 150_000);
-      // The Specialist's session is past its rotation share: its turn comes behind a handoff.
-      const second = await send("Second round.");
-      const handoff = (await db.pool.query<{ id: string }>(
-        `SELECT id FROM runs WHERE run_group_id = $1 AND model_override_json->'chat_turn'->>'kind' = 'handoff'`,
-        [second.task_group_ids[0]],
-      )).rows[0]!;
-      await finish(second.run_ids[0]!, 12_000);
-      expect(await hasRunJob(handoff.id)).toBe(true);
-      const parked = await db.pool.query(`SELECT 1 FROM runs WHERE id = $1 AND output_json ? 'waiting_for_turn'`, [handoff.id]);
-      expect(parked.rowCount).toBe(0);
-    });
-
-    it("admits an Agent-triggered wave whose recipient must first rotate its session", async (ctx) => {
-      if (!db.available || !service) return ctx.skip();
-      const { owner, created, conversation } = await roomWithSpecialist("Rotating wave");
-      const direct = await service.sendMessage(owner, created.room.id, conversation.id, {
-        content: "Research Specialist, hello.",
-        recipient_segments: [{ recipient_agent_ids: ["agent-2"], content: "hello" }],
-      });
-      await completeTurn(direct.run_ids[0]!, "Hello.", fixedQuota(10));
-      const run = (await new PgRunRepository(db.pool).getRun("space-1", direct.run_ids[0]!))!;
-      await new PgHostThreadRepository(db.pool).recordRunOutcome(run.host_task_thread_id!, {
-        lastRunId: run.id, vendorSessionId: "vendor-agent-2", sessionReset: false, landed: true, identity: null,
-        contextWindow: { used: 150_000, size: 200_000 },
-      });
-      const first = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Plan the release." });
-      await completeTurn(first.run_ids[0]!, "Let me ask.\n@Research Specialist please check the numbers.", fixedQuota(10));
-      const handoff = (await db.pool.query<{ id: string }>(
-        `SELECT id FROM runs WHERE session_id = $1 AND agent_id = 'agent-2' AND model_override_json->'chat_turn'->>'kind' = 'handoff'
-          AND status = 'queued'`,
-        [conversation.id],
-      )).rows[0]!;
-      expect(await hasRunJob(handoff.id)).toBe(true);
-    });
-
     it("does not queue a person behind a recipient that waits on a delegated child held for the window", async (ctx) => {
       if (!db.available || !service || !groupService) return ctx.skip();
       const owner = { spaceId: "space-1", userId: "user-1" };
@@ -4143,17 +4114,12 @@ describe("Room workflow (real Postgres)", () => {
       expect(await conversationTurnTaken(db.pool, "space-1", conversation.id)).toBe(true);
     });
 
-    it("adds rounds while the Manager's closing waits behind its own handoff for the window", async (ctx) => {
+    it("adds rounds while the Manager's closing chain waits for the window", async (ctx) => {
       if (!db.available || !service) return ctx.skip();
-      const { owner, created, conversation } = await roomWithSpecialist("Closing behind handoff");
+      const { owner, created, conversation } = await roomWithSpecialist("Closing held for the window");
       const discussions = new RoomDiscussionService(loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot }), db.pool);
       const direct = await service.sendMessage(owner, created.room.id, conversation.id, { content: "Hello." });
       await completeTurn(direct.run_ids[0]!, "Hello.", fixedQuota(10));
-      const manager = (await new PgRunRepository(db.pool).getRun("space-1", direct.run_ids[0]!))!;
-      await new PgHostThreadRepository(db.pool).recordRunOutcome(manager.host_task_thread_id!, {
-        lastRunId: manager.id, vendorSessionId: "vendor-agent-1", sessionReset: false, landed: true, identity: null,
-        contextWindow: { used: 150_000, size: 200_000 },
-      });
       const opened = await discussions.open(owner, created.room.id, conversation.id, {
         topic: "Who owns the migration?", participant_agent_ids: ["agent-2"], shape: "open",
       });
@@ -5274,177 +5240,6 @@ describe("Room workflow (real Postgres)", () => {
     expect(recovered.user_members.filter((member) => member.role === "owner")).toHaveLength(1);
   });
 
-  it("rejects a Room send after the Primary Git baseline changes before creating a message or Run", async (ctx) => {
-    if (!db.available || !service) return ctx.skip();
-    const owner = { spaceId: "space-1", userId: "user-1" };
-    await db.pool.query(
-      `UPDATE agent_runtime_profiles
-          SET workspace_mode = 'location', workspace_location_id = 'location-1'
-        WHERE id = 'runtime-cli'`,
-    );
-    await db.pool.query(
-      `UPDATE workspace_locations
-          SET branch = 'main', git_head = 'baseline', execution_ready = true
-        WHERE id = 'location-1'`,
-    );
-    const created = await service.createRoom(owner, { project_id: "project-1", title: "Git guard" });
-    const conversation = await seedConversation(owner, created.room.id, "Git guard", {
-      hostId: "host-1",
-      primary: { kind: "location", workspace_location_id: "location-1" },
-    });
-    const before = await db.pool.query<{ messages: string; runs: string }>(
-      `SELECT
-         (SELECT count(*) FROM messages WHERE session_id = $1) AS messages,
-         (SELECT count(*) FROM runs WHERE session_id = $1) AS runs`,
-      [conversation.id],
-    );
-    await db.pool.query(
-      `UPDATE workspace_locations SET git_head = 'changed', updated_at = now() WHERE id = 'location-1'`,
-    );
-
-    await expect(service.sendMessage(owner, created.room.id, conversation.id, {
-      content: "This must not dispatch on the changed workspace.",
-      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }],
-    })).rejects.toMatchObject({ statusCode: 409 });
-
-    const after = await db.pool.query<{ messages: string; runs: string }>(
-      `SELECT
-         (SELECT count(*) FROM messages WHERE session_id = $1) AS messages,
-         (SELECT count(*) FROM runs WHERE session_id = $1) AS runs`,
-      [conversation.id],
-    );
-    expect(after.rows[0]).toEqual(before.rows[0]);
-  });
-
-  it("advances the Git baseline when HEAD moved to where this Conversation's own last Run left it, and still refuses any other move", async (ctx) => {
-    if (!db.available || !service) return ctx.skip();
-    const owner = { spaceId: "space-1", userId: "user-1" };
-    await db.pool.query(
-      `UPDATE agent_runtime_profiles
-          SET workspace_mode = 'location', workspace_location_id = 'location-1'
-        WHERE id = 'runtime-cli'`,
-    );
-    await db.pool.query(
-      `UPDATE workspace_locations
-          SET branch = 'main', git_head = 'baseline', execution_ready = true
-        WHERE id = 'location-1'`,
-    );
-    const created = await service.createRoom(owner, { project_id: "project-1", title: "Git own run" });
-    const conversation = await seedConversation(owner, created.room.id, "Git own run", {
-      hostId: "host-1",
-      primary: { kind: "location", workspace_location_id: "location-1" },
-    });
-    const backends = [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }];
-    const first = await service.sendMessage(owner, created.room.id, conversation.id, {
-      content: "Commit the change.",
-      backends,
-    });
-    const runId = first.run_ids[0]!;
-    await dispatchQueuedRoomRuns(first.run_ids);
-    // The host reports where the Run left the checkout, with its diff.
-    const hosts = new PgHostRepository(db.pool);
-    const launchId = "launch-git-own-run";
-    await db.pool.query(
-      `UPDATE run_attempts SET launch_id = $2 WHERE run_id = $1 AND attempt_number = (SELECT max(attempt_number) FROM run_attempts WHERE run_id = $1)`,
-      [runId, launchId],
-    );
-    const uploaded = await hosts.recordDiffArtifact("host-1", "user-1", runId, {
-      launch_id: launchId,
-      diff: "diff --git a/x b/x\n+commit\n",
-      truncated: false,
-      git_before: { branch: "main", head: "baseline" },
-      git_after: { branch: "main", head: "agent-commit" },
-    });
-    expect(uploaded.ok).toBe(true);
-    await db.pool.query(
-      "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
-      [runId],
-    );
-    await releaseConversationTurn(runId);
-    await seedChatCompletion(runId);
-    // The next heartbeat carries the commit the Agent made.
-    await db.pool.query(
-      `UPDATE workspace_locations SET git_head = 'agent-commit', updated_at = now() WHERE id = 'location-1'`,
-    );
-
-    const second = await service.sendMessage(owner, created.room.id, conversation.id, {
-      content: "Continue from your commit.",
-      backends,
-    });
-    expect(second.run_ids).toHaveLength(1);
-    const advanced = await db.pool.query<{ git_branch: string; git_head: string }>(
-      `SELECT git_branch, git_head FROM conversation_execution_contexts WHERE session_id = $1`,
-      [conversation.id],
-    );
-    expect(advanced.rows[0]).toEqual({ git_branch: "main", git_head: "agent-commit" });
-    // Advancing starts a new account: the old last-Run HEAD vouches for nothing.
-    await expect(db.pool.query(
-      `SELECT last_run_git_head FROM conversation_execution_contexts WHERE session_id = $1`,
-      [conversation.id],
-    )).resolves.toMatchObject({ rows: [{ last_run_git_head: null }] });
-
-    await dispatchQueuedRoomRuns(second.run_ids);
-    await db.pool.query(
-      "UPDATE runs SET status='succeeded', ended_at=now(), updated_at=now() WHERE id=$1",
-      [second.run_ids[0]],
-    );
-    await releaseConversationTurn(second.run_ids[0]!);
-    await seedChatCompletion(second.run_ids[0]!);
-    // Somebody else commits on top; no Run of this Conversation left HEAD there.
-    await db.pool.query(
-      `UPDATE workspace_locations SET git_head = 'someone-else', updated_at = now() WHERE id = 'location-1'`,
-    );
-    const before = await db.pool.query<{ messages: string; runs: string }>(
-      `SELECT
-         (SELECT count(*) FROM messages WHERE session_id = $1) AS messages,
-         (SELECT count(*) FROM runs WHERE session_id = $1) AS runs`,
-      [conversation.id],
-    );
-    await expect(service.sendMessage(owner, created.room.id, conversation.id, {
-      content: "This must not dispatch on a HEAD someone else moved.",
-      backends,
-    })).rejects.toMatchObject({ statusCode: 409 });
-    const after = await db.pool.query<{ messages: string; runs: string }>(
-      `SELECT
-         (SELECT count(*) FROM messages WHERE session_id = $1) AS messages,
-         (SELECT count(*) FROM runs WHERE session_id = $1) AS runs`,
-      [conversation.id],
-    );
-    expect(after.rows[0]).toEqual(before.rows[0]);
-  });
-
-  it("does not honour a last-Run HEAD from before a refresh when somebody else later moves HEAD there", async (ctx) => {
-    if (!db.available || !service) return ctx.skip();
-    const owner = { spaceId: "space-1", userId: "user-1" };
-    await db.pool.query(
-      `UPDATE agent_runtime_profiles
-          SET workspace_mode = 'location', workspace_location_id = 'location-1'
-        WHERE id = 'runtime-cli'`,
-    );
-    await db.pool.query(
-      `UPDATE workspace_locations SET branch = 'main', git_head = 'baseline', execution_ready = true WHERE id = 'location-1'`,
-    );
-    const created = await service.createRoom(owner, { project_id: "project-1", title: "Git refresh" });
-    const conversation = await seedConversation(owner, created.room.id, "Git refresh", {
-      hostId: "host-1",
-      primary: { kind: "location", workspace_location_id: "location-1" },
-    });
-    // This Conversation's Run left HEAD at H1.
-    await db.pool.query(
-      `UPDATE conversation_execution_contexts SET last_run_git_branch = 'main', last_run_git_head = 'h1' WHERE session_id = $1`,
-      [conversation.id],
-    );
-    // … then the person moved it elsewhere and refreshed the baseline there.
-    await db.pool.query(`UPDATE workspace_locations SET git_head = 'person-commit' WHERE id = 'location-1'`);
-    await new ConversationExecutionContextService(db.pool).refreshGit(owner, conversation.id);
-    // Somebody else now moves HEAD to H1: nothing of this Conversation's did.
-    await db.pool.query(`UPDATE workspace_locations SET git_head = 'h1' WHERE id = 'location-1'`);
-    await expect(service.sendMessage(owner, created.room.id, conversation.id, {
-      content: "This must not dispatch.",
-      backends: [{ agent_id: "agent-1", runtime_profile_id: "runtime-cli" }],
-    })).rejects.toMatchObject({ statusCode: 409 });
-  });
-
   it("notifies the Room when a delegated child run completes with nobody waiting on it", async (ctx) => {
     if (!db.available || !service || !groupService || !testRoot) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
@@ -5663,7 +5458,7 @@ describe("Room workflow (real Postgres)", () => {
     expect(recount.rows[0]?.total).toBe("1");
   });
 
-  it("admits at most `max_fanout` delegations per turn and attributes each child to the specialist's own version", async (ctx) => {
+  it("honors explicit delegation budgets and attributes each child to the specialist's own version", async (ctx) => {
     if (!db.available || !service || !groupService || !testRoot) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
     const now = new Date().toISOString();
@@ -5686,7 +5481,10 @@ describe("Room workflow (real Postgres)", () => {
     const managerRunId = sent.run_ids[0]!;
     const group = await new PgAgentGroupRepository(db.pool).getGroup("space-1", sent.task_group_ids[0]!);
     if (!group?.root_run_id) throw new Error("group or its root_run_id not found");
-    expect(group.budget_json).toEqual({ max_depth: 1, max_fanout: 2 });
+    expect(group.budget_json).toEqual({ max_depth: 1, max_fanout: 10, soft_max_fanout: 10, hard_max_fanout: 20 });
+    // Explicit bounds override the roster-scaled default.
+    await db.pool.query("UPDATE agent_run_groups SET budget_json=$2::jsonb WHERE id=$1",
+      [group.id, JSON.stringify({ max_depth: 1, max_fanout: 2 })]);
 
     const spawn = (targetAgentId: string, instruction: string) => groupService!.spawnChildRun(owner, {
       space_id: "space-1",
@@ -6189,81 +5987,6 @@ describe("Room workflow (real Postgres)", () => {
     expect(afterRetry.rows[0]?.total).toBe("1");
   });
 
-  it("keeps an on-path message in the replay window when a reference is stamped ahead of it", async (ctx) => {
-    if (!db.available || !service || !db.pool) return ctx.skip();
-    const testPool = db.pool;
-    const owner = { spaceId: "space-1", userId: "user-1" };
-    const created = await service.createRoom(owner, { project_id: "project-1", title: "Replay Room" });
-    const conversation = await seedConversation(owner, created.room.id, "Replay thread");
-
-    // referenceService stamps an attached reference past the wall clock, so
-    // the message written after it carries an earlier timestamp. A replay
-    // window bounds on the path, not the clock. Do not drop that message
-    // from the Agent's prompt while the transcript still has it.
-    const ahead = new Date(Date.now() + 600_000).toISOString();
-    await seedConversationMessages(testPool, {
-      space: "space-1", session: conversation.id,
-      messages: [
-        { id: "replay-ref", role: "system", userId: "user-1", content: "Quoted material.",
-          metadata: { room_display: "reference", reference: { kind: "thread", trust: "domain_approved" } },
-          createdAt: ahead },
-        { id: "replay-after", role: "user", userId: "user-1", content: "About that material." },
-        { id: "replay-current", role: "user", userId: "user-1", content: "And the follow-up." },
-      ],
-    });
-    // The summary covers through the reference, so the window starts after it.
-    await testPool.query(
-      `INSERT INTO room_conversation_summary_versions
-         (id, space_id, room_id, session_id, version, status, summary_text,
-          covered_through_message_id, covered_through_created_at, covered_message_count,
-          source_token_estimate, summary_token_estimate, project_id, owner_user_id,
-          system_prompt_version, schema_version, created_at)
-       VALUES ('replay-sum', 'space-1', $1, $2, 1, 'active', 'Earlier material.',
-               'replay-ref', $3, 1, 10, 5, 'project-1', 'user-1', 'v1', 'v1', now())`,
-      [created.room.id, conversation.id, ahead],
-    );
-
-    const replay = await loadRoomConversationReplayThroughMessage(testPool, {
-      spaceId: "space-1", sessionId: conversation.id, currentMessageId: "replay-current",
-    });
-    // The summary must actually be found, or the clock filter is never
-    // reached and this proves nothing.
-    expect(replay.summary?.covered_through_message_id).toBe("replay-ref");
-    // `replay-after` is neither the boundary nor covered by the summary, so
-    // nothing short-circuits the filter for it: it is in the window only if
-    // the window bounds on the path rather than on the clock.
-    expect(replay.messages.map((message) => message.id)).toContain("replay-after");
-  });
-
-  it("stops sweeping a short conversation it has nothing to summarize for", async (ctx) => {
-    if (!db.available || !service || !db.pool) return ctx.skip();
-    const testPool = db.pool;
-    const owner = { spaceId: "space-1", userId: "user-1" };
-    const created = await service.createRoom(owner, { project_id: "project-1", title: "Short Sweep Room" });
-    const conversation = await seedConversation(owner, created.room.id, "Short thread");
-    await seedConversationMessages(db.pool, {
-      space: "space-1", session: conversation.id,
-      messages: [{ id: "short-only", role: "user", userId: "user-1", content: "Just a short note." }],
-    });
-    const summaries = new RoomConversationSummaryService(
-      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot! }),
-      testPool,
-    );
-    // Below the threshold there is nothing to summarize, so no job — but the
-    // watermark is recorded, or the sweep selects this conversation on every
-    // tick forever and the backlog behind it never gets its turn.
-    expect(await summaries.reconcileMissingStates()).toBe(1);
-    await expect(testPool.query<{ status: string; requested_through_message_id: string }>(
-      "SELECT status, requested_through_message_id FROM room_conversation_summary_states WHERE session_id = $1",
-      [conversation.id],
-    )).resolves.toMatchObject({ rows: [{ status: "idle", requested_through_message_id: "short-only" }] });
-    await expect(testPool.query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count FROM jobs WHERE job_type = 'room_conversation_summary' AND payload_json->>'session_id' = $1`,
-      [conversation.id],
-    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
-    expect(await summaries.reconcileMissingStates()).toBe(0);
-  });
-
   it("sends the message when a Project state read fails inside the database, and says what failed", async (ctx) => {
     if (!db.available || !service) return ctx.skip();
     const owner = { spaceId: "space-1", userId: "user-1" };
@@ -6294,245 +6017,6 @@ describe("Room workflow (real Postgres)", () => {
     } finally {
       projectAttentionRegistry.replace({ areaKind: "rogue_sql", async listAttentionItems() { return []; } });
     }
-  });
-
-  it("stops sweeping a conversation once its watermark reaches the head", async (ctx) => {
-    if (!db.available || !service || !db.pool) return ctx.skip();
-    const testPool = db.pool;
-    const owner = { spaceId: "space-1", userId: "user-1" };
-    const created = await service.createRoom(owner, { project_id: "project-1", title: "Sweep Room" });
-    const conversation = await seedConversation(owner, created.room.id, "Sweep thread");
-
-    // A reference stamped ahead of the wall clock (what referenceService's
-    // `base = max(now, existing + 1)` produces), then a message after it on
-    // the path but before it on the clock. Compare the two by position. Do not
-    // compare by timestamp. That re-selects this conversation forever,
-    // re-enqueueing a billed summary job every tick.
-    const ahead = new Date(Date.now() + 600_000).toISOString();
-    await seedConversationMessages(db.pool, {
-      space: "space-1", session: conversation.id,
-      messages: [
-        { id: "sweep-ref", role: "system", userId: "user-1", content: "R".repeat(36_000),
-          metadata: { room_display: "reference", reference: { kind: "thread", trust: "domain_approved" } },
-          createdAt: ahead },
-        { id: "sweep-after", role: "user", userId: "user-1", content: "A".repeat(36_000) },
-      ],
-    });
-
-    // No provider stub: this exercises `reconcileMissingStates`, which only
-    // selects and re-requests — it never reaches the summary provider.
-    const summaries = new RoomConversationSummaryService(
-      loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot! }),
-      testPool,
-    );
-
-    // Establish the watermark at the future-stamped reference first, so the
-    // sweep below has to *advance* an existing row rather than insert a fresh
-    // one — the ON CONFLICT branch is where the comparison lives.
-    await requestRoomConversationSummary(testPool, {
-      spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id,
-      throughMessageId: "sweep-ref", throughCreatedAt: ahead,
-    });
-    await expect(testPool.query<{ requested_through_message_id: string }>(
-      "SELECT requested_through_message_id FROM room_conversation_summary_states WHERE session_id = $1",
-      [conversation.id],
-    )).resolves.toMatchObject({ rows: [{ requested_through_message_id: "sweep-ref" }] });
-
-    // The sweep moves the watermark from the reference to the head, which
-    // is deeper on the path but earlier on the clock.
-    expect(await summaries.reconcileMissingStates()).toBe(1);
-    await expect(testPool.query<{ requested_through_message_id: string }>(
-      "SELECT requested_through_message_id FROM room_conversation_summary_states WHERE session_id = $1",
-      [conversation.id],
-    )).resolves.toMatchObject({ rows: [{ requested_through_message_id: "sweep-after" }] });
-
-    // And having advanced, it finds nothing to do. A watermark compared on
-    // the clock would still be sitting on the reference here, and this
-    // conversation would be re-selected on every tick forever.
-    expect(await summaries.reconcileMissingStates()).toBe(0);
-
-    // A genuinely new message still triggers one.
-    await seedConversationMessages(db.pool, {
-      space: "space-1", session: conversation.id,
-      messages: [{ id: "sweep-newer", role: "user", userId: "user-1", content: "N".repeat(28_000) }],
-    });
-    expect(await summaries.reconcileMissingStates()).toBe(1);
-  });
-
-  it("processes owner-funded summaries with strict output and preserves the active version on failure", async (ctx) => {
-    if (!db.available || !service) return ctx.skip();
-    const testPool = db.pool;
-    const owner = { spaceId: "space-1", userId: "user-1" };
-    const created = await service.createRoom(owner, { project_id: "project-1", title: "Summary Room" });
-    const conversation = await seedConversation(owner, created.room.id, "Summary thread");
-    // After whatever the conversation already holds — the setup notice is a
-    // real message on the path, and a fixture timestamped before its own
-    // parent is a conversation that could not have happened.
-    const firstMessageAt = new Date(Date.now() + 1000).toISOString();
-    await seedConversationMessages(db.pool, {
-      space: "space-1", session: conversation.id,
-      messages: [
-        { id: "summary-message-1", role: "user", userId: "user-1", content: "A".repeat(28_000), metadata: {}, createdAt: firstMessageAt },
-        { id: "summary-message-2", role: "user", userId: "user-1", content: "A second constraint.", metadata: {},
-          createdAt: new Date(Date.parse(firstMessageAt) + 1000).toISOString() },
-      ],
-    });
-
-    let response = JSON.stringify({ summary: "Initial durable Room summary." });
-    const providerStore = {
-      authorizeCredentialSpend: async () => ({}) as never,
-      // The summary chooses its provider from the database and resolves no
-      // key before the spend is decided inside the completion.
-      getInvocationTarget: async () => {
-        throw new Error("the Room summary resolved a key before its spend was decided");
-      },
-    } as unknown as ProviderCommandStore;
-    const summarySpends: CredentialSpendBasis[] = [];
-    const dependencies: RoomConversationSummaryDependencies = {
-      resolveProviderStore: () => providerStore,
-      completeProviderMessages: async (_store, _spaceId, input) => {
-        summarySpends.push(input.spend);
-        return {
-          text: response,
-          provider: "openai",
-          provider_id: "provider-1",
-          model: "test-model",
-          usage: { input_tokens: 10, output_tokens: 8 },
-        };
-      },
-    };
-    const config = loadConfig({ SERVER_DATABASE_URL: db.connectionUri, RAINVER_HOME: testRoot! });
-    const summaries = new RoomConversationSummaryService(config, testPool, dependencies);
-    await requestRoomConversationSummary(testPool, {
-      spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id,
-      throughMessageId: "summary-message-2", throughCreatedAt: new Date(Date.parse(firstMessageAt) + 1000).toISOString(),
-    });
-    await expect(testPool.query<{ status: string }>(
-      `SELECT status FROM room_conversation_summary_states WHERE session_id = $1`,
-      [conversation.id],
-    )).resolves.toMatchObject({ rows: [{ status: "queued" }] });
-    await expect(summaries.process({ spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id }))
-      .resolves.toMatchObject({ status: "published", version: 1 });
-    // Nobody was present: the spend rested on the Room owner, re-read when it
-    // is decided, so a Room its owner no longer holds spends nothing.
-    const [ownerSetup] = summarySpends;
-    if (ownerSetup?.kind !== "setup") throw new Error("the summary spent without naming its setup");
-    expect(ownerSetup).toMatchObject({ setup: "room_summary", user_id: "user-1" });
-    await expect(ownerSetup.still_authorized()).resolves.toBe(true);
-    await testPool.query(`UPDATE rooms SET status = 'archived' WHERE id = $1`, [created.room.id]);
-    await expect(ownerSetup.still_authorized()).resolves.toBe(false);
-    await testPool.query(`UPDATE rooms SET status = 'active' WHERE id = $1`, [created.room.id]);
-    const published = await testPool.query<{
-      summary_text: string;
-      project_id: string;
-      owner_user_id: string;
-      system_prompt_version: string;
-      schema_version: string;
-      summary_token_estimate: number;
-    }>(
-      `SELECT summary_text,project_id,owner_user_id,system_prompt_version,schema_version,summary_token_estimate
-         FROM room_conversation_summary_versions
-        WHERE session_id = $1 AND status = 'active'`,
-      [conversation.id],
-    );
-    expect(published.rows[0]).toMatchObject({
-      summary_text: "Initial durable Room summary.",
-      project_id: "project-1",
-      owner_user_id: "user-1",
-      system_prompt_version: "room-summary-prompt.v1",
-      schema_version: "room-summary-schema.v1",
-    });
-    expect(Number(published.rows[0]?.summary_token_estimate)).toBeGreaterThan(0);
-
-    // The compaction batch retains the most-recent messages unsummarized
-    // (kept for raw replay) rather than folding them into the summary —
-    // summary-message-2 is tiny and the most recent of the two, so it is
-    // retained rather than covered; the summary correctly stops at
-    // summary-message-1, the older message that fell outside the retained
-    // recent window.
-    await expect(loadRoomContinuityForRunRequest(testPool, {
-      spaceId: "space-1",
-      sessionId: conversation.id,
-    })).resolves.toMatchObject({
-      room_summary: {
-        summary_text: "Initial durable Room summary.",
-        covered_through_message_id: "summary-message-1",
-      },
-    });
-    await expect(loadRoomConversationReplayThroughMessage(testPool, {
-      spaceId: "space-1",
-      sessionId: conversation.id,
-      currentMessageId: "summary-message-2",
-    })).resolves.toMatchObject({
-      summary: {
-        summary_text: "Initial durable Room summary.",
-        covered_through_message_id: "summary-message-1",
-      },
-      messages: [{ id: "summary-message-2" }],
-    });
-
-    await seedConversationMessages(testPool, {
-      space: "space-1", session: conversation.id,
-      messages: [{ id: "summary-message-3", role: "user", userId: "user-1",
-        content: "B".repeat(28_000), metadata: {}, createdAt: new Date(Date.parse(firstMessageAt) + 2000).toISOString() }],
-    });
-    await requestRoomConversationSummary(testPool, {
-      spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id,
-      throughMessageId: "summary-message-3", throughCreatedAt: new Date(Date.parse(firstMessageAt) + 2000).toISOString(),
-    });
-    await testPool.query(
-      `UPDATE room_conversation_summary_states
-          SET status='running', lease_token='expired-summary-lease',
-              lease_expires_at=now() - interval '1 minute'
-        WHERE session_id=$1`,
-      [conversation.id],
-    );
-    await expect(summaries.recoverExpiredLeases()).resolves.toBe(1);
-    response = JSON.stringify({ summary: "Second durable Room summary." });
-    await expect(summaries.process({ spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id }))
-      .resolves.toMatchObject({ status: "published", version: 2 });
-    await expect(testPool.query<{ covered_through_message_id: string }>(
-      `SELECT covered_through_message_id FROM room_conversation_summary_versions
-        WHERE session_id = $1 AND status = 'active'`,
-      [conversation.id],
-    )).resolves.toMatchObject({ rows: [{ covered_through_message_id: "summary-message-3" }] });
-
-    await seedConversationMessages(testPool, {
-      space: "space-1", session: conversation.id,
-      messages: [{ id: "summary-message-4", role: "user", userId: "user-1",
-        content: "C".repeat(28_000), metadata: {}, createdAt: new Date(Date.parse(firstMessageAt) + 3000).toISOString() }],
-    });
-    await requestRoomConversationSummary(testPool, {
-      spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id,
-      throughMessageId: "summary-message-4", throughCreatedAt: new Date(Date.parse(firstMessageAt) + 3000).toISOString(),
-    });
-    response = "provider refusal, not JSON";
-    await expect(summaries.process({ spaceId: "space-1", roomId: created.room.id, sessionId: conversation.id }))
-      .resolves.toMatchObject({ status: "failed", reason: "empty_summary" });
-    await expect(testPool.query<{ count: string }>(
-      `SELECT count(*)::text AS count FROM room_conversation_summary_versions
-        WHERE session_id = $1 AND status = 'active'`,
-      [conversation.id],
-    )).resolves.toMatchObject({ rows: [{ count: "1" }] });
-    // failLease always sanitizes the stored error through sanitizeSummaryError,
-    // which only recognizes a real Error instance's name (timeout/abort/cancel);
-    // a plain string message — what every call site here passes — falls
-    // through to this generic text regardless of the specific message given.
-    await expect(testPool.query<{ status: string; last_error: string }>(
-      `SELECT status,last_error FROM room_conversation_summary_states WHERE session_id = $1`,
-      [conversation.id],
-    )).resolves.toMatchObject({ rows: [{ status: "retry_wait", last_error: "Summary provider request failed" }] });
-    await expect(testPool.query<{ count: string }>(
-      `SELECT count(*)::text AS count FROM messages
-        WHERE session_id=$1 AND sender_agent_id IS NOT NULL`,
-      [conversation.id],
-    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
-    await expect(testPool.query<{ count: string }>(
-      `SELECT count(*)::text AS count FROM proposals proposal
-        JOIN runs run_row ON run_row.id=proposal.created_by_run_id
-        WHERE run_row.session_id=$1`,
-      [conversation.id],
-    )).resolves.toMatchObject({ rows: [{ count: "0" }] });
   });
 
   it("gives each Project its own Assistant instance, following one seed until one is changed", async (ctx) => {
@@ -6881,23 +6365,17 @@ describe("Room workflow (real Postgres)", () => {
       { content: "A long discussion nobody wants copied whole." },
     );
 
-    // A whole thread has no other bounded form, so it carries the summary.
-    const versionId = randomUUID();
+    // A whole thread has no other bounded form, so it carries the summary an
+    // Agent wrote of it ("Summarize context", agentGroups/sessionHandoff.ts).
+    expect(said).toBeTruthy();
     await db.pool.query(
-      `INSERT INTO room_conversation_summary_versions (
-         id, space_id, room_id, session_id, version, status, summary_text,
-         covered_through_message_id, covered_through_created_at, covered_message_count,
-         source_token_estimate, summary_token_estimate, project_id, owner_user_id,
-         system_prompt_version, schema_version, created_at
-       ) VALUES ($1,'space-1',$2,$3,1,'active','They settled on arrow-free parsing.',
-         $4, now(), 1, 100, 20, 'project-1', 'user-1', 'v1', 'v1', now())`,
-      [versionId, source.room.id, source.conversation.id, said!.id],
-    );
-    await db.pool.query(
-      `INSERT INTO room_conversation_summary_states (
-         id, space_id, room_id, session_id, status, active_summary_id, updated_at
-       ) VALUES ($1,'space-1',$2,$3,'idle',$4, now())`,
-      [randomUUID(), source.room.id, source.conversation.id, versionId],
+      `INSERT INTO artifacts (
+         id, space_id, artifact_type, title, content, mime_type, exportable, export_formats_json,
+         preview, created_at, updated_at, metadata_json, visibility, owner_user_id, trust_level, project_id
+       ) VALUES ($1,'space-1','agent_handoff','Conversation summary by Builder','They settled on arrow-free parsing.',
+         'text/markdown', true, '["text/markdown"]'::jsonb, false, now(), now(),
+         $2::jsonb, 'private', 'user-1', 'unknown', 'project-1')`,
+      [randomUUID(), JSON.stringify({ session_id: source.conversation.id, manual_summary: true, agent_id: "agent-1" })],
     );
 
     const target = await seedConversation(owner, source.room.id, "The new idea");

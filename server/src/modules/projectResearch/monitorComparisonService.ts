@@ -1,3 +1,4 @@
+import { RESEARCH_STAGES } from "./researchStages.js";
 import { randomUUID } from "node:crypto";
 import type { Queryable, SpaceUserIdentity } from "../routeUtils/common.js";
 import { objectValue, optionalString, withQueryableTransaction } from "../routeUtils/common.js";
@@ -113,8 +114,8 @@ export class ProjectResearchMonitorComparisonService {
       runtime_profile_id: input.runtimeProfileId,
       prompt: `Compare ${material.length} newly screened material item${material.length === 1 ? "" : "s"} with the current project understanding`,
       instruction: resolved.instruction,
-      capability_id: "research.monitor_compare",
-      capabilities_json: ["research.monitor_compare"],
+      capability_id: RESEARCH_STAGES.monitor_compare,
+      capabilities_json: [],
       contract_snapshot: {
         source: "standingBatchId" in input
           ? { kind: "direct", id: input.projectId }

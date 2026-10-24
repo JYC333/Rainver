@@ -181,13 +181,13 @@ simulations: they perform no action, mutate no state, and create no
 permission manifest that routes risk and enables unknown-action fail-closed behaviour.
 
 **Registry structure**: The registry has three lifecycle states, distinguished by `lifecycle_status`:
-- **wired_direct** (74): `lifecycle_status=wired_direct` — have a preferred `PolicyGateway.enforce()` or `enforceProposalApply()` call site. `agent.config_update` is registered in this state and has no call site; owner agent routes append `AgentVersion` directly.
+- **wired_direct**: `lifecycle_status=wired_direct` — have a preferred `PolicyGateway.enforce()` or `enforceProposalApply()` call site. `agent.config_update` is registered in this state and has no call site; owner agent routes append `AgentVersion` directly.
   Actions: `authorization.request.create`, `runtime.execute`, `run.spawn_child`,
   `runtime.use_credential`, `runtime_context_policy.change`, `work_context_setup.change`,
   `context.inject_memory`, `context.render_for_runtime`, `project_folder.write_patch`,
   `artifact.persist`, `proposal.create`, `proposal.apply`, `agent.config_update`,
   `project_folder.read`, `input_resource.read`, `input_resource.search`,
-  `project_folder.apply_patch`, `runtime_skill.render`, `automation.create`, `automation.fire`,
+  `project_folder.apply_patch`, `automation.create`, `automation.fire`,
   `automation.update`, `source.connection.manage`, `source.item_create`, `source.item_update`,
   `evidence.create`, `evidence.update`, `evidence.link`, `source.custom.create`,
   `source.custom.generate`, `source.custom.test`, `source.custom.activate`, `source.custom.repair`,
@@ -203,21 +203,21 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
   `inquiry.thread.list`, `inquiry.iteration.record`, `inquiry.knowledge.promote`, `task.create`,
   `proposal.decide`, `task.report`, `task.handoff`, `task.stage.advance`, `artifact.declare`,
   `task.complete`, `handoff.write`, `task.request_review`.
-- **wired_via_proposal** (28): `lifecycle_status=wired_via_proposal` — enforced exclusively via the `proposal.apply`
+- **wired_via_proposal**: `lifecycle_status=wired_via_proposal` — enforced exclusively via the `proposal.apply`
   gate (`PolicyGateway.enforceProposalApply()`).
   Actions: `memory.create`, `memory.update`, `memory.archive`, `knowledge.create`,
   `knowledge.update`, `knowledge.archive`, `claim.create`, `claim.update`, `claim.archive`,
   `object_relation.create`, `object_relation.delete`, `object_profile.create`,
   `object_profile.update`, `object_profile.deprecate`, `object_profile.archive`,
   `claim_candidate_packet`, `retrieval_maintenance_packet`, `memory_maintenance_packet`,
-  `retrieval_diagnostics_packet`, `relation_discovery_packet`, `skill.import`, `skill.convert`,
-  `capability.enable`, `capability.disable`, `capability.update`, `runtime_skill.binding_update`,
+  `retrieval_diagnostics_packet`, `relation_discovery_packet`, `skill.import`,
+  `runtime_skill.binding_update`,
   `source.connection.activate`, `source.backfill.start`.
-- **reserved** (11): `lifecycle_status=reserved` — registered for vocabulary completeness and fail-closed
+- **reserved**: `lifecycle_status=reserved` — registered for vocabulary completeness and fail-closed
   defence-in-depth. `PolicyGateway` always denies reserved actions.
   `current_enforcement_point="not_implemented"` is a human-readable marker.
   Actions: `context.use_personal_grant`, `artifact.export`, `proposal.approve`,
-  `memory.read_private`, `memory.promote_shared`, `runtime_skill.execute`, `tool_binding.enable`,
+  `memory.read_private`, `memory.promote_shared`, `tool_binding.enable`,
   `evidence.export`, `note.link.create`, `deployment.propose`, `deployment.execute`.
 
 **record_failure_mode** (`PolicyRecordFailureModeEnum` in `packages/protocol/src/policy.ts`): Each action definition carries a typed `record_failure_mode` field:
@@ -225,8 +225,8 @@ permission manifest that routes risk and enables unknown-action fail-closed beha
 - `fail_closed` — preferred enforcement raises `PolicyAuditPersistError` if durable persistence fails; the sensitive action must not proceed.
   Actions with `fail_closed`: `authorization.request.create`, `run.spawn_child`, `runtime.use_credential`,
   `runtime_context_policy.change`, `work_context_setup.change`, `project_folder.write_patch`,
-  `artifact.persist`, `proposal.apply`, `skill.import`, `skill.convert`,
-  `capability.enable`, `capability.disable`, `capability.update`, `runtime_skill.binding_update`,
+  `artifact.persist`, `proposal.apply`, `skill.import`,
+  `runtime_skill.binding_update`,
   `input_resource.read`, `input_resource.search`, `project_folder.apply_patch`, `automation.create`,
   `automation.fire`, `automation.update`, `inquiry.thread.create`, `research.acquisition.start`,
   `research.acquisition.cancel`, `retrieval.search`, `retrieval.brief`, `memory.retrieval.search`,
@@ -470,4 +470,3 @@ blocked. Space-wide publication is routed through `egress_review`; its applier
 re-loads the target taint and requires database-backed, unrevoked
 `egress_granting_user` approvals from every contributing owner. Payload flags
 are declarations, never proof of approval.
-

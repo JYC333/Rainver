@@ -222,44 +222,7 @@ describe("engine + registry default", () => {
     const d = engineCheck(registry, { action: "runtime.execute" });
     expect(d.decision).toBe("allow");
   });
-  it("runtime_skill.render requires enablement proof before allowing render", () => {
-    const d = engineCheck(registry, {
-      action: "runtime_skill.render",
-      risk_level: "medium",
-    });
-    expect(d.decision).toBe("require_approval");
-    expect(d.policy_rule_id).toBe("registry_default");
-  });
-  it("runtime_skill.render allows enabled bindings (review happens at enablement)", () => {
-    const d = engineCheck(registry, {
-      action: "runtime_skill.render",
-      risk_level: "medium",
-      enabled_binding: true,
-      capability_enablement_id: "enable-1",
-    });
-    expect(d.decision).toBe("allow");
-    expect(d.policy_rule_id).toBe("runtime_skill_render_enabled_binding");
-  });
-  it("runtime_skill.render allows enabled bindings even without a context risk_level", () => {
-    const d = engineCheck(registry, {
-      action: "runtime_skill.render",
-      enabled_binding: true,
-      capability_enablement_id: "enable-1",
-    });
-    expect(d.decision).toBe("allow");
-    expect(d.policy_rule_id).toBe("runtime_skill_render_enabled_binding");
-  });
-  it("runtime_skill.render allows enabled high-risk bindings (enablement was the review gate)", () => {
-    const d = engineCheck(registry, {
-      action: "runtime_skill.render",
-      risk_level: "high",
-      enabled_binding: true,
-      capability_enablement_id: "enable-1",
-    });
-    expect(d.decision).toBe("allow");
-    expect(d.policy_rule_id).toBe("runtime_skill_render_enabled_binding");
-    expect(d.risk_level).toBe("high");
-  });
+
   it("retrieval tool policy allows enabled domains with an instructed viewer", () => {
     const { decision } = computeDecision(
       registry,
@@ -448,8 +411,6 @@ describe("engine + registry default", () => {
       "daily_report",
       "imported_session_extraction",
       "inquiry_advice",
-      "room_summary",
-      "context_checkpoint",
       "conversation_title",
       "retrieval_embedding",
       "research_pipeline",
@@ -590,6 +551,20 @@ describe("engine + registry default", () => {
     expect(concurrencyOverLimit.decision).toBe("deny");
     expect(fanoutOverLimit.audit_code).toBe("run_spawn_child_capacity_limit");
     expect(concurrencyOverLimit.audit_code).toBe("run_spawn_child_capacity_limit");
+  });
+  it("admits above the soft Room budget up to the hard bound", () => {
+    for (const count of [6, 10]) {
+      const decision = engineCheck(registry, spawnChildContext({
+        fanout_count: count, max_fanout: 5, soft_max_fanout: 5, hard_max_fanout: 10,
+      }));
+      expect(decision.decision).toBe("allow");
+    }
+    expect(engineCheck(registry, spawnChildContext({ fanout_count: 11, max_fanout: 5,
+      soft_max_fanout: 5, hard_max_fanout: 10 })).audit_code).toBe("run_spawn_child_capacity_limit");
+    expect(engineCheck(registry, spawnChildContext({ fanout_count: 1, container_turns_count: 20,
+      soft_max_turns: 10, hard_max_turns: 20 })).decision).toBe("allow");
+    expect(engineCheck(registry, spawnChildContext({ fanout_count: 1, container_turns_count: 21,
+      soft_max_turns: 10, hard_max_turns: 20 })).audit_code).toBe("run_spawn_child_capacity_limit");
   });
   it("unknown delegation-like actions fail closed", () => {
     const d = engineCheck(registry, { action: "agent.delegate" });

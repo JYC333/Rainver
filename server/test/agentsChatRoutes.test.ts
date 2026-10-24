@@ -101,28 +101,15 @@ function services(overrides: AgentChatServiceOverrides = {}): AgentChatServices 
           workspace_location_id: null,
           runtime_installation: null,
           binding_id: "binding-1",
-          runtime_state_key: "11111111-1111-4111-8111-111111111111",
-          runtime_session_id: null,
-          runtime_context_fingerprint: null,
           model_name: null,
           model_provider_id: null,
           runtime_config_json: {},
           runtime_policy_json: {},
-          retired_runtime_state_key: null,
         };
       },
     },
     runtimeSessions: {
       async claimTurn() {},
-      async prepare(input) {
-        return {
-          binding_id: input.binding_id,
-          runtime_state_key: "11111111-1111-4111-8111-111111111111",
-          runtime_session_id: null,
-          runtime_context_fingerprint: null,
-          retired_runtime_state_key: null,
-        };
-      },
     },
     runs: {
       async createQueuedRun(input) {
@@ -178,10 +165,7 @@ describe("agents asynchronous chat-turn route", () => {
           return {
             runtime_profile_id: "runtime-profile-1", runtime_key: "codex_cli",
             execution_host_id: null, workspace_location_id: null, runtime_installation: "own", binding_id: "binding-1",
-            runtime_state_key: "11111111-1111-4111-8111-111111111111",
-            runtime_session_id: null, runtime_context_fingerprint: null,
             model_name: null, model_provider_id: null, runtime_config_json: {}, runtime_policy_json: {},
-            retired_runtime_state_key: null,
             session_config_options: [{
               id: "fast", name: "Fast mode", description: null, category: "model_config",
               type: "boolean" as const, current_value: false,
@@ -342,9 +326,6 @@ describe("agents asynchronous chat-turn route", () => {
             runtime_profile_id: "runtime-profile-1",
             runtime_key: "claude_code",
             binding_id: "binding-1",
-            runtime_state_key: "11111111-1111-4111-8111-111111111111",
-            runtime_session_id: null,
-            runtime_context_fingerprint: null,
             model_name: null,
             model_provider_id: null,
             runtime_config_json: {},
@@ -352,7 +333,6 @@ describe("agents asynchronous chat-turn route", () => {
             execution_host_id: "host-1",
             workspace_location_id: "location-1",
             runtime_installation: "own",
-            retired_runtime_state_key: null,
           };
         },
       },
@@ -471,14 +451,10 @@ describe("agents asynchronous chat-turn route", () => {
               workspace_location_id: null,
               runtime_installation: null,
               binding_id: "binding-1",
-              runtime_state_key: "11111111-1111-4111-8111-111111111111",
-              runtime_session_id: null,
-              runtime_context_fingerprint: null,
               model_name: "claude-opus-5",
               model_provider_id: null,
               runtime_config_json: {},
               runtime_policy_json: {},
-              retired_runtime_state_key: null,
             };
           },
         },
@@ -525,8 +501,8 @@ describe("agents asynchronous chat-turn route", () => {
       },
     });
     // Outside a Project a chat is still a conversation with a person: it may
-    // remember, and touches nothing of a Project.
-    expect(observed.queuedRun?.scenario_tool_allowance).toEqual(["memory.remember", "memory.revise"]);
+    // remember and look up its own record, and touches nothing of a Project.
+    expect(observed.queuedRun?.scenario_tool_allowance).toEqual(["memory.remember", "memory.revise", "conversation.search", "conversation.read"]);
     expect(observed.queuedRun?.model_override_json).not.toHaveProperty("messages");
     expect(observed.queuedRun?.model_override_json).not.toHaveProperty("conversation_runtime");
     expect(observed.queuedRun?.model_override_json).not.toHaveProperty("chat_context_preamble");
@@ -534,60 +510,4 @@ describe("agents asynchronous chat-turn route", () => {
     expect(observed.jobSawRun).toBe(true);
   });
 
-  it("does not author runtime fingerprints in the HTTP route", async () => {
-    __setAgentChatIdentityForTests({ spaceId: "space-1", userId: "user-1" });
-    let runtimeRevision = 1;
-    const fingerprints: string[] = [];
-    __setAgentChatServicesFactoryForTests(() =>
-      services({
-        backends: {
-          async resolveBinding() {
-            return {
-              runtime_profile_id: "runtime-profile-1",
-              runtime_key: "claude_code",
-              execution_host_id: null,
-              workspace_location_id: null,
-              runtime_installation: null,
-              binding_id: "binding-1",
-              runtime_state_key: "11111111-1111-4111-8111-111111111111",
-              runtime_session_id: "22222222-2222-4222-8222-222222222222",
-              runtime_context_fingerprint: "old",
-              model_name: "claude",
-              model_provider_id: null,
-              runtime_config_json: { revision: runtimeRevision },
-              runtime_policy_json: { allow_permission_bypass: false },
-              retired_runtime_state_key: null,
-            };
-          },
-        },
-        runtimeSessions: {
-          async prepare(input) {
-            fingerprints.push(input.context_fingerprint);
-            return {
-              binding_id: input.binding_id,
-              runtime_state_key: input.runtime_state_key,
-              runtime_session_id: null,
-              runtime_context_fingerprint: null,
-              retired_runtime_state_key: null,
-            };
-          },
-        },
-      }),
-    );
-    app = buildModuleServer(chatConfig(), [agentsModule, runsModule]);
-
-    await app.inject({
-      method: "POST",
-      url: "/api/v1/agents/agent-1/chat",
-      payload: { message: "first" },
-    });
-    runtimeRevision = 2;
-    await app.inject({
-      method: "POST",
-      url: "/api/v1/agents/agent-1/chat",
-      payload: { message: "second" },
-    });
-
-    expect(fingerprints).toEqual([]);
-  });
 });

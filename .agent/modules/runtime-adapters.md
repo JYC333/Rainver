@@ -163,9 +163,23 @@ Reuse / Dependency Check:
    protocol. Rainver retains Run finalization, cancellation/recovery,
    artifacts, usage, tool authorization and audit ownership.
 
-The shared controller counts the ACP prompts it actually sends, including a
-context phase when present, and reports the runtime's last valid context
-occupancy/capacity. Neither is an internal model-call count. The server adds
+The shared controller counts the ACP prompts it actually sends and reports
+the runtime's last valid context
+occupancy/capacity. Neither is an internal model-call count. It also counts
+the `usage_update` notifications a turn received and sums their `used`
+values (`usage_updates`, `usage_updates_used_total`): a runtime sends one per
+model request, so the sum is the context volume the turn processed. The token
+usage on a prompt result is whole-turn for Claude Code and OpenCode; `codex-acp`
+1.12 builds it from Codex's `tokenUsage.last`, the last request alone, which
+the Codex spec declares as `usage.acp_prompt_usage: "last_request"` and the
+ledger records as `usage_scope: "last_model_request"` — a lower bound, not
+the turn (a Codex turn with 76 tool calls was recorded as one request's
+310k tokens). A spec also declares `usage.prompt_cache_ttl_seconds`, how
+long the vendor keeps a prompt cache warm after a request (Claude Code on a
+subscription: one hour, measured on the test instance; Codex: ten minutes,
+OpenAI's in-memory default); the conversation preflight compares it with the
+thread's last Run end to say the next turn will rewrite its context. A notice
+only. The server adds
 the accepted Gateway plan's numeric allocation estimate to usage diagnostics;
 it never reads vendor transcripts to guess missing measurements. Unreported
 model calls are unknown, including legacy aggregate CLI observations. See
@@ -319,3 +333,10 @@ Tests should exercise the shared ACP controller and host dispatch, plus
 registry admission and Profile backend validation. Do not restore a private
 Agent loop or a Provider-backed Agent adapter to obtain a test-only no-login
 path.
+
+Skill delivery uses the original-package library only: `PgRuntimeSkillProvider`
+delegates to `loadSelectedSkills`; acquisition and both Gateway authorization
+passes preserve Run scope and revalidate bindings and exact bytes (locking on
+the final pass). Hosts materialize accepted Delivery files with their original
+hashes and source/planned-item references. There are no normalized Skill
+renderers. The Work Skill remains a separate required code contract.

@@ -5,10 +5,9 @@
  * - GET /api/v1/server/catalog/capabilities     capability manifest summaries
  * - GET /api/v1/server/catalog/agent-templates  agent template spec summaries
  *
- * Read-only descriptors of the on-disk `catalog/` definitions. Product
- * capability APIs live in `modules/capabilities` under
- * `/api/v1/capability-definitions`. This catalog is read-only descriptors,
- * not a public capability surface.
+ * Read-only descriptors of the on-disk `catalog/` definitions.
+ * Skill library APIs live in `modules/skills`; this catalog is read-only
+ * diagnostic descriptors and confers no execution authority.
  */
 
 import type { FastifyInstance } from "fastify";

@@ -4,69 +4,6 @@ import type { ApplyProposal } from "../src/modules/memory/memoryApplyRepository.
 import { createDefaultProposalApplierRegistry } from "../src/modules/proposals/applierRegistry.js";
 import { validateProposalPayload } from "../src/modules/proposals/payloadSchemas.js";
 
-class FakeApplyDb {
-  readonly dirtyUpdates: Array<{ kind: string; params: readonly unknown[] }> = [];
-  readonly jobs: Array<{
-    job_type: string;
-    project_folder_id: unknown;
-    agent_id: unknown;
-    payload: Record<string, unknown>;
-  }> = [];
-
-  async query(sql: string, params: readonly unknown[] = []) {
-    const norm = sql.replace(/\s+/g, " ").trim();
-    if (norm.startsWith("INSERT INTO jobs")) {
-      this.jobs.push({
-        job_type: String(params[5]),
-        project_folder_id: params[3],
-        agent_id: params[4],
-        payload: JSON.parse(String(params[7])) as Record<string, unknown>,
-      });
-      return {
-        rows: [{
-          id: String(params[0]),
-          space_id: params[1],
-          user_id: params[2],
-          project_folder_id: params[3],
-          agent_id: params[4],
-          job_type: params[5],
-          status: "pending",
-          priority: params[6],
-          payload_json: JSON.parse(String(params[7])),
-          result_json: null,
-          error: null,
-          attempts: 0,
-          max_attempts: params[8],
-          scheduled_at: params[9],
-          claimed_by: null,
-          claimed_at: null,
-          started_at: null,
-          completed_at: null,
-          heartbeat_at: null,
-          created_at: params[10],
-          updated_at: params[10],
-        }],
-        rowCount: 1,
-      };
-    }
-    if (norm.startsWith("UPDATE proposals")) {
-      return { rows: [], rowCount: 1 };
-    }
-    return { rows: [], rowCount: 0 };
-  }
-}
-
-class CapabilityVersionFakeDb {
-  async query(sql: string, _params: readonly unknown[] = []) {
-    const norm = sql.replace(/\s+/g, " ").trim();
-    if (norm.startsWith("SELECT id, capability_key FROM capability_versions")) {
-      // The requested version exists but belongs to a different capability_key.
-      return { rows: [{ id: "v1", capability_key: "imported.other" }], rowCount: 1 };
-    }
-    return { rows: [], rowCount: 0 };
-  }
-}
-
 function proposal(overrides: Partial<ApplyProposal> = {}): ApplyProposal {
   return {
     id: "proposal-1",
@@ -121,13 +58,14 @@ describe("proposal applier registry", () => {
     })).not.toThrow();
   });
 
-  it("registers capability lifecycle proposal appliers", () => {
+  it("registers Skill review and binding proposal appliers", () => {
     const registered = createDefaultProposalApplierRegistry().registeredTypes();
     expect(registered).toContain("skill_import_approve");
-    expect(registered).toContain("capability_install");
-    expect(registered).toContain("capability_update");
-    expect(registered).toContain("capability_enable");
-    expect(registered).toContain("capability_disable");
+    expect(registered).not.toContain("capability_install");
+    expect(() => validateProposalPayload("capability_install", { proposal_type: "capability_install" })).toThrow();
+    expect(registered).not.toContain("capability_update");
+    expect(registered).not.toContain("capability_enable");
+    expect(registered).not.toContain("capability_disable");
     expect(registered).toContain("runtime_skill_binding_update");
   });
 
@@ -195,46 +133,4 @@ describe("proposal applier registry", () => {
     expect(createDefaultProposalApplierRegistry().registeredTypes().has("policy_change")).toBe(false);
   });
 
-  it("rejects a capability_enable proposal whose version belongs to another capability", async () => {
-    const db = new CapabilityVersionFakeDb();
-
-    await expect(
-      createDefaultProposalApplierRegistry().apply({
-        config: loadConfig({
-          SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
-          SERVER_INTERNAL_TOKEN: "internal-token",
-        }),
-        db: db as never,
-        proposal: proposal({
-          proposal_type: "capability_enable",
-          payload_json: {
-            operation: "capability_enable",
-            capability_key: "imported.mine",
-            capability_version_id: "v1",
-          },
-        }),
-        userId: "user-1",
-      }),
-    ).rejects.toThrow(/does not match capability_key/);
-  });
-
-  it("rejects non-built-in capability_enable proposals without an explicit version", async () => {
-    await expect(
-      createDefaultProposalApplierRegistry().apply({
-        config: loadConfig({
-          SERVER_DATABASE_URL: "postgresql://server@db:5432/rainver",
-          SERVER_INTERNAL_TOKEN: "internal-token",
-        }),
-        db: new FakeApplyDb() as never,
-        proposal: proposal({
-          proposal_type: "capability_enable",
-          payload_json: {
-            operation: "capability_enable",
-            capability_key: "imported.mine",
-          },
-        }),
-        userId: "user-1",
-      }),
-    ).rejects.toThrow(/capability_version_id is required/);
-  });
 });

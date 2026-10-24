@@ -223,7 +223,7 @@ function TurnStep({ part }: { part: StepPart }) {
         expandable={expandable}
         statusIndicator={nonzeroExit ? (
           <span className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">
-            <Info className="size-3" /> {t('conversation_ui.turn.exit_code', { code: result.exitCode })}
+            <Info className="size-3" /> {t('conversation_ui.turn.command_returned')}
           </span>
         ) : undefined}
       />
@@ -232,7 +232,7 @@ function TurnStep({ part }: { part: StepPart }) {
           {part.input !== null && <ToolInput input={part.input} />}
           {nonzeroExit && <p className="text-xs text-muted-foreground">{t('conversation_ui.turn.nonzero_exit')}</p>}
           {part.status === 'failed' && !nonzeroExit && <p className="text-xs text-destructive">{t('conversation_ui.turn.tool_failed')}</p>}
-          {result.exitCode !== null && !nonzeroExit && <p className="text-xs text-muted-foreground">{t('conversation_ui.turn.exit_code', { code: result.exitCode })}</p>}
+          {result.exitCode !== null && <p className="text-xs text-muted-foreground">{t('conversation_ui.turn.exit_code', { code: result.exitCode })}</p>}
           {result.truncated && <p className="text-xs text-muted-foreground">{t('conversation_ui.turn.output_truncated')}</p>}
           {(part.output !== null || part.status === 'failed') && (
             <ToolOutput

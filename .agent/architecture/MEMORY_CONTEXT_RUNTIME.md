@@ -105,53 +105,37 @@ product table; Context Events store ordered refs and typed continuity facts.
 
 - Ingress records sequence gaps rather than inventing missing history.
 - Terminal events create deterministic Micro Checkpoints.
-- Semantic extraction runs outside the persistence transaction and may publish
-  only after revalidating the selected head and every canonical ref. Ordinary
-  terminal events alone do not invoke the semantic provider; threshold and
-  material-change triggers remain conditional.
+- No provider call extracts from the ledger: the semantic-checkpoint job is
+  retired, and the only summary of a conversation is the one its Agent writes
+  on request (`modules/hosts.md`, "Conversation summary and restart").
 - Immutable corrections supersede invalid semantic checkpoints without
   rewriting prior events. Authenticated clients submit corrections through the
   active Work Context's checkpoint-correction command route; the mutation
   transaction takes the Work Context version advisory lock, then revalidates
   and locks the active scope and Project ACL authority.
-- Room conversation continuity combines the active append-only Room summary
-  (2,000-token floor) with only the uncaptured canonical message tail
-  (6,000-token floor) through the exact current message. The Runtime Context
-  continuity item uses the floors; the replay a host-bound Room turn builds
-  into its own prompt scales both to its model's window
-  (`roomContextBudgets`, `modules/rooms.md`). The summary cursor is
-  exclusive, so ranges cannot overlap; the canonical transcript remains the
-  source of truth and is always available through paged history. Before an
-  active summary exists, the same complete-message assembler is used rather
-  than a separate fixed-count/truncating window. Prior messages larger than the
-  recent budget are omitted; only the triggering message is preserved intact.
-  Non-Room continuity retains the Semantic Checkpoint plus its bounded message
-  tail.
-- Room summaries are asynchronous API tasks charged to the active Room owner.
-  Scheduling waits for a 6,000-token raw uncompacted-prefix threshold and the
-  worker rechecks that the owner can still write the bound Project. The worker
-  accepts any eligible owner-usable API provider (including an eligible Space
-  grant), records tokenizer and prompt/schema provenance, and uses a 12,000
-  token source budget. Missing API configuration yields a visible
-  `waiting_provider` freshness state and never blocks message persistence or
-  conversation use. Retry failures use capped exponential backoff with jitter,
-  distinguish `retry_wait` from terminal `failed`, and never advance coverage
-  on malformed provider output.
-- CLI continuity stores an acknowledged cursor and rotates its private vendor
-  session when scope, generation, cursor, replay authority, or a bounded delta
-  overflow is detected. Overflow rotation bootstraps from the latest authorized
-  checkpoint and transfers the execution lease to the replacement binding. Any
-  uncovered reconstruction tail and the authorized checkpoint share one
-  6,000 estimated-token replay budget (`CLI_REPLAY_TOKENS`; a checkpoint over
-  3,000 tokens is a labelled excerpt), with explicit omission/excerpt coverage
-  and complete audit refs; current input and fixed instructions remain intact. Healthy resumes omit a Run's own output only when an accepted
-  Delivery proves it belongs to that exact vendor binding. Generic progress
-  events stay in the audit ledger rather than the rendered history. Any
-  other rotation waits while another Run holds the binding's live execution
-  lease, so that Run keeps an active binding to acknowledge against. A
-  successful bootstrap/delta phase advances that cursor before the current-user
-  turn is sent, while the whole invocation Snapshot remains draft until its
-  terminal acknowledgement.
+- Room conversation continuity for an API-provider Run is the uncaptured
+  canonical message tail (6,000-token floor) through the exact current
+  message. A vendor CLI Run receives none of it: its session holds the
+  conversation, and a fresh session starts empty. The canonical transcript
+  remains the source of truth and is always available through paged history
+  and the `conversation.search` / `conversation.read` tools. Prior messages
+  larger than the recent budget are omitted; only the triggering message is
+  preserved intact. Non-Room continuity retains the Semantic Checkpoint plus
+  its bounded message tail.
+- There is no server-side rolling summary and no summary job. The summary a
+  conversation has is the one an Agent writes when asked (`modules/hosts.md`,
+  "Conversation summary and restart"), kept as an Artifact in the Project; a
+  whole-thread reference carries the newest one.
+- A vendor CLI session is the conversation's working memory. A Run resumes
+  the host thread's session and is delivered the turn's current input and
+  attachments; the standing items (Agent instruction, Project Instruction and
+  Brief, bound Skills, Room identity) go into a fresh session and into a
+  resumed one only when their versions changed (`host_threads.standing_digest`,
+  `modules/runtime-context.md`). The ledger and checkpoints are the audited
+  record, never a replay into the session. A fresh session (first turn, reset,
+  restart from a summary) opens with the standing context, the conversation
+  title and, after a restart, the summary the Agent wrote — never the
+  transcript (`modules/hosts.md`).
 
 ## 6. Policy and transaction boundaries
 

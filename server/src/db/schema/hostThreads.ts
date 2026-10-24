@@ -61,6 +61,13 @@ export const hostThreads = pgTable("host_threads", {
 	// vendor session is replaced.
 	identityDigest: varchar("identity_digest", { length: 64 }),
 	identityDigestRunId: varchar("identity_digest_run_id", { length: 36 }),
+	// sha256 over the source refs of the standing Runtime Context items (Agent
+	// instruction version, Project Instruction and Brief versions, bound Skill
+	// versions, Room identity) this thread's vendor session last received, and
+	// the Run that delivered them. Same discipline as the identity digest: a
+	// resumed session is sent those items again only when this differs.
+	standingDigest: varchar("standing_digest", { length: 64 }),
+	standingDigestRunId: varchar("standing_digest_run_id", { length: 36 }),
 	// How full the vendor session's context was when this thread's last Run
 	// ended, and the window it was measured against — both as the runtime
 	// reported them (ACP `usage_update`). Drive handoff rotation before the

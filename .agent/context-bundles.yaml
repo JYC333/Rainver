@@ -260,17 +260,20 @@ policy:
   code_roots:
     - server/src/modules/policy
 
-capability:
+skills:
   docs:
-    - .agent/modules/capability.md
+    - .agent/modules/skills.md
     - .agent/architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md
     - .agent/modules/runtime-context.md
     - .agent/BOUNDARIES.md
   code_roots:
-    - catalog/capabilities
-    - server/src/modules/catalog
+    - server/src/modules/skills
+    - server/src/modules/projectResearch
+    - server/src/modules/runtimeContext
     - server/src/modules/runtimeAdapters
-    - server/test/capabilityProposalApplier.test.ts
+    - packages/protocol/src/skills.ts
+    - apps/web/src/modules/skills
+    - server/test/skillProposalApplier.test.ts
 
 proposals:
   docs:

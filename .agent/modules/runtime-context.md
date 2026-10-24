@@ -14,8 +14,8 @@ Room turns, and local CLI adapters all enter through
 - deterministic normalization, precedence, deduplication, budget planning, and
   managed/CLI rendering;
 - immutable Invocation Delivery and safe Invocation Snapshot lifecycle;
-- scope-sequenced Context Events, gap reconciliation, Micro Checkpoints,
-  Semantic Checkpoints, corrections, and CLI cursor continuity.
+- scope-sequenced Context Events, capture gaps, Micro Checkpoints and
+  corrections — an audit ledger, read by Context Ops and the history tools.
 
 Canonical bodies remain in their owning domains. Runtime Context persists refs,
 delivery evidence, safe projections, and continuity state; it is not a second
@@ -94,12 +94,13 @@ keeps both. Distinct instructions remain authoritative and intact.
 
 Conversation and task continuity is an ordered ledger of canonical refs, not a
 route-owned prompt cache. Runtime events are append-only per typed work scope.
-Terminal events create deterministic Micro Checkpoints; bounded semantic
-extraction may publish a validated Semantic Checkpoint only after rechecking the
-selected head and every canonical ref. Immutable corrections supersede invalid
-semantic state without rewriting history. CLI bindings keep an acknowledged
-cursor and rotate fail closed when scope, generation, session state, or replay
-authority is invalid.
+Terminal events create deterministic Micro Checkpoints. Nothing extracts from
+the ledger: there is no semantic-checkpoint job and no provider call behind a
+turn (`context_semantic_checkpoints` keeps only rows written before that job
+was retired, and the correction route still supersedes one of those). The
+ledger is the audited record; it is never replayed into a vendor CLI session,
+and the conversation's own summary is the one an Agent writes on request
+(`modules/hosts.md`, "Conversation summary and restart"; ADR 0014 §11).
 
 A direct conversation's raw tail follows the canonical visible message path
 through the triggering message, including messages whose ledger capture is
@@ -113,99 +114,65 @@ A Room recipient's Work Context scope is one Conversation with that
 recipient: a `room_conversation_recipients` row, created on the first Run that
 resolves it (`policy/executionControlSnapshots.ts`) or when a person first sets
 its retrieval switch, and authorized through the
-recipient's Room membership in `workContextService.ts`. Its ledger, checkpoints,
-CLI bindings and Setup belong to that Conversation alone; another
+recipient's Room membership in `workContextService.ts`. Its ledger, checkpoints
+and Setup belong to that Conversation alone; another
 Conversation's transcript never enters its history (ADR 0014 §11 amendment).
 
 Room Runs from before per-Conversation scopes have control snapshots naming
 the whole-Room recipient scope. The upgrade split (`0003_repair_upgrade_backfills`)
-moved their events and replayable capture gaps to the Conversation scopes but
+moved their events and capture gaps to the Conversation scopes but
 left the snapshots alone, because they are audit records. Continuity therefore
 counts a Run as in scope when its snapshot names the scope, or when the scope
 is the `room_conversation_recipients` row for that Run's own Conversation and
 the snapshot names that row's recipient (`controlInScope` in
-`continuity/service.ts`). Canonical-ref checks, reconciliation's terminal
-check, gap recovery and the extraction egress policy all use this rule. A Run
-of another Conversation with the same recipient is still foreign. Cursor
-checks against an invocation snapshot keep the old ledger's own coordinates
-and do not cross the split.
+`continuity/service.ts`); the canonical-ref checks use this rule. A Run
+of another Conversation with the same recipient is still foreign.
 
-Reconciliation records what it finds as a `reconciliation_mismatch` gap and
-re-derives it from durable rows on every scan. A later clean scan therefore
-resolves that gap. Capture gaps close only when their buffered event is
-replayed.
+A capture gap is recorded with the event it buffered (`context_capture_gaps`,
+`replay_event_json`) and the scope stays `partial`. No job replays or
+reconciles it afterwards: the ledger is an audit of what was captured, and a
+known gap is shown as one rather than repaired later.
 
-A binding that follows a Host thread's ACP session is also keyed by that
-thread, so one scope never has two vendor sessions sharing a cursor. Bindings
-for server-local CLI state carry no thread. A Run that parks mid-turn (`waiting_for_dependency` or
-`waiting_for_review`) writes the session its binding names back to its
-`host_thread.runtime_session_id`. Its next attempt then resumes that session
-instead of the one it was created with.
+## What an ACP Run is sent
 
-CLI history selection is owned by `continuity/cliHistory.ts`. Generic tool-start,
-tool-completion and invocation-finalization progress stays in the audit ledger
-but is not replayed to the model; meaningful tool outcomes and failures remain.
-On a healthy resume, a successful Delivery acknowledgement for the exact same
-binding proves the session already knows that Run's request, replies and tool
-outcomes. They are not replayed. Unacknowledged Runs and other bindings remain
-eligible, and a fresh or security-rotated session reconstructs them normally.
-An acknowledged Run's `run_terminal` outcome is treated the same way. An
-assistant message from a failed, cancelled or orphaned Run is rendered as one
-`earlier attempt <status>` line, and an identical notice from repeated attempts
-is said once; the ledger keeps every event.
+The vendor CLI session is the conversation's working memory. The host thread
+records which ACP session a Conversation × Agent continues
+(`host_threads.vendor_session_id`, `modules/hosts.md`); a Run resumes that
+session and its Delivery carries the turn's current input, attachment
+descriptors and whatever is this turn's own (a routed segment, a retry note,
+a Skill the person selected in the message). The **standing items** — the
+Agent's instruction (`agent_version`), the Project Instruction and Brief,
+the Skills bound to the Agent or Project, the Room identity block — are sent
+into a fresh session and into a resumed one only when their versions changed:
+`PgDirectProvider.standingAlreadyHeld` hashes their source refs
+(`standingItemsDigest`), compares with `host_threads.standing_digest` for the
+very session being resumed, and records its decision on the Run
+(`model_override_json.host_thread.standing_digest` / `standing_sent`); the
+thread learns the digest only from a Run that carried them and landed
+(`recordRunOutcome`), exactly as the Room identity digest does. No
+history, checkpoint or event delta is delivered into a resumed session (the
+continuity acquisition returns nothing for a vendor CLI Run,
+`productionAcquisition.ts`): the
+session already holds the conversation, and every ACP client surveyed (Zed,
+JetBrains, Vibe Kanban, Paperclip, Symphony) works the same way. A fresh
+session — the first turn, a context reset, a restart from a summary — opens
+with standing context and the conversation title, plus the summary the Agent
+wrote when it is a restart (`modules/hosts.md`, "Conversation summary and
+restart"); nothing of the transcript is replayed, as with a cleared CLI
+session. The remote Host adapter sends the Work Skill pointer into a fresh
+session only; a resumed session already holds it. A resumed turn that
+carries only the person's message is sent as that message, verbatim
+(`runs/acpRuntimeContextPrompt.ts`).
 
-Stable standing items keep one item id across Runs so the acknowledged-item
-filter recognises them: the item id hashes an identity key instead of the
-source ref, the group goal (`run_instruction`) keyed by its Run group and the
-Room identity by its Agent. Their `source_ref` still names the Run whose row
-supplied the text, and the gateway revalidates them against that Run. Item ids
-also hash the text, so a changed goal or identity is a new item and is
-delivered again. A delta Delivery opens with a
-one-line continuation notice instead of the full ACP channel notice, and the
-remote Host adapter sends a short Work Skill reminder instead of the full
-pointer; any tool-grant change already rotates the binding to a full Delivery.
-The one exception is the input-resource tools (`input_resource.read/search`),
-granted only for a turn whose message carries resources. They are left out of
-the binding fingerprint, so an attached message does not rotate the session
-twice; the turn's resource descriptors name the tools, `$RAINVER_CLI list`
-lists them, and every call is still checked against that turn's own grants.
-
-One CLI replay budget, `CLI_REPLAY_TOKENS` (6,000 estimated tokens,
-`continuity/cliHistory.ts`), bounds both paths: a delta above it rotates, and
-the reconstruction that replaces it fits it whole. An authorized semantic
-checkpoint rendered into the reconstruction counts against it: up to 3,000
-tokens (`CLI_CHECKPOINT_TOKENS`) verbatim, a larger one as its beginning,
-labelled as an incomplete excerpt whose full record remains in Rainver. Recent
-history takes what the checkpoint, header and coverage notice leave. An
-incomplete boundary event is explicitly labelled as an excerpt with its
-canonical ref; omitted history has a coverage notice. Complete event refs remain
-on the Delivery item for audit, and delivery authorization recomputes the same
-selection from canonical sources. The current input, standing instructions, and
-explicit or pinned inputs are separate items and are not trimmed by this budget.
-No semantic summary is invented when a Provider is unavailable, and the notice
-explicitly forbids assuming decisions from omitted history. This budget is not
-a claim about an ACP model's capacity.
-
-A Run executes on a CLI binding under its execution lease. The lease names its
-holder Run and a fencing generation that every acquisition raises and every
-rotation carries over. It lasts five minutes without renewal; the holder renews
-it once a minute while it runs. A lease whose holder Run is no longer live is
-free at once, and the same Run's next attempt is not held off by its own dead
-attempt. A Run waiting for another holder waits at most ten minutes, and stops
-waiting when it is itself no longer live; either way it fails with the
-retryable `cli_execution_lease_unavailable`. A Delivery carries the fencing
-generation it was planned under, and acknowledgements and vendor-session
-records are refused once another Run has taken the lease over. Preparation
-preserves the caller's acquired generation and rechecks it both before history
-selection and in the Delivery persistence transaction; a stale attempt cannot
-adopt its successor's generation. Lease acquisition requires the acquiring Run
-to remain queued or running even when the binding is free; binding preparation
-also locks and checks that Run before creating or rotating state. An overflow
-reconstruction moves the lease onto the replacement binding. A missing vendor
-state rotates once per lease: asking again answers with the binding the lease
-already holds. Both replacements retain the holder Run, so its restarted
-attempt or the successor of a stopped holder can acquire without waiting for
-the lease expiry.
+A Run that parks mid-turn (`waiting_for_dependency` or `waiting_for_review`)
+writes the session the runtime reported back to its
+`host_thread.runtime_session_id`, so its next attempt resumes that session
+instead of the one it was created with. Tool grants, instructions and egress
+are enforced per Run by the dispatcher and re-sent through standing context
+when they change; none of them rotates the vendor session. The session is
+replaced only by the person (a reset, or a restart from a summary), a runtime that refuses
+to resume it (`runtime_session_invalid`), or a changed host or working
+directory.
 
 ## Knowledge retrieval switch
 
@@ -271,3 +238,10 @@ accepted Delivery files reach the Host work surface and ACP resource links;
 normalized conversion/rendering is not involved in this path. Disabling a
 binding or changing stored bytes invalidates an outstanding plan. See
 [Skill library](../architecture/CAPABILITY_WORKFLOW_SKILL_SYSTEM.md).
+
+Skill delivery uses the original-package library only: `PgRuntimeSkillProvider`
+delegates to `loadSelectedSkills`; acquisition and both Gateway authorization
+passes preserve Run scope and revalidate bindings and exact bytes (locking on
+the final pass). Hosts materialize accepted Delivery files with their original
+hashes and source/planned-item references. There are no normalized Skill
+renderers. The Work Skill remains a separate required code contract.

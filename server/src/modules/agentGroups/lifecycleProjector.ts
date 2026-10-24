@@ -11,8 +11,7 @@ import { PgAgentGroupRepository, type RunDelegationRecord } from "./repository.j
 import { ROOM_DELEGATION_COMPLETION_RETRY_JOB } from "./delegationCompletionRetryJob.js";
 import { runAssignedTask } from "../runs/runAssignedTask.js";
 import { CONVERSATION_SERIALIZATION_WAIT_SCOPE } from "./waitScopes.js";
-import { handoffRotationOf, handoffTurnOf, rotateForHandoff } from "./sessionHandoff.js";
-import { PgSessionRepository } from "../sessions/repository.js";
+import { handoffTurnOf } from "./sessionHandoff.js";
 import { admitAgentOriginRun, enqueueWhenTurnFree, isAgentOriginGroup } from "../rooms/quotaGate.js";
 import { liveQuotaSource, type QuotaSource } from "../rooms/subscriptionLogins.js";
 import {
@@ -208,7 +207,7 @@ export class AgentGroupRunLifecycleProjector {
           },
           // An Agent-origin turn: charged to the container the delegation
           // came from, and delegating only from what it has left.
-          ...await agentOriginContinuation(input.client, group.space_id, group.id),
+          ...await agentOriginContinuation(input.client, group.space_id, group.id, input.delegation.id),
         },
       );
       await input.client.query("RELEASE SAVEPOINT room_delegation_continuation");
@@ -217,7 +216,7 @@ export class AgentGroupRunLifecycleProjector {
       await input.client.query("RELEASE SAVEPOINT room_delegation_continuation").catch(() => undefined);
       if (isRetryableRoomPostError(error)) {
         // A Room fanning out to more than one specialist without waiting
-        // (budget allows max_fanout: 2) routinely produces this: the first
+        // (within the shared container budget) routinely produces this: the first
         // delegate's notification claims the conversation's turn: the
         // second's loses the race. Losing once is not a reason to drop the
         // second specialist's result — retry it once the turn frees up.
@@ -595,30 +594,17 @@ async function queueWaitingDependencyRunIfReady(input: {
   const changes = handoffTurn || independent || !group.room_id || !group.session_id
     ? new Map<string, RunChange>()
     : await loadRunChanges(input.db, input.waitingRun.space_id, dependencyRuns.map((run) => run.id));
-  let prompt = handoffTurn || independent
+  const prompt = handoffTurn || independent
     ? input.waitingRun.prompt ?? ""
     : serialized
       ? serializedRecipientPrompt(input.waitingRun, replies, changes)
       : waitingContinuationPrompt(input.waitingRun, waiting, dependencyRuns, changes);
-  let modelOverride: Record<string, unknown> | null = null;
-  const rotation = serialized ? handoffRotationOf(input.waitingRun) : null;
-  if (rotation) {
-    const rotated = await rotateForHandoff(input.db, {
-      waitingRun: input.waitingRun,
-      handoffRun: dependencyRuns.find((run) => run.id === rotation.handoff_run_id) ?? null,
-      rotation,
-    });
-    if (rotated) {
-      prompt = independent ? rotated.prompt : serializedRecipientPrompt({ ...input.waitingRun, prompt: rotated.prompt }, replies, changes);
-      modelOverride = rotated.model_override_json;
-    }
-  }
   const resumed = await input.runs.requeueWaitingDependencyRun({
     run_id: input.waitingRun.id,
     space_id: input.waitingRun.space_id,
     prompt,
     resumed_at: new Date().toISOString(),
-    model_override_json: modelOverride,
+    model_override_json: null,
   });
   if (!resumed) return;
   // A change link is only useful if the Run can follow it: it gains the
@@ -626,15 +612,7 @@ async function queueWaitingDependencyRunIfReady(input: {
   // Only for a block this admission rendered: link-shaped text an Agent wrote
   // into a reply is not a handed-over reference.
   if (changes.size > 0 && containsRunChangeLink(prompt)) await grantRunChangeReadTools(input.db, resumed);
-  if (rotation) {
-    await recordRotationOutcome(input.db, input.runs, {
-      group,
-      waitingRun: resumed,
-      rotated: modelOverride !== null,
-      handoffRunId: rotation.handoff_run_id,
-    });
-  }
-  // The group timeline shows the turns a person asked for; a handoff turn is
+  // The group timeline shows the turns a person asked for; a summary turn is
   // the session's own bookkeeping and appears on neither side of it.
   if (!handoffTurn) await input.groups.createMessage({
     space_id: group.space_id,
@@ -769,48 +747,6 @@ function stringArrayValue(value: unknown): string[] {
   return [...new Set(value
     .map((item) => typeof item === "string" ? item.trim() : "")
     .filter((item) => item.length > 0))];
-}
-
-/**
- * What happened to a recipient's pending session rotation, where it can be
- * found again: a Run event on the recipient either way, and on success the
- * internal marker that keeps the renewed session's place in replay order.
- */
-async function recordRotationOutcome(
-  db: PoolClient,
-  runs: PgRunRepository,
-  input: {
-    group: { space_id: string; room_id: string | null; session_id: string | null; manager_user_id: string };
-    waitingRun: RunRecord;
-    rotated: boolean;
-    handoffRunId: string;
-  },
-): Promise<void> {
-  await runs.appendRunEvent({
-    run_id: input.waitingRun.id,
-    space_id: input.waitingRun.space_id,
-    event_type: input.rotated ? "state_transition" : "warning",
-    status: input.rotated ? "succeeded" : "warning",
-    summary: input.rotated
-      ? "The Agent's vendor session was renewed from its handoff before this turn."
-      : "The handoff before this turn did not complete; the turn continues in the existing vendor session.",
-    project_folder_id: input.waitingRun.project_folder_id,
-    metadata_json: { handoff_run_id: input.handoffRunId, session_rotated: input.rotated },
-  });
-  if (!input.rotated || !input.group.room_id || !input.group.session_id) return;
-  await new PgSessionRepository(db).addRoomInternalInstruction(
-    input.group.space_id,
-    input.group.manager_user_id,
-    input.group.room_id,
-    input.group.session_id,
-    {
-      content: `${input.waitingRun.agent_name ?? "The Agent"} continues in a renewed session, from the handoff it wrote.`,
-      metadata: {
-        continuation_event_kind: "session_handoff",
-        continuation_event_key: input.handoffRunId,
-      },
-    },
-  );
 }
 
 async function debateFirstRound(

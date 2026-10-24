@@ -10,6 +10,14 @@ describe('Evolution page language', () => {
   beforeEach(() => act(() => setLocale('en')))
   afterEach(() => act(() => setLocale('en')))
 
+  it('offers supported targets without capability-layer choices or fields', () => {
+    render(<TargetConfigDialog open mode="create" target={null} saving={false} onOpenChange={vi.fn()} onSubmit={vi.fn()} />)
+    expect(screen.queryByText('Capability')).not.toBeInTheDocument()
+    expect(screen.queryByText('Runtime skill binding')).not.toBeInTheDocument()
+    expect(screen.queryByText('Capability key')).not.toBeInTheDocument()
+    expect(screen.getByText('Agent version')).toBeInTheDocument()
+  })
+
   it('updates the overview when the browser language changes', () => {
     render(<OverviewCards summary={{
       active_targets: 2,

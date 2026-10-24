@@ -112,29 +112,6 @@
   },
   {
     "request": {
-      "action": "runtime_skill.render",
-      "context": {
-        "risk_level": "medium",
-        "enabled_binding": true,
-        "capability_enablement_id": "enable-1"
-      }
-    },
-    "decision": {
-      "decision": "allow",
-      "risk_level": "medium",
-      "reason_code": "runtime_skill_render_enabled_binding",
-      "required_approver_role": null,
-      "policy_rule_id": "runtime_skill_render_enabled_binding",
-      "policy_source": "builtin",
-      "approval_capability": null,
-      "audit_code": "runtime_skill_render_enabled_binding",
-      "resource_type": "runtime_skill_binding",
-      "message": "runtime_skill.render allowed for enabled binding (reviewed at capability enablement, risk_level=medium)",
-      "action": null
-    }
-  },
-  {
-    "request": {
       "action": "runtime.execute",
       "context": {
         "tool_name": "codex_cli",

@@ -15,7 +15,7 @@
 
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema } from "./common.js";
-import { JsonObjectSchema } from "./capabilities.js";
+import { JsonObjectSchema } from "./common.js";
 
 export const PROMPT_TYPES = [
   "chat",

@@ -34,6 +34,7 @@ import type {
 import { TARGET_COLUMNS } from "./types.js";
 import {
   assertTargetRunnable,
+  evolutionTargetType,
   boundedRunMode,
   requiredBodyString,
 } from "./validation.js";
@@ -178,7 +179,7 @@ export class EvolutionRepository {
       [
         randomUUID(),
         identity.spaceId,
-        requiredBodyString(body.target_type, "target_type"),
+        evolutionTargetType(body.target_type),
         optionalString(body.target_ref_type),
         optionalString(body.target_ref_id),
         optionalString(body.capability_key),
@@ -198,6 +199,9 @@ export class EvolutionRepository {
     const current = await this.getTargetRow(identity, targetId);
     if (!current) throw new HttpError(404, "Evolution target not found");
     if (current.space_id === null) throw new HttpError(403, "System evolution targets are read-only");
+    const targetType = body.target_type == null ? null : evolutionTargetType(body.target_type);
+    const status = optionalString(body.status);
+    if ((status ?? current.status) !== "archived") evolutionTargetType(targetType ?? current.target_type);
     const currentMeta = objectValue(current.metadata_json);
     const metadata = {
       ...currentMeta,
@@ -231,7 +235,7 @@ export class EvolutionRepository {
       [
         targetId,
         identity.spaceId,
-        optionalString(body.target_type),
+        targetType,
         Object.hasOwn(body, "target_ref_type"),
         optionalString(body.target_ref_type),
         Object.hasOwn(body, "target_ref_id"),
@@ -241,7 +245,7 @@ export class EvolutionRepository {
         Object.hasOwn(body, "current_version_id"),
         optionalString(body.current_version_id),
         optionalString(body.risk_level),
-        optionalString(body.status),
+        status,
         typeof body.enabled === "boolean" ? body.enabled : null,
         Object.hasOwn(body, "engine_policy_json"),
         JSON.stringify(optionalObject(body.engine_policy_json) ?? {}),

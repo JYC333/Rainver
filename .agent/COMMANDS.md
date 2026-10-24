@@ -265,6 +265,16 @@ pnpm run preview
 # Run this suite alone. Its budget totals are per-file sums and grow when
 # another suite runs beside it.
 pnpm test
+
+# Real layout regression (separate from jsdom): build, then check the Room and
+# Agent Work routes with mixed Markdown at mobile/desktop breakpoints.
+# Playwright Core is a dev dependency; it does not download browsers on install.
+pnpm exec playwright-core install chromium
+pnpm run build
+pnpm run test:layout
+# CHROMIUM_EXECUTABLE=/path/to/chromium selects an existing local browser.
+# LAYOUT_BASE_URL=http://localhost:3100 checks an already hosted build instead.
+# All API requests are mocked in the browser; no instance data is changed.
 ```
 
 The Docker dev frontend keeps `node_modules` inside a container volume.

@@ -564,6 +564,8 @@ export class PgHostThreadRepository {
       landed?: boolean;
       /** The identity digest the Run was dispatched with, and whether its block was in the prompt. */
       identity?: { digest: string; sent: boolean } | null;
+      /** The standing Runtime Context digest the Run was dispatched with, and whether those items were delivered. */
+      standing?: { digest: string; sent: boolean } | null;
       /** Context occupancy the runtime reported at the end of the Run. */
       contextWindow?: { used: number; size: number } | null;
     },
@@ -592,10 +594,11 @@ export class PgHostThreadRepository {
         [threadId, input.vendorSessionId],
       );
       if ((retired.rowCount ?? 0) > 0) {
-        input = { lastRunId: input.lastRunId, vendorSessionId: null, sessionReset: false, landed: false, identity: null, contextWindow: null };
+        input = { lastRunId: input.lastRunId, vendorSessionId: null, sessionReset: false, landed: false, identity: null, standing: null, contextWindow: null };
       }
     }
     const identitySent = Boolean(input.identity?.sent && input.landed && !input.sessionReset);
+    const standingSent = Boolean(input.standing?.sent && input.landed && !input.sessionReset);
     await this.db.query(
       `UPDATE host_threads
           SET last_run_id = $2::varchar,
@@ -616,6 +619,18 @@ export class PgHostThreadRepository {
                 WHEN $5::boolean THEN $2::varchar
                 WHEN $3::varchar IS NOT NULL AND vendor_session_id IS DISTINCT FROM $3::varchar THEN NULL
                 ELSE identity_digest_run_id END,
+              standing_digest = CASE
+                WHEN $4::boolean THEN NULL
+                WHEN ${COMPACTED_SQL} THEN NULL
+                WHEN $9::boolean THEN $10::varchar
+                WHEN $3::varchar IS NOT NULL AND vendor_session_id IS DISTINCT FROM $3::varchar THEN NULL
+                ELSE standing_digest END,
+              standing_digest_run_id = CASE
+                WHEN $4::boolean THEN NULL
+                WHEN ${COMPACTED_SQL} THEN NULL
+                WHEN $9::boolean THEN $2::varchar
+                WHEN $3::varchar IS NOT NULL AND vendor_session_id IS DISTINCT FROM $3::varchar THEN NULL
+                ELSE standing_digest_run_id END,
               context_tokens = CASE
                 WHEN $4::boolean THEN NULL
                 WHEN $7::integer IS NOT NULL THEN $7::integer
@@ -648,6 +663,8 @@ export class PgHostThreadRepository {
         identitySent ? input.identity!.digest : null,
         input.contextWindow?.used ?? null,
         input.contextWindow?.size ?? null,
+        standingSent,
+        standingSent ? input.standing!.digest : null,
       ],
     );
   }

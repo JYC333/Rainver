@@ -243,7 +243,7 @@ function ConversationTextEditor({ input, onInputChange, onSend, placeholder, dis
         onMouseDown={event => event.preventDefault()} onClick={() => choose(itemIndex)} className={`block w-full rounded p-2 text-left text-sm ${itemIndex === index ? 'bg-accent' : ''}`}>
         /{skill.display_name} <span className="text-xs text-muted-foreground">{skill.package_hash.slice(0, 8)}</span>
       </button>)}
-      {(!suggestions.length || error || inputParts.filter(part => part.kind === 'skill').length >= 4) && <p className="p-2 text-xs">{error || (loading ? t('management_ui.capabilities.loading_detail') : inputParts.filter(part => part.kind === 'skill').length >= 4 ? t('skill_packages.limit') : loaded && !skills.length ? <SkillMenuEmptyHint /> : t('skill_packages.no_matches'))}</p>}
+      {(!suggestions.length || error || inputParts.filter(part => part.kind === 'skill').length >= 4) && <p className="p-2 text-xs">{error || (loading ? t('management_ui.skills.loading_detail') : inputParts.filter(part => part.kind === 'skill').length >= 4 ? t('skill_packages.limit') : loaded && !skills.length ? <SkillMenuEmptyHint /> : t('skill_packages.no_matches'))}</p>}
     </div>}
     {references.length > 0 && <SkillReferenceBackdrop ref={backdrop} text={input} references={references} />}
     <Textarea ref={textarea} value={input}

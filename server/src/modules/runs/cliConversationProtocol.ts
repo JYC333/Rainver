@@ -93,7 +93,6 @@ export function createCliConversationController(input: {
   local_tool_directory?: boolean;
   session_config?: AcpSessionConfigSelection[];
   runtime_session_id?: string | null;
-  before_next_prompt?: (sessionId: string) => Promise<void>;
   on_text_delta?: (delta: string) => void;
   /**
    * Reasoning, on the channel a runtime uses when it keeps reasoning separate
@@ -141,7 +140,7 @@ const AUTHENTICATE_REQUEST_ID = 2.5;
  * use this lifecycle. Claude uses its ACP adapter.
  */
 export class AcpController implements CliStdioController {
-  private phase: "initialize" | "session_new" | "authenticate" | "set_config" | "prompt" | "phase_acknowledge" | "terminal" = "initialize";
+  private phase: "initialize" | "session_new" | "authenticate" | "set_config" | "prompt" | "terminal" = "initialize";
   private completed = false;
   private error: string | null = null;
   private resumeHandshakeFailed = false;
@@ -185,6 +184,15 @@ export class AcpController implements CliStdioController {
   } | null = null;
   /** The runtime's last report of how full its session context is (ACP `usage_update`). */
   private contextWindow: { used: number; size: number } | null = null;
+  /**
+   * Every `usage_update` the runtime sent in this turn, and the sum of their
+   * `used` values. A runtime sends one per model request, each saying how
+   * full the context was for that request, so the sum is the context volume
+   * the turn processed — the number a per-call price multiplies — even for a
+   * runtime whose prompt result reports only its last request (Codex).
+   */
+  private usageUpdates = 0;
+  private usageUpdatesUsedTotal = 0;
   private promptIndex = 0;
   private sentPromptCount = 0;
   /**
@@ -202,8 +210,7 @@ export class AcpController implements CliStdioController {
     local_tool_directory?: boolean;
     session_config?: AcpSessionConfigSelection[];
     runtime_session_id?: string | null;
-    before_next_prompt?: (sessionId: string) => Promise<void>;
-    on_text_delta?: (delta: string) => void;
+      on_text_delta?: (delta: string) => void;
     on_thought_delta?: (delta: string) => void;
     attributed_model?: string | null;
     on_protocol_event?: (event: Record<string, unknown>) => void;
@@ -449,18 +456,9 @@ export class AcpController implements CliStdioController {
       if (this.askedUser) {
         this.completeAskedTurn(closeStdin);
       } else if (this.promptIndex + 1 < this.promptCount()) {
-        this.phase = "phase_acknowledge";
-        const acknowledge = this.input.before_next_prompt?.(this.sessionId!);
-        Promise.resolve(acknowledge).then(() => {
-          if (this.phase !== "phase_acknowledge") return;
-          this.promptIndex += 1;
-          this.text = "";
-          this.phase = "prompt";
-          this.prompt(send);
-        }, (error) => this.fail(
-          error instanceof Error ? error.message : "CLI context acknowledgement failed",
-          closeStdin,
-        ));
+        this.promptIndex += 1;
+        this.text = "";
+        this.prompt(send);
       } else {
         this.completed = true;
         this.phase = "terminal";
@@ -518,7 +516,7 @@ export class AcpController implements CliStdioController {
       // and checked above; a new session must first return its id. Message
       // chunks remain turn-scoped and are rejected above outside `prompt`.
       if (this.phase !== "set_config" && this.phase !== "prompt"
-        && this.phase !== "phase_acknowledge" && this.phase !== "terminal"
+        && this.phase !== "terminal"
         && !(this.phase === "session_new" && this.input.runtime_session_id)) {
         this.fail(`${this.label()} ACP returned an out-of-order session update`, closeStdin);
         return;
@@ -560,6 +558,7 @@ export class AcpController implements CliStdioController {
       model_usage: this.modelUsage,
       subscription_quota: this.subscriptionQuota,
       context_window: this.contextWindow,
+      usage_updates: { count: this.usageUpdates, used_total: this.usageUpdatesUsedTotal },
       acp_prompt_count: this.sentPromptCount,
       asked_user: this.askedUser,
       ...(this.droppedConfig.length ? { dropped_session_config: [...this.droppedConfig] } : {}),
@@ -828,6 +827,8 @@ export class AcpController implements CliStdioController {
     const size = nonNegativeInteger(update.size);
     if (used === null || size === null || size === 0) return;
     this.contextWindow = { used, size };
+    this.usageUpdates += 1;
+    this.usageUpdatesUsedTotal += used;
   }
 
   private captureSubscriptionQuota(

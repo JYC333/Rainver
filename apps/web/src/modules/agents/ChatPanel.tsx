@@ -459,22 +459,6 @@ function ChatPanelContent({
     }
   }, [agent.id, agent.space_id, awaitingDecision, backend, changeInput, changeInputParts, draftDestination, inputParts, loadingBackends, loadingHistory, onSessionChange, projectId, restoreWorkspace, selectedBackendOption?.usable, sessionConfig, sessionId, scope, savingSettings])
 
-  const refreshDirectGit = useCallback(async () => {
-    if (!sessionId) return
-    try {
-      const next = await sessionsApi.refreshGitContext(sessionId, scope)
-      setBackendOptions(current => current.map(option => option.runtime_profile_id === backend?.runtime_profile_id
-        ? { ...option, git: next.git ?? null }
-        : option))
-      setHostError(null)
-      toast.success(t('conversation_ui.chat.git_refreshed'))
-    } catch (error) {
-      const note = errMsg(error)
-      setHostError(note)
-      toast.error(note)
-    }
-  }, [backend?.runtime_profile_id, sessionId, scope])
-
   const retryRun = useCallback(async (runId: string) => {
     const retried = await agentsApi.retryConversation(agent.id, runId, { ...scope, spaceId: agent.space_id })
     if (scope.signal?.aborted) return
@@ -618,7 +602,6 @@ function ChatPanelContent({
       {selectedBackendOption && <div className="mb-2 rounded-md border border-border bg-muted/20 px-3 py-2"><ConversationGitContext snapshot={selectedBackendOption.git ?? null} /></div>}
       {hostError && <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-destructive" role="alert">
         <span>{hostError}</span>
-        {sessionId && hostError.toLowerCase().includes('git branch or commit changed') && <Button type="button" size="sm" variant="outline" onClick={() => void refreshDirectGit()}>{t('conversation_ui.chat.refresh_git')}</Button>}
       </div>}
       {archivedManagedWorkspace && !hostBlocked && (
         <label className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">

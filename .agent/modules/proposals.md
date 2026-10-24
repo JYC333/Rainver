@@ -85,9 +85,7 @@ The public proposal review/apply surface is owned by the server:
   `relation_discovery_packet`, `imported_history_memory_packet`,
   `memory_maintenance_packet`, `retrieval_maintenance_packet`,
   `retrieval_diagnostics_packet`, `code_patch`,
-  `skill_import_approve`, `capability_install`, `capability_update`,
-  `capability_enable`, `capability_disable`, and
-  `runtime_skill_binding_update`, plus `custom_source_policy_delta`,
+  `skill_import_approve`, `runtime_skill_binding_update`, plus `custom_source_policy_delta`,
   `custom_source_credentialed_source`, `custom_source_repair_activation`,
   `source_recipe_activation`, `source_channel_activation`,
   `source_backfill_start`, `project_source_bind`,
@@ -97,6 +95,9 @@ The public proposal review/apply surface is owned by the server:
   `research_history_extend`, `project_brief_publish`, and `egress_review`.
   Unregistered proposal types fail closed until
   their owning domain registers an applier.
+  Migration `0004_remove_capability_layer` supersedes pending legacy capability
+  install/update/enable/disable proposals with a reason; their history remains
+  readable, and accepted/rejected rows are unchanged.
 - `memory_maintenance_packet`, `retrieval_maintenance_packet`, and
   `retrieval_diagnostics_packet` are owner-private, creator-owned review
   packets; the current appliers reject another user, including a space admin,

@@ -248,16 +248,13 @@ describe("ACP session updates between Delivery phases", () => {
     expect(sent.some((message) => message.method === "session/prompt")).toBe(false);
   });
 
-  it("accepts session metadata while acknowledging a prompt and after the final response", async () => {
+  it("accepts session metadata between prompts and after the final response", async () => {
     const sent: Record<string, unknown>[] = [];
     const projected: Record<string, unknown>[] = [];
-    let acknowledge!: () => void;
-    const acknowledgement = new Promise<void>((resolve) => { acknowledge = resolve; });
     const acp = createCliConversationController({
       runtime_key: "opencode",
       cwd: "/workspace",
       prompts: ["context", "current user request"],
-      before_next_prompt: () => acknowledgement,
       on_protocol_event: (event) => projected.push(event),
     })!;
     const send = (message: Record<string, unknown>) => sent.push(message);
@@ -272,21 +269,20 @@ describe("ACP session updates between Delivery phases", () => {
     acp.start(send);
     await acp.receive({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }, send, close);
     await acp.receive({ jsonrpc: "2.0", id: 2, result: { sessionId: "session-1", configOptions: [] } }, send, close);
+    expect(sent.filter((message) => message.method === "session/prompt")).toHaveLength(1);
+    // The next prompt follows the previous response directly; nothing waits
+    // for a server-side acknowledgement in between.
     await acp.receive({ jsonrpc: "2.0", id: 4, result: { stopReason: "end_turn" } }, send, close);
+    expect(sent.filter((message) => message.method === "session/prompt")).toHaveLength(2);
     await acp.receive(update("session-1"), send, close);
     expect(acp.result().error).toBeNull();
-    expect(projected).toHaveLength(1); // initialize response only
-    expect(sent.filter((message) => message.method === "session/prompt")).toHaveLength(1);
-
-    acknowledge();
-    await Promise.resolve();
-    expect(sent.filter((message) => message.method === "session/prompt")).toHaveLength(2);
     await acp.receive({ jsonrpc: "2.0", id: 5, result: { stopReason: "end_turn" } }, send, close);
     await acp.receive(update("session-1"), send, close);
     expect(acp.result().error).toBeNull();
     expect(acp.result().completed).toBe(true);
     expect(closed).toBe(true);
-    expect(projected).toHaveLength(1);
+    // Metadata updates are projected, never treated as turn output.
+    expect(projected.every((event) => !("text" in event))).toBe(true);
   });
 
   it("still rejects an out-of-scope update while waiting for a prompt", async () => {

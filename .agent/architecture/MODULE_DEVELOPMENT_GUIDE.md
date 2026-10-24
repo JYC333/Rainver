@@ -29,7 +29,7 @@ Support packages are documented in `MODULES.md`.
 |---|---|
 | `kernel` | Identity, isolation, governance, execution spine. |
 | `infra` | Cross-cutting infrastructure and host/runtime integration. |
-| `capability` | Code-defined agent skills and reviewable evolution surfaces. |
+| `capability` | Skill library, diagnostic manifests and reviewable evolution surfaces. |
 | `product` | User-facing domain feature surface. |
 | `frontend-support` | Backend read models and aggregation endpoints for UI views. |
 | `support-package` | Import-only package without HTTP route registration. |
@@ -56,11 +56,11 @@ Support packages are documented in `MODULES.md`.
 
 Routes must live in module route files, not in `server.ts` or a shared API directory.
 
-For capability/workflow/open-skill work, keep the ownership split explicit:
-`catalog` reads raw on-disk manifests, `capabilities` owns the product control
+For Skill/Tool/Workflow work, keep the ownership split explicit:
+`catalog` reads raw on-disk manifests, `skills` owns the product control
 plane, `runtimeAdapters` owns runtime adapter type metadata, `runs` owns
-execution, and `runtimeContext` converts approved skill renderings into typed
-Delivery items without writing vendor instruction files.
+execution, and `runtimeContext` authorizes original package files in typed Delivery items;
+Hosts materialize those original bytes.
 
 ## Public Facades And Imports
 
@@ -118,7 +118,7 @@ Keep facades narrow so tests and peer modules do not couple to internal helpers.
 | Proposal apply behavior | Put mutation logic in the target module and register it with the server proposal applier registry. |
 | Runtime adapter | Register adapter/spec in `server/src/modules/runtimeAdapters`; adapters return `RuntimeAdapterResult` and use server runtime services. |
 | Agent runtime | Add an ACP-backed `AgentRuntimeDefinition`/registry entry and use the shared `AcpRuntimeAdapter`; do not add a Server-side Agent loop. Bounded provider calls belong to ProviderTask and the owning domain. |
-| Capability/workflow/open-skill control plane | Add or change `server/src/modules/capabilities`; do not widen `catalog` into remote import, marketplace, or execution ownership. |
+| Capability/workflow/open-skill control plane | Add or change `server/src/modules/skills`; do not widen `catalog` into remote import, marketplace, or execution ownership. |
 
 ### Static contribution registries
 

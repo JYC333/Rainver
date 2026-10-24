@@ -152,6 +152,9 @@ place — a tool call finishing updates the part it started as — so a frame's
 `part.index` is where it belongs in the list, not a running counter.
 `turn.state_changed` carries `blocked_on` alongside `state`, because `blocked`
 on its own does not say what the turn is waiting for.
+Each server poll also writes an SSE keepalive comment, including when the turn
+has no changes, so long commands and approval waits do not trigger the proxy's
+idle read timeout. These comments create no progress events.
 
 `GET /api/v1/runs/{runId}/turn` is the same projection as a plain read, always
 whole: part indices restart at 0 and the reply and Proposals are appended

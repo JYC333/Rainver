@@ -37,12 +37,6 @@ export interface ExecutionContextRow {
   git_dirty: boolean | null;
   git_execution_ready: boolean | null;
   git_observed_at: string | null;
-  /**
-   * Branch and HEAD the host reported at the exit of this Conversation's most
-   * recent Run in its Primary Location (hosts/repository recordGitAfter).
-   */
-  last_run_git_branch: string | null;
-  last_run_git_head: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -118,13 +112,15 @@ interface ConversationRuntimeThreadRow {
   context_tokens: number | null;
   context_window_tokens: number | null;
   handoff_artifact_id: string | null;
+  /** The summary written in the current vendor session, if any, and when the last Run ended. */
+  summary_artifact_id: string | null;
+  last_run_ended_at: string | Date | null;
 }
 
 const CONTEXT_COLUMNS = `id, space_id, session_id, execution_host_id,
   primary_workspace_mode, primary_project_folder_id, primary_workspace_location_id,
   state, initialized_at, initialized_by_user_id, dispatch_lock_id, queue_paused_at,
   git_branch, git_head, git_dirty, git_execution_ready, git_observed_at,
-  last_run_git_branch, last_run_git_head,
   created_at, updated_at`;
 
 const ATTACHMENT_COLUMNS = `grant_row.id, grant_row.space_id, grant_row.session_id,
@@ -250,37 +246,6 @@ export class PgConversationExecutionContextRepository {
       return existing;
     }
     return context;
-  }
-
-  async refreshGitBaseline(input: {
-    spaceId: string;
-    sessionId: string;
-    git: {
-      branch: string | null;
-      commitSha: string | null;
-      dirty: boolean | null;
-      executionReady: boolean;
-      observedAt: string;
-    };
-  }): Promise<ExecutionContextRow | null> {
-    const result = await this.db.query<ExecutionContextRow>(
-      `UPDATE conversation_execution_contexts
-          SET git_branch = $3,
-              git_head = $4,
-              git_dirty = $5,
-              git_execution_ready = $6,
-              git_observed_at = $7,
-              -- A new baseline starts a new account of who moved HEAD: a
-              -- last-Run HEAD from before it must not later vouch for a HEAD
-              -- somebody else moved to the same commit.
-              last_run_git_branch = NULL,
-              last_run_git_head = NULL,
-              updated_at = now()
-        WHERE space_id = $1 AND session_id = $2 AND state = 'initialized'
-        RETURNING ${CONTEXT_COLUMNS}`,
-      [input.spaceId, input.sessionId, input.git.branch, input.git.commitSha, input.git.dirty, input.git.executionReady, input.git.observedAt],
-    );
-    return result.rows[0] ?? null;
   }
 
   async listHosts(userId: string): Promise<ExecutionHostRow[]> {
@@ -484,12 +449,21 @@ export class PgConversationExecutionContextRepository {
 
   async getConversationThread(spaceId: string, sessionId: string, agentId: string): Promise<ConversationRuntimeThreadRow | null> {
     const result = await this.db.query<ConversationRuntimeThreadRow>(
-      `SELECT agent_id, execution_host_id, workspace_mode, workspace_location_id,
-              runtime_key, runtime_installation, status,
-              context_tokens, context_window_tokens, handoff_artifact_id
-         FROM host_threads
-        WHERE space_id = $1 AND session_id = $2 AND agent_id = $3
-          AND container_kind = 'conversation' AND status IN ('active', 'session_reset')
+      `SELECT thread.agent_id, thread.execution_host_id, thread.workspace_mode, thread.workspace_location_id,
+              thread.runtime_key, thread.runtime_installation, thread.status,
+              thread.context_tokens, thread.context_window_tokens, thread.handoff_artifact_id,
+              (SELECT summary.id FROM artifacts summary
+                WHERE summary.space_id = thread.space_id AND summary.artifact_type = 'agent_handoff'
+                  AND summary.metadata_json->>'host_thread_id' = thread.id
+                  AND summary.metadata_json->>'manual_summary' = 'true'
+                  AND thread.vendor_session_id IS NOT NULL
+                  AND summary.metadata_json->>'vendor_session_id' = thread.vendor_session_id
+                ORDER BY summary.created_at DESC LIMIT 1) AS summary_artifact_id,
+              (SELECT last_run.ended_at FROM runs last_run
+                WHERE last_run.space_id = thread.space_id AND last_run.id = thread.last_run_id) AS last_run_ended_at
+         FROM host_threads thread
+        WHERE thread.space_id = $1 AND thread.session_id = $2 AND thread.agent_id = $3
+          AND thread.container_kind = 'conversation' AND thread.status IN ('active', 'session_reset')
         LIMIT 1`,
       [spaceId, sessionId, agentId],
     );
@@ -518,11 +492,11 @@ export class PgConversationExecutionContextRepository {
            runtime_key_snapshot, backend_mode_snapshot,
            model_name_snapshot, model_provider_id_snapshot,
            runtime_config_snapshot_json, runtime_policy_snapshot_json,
-           runtime_state_key, created_at, updated_at
+           created_at, updated_at
          ) VALUES (
            $1::varchar, $2::varchar, $3::varchar, $4::varchar, $5::varchar, $6::varchar,
            $7::varchar(128), $8::varchar(32), $9, $10, $11::jsonb, $12::jsonb,
-           $13::varchar, $14::timestamptz, $14::timestamptz
+           $13::timestamptz, $13::timestamptz
          )
          ON CONFLICT ON CONSTRAINT uq_session_conversation_backends_session_agent
          DO UPDATE SET
@@ -533,11 +507,6 @@ export class PgConversationExecutionContextRepository {
            model_provider_id_snapshot = EXCLUDED.model_provider_id_snapshot,
            runtime_config_snapshot_json = EXCLUDED.runtime_config_snapshot_json,
            runtime_policy_snapshot_json = EXCLUDED.runtime_policy_snapshot_json,
-           runtime_state_key = EXCLUDED.runtime_state_key,
-           runtime_session_id = NULL,
-           runtime_context_fingerprint = NULL,
-           runtime_message_cursor_id = NULL,
-           runtime_session_updated_at = NULL,
            updated_at = EXCLUDED.updated_at`,
         [
           randomUUID(),
@@ -552,7 +521,6 @@ export class PgConversationExecutionContextRepository {
           profile.model_provider_id,
           JSON.stringify(profile.runtime_config_json),
           JSON.stringify(profile.runtime_policy_json),
-          randomUUID(),
           now,
         ],
       );

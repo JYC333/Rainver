@@ -306,43 +306,6 @@ export const ProjectConversationsResponseSchema = z.object({
 }).strict();
 export type ProjectConversationsResponse = z.infer<typeof ProjectConversationsResponseSchema>;
 
-export const RoomConversationSummarySchema = z.object({
-  id: IdSchema,
-  version: z.number().int().positive(),
-  summary_text: z.string().min(1),
-  covered_through_message_id: IdSchema,
-  covered_through_created_at: ISODateTimeSchema,
-  covered_message_count: z.number().int().positive(),
-  source_token_estimate: z.number().int().nonnegative(),
-  summary_token_estimate: z.number().int().nonnegative(),
-  project_id: IdSchema,
-  created_at: ISODateTimeSchema,
-  provider_id: IdSchema.nullish(),
-  model: z.string().nullish(),
-  usage: z.record(z.unknown()).nullish(),
-  audit: z.record(z.unknown()).nullish(),
-}).strict();
-export type RoomConversationSummary = z.infer<typeof RoomConversationSummarySchema>;
-
-export const RoomConversationSummaryResponseSchema = z.object({
-  state: z.object({
-    room_id: IdSchema,
-    session_id: IdSchema,
-    status: z.enum(["idle", "queued", "running", "waiting_provider", "retry_wait", "failed"]),
-    active_summary_id: IdSchema.nullish(),
-    requested_through_message_id: IdSchema.nullish(),
-    requested_through_created_at: ISODateTimeSchema.nullish(),
-    retry_count: z.number().int().nonnegative(),
-    next_attempt_at: ISODateTimeSchema.nullish(),
-    last_error: z.string().nullish(),
-    updated_at: ISODateTimeSchema,
-    owner_user_id: IdSchema.nullish(),
-    room_title: z.string(),
-  }).nullable(),
-  summary: RoomConversationSummarySchema.nullable(),
-}).strict();
-export type RoomConversationSummaryResponse = z.infer<typeof RoomConversationSummaryResponseSchema>;
-
 export const RoomMessageSchema = z.object({
   id: IdSchema,
   space_id: IdSchema,

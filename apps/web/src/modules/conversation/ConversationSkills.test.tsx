@@ -2,12 +2,12 @@ import { useState } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ConversationInputPart } from '@rainver/protocol'
-import { capabilitiesFrameworkApi } from '../../api/client'
+import { skillsApi } from '../../api/client'
 import { ConversationView } from './ConversationView'
 
 vi.mock('../../api/client', async original => ({
   ...await original<typeof import('../../api/client')>(),
-  capabilitiesFrameworkApi: { availableSkills: vi.fn() },
+  skillsApi: { availableSkills: vi.fn() },
 }))
 const skill = { kind: 'skill' as const, skill_package_id: 'skill-1', package_hash: 'a'.repeat(64), display_name: 'Audit' }
 function Harness({ initialText = '', initialParts = [] }: { initialText?: string; initialParts?: ConversationInputPart[] }) {
@@ -24,7 +24,7 @@ function Harness({ initialText = '', initialParts = [] }: { initialText?: string
 }
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(capabilitiesFrameworkApi.availableSkills).mockResolvedValue([skill])
+  vi.mocked(skillsApi.availableSkills).mockResolvedValue([skill])
 })
 describe('direct conversation Skill selection', () => {
   it.each(['/', '@'])('selects and removes an immutable Skill through %s', async trigger => {
@@ -38,7 +38,7 @@ describe('direct conversation Skill selection', () => {
     expect(screen.queryByRole('button', { name: 'Remove Audit' })).not.toBeInTheDocument()
     fireEvent.change(editor, { target: { value: '' } })
     expect(screen.getByTestId('parts')).toHaveTextContent('[]')
-    expect(capabilitiesFrameworkApi.availableSkills).toHaveBeenCalledWith(
+    expect(skillsApi.availableSkills).toHaveBeenCalledWith(
       expect.objectContaining({ session_id: 'session-1', agent_id: 'agent-1' }), expect.anything(),
     )
   })

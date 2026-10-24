@@ -35,8 +35,8 @@ Rules:
 | Policy | Sensitive-action enforcement, proposal-apply policy gate, durable policy audit | — |
 | Proposals | External proposal review/read routes, accept/reject/egress-approval/rollback commands, proposal-apply orchestration, and the server applier registry for registered memory, knowledge, task follow-up, and code-patch types | Target-module appliers that are not registered; unregistered proposal types fail closed |
 | Sessions | Public list/get/create session commands, list/add canonical messages, conversation backend bindings, and session reflection proposal creation | Continuity derivation belongs to Runtime Context |
-| Runtime Context | Policy/setup resolution, typed acquisition and planning, Delivery/Snapshot lifecycle, scope-sequenced canonical Context Events, capture-gap reconciliation, deterministic Micro Checkpoints, validated Semantic Checkpoints, and immutable corrections | Canonical bodies stay in owning domains; Memory/Project/Policy promotion stays separately governed |
-| Agent conversation | Direct agent chat turn orchestration, user × session backend binding, hybrid CLI runtime-session resume, and queued Run creation | Room persistence, which is owned by Rooms |
+| Runtime Context | Policy/setup resolution, typed acquisition and planning, Delivery/Snapshot lifecycle, scope-sequenced canonical Context Events, capture gaps, deterministic Micro Checkpoints, and immutable corrections | Canonical bodies stay in owning domains; no extraction from the ledger; Memory/Project/Policy promotion stays separately governed |
+| Agent conversation | Direct agent chat turn orchestration, user × session backend binding, Host-thread resume, and queued Run creation | Room persistence, which is owned by Rooms |
 | Ask Space / personal aggregated retrieval | Same-Space `/ask-space/think`; user-centred `/me/retrieval*` fan-out with per-Space live adapter authorization; pointer-only result persistence/re-resolution; source-private single-Space summaries; pre-disclosed explicit Personal-Space fused storage; per-source pointer-only egress records; mutable Space egress notification settings and member broadcasts | Automatic persistence of fused conclusions remains prohibited |
 | Memory read/write boundary | `/memory` list/get/search, read-access logging, public memory create/update/archive proposal creation, batch activity consolidation via `POST /memory/consolidation/run` | Memory quality/evolution jobs (digest refresh, memory-health solidification, source-monitoring producers) |
 | Memory apply | Accepted `memory_create` / `memory_update` / `memory_archive` apply after the proposal-apply policy gate, including creation-context/taint placement and producing-Agent provenance | Capability learning, which belongs to evolvable assets |
@@ -47,7 +47,7 @@ Rules:
 | Plans | DB-backed `/plans*` Agent Plan list/detail reads, approval-gated version reads, execution, reconciliation, and Agent-only `task.plan.propose` materialization | Public Plan creation/revision, Canvas editing, and planner/model authority beyond the stored plan contract |
 | Artifacts | Client-facing `GET /artifacts`, `GET /artifacts/{id}`, `GET /artifacts/{id}/export`, and run-scoped artifact routes, including scoped visibility checks and managed-storage export path guards | — |
 | Projects | DB-backed `/projects*` CRUD/archive, immutable Brief Versions (no Project type field — ADR 0019; every installed Area always reachable), owned Project Folders (`/projects/{id}/folders*`), adapter-composed Overview/Attention, and ephemeral cross-domain Project Review sessions. Inquiry owns Questions/Hypotheses; Project Research owns one version-pinned Question scope per Workflow; Experiment, Decision, Learning, Delivery, and Operations retain their own authorities. | Incident/Runbook aggregates remain usage-triggered |
-| Capabilities / templates | Catalog-backed `/capabilities*` and `/agent-templates*` product routes | Capability/template authoring remains file/catalog controlled |
+| Skill library / diagnostic catalog | `skills` owns original Skill imports, review, scope bindings and `/skills` data; `catalog` owns read-only `/server/catalog*` manifests | Skill content grants no Tool authority; catalog manifests are not executable |
 | Prompts | Catalog-backed built-in prompt manifests, `/prompts/assets*` prompt asset/version reads and writes, preview/evaluation, labeled deployment refs, production promotion proposals, rollback, and runtime prompt resolution | Tool/capability grants, provider credentials, Project Folder access, memory write policy, and capability graph changes remain outside prompt edits |
 | Evolution | `/evolution*` target/signal surfaces, strategy assets, selector decisions, experiences, review prompts, real `run_type='evolution'` run creation, review artifact recording, and evolution bundle grouping/partial review/version-set rollback | Automatic apply/deploy/code-merge loops, rollback adapters for proposal types without durable domain snapshots, and unregistered proposal appliers |
 | Personal memory grants | `/personal-memory-grants*` preview/create/list/revoke/audit for run-scoped summary-only grants | Raw personal-memory egress apply path remains fail-closed |
@@ -56,8 +56,8 @@ Rules:
 
 Current ownership aliases to avoid migration-drift mistakes:
 
-- `catalog` owns catalog-backed `/capabilities*` and `/server/catalog*` surfaces.
-  `capabilities` is a separate ServerModule for capability-definitions, packs,
+- `catalog` owns read-only `/server/catalog*` diagnostics.
+  `skills` is a separate ServerModule for original Skill packages, review,
   and skill packages.
 - `providers` owns provider credentials and managed-subscription OAuth; no CLI
   credential is brokered (ADR 0016). There is no standalone `credentials` route

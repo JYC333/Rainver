@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { retryTaskInstruction } from "../runs/retryPolicy.js";
 import * as protocol from "@rainver/protocol";
-import type { ContextEvent, ContextItem, ExecutionControlSnapshot, InvocationDelivery, InvocationSnapshotSafe, RetrievalObjectType, RuntimeContextEnvelope, RuntimeContextEventIngress } from "@rainver/protocol";
+import type { ContextEvent, ContextItem, ExecutionControlSnapshot, InvocationDelivery, InvocationSnapshotSafe, RetrievalObjectType, RuntimeContextEventIngress } from "@rainver/protocol";
 import type { ServerConfig } from "../../config.js";
 import type { Pool, Queryable } from "../routeUtils/common.js";
 import { HttpError } from "../routeUtils/common.js";
@@ -49,16 +49,9 @@ import {
   roomRoutingInstruction,
 } from "./productionAcquisition.js";
 import { RuntimeContextContinuityService } from "./continuity/service.js";
-import { ManagedSemanticCheckpointProvider } from "./continuity/semanticExtractor.js";
-import {
-  RuntimeContextCliContinuityService,
-  authorizeCliDeltaItem,
-} from "./continuity/cliContinuity.js";
-import { ContextWindowPlanner, trimContextText } from "./windowPlanner.js";
+import { trimContextText } from "./windowPlanner.js";
 import { PgRuntimeContextAcquisitionRepository } from "./acquisitionRepository.js";
-import { PgRuntimeSkillProvider, renderRuntimeSkillCandidate } from "../capabilities/runtimeSkillProvider.js";
-import { enforce } from "../policy/service.js";
-import { loadActionRegistry } from "../policy/actionRegistry.js";
+import { PgRuntimeSkillProvider } from "../skills/runtimeSkillProvider.js";
 import { isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 import { effectiveRunProviderModel } from "../runs/remoteProviderBinding.js";
 import { availableModels } from "../providers/dbReader.js";
@@ -80,7 +73,6 @@ for (const adapter of [
 export interface InvocationSnapshotStorePort {
   createAttempt(input: Parameters<InvocationSnapshotService["createAttempt"]>[0]): ReturnType<InvocationSnapshotService["createAttempt"]>;
   acknowledge(input: Parameters<InvocationSnapshotService["acknowledge"]>[0]): ReturnType<InvocationSnapshotService["acknowledge"]>;
-  acknowledgeCliContextPhase?(input: Parameters<InvocationSnapshotService["acknowledgeCliContextPhase"]>[0]): ReturnType<InvocationSnapshotService["acknowledgeCliContextPhase"]>;
   finalize(input: Parameters<InvocationSnapshotService["finalize"]>[0]): ReturnType<InvocationSnapshotService["finalize"]>;
 }
 
@@ -99,7 +91,6 @@ export class RuntimeContextInvocationGateway implements RuntimeContextInvocation
     private readonly snapshots: InvocationSnapshotStorePort,
     private readonly controls: ExecutionControlLoaderPort,
     private readonly continuity?: RuntimeContextContinuityPort,
-    private readonly cliContinuity?: Pick<RuntimeContextCliContinuityService, "prepareDelivery">,
   ) {}
 
   preview(input: RuntimeContextPreviewInput) {
@@ -131,46 +122,10 @@ export class RuntimeContextInvocationGateway implements RuntimeContextInvocation
       throw new HttpError(409, "Live Runtime Context authority changed before delivery");
     }
     const control = await this.controls.load(input.identity.spaceId, input.executionControlSnapshotId);
-    const cliState = input.cliBinding
-      ? await this.requireCliContinuity().prepareDelivery({
-          bindingId: input.cliBinding.id,
-          leaseGeneration: input.cliBinding.lease_generation,
-          spaceId: input.identity.spaceId,
-          workContextScopeId: input.turn.work_context_scope_id,
-          invocationId: input.invocationId,
-          currentMessageRef: input.turn.current_message_ref,
-          ownerUserId: input.identity.userId,
-          authorizedSourceRefs: acceptedEnvelopeSourceRefs(plan.envelope),
-        })
-      : null;
-    const envelope = cliState
-      ? cliScopedEnvelope(
-          plan.envelope,
-          cliState.mode,
-          cliState.acknowledged_item_ids,
-          cliState.delta_item,
-        )
-      : plan.envelope;
-    const cliSession = cliState
-      ? {
-          binding_ref: {
-            type: "runtime_context_cli_binding",
-            id: cliState.id,
-            version: String(cliState.generation),
-          },
-          runtime_state_key: cliState.runtime_state_key,
-          vendor_session_id: cliState.vendor_session_id,
-          cursor_from: cliState.cli_known_cursor,
-          cursor_through: cliState.target_cursor,
-          generation: cliState.generation,
-          rotation_reason: cliState.rotation_reason,
-          lease_generation: cliState.lease_generation,
-        }
-      : null;
     const attempt = await this.snapshots.createAttempt({
       spaceId: input.identity.spaceId,
       invocationId: input.invocationId,
-      envelope,
+      envelope: plan.envelope,
       control,
       runtimeKey: input.runtimeKey,
       providerId: input.providerId ?? null,
@@ -178,9 +133,7 @@ export class RuntimeContextInvocationGateway implements RuntimeContextInvocation
       // but worker inputs are not required to rediscover AgentVersion config.
       model: input.model ?? plan.envelope.window_plan.model,
       usageSourceId: input.usageSourceId,
-      mode: cliState?.mode ?? input.mode,
-      runtimeSessionBindingRef: cliSession?.binding_ref ?? input.runtimeSessionBindingRef,
-      cliSession,
+      runtimeSessionBindingRef: input.runtimeSessionBindingRef,
       rawReplayPayload: input.rawReplayPayload,
       viewerUserId: input.identity.userId,
       requireLiveAuthorization: true,
@@ -188,11 +141,6 @@ export class RuntimeContextInvocationGateway implements RuntimeContextInvocation
       snapshotId,
     });
     return attempt.delivery;
-  }
-
-  private requireCliContinuity(): Pick<RuntimeContextCliContinuityService, "prepareDelivery"> {
-    if (!this.cliContinuity) throw new Error("CLI continuity service is unavailable");
-    return this.cliContinuity;
   }
 
   async acknowledgeDelivery(input: RuntimeContextDeliveryAcknowledgement): Promise<InvocationSnapshotSafe> {
@@ -213,13 +161,6 @@ export class RuntimeContextInvocationGateway implements RuntimeContextInvocation
       });
     }
     return snapshot;
-  }
-
-  async acknowledgeCliContextPhase(input: { spaceId: string; deliveryId: string; vendorSessionId: string }): Promise<void> {
-    if (!this.snapshots.acknowledgeCliContextPhase) {
-      throw new Error("CLI context-phase acknowledgement is unavailable");
-    }
-    await this.snapshots.acknowledgeCliContextPhase(input);
   }
 
   finalizeInvocation(input: RuntimeContextFinalizeInput): Promise<InvocationSnapshotSafe> {
@@ -274,7 +215,7 @@ export class PgExecutionControlLoader implements ExecutionControlLoaderPort {
 }
 
 export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthorizer {
-  constructor(private readonly config?: ServerConfig) {}
+  constructor(_config?: ServerConfig) {}
 
   async authorize(db: Queryable, input: InvocationAttemptInput, control: ExecutionControlSnapshot): Promise<void> {
     if (!input.viewerUserId) throw new HttpError(403, "Invocation Delivery requires a live viewer authority");
@@ -330,33 +271,7 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
     const revalidatedRun = { ...run, agent_name: agentName };
     await this.authorizeProject(db, input, control);
     const egress = await this.authorizeEgress(db, input, control, run);
-    await this.authorizeCliSession(db, input, control);
     await this.authorizeAcceptedSources(db, input, control, spaceMember.rows[0].role, egress, revalidatedRun);
-  }
-
-  private async authorizeCliSession(
-    db: Queryable,
-    input: InvocationAttemptInput,
-    control: ExecutionControlSnapshot,
-  ): Promise<void> {
-    const session = input.cliSession;
-    if (!session) return;
-    const viewerUserId = input.viewerUserId;
-    const generation = Number(session.binding_ref.version ?? session.generation);
-    const result = await db.query(
-      `SELECT 1 FROM runtime_context_cli_bindings
-        WHERE id=$1 AND space_id=$2 AND work_context_scope_id=$3
-          AND user_id=$4 AND agent_id=$5 AND runtime_key=$6
-          AND runtime_state_key=$7 AND generation=$8
-          AND vendor_session_id IS NOT DISTINCT FROM $9 AND cli_known_cursor=$10
-          AND execution_lease_generation=$11
-          AND status='active' FOR SHARE`,
-      [session.binding_ref.id, input.spaceId, control.work_context_scope_id,
-        viewerUserId, control.agent_id, input.runtimeKey,
-        session.runtime_state_key, generation, session.vendor_session_id,
-        session.cursor_from, session.lease_generation],
-    );
-    if (!result.rows[0]) throw new HttpError(409, "CLI Delivery binding authority changed before persistence");
   }
 
   private async authorizeSetupAndAgent(
@@ -568,34 +483,17 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       } else if (item.acquisition === "direct" && item.source_ref.type === "project_research_evidence_matrix") {
         await this.authorizeProjectResearchMatrix(db, input, control, item);
       } else if (item.acquisition === "direct" && item.source_ref.type === "runtime_skill_binding") {
-        await this.authorizeRuntimeSkill(db, input, item, run);
+        // No acquisition produces legacy capability renderings. Old plans
+        // must be rebuilt, never delivered without their retired authority.
+        throw new HttpError(409, "Legacy Runtime Skill plan must be rebuilt");
       } else if (item.acquisition === "direct" && item.source_ref.type === "skill_package_binding") {
-        const current = await new PgRuntimeContextAcquisitionRepository(db).loadRun(input.spaceId, input.invocationId);
-        if (!current) throw new HttpError(409, "Skill invocation disappeared");
-        const selected = await loadSelectedSkills(db, {
-          space_id: input.spaceId, project_id: control.project_id, agent_id: control.agent_id,
-          user_id: input.viewerUserId!, session_id: current.session_id,
-          message_id: input.envelope.turn_request.current_message_ref.type === "message"
-            ? input.envelope.turn_request.current_message_ref.id : null, lock: true,
-        });
-        const skill = selected.find(skill => skill.binding_id === item.source_ref.id);
-        if (!skill || item.source_ref.version !== `${skill.content.package_hash}:${current.id}`
-          || contextItemText(item) !== selectedSkillInstruction(skill.content)
-          || JSON.stringify(item.payload.skill_package) !== JSON.stringify(skill.content)) {
-          throw new HttpError(409, "Skill package authorization changed after planning");
-        }
+        await this.authorizeRuntimeSkill(db, input, control, item);
       } else if (item.acquisition === "continuity") {
         await this.authorizeContinuitySource(db, input, item, run);
       } else if (item.acquisition === "runtime_event") {
-        await authorizeCliDeltaItem(db, {
-          item,
-          spaceId: input.spaceId,
-          workContextScopeId: input.envelope.turn_request.work_context_scope_id,
-          viewerUserId: input.viewerUserId!,
-          agentId: control.agent_id,
-          currentMessageRef: input.envelope.turn_request.current_message_ref,
-          authorizedSourceRefs: acceptedEnvelopeSourceRefs(input.envelope),
-        });
+        // CLI history replay no longer exists: the vendor session holds the
+        // conversation and the Context Event ledger is audit, not prompt.
+        throw new HttpError(409, "Invocation Delivery carries a runtime-event item no acquisition produces");
       } else if (item.acquisition === "retrieval") {
         await this.authorizeRetrievalSource(db, input, control, item, viewerSpaceRole, egress);
       } else if (item.acquisition === "explicit"
@@ -702,135 +600,32 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
   private async authorizeRuntimeSkill(
     db: Queryable,
     input: InvocationAttemptInput,
+    control: ExecutionControlSnapshot,
     item: ContextItem,
-    _run: {
-      runtime_key?: string | null;
-    },
   ): Promise<void> {
-    const run = await new PgRuntimeContextAcquisitionRepository(db).loadRun(
-      input.spaceId,
-      input.invocationId,
-    );
-    if (!run) throw new HttpError(409, "Invocation Delivery Runtime Skill Run disappeared");
-    const candidates = await new PgRuntimeSkillProvider(db).loadCandidatesForRun({
-      space_id: input.spaceId,
-      run_id: input.invocationId,
-      runtime_key: run.runtime_key ?? null,
-      capability_id: run.capability_id,
-      agent_id: run.agent_id,
-      project_id: run.project_id,
-      instructed_by_user_id: run.instructed_by_user_id,
-      capabilities_json: run.capabilities_json,
-    });
-    const candidate = candidates.find((value) => value.binding_id === item.source_ref.id);
-    if (!candidate?.capability_enablement_id) {
-      throw new HttpError(409, "Invocation Delivery Runtime Skill enablement changed after planning");
+    const run = await new PgRuntimeContextAcquisitionRepository(db).loadRun(input.spaceId, input.invocationId);
+    if (!run) throw new HttpError(409, "Skill invocation disappeared");
+    const scope = {
+      space_id: input.spaceId, run_id: input.invocationId, runtime_key: run.runtime_key ?? null,
+      project_id: control.project_id, agent_id: control.agent_id,
+      instructed_by_user_id: run.instructed_by_user_id, viewer_user_id: input.viewerUserId,
+      session_id: run.session_id,
+      message_id: input.envelope.turn_request.current_message_ref.type === "message"
+        ? input.envelope.turn_request.current_message_ref.id : null,
+    };
+    const provider = new PgRuntimeSkillProvider(db);
+    const candidates = await provider.loadCandidatesForRun(scope);
+    if (!candidates.some(skill => skill.binding_id === item.source_ref.id)) {
+      throw new HttpError(409, "Skill package authorization changed after planning");
     }
-    // Capability writers take the same transaction-scoped lock. Acquiring it
-    // before the authoritative reload prevents a higher-precedence enablement
-    // from appearing between selection and Delivery persistence.
-    await db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
-      `runtime-skill-authority:${input.spaceId}:${candidate.capability_id}`,
-    ]);
-    const enablement = await db.query<{
-      capability_key: string;
-      capability_version_id: string | null;
-      enabled: boolean;
-    }>(
-      `SELECT capability_key,capability_version_id,enabled
-         FROM capability_enablements
-        WHERE id=$1 AND space_id=$2
-        FOR SHARE`,
-      [candidate.capability_enablement_id, input.spaceId],
-    );
-    const enabled = enablement.rows[0];
-    if (!enabled?.enabled || enabled.capability_key !== candidate.capability_id
-      || enabled.capability_version_id !== candidate.capability_version_id) {
-      throw new HttpError(409, "Invocation Delivery Runtime Skill enablement changed after planning");
-    }
-    if (candidate.capability_version_id) {
-      const binding = await db.query<{
-        capability_key: string;
-        capability_version_id: string | null;
-        runtime_key: string;
-        render_mode: string;
-        enabled: boolean;
-      }>(
-        `SELECT capability_key,capability_version_id,runtime_key,render_mode,enabled
-           FROM capability_runtime_bindings
-          WHERE id=$1 AND space_id=$2
-          FOR SHARE`,
-        [candidate.binding_id, input.spaceId],
-      );
-      const version = await db.query<{ status: string }>(
-        `SELECT status FROM capability_versions
-          WHERE id=$1 AND space_id=$2
-          FOR SHARE`,
-        [candidate.capability_version_id, input.spaceId],
-      );
-      const bound = binding.rows[0];
-      if (!bound?.enabled || bound.capability_key !== candidate.capability_id
-        || bound.capability_version_id !== candidate.capability_version_id
-        || bound.runtime_key !== candidate.runtime_key
-        || bound.render_mode !== candidate.render_mode
-        || version.rows[0]?.status !== "available") {
-        throw new HttpError(409, "Invocation Delivery Runtime Skill binding changed after planning");
-      }
-    }
-    const authorizedCandidates = await new PgRuntimeSkillProvider(db).loadCandidatesForRun({
-      space_id: input.spaceId,
-      run_id: input.invocationId,
-      runtime_key: run.runtime_key ?? null,
-      capability_id: run.capability_id,
-      agent_id: run.agent_id,
-      project_id: run.project_id,
-      instructed_by_user_id: run.instructed_by_user_id,
-      capabilities_json: run.capabilities_json,
-    });
-    const authorizedCandidate = authorizedCandidates.find((value) => value.binding_id === item.source_ref.id);
-    if (!authorizedCandidate) {
-      throw new HttpError(409, "Invocation Delivery Runtime Skill authority changed after planning");
-    }
-    if (!this.config) {
-      throw new HttpError(503, "Invocation Delivery Runtime Skill policy authority is unavailable");
-    }
-    const policy = await enforce(this.config, await loadActionRegistry(), {
-      action: "runtime_skill.render",
-      force_record: false,
-      actor_type: "run",
-      actor_id: input.invocationId,
-      space_id: input.spaceId,
-      resource_type: "runtime_skill_binding",
-      resource_id: authorizedCandidate.binding_id,
-      run_id: input.invocationId,
-      context: {
-        runtime_key: authorizedCandidate.runtime_key,
-        render_mode: authorizedCandidate.render_mode,
-        capability_id: authorizedCandidate.capability_id,
-        capability_version_id: authorizedCandidate.capability_version_id,
-        capability_enablement_id: authorizedCandidate.capability_enablement_id,
-        enabled_binding: true,
-        risk_level: authorizedCandidate.risk_level,
-      },
-      metadata_json: {
-        binding_id: authorizedCandidate.binding_id,
-        capability_id: authorizedCandidate.capability_id,
-        capability_version_id: authorizedCandidate.capability_version_id,
-        capability_enablement_id: authorizedCandidate.capability_enablement_id,
-        runtime_key: authorizedCandidate.runtime_key,
-        render_mode: authorizedCandidate.render_mode,
-        risk_level: authorizedCandidate.risk_level,
-      },
-    });
-    if (policy.status !== "allow") {
-      throw new HttpError(403, policy.message ?? "Invocation Delivery Runtime Skill policy denied rendering");
-    }
-    const rendered = renderRuntimeSkillCandidate(authorizedCandidate);
-    const text = rendered?.rendered.prompt_block
-      ?? rendered?.rendered.files.map((file) => `## ${file.path}\n\n${file.content}`).join("\n\n")
-      ?? null;
-    if (!candidate || !text || contextItemText(item) !== text) {
-      throw new HttpError(409, "Invocation Delivery Runtime Skill binding changed after planning");
+    // The same package lock is taken by binding writers. Reload under the
+    // lock so a disable or higher-precedence binding cannot race Delivery.
+    const authorizedCandidates = await provider.loadCandidatesForRun({ ...scope, lock: true });
+    const skill = authorizedCandidates.find(skill => skill.binding_id === item.source_ref.id);
+    if (!skill || item.source_ref.version !== `${skill.content.package_hash}:${run.id}`
+      || contextItemText(item) !== selectedSkillInstruction(skill.content)
+      || JSON.stringify(item.payload.skill_package) !== JSON.stringify(skill.content)) {
+      throw new HttpError(409, "Skill package authorization changed after planning");
     }
   }
 
@@ -902,16 +697,6 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
         "Invocation Delivery semantic checkpoint changed after planning",
       );
     }
-    if (planned.room_summary) {
-      await lockRequiredRow(
-        db,
-        `SELECT id FROM room_conversation_summary_versions
-          WHERE id=$1 AND space_id=$2 AND session_id=$3 AND version=$4 AND status='active'
-          FOR SHARE`,
-        [planned.room_summary.id, input.spaceId, run.session_id, planned.room_summary.version],
-        "Invocation Delivery Room summary changed after planning",
-      );
-    }
     const messageIds = messages.map((message) => message.id);
     const locked = messageIds.length
       ? await db.query(
@@ -938,12 +723,9 @@ export class PgInvocationDeliveryAuthorizer implements InvocationDeliveryAuthori
       canonical.messages,
       canonicalCurrent,
       canonical.checkpoint,
-      canonical.room_summary,
       canonical.room_conversation,
     );
-    const expectedRef = canonical.room_summary
-      ? { type: "room_conversation_summary", id: canonical.room_summary.id, version: String(canonical.room_summary.version) }
-      : canonical.checkpoint
+    const expectedRef = canonical.checkpoint
       ? { type: "semantic_checkpoint", id: canonical.checkpoint.id, version: String(canonical.checkpoint.version) }
       : { type: "session", id: run.session_id, version: null };
     const decision = input.envelope.window_plan.decisions.find((entry) => entry.item_id === item.id);
@@ -1455,11 +1237,7 @@ export function createProductionRuntimeContextInvocationGateway(
   db: Pool,
   config?: ServerConfig,
 ): RuntimeContextInvocationGateway {
-  const continuity = new RuntimeContextContinuityService(
-    db,
-    config ? new ManagedSemanticCheckpointProvider(db, config) : undefined,
-  );
-  const cliContinuity = new RuntimeContextCliContinuityService(db);
+  const continuity = new RuntimeContextContinuityService(db);
   return new RuntimeContextInvocationGateway(
     createProductionRuntimeContextPlanningService(db, config),
     new InvocationSnapshotService(
@@ -1467,61 +1245,10 @@ export function createProductionRuntimeContextInvocationGateway(
       undefined,
       new PgInvocationDeliveryAuthorizer(config),
       continuity,
-      cliContinuity,
     ),
     new PgExecutionControlLoader(db),
     continuity,
-    cliContinuity,
   );
 }
 
-function cliScopedEnvelope(
-  envelope: RuntimeContextEnvelope,
-  mode: "full" | "delta",
-  acknowledgedItemIds: readonly string[],
-  deltaItem: ContextItem | null,
-): RuntimeContextEnvelope {
-  const known = new Set(acknowledgedItemIds);
-  const currentRef = envelope.turn_request.current_message_ref;
-  const selected = envelope.items.filter((item) => {
-    const current = item.source_ref.type === currentRef.type
-      && item.source_ref.id === currentRef.id
-      && (item.source_ref.version ?? null) === (currentRef.version ?? null);
-    if (current) return true;
-    if (item.acquisition === "continuity") return false;
-    return mode === "full" || !known.has(item.id);
-  });
-  if (deltaItem) selected.push(deltaItem);
-  const current = selected.find((item) => item.source_ref.type === currentRef.type
-    && item.source_ref.id === currentRef.id
-    && (item.source_ref.version ?? null) === (currentRef.version ?? null));
-  if (!current) throw new Error("CLI delta planning lost the current user input");
-  const original = envelope.window_plan;
-  const planned = new ContextWindowPlanner().plan({
-    model: original.model,
-    items: selected,
-    currentMessageItemId: current.id,
-    outputReserveTokens: original.reserved_output_tokens,
-    modelWindowOverride: {
-      contextWindowTokens: original.total_window_tokens,
-      defaultOutputReserveTokens: original.reserved_output_tokens,
-      providerOverheadTokens: original.provider_overhead_tokens,
-      catalogVersion: original.model_catalog_version,
-      tokenizerVersion: original.tokenizer_version,
-    },
-  });
-  return {
-    ...envelope,
-    items: planned.items,
-    source_trace: planned.items.map((item) => item.source_ref),
-    window_plan: planned.windowPlan,
-  };
-}
-
-function acceptedEnvelopeSourceRefs(envelope: RuntimeContextEnvelope) {
-  const decisions = new Map(envelope.window_plan.decisions.map((decision) => [decision.item_id, decision.decision]));
-  return envelope.items
-    .filter((item) => decisions.get(item.id) !== "blocked")
-    .map((item) => item.source_ref);
-}
-import { loadSelectedSkills, selectedSkillInstruction } from "../capabilities/selectedSkills.js";
+import { selectedSkillInstruction } from "../skills/selectedSkills.js";

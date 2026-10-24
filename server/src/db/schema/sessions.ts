@@ -105,18 +105,12 @@ export const sessionConversationBackends = pgTable("session_conversation_backend
 	runtimeConfigSnapshotJson: jsonb("runtime_config_snapshot_json").default({}).notNull(),
 	runtimePolicySnapshotJson: jsonb("runtime_policy_snapshot_json").default({}).notNull(),
 	sessionConfigJson: jsonb("session_config_json"),
-	runtimeStateKey: varchar("runtime_state_key", { length: 36 }).notNull(),
-	runtimeSessionId: varchar("runtime_session_id", { length: 512 }),
-	runtimeContextFingerprint: varchar("runtime_context_fingerprint", { length: 64 }),
-	runtimeMessageCursorId: varchar("runtime_message_cursor_id", { length: 36 }),
-	runtimeSessionUpdatedAt: timestamp("runtime_session_updated_at", { withTimezone: true, mode: 'string' }),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true, mode: 'string' }).notNull(),
 }, (table): PgTableExtraConfigValue[] => [
 	index("ix_session_conversation_backends_space_id").on(table.spaceId),
 	index("ix_session_conversation_backends_runtime_profile_id").on(table.runtimeProfileId),
 	unique("uq_session_conversation_backends_session_agent").on(table.sessionId, table.agentId),
-	unique("uq_session_conversation_backends_runtime_state_key").on(table.runtimeStateKey),
 	foreignKey({
 		columns: [table.sessionId, table.spaceId],
 		foreignColumns: [sessions.id, sessions.spaceId],

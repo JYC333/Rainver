@@ -2,12 +2,12 @@
  * Open Skill import contracts.
  *
  * External skill packages are untrusted source material. These schemas describe
- * preview, persistence, and conversion request/response shapes only.
+ * preview, persistence, review and scope-binding request/response shapes only.
  */
 
 import { z } from "zod";
 import { IdSchema, ISODateTimeSchema } from "./common.js";
-import { JsonObjectSchema } from "./capabilities.js";
+import { JsonObjectSchema } from "./common.js";
 import { ProposalOutSchema } from "./proposals.js";
 
 export const SkillSourceTypeSchema = z.enum([
@@ -26,7 +26,6 @@ export const SkillPackageStatusSchema = z.enum([
   "imported",
   "reviewed",
   "rejected",
-  "converted",
   "archived",
   "superseded",
 ]);
@@ -107,8 +106,8 @@ export const SkillPackageFileSchema = SkillPackageFilePreviewSchema.extend({
 }).passthrough();
 export type SkillPackageFile = z.infer<typeof SkillPackageFileSchema>;
 
-/** The operations a skill package's Review and Convert actions file. */
-export const SkillPackageProposalOperationSchema = z.enum(["skill_import_approve", "install_from_skill_package"]);
+/** The operation filed by a package review. */
+export const SkillPackageProposalOperationSchema = z.enum(["skill_import_approve"]);
 export type SkillPackageProposalOperation = z.infer<typeof SkillPackageProposalOperationSchema>;
 
 export const SkillPackageSchema = z
@@ -125,7 +124,7 @@ export const SkillPackageSchema = z
     status: SkillPackageStatusSchema,
     created_at: ISODateTimeSchema,
     updated_at: ISODateTimeSchema,
-    // The caller's own still-pending Review or Convert proposal for this
+    // The caller's own still-pending Review proposal for this
     // package snapshot; asking again returns it instead of filing another.
     pending_proposal: z.object({ id: IdSchema, operation: SkillPackageProposalOperationSchema }).nullable(),
     // Detail read only: `GET /skill-packages/:id` joins the owning Source and
@@ -297,15 +296,6 @@ export const SkillPackageContentSchema = z.object({
 }).strict();
 export type SkillPackageContent = z.infer<typeof SkillPackageContentSchema>;
 
-export const SkillConvertToCapabilityRequestSchema = z.object({
-  capability_id: z.string().min(1).optional(),
-  namespace: z.string().min(1).optional(),
-  // Conversion produces a disabled draft. Supplying a project enablement is
-  // rejected: enablement goes through proposal review (ADR 0009).
-  enable_for_project_id: IdSchema.nullish(),
-  create_runtime_bindings: z.boolean().default(true),
-});
-
 /**
  * Review request body. An optional enabling `binding` folds the first scope
  * binding into the review, so one approval reviews and enables the package.
@@ -324,9 +314,4 @@ export type SkillReviewProposalRequest = z.infer<typeof SkillReviewProposalReque
 export const SkillImportApprovalProposalResponseSchema = ProposalOutSchema;
 export type SkillImportApprovalProposalResponse = z.infer<
   typeof SkillImportApprovalProposalResponseSchema
->;
-
-export const SkillConvertToCapabilityResponseSchema = ProposalOutSchema;
-export type SkillConvertToCapabilityResponse = z.infer<
-  typeof SkillConvertToCapabilityResponseSchema
 >;

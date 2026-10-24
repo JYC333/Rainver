@@ -41,23 +41,21 @@ The distinction: `ServerModule` = core backend module mount; `PluginHost` =
 official plugin code activation; Official Optional Module = product feature
 package with runtime enablement state.
 
-### Capability
-A product capability is a built-in definition in
-`server/src/modules/capabilities/registry.ts`, read through
-`/api/v1/capability-definitions`. YAML under `catalog/capabilities/` is a
-diagnostic catalog. Do not execute a catalog manifest. `memory.reflect` in
-that catalog is manifest metadata. Session reflection does not run it.
+### Skill and Tool boundaries
 
-Capabilities are not Official Optional Modules. Do not turn a capability on
-with a plugin enablement row, and do not use a capability id as a plugin id.
+A Skill is procedural content. `skills/` owns its original package,
+review and scoped bindings; `/skills` is the library. A Tool / System Action is
+a code-owned operation governed by the registry and gateway. Neither is an
+Official Optional Module, and neither uses plugin enablement rows. YAML under
+`catalog/capabilities/` is diagnostic, never executable.
 
-| | Capability | Official Optional Module |
+| | Skill | Official Optional Module |
 |---|---|---|
-| Unit | Built-in definition in `capabilities/registry.ts` | Product feature package |
-| Discovery | `GET /api/v1/capability-definitions` | `GET /api/v1/plugins` |
-| Enablement | `capability_enable` / `capability_disable` proposals; state in `capability_enablements` | DB-backed per space or user |
-| Frontend | `/capabilities` | The plugin's own page; a rail item only when `enabled` |
-| Catalog | `GET /api/v1/server/catalog` lists manifests and is not the product path | Not listed there |
+| Unit | Immutable original package | Product feature package |
+| Discovery | `GET /api/v1/skill-packages` | `GET /api/v1/plugins` |
+| Enablement | Reviewed package and proposal-approved `skill_bindings` | DB-backed per Space or user |
+| Frontend | `/skills` | The plugin's own page; rail item when enabled |
+| Authority | Procedural content grants no Tool or plugin permissions | Registered product behavior with plugin guards |
 
 ### RuntimeAdapter
 A backend plugin for the agent runtime execution layer (CLI runtime, model API, etc.). Defined under `server/src/modules/runtimeAdapters/`. Not a product feature visible to end users. Not related to official optional modules.

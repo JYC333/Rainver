@@ -34,8 +34,6 @@ import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
 import { finalizeChatTurn, recordChatTurnFinalizationFailure } from "../runs/chatTurnFinalizer.js";
 import type { ChatTurnFinalizerDeps } from "../runs/chatTurnFinalizer.js";
 import { isHardTerminalRunStatus } from "../runs/orchestrationResults.js";
-import { registerRuntimeContextCheckpointHandler } from "../runtimeContext/continuity/job.js";
-import { registerRoomConversationSummaryHandler } from "../rooms/conversationSummaryJob.js";
 import { registerRoomConversationTitleHandler } from "../rooms/conversationTitleJob.js";
 import { registerRoomDelegationCompletionRetryHandler } from "../agentGroups/delegationCompletionRetryJob.js";
 import { registerRoomDiscussionAdvanceRetryHandler } from "../rooms/discussionAdvanceRetryJob.js";
@@ -114,8 +112,6 @@ export function buildJobHandlerRegistry(
   registerTaskBranchJobHandlers(registry, config);
   registerTaskMergeHandler(registry, config, { resolver: new TaskMergeResolutionDispatcher(config) });
   registerInquiryAdviceHandler(registry, config);
-  registerRuntimeContextCheckpointHandler(registry, config);
-  registerRoomConversationSummaryHandler(registry, config);
   registerRoomConversationTitleHandler(registry, config);
   registerRoomDelegationCompletionRetryHandler(registry, config);
   registerRoomDiscussionAdvanceRetryHandler(registry, config);
@@ -261,7 +257,7 @@ export async function reconcileTerminalChatRuns(
         // record the vendor-session outcome before publishing completion.
         const hostThread = hostThreadDispatchInputs(current);
         if (hostThread.thread_id) {
-          await recordHostThreadOutcome(config, hostThread.thread_id, current, hostThread.resume_attempted, hostThread.identity);
+          await recordHostThreadOutcome(config, hostThread.thread_id, current, hostThread.resume_attempted, hostThread.identity, hostThread.standing);
         }
         try {
           await finalizeChatTurn(config, runs, current, finalizerDeps);

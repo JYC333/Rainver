@@ -77,7 +77,7 @@ no general WebSocket event bus. Agent-turn SSE exists at
 | Feature type | Layer | Module path |
 |---|---|---|
 | New data entity tied to a space | Layer 1–2 | `server/src/db/schema/` + owning module |
-| New agent capability or tool | Layer 7 | `catalog/capabilities/<id>/` and/or `capabilities` |
+| New Skill or Tool | Layer 7 | `skills` for original procedural packages; `systemActions` for callable operations |
 | New permission rule | Layer 8 | `server/src/modules/policy/` |
 | New memory scope or type | Layer 4 | `server/src/modules/memory/` |
 | New raw capture source | Layer 3 | `server/src/modules/activity/` or `capture` |

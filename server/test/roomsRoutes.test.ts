@@ -23,7 +23,6 @@ function service(overrides: Record<string, unknown>) {
     getRoom: async () => { throw new Error("not used"); },
     listConversations: async () => { throw new Error("not used"); },
     listMessages: async () => { throw new Error("not used"); },
-    getConversationSummary: async () => { throw new Error("not used"); },
     sendMessage: async () => { throw new Error("not used"); },
     continueAfterProposal: async () => { throw new Error("not used"); },
     ...overrides,
@@ -274,57 +273,6 @@ describe("Room routes", () => {
         }],
       },
     });
-  });
-
-  it("returns member-visible summary freshness without exposing owner usage metadata", async () => {
-    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-2" });
-    let seen: unknown;
-    __setRoomServiceFactoryForTests(() => service({
-      getConversationSummary: async (...args: unknown[]) => {
-        seen = args;
-        return {
-          state: {
-            room_id: "room-1",
-            session_id: "session-1",
-            status: "idle",
-            active_summary_id: "summary-1",
-            requested_through_message_id: "message-4",
-            requested_through_created_at: "2026-07-26T00:00:04.000Z",
-            retry_count: 0,
-            next_attempt_at: null,
-            last_error: null,
-            updated_at: "2026-07-26T00:00:05.000Z",
-            owner_user_id: null,
-            room_title: "Delivery Room",
-          },
-          summary: {
-            id: "summary-1",
-            version: 1,
-            summary_text: "Earlier decisions.",
-            covered_through_message_id: "message-2",
-            covered_through_created_at: "2026-07-26T00:00:02.000Z",
-            covered_message_count: 2,
-            source_token_estimate: 400,
-            summary_token_estimate: 120,
-            project_id: "project-1",
-            created_at: "2026-07-26T00:00:05.000Z",
-            provider_id: null,
-            model: null,
-            usage: null,
-            audit: null,
-          },
-        };
-      },
-    }));
-    app = buildModuleServer(config(), [roomsModule]);
-
-    const response = await app.inject({
-      method: "GET",
-      url: "/api/v1/rooms/room-1/conversations/session-1/summary",
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ summary: { id: "summary-1", provider_id: null, usage: null } });
-    expect(seen).toEqual([{ spaceId: "space-1", userId: "user-2" }, "room-1", "session-1"]);
   });
 
   it("exposes roster mutations through strict request contracts", async () => {

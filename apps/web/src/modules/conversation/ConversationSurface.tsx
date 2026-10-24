@@ -5,7 +5,6 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import { Bot, Loader2, MessagesSquare, Quote, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { agentsApi, ApiRequestError, roomsApi, runsApi } from '../../api/client'
-import { ConversationLink as Link } from './ConversationScope'
 import { useSpace } from '../../contexts/SpaceContext'
 import i18n, { useAppTranslation } from '../../i18n'
 import { formatTime } from '../../i18n/format'
@@ -17,7 +16,6 @@ import type {
   OpenRoomDiscussionRequest,
   QueuedRoomMessage,
   RoomConversation as RoomConversationRecord,
-  RoomConversationSummaryResponse,
   RoomConversationQuota,
   RoomDetail,
   RoomDiscussion,
@@ -238,7 +236,6 @@ function ConversationSurfaceContent({
   const readErrorRef = useRef(onReadError)
   readErrorRef.current = onReadError
   const [hasOlderMessages, setHasOlderMessages] = useState(false)
-  const [summary, setSummary] = useState<RoomConversationSummaryResponse | null>(null)
   const [runs, setRuns] = useState<Record<string, Run>>({})
   const runsRef = useRef<Record<string, Run>>({})
   // The turn each running Run is producing, so the Agent's work appears as
@@ -444,11 +441,6 @@ function ConversationSurfaceContent({
     setHasOlderMessages(page.items.length === MESSAGE_PAGE_SIZE)
     setQueued(page.queued ?? [])
     refreshDiscussions(page.items)
-    if (variant === 'full') {
-      void roomsApi.summary(roomId, conversationId, scope)
-        .then(next => { if (sequence === requestSequence.current) setSummary(next) })
-        .catch(() => { if (sequence === requestSequence.current) setSummary(null) })
-    }
     const runIds = uniqueIds(page.items.flatMap(message => messageRunIds(message)))
     await refreshRuns(runIds, () => sequence === requestSequence.current)
     if (scope.signal?.aborted || sequence !== requestSequence.current) return
@@ -532,7 +524,6 @@ function ConversationSurfaceContent({
     setContinuation(null)
     setMessagesLoading(true)
     setMessages([])
-    setSummary(null)
     setHasOlderMessages(false)
     setRuns({})
     setLiveTurns({})
@@ -1070,7 +1061,6 @@ function ConversationSurfaceContent({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {variant === 'full' && <RoomSummaryFreshness summary={summary} isOwner={isOwner} />}
       {picked.length > 0 && (
         <PickToolbar
           count={picked.length}
@@ -1500,31 +1490,6 @@ function ProposalContinuationStatus({ continuation, turns }: {
         </div>
         <p className="text-sm">{statusText}</p>
       </div>
-    </div>
-  )
-}
-
-function RoomSummaryFreshness({ summary, isOwner }: { summary: RoomConversationSummaryResponse | null; isOwner: boolean }) {
-  const { t } = useAppTranslation()
-  if (!summary?.state) return null
-  const state = summary.state
-  const label = state.status === 'waiting_provider'
-    ? isOwner ? t('conversation_ui.surface.summary.owner_unconfigured') : t('conversation_ui.surface.summary.unconfigured')
-    : state.status === 'retry_wait'
-      ? state.next_attempt_at
-        ? t('conversation_ui.surface.summary.retry_at', { time: formatTime(state.next_attempt_at) })
-        : t('conversation_ui.surface.summary.retry')
-      : state.status === 'running' || state.status === 'queued'
-        ? t('conversation_ui.surface.summary.updating')
-        : state.status === 'failed'
-          ? t('conversation_ui.surface.summary.failed')
-          : summary.summary
-            ? t('conversation_ui.surface.summary.covers', { version: summary.summary.version, count: summary.summary.covered_message_count })
-            : t('conversation_ui.surface.summary.none')
-  return (
-    <div className="border-b border-border px-5 py-2 text-xs text-muted-foreground" role="status">
-      <span>{label}</span>
-      {state.status === 'waiting_provider' && isOwner && <Link to="/providers" className="ml-2 underline">{t('conversation_ui.surface.summary.configure')}</Link>}
     </div>
   )
 }

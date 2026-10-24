@@ -45,7 +45,7 @@ export const EMPTY_SUMMARY: EvolutionSummaryOut = {
 const SIGNAL_TYPE_VALUES = [
   'runtime_failure', 'adapter_failed', 'tool_error', 'validation_failure',
   'run_validation_failed', 'proposal_rejected', 'stable_preference_missed',
-  'prompt_gap', 'user_repeated_same_correction', 'capability_gap',
+  'prompt_gap', 'user_repeated_same_correction',
   'policy_boundary', 'memory_health', 'retrieval_gap', 'review_requested',
 ]
 
@@ -54,7 +54,7 @@ export type DetailTab = 'definition' | 'signals' | 'strategies' | 'decisions' | 
 export type TargetDialogMode = 'create' | 'copy' | 'edit'
 export type TargetListTab = 'active' | 'archived'
 
-const TARGET_TYPE_VALUES = ['agent_version', 'capability', 'runtime_skill_binding', 'memory', 'knowledge', 'workflow', 'project_folder', 'system']
+const TARGET_TYPE_VALUES = ['agent_version', 'memory', 'knowledge', 'workflow', 'project_folder', 'system']
 const TARGET_STATUS_VALUES = ['active', 'paused', 'archived']
 const DEFAULT_ENGINE_POLICY = {
   max_strategy_risk: 'medium',
@@ -501,9 +501,8 @@ export function TargetConfigDialog({
   const isCopy = mode === 'copy'
   const [targetName, setTargetName] = useState('')
   const [targetType, setTargetType] = useState('agent_version')
-  const [targetRefType, setTargetRefType] = useState('capability')
+  const [targetRefType, setTargetRefType] = useState('agent_version')
   const [targetRefId, setTargetRefId] = useState('')
-  const [capabilityKey, setCapabilityKey] = useState('')
   const [riskLevel, setRiskLevel] = useState('medium')
   const [status, setStatus] = useState('active')
   const [enabled, setEnabled] = useState('true')
@@ -519,9 +518,8 @@ export function TargetConfigDialog({
     const nextName = target ? (target.target_name || '') : ''
     setTargetName(mode === 'copy' && nextName ? t('evolution.copy_name', { name: nextName }) : nextName)
     setTargetType(target?.target_type ?? 'agent_version')
-    setTargetRefType(target?.target_ref_type ?? 'capability')
+    setTargetRefType(target?.target_ref_type ?? 'agent_version')
     setTargetRefId(target?.target_ref_id ?? '')
-    setCapabilityKey(target?.capability_key ?? '')
     setRiskLevel(target?.risk_level ?? 'medium')
     setStatus(isCopy ? 'active' : target?.status ?? 'active')
     setEnabled(String(isCopy ? true : target?.enabled ?? true))
@@ -556,7 +554,6 @@ export function TargetConfigDialog({
           target_type: targetType,
           target_ref_type: targetRefType.trim() || null,
           target_ref_id: targetRefId.trim() || null,
-          capability_key: capabilityKey.trim() || null,
           risk_level: riskLevel,
           enabled: enabled === 'true',
           status,
@@ -570,7 +567,6 @@ export function TargetConfigDialog({
           target_type: targetType,
           target_ref_type: targetRefType.trim() || null,
           target_ref_id: targetRefId.trim() || null,
-          capability_key: capabilityKey.trim() || null,
           risk_level: riskLevel,
           enabled: enabled === 'true',
           status,
@@ -606,10 +602,6 @@ export function TargetConfigDialog({
             </div>
           </div>
           <div className="grid gap-3 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <Label>{t('evolution.capability_key')}</Label>
-              <Input value={capabilityKey} onChange={event => setCapabilityKey(event.target.value)} />
-            </div>
             <p className="self-end rounded-md border border-border bg-muted/30 p-3 text-xs text-muted-foreground">{t('evolution.object_reference_hint')}</p>
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
@@ -669,7 +661,6 @@ export function TargetDefinition({ target }: { target: EvolutionTarget }) {
     { label: t('evolution.scope'), value: target.scope ?? '-', mono: false },
     { label: t('evolution.type'), value: t('evolution.target_type.' + target.target_type, { defaultValue: target.target_type }), mono: false },
     { label: t('evolution.reference'), value: target.target_ref_id ?? '-', mono: true },
-    { label: t('evolution.capability'), value: target.capability_key ?? '-', mono: true },
     { label: t('evolution.current_version'), value: target.current_version ?? target.current_version_id ?? '-', mono: false },
     { label: 'agent_id', value: agentId ?? '-', mono: true },
     { label: t('evolution.last_run'), value: fmt(target.last_run_at, locale), mono: false },

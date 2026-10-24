@@ -21,11 +21,11 @@ import { assertProjectWriter } from "../projects/access.js";
 import { PgHostRepository } from "../hosts/repository.js";
 import { normalizeHostCapabilities } from "../hosts/capabilities.js";
 import { PgHostThreadRepository } from "../hosts/threadRepository.js";
+import { getRuntimeAdapterSpec } from "../runtimeAdapters/index.js";
 import { PgWorkspaceLocationRepository } from "../projectFolders/workspaceLocations.js";
 import { PgAgentRepository } from "../agents/repository.js";
 import { PgConversationRuntimeSessionRepository } from "./conversationRuntimeSessionRepository.js";
 import { PgSessionRepository } from "./repository.js";
-import { headMovedByConversationRun } from "./conversationGitGate.js";
 import {
   attachmentSummary,
   hostIsOnline,
@@ -289,41 +289,6 @@ export class ConversationExecutionContextService {
         throw new ConversationExecutionContextError(409, "Conversation access changed before initialization could be recorded; retry");
       }
       return this.buildSummary(repository, identity, session, initialized, request.runtime);
-    });
-  }
-
-  async refreshGit(
-    identity: ConversationExecutionContextIdentity,
-    sessionId: string,
-  ): Promise<ConversationExecutionSummary> {
-    return withTransaction(this.pool, async (client) => {
-      const repository = new PgConversationExecutionContextRepository(client);
-      const session = await repository.getVisibleSession(identity, sessionId, { forUpdate: true });
-      if (!session) throw new ConversationExecutionContextError(404, "Conversation not found");
-      const context = await repository.lockDraft(session);
-      if (context.state !== "initialized") {
-        throw new ConversationExecutionContextError(409, "Initialize the Conversation execution context before refreshing Git");
-      }
-      const location = context.primary_workspace_location_id && context.primary_project_folder_id
-        ? await repository.getLocation(identity.spaceId, context.primary_project_folder_id, context.primary_workspace_location_id)
-        : null;
-      const git = context.primary_workspace_mode === "managed"
-        ? managedGitSnapshot()
-        : conversationGitSnapshot(location);
-      if (!git) throw new ConversationExecutionContextError(409, "The selected Git workspace is unavailable; choose a new Conversation");
-      const refreshed = await repository.refreshGitBaseline({
-        spaceId: identity.spaceId,
-        sessionId,
-        git: {
-          branch: git.branch,
-          commitSha: git.commit_sha,
-          dirty: git.dirty,
-          executionReady: git.execution_ready,
-          observedAt: git.observed_at,
-        },
-      });
-      if (!refreshed) throw new ConversationExecutionContextError(409, "The Conversation execution context is no longer initialized");
-      return this.buildSummary(repository, identity, session, refreshed);
     });
   }
 
@@ -657,14 +622,11 @@ export class ConversationExecutionContextService {
     const blockedReason = context.state === "initialized"
       ? initializedBlockReason(summary, initializedRuntimeAvailability)
       : draftBlockReason(host, defaultPrimary, primaryLocation, runtime, hosts, executableLocations, usableRuntimeCandidates);
-    const staleGit = context.state === "initialized" && gitContextChanged(context, git);
     return {
       summary: {
         ...summary,
-        can_send: blockedReason === null && !staleGit,
-        blocked_reason: staleGit
-          ? "Git branch or commit changed after this Conversation was initialized; refresh the execution context before sending"
-          : blockedReason,
+        can_send: blockedReason === null,
+        blocked_reason: blockedReason,
       },
       available_hosts: hosts.map((candidate) => hostSummary(candidate, session.id)),
       available_runtime_profiles: availableRuntimeProfiles,
@@ -773,6 +735,9 @@ export class ConversationExecutionContextService {
         context_tokens: thread.context_tokens,
         context_window_tokens: thread.context_window_tokens,
         handoff_artifact_id: thread.handoff_artifact_id,
+        summary_artifact_id: thread.summary_artifact_id,
+        last_run_ended_at: thread.last_run_ended_at === null ? null : new Date(thread.last_run_ended_at).toISOString(),
+        prompt_cache_ttl_seconds: getRuntimeAdapterSpec(thread.runtime_key)?.usage.prompt_cache_ttl_seconds ?? null,
       });
     }
     return runtimes;
@@ -903,22 +868,6 @@ function managedGitSnapshot(): ConversationGitSnapshot {
     execution_ready: true,
     observed_at: new Date().toISOString(),
   };
-}
-
-function gitContextChanged(
-  context: Pick<ExecutionContextRow, "git_observed_at" | "git_branch" | "git_head" | "git_execution_ready" | "primary_workspace_location_id" | "last_run_git_branch" | "last_run_git_head">,
-  current: ConversationGitSnapshot | null,
-): boolean {
-  // A context with no git observation has no baseline yet. It stays
-  // usable and acquires the baseline on the next new Conversation.
-  if (!context.git_observed_at) return false;
-  if (!current) return true;
-  if (context.primary_workspace_location_id !== current.workspace_location_id
-    || context.git_execution_ready !== current.execution_ready) return true;
-  if (context.git_branch === current.branch && context.git_head === current.commit_sha) return false;
-  // Moved by this Conversation's own last Run: the next send advances the
-  // baseline itself, so nothing is stale for the person to refresh.
-  return !headMovedByConversationRun(context, current);
 }
 
 function runtimeChoice(candidate: ConversationExecutionRuntimeProfile): ConversationRuntimeChoice {

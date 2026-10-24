@@ -19,6 +19,7 @@ import { discussionOut, PgRoomDiscussionRepository, type DiscussionRecord } from
 import { PgRoomRepository, roomConversationOut, type RoomAgentMemberRecord } from "./repository.js";
 import { PgAgentGroupRepository } from "../agentGroups/repository.js";
 import { collaborationActive, collaborationContainer } from "../agentGroups/collaborationBudgetRepository.js";
+import { roomBudgetContainer, roomBudgetLimits, warnRoomSoftBudget } from "./delegationBudget.js";
 import { RoomService, type ContinuationCause, type RoomDelegationBudget, type RoomDispatchDiscussion, type RoomIdentity } from "./service.js";
 import { hasQueuedRoomMessage, isTransientDatabaseError, lockRoomConversationQueue, RoomMessageQueue } from "./messageQueue.js";
 import { admitTurnParkedRuns, discussionQuotaHold } from "./quotaGate.js";
@@ -47,7 +48,6 @@ import type { AgentGroupMessageRecipientSegment } from "../agentGroups/service.j
  * serialization, identity, prompt and authority of a person's own message
  * apply unchanged (B8A).
  */
-export const DISCUSSION_FANOUT_CEILING = ROOM_DISCUSSION_MAX_PARTICIPANTS;
 /** An emergent discussion: the person's own round, plus one the Agents opened. */
 const EMERGENT_ROUND_CAP = 2;
 export const ROOM_DISCUSSION_ADVANCE_RETRY_JOB = "room_discussion_advance_retry";
@@ -683,7 +683,8 @@ export class RoomDiscussionService {
       }, `${agentName(roster, entry.target.from_agent_ids[0])} wanted ${agentName(roster, entry.target.agent_id)} to take part, but ${entry.reason}.`);
     }
     if (discussion.kind !== "emergent") return { targets: allowed, held: [] };
-    const remaining = Math.max(0, DISCUSSION_FANOUT_CEILING - discussion.turns_used);
+    const budget = await discussionDelegationBudget(client, discussion);
+    const remaining = Math.max(0, roomBudgetLimits({ ...budget }).hardTurns - discussion.turns_used);
     return { targets: allowed.slice(0, remaining), held: allowed.slice(remaining) };
   }
 
@@ -705,6 +706,7 @@ export class RoomDiscussionService {
     // bounded by its rounds, and its turn count keeps only what Agents
     // started on their own (delegations and their results).
     const turnsUsed = discussion.turns_used + (discussion.kind === "emergent" ? input.targets.length : 0);
+    const budget = await discussionDelegationBudget(client, discussion);
     await new RoomService(this.config, this.pool).continueAfterDomainEventInTransaction(
       client,
       { spaceId: discussion.space_id, userId: discussion.opened_by_user_id },
@@ -725,13 +727,13 @@ export class RoomDiscussionService {
         },
         recipient_segments: segments,
         discussion: { id: discussion.id, wave: input.wave },
-        delegation_budget: overSpend(discussion) ? { max_depth: 1, max_fanout: 0 } : delegationBudget(turnsUsed),
+        delegation_budget: overSpend(discussion) ? { max_depth: 1, max_fanout: 0 } : delegationBudget(turnsUsed, budget),
         // A wave is inside the discussion's budget while its spend holds and,
         // for an emergent one, its turns fit the fan-out ceiling (the waves
         // past it are held, never dispatched).
         cause: {
           run_id: await discussionCauseRunId(client, discussion),
-          within_budget: !overSpend(discussion) && (discussion.kind !== "emergent" || turnsUsed <= DISCUSSION_FANOUT_CEILING),
+          within_budget: !overSpend(discussion) && (discussion.kind !== "emergent" || turnsUsed <= roomBudgetLimits({ ...budget }).hardTurns),
         },
       },
     );
@@ -918,12 +920,23 @@ export class RoomDiscussionService {
 
 /**
  * The delegation budget of a turn inside a container that has already
- * charged `turnsUsed` Agent-triggered turns: never more than two per turn,
- * never past the fan-out ceiling. Do not give every completion turn a fresh
+ * charged `turnsUsed` Agent-triggered turns: preserve its shared limits and
+ * close delegation when its hard turn ceiling is reached. Do not give every completion turn a fresh
  * budget. The chain would keep delegating.
  */
-export function delegationBudget(turnsUsed: number): { max_depth: number; max_fanout: number } {
-  return { max_depth: 1, max_fanout: Math.max(0, Math.min(2, DISCUSSION_FANOUT_CEILING - turnsUsed)) };
+export function delegationBudget(turnsUsed: number, budget: RoomDelegationBudget): RoomDelegationBudget {
+  const limits = roomBudgetLimits({ ...budget });
+  return { ...budget, max_depth: Math.min(1, budget.max_depth),
+    max_fanout: turnsUsed >= limits.hardTurns ? 0 : budget.max_fanout };
+}
+
+async function discussionDelegationBudget(db: PoolClient, discussion: DiscussionRecord): Promise<RoomDelegationBudget> {
+  const group = (await db.query<{ id: string }>(`SELECT id FROM agent_run_groups
+    WHERE space_id=$1 AND trigger_message_id=$2 ORDER BY created_at,id LIMIT 1`,
+  [discussion.space_id, discussion.origin_message_id])).rows[0];
+  const container = group ? await roomBudgetContainer(db, discussion.space_id, group.id) : null;
+  return { max_depth: 1, max_fanout: 5, ...container?.budget_json,
+    ...(container ? { container_group_id: container.id } : {}) };
 }
 
 /**
@@ -940,6 +953,7 @@ export async function agentOriginContinuation(
   client: PoolClient,
   spaceId: string,
   sourceGroupId: string,
+  sourceDelegationId?: string,
 ): Promise<{ discussion: RoomDispatchDiscussion | null; delegation_budget: RoomDelegationBudget; cause: ContinuationCause }> {
   const source = (await client.query<{ discussion_id: string | null; budget_json: unknown; metadata_json: unknown; root_run_id: string | null }>(
     `SELECT grp.discussion_id, grp.budget_json, message.metadata_json, grp.root_run_id
@@ -949,6 +963,9 @@ export async function agentOriginContinuation(
     [spaceId, sourceGroupId],
   )).rows[0];
   if (source?.discussion_id) {
+    const container = await roomBudgetContainer(client, spaceId, sourceGroupId);
+    const budget: RoomDelegationBudget = { max_depth: 1, max_fanout: 5, ...container?.budget_json,
+      ...(container ? { container_group_id: container.id } : {}) };
     // Inside the source's discussion whatever its state: a result arriving
     // after it stopped or reached a cap still reports into it, but delegates
     // nothing and opens nothing new — its @-mentions meet the ended
@@ -969,14 +986,31 @@ export async function agentOriginContinuation(
     const spent = charged.spend_cap_usd !== null && Number(charged.spend_usd) >= Number(charged.spend_cap_usd);
     return {
       discussion,
-      delegation_budget: spent ? { max_depth: 1, max_fanout: 0 } : delegationBudget(charged.turns_used),
-      cause: { run_id: source.root_run_id, within_budget: !spent && charged.turns_used <= DISCUSSION_FANOUT_CEILING },
+      delegation_budget: spent ? { max_depth: 1, max_fanout: 0 } : delegationBudget(charged.turns_used, budget),
+      cause: { run_id: source.root_run_id, within_budget: !spent && charged.turns_used <= roomBudgetLimits({ ...budget }).hardTurns },
     };
   }
   const containerGroupId = containerGroupOf(sourceGroupId, source?.budget_json);
   const group = await new PgAgentGroupRepository(client).getGroup(spaceId, sourceGroupId);
   const collaboration = group ? await collaborationContainer(client, group) : null;
   const turns = await chargeContainer(client, spaceId, containerGroupId);
+  if (collaboration?.collaboration && sourceDelegationId) {
+    const sourceTask = (await client.query<{ task_id: string | null }>(`SELECT d.budget_json->>'collaboration_task_id' AS task_id
+      FROM run_delegations d JOIN agent_run_groups g ON g.space_id=d.space_id AND g.id=d.group_id
+      WHERE d.space_id=$1 AND d.id=$2 AND (g.id=$3 OR g.budget_json->>'container_group_id'=$3)`,
+    [spaceId, sourceDelegationId, containerGroupId])).rows[0];
+    if (sourceTask && sourceTask.task_id !== collaboration.collaboration.task_id
+      && (sourceTask.task_id !== null || (collaboration.collaboration.delegations_offset ?? 0) > 0)) {
+      // A late result from an older declaration still charges the container,
+      // but must not spend the current Task's finite turn allowance.
+      const offset = (collaboration.collaboration.turns_offset ?? 0) + 1;
+      await client.query(`UPDATE agent_run_groups SET budget_json=jsonb_set(budget_json,
+        '{collaboration,turns_offset}',to_jsonb($3::int)) WHERE space_id=$1 AND id=$2`, [spaceId, containerGroupId, offset]);
+      collaboration.collaboration.turns_offset = offset;
+    }
+  }
+  const container = await roomBudgetContainer(client, spaceId, sourceGroupId);
+  const budget: RoomDelegationBudget = { max_depth: 1, max_fanout: 5, ...container?.budget_json };
   if (collaboration?.collaboration) {
     // The container row was read before this turn's charge; judge the
     // collaboration on the charged count. Keep the original human cause
@@ -992,8 +1026,8 @@ export async function agentOriginContinuation(
   }
   return {
     discussion: null,
-    delegation_budget: { ...delegationBudget(turns), container_group_id: containerGroupId },
-    cause: { run_id: source?.root_run_id ?? null, within_budget: turns <= DISCUSSION_FANOUT_CEILING },
+    delegation_budget: { ...delegationBudget(turns, budget), container_group_id: containerGroupId },
+    cause: { run_id: source?.root_run_id ?? null, within_budget: turns <= roomBudgetLimits({ ...budget }).hardTurns },
   };
 }
 
@@ -1031,7 +1065,8 @@ export async function chargeContainer(client: Pick<PoolClient, "query">, spaceId
       RETURNING (budget_json->>'container_turns_used')::int AS turns`,
     [spaceId, containerGroupId],
   );
-  return result.rows[0]?.turns ?? DISCUSSION_FANOUT_CEILING;
+  await warnRoomSoftBudget(client, spaceId, containerGroupId);
+  return result.rows[0]?.turns ?? Number.MAX_SAFE_INTEGER;
 }
 
 async function containerTurns(client: PoolClient, spaceId: string, groupId: string, budgetJson: unknown): Promise<number> {

@@ -10,7 +10,6 @@ import {
   text,
   timestamp,
   unique,
-  uniqueIndex,
   varchar,
   type PgTableExtraConfigValue,
 } from "drizzle-orm/pg-core";
@@ -19,9 +18,7 @@ import { runs } from "./runs.js";
 import { policyDecisionRecords } from "./policy.js";
 import { spaces } from "./spaces.js";
 import { users } from "./auth.js";
-import { agentRuntimeProfiles, agents } from "./agents.js";
-import { modelProviders } from "./providers.js";
-import { hostThreads } from "./hostThreads.js";
+import { agents } from "./agents.js";
 import { sessions } from "./sessions.js";
 import { roomAgentMembers } from "./rooms.js";
 import { projects, projectBriefVersions, projectInstructionVersions } from "./projects.js";
@@ -242,7 +239,6 @@ export const contextEventScopes = pgTable("context_event_scopes", {
   workContextScopeId: varchar("work_context_scope_id", { length: 36 }).notNull(),
   eventHeadCursor: integer("event_head_cursor").default(0).notNull(),
   checkpointCursor: integer("checkpoint_cursor").default(0).notNull(),
-  cliKnownCursor: integer("cli_known_cursor"),
   captureStatus: varchar("capture_status", { length: 16 }).default("complete").notNull(),
   activeMicroCheckpointId: varchar("active_micro_checkpoint_id", { length: 36 }),
   activeSemanticCheckpointId: varchar("active_semantic_checkpoint_id", { length: 36 }),
@@ -250,75 +246,10 @@ export const contextEventScopes = pgTable("context_event_scopes", {
 }, (table): PgTableExtraConfigValue[] => [
   primaryKey({ columns: [table.spaceId, table.workContextScopeId], name: "context_event_scopes_pkey" }),
   foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "context_event_scopes_space_id_fkey" }),
-  check("ck_context_event_scopes_cursors", sql`event_head_cursor >= 0 AND checkpoint_cursor >= 0 AND checkpoint_cursor <= event_head_cursor AND (cli_known_cursor IS NULL OR (cli_known_cursor >= 0 AND cli_known_cursor <= event_head_cursor))`),
+  check("ck_context_event_scopes_cursors", sql`event_head_cursor >= 0 AND checkpoint_cursor >= 0 AND checkpoint_cursor <= event_head_cursor`),
   check("ck_context_event_scopes_capture_status", sql`capture_status IN ('complete','recovered','partial')`),
 ]);
 
-/**
- * One durable vendor-session binding per active CLI work-scope identity.
- * Vendor state is only an opaque resumable cache; canonical continuity remains
- * in Context Events and checkpoints.
- */
-export const runtimeContextCliBindings = pgTable("runtime_context_cli_bindings", {
-  id: varchar({ length: 36 }).primaryKey().notNull(),
-  spaceId: varchar("space_id", { length: 36 }).notNull(),
-  workContextScopeId: varchar("work_context_scope_id", { length: 36 }).notNull(),
-  scopeKind: varchar("scope_kind", { length: 32 }).notNull(),
-  userId: varchar("user_id", { length: 36 }).notNull(),
-  agentId: varchar("agent_id", { length: 36 }).notNull(),
-  runtimeProfileId: varchar("runtime_profile_id", { length: 36 }).notNull(),
-  runtimeKey: varchar("runtime_key", { length: 64 }).notNull(),
-  providerId: varchar("provider_id", { length: 36 }),
-  model: varchar({ length: 256 }),
-  runtimeStateKey: varchar("runtime_state_key", { length: 36 }).notNull(),
-  vendorSessionId: varchar("vendor_session_id", { length: 512 }),
-  // The Host thread whose ACP session this cursor follows. One Room recipient
-  // scope spans every Conversation in the Room, each with its own thread and
-  // session, so each thread keeps its own active binding. Null for a binding
-  // that follows server-local CLI state rather than a Host thread.
-  hostThreadId: varchar("host_thread_id", { length: 36 }),
-  authorityFingerprint: varchar("authority_fingerprint", { length: 64 }).notNull(),
-  runtimeFingerprint: varchar("runtime_fingerprint", { length: 64 }).notNull(),
-  fingerprintJson: jsonb("fingerprint_json").notNull(),
-  cliKnownCursor: integer("cli_known_cursor").default(0).notNull(),
-  acknowledgedItemIdsJson: jsonb("acknowledged_item_ids_json").default([]).notNull(),
-  generation: integer().default(1).notNull(),
-  status: varchar({ length: 16 }).default("active").notNull(),
-  rotationReason: varchar("rotation_reason", { length: 64 }),
-  executionLeaseId: varchar("execution_lease_id", { length: 36 }),
-  executionLeaseExpiresAt: timestamp("execution_lease_expires_at", { withTimezone: true, mode: "string" }),
-  // The Run holding the lease: a holder that is no longer live (crashed,
-  // reaped, finished without releasing) gives the lease up at once.
-  executionLeaseRunId: varchar("execution_lease_run_id", { length: 36 }),
-  // Fencing token: raised by every acquisition and carried across rotations,
-  // so a holder whose lease was taken over cannot acknowledge or record a
-  // vendor session afterwards.
-  executionLeaseGeneration: integer("execution_lease_generation").default(0).notNull(),
-  lastAcknowledgedAt: timestamp("last_acknowledged_at", { withTimezone: true, mode: "string" }),
-  createdAt: timestamp("created_at", { withTimezone: true, mode: "string" }).notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" }).notNull(),
-}, (table): PgTableExtraConfigValue[] => [
-  uniqueIndex("uq_runtime_context_cli_bindings_active_scope").using(
-    "btree",
-    sql`space_id`,
-    sql`work_context_scope_id`,
-    sql`user_id`,
-    sql`agent_id`,
-    sql`COALESCE(host_thread_id, ''::character varying)`,
-  ).where(sql`status = 'active'`),
-  index("ix_runtime_context_cli_bindings_scope").on(table.spaceId, table.workContextScopeId),
-  index("ix_runtime_context_cli_bindings_runtime_profile").on(table.runtimeProfileId),
-  foreignKey({ columns: [table.spaceId], foreignColumns: [spaces.id], name: "runtime_context_cli_bindings_space_id_fkey" }),
-  foreignKey({ columns: [table.userId], foreignColumns: [users.id], name: "runtime_context_cli_bindings_user_id_fkey" }),
-  foreignKey({ columns: [table.agentId, table.spaceId], foreignColumns: [agents.id, agents.spaceId], name: "runtime_context_cli_bindings_agent_scope_fkey" }),
-  foreignKey({ columns: [table.runtimeProfileId, table.spaceId, table.agentId], foreignColumns: [agentRuntimeProfiles.id, agentRuntimeProfiles.spaceId, agentRuntimeProfiles.agentId], name: "runtime_context_cli_bindings_runtime_scope_fkey" }),
-  foreignKey({ columns: [table.providerId], foreignColumns: [modelProviders.id], name: "runtime_context_cli_bindings_provider_id_fkey" }),
-  foreignKey({ columns: [table.hostThreadId], foreignColumns: [hostThreads.id], name: "runtime_context_cli_bindings_host_thread_id_fkey" }),
-  check("ck_runtime_context_cli_bindings_scope_kind", sql`scope_kind IN ('direct_session','room_recipient','root_task','workflow_execution')`),
-  check("ck_runtime_context_cli_bindings_status", sql`status IN ('active','rotated')`),
-  check("ck_runtime_context_cli_bindings_cursor_generation", sql`cli_known_cursor >= 0 AND generation >= 1`),
-  check("ck_runtime_context_cli_bindings_json", sql`jsonb_typeof(fingerprint_json) = 'object' AND jsonb_typeof(acknowledged_item_ids_json) = 'array'`),
-]);
 
 export const contextEvents = pgTable("context_events", {
   id: varchar({ length: 36 }).primaryKey().notNull(),

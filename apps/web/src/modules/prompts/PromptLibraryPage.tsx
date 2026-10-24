@@ -31,8 +31,8 @@ const DEPLOYMENT_SCOPE_ORDER: PromptAssetScopeType[] = ['project', 'agent', 'use
 const AUTO_RESEARCH_BUNDLE_ID = 'auto_research'
 const AUTO_RESEARCH_ASSET_PREFIX = 'workflow.research.'
 
-/** Capability ids stay as identifiers; their label and detail are UI copy under `capability.<key>`. */
-const AUTO_RESEARCH_CAPABILITIES = [
+/** Pipeline stage ids stay stable; labels and details are presentation only. */
+const AUTO_RESEARCH_STAGES = [
   { id: 'research.source_collect', key: 'source_collect' },
   { id: 'research.source_summarize', key: 'source_summarize' },
   { id: 'research.evidence_extract', key: 'evidence_extract' },
@@ -742,7 +742,7 @@ export default function PromptLibraryPage() {
                     <Badge variant="outline">{t('management_ui.prompts.bundle')}</Badge>
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    {t('management_ui.prompts.workflow_prompts', { count: autoResearchAssets.length })} · {t('management_ui.prompts.capabilities', { count: AUTO_RESEARCH_CAPABILITIES.length })}
+                    {t('management_ui.prompts.workflow_prompts', { count: autoResearchAssets.length })} · {t('management_ui.prompts.stages', { count: AUTO_RESEARCH_STAGES.length })}
                   </div>
                   <div className="mt-2 flex flex-wrap gap-1">
                     <Badge variant="muted">{usageAreaLabel('workflow')}</Badge>
@@ -763,7 +763,7 @@ export default function PromptLibraryPage() {
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     <Badge variant="outline">{t('management_ui.prompts.prompts_count', { count: autoResearchAssets.length })}</Badge>
-                    <Badge variant="outline">{t('management_ui.prompts.capabilities', { count: AUTO_RESEARCH_CAPABILITIES.length })}</Badge>
+                    <Badge variant="outline">{t('management_ui.prompts.stages', { count: AUTO_RESEARCH_STAGES.length })}</Badge>
                   </div>
                 </div>
                 <div className="rounded-md border border-border px-3 py-2 text-sm">
@@ -791,16 +791,16 @@ export default function PromptLibraryPage() {
                         <div className="mt-0.5 text-xs text-muted-foreground">{t('management_ui.prompts.editable_assets_detail')}</div>
                       </div>
                     </div>
-                    {AUTO_RESEARCH_CAPABILITIES.map(capability => (
-                      <div key={capability.id} className="grid grid-cols-[64px_minmax(180px,1fr)_minmax(220px,1fr)] gap-3 px-3 py-2 text-sm">
-                        <div className="font-mono text-xs text-muted-foreground">cap</div>
+                    {AUTO_RESEARCH_STAGES.map(stage => (
+                      <div key={stage.id} className="grid grid-cols-[64px_minmax(180px,1fr)_minmax(220px,1fr)] gap-3 px-3 py-2 text-sm">
+                        <div className="font-mono text-xs text-muted-foreground">stage</div>
                         <div className="min-w-0">
-                          <div className="font-medium">{t(`management_ui.prompts.capability.${capability.key}.label`)}</div>
-                          <div className="mt-0.5 text-xs text-muted-foreground">{t(`management_ui.prompts.capability.${capability.key}.detail`)}</div>
+                          <div className="font-medium">{t(`management_ui.prompts.stage.${stage.key}.label`)}</div>
+                          <div className="mt-0.5 text-xs text-muted-foreground">{t(`management_ui.prompts.stage.${stage.key}.detail`)}</div>
                         </div>
                         <div className="min-w-0">
                           <div>{t('management_ui.prompts.not_prompt_asset')}</div>
-                          <div className="mt-0.5 text-xs text-muted-foreground">{capability.id}</div>
+                          <div className="mt-0.5 text-xs text-muted-foreground">{stage.id}</div>
                         </div>
                       </div>
                     ))}

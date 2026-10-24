@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { zipSync, strToU8 } from "fflate";
-import { previewSkillFiles } from "../src/modules/capabilities/skillImporter.js";
-import { readSkillArchive } from "../src/modules/capabilities/skillArchive.js";
-import { resolveSkillImportPreview } from "../src/modules/capabilities/service.js";
+import { previewSkillFiles } from "../src/modules/skills/skillImporter.js";
+import { readSkillArchive } from "../src/modules/skills/skillArchive.js";
+import { resolveSkillImportPreview } from "../src/modules/skills/service.js";
 
 const markdown = "\ufeff---\r\nname: portable\r\ndescription: Preserve original files.\r\n---\r\nRead references/a.txt.\r\n";
 const bytes = { "portable/SKILL.md": strToU8(markdown), "portable/references/a.txt": strToU8("original\r\n"), "portable/assets/image.bin": Uint8Array.from([0, 255, 128, 1]) };

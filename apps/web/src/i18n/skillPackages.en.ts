@@ -1,7 +1,9 @@
-/** UI copy for importing, reviewing and converting skill packages. */
+/** UI copy for Skill sources, review and scoped enablement. */
 export const skillPackagesEn = {
   skill_packages: {
-    status_imported: 'Awaiting review', status_reviewed: 'Reviewed', status_rejected: 'Rejected', status_converted: 'Reviewed (legacy)', status_archived: 'Archived', status_superseded: 'Superseded',
+    builtin_source: 'Built-in',
+    builtin_description: 'Shipped with the server. No import or content review is needed. Enable it for a scope through a binding proposal; it is off by default.',
+    status_imported: 'Awaiting review', status_reviewed: 'Reviewed', status_rejected: 'Rejected', status_archived: 'Archived', status_superseded: 'Superseded',
     risk_low: 'Low', risk_medium: 'Medium', risk_high: 'High', risk_critical: 'Critical',
     uploaded_package: 'Uploaded package', local_source: 'Local source', review_before_enable: 'This Skill is not reviewed yet, so it does not appear in the conversation @ and / menus. Choose a scope and select Review and enable; one approval makes it available.',
     choose_host: 'Choose an online Host', offline_hint: 'Your Hosts are offline. Connect a Host, then reopen this dialog to scan its global Skills.',
@@ -41,8 +43,8 @@ export const skillPackagesEn = {
     loading_library: "Loading Skills…",
     empty_title: "Your Skill library is empty",
     empty_description: "Import from your CLI’s global Skills, GitHub, Markdown or ZIP, then reuse the same package in Claude Code and Codex.",
-    library: "Imported Skills",
-    search: "Search imported Skills",
+    library: "Skill packages",
+    search: "Search Skills",
     no_matches: "No matching Skills.",
 
     title: 'Skills', subtitle: 'One library for Claude Code, Codex and other conversation agents.',

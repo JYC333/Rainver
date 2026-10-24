@@ -1,0 +1,425 @@
+import { createHash } from "node:crypto";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { analyzeSkillRisk } from "../src/modules/skills/skillRisk.js";
+import { parseSkillMarkdown } from "../src/modules/skills/skillParser.js";
+import { previewSkillImport, prepareSkillPackageFiles } from "../src/modules/skills/skillImporter.js";
+import { BUILTIN_SKILL_PACKAGES } from "../src/modules/skills/builtinPackages.js";
+import { outboundGuard } from "../src/modules/sources/outboundUrlSafety.js";
+import { publicAddressGuard } from "./support/outboundGuard.js";
+
+afterEach(() => vi.restoreAllMocks());
+
+describe("skill parser and risk scanner", () => {
+  it("parses every production builtin release and matches its SKILL.md version", () => {
+    // D9 permits an empty catalog; future entries must pass before registration.
+    const releases = new Set<string>();
+    for (const pkg of BUILTIN_SKILL_PACKAGES) {
+      expect(pkg.key.trim()).not.toBe("");
+      expect(pkg.version.trim()).not.toBe("");
+      expect(pkg.version.length).toBeLessThanOrEqual(64);
+      const release = JSON.stringify([pkg.key, pkg.version]);
+      expect(releases.has(release)).toBe(false);
+      releases.add(release);
+      const prepared = prepareSkillPackageFiles({ files: [...pkg.files], source_type: "builtin" });
+      expect(prepared.normalized_skill.version).toBe(pkg.version);
+    }
+  });
+  it("parses a minimal SKILL.md into a normalized skill", () => {
+    const skill = parseSkillMarkdown([
+      "---",
+      "name: Technical Survey Helper",
+      "description: Summarize technical sources.",
+      "version: 0.2.0",
+      "allowed-tools:",
+      "  - WebFetch",
+      "---",
+      "",
+      "Use cited evidence only.",
+    ].join("\n"));
+
+    expect(skill.name).toBe("Technical Survey Helper");
+    expect(skill.description).toBe("Summarize technical sources.");
+    expect(skill.requested_permissions).toEqual(["WebFetch"]);
+  });
+
+  it("rejects a skill with no name or description", () => {
+    expect(() => parseSkillMarkdown("")).toThrow(/Skill is missing name/);
+    expect(() => parseSkillMarkdown("# Name Only")).toThrow(/Skill is missing description/);
+  });
+
+  it("classifies instruction-only skills as low risk and scripts/tool requests as high", () => {
+    const low = analyzeSkillRisk(
+      parseSkillMarkdown("# Summary Helper\n\nSummarize the supplied source material."),
+    );
+    expect(low.risk_level).toBe("low");
+
+    const high = analyzeSkillRisk(
+      parseSkillMarkdown([
+        "---",
+        "name: Shell Helper",
+        "description: Runs local scripts.",
+        "allowed-tools: Bash",
+        "---",
+        "",
+        "Run npm install and execute the provided script.",
+      ].join("\n")),
+    );
+    expect(high.risk_level).toBe("high");
+    expect(high.warnings).toContain("shell_or_subprocess_permission_requested");
+  });
+});
+
+describe("skill import preview", () => {
+  it("rejects unsupported URLs before fetching", async () => {
+    await expect(
+      previewSkillImport(
+        { url: "https://example.com/SKILL.md" },
+        async () => {
+          throw new Error("fetch should not run");
+        },
+      ),
+    ).rejects.toThrow(/unsupported_skill_source/);
+  });
+
+  it("normalizes GitHub SKILL.md URLs and never executes scripts during preview", async () => {
+    const preview = await previewSkillImport(
+      { url: "https://github.com/org/repo/blob/main/skills/demo/SKILL.md" },
+      async (url) => ({
+        finalUrl: url,
+        body: [
+          "---",
+          "name: Demo Skill",
+          "description: Demonstrates preview.",
+          "---",
+          "",
+          "Follow instructions without side effects.",
+        ].join("\n"),
+      }),
+    );
+    expect(preview.source.repo).toBe("org/repo");
+    expect(preview.source.path).toBe("skills/demo/SKILL.md");
+    expect(preview.package_root).toBe("skills/demo");
+    expect(preview.package_files).toHaveLength(1);
+    expect(preview.normalized_skill.name).toBe("Demo Skill");
+    expect(preview.risk_level).toBe("low");
+  });
+
+  it("imports package tree text resources with hashes", async () => {
+    const fetchedUrls: string[] = [];
+    const preview = await previewSkillImport(
+      { url: "https://github.com/org/repo/blob/main/skills/demo/SKILL.md" },
+      {
+        commitResolver: null,
+        packageLister: async () => [
+          { path: "skills/demo/SKILL.md", type: "blob", size: 96, sha: "skill-sha" },
+          { path: "skills/demo/guide.md", type: "blob", size: 29, sha: "guide-sha" },
+        ],
+        fetcher: async (url) => {
+          fetchedUrls.push(url);
+          if (url.endsWith("/skills/demo/SKILL.md")) {
+            return {
+              contentType: "text/markdown",
+              body: [
+                "---",
+                "name: Resource Skill",
+                "description: Uses a local guide.",
+                "references:",
+                "  - guide.md",
+                "---",
+                "",
+                "Follow the guide.",
+              ].join("\n"),
+            };
+          }
+          if (url.endsWith("/skills/demo/guide.md")) {
+            return { contentType: "text/markdown", body: "# Guide\n\nUse bounded context." };
+          }
+          throw new Error(`unexpected fetch ${url}`);
+        },
+      },
+    );
+
+    expect(fetchedUrls).toEqual([
+      "https://raw.githubusercontent.com/org/repo/main/skills/demo/SKILL.md",
+      "https://raw.githubusercontent.com/org/repo/main/skills/demo/guide.md",
+    ]);
+    expect(preview.files_detected).toEqual([
+      "skills/demo/SKILL.md",
+      "skills/demo/guide.md",
+    ]);
+    expect(preview.package_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(preview.normalized_skill.resources[1]).toMatchObject({
+      path: "guide.md",
+      kind: "reference",
+      content_type: "text/markdown",
+      byte_length: 29,
+    });
+    expect(preview.normalized_skill.resources[1]?.content_hash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("fetches a package file whose name holds URL-significant characters by its encoded path", async () => {
+    const fetchedUrls: string[] = [];
+    const preview = await previewSkillImport(
+      { url: "https://github.com/org/repo/blob/main/skills/demo/SKILL.md" },
+      {
+        commitResolver: null,
+        packageLister: async () => [
+          { path: "skills/demo/SKILL.md", type: "blob", size: 96, sha: "skill-sha" },
+          { path: "skills/demo/references/c#-guide 100%.md", type: "blob", size: 29, sha: "guide-sha" },
+        ],
+        fetcher: async (url) => {
+          fetchedUrls.push(url);
+          if (url.endsWith("/skills/demo/SKILL.md")) {
+            return {
+              contentType: "text/markdown",
+              body: "---\nname: Encoded Skill\ndescription: Has an awkward file name.\n---\n\nRead the guide.",
+            };
+          }
+          if (url.endsWith("/skills/demo/references/c%23-guide%20100%25.md")) {
+            return { contentType: "text/markdown", body: "# Guide\n\nUse bounded context." };
+          }
+          throw new Error(`unexpected fetch ${url}`);
+        },
+      },
+    );
+
+    expect(fetchedUrls).toEqual([
+      "https://raw.githubusercontent.com/org/repo/main/skills/demo/SKILL.md",
+      "https://raw.githubusercontent.com/org/repo/main/skills/demo/references/c%23-guide%20100%25.md",
+    ]);
+    expect(preview.files_detected).toContain("skills/demo/references/c#-guide 100%.md");
+  });
+
+  it("treats GitHub tree URLs as skill package roots and flags scripts", async () => {
+    const commit = "a".repeat(40);
+    const preview = await previewSkillImport(
+      { url: "https://github.com/org/repo/tree/main/skills/demo" },
+      {
+        commitResolver: async () => commit,
+        packageLister: async (source) => {
+          expect(source.packageRoot).toBe("skills/demo");
+          expect(source.skillPath).toBe("skills/demo/SKILL.md");
+          expect(source.commitSha).toBe(commit);
+          return [
+            { path: "skills/demo/SKILL.md", type: "blob", size: 90, sha: "skill-sha" },
+            { path: "skills/demo/references/guide.md", type: "blob", size: 20, sha: "guide-sha" },
+            { path: "skills/demo/scripts/run.py", type: "blob", size: 18, sha: "script-sha", mode: "100755" },
+            { path: "skills/demo/assets/logo.png", type: "blob", size: 4096, sha: "asset-sha" },
+          ];
+        },
+        fetcher: async (url) => {
+          expect(url).toContain(`/org/repo/${commit}/`);
+          if (url.endsWith("/skills/demo/SKILL.md")) {
+            return {
+              contentType: "text/markdown",
+              body: "---\nname: Package Skill\ndescription: Package import.\n---\n\nUse package files.",
+            };
+          }
+          if (url.endsWith("/skills/demo/references/guide.md")) {
+            return { contentType: "text/markdown", body: "# Guide\n" };
+          }
+          if (url.endsWith("/skills/demo/assets/logo.png")) {
+            return { contentType: "image/png", body: "", bytes: Uint8Array.from([137, 80, 78, 71, 0, 255]) };
+          }
+          if (url.endsWith("/skills/demo/scripts/run.py")) {
+            return { contentType: "text/x-python", body: "print('review only')\n" };
+          }
+          throw new Error(`unexpected fetch ${url}`);
+        },
+      },
+    );
+
+    expect(preview.package_root).toBe("skills/demo");
+    expect(preview.files_detected).toEqual([
+      "skills/demo/SKILL.md",
+      "skills/demo/assets/logo.png",
+      "skills/demo/references/guide.md",
+      "skills/demo/scripts/run.py",
+    ]);
+    expect(preview.package_files.find((file) => file.path.endsWith("scripts/run.py"))).toMatchObject({
+      kind: "script",
+      included: true,
+      executable: true,
+      risk_flags_json: { script: true, executable: true },
+    });
+    expect(preview.package_files.find((file) => file.path.endsWith("assets/logo.png"))).toMatchObject({
+      kind: "asset",
+      included: true,
+      content_hash: createHash("sha256").update(Uint8Array.from([137, 80, 78, 71, 0, 255])).digest("hex"),
+    });
+    expect(preview.package_contents?.["skills/demo/assets/logo.png"]).toBe(Buffer.from([137, 80, 78, 71, 0, 255]).toString("base64"));
+    expect(preview.warnings).toContain("script_files_detected");
+    expect(preview.risk_level).toBe("high");
+  });
+
+  it("rejects package trees that exceed the file-count cap", async () => {
+    await expect(
+      previewSkillImport(
+        { url: "https://github.com/org/repo/tree/main/skills/huge" },
+        {
+          commitResolver: null,
+          packageLister: async () => [
+            { path: "skills/huge/SKILL.md", type: "blob", size: 80, sha: "skill-sha" },
+            ...Array.from({ length: 201 }, (_, index) => ({
+              path: `skills/huge/references/${index}.md`,
+              type: "blob" as const,
+              size: 4,
+              sha: `sha-${index}`,
+            })),
+          ],
+          fetcher: async () => ({
+            contentType: "text/markdown",
+            body: "---\nname: Huge Skill\ndescription: Too many files.\n---\n\nStop.",
+          }),
+        },
+      ),
+    ).rejects.toThrow(/too many files/);
+  });
+
+  it("rejects optional resources outside the skill directory tree", async () => {
+    await expect(
+      previewSkillImport(
+        { url: "https://github.com/org/repo/blob/main/skills/demo/SKILL.md" },
+        async () => ({
+          contentType: "text/markdown",
+          body: [
+            "---",
+            "name: Escape Skill",
+            "description: References outside its directory.",
+            "references:",
+            "  - ../secret.md",
+            "---",
+            "",
+            "Try to read more files.",
+          ].join("\n"),
+        }),
+      ),
+    ).rejects.toThrow(/Optional skill resource path is invalid/);
+  });
+});
+
+describe("skill import network boundary", () => {
+  const sourceUrl = "https://github.com/org/repo/tree/main/skills/demo";
+  const skill = "# Bounded Skill\n\nRead only the supplied sources.";
+  const commit = "a".repeat(40);
+  const tree = "b".repeat(40);
+  const files = [{ path: "skills/demo/SKILL.md", type: "blob" as const }];
+
+  beforeEach(() => {
+    vi.spyOn(outboundGuard, "pin").mockImplementation(publicAddressGuard.pin);
+  });
+
+  function oversizedBody(limit: number, headers: Record<string, string> = {}) {
+    let cancelled = false;
+    let bytesProduced = 0;
+    const response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (bytesProduced >= limit * 2) { controller.close(); return; }
+        const chunk = new Uint8Array(64 * 1024).fill(32);
+        bytesProduced += chunk.length;
+        controller.enqueue(chunk);
+      },
+      cancel() { cancelled = true; },
+    }), { headers: { "content-type": "text/plain", ...headers } });
+    return { response, cancelled: () => cancelled, bytesProduced: () => bytesProduced };
+  }
+
+  it.each([undefined, "1", "262145"])("stops an oversized Skill body with Content-Length %s", async (length) => {
+    const body = oversizedBody(256 * 1024, length === undefined ? {} : { "content-length": length });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(body.response);
+    await expect(previewSkillImport({ url: sourceUrl }, {
+      commitResolver: null, packageLister: null,
+    })).rejects.toMatchObject({ statusCode: 413 });
+    expect(body.cancelled()).toBe(true);
+    expect(body.bytesProduced()).toBeLessThan(512 * 1024);
+  });
+
+  it("accepts a UTF-8 Skill exactly at the existing byte ceiling", async () => {
+    const prefix = `${skill}\n`;
+    const body = prefix + "文".repeat(Math.floor((256 * 1024 - Buffer.byteLength(prefix)) / 3));
+    const padded = body + " ".repeat(256 * 1024 - Buffer.byteLength(body));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(padded));
+    const preview = await previewSkillImport({ url: sourceUrl }, { commitResolver: null, packageLister: null });
+    expect(preview.raw_content).toBe(padded);
+    expect(preview.package_files[0]?.byte_length).toBe(256 * 1024);
+  });
+
+  it("also stops oversized optional package resources during download", async () => {
+    const body = oversizedBody(256 * 1024);
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(skill)).mockResolvedValueOnce(body.response);
+    await expect(previewSkillImport({ url: sourceUrl }, {
+      commitResolver: null,
+      packageLister: async () => [...files, { path: "skills/demo/guide.md", type: "blob" }],
+    })).rejects.toMatchObject({ statusCode: 413 });
+    expect(body.cancelled()).toBe(true);
+  });
+
+  it.each(["commit", "tree_lookup", "tree_list"] as const)("bounds the %s GitHub JSON response before parsing", async (stage) => {
+    const body = oversizedBody(8 * 1024 * 1024, { "content-type": "application/json" });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+      const path = new URL(String(url)).pathname;
+      if (path.endsWith("/commits/main")) return stage === "commit" ? body.response : Response.json({ sha: commit });
+      if (path.includes("/git/commits/")) return stage === "tree_lookup" ? body.response : Response.json({ tree: { sha: tree } });
+      if (path.includes("/git/trees/")) return stage === "tree_list" ? body.response : Response.json({ tree: files });
+      if (path.endsWith("/SKILL.md")) return new Response(skill);
+      throw new Error(`Unexpected fixture request: ${path}`);
+    });
+    if (stage === "commit") {
+      // Commit resolution has always been optional; a refused lookup still
+      // follows that fallback, but cannot consume an unbounded response.
+      const preview = await previewSkillImport({ url: sourceUrl });
+      expect(preview.source.commit_sha).toBeNull();
+      expect(preview.source.metadata_json.commit_sha_resolution).toBe("unresolved");
+    } else {
+      await expect(previewSkillImport({ url: sourceUrl })).rejects.toMatchObject({ statusCode: 413 });
+    }
+    expect(body.cancelled()).toBe(true);
+    expect(body.bytesProduced()).toBeLessThan(16 * 1024 * 1024);
+  });
+
+  it.each(["https://example.com/file", "https://127.0.0.1/private", "http://raw.githubusercontent.com/file"])(
+    "rejects a raw-content redirect to %s before contacting it", async (target) => {
+      const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, {
+        status: 302, headers: { location: target },
+      }));
+      await expect(previewSkillImport({ url: sourceUrl }, {
+        commitResolver: null, packageLister: null,
+      })).rejects.toMatchObject({ statusCode: 422 });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("keeps allowed same-host redirects working", async () => {
+    const target = "https://raw.githubusercontent.com/org/repo/main/skills/moved/SKILL.md";
+    const fetch = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: target } }))
+      .mockResolvedValueOnce(new Response(skill));
+    const preview = await previewSkillImport({ url: sourceUrl }, { commitResolver: null, packageLister: null });
+    expect(preview.raw_content).toBe(skill);
+    expect(preview.source.metadata_json.resolved_url).toBe(target);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not follow a GitHub metadata redirect outside api.github.com", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(null, {
+      status: 302, headers: { location: "https://example.com/tree" },
+    }));
+    await expect(previewSkillImport({ url: sourceUrl }, {
+      commitResolver: null,
+      fetcher: async () => ({ body: skill }),
+    })).rejects.toMatchObject({ statusCode: 422 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels an unsuccessful upstream body without reading it", async () => {
+    const cancel = vi.fn();
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+      new ReadableStream({ cancel }), { status: 404 },
+    ));
+    await expect(previewSkillImport({ url: sourceUrl }, {
+      commitResolver: null, packageLister: null,
+    })).rejects.toMatchObject({ statusCode: 404 });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});

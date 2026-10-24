@@ -1,8 +1,7 @@
 import type { MessageOut } from "@rainver/protocol";
 import { describe, expect, it } from "vitest";
-import { assembleRoomConversationContext, estimateRoomSummaryTokens, ROOM_CONTEXT_FLOOR_BUDGETS, ROOM_RECENT_TOKEN_BUDGET, ROOM_SUMMARY_SOURCE_TOKEN_BUDGET, roomContextBudgets, selectRoomCompactionBatch } from "../src/modules/rooms/conversationContext.js";
+import { assembleRoomConversationContext, ROOM_RECENT_TOKEN_BUDGET } from "../src/modules/rooms/conversationContext.js";
 import { estimateModelTokens, fitTextToTokenBudget, trimTextToModelTokens, trimTextToModelTokensFromEnd } from "../src/modules/usage/modelCatalog.js";
-import { parseSummary } from "../src/modules/rooms/conversationSummaryService.js";
 import { cleanGeneratedTitle, titleFromMessage } from "../src/modules/rooms/conversationTitleService.js";
 
 describe("roomConversationContext", () => {
@@ -21,30 +20,6 @@ describe("roomConversationContext", () => {
   }
 
   describe("Room conversation context", () => {
-    it("keeps summary coverage and recent messages disjoint", () => {
-      const summary = {
-        id: "summary-1",
-        version: 1,
-        summary_text: "Earlier decisions are preserved.",
-        covered_through_message_id: "m-2",
-        covered_through_created_at: "2026-01-01T00:00:02.000Z",
-      };
-      const current = message("m-4", "current request", "2026-01-01T00:00:04.000Z");
-      const context = assembleRoomConversationContext({
-        summary,
-        currentMessage: current,
-        messages: [
-          message("m-1", "old", "2026-01-01T00:00:01.000Z"),
-          message("m-2", "covered", "2026-01-01T00:00:02.000Z"),
-          message("m-3", "recent", "2026-01-01T00:00:03.000Z", "assistant"),
-          current,
-        ],
-      });
-      expect(context?.no_overlap).toBe(true);
-      expect(context?.message_refs).toEqual(["m-3"]);
-      expect(context?.trace.covered_through_message_id).toBe("m-2");
-    });
-
     it("omits an oversized prior turn instead of exceeding the raw budget", () => {
       const oversized = "x".repeat(ROOM_RECENT_TOKEN_BUDGET * 8);
       const current = message("m-2", "trigger", "2026-01-01T00:00:02.000Z");
@@ -53,42 +28,6 @@ describe("roomConversationContext", () => {
         messages: [message("m-1", oversized, "2026-01-01T00:00:01.000Z", "assistant"), current],
       });
       expect(context).toBeNull();
-    });
-
-    it("advances compaction through an exclusive cursor", () => {
-      const messages = Array.from({ length: 20 }, (_, index) => message(
-        `m-${index + 1}`,
-        `turn ${index + 1} ${"detail ".repeat(300)}`,
-        `2026-01-01T00:00:${String(index + 1).padStart(2, "0")}.000Z`,
-      ));
-      const batch = selectRoomCompactionBatch({
-        messages,
-        summary: {
-          covered_through_message_id: "m-2",
-          covered_through_created_at: "2026-01-01T00:00:02.000Z",
-        },
-      });
-      expect(batch.should_compact).toBe(true);
-      expect(batch.source_messages[0]?.id).toBe("m-3");
-      expect(batch.covered_through_message?.id).toBe(batch.source_messages.at(-1)?.id);
-      expect(batch.retained_recent_messages.at(-1)?.id).toBe("m-20");
-    });
-
-    it("bounds each summary source batch without skipping the oldest cursor", () => {
-      const messages = Array.from({ length: 40 }, (_, index) => message(
-        `m-${index + 1}`,
-        "detail ".repeat(500),
-        `2026-01-01T00:00:${String(index + 1).padStart(2, "0")}.000Z`,
-      ));
-      const batch = selectRoomCompactionBatch({ messages });
-      expect(batch.source_messages.length).toBeGreaterThan(0);
-      expect(batch.source_token_estimate).toBeGreaterThan(0);
-      expect(batch.source_token_estimate).toBeGreaterThanOrEqual(
-        estimateRoomSummaryTokens(batch.source_messages[0]!.content),
-      );
-      expect(batch.source_token_estimate).toBeLessThanOrEqual(ROOM_SUMMARY_SOURCE_TOKEN_BUDGET);
-      expect(batch.source_messages.at(-1)?.id).toBe(batch.covered_through_message?.id);
-      expect(batch.source_messages.at(-1)?.id).not.toBe("m-40");
     });
 
     it("estimates tokens by character class, not by UTF-8 bytes", () => {
@@ -142,20 +81,8 @@ describe("roomConversationContext", () => {
       }
     });
 
-    it("derives budgets from the model window without falling below the floors", () => {
-      expect(roomContextBudgets(200_000)).toEqual({
-        summary: 6_000,
-        recent: 30_000,
-        summary_source: 60_000,
-        rotate_at: 120_000,
-      });
-      const small = roomContextBudgets(16_384);
-      expect(small.summary).toBe(ROOM_CONTEXT_FLOOR_BUDGETS.summary);
-      expect(small.recent).toBe(ROOM_CONTEXT_FLOOR_BUDGETS.recent);
-      expect(small.summary_source).toBe(ROOM_CONTEXT_FLOOR_BUDGETS.summary_source);
-    });
-
-    it("keeps more of the conversation for a large-window model", () => {
+    it("keeps more of the conversation when given a larger budget", () => {
+      const budgets = { recent: 30_000 };
       const messages = Array.from({ length: 30 }, (_, index) => message(
         `m-${String(index + 1).padStart(2, "0")}`,
         "detail ".repeat(800),
@@ -163,70 +90,13 @@ describe("roomConversationContext", () => {
       ));
       const current = messages.at(-1)!;
       const floor = assembleRoomConversationContext({ messages, currentMessage: current });
-      const large = assembleRoomConversationContext({
-        messages,
-        currentMessage: current,
-        budgets: roomContextBudgets(200_000),
-      });
+      const large = assembleRoomConversationContext({ messages, currentMessage: current, budgets });
       expect(floor!.recent_token_estimate).toBeLessThanOrEqual(ROOM_RECENT_TOKEN_BUDGET);
       expect(large!.recent_messages.length).toBeGreaterThan(floor!.recent_messages.length);
       expect(large!.recent_token_estimate).toBeGreaterThan(ROOM_RECENT_TOKEN_BUDGET * 4);
-      expect(large!.recent_token_estimate).toBeLessThanOrEqual(roomContextBudgets(200_000).recent);
+      expect(large!.recent_token_estimate).toBeLessThanOrEqual(budgets.recent);
     });
 
-    it("widens the recent window by one summary batch when no summary is coming", () => {
-      const messages = Array.from({ length: 40 }, (_, index) => message(
-        `m-${String(index + 1).padStart(2, "0")}`,
-        "detail ".repeat(800),
-        `2026-01-01T00:00:${String(index + 1).padStart(2, "0")}.000Z`,
-      ));
-      const current = messages.at(-1)!;
-      const summarized = assembleRoomConversationContext({ messages, currentMessage: current });
-      const unavailable = assembleRoomConversationContext({ messages, currentMessage: current, summaryUnavailable: true });
-      expect(summarized!.recent_token_estimate).toBeLessThanOrEqual(ROOM_RECENT_TOKEN_BUDGET);
-      expect(unavailable!.recent_token_estimate).toBeGreaterThan(ROOM_RECENT_TOKEN_BUDGET);
-      expect(unavailable!.recent_token_estimate)
-        .toBeLessThanOrEqual(ROOM_RECENT_TOKEN_BUDGET + ROOM_SUMMARY_SOURCE_TOKEN_BUDGET);
-    });
-
-    it("widens it no further than half the share at which the session rotates", () => {
-      const messages = Array.from({ length: 120 }, (_, index) => message(
-        `m-${String(index + 1).padStart(3, "0")}`,
-        "detail ".repeat(800),
-        new Date(Date.UTC(2026, 0, 1, 0, 0, index + 1)).toISOString(),
-      ));
-      const budgets = roomContextBudgets(200_000);
-      const unavailable = assembleRoomConversationContext({
-        messages, currentMessage: messages.at(-1)!, summaryUnavailable: true, budgets,
-      });
-      expect(budgets.recent + budgets.summary_source).toBeGreaterThan(budgets.rotate_at / 2);
-      expect(unavailable!.recent_token_estimate).toBeGreaterThan(budgets.recent);
-      expect(unavailable!.recent_token_estimate).toBeLessThanOrEqual(budgets.rotate_at / 2);
-    });
-
-    it("clips an oversized summary to the recipient's summary budget", () => {
-      const current = message("m-2", "trigger", "2026-01-01T00:00:02.000Z");
-      const context = assembleRoomConversationContext({
-        currentMessage: current,
-        messages: [current],
-        summary: {
-          id: "summary-1",
-          version: 1,
-          summary_text: "fact ".repeat(10_000),
-          covered_through_message_id: "m-1",
-          covered_through_created_at: "2026-01-01T00:00:01.000Z",
-        },
-      });
-      expect(context!.summary_token_estimate).toBeLessThanOrEqual(ROOM_CONTEXT_FLOOR_BUDGETS.summary);
-    });
-
-    it("accepts only the versioned summary response shape", () => {
-      expect(parseSummary('{"summary":"Keep this decision."}')).toBe("Keep this decision.");
-      expect(parseSummary('{"summary":"ok","extra":"leak"}')).toBeNull();
-      expect(parseSummary("provider refusal")).toBeNull();
-      expect(parseSummary("```json\n{\"summary\":\"fenced\"}\n```"))
-        .toBe("fenced");
-    });
   });
 });
 

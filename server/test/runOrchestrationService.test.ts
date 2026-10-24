@@ -17,7 +17,6 @@ import type {
   RunStepInput,
   RunStepRecord,
   RunTerminalUpdate,
-  ConversationRuntimeTerminalSync,
 } from "../src/modules/runs/repository.js";
 import type { ExecutionControlSnapshot, InvocationDelivery } from "@rainver/protocol";
 import type { PreparedRunSandbox, RunSandboxManagerPort } from "../src/modules/projectFolders/index.js";
@@ -47,7 +46,6 @@ function invocationDelivery(prompt = "Say hello"): InvocationDelivery {
     provider_id: null,
     model: "gpt-4o-mini",
     renderer_version: "acp.v1",
-    mode: "full",
     planned_items: [
       { item_id: "system-item", semantic_role: "delegated_instruction", required: true },
       { item_id: "user-item", semantic_role: "user_input", required: true },
@@ -307,16 +305,6 @@ class FakeRepo implements RunExecutionRepositoryPort {
     return this.run;
   }
 
-  async markRunTerminalWithConversationSession(
-    input: RunTerminalUpdate,
-    conversation: ConversationRuntimeTerminalSync,
-  ): Promise<RunRecord | null> {
-    this.calls.push(
-      conversation.keep_session ? "runtime:record" : "runtime:invalidate",
-    );
-    return this.markRunTerminal(input);
-  }
-
   async markRunCancelling(): Promise<RunRecord | null> {
     if (!this.run || ["succeeded", "failed", "degraded", "cancelled"].includes(this.run.status)) {
       return null;
@@ -350,16 +338,6 @@ class FakeRepo implements RunExecutionRepositoryPort {
     if (terminal) this.calls.push(`unlock:${input.run_id}`);
     if (terminal) this.executionLocked = false;
     return terminal;
-  }
-
-  async publishRunTerminalWithConversationSession(
-    input: RunTerminalUpdate,
-    conversation: ConversationRuntimeTerminalSync,
-  ): Promise<RunRecord | null> {
-    this.calls.push(
-      conversation.keep_session ? "runtime:record" : "runtime:invalidate",
-    );
-    return this.publishRunTerminal(input);
   }
 
   async markRunWaitingForReview(input: {
@@ -797,7 +775,6 @@ describe("RunOrchestrationService", () => {
       executionControlSnapshotId: "control-1",
       runtimeKey: "codex_cli",
       providerId: null,
-      cliBinding: null,
     }));
     expect(ensureWorkContextSetup).toHaveBeenCalledTimes(1);
     expect(ensureWorkContextSetup).toHaveBeenCalledWith(
@@ -2065,13 +2042,6 @@ describe("RunOrchestrationService", () => {
       status: "running",
       runtime_key: "codex_cli",
       model_provider_id: null,
-      model_override_json: {
-        conversation_runtime: {
-          schema_version: "conversation_runtime.v1",
-          binding_id: "binding-1",
-          runtime_state_key: "11111111-1111-4111-8111-111111111111",
-        },
-      },
     });
     const terminated: string[] = [];
     const service = orchestration(repo, {
@@ -2094,8 +2064,7 @@ describe("RunOrchestrationService", () => {
       }),
     ).resolves.toMatchObject({ status: "cancelled", error_code: "run_cancelled" });
     expect(terminated).toEqual(["run-1"]);
-    expect(repo.calls.indexOf("runtime:invalidate"))
-      .toBeLessThan(repo.calls.indexOf("terminal:cancelled"));
+    expect(repo.calls).toContain("terminal:cancelled");
     expect(repo.run?.status).toBe("cancelled");
   });
 
@@ -2139,20 +2108,6 @@ describe("RunOrchestrationService", () => {
     expect(result).not.toMatchObject({ error_code: "finalization_failed" });
     // The sweep settles the rest; the delegation is closed now, once.
     expect(projector.terminal).toHaveLength(1);
-  });
-
-  it("stops a turn's session handoff together with the turn", async () => {
-    const repo = new FakeRepo();
-    repo.run = run({
-      status: "waiting_for_dependency",
-      model_override_json: { handoff_rotation: { handoff_run_id: "run-handoff" } },
-    });
-    repo.runsById.set("run-handoff", run({ id: "run-handoff", status: "running" }));
-    const service = orchestration(repo);
-
-    await expect(service.cancelRun({ run_id: "run-1", space_id: "space-1" }))
-      .resolves.toMatchObject({ status: "cancelled" });
-    expect(repo.calls).toContain("get:space-1:run-handoff");
   });
 
   it("does not overwrite a concurrent cancel when the adapter finishes", async () => {
@@ -2295,7 +2250,8 @@ describe("RunOrchestrationService", () => {
       runtime_key: "codex_cli",
       event_type: "llm.generation",
       metadata: {
-        cli_usage: { acp_turns: 1, estimated_total: 8, estimate_instructions: 3, estimate_current_input: 5 },
+        // codex-acp reports its last model request, not the turn (`usage.acp_prompt_usage`).
+        cli_usage: { acp_turns: 1, usage_scope: "last_model_request", estimated_total: 8, estimate_instructions: 3, estimate_current_input: 5 },
       },
       dimensions: { run_outcome: "succeeded", run_purpose: "task" },
     });

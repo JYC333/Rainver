@@ -123,7 +123,6 @@ to any business code. `computeDecision` (`gateway.ts`) always denies reserved ac
 | `project_folder.read` | project_folder | low | allow | projectFolders repository via `enforce()` |
 | `input_resource.read` | conversation_input_resource | low | allow (audit_required) | `server/src/modules/sessions/conversationInputResourceService.ts` |
 | `input_resource.search` | conversation_input_resource | low | allow (audit_required) | `server/src/modules/sessions/conversationInputResourceService.ts` |
-| `runtime_skill.render` | runtime_skill_binding | medium | require_approval | context module via `enforce()` |
 | `agent.config_update` | agent | high | allow (audit_required) | registered only; owner agent routes append `AgentVersion` and do not call `enforce()` |
 | `source.connection.manage` | source_connection | medium | allow (audit_required) | sources routes via `enforce()` |
 | `source.item_create` | source_item | low | allow (audit_required) | sources routes via `enforce()` |
@@ -177,11 +176,7 @@ to any business code. `computeDecision` (`gateway.ts`) always denies reserved ac
 | `retrieval_maintenance_packet` | proposal | medium | require_approval | via `proposal.apply` |
 | `retrieval_diagnostics_packet` | proposal | medium | require_approval | via `proposal.apply` |
 | `skill.import` | skill_package | medium | require_approval | via `proposal.apply` |
-| `skill.convert` | skill_package | high | require_approval | via `proposal.apply` |
-| `capability.enable` | capability | high | require_approval | via `proposal.apply` |
-| `capability.disable` | capability | medium | require_approval | via `proposal.apply` |
-| `capability.update` | capability | high | require_approval | via `proposal.apply` |
-| `runtime_skill.binding_update` | runtime_skill_binding | high | require_approval | via `proposal.apply` |
+| `runtime_skill.binding_update` | skill_binding | high | require_approval | via `proposal.apply` |
 | `source.connection.activate` | source_connection | high | require_approval | via `proposal.apply` (`source_connection_create`) |
 | `automation.create` | automation | high | require_approval | `server/src/modules/automations/service.ts` via `enforce()` |
 | `automation.update` | automation | high | require_approval | `server/src/modules/automations/service.ts` via `enforce()` |
@@ -214,7 +209,6 @@ reserved actions. The registry is **not** full RBAC/ABAC.
 | `proposal.approve` | proposal | medium | require_approval |
 | `memory.read_private` | memory | high | require_approval |
 | `memory.promote_shared` | memory | high | require_approval |
-| `runtime_skill.execute` | runtime_skill_binding | high | require_approval |
 | `tool_binding.enable` | tool_binding | high | require_approval |
 | `evidence.export` | evidence | high | require_approval |
 | `note.link.create` | note | low | deny |
@@ -276,10 +270,10 @@ Effective risk computation (`PROPOSAL_TYPE_RISK` in `gateway.ts` is the table):
   (`claim_candidate_packet`, `imported_history_memory_packet`,
   `memory_maintenance_packet`, `retrieval_maintenance_packet`,
   `retrieval_diagnostics_packet`, `relation_discovery_packet`) → medium
-- `skill_import_approve`, `capability_disable`, `custom_source_policy_delta`,
+- `skill_import_approve`, `custom_source_policy_delta`,
   `custom_source_repair_activation`, `source_recipe_activation` → medium
 - `code_patch / egress_review / agent_config_update`,
-  `object_profile_*`, `capability_install / capability_update / capability_enable`,
+  `object_profile_*`,
   `runtime_skill_binding_update`, `custom_source_credentialed_source`,
   `evolution_bundle_rollback` → high
 - Unknown proposal type → high (conservative)
@@ -356,7 +350,6 @@ simulation path: the automation policy preflight.
 | `proposal.apply` | `server/src/modules/proposals/applyService.ts` via `enforceProposalApply()` | Before accepted proposal side effects |
 | `project_folder.write_patch` | `server/src/modules/projectFolders/` and proposal appliers via `enforce()` | Before any Project Folder file writes |
 | `project_folder.apply_patch` | `server/src/modules/projectFolders/repository.ts` via `enforce()` | Before human Save to Folder after exact draft/version and Host preconditions; direct user context is allowed and no Proposal is created. Restore as draft never mutates the Folder. There is no direct browser-content write or user-facing rollback route |
-| `runtime_skill.render` | execution-control policy resolution | Before enabled runtime-skill content may enter an accepted Delivery |
 | `retrieval.search` | `server/src/modules/retrieval/tool/service.ts` via `enforce()` | Before managed-run Knowledge search execution |
 | `retrieval.brief` | `server/src/modules/retrieval/tool/service.ts` via `enforce()` | Before managed-run Knowledge Context Brief execution |
 | `memory.retrieval.search` | `server/src/modules/retrieval/tool/service.ts` + `server/src/modules/runs/managedRetrievalTools.ts` via `enforce()` | Before explicitly opted-in managed-run Memory search execution; disabled-domain calls are denied/audited |
@@ -453,3 +446,8 @@ Falls through to registry default only for **known** registered actions when no 
 - Policy rows are domain-specific; there are no space-level row overrides.
 - Reserved / placeholder actions are registered and denied until a call site exists.
 
+
+The retired capability layer has no policy actions for conversion, capability
+mutation, normalized Skill rendering or native Skill execution. Review and
+scoped immutable-package binding still use the proposal gate; Runtime Context
+revalidates original-package selection and bytes before accepted Delivery.

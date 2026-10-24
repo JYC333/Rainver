@@ -288,9 +288,7 @@ user session — the daemon has no session to present):
   { branch, head }` — where the Run's checkout stood before and after it (see
   "Location lease, Task worktrees and `git_after`" below). `recordDiffArtifact`
   writes `git_after` to the Run's `output_json.workspace_after` (kept through
-  finalization) and, under the conditions listed there, to
-  `conversation_execution_contexts.last_run_git_branch/head`; a body with
-  only git fields records no artifact.
+  finalization); a body with only git fields records no artifact.
 
 User-session authenticated dispatch is owned by the Tasks module, not this
 Host registry:
@@ -473,10 +471,10 @@ verified on a real host** — if it ignores `XDG_DATA_HOME`, its state stays
 machine-global. That is not the isolation claimed here. See the deferred
 register.
 
-This granularity extends the HostThread's opaque `vendor_session_id` to the
-Runtime Context cursor. The HostThread and Runtime Context binding must resume
-the same ACP session; a mismatch or authority rotation starts a fresh session.
-The server does not materialize CLI state directories on a remote Host.
+The HostThread's opaque `vendor_session_id` is the one record of which ACP
+session a Conversation × Agent continues; nothing else keeps a copy that could
+disagree with it. The server does not materialize CLI state directories on a
+remote Host.
 
 ### Login state: one per host × installation, shared by link
 
@@ -1343,68 +1341,69 @@ silenced every reset after the first. Every session id a thread moves on from �
 
 `recordRunOutcome` also keeps what the live vendor session holds.
 `identity_digest` / `identity_digest_run_id` name the standing context (identity
-block + Room rules) it last received, written only for a Run that carried the
-block and completed, and cleared when the session is replaced or reset
+block + Room rules) it last received, and `standing_digest` /
+`standing_digest_run_id` the Runtime Context standing items (Agent
+instruction, Project Instruction and Brief, bound Skills,
+`modules/runtime-context.md`); both are written only for a Run that carried
+them and completed, and cleared when the session is replaced or reset
 (`modules/rooms.md`). `context_tokens` / `context_window_tokens` are the
 occupancy the runtime last reported through ACP `usage_update` (`used`,
 `size`), carried on the Run's `output_json.result.context_window`; a runtime
-that reports none leaves them null, and such a thread never rotates. A drop in
+that reports none leaves them null, and the preflight shows no occupancy. A drop in
 reported occupancy within one session means the vendor compacted it, which may
 have summarized the standing context away, so it clears the digest and the
 next turn sends the block again. A runtime that reports nothing gives no such
 signal: its compaction can drop the block unnoticed until the session is
 replaced (a residual).
 
-### Session rotation with a self-written handoff (`agentGroups/sessionHandoff.ts`)
+### Conversation summary and restart (`agentGroups/sessionHandoff.ts`)
 
-When a Room turn would resume a Conversation × Agent session whose reported
-occupancy is at or past 60 % of its window (`roomContextBudgets.rotate_at`,
-below any vendor's own auto-compaction; the share is the fixed
-`ROOM_SESSION_ROTATE_SHARE` — no Space policy overrides it yet, see the
-deferred register), the send first creates a **handoff
-turn**: an ordinary Room Run for the same Agent, placed in the Conversation's
-serial chain immediately before that Agent's own turn, resuming the old
-session, whose prompt is the
-Prompt Library asset `agent.handoff` and whose only granted action is
-`handoff.write` (policy action `handoff.write`, `declared_resource`, ungated).
-The action writes one `agent_handoff` Artifact per handoff Run (a second call
-in the same turn replaces that turn's document, the Agent correcting itself; a
-later handoff or a retry writes its own, so the document a rotation used is
-never overwritten) — goal, decisions taken, files and their state, next step,
-open questions —
-bounded to 4 % of the window, visible to exactly whom the Run was
-(`selected_users` inheriting the Run's grants). Its Runtime Context input is
-its own request, with no conversation window — the resumed session already
-holds the conversation, and a window read then would end in the person's
-pending message. Its reply is posted neither to the transcript nor to the
-group timeline, and a later recipient's admission is never handed it as a
-reply. The renewed session's replay is sized without the "no summary"
-widening, so it does not start near the rotation share again. The person's turn is parked behind it and carries, beside the
-prompt it was dispatched with, the fresh prompt it switches to: standing
-context, the conversation title, the handoff, and the replay window.
+Rainver does not rotate a Conversation × Agent vendor session by occupancy.
+The session is the Agent's working memory, the runtime compacts it on its own
+terms, and every ACP client and CLI orchestrator surveyed leaves it there
+(ADR 0014 §11). What a person can do, from the Room roster beside reset, is
+ask for a **summary** and later **restart** from it.
 
-The rotation happens where that turn is admitted
-(`AgentGroupRunLifecycleProjector`), in one transaction: when the handoff Run
-succeeded and wrote its document, `rotateAfterHandoff` retires the session
-(`session_reset`, `vendor_session_id` null, digest and occupancy cleared,
-`handoff_artifact_id` set), the turn's prompt and `host_thread` override
-become the fresh ones, and an internal marker message
-(`continuation_event_kind = session_handoff`) keeps replay order. The handoff
-Run's own outcome can arrive afterwards and is ignored for the thread it
-already rotated. A handoff that failed or wrote nothing records a `warning`
-Run event on the turn, which then resumes the old session; the vendor's own
-compaction stays the safety net, and the same session is not handed off again
-until it has grown by a tenth of its window since that attempt. Rotation
-retires only the session the handoff was written from: a reset while the
-handoff ran leaves the thread as the reset left it, and an explicit context
-reset clears the handoff as well. Any later fresh prompt on the thread — a
-renewed turn that failed before its session existed, a broken resume —
-carries the last handoff, and a thread with no vendor session is always
-treated as fresh. Stopping the person's parked turn stops its handoff turn
-too; a stopped Run, or one that never started, is never read as a broken
-resume. The
-execution-context summary reports each pinned Agent's occupancy and links its
-handoff. Real-host acceptance is recorded in `tasks/deferred-register.md`.
+A summary (`RoomService.summarizeAgentContext`, `POST
+/rooms/:roomId/agents/:agentId/summarize-context`, Host owner only, 409 while
+the Agent is handling a turn or has no session yet) is one Room turn into the
+Agent's current session: an internal instruction message
+(`continuation_event_kind = conversation_summary`, keyed by the Agent) whose
+recipient Run is built as a handoff-shaped turn — `chat_turn.kind =
+"handoff"`, `handoff.manual_summary = true`, prompt asset
+`agent.conversation_summary`, only `handoff.write` granted
+(`HANDOFF_TOOL_ALLOWANCE`), `identity_sent: false`, and nothing waits behind
+it. Its reply is posted nowhere; what it produces is an
+`agent_handoff` Artifact on the Project — goal, decisions, files and their
+state, next step, open questions — bounded to 4 % of the runtime's reported
+window (`handoffBudgetTokens`), carrying `manual_summary` and the
+`vendor_session_id` it describes, visible to exactly whom the Run was
+(`selected_users` inheriting the Run's grants). A second `handoff.write` in the
+same turn replaces the first. When the turn ends, `runs/chatTurnFinalizer.ts`
+posts a Room system notice (`host_thread_event: context_summary`,
+`execution_details.artifact_id`). The session continues unchanged; the
+summary ends with a pointer to `conversation.search` / `conversation.read` for
+what it left out.
+
+The execution-context summary reports, per pinned Agent, the occupancy the
+runtime last reported, `summary_artifact_id` while the thread is still in the
+session that summary describes, `last_run_ended_at` and the runtime's declared
+`prompt_cache_ttl_seconds` (`RuntimeAdapterSpec.usage`). The conversation
+preflight turns these into two notices before a send — continuing resumes the
+full session, and the vendor's prompt cache has gone cold so the next turn
+rewrites its context — and acts on neither.
+
+Restart from summary (`RoomRosterService.restartFromSummary`, `POST
+.../restart-from-summary`, same guards, 409 when the current session has no
+summary) is the person choosing the rotation: `rotateAfterHandoff` retires the
+session (`session_reset`, `vendor_session_id` null, digest and occupancy
+cleared, `handoff_artifact_id` set) and posts a notice
+(`host_thread_reset_reason: summary`); the next turn opens from standing
+context, the conversation title and the summary (`[Summary you wrote before
+this session was restarted]`), with no replay of the transcript. Any later fresh prompt on the
+thread carries that document until an explicit context reset clears it, and a
+thread with no vendor session is always treated as fresh. A stopped Run, or
+one that never started, is never read as a broken resume.
 
 `vendor_session_id` is the thread's own resume target, deliberately distinct
 from the server-owned `runs.session_id`. No surface displays it. What a
@@ -1599,11 +1598,11 @@ server-side authorization: live tools and side effects still pass through the
 Run-scoped gateway and policy checks. Runtime Context does not grant the daemon
 additional filesystem access or change the Host trust model.
 
-For a persistent HostThread, the Runtime Context event cursor follows the same
-opaque ACP vendor session id. When the session and context binding disagree,
-or the binding rotates with changed authority, orchestration starts a fresh
-ACP session rather than resuming stale transcript state. A threadless Run gets
-a full Delivery and does not persist an unused cursor.
+For a persistent HostThread, a Run resumes the thread's vendor session and its
+Delivery carries only the turn's current input, instructions and attachments;
+the session holds the conversation (`modules/runtime-context.md`, "What an
+ACP Run is sent"). A threadless Run gets the same Delivery into a fresh
+session.
 
 ## Dispatch: the runtime decides, not the machine
 
@@ -2124,16 +2123,9 @@ event, notice or attention item — the merge itself runs the same. `waiting_loc
 `done` (`tasks/projectIntegration.ts`, `source_type: task_merge`), with the
 failure reason in words (`mergeFailureText`). Rainver never pushes.
 
-A fast-forward in the checkout moves its HEAD, which the Room Git gate would
-refuse (`modules/rooms.md`). The conversation the Task came from — the one
-told it merged — takes that move as its own: when its accepted baseline or
-last-Run HEAD is the main branch at `onto_commit`, `merged` records the main
-branch at the merged commit as its `last_run_git_branch/head` through the
-gate's one writer (`sessions/conversationGitGate.ts`
-`recordConversationHeadMove`, which a Conversation Run's `git_after` goes
-through too), so its next send advances the baseline. Any other state there
-is someone else's move and still the person's to refresh; other conversations
-on the Location were not told and keep the gate.
+A fast-forward in the checkout moves its HEAD. Nothing on the server gates
+a Conversation on that: the CLI working in the Location sees the new HEAD
+itself on its next turn.
 
 In strict mode the launch binds its cwd, the Task worktree, by
 `sandbox_mode` and the repository's git common directory as a write bind
@@ -2176,20 +2168,10 @@ change it between them. Removing a Task worktree whose `git worktree remove` fai
 daemon reads the branch and HEAD (`captureGitHead`: `rev-parse --abbrev-ref
 HEAD` / `rev-parse HEAD`, the reads a heartbeat reports); after the exit diff
 it reads them again, and uploads both with the diff. Neither is sent for a
-worktree Run, whose detached HEAD is not the Location's. The server always
-keeps `git_after` as the Run's `output_json.workspace_after`, and records it
-as the Conversation's `last_run_git_branch/head` — through the gate's one
-writer, `sessions/conversationGitGate.ts` `recordConversationHeadMove`, which
-a done Task's fast-forward goes through too — only for a Run that may
-write (`required_sandbox_level` is not `read_only`), is not yet terminal,
-ran in its Conversation's Primary Location on the uploading host, and whose
-`git_before` equals the Conversation's baseline or its current last-Run HEAD
-— so the move to `git_after` happened while this Run held the directory. The
-Conversation send gates use it (`modules/rooms.md`, Git gate); refreshing or
-advancing the baseline clears it. A branch name longer than the record's 256
-characters is not kept — the diff still is — and the gate then treats a moved
-HEAD as it would with no report; a Location's status report records such a
-branch as unknown too.
+worktree Run, whose detached HEAD is not the Location's. The server keeps
+`git_after` as the Run's `output_json.workspace_after`; `git_before` is
+accepted for the daemon's audit of the lease and not stored. Neither gates a
+later send: the CLI reads the checkout itself.
 
 ### Strict mode (`strictNamespace.ts`)
 

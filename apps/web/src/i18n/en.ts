@@ -127,7 +127,7 @@ export const en = {
     pdfs: 'PDFs', digests: 'Digests', proposals: 'Proposals', memory: 'Memory',
     my_agents: 'My agents', chat_history: 'Chat history', templates: 'Templates',
     runs: 'Runs', plans: 'Plans', automations: 'Automations',
-    skills: 'Skills', capabilities: 'Capabilities', artifacts: 'Artifacts',
+    skills: 'Skills', artifacts: 'Artifacts',
   },
   shell: {
     switch_to_light: 'Switch to light theme', switch_to_dark: 'Switch to dark theme',
@@ -207,7 +207,7 @@ export const en = {
     instance_settings: 'Instance Settings', job_queue: 'Job Queue', evolution: 'Evolution',
     prompt_library: 'Prompt Library', retrieval_settings: 'Retrieval Settings',
     plugins: 'Optional Modules', settings: 'Settings', space_settings: 'Space Settings',
-    skills: 'Skills', capabilities: 'Capabilities', agents_mgmt: 'Agents', providers: 'Providers',
+    skills: 'Skills', agents_mgmt: 'Agents', providers: 'Providers',
     usage: 'Token Usage', network_profiles: 'Network', automations: 'Automations',
   },
 } as const

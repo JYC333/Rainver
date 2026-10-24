@@ -31,7 +31,7 @@ describe('SceneSidebar changes by scene', () => {
       fireEvent.click(link)
       expect(screen.getByTestId('destination')).toHaveTextContent('/spaces/personal-1/skills')
       expect(screen.getByRole('link', { name: '技能库' })).toHaveAttribute('aria-current', 'page')
-      expect(screen.getByRole('link', { name: '能力' })).not.toHaveAttribute('aria-current')
+      expect(screen.queryByRole('link', { name: '能力' })).not.toBeInTheDocument()
     } finally {
       await i18n.changeLanguage('en')
     }
@@ -42,7 +42,7 @@ describe('SceneSidebar changes by scene', () => {
     expect(screen.getByText('My agents')).toBeInTheDocument()
     expect(screen.getByText('Runs')).toBeInTheDocument()
     expect(screen.getByText('Templates')).toBeInTheDocument()
-    expect(screen.getByText('Capabilities')).toBeInTheDocument()
+    expect(screen.queryByText('Capabilities')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Skills' })).toHaveAttribute('href', '/spaces/personal-1/skills')
     expect(screen.queryByText('Projects')).toBeNull()
     expect(screen.queryByText('Raw')).toBeNull()

@@ -6,17 +6,13 @@ import type {
   RunAdapterResultEnvelope,
   TurnContextRequest,
 } from "@rainver/protocol";
-import type {
-  RuntimeContextInvocationGatewayPort,
-  RuntimeContextInvocationInput,
-} from "../runtimeContext/index.js";
+import type { RuntimeContextInvocationGatewayPort } from "../runtimeContext/index.js";
 import type { RunRecord } from "./repository.js";
 
 export interface RunInvocationAttemptLifecycle {
   prepare(): Promise<InvocationDelivery>;
   acknowledge(delivery: InvocationDelivery, response: RunAdapterResultEnvelope): Promise<InvocationSnapshotSafe>;
   finalize(delivery: InvocationDelivery, errorCode?: string | null): Promise<InvocationSnapshotSafe>;
-  acknowledgeContext?(delivery: InvocationDelivery, vendorSessionId: string): Promise<void>;
 }
 
 export function createRunInvocationAttemptLifecycle(input: {
@@ -26,7 +22,6 @@ export function createRunInvocationAttemptLifecycle(input: {
   turn: TurnContextRequest;
   model: string | null;
   runtimeSessionBindingRef?: { type: string; id: string; version?: string | null } | null;
-  cliBinding?: RuntimeContextInvocationInput["cliBinding"];
 }): RunInvocationAttemptLifecycle {
   const viewerUserId = input.run.instructed_by_user_id ?? input.run.owner_user_id;
   if (!viewerUserId) throw new Error("Runtime Context invocation requires an instructing user");
@@ -41,7 +36,6 @@ export function createRunInvocationAttemptLifecycle(input: {
       model: input.model,
       usageSourceId: `runtime-context:${input.run.id}:${randomUUID()}`,
       runtimeSessionBindingRef: input.runtimeSessionBindingRef ?? null,
-      cliBinding: input.cliBinding ?? null,
     }),
     acknowledge: (delivery, response) => input.gateway.acknowledgeDelivery({
       spaceId: input.run.space_id,
@@ -54,16 +48,6 @@ export function createRunInvocationAttemptLifecycle(input: {
       adapterReceiptRef: { type: "runtime_attempt", id: delivery.id },
       errorCode: response.error_code ?? null,
     }),
-    acknowledgeContext: (delivery, vendorSessionId) => {
-      if (!input.gateway.acknowledgeCliContextPhase) {
-        throw new Error("CLI context-phase acknowledgement is unavailable");
-      }
-      return input.gateway.acknowledgeCliContextPhase({
-        spaceId: input.run.space_id,
-        deliveryId: delivery.id,
-        vendorSessionId,
-      });
-    },
     finalize: (delivery, errorCode) => input.gateway.finalizeInvocation({
       spaceId: input.run.space_id,
       invocationId: input.run.id,

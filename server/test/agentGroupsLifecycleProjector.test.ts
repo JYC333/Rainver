@@ -189,8 +189,8 @@ class FakeClient {
     if (sql.includes("UPDATE host_threads thread") && sql.includes("SET dispatch_lock_id = NULL")) {
       return { rows: [], rowCount: 0 };
     }
-    if (sql.includes("SELECT run.host_task_thread_id")) {
-      return { rows: [{ host_task_thread_id: null, owner_id: null } as Row], rowCount: 1 };
+    if (sql.includes("SELECT host_task_thread_id FROM runs")) {
+      return { rows: [{ host_task_thread_id: null } as Row], rowCount: 1 };
     }
     // One Run of a group at a time (`groupHasRunnableRun`).
     if (sql.includes("AND run_group_id = $2 AND id <> $3")) {

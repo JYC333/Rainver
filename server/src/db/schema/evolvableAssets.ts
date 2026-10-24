@@ -12,9 +12,8 @@ import { evolutionTargets } from "./evolution.js";
 // existing `evolution` foundation (evolution_targets/signals/strategy_assets/
 // experiences) rather than duplicating it.
 
-// 'capability' is intentionally excluded: capability_versions is the sole
-// version authority for capabilities, to avoid a second source of truth.
-const ASSET_TYPES = sql`ARRAY[('prompt_template'::character varying)::text, ('workflow_template'::character varying)::text, ('agent_config'::character varying)::text, ('runtime_skill_binding'::character varying)::text, ('source_post_processing_rule'::character varying)::text]`;
+// Imported Skill content is owned by immutable skill_packages, not evolvable assets.
+const ASSET_TYPES = sql`ARRAY[('prompt_template'::character varying)::text, ('workflow_template'::character varying)::text, ('agent_config'::character varying)::text, ('source_post_processing_rule'::character varying)::text]`;
 const SCOPE_TYPES = sql`ARRAY[('system'::character varying)::text, ('space'::character varying)::text, ('project'::character varying)::text, ('user'::character varying)::text, ('agent'::character varying)::text]`;
 
 export const evolvableAssets = pgTable("evolvable_assets", {
@@ -51,7 +50,7 @@ export const evolvableAssets = pgTable("evolvable_assets", {
 			foreignColumns: [evolvableAssetVersions.id],
 			name: "evolvable_assets_current_system_version_id_fkey"
 		}),
-	check("ck_evolvable_assets_asset_type", sql`(asset_type)::text = ANY (${ASSET_TYPES})`),
+	check("ck_evolvable_assets_asset_type", sql`status = 'archived' OR (asset_type)::text = ANY (${ASSET_TYPES})`),
 	check("ck_evolvable_assets_owner_scope_type", sql`(owner_scope_type)::text = ANY (${SCOPE_TYPES})`),
 	check("ck_evolvable_assets_status", sql`(status)::text = ANY (ARRAY[('active'::character varying)::text, ('disabled'::character varying)::text, ('archived'::character varying)::text])`),
 	check("ck_evolvable_assets_metadata_object", sql`jsonb_typeof(metadata_json) = 'object'::text`),

@@ -101,9 +101,11 @@ describe('ConversationTurn states', () => {
       ...tool(0, 'exec_command', 'failed'),
       output: JSON.stringify({ formatted_output: '', exit_code: 1 }),
     }])} />)
-    expect(screen.getByText('Exit code: 1')).toBeInTheDocument()
+    expect(screen.getByText('Command returned')).toBeInTheDocument()
+    expect(screen.queryByText('Exit code: 1')).not.toBeInTheDocument()
     expect(screen.queryByText('Error')).not.toBeInTheDocument()
     fireEvent.click(screen.getByText('exec_command'))
+    expect(screen.getByText('Exit code: 1')).toBeInTheDocument()
     expect(screen.getByText(/can mean no matches/)).toBeInTheDocument()
     expect(screen.queryByText(/The tool reported failure/)).not.toBeInTheDocument()
   })

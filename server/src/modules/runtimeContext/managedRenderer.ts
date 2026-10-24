@@ -17,11 +17,9 @@ export interface ManagedDeliveryRenderInput {
   runtimeKey: string;
   providerId: string | null;
   model: string | null;
-  mode?: "full" | "delta";
   usageSourceId: string;
   deliveryId?: string;
   snapshotId?: string;
-  cliSession?: InvocationDelivery["cli_session"];
 }
 
 export async function renderManagedDelivery(input: ManagedDeliveryRenderInput): Promise<InvocationDelivery> {
@@ -78,7 +76,6 @@ export async function renderManagedDelivery(input: ManagedDeliveryRenderInput): 
     provider_id: input.providerId,
     model: envelope.window_plan.model,
     renderer_version: MANAGED_RENDERER_VERSION,
-    mode: input.mode ?? "full",
     planned_items: accepted.map((item) => ({
       item_id: item.id,
       semantic_role: item.semantic_role,
@@ -88,17 +85,7 @@ export async function renderManagedDelivery(input: ManagedDeliveryRenderInput): 
       semantic_role: item.semantic_role,
       content: renderSemanticContent(item.semantic_role, contextItemText(item)),
       source_item_ids: [item.id],
-      ...(input.cliSession
-        ? {
-            delivery_phase: sameRef(item.source_ref, envelope.turn_request.current_message_ref)
-              ? "current_user" as const
-              : (input.mode ?? "full") === "full"
-                ? "bootstrap_context" as const
-                : "context_delta" as const,
-          }
-        : {}),
     })),
-    cli_session: input.cliSession ?? null,
     ...(accepted.some(item => item.source_ref.type === "skill_package_binding") ? {
       skill_packages: accepted.filter(item => item.source_ref.type === "skill_package_binding").map(item => ({
         source_item_id: item.id, content: protocol.SkillPackageContentSchema.parse(item.payload.skill_package),

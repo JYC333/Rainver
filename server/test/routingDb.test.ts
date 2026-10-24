@@ -252,12 +252,12 @@ async function pinConversation(input: {
        id, space_id, session_id, bound_by_user_id, agent_id, runtime_profile_id,
        runtime_key_snapshot, backend_mode_snapshot, model_name_snapshot,
        model_provider_id_snapshot, runtime_config_snapshot_json,
-       runtime_policy_snapshot_json, runtime_state_key, created_at, updated_at
-     ) VALUES ($1,$2,$3,$4,$5,$6,'opencode',$7,$8,$9,'{}'::jsonb,'{}'::jsonb,$10,$11,$11)`,
+       runtime_policy_snapshot_json, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,'opencode',$7,$8,$9,'{}'::jsonb,'{}'::jsonb,$10,$10)`,
     [
       randomUUID(), SPACE, sessionId, OWNER, input.agentId, input.profileId,
       input.backendMode, input.modelName ?? null, input.providerId ?? null,
-      randomUUID(), now,
+      now,
     ],
   );
   return { sessionId, threadId };

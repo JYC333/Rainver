@@ -62,22 +62,7 @@ export {
   type InvocationSnapshotStorePort,
   type RuntimeContextContinuityPort,
 } from "./gateway.js";
-export {
-  RuntimeContextContinuityService,
-  type SemanticCheckpointProviderPort,
-} from "./continuity/service.js";
-export { ManagedSemanticCheckpointProvider } from "./continuity/semanticExtractor.js";
-export {
-  CliExecutionLeaseUnavailableError,
-  EXECUTION_LEASE_HEARTBEAT_MS,
-  RuntimeContextCliContinuityService,
-  renderCliEventDelta,
-  type CliExecutionLease,
-  type CliRotationReason,
-  type PreparedCliBinding,
-  type PreparedCliDeliveryState,
-} from "./continuity/cliContinuity.js";
-export { registerRuntimeContextCheckpointHandler, RUNTIME_CONTEXT_CHECKPOINT_JOB } from "./continuity/job.js";
+export { RuntimeContextContinuityService } from "./continuity/service.js";
 export { loadActiveSemanticCheckpoint, loadConversationContinuityThroughMessage } from "./conversationContinuity.js";
 export {
   InvocationSnapshotService,

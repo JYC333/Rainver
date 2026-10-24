@@ -27,8 +27,15 @@ export function UsageEventDiagnostics({ event }: { event: UsageEventDTO }) {
   ]
   if (event.execution_channel === 'local_cli') {
     rows.push(['acp_turns', number('acp_turns')], ['occupancy', `${number('occupancy_used')} / ${number('occupancy_size')}`])
-    if (diagnostics.delivery_mode === 'full' || diagnostics.delivery_mode === 'delta') {
-      rows.push(['delivery_mode', t(`workspace_ui.usage.diagnostics.mode_${diagnostics.delivery_mode}`)])
+    if (diagnostics.usage_scope === 'last_model_request') {
+      // codex-acp reports its last model request, not the turn; the buckets above are a lower bound.
+      rows.push(['usage_scope', t('workspace_ui.usage.diagnostics.scope_last_model_request')])
+    }
+    if (typeof diagnostics.usage_updates === 'number') {
+      rows.push(['usage_updates', number('usage_updates')], ['usage_updates_used_total', number('usage_updates_used_total')])
+    }
+    if (typeof diagnostics.resumed_session === 'boolean') {
+      rows.push(['session', t(diagnostics.resumed_session ? 'workspace_ui.usage.diagnostics.session_resumed' : 'workspace_ui.usage.diagnostics.session_fresh')])
     }
     const purpose = event.dimensions.run_purpose
     if (purpose === 'task' || purpose === 'delegation' || purpose === 'handoff') {
@@ -38,11 +45,6 @@ export function UsageEventDiagnostics({ event }: { event: UsageEventDTO }) {
     if (outcome === 'succeeded' || outcome === 'failed') rows.push(['outcome', t(`workspace_ui.usage.diagnostics.outcome_${outcome}`)])
     const attempt = event.dimensions.run_attempt_number
     if (typeof attempt === 'number' && Number.isSafeInteger(attempt) && attempt > 0) rows.push(['attempt', formatNumber(attempt)])
-    if (typeof diagnostics.rotation_reason === 'string') {
-      rows.push(['rotation', t(`workspace_ui.usage.diagnostics.rotation_${diagnostics.rotation_reason}`, {
-        defaultValue: t('workspace_ui.usage.diagnostics.rotation_other'),
-      })])
-    }
     if (typeof diagnostics.estimated_total === 'number') {
       rows.push(['estimated_total', number('estimated_total')])
       for (const key of ['instructions', 'current_input', 'history', 'checkpoint_tail', 'skills', 'attachments', 'retrieval', 'tool_results']) {

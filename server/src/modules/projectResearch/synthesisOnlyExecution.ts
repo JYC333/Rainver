@@ -1,3 +1,4 @@
+import { RESEARCH_STAGES } from "./researchStages.js";
 import { randomUUID } from "node:crypto";
 import { sha256Json } from "../evolution/hash.js";
 import type { ServerConfig } from "../../config.js";
@@ -214,7 +215,7 @@ function synthesisOnlyDefinition(input: {
         title: "Synthesize the approved research corpus",
         description: input.instruction,
         depends_on: [],
-        capability_id: "research.brief_synthesize",
+        capability_id: RESEARCH_STAGES.brief_synthesize,
         contract_json: {
           risk_level: "low",
           required_outputs_json: { artifact_types: ["research_report.archive.v1"] },

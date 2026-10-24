@@ -31,7 +31,6 @@ import type {
   RunStepInput,
   RunStepRecord,
   RunTerminalUpdate,
-  ConversationRuntimeTerminalSync,
 } from "./repository.js";
 import {
   EPHEMERAL_CLEANUP_KIND,
@@ -39,10 +38,6 @@ import {
   removeEphemeralDir,
   workingDirScopeForLevel,
 } from "./ephemeralSandbox.js";
-import {
-  prepareConversationRuntimeState,
-  removeConversationRuntimeState,
-} from "./conversationRuntimeState.js";
 import type { RunSandboxManagerPort } from "../projectFolders/index.js";
 import { locationAbsoluteRoot } from "../projectFolders/workspaceLocations.js";
 import {
@@ -53,8 +48,6 @@ import {
 import type { RunMaterializationService } from "./materializationService.js";
 import {
   createProductionRuntimeContextInvocationGateway,
-  EXECUTION_LEASE_HEARTBEAT_MS,
-  RuntimeContextCliContinuityService,
   WorkContextService,
   type RuntimeContextGatewayPort,
   type RuntimeContextInvocationGatewayPort,
@@ -158,15 +151,7 @@ export interface RunExecutionRepositoryPort {
     required_sandbox_level: string;
   }): Promise<void>;
   markRunTerminal(input: RunTerminalUpdate): Promise<RunRecord | null>;
-  markRunTerminalWithConversationSession(
-    input: RunTerminalUpdate,
-    conversation: ConversationRuntimeTerminalSync,
-  ): Promise<RunRecord | null>;
   publishRunTerminal(input: RunTerminalUpdate): Promise<RunRecord | null>;
-  publishRunTerminalWithConversationSession(
-    input: RunTerminalUpdate,
-    conversation: ConversationRuntimeTerminalSync,
-  ): Promise<RunRecord | null>;
   markRunCancelling?(input: {
     run_id: string;
     space_id: string;
@@ -275,7 +260,6 @@ interface RunExecutionAdapterDeps {
   /** Seams for the host-daemon CLI adapter. */
   hostCli?: RemoteHostCliAdapterDeps;
   usageRecorder?: (observation: UsageObservation) => Promise<void>;
-  cliContinuity?: RuntimeContextCliContinuityService;
 }
 
 interface RunRouteResolverPort {
@@ -528,12 +512,6 @@ interface PreparedRuntimeContext {
   exchange: RunExchangeHandle | null;
   invocation_delivery: InvocationDelivery | null;
   invocation_attempts: RunInvocationAttemptLifecycle | null;
-  cli_execution_lease: {
-    binding_id: string;
-    lease_id: string;
-    /** Renews the lease while the Run executes; cleared on release. */
-    heartbeat: ReturnType<typeof setInterval> | null;
-  } | null;
   /** Resolved once per run by `resolveExecutionPort`; null until then. */
   execution_port: HostExecutionPort | null;
 }
@@ -559,7 +537,6 @@ export class RunOrchestrationService {
     & Partial<Pick<RuntimeContextGatewayPort, "ingestRuntimeEvent" | "recordRuntimeEventGap">>) | null;
   private readonly ensureWorkContextSetup:
     NonNullable<RunExecutionAdapterDeps["ensureWorkContextSetup"]> | null;
-  private readonly cliContinuity: RuntimeContextCliContinuityService | null;
   private readonly serverExecutionPort: ServerHostExecutionAdapter;
   private builtinHostIdPromise: Promise<string> | null = null;
   private readonly builtinHostResolver: (() => Promise<string>) | null;
@@ -593,10 +570,6 @@ export class RunOrchestrationService {
     this.usageRecorder = adapters.usageRecorder
       ?? (repository instanceof PgRunRepository && config.databaseUrl
         ? (observation) => recordUsageObservation(config, observation)
-        : null);
-    this.cliContinuity = adapters.cliContinuity
-      ?? (repository instanceof PgRunRepository && config.databaseUrl
-        ? new RuntimeContextCliContinuityService(getDbPool(config.databaseUrl))
         : null);
     const databaseUrl = config.databaseUrl;
     this.runtimeContextGateway = adapters.runtimeContextGateway
@@ -742,7 +715,7 @@ export class RunOrchestrationService {
         await this.repository.checkRunExecutionAuthorization?.(proposedContextBoundRun)
         ?? { allowed: true };
       if (!currentAuthorization.allowed) {
-        const rejected = await this.publishRunTerminalWithConversationRuntime({
+        const rejected = await this.repository.publishRunTerminal({
           run_id: run.id,
           space_id: run.space_id,
           status: "failed",
@@ -766,7 +739,7 @@ export class RunOrchestrationService {
           },
           exit_code: 1,
           completed_at: startedAt,
-        }, run, null, false);
+        });
         // A failure cannot be published over a cancellation that arrived
         // first; the execution owner publishes that cancellation instead.
         const cancelled = rejected ? null : await this.publishPendingCancellation(run, startedAt);
@@ -841,7 +814,7 @@ export class RunOrchestrationService {
           };
       if (!dispatchContract.allowed) {
         await this.cleanupRuntimeContext(preparedRuntime, run);
-        let rejected = await this.publishRunTerminalWithConversationRuntime({
+        let rejected = await this.repository.publishRunTerminal({
           run_id: run.id,
           space_id: run.space_id,
           status: "failed",
@@ -857,7 +830,7 @@ export class RunOrchestrationService {
           },
           exit_code: 1,
           completed_at: startedAt,
-        }, run, null, false);
+        });
         if (!rejected) rejected = await this.publishPendingCancellation(run, startedAt);
         if (rejected) executionLockHeld = false;
         const finalization = await this.finalizeTerminalRunBestEffort(
@@ -1106,15 +1079,6 @@ export class RunOrchestrationService {
           adapterResult.error_code ?? null,
         );
       }
-      if (adapterResult.error_code === "runtime_session_invalid"
-        && preparedRuntime.cli_execution_lease
-        && this.cliContinuity) {
-        const replacement = await this.cliContinuity.rotateMissingVendorState(
-          preparedRuntime.cli_execution_lease.binding_id,
-          preparedRuntime.cli_execution_lease.lease_id,
-        );
-        preparedRuntime.cli_execution_lease.binding_id = replacement.id;
-      }
       if (preparedRuntime.exchange) {
         const exchange = await (preparedRuntime.execution_port?.runExchange ?? this.runExchange).collect(
           preparedRuntime.exchange,
@@ -1157,10 +1121,6 @@ export class RunOrchestrationService {
         };
       }
       await this.appendRuntimeSemanticEvents(effectiveRun, adapterResult);
-      await this.syncCliContinuityVendorSessionBestEffort(
-        preparedRuntime.invocation_delivery,
-        adapterResult,
-      );
       const executionIdentity = input.job_id ?? step?.id ?? effectiveRun.id;
       const completedAt = adapterResult.completed_at ?? new Date().toISOString();
       const adapterTerminalStatus = terminalStatusFromAdapter(adapterResult);
@@ -1174,23 +1134,16 @@ export class RunOrchestrationService {
         || currentAfterAdapter?.status === "waiting_for_dependency"
       ) {
         await this.recordLocalCliUsageBestEffort(effectiveRun, adapterResult, executionIdentity, runAttemptNumber);
-        // The next attempt resumes the session this one parked in, which
-        // its binding recorded when the Host accepted the prompt. The Run's
-        // creation-time session would no longer match the binding, and the
-        // next attempt would start yet another session.
-        const cliSession = preparedRuntime.invocation_delivery?.cli_session;
-        if (cliSession && running.host_task_thread_id && this.cliContinuity) {
-          const parkedSession = await this.cliContinuity.vendorSessionUnderLease(
-            cliSession.binding_ref.id,
-            cliSession.lease_generation,
-          );
-          if (parkedSession) {
-            await this.repository.recordParkedHostThreadSession?.({
-              run_id: running.id,
-              space_id: running.space_id,
-              vendor_session_id: parkedSession,
-            });
-          }
+        // The next attempt resumes the session this one parked in: the one
+        // the runtime reported, not the Run's creation-time session, which
+        // would start yet another session when the two differ.
+        const parkedSession = stringConfigValue(recordValue(adapterResult.metadata_json).external_session_id);
+        if (parkedSession && running.host_task_thread_id) {
+          await this.repository.recordParkedHostThreadSession?.({
+            run_id: running.id,
+            space_id: running.space_id,
+            vendor_session_id: parkedSession,
+          });
         }
       }
       // A tool call mid-run (e.g. `authorization.request`) can pause the Run
@@ -1401,7 +1354,7 @@ export class RunOrchestrationService {
         });
       }
       await this.cleanupRuntimeContext(preparedRuntime, run);
-      let terminalRun = await this.publishRunTerminalWithConversationRuntime({
+      let terminalRun = await this.repository.publishRunTerminal({
         run_id: running.id,
         space_id: running.space_id,
         status: terminalStatus,
@@ -1422,14 +1375,14 @@ export class RunOrchestrationService {
         error_json: semanticFailureErrorJson(adapterResult, semanticFailure),
         exit_code: adapterResult.exit_code,
         completed_at: completedAt,
-      }, effectiveRun, adapterResult, terminalStatus === "succeeded");
+      });
       if (!terminalRun) {
         // Cancellation can linearize before publication by moving the Run to
         // `cancelling`. The execution owner then publishes the cancellation;
         // public cancellation never removes an active execution lock.
         const current = await this.repository.getRun(running.space_id, running.id);
         if (current?.status === "cancelling") {
-          terminalRun = await this.publishRunTerminalWithConversationRuntime({
+          terminalRun = await this.repository.publishRunTerminal({
             run_id: running.id,
             space_id: running.space_id,
             status: "cancelled",
@@ -1447,7 +1400,7 @@ export class RunOrchestrationService {
             },
             exit_code: 1,
             completed_at: completedAt,
-          }, effectiveRun, null, false);
+          });
         }
         if (terminalRun) {
           executionLockHeld = false;
@@ -1582,7 +1535,7 @@ export class RunOrchestrationService {
         metadata_json: { orchestration_failure: true },
       });
       await this.cleanupRuntimeContext(preparedRuntime, run);
-      let failedRun = await this.publishRunTerminalWithConversationRuntime({
+      let failedRun = await this.repository.publishRunTerminal({
         run_id: run.id,
         space_id: run.space_id,
         status: "failed",
@@ -1598,11 +1551,11 @@ export class RunOrchestrationService {
         },
         exit_code: 1,
         completed_at: completedAt,
-      }, run, null, false);
+      });
       if (!failedRun) {
         const current = await this.repository.getRun(run.space_id, run.id);
         if (current?.status === "cancelling") {
-          failedRun = await this.publishRunTerminalWithConversationRuntime({
+          failedRun = await this.repository.publishRunTerminal({
             run_id: run.id,
             space_id: run.space_id,
             status: "cancelled",
@@ -1618,7 +1571,7 @@ export class RunOrchestrationService {
             },
             exit_code: 1,
             completed_at: completedAt,
-          }, run, null, false);
+          });
         }
       }
       if (failedRun) executionLockHeld = false;
@@ -1748,7 +1701,7 @@ export class RunOrchestrationService {
       };
     }
 
-    const updated = await this.markRunTerminalWithConversationRuntime({
+    const updated = await this.repository.markRunTerminal({
       run_id: run.id,
       space_id: run.space_id,
       status: "cancelled",
@@ -1768,7 +1721,7 @@ export class RunOrchestrationService {
       },
       exit_code: 1,
       completed_at: new Date().toISOString(),
-    }, run, null, false);
+    });
     if (!updated) {
       const current = await this.repository.getRun(input.space_id, run.id);
       return {
@@ -1786,6 +1739,7 @@ export class RunOrchestrationService {
         updated,
         cancelledHostThread.resume_attempted,
         cancelledHostThread.identity,
+        cancelledHostThread.standing,
       ).catch(() => undefined);
     }
     const finalization = await this.finalizeTerminalRunBestEffort(
@@ -1800,19 +1754,6 @@ export class RunOrchestrationService {
       };
     }
     await this.markDelegatedRunTerminal(updated);
-    // A turn parked behind its own session handoff is the only reason that
-    // handoff runs; stopping the turn stops it too, or it would go on writing
-    // into the Agent's session after the person asked for the turn to end.
-    const handoffRunId = recordValue(recordValue(updated.model_override_json).handoff_rotation).handoff_run_id;
-    if (typeof handoffRunId === "string" && handoffRunId) {
-      await this.cancelRun({
-        run_id: handoffRunId,
-        space_id: updated.space_id,
-        requested_by_user_id: input.requested_by_user_id ?? null,
-        reason: input.reason ?? "The turn this handoff prepared was stopped.",
-        terminate_process: input.terminate_process,
-      });
-    }
     // Cancellation evidence lives on the run row (error_json carries requester
     // + process_terminated); no run_event is appended (event_type has a closed
     // CHECK constraint with no cancel type).
@@ -2199,9 +2140,6 @@ export class RunOrchestrationService {
     executionPort: HostExecutionPort,
     effectiveBindings?: EffectiveRunContextBindings,
   ): Promise<PreparedRuntimeContext> {
-    const workspace = launchWorkspaceFromSnapshot(
-      recordValue(run.runtime_profile_snapshot_json).workspace,
-    );
     // A caller-supplied working directory is a path on *this* machine. For a
     // run handed to a daemon it names nothing the run will ever see, and
     // carrying it would let every local-filesystem branch downstream believe
@@ -2225,116 +2163,15 @@ export class RunOrchestrationService {
       exchange: null,
       invocation_delivery: null,
       invocation_attempts: null,
-      cli_execution_lease: null,
       execution_port: null,
     };
 
     try {
       prepared.execution_port = executionPort;
-      let cliBinding: Awaited<ReturnType<RuntimeContextCliContinuityService["prepareBinding"]>> | null = null;
-      const daemonRun = dispatchesToHostDaemon(run.runtime_key);
-      const hostThreadSessionId = stringConfigValue(prepared.adapter_config.remote_resume_session_id);
-      const hasPersistentAcpSession = Boolean(run.host_task_thread_id || hostThreadSessionId);
-      // Runtime Context's event cursor follows a persistent ACP Host thread,
-      // not a server-local CLI state directory. Threadless Runs create a fresh
-      // ACP session, so they receive a full Delivery without retaining a
-      // meaningless cross-Run cursor.
-      if (isVendorCliAdapter(run.runtime_key) && this.cliContinuity
-        && (!daemonRun || hasPersistentAcpSession)) {
-        if (!control || !effectiveBindings?.workContextSetupRef) {
-          throw new RunPreparationError(
-            "runtime_context_authority_missing",
-            "CLI execution requires a persisted Work Context authority and continuity service.",
-          );
-        }
-        const userId = run.instructed_by_user_id ?? run.owner_user_id;
-        const agentId = effectiveBindings.agentId ?? run.agent_id;
-        const runtimeProfileId = effectiveBindings.runtimeProfileId ?? run.requested_runtime_profile_id;
-        if (!userId || !agentId || !runtimeProfileId) {
-          // Not `runtime_session_invalid`: no vendor session was tried, and
-          // that code resets the Agent's host thread.
-          throw new RunPreparationError(
-            "runtime_context_authority_missing",
-            "CLI work-scope identity is incomplete.",
-          );
-        }
-        cliBinding = await this.cliContinuity.prepareBinding({
-          spaceId: run.space_id,
-          workContextScopeId: effectiveBindings.workContextScopeId,
-          setupId: effectiveBindings.workContextSetupRef.id,
-          setupVersion: Number(effectiveBindings.workContextSetupRef.version),
-          userId,
-          agentId,
-          runtimeProfileId,
-          runtimeKey: run.runtime_key ?? "unknown",
-          providerId: run.model_provider_id,
-          model: resolvedRunModel(run, input.model),
-          agentVersionId: run.agent_version_id,
-          runtimeInstallation: stringConfigValue(prepared.adapter_config.runtime_installation),
-          control,
-          runId: run.id,
-          ...(daemonRun ? { expectedVendorSessionId: hostThreadSessionId, hostThreadId: run.host_task_thread_id ?? null } : {}),
-        });
-        const cliLease = await this.cliContinuity.acquireExecutionLease(cliBinding.id, { runId: run.id });
-        const continuity = this.cliContinuity;
-        prepared.cli_execution_lease = {
-          binding_id: cliBinding.id,
-          lease_id: cliLease.leaseId,
-          // A lease that is not renewed lapses, so a crashed worker cannot
-          // hold the conversation; one that is, holds it for the whole turn.
-          heartbeat: setInterval(() => {
-            void continuity.heartbeatExecutionLease(cliLease.leaseId).catch(() => false);
-          }, EXECUTION_LEASE_HEARTBEAT_MS),
-        };
-        prepared.cli_execution_lease.heartbeat?.unref?.();
-        cliBinding = await this.cliContinuity.bindingForExecutionLease(cliBinding.id, cliLease.leaseId);
-        if (daemonRun) {
-          // HostThread and Runtime Context must resume the same opaque ACP
-          // session. Any binding rotation (policy, AgentVersion, runtime, or
-          // cursor/session mismatch) starts a fresh ACP session, preventing
-          // stale vendor transcript context from outliving its authority.
-          if (cliBinding.vendor_session_id !== hostThreadSessionId) {
-            prepared.adapter_config.remote_resume_session_id = null;
-          }
-        } else {
-          let state = await prepareConversationRuntimeState({
-            rainver_home: this.config.rainverHome,
-            sandbox_root: this.config.sandboxRoot,
-            state_key: cliBinding.runtime_state_key,
-            resume_requested: Boolean(cliBinding.vendor_session_id),
-            conversation_id: workspace?.kind === "managed" && workspace.container.kind === "conversation"
-              ? workspace.container.conversation_id
-              : null,
-          });
-          if (cliBinding.vendor_session_id && !state.resume) {
-            cliBinding = await this.cliContinuity.rotateMissingVendorState(cliBinding.id, prepared.cli_execution_lease.lease_id);
-            prepared.cli_execution_lease.binding_id = cliBinding.id;
-            state = await prepareConversationRuntimeState({
-              rainver_home: this.config.rainverHome,
-              sandbox_root: this.config.sandboxRoot,
-              state_key: cliBinding.runtime_state_key,
-              resume_requested: false,
-              conversation_id: workspace?.kind === "managed" && workspace.container.kind === "conversation"
-                ? workspace.container.conversation_id
-                : null,
-            });
-          }
-          if (workingDirScopeForLevel(run.required_sandbox_level) === "ephemeral") {
-            prepared.sandbox_cwd = state.cwd;
-            prepared.context_cwd = state.cwd;
-            prepared.sandbox_kind = "conversation_session";
-          }
-          prepared.adapter_config.conversation_runtime = {
-            binding_id: cliBinding.id,
-            runtime_state_key: cliBinding.runtime_state_key,
-            runtime_session_id: state.resume ? cliBinding.vendor_session_id : null,
-            cli_known_cursor: cliBinding.cli_known_cursor,
-            generation: cliBinding.generation,
-            rotation_reason: cliBinding.rotation_reason,
-          };
-        }
-      }
-
+      // The vendor session a Run resumes is the host thread's
+      // (`hosts/threadDispatchInputs.ts`), read by the job handler into
+      // `adapter_config.remote_resume_session_id`. The CLI holds the
+      // conversation; the Context Event ledger is audit, not prompt.
       // Unreachable. Every `local_cli` adapter is a daemon run, so this
       // condition is false. A CLI run's working directory belongs to the
       // daemon.
@@ -2425,7 +2262,6 @@ export class RunOrchestrationService {
             retrieval_intent: await retrievalIntentFor(input.retrieval_intent ?? input.prompt ?? run.prompt),
             invocation_purpose: "agent_task",
           },
-          cliBinding,
         });
         prepared.invocation_attempts = attempts;
         prepared.invocation_delivery = await attempts.prepare();
@@ -2447,12 +2283,6 @@ export class RunOrchestrationService {
     prepared: PreparedRuntimeContext | null,
     run: RunRecord,
   ): Promise<void> {
-    if (prepared?.cli_execution_lease && this.cliContinuity) {
-      const lease = prepared.cli_execution_lease;
-      prepared.cli_execution_lease = null;
-      if (lease.heartbeat) clearInterval(lease.heartbeat);
-      await this.cliContinuity.releaseExecutionLease(lease.lease_id).catch(() => {});
-    }
     const executionPort = prepared?.execution_port ?? this.serverExecutionPort;
     if (prepared?.exchange) {
       await executionPort.runExchange.cleanup(prepared.exchange).catch(() => {});
@@ -2954,10 +2784,9 @@ export class RunOrchestrationService {
           run_attempt_id: executionIdentity,
           ...(attemptNumber !== null ? { run_attempt_number: attemptNumber, execution_phase: attemptNumber > 1 ? "retry" : "initial" } : {}),
           run_outcome: adapterResult.success ? "succeeded" : "failed",
-          run_purpose: recordValue(recordValue(run.model_override_json).chat_turn).kind === "handoff"
+          run_purpose: isHandoffTurn(run)
             ? "handoff" : run.delegation_id ? "delegation" : "task",
-          delivery_mode: recordValue(metadata.cli_usage).delivery_mode,
-          rotation_reason: recordValue(metadata.cli_usage).rotation_reason,
+          resumed_session: recordValue(metadata.cli_usage).resumed_session,
           ...(usageSourceId
             ? {
                 delivery_id: stringConfigValue(auditRefs.delivery_id),
@@ -3097,47 +2926,10 @@ export class RunOrchestrationService {
     }
   }
 
-  private async markRunTerminalWithConversationRuntime(
-    input: RunTerminalUpdate,
-    run: RunRecord,
-    adapterResult: RunAdapterResultEnvelope | null,
-    keepSession: boolean,
-  ): Promise<RunRecord | null> {
-    const conversation = conversationRuntimeTerminalSync(
-      run,
-      adapterResult,
-      keepSession,
-    );
-    if (!conversation) return this.repository.markRunTerminal(input);
-    const terminal = await this.repository.markRunTerminalWithConversationSession(
-      input,
-      conversation,
-    );
-    if (!conversation.keep_session) {
-      try {
-        await removeConversationRuntimeState({
-          rainver_home: this.config.rainverHome,
-          sandbox_root: this.config.sandboxRoot,
-          state_key: conversation.runtime_state_key,
-        });
-      } catch {
-        // PostgreSQL state is already authoritative and atomically detached.
-        // The retention sweep removes an interrupted filesystem orphan.
-      }
-    }
-    return terminal;
-  }
-
-  /**
-   * Cancellation can linearize first by moving the Run to `cancelling` while
-   * this worker holds its execution lock; public cancellation never removes
-   * that lock, so the execution owner publishes the cancellation. Returns the
-   * cancelled Run, or null when the Run is not `cancelling`.
-   */
   private async publishPendingCancellation(run: RunRecord, completedAt: string): Promise<RunRecord | null> {
     const current = await this.repository.getRun(run.space_id, run.id);
     if (current?.status !== "cancelling") return null;
-    return this.publishRunTerminalWithConversationRuntime({
+    return this.repository.publishRunTerminal({
       run_id: run.id,
       space_id: run.space_id,
       status: "cancelled",
@@ -3153,60 +2945,7 @@ export class RunOrchestrationService {
       },
       exit_code: 1,
       completed_at: completedAt,
-    }, run, null, false);
-  }
-
-  private async publishRunTerminalWithConversationRuntime(
-    input: RunTerminalUpdate,
-    run: RunRecord,
-    adapterResult: RunAdapterResultEnvelope | null,
-    keepSession: boolean,
-  ): Promise<RunRecord | null> {
-    const conversation = conversationRuntimeTerminalSync(
-      run,
-      adapterResult,
-      keepSession,
-    );
-    if (!conversation) return this.repository.publishRunTerminal(input);
-    const terminal =
-      await this.repository.publishRunTerminalWithConversationSession(
-        input,
-        conversation,
-      );
-    if (!conversation.keep_session) {
-      try {
-        await removeConversationRuntimeState({
-          rainver_home: this.config.rainverHome,
-          sandbox_root: this.config.sandboxRoot,
-          state_key: conversation.runtime_state_key,
-        });
-      } catch {
-        // PostgreSQL state is already authoritative and atomically detached.
-      }
-    }
-    return terminal;
-  }
-
-  private async syncCliContinuityVendorSessionBestEffort(
-    delivery: InvocationDelivery | null,
-    adapterResult: RunAdapterResultEnvelope,
-  ): Promise<void> {
-    if (!this.cliContinuity || !delivery?.cli_session || !adapterResult.success) return;
-    const externalSessionId = stringConfigValue(
-      recordValue(adapterResult.metadata_json).external_session_id,
-    );
-    if (!externalSessionId) return;
-    try {
-      await this.cliContinuity.recordVendorSession({
-        bindingId: delivery.cli_session.binding_ref.id,
-        runtimeStateKey: delivery.cli_session.runtime_state_key,
-        vendorSessionId: externalSessionId,
-        leaseGeneration: delivery.cli_session.lease_generation,
-      });
-    } catch {
-      // The accepted Delivery and canonical Context Event ledger remain the
-      // authority; a stale vendor cache binding is reconstructed next turn.
-    }
+    });
   }
 
   private async appendRuntimeSemanticEvent(
@@ -3285,33 +3024,6 @@ export class RunOrchestrationService {
     await this.markDelegatedRunTerminal(run);
   }
 
-}
-
-function conversationRuntimeTerminalSync(
-  run: RunRecord,
-  adapterResult: RunAdapterResultEnvelope | null,
-  keepSession: boolean,
-): ConversationRuntimeTerminalSync | null {
-  const runtime = recordValue(recordValue(run.model_override_json).conversation_runtime);
-  if (runtime.schema_version !== "conversation_runtime.v1") return null;
-  const bindingId = stringConfigValue(runtime.binding_id);
-  const stateKey = stringConfigValue(runtime.runtime_state_key);
-  if (!bindingId || !stateKey) return null;
-  const contextFingerprint = stringConfigValue(runtime.context_fingerprint);
-  const externalSessionId = adapterResult
-    ? stringConfigValue(recordValue(adapterResult.metadata_json).external_session_id)
-    : null;
-  const canKeep = keepSession && Boolean(contextFingerprint && externalSessionId);
-  return {
-    binding_id: bindingId,
-    runtime_state_key: stateKey,
-    keep_session: canKeep,
-    runtime_session_id: canKeep ? externalSessionId : null,
-    context_fingerprint: canKeep ? contextFingerprint : null,
-    message_cursor_id: canKeep
-      ? stringConfigValue(runtime.message_cursor_id)
-      : null,
-  };
 }
 
 function applyEffectiveWorkContextBindings(
@@ -3450,6 +3162,11 @@ function semanticEventStatus(
 
 function stringConfigValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** A Room session-handoff turn (`agentGroups/sessionHandoff.ts`). */
+function isHandoffTurn(run: Pick<RunRecord, "model_override_json">): boolean {
+  return recordValue(recordValue(run.model_override_json).chat_turn).kind === "handoff";
 }
 
 function launchWorkspaceFromSnapshot(value: unknown): LaunchWorkspace | undefined {

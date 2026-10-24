@@ -6,7 +6,9 @@ import type {
 } from "@rainver/protocol";
 import * as protocol from "@rainver/protocol";
 import { instructionInRunRequest } from "./runRequest.js";
-import { loadSelectedSkills, selectedSkillInstruction } from "../capabilities/selectedSkills.js";
+import { createHash } from "node:crypto";
+import { hostThreadDispatchInputs } from "../hosts/threadDispatchInputs.js";
+import { selectedSkillInstruction } from "../skills/selectedSkills.js";
 import type { Pool } from "../../db/pool.js";
 import type { ServerConfig } from "../../config.js";
 import type { Queryable } from "../routeUtils/common.js";
@@ -59,14 +61,10 @@ import {
   loadConversationContinuityThroughMessage,
   loadRoomContinuityForRunRequest,
 } from "./conversationContinuity.js";
-import { assembleRoomConversationContext, type RoomSummaryCoverage } from "../rooms/conversationContext.js";
+import { assembleRoomConversationContext } from "../rooms/conversationContext.js";
 import {
   PgRuntimeSkillProvider,
-  renderRuntimeSkillCandidate,
-  type RuntimeSkillCandidate,
-} from "../capabilities/runtimeSkillProvider.js";
-import { enforce } from "../policy/service.js";
-import { loadActionRegistry } from "../policy/actionRegistry.js";
+} from "../skills/runtimeSkillProvider.js";
 import { isAcpRuntimeAdapter, isVendorCliAdapter } from "../runtimeAdapters/specs.js";
 import { acpSessionConfigFromRunOverride } from "../runs/cliConversationProtocol.js";
 import { ACP_RUNTIME_MANAGED_WINDOW } from "../usage/modelCatalog.js";
@@ -165,7 +163,7 @@ class PgAuthorityProvider implements RuntimeContextAuthorityPort {
 
 class PgDirectProvider implements RuntimeContextChannelProvider {
   private readonly context: PgRuntimeContextAcquisitionRepository;
-  constructor(private readonly db: Pool, private readonly config?: ServerConfig) {
+  constructor(private readonly db: Pool, _config?: ServerConfig) {
     this.context = new PgRuntimeContextAcquisitionRepository(db);
   }
 
@@ -267,9 +265,17 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
         conflictKey: "supervisor_retry",
       }));
     }
+    // Standing items: what a vendor session holds for its whole life — the
+    // Agent's instruction, the Project's Instruction and Brief, the Skills
+    // bound to it, the Room identity block. Sent into a fresh session, and
+    // into a resumed one only when their versions changed since that session
+    // last received them (`host_threads.standing_digest`): the same discipline
+    // as the Room identity block, and what every ACP client does with a
+    // system prompt — set once, not re-sent with every follow-up.
+    const standing: ContextItem[] = [];
     const roomIdentity = groupedAgentIdentityContext(run);
     if (roomIdentity) {
-      items.push(normalizeOwned({
+      standing.push(normalizeOwned({
         authority, request,
         sourceRef: { type: "run_group_agent_identity", id: run.id },
         identityKey: `run_group_agent_identity:${run.agent_id ?? run.id}`,
@@ -280,7 +286,7 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
     }
     if (run.system_prompt?.trim()) {
       if (!run.agent_version_id) throw new Error("Agent instruction has no authoritative version");
-      items.push(normalizeOwned({
+      standing.push(normalizeOwned({
         authority, request,
         sourceRef: { type: "agent_version", id: run.agent_version_id },
         selection: "required", semanticRole: "delegated_instruction", trust: "system_approved",
@@ -290,14 +296,14 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
     // The execution snapshot is the authority on whether the Project
     // Instruction and Brief may reach this Run; a Work Context Setup only
     // pins which versions they are.
-    if (project.instruction && authority.controlSnapshot.project_instruction_ref) items.push(normalizeOwned({
+    if (project.instruction && authority.controlSnapshot.project_instruction_ref) standing.push(normalizeOwned({
       authority, request,
       sourceRef: { type: "project_instruction_version", id: String(project.instruction.id), version: String(project.instruction.version) },
       selection: "required", semanticRole: "delegated_instruction", trust: "system_approved",
       text: String(project.instruction.instruction_text ?? ""),
       conflictKey: "project_instruction",
     }));
-    if (project.brief && authority.controlSnapshot.project_brief_ref) items.push(normalizeOwned({
+    if (project.brief && authority.controlSnapshot.project_brief_ref) standing.push(normalizeOwned({
       authority, request,
       sourceRef: { type: "project_brief_version", id: String(project.brief.id), version: String(project.brief.version) },
       selection: "required", semanticRole: "reference_data", trust: "domain_approved",
@@ -336,8 +342,46 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
         }));
       }
     }
-    items.push(...await this.loadRuntimeSkillItems(run, request, authority));
-    return items;
+    const skillItems = await this.loadRuntimeSkillItems(run, request, authority);
+    // Canonical message selections are delivered for this turn, including
+    // continuations, under the live library bindings.
+    const perTurnSkills = skillItems;
+    const held = await this.standingAlreadyHeld(run, standing, mode);
+    return [...items, ...(held ? [] : standing), ...perTurnSkills];
+  }
+
+  /**
+   * Whether the vendor session this Run resumes already holds exactly these
+   * standing items. Records the decision on the Run (digest + sent) so the
+   * thread learns it when the Run lands (`hosts/threadOutcome.ts`); a preview
+   * decides the same way but records nothing.
+   */
+  private async standingAlreadyHeld(
+    run: RunContextRecord,
+    standing: readonly ContextItem[],
+    mode: "preview" | "execution",
+  ): Promise<boolean> {
+    const thread = hostThreadDispatchInputs({
+      host_task_thread_id: run.host_task_thread_id ?? null,
+      model_override_json: run.model_override_json,
+    });
+    if (!thread.thread_id) return false;
+    const digest = standingItemsDigest(standing.map((item) => item.source_ref));
+    const row = thread.resume_attempted
+      ? (await this.db.query<{ standing_digest: string | null; vendor_session_id: string | null }>(
+          `SELECT standing_digest, vendor_session_id FROM host_threads WHERE id = $1 AND space_id = $2`,
+          [thread.thread_id, run.space_id],
+        )).rows[0] ?? null
+      : null;
+    // Held only by the very session being resumed: a digest recorded for a
+    // session the thread has since replaced says nothing about this one.
+    const held = row !== null
+      && row.vendor_session_id === thread.resume_session_id
+      && row.standing_digest === digest;
+    if (mode === "execution") {
+      await this.context.recordHostThreadStandingDispatch(run.space_id, run.id, { digest, sent: !held });
+    }
+    return held;
   }
 
   private async loadProjectResearchMatrix(
@@ -396,54 +440,18 @@ class PgDirectProvider implements RuntimeContextChannelProvider {
   ): Promise<ContextItem[]> {
     if (!run.runtime_key) return [];
     const candidates = await new PgRuntimeSkillProvider(this.db).loadCandidatesForRun({
-      space_id: run.space_id,
-      run_id: run.id,
-      runtime_key: run.runtime_key,
-      capability_id: run.capability_id,
-      agent_id: run.agent_id,
-      project_id: run.project_id,
-      instructed_by_user_id: run.instructed_by_user_id,
-      capabilities_json: run.capabilities_json,
-    });
-    const items: ContextItem[] = [];
-    const selected = await loadSelectedSkills(this.db, {
-      space_id: run.space_id, project_id: authority.controlSnapshot.project_id, agent_id: authority.controlSnapshot.agent_id,
-      user_id: request.identity.userId, session_id: run.session_id,
+      space_id: run.space_id, run_id: run.id, runtime_key: run.runtime_key,
+      project_id: authority.controlSnapshot.project_id, agent_id: authority.controlSnapshot.agent_id,
+      instructed_by_user_id: run.instructed_by_user_id, viewer_user_id: request.identity.userId,
+      session_id: run.session_id,
       message_id: request.turn.current_message_ref.type === "message" ? request.turn.current_message_ref.id : null,
     });
-    for (const skill of selected) {
+    const items: ContextItem[] = [];
+    for (const skill of candidates) {
       items.push(normalizeOwned({ authority, request,
         sourceRef: { type: "skill_package_binding", id: skill.binding_id, version: `${skill.content.package_hash}:${run.id}` },
         selection: "required", semanticRole: "delegated_instruction", trust: "system_approved",
         text: selectedSkillInstruction(skill.content), structuredPayload: { skill_package: skill.content },
-      }));
-    }
-    for (const candidate of candidates) {
-      if (this.config) await enforceRuntimeSkillRender(this.config, run.id, run.space_id, candidate);
-      const rendered = renderRuntimeSkillCandidate(candidate);
-      if (!rendered) continue;
-      const text = rendered.rendered.prompt_block
-        ?? rendered.rendered.files.map((file) => `## ${file.path}\n\n${file.content}`).join("\n\n");
-      if (!text.trim()) continue;
-      items.push(normalizeOwned({
-        authority,
-        request,
-        sourceRef: {
-          type: "runtime_skill_binding",
-          id: candidate.binding_id,
-          version: candidate.capability_version_id ?? candidate.capability.version,
-        },
-        selection: "required",
-        semanticRole: "delegated_instruction",
-        trust: "system_approved",
-        text,
-        structuredPayload: {
-          capability_id: candidate.capability_id,
-          capability_version_id: candidate.capability_version_id,
-          capability_enablement_id: candidate.capability_enablement_id,
-          runtime_key: candidate.runtime_key,
-          render_mode: candidate.render_mode,
-        },
       }));
     }
     return items;
@@ -574,7 +582,12 @@ class PgCheckpointContinuityProvider implements RuntimeContextChannelProvider {
   ): Promise<ContextItem[]> {
     const run = await loadInvocationRun(this.db, this.context, request);
     if (!run?.session_id) return [];
-    // A session handoff turn resumes the session that already holds the
+    // An ACP Run's vendor session holds the conversation, and a fresh session
+    // opens from the prompt the Room layer builds (`modules/hosts.md`); the
+    // ledger and checkpoints are the record, never a replay into the prompt
+    // (ADR 0014 §11). Continuity items are for bounded provider work only.
+    if (isVendorCliAdapter(run.runtime_key)) return [];
+    // A session summary turn resumes the session that already holds the
     // conversation; a window read now would end in the person's pending turn.
     if (record(record(run.model_override_json).chat_turn).kind === "handoff") return [];
     const session = await this.sessions.getConversationForBackendSelection(
@@ -603,7 +616,6 @@ class PgCheckpointContinuityProvider implements RuntimeContextChannelProvider {
                 session.id,
                 80,
                 ) ?? [],
-                room_summary: null,
                 room_conversation: false,
               }),
           checkpoint: await loadActiveSemanticCheckpoint(
@@ -617,16 +629,14 @@ class PgCheckpointContinuityProvider implements RuntimeContextChannelProvider {
       ? messages.find((message) => message.id === request.turn.current_message_ref.id)
       : syntheticRunRequestMessage(run, request);
     if (!current) throw new Error("Current conversation message is unavailable for continuity planning");
-    const continuity = renderCheckpointContinuity(messages, current, checkpoint, bounded.room_summary, bounded.room_conversation);
+    const continuity = renderCheckpointContinuity(messages, current, checkpoint, bounded.room_conversation);
     if (!continuity) return [];
     return [normalizeOwned({
       authority,
       request,
-      sourceRef: bounded.room_summary
-        ? { type: "room_conversation_summary", id: bounded.room_summary.id, version: String(bounded.room_summary.version) }
-        : checkpoint
-          ? { type: "semantic_checkpoint", id: checkpoint.id, version: String(checkpoint.version) }
-          : { type: "session", id: session.id },
+      sourceRef: checkpoint
+        ? { type: "semantic_checkpoint", id: checkpoint.id, version: String(checkpoint.version) }
+        : { type: "session", id: session.id },
       selection: "ranked",
       semanticRole: "reference_data",
       trust: "derived",
@@ -650,20 +660,13 @@ export function renderCheckpointContinuity(
   messages: readonly MessageOut[],
   current: MessageOut,
   checkpoint: SemanticCheckpoint | null,
-  roomSummary: RoomSummaryCoverage | null = null,
   roomConversation = false,
 ): { text: string; messageRefs: Array<{ type: "message"; id: string }>; trace: Record<string, unknown> } | null {
   if (roomConversation) {
-    const roomContext = assembleRoomConversationContext({ messages, currentMessage: current, summary: roomSummary });
+    const roomContext = assembleRoomConversationContext({ messages, currentMessage: current });
     if (!roomContext) return null;
-    const recent = roomContext.recent_messages.length > 0
-      ? ["[Recent Room turns]", ...roomContext.recent_messages.map((message) => `${message.role}:\n${message.content}`)].join("\n\n")
-      : "";
-    const summary = roomContext.summary?.summary_text
-      ? `[Room rolling summary]\n${roomContext.summary.summary_text}`
-      : "";
     return {
-      text: [summary, recent].filter(Boolean).join("\n\n"),
+      text: ["[Recent Room turns]", ...roomContext.recent_messages.map((message) => `${message.role}:\n${message.content}`)].join("\n\n"),
       messageRefs: roomContext.message_refs.map((id) => ({ type: "message" as const, id })),
       trace: {
         ...roomContext.trace,
@@ -849,43 +852,6 @@ export function createProductionRuntimeContextPlanningService(
     ),
     new ContextWindowReconciliationRepository(db),
   );
-}
-
-async function enforceRuntimeSkillRender(
-  config: ServerConfig,
-  runId: string,
-  spaceId: string,
-  candidate: RuntimeSkillCandidate,
-): Promise<void> {
-  const result = await enforce(config, await loadActionRegistry(), {
-    action: "runtime_skill.render",
-    force_record: false,
-    actor_type: "run",
-    actor_id: runId,
-    space_id: spaceId,
-    resource_type: "runtime_skill_binding",
-    resource_id: candidate.binding_id,
-    run_id: runId,
-    context: {
-      runtime_key: candidate.runtime_key,
-      render_mode: candidate.render_mode,
-      capability_id: candidate.capability_id,
-      capability_version_id: candidate.capability_version_id,
-      capability_enablement_id: candidate.capability_enablement_id,
-      enabled_binding: true,
-      risk_level: candidate.risk_level,
-    },
-    metadata_json: {
-      binding_id: candidate.binding_id,
-      capability_id: candidate.capability_id,
-      capability_version_id: candidate.capability_version_id,
-      capability_enablement_id: candidate.capability_enablement_id,
-      runtime_key: candidate.runtime_key,
-      render_mode: candidate.render_mode,
-      risk_level: candidate.risk_level,
-    },
-  });
-  if (result.status !== "allow") throw new Error(result.message ?? "Policy denied Runtime Skill rendering");
 }
 
 class RuntimeContextRetrievalEngine {
@@ -1097,6 +1063,13 @@ function supervisorRetryContext(errorJson: unknown): string | null {
   ].join("\n");
 }
 
+/** sha256 over the standing items' source refs, in Delivery order: versions, not text. */
+export function standingItemsDigest(refs: ReadonlyArray<{ type: string; id: string; version?: string | null }>): string {
+  return createHash("sha256")
+    .update(JSON.stringify(refs.map((ref) => [ref.type, ref.id, ref.version ?? null])))
+    .digest("hex");
+}
+
 export function groupedAgentIdentityContext(run: {
   run_group_id: string | null;
   agent_name: string | null;
@@ -1226,7 +1199,6 @@ export async function revalidateExecutionDestination(
   }
   return destination;
 }
-
 
 function refKey(ref: { type: string; id: string }): string {
   return `${ref.type}:${ref.id}`;

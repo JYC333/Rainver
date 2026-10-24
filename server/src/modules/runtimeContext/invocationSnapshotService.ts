@@ -13,7 +13,6 @@ import { renderManagedDelivery } from "./managedRenderer.js";
 import { ContextWindowReconciliationRepository } from "./reconciliationRepository.js";
 import { SealedPayloadCipher } from "./sealedPayloadCrypto.js";
 import type { RuntimeContextContinuityService } from "./continuity/service.js";
-import type { RuntimeContextCliContinuityService } from "./continuity/cliContinuity.js";
 import { persistRunContextTaint } from "../runs/contextTaint.js";
 import type { ContentVisibility } from "../access/contentAccessTypes.js";
 
@@ -26,14 +25,12 @@ export interface InvocationAttemptInput {
   providerId: string | null;
   model: string | null;
   usageSourceId: string;
-  mode?: "full" | "delta";
   runtimeSessionBindingRef?: { type: string; id: string; version?: string | null } | null;
   rawReplayPayload?: unknown;
   viewerUserId?: string;
   requireLiveAuthorization?: boolean;
   deliveryId?: string;
   snapshotId?: string;
-  cliSession?: InvocationDelivery["cli_session"];
 }
 
 export interface InvocationAttemptDraft {
@@ -52,7 +49,6 @@ export class InvocationSnapshotService {
     private readonly sealedCipher?: SealedPayloadCipher,
     private readonly deliveryAuthorizer?: InvocationDeliveryAuthorizer,
     private readonly continuity?: Pick<RuntimeContextContinuityService, "finalizeInvocationInTransaction">,
-    private readonly cliContinuity?: Pick<RuntimeContextCliContinuityService, "acknowledgeDeliveryInTransaction">,
   ) {}
 
   async createAttempt(input: InvocationAttemptInput): Promise<InvocationAttemptDraft> {
@@ -91,11 +87,9 @@ export class InvocationSnapshotService {
         runtimeKey: input.runtimeKey,
         providerId: input.providerId,
         model: input.model,
-        mode: input.mode,
         usageSourceId: input.usageSourceId,
         deliveryId,
         snapshotId,
-        cliSession: input.cliSession,
       });
       const parsedDelivery = protocol.InvocationDeliverySchema.parse(delivery);
       await new ContextWindowReconciliationRepository(db).recordPlan({
@@ -116,9 +110,7 @@ export class InvocationSnapshotService {
         project_folder_id: control.project_folder_id,
         agent_id: control.agent_id,
         work_context_scope_id: control.work_context_scope_id,
-        runtime_session_binding_ref: input.cliSession?.binding_ref
-          ?? input.runtimeSessionBindingRef
-          ?? null,
+        runtime_session_binding_ref: input.runtimeSessionBindingRef ?? null,
         control_ref: parsedDelivery.control_ref,
         setup_ref: input.envelope.setup_ref,
         governing_policy_version_refs: control.governing_policy_version_refs,
@@ -133,7 +125,6 @@ export class InvocationSnapshotService {
         delivered_at: null,
         acknowledgement: null,
         checkpoint_cursor: null,
-        cli_known_cursor: input.cliSession?.cursor_from ?? null,
         capture_status: "partial",
         error_code: null,
         created_at: now,
@@ -227,35 +218,11 @@ export class InvocationSnapshotService {
         acknowledged_at: acknowledgedAt,
         adapter_receipt_ref: input.adapterReceiptRef ?? null,
       };
-      const deliveryMetadata = record(row.delivery_metadata_json);
-      const cliSession = record(deliveryMetadata.cli_session);
-      const cliBindingRef = record(cliSession.binding_ref);
-      const cursorFrom = nonnegativeInteger(cliSession.cursor_from);
-      const cursorThrough = nonnegativeInteger(cliSession.cursor_through);
-      const leaseGeneration = nonnegativeInteger(cliSession.lease_generation);
-      if (input.status === "accepted" && this.cliContinuity
-        && typeof cliBindingRef.id === "string"
-        && current.work_context_scope_id
-        && cursorFrom !== null && cursorThrough !== null) {
-        if (leaseGeneration === null) throw new HttpError(409, "CLI Delivery has no execution lease generation");
-        await this.cliContinuity.acknowledgeDeliveryInTransaction(db, {
-          bindingId: cliBindingRef.id,
-          spaceId: input.spaceId,
-          workContextScopeId: current.work_context_scope_id,
-          fromCursor: cursorFrom,
-          throughCursor: cursorThrough,
-          itemIds: plannedItemIds(deliveryMetadata),
-          leaseGeneration,
-        });
-      }
       const next = protocol.InvocationSnapshotSafeSchema.parse({
         ...current,
         actual_tokens: input.actualTokens ?? null,
         delivered_at: input.status === "accepted" ? acknowledgedAt : null,
         acknowledgement,
-        cli_known_cursor: input.status === "accepted" && cursorThrough !== null
-          ? cursorThrough
-          : current.cli_known_cursor,
         // Adapter acceptance proves delivery, not continuity capture. Only a
         // committed terminal Context Event + Micro Checkpoint may mark this
         // snapshot complete.
@@ -270,63 +237,6 @@ export class InvocationSnapshotService {
           acknowledgementFingerprint, acknowledgedAt],
       );
       return next;
-    });
-  }
-
-  /** Advance only the CLI context cursor after the bootstrap/delta turn is accepted. */
-  async acknowledgeCliContextPhase(input: { spaceId: string; deliveryId: string; vendorSessionId: string }): Promise<void> {
-    if (!this.cliContinuity) throw new Error("CLI continuity service is unavailable");
-    await withQueryableTransaction(this.db, async (db) => {
-      const result = await db.query<{
-        status: string;
-        safe_snapshot_json: unknown;
-        delivery_metadata_json: unknown;
-      }>(
-        `SELECT snapshot.status,snapshot.safe_snapshot_json,delivery.delivery_metadata_json
-           FROM invocation_snapshots snapshot
-           JOIN invocation_deliveries delivery
-             ON delivery.id=snapshot.delivery_id AND delivery.space_id=snapshot.space_id
-          WHERE snapshot.space_id=$1 AND snapshot.delivery_id=$2
-          FOR UPDATE OF snapshot,delivery`,
-        [input.spaceId, input.deliveryId],
-      );
-      const row = result.rows[0];
-      if (!row || row.status !== "draft") {
-        throw new HttpError(409, "CLI context phase is unavailable for acknowledgement");
-      }
-      const snapshot = protocol.InvocationSnapshotSafeSchema.parse(row.safe_snapshot_json);
-      const metadata = record(row.delivery_metadata_json);
-      const cliSession = record(metadata.cli_session);
-      const bindingRef = record(cliSession.binding_ref);
-      const cursorFrom = nonnegativeInteger(cliSession.cursor_from);
-      const cursorThrough = nonnegativeInteger(cliSession.cursor_through);
-      const leaseGeneration = nonnegativeInteger(cliSession.lease_generation);
-      if (typeof bindingRef.id !== "string" || !snapshot.work_context_scope_id
-        || cursorFrom === null || cursorThrough === null || leaseGeneration === null) {
-        throw new HttpError(409, "Invocation Delivery has no CLI context phase");
-      }
-      const vendor = input.vendorSessionId.trim();
-      if (!vendor) throw new HttpError(422, "CLI context phase requires a vendor session id");
-      // Fenced like the acknowledgement below: a Run whose lease another Run
-      // has since taken over records nothing.
-      const recorded = await db.query(
-        `UPDATE runtime_context_cli_bindings
-            SET vendor_session_id=$3,updated_at=now()
-          WHERE id=$1 AND runtime_state_key=$2 AND status='active' AND execution_lease_generation=$4`,
-        [bindingRef.id, cliSession.runtime_state_key, vendor, leaseGeneration],
-      );
-      if ((recorded.rowCount ?? 0) !== 1) {
-        throw new HttpError(409, "CLI Delivery binding is no longer active under this execution lease");
-      }
-      await this.cliContinuity!.acknowledgeDeliveryInTransaction(db, {
-        bindingId: bindingRef.id,
-        spaceId: input.spaceId,
-        workContextScopeId: snapshot.work_context_scope_id,
-        fromCursor: cursorFrom,
-        throughCursor: cursorThrough,
-        itemIds: plannedItemIds(metadata),
-        leaseGeneration,
-      });
     });
   }
 
@@ -396,7 +306,6 @@ export class InvocationSnapshotService {
       const next = protocol.InvocationSnapshotSafeSchema.parse({
         ...current,
         checkpoint_cursor: checkpoint?.checkpoint_cursor ?? current.checkpoint_cursor,
-        cli_known_cursor: checkpoint?.cli_known_cursor ?? current.cli_known_cursor,
         capture_status: checkpoint?.capture_status ?? current.capture_status,
         error_code: requestedError,
       });
@@ -542,15 +451,12 @@ function safeDeliveryMetadata(delivery: InvocationDelivery): Record<string, unkn
     provider_id: delivery.provider_id,
     model: delivery.model,
     renderer_version: delivery.renderer_version,
-    mode: delivery.mode,
     planned_items: delivery.planned_items,
     message_blocks: delivery.message_blocks.map((block) => ({
       semantic_role: block.semantic_role,
       source_item_ids: block.source_item_ids,
-      delivery_phase: block.delivery_phase,
       content_hash: hashValue(block.content),
     })),
-    cli_session: delivery.cli_session,
     control_ref: delivery.control_ref,
     sandbox_ref: delivery.sandbox_ref,
     tool_grant_refs: delivery.tool_grant_refs,
@@ -576,35 +482,8 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-}
 
-function nonnegativeInteger(value: unknown): number | null {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0
-    ? value
-    : null;
-}
 
-function plannedItemIds(metadata: Record<string, unknown>): string[] {
-  const currentIds = new Set(
-    (Array.isArray(metadata.message_blocks) ? metadata.message_blocks : [])
-      .map(record)
-      .filter((block) => block.delivery_phase === "current_user")
-      .flatMap((block) => Array.isArray(block.source_item_ids)
-        ? block.source_item_ids.filter((id): id is string => typeof id === "string")
-        : []),
-  );
-  const value = metadata.planned_items;
-  return Array.isArray(value)
-    ? value.flatMap((item) => {
-        const id = record(item).item_id;
-        return typeof id === "string" && !currentIds.has(id) ? [id] : [];
-      })
-    : [];
-}
 
 async function deleteSealedRow(db: Queryable, id: string): Promise<void> {
   await db.query(

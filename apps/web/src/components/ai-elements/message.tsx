@@ -324,7 +324,9 @@ export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
     <Streamdown
       className={cn(
-        "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
+        // Long paths and inline code must wrap in narrow bubbles and indented
+        // progress text, including while flex computes their minimum width.
+        "size-full min-w-0 max-w-full wrap-anywhere [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
         className
       )}
       {...safeStreamdownProps}

@@ -4,7 +4,7 @@
  *
  * This is the raw catalog read surface: which definition files exist on disk
  * and their declared summary fields. The parser applies no business policy
- * beyond skipping missing directories. Product capability pages do not read
+ * beyond skipping missing directories. The Skill library does not read
  * this catalog. `/api/v1/agent-templates` reads `catalog/agent_templates`
  * on its own.
  *

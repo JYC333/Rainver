@@ -5,14 +5,11 @@ import type {
   MicroCheckpoint,
   RuntimeContextEventIngress,
   SemanticCheckpoint,
-  SemanticCheckpointExtraction,
 } from "@rainver/protocol";
 import type { Queryable } from "../../routeUtils/common.js";
 import { HttpError, withQueryableTransaction } from "../../routeUtils/common.js";
 import type { SpaceUserIdentity } from "../../routeUtils/common.js";
 import { assertActiveWorkContextReadable } from "../workContextService.js";
-import { wakeJobWorkers } from "../../jobs/wakeSignal.js";
-import type { RetrievalEgressPolicy } from "../../retrieval/egress/egressPolicy.js";
 
 type Ref = { type: string; id: string; version?: string | null };
 
@@ -32,20 +29,6 @@ interface CanonicalAuthority {
   actorUserId?: string | null;
 }
 
-export interface SemanticCheckpointProviderPort {
-  extract(input: {
-    spaceId: string;
-    workContextScopeId: string;
-    previous: SemanticCheckpoint | null;
-    events: ContextEvent[];
-    egressPolicy: RetrievalEgressPolicy;
-  }): Promise<{ extraction: unknown; extractorRef: Ref }>;
-}
-
-/**
- * The sole writer for ordered Runtime Context continuity.  All sequence and
- * checkpoint mutations run under the same per-scope transaction lock.
- */
 /**
  * The invocation never acquired a Runtime Context authority — normal for a
  * Run that died before execution (routing failure, admission refusal).
@@ -59,20 +42,19 @@ export class InvocationAuthorityNotFoundError extends HttpError {
   }
 }
 
+/**
+ * The sole writer for ordered Runtime Context continuity. All sequence and
+ * checkpoint mutations run under the same per-scope transaction lock. The
+ * ledger is an audit record: nothing here extracts from it or replays it into
+ * a vendor session (ADR 0014 §11).
+ */
 export class RuntimeContextContinuityService {
-  constructor(
-    private readonly db: Queryable,
-    private readonly semanticProvider?: SemanticCheckpointProviderPort,
-  ) {}
+  constructor(private readonly db: Queryable) {}
 
   async ingest(input: RuntimeContextEventIngress): Promise<ContextEvent> {
     return withQueryableTransaction(this.db, async (db) => {
       const authority = await this.resolveInvocation(db, input.invocation_id);
-      const event = await this.appendCanonicalEvent(db, authority, input, "complete");
-      if (input.event_type === "provider_compacted") {
-        await this.ensureCheckpointJob(db, authority, event.scope_sequence);
-      }
-      return event;
+      return this.appendCanonicalEvent(db, authority, input, "complete");
     });
   }
 
@@ -100,62 +82,6 @@ export class RuntimeContextContinuityService {
     });
   }
 
-  /** Replay one buffered non-critical event and close its immutable gap row. */
-  async recoverCaptureGap(input: {
-    gapId: string;
-    event: RuntimeContextEventIngress;
-  }): Promise<ContextEvent> {
-    return withQueryableTransaction(this.db, async (db) => {
-      const gap = await db.query<{ space_id: string; work_context_scope_id: string; invocation_id: string | null; status: string }>(
-        `SELECT space_id,work_context_scope_id,invocation_id,status
-           FROM context_capture_gaps WHERE id=$1 FOR UPDATE`,
-        [input.gapId],
-      );
-      const row = gap.rows[0];
-      if (!row) throw new HttpError(404, "Context capture gap not found");
-      if (row.status !== "open") throw new HttpError(409, "Context capture gap is already recovered");
-      if (row.invocation_id !== input.event.invocation_id) throw new HttpError(409, "Buffered event does not match its capture gap");
-      let authority = await this.resolveInvocation(db, input.event.invocation_id, row.space_id);
-      if (authority.work_context_scope_id !== row.work_context_scope_id) {
-        // A gap moved with its Run's events into the Conversation scope split
-        // from the recipient scope that Run's audit snapshot still names.
-        const split = await db.query(
-          `SELECT 1 FROM room_conversation_recipients split
-             JOIN runs run ON run.id=$4 AND run.space_id=split.space_id
-            WHERE split.id=$2 AND split.space_id=$1 AND split.room_agent_member_id=$3
-              AND split.session_id=run.session_id`,
-          [row.space_id, row.work_context_scope_id, authority.work_context_scope_id, authority.invocation_id],
-        );
-        if (!split.rows[0]) throw new HttpError(409, "Capture gap scope changed");
-        authority = { ...authority, work_context_scope_id: row.work_context_scope_id };
-      }
-      const event = await this.appendCanonicalEvent(db, authority, input.event, "recovered");
-      const now = new Date().toISOString();
-      await db.query(`UPDATE context_capture_gaps SET status='recovered',resolved_at=$2 WHERE id=$1`, [input.gapId, now]);
-      const remaining = await db.query(`SELECT 1 FROM context_capture_gaps WHERE space_id=$1 AND work_context_scope_id=$2 AND status='open' LIMIT 1`,
-        [row.space_id, row.work_context_scope_id]);
-      await this.setCaptureStatus(db, authority, remaining.rows.length > 0 ? "partial" : "recovered");
-      return event;
-    });
-  }
-
-  /** Replay every durable non-critical ingress for a scope before reconciliation. */
-  async recoverOpenCaptureGaps(spaceId: string, workContextScopeId: string): Promise<number> {
-    const result = await this.db.query<{ id: string; replay_event_json: unknown }>(
-      `SELECT id,replay_event_json FROM context_capture_gaps
-        WHERE space_id=$1 AND work_context_scope_id=$2 AND status='open'
-          AND replay_event_json IS NOT NULL ORDER BY created_at,id`,
-      [spaceId, workContextScopeId],
-    );
-    let recovered = 0;
-    for (const row of result.rows) {
-      const event = protocol.RuntimeContextEventIngressSchema.parse(row.replay_event_json) as RuntimeContextEventIngress;
-      await this.recoverCaptureGap({ gapId: row.id, event });
-      recovered += 1;
-    }
-    return recovered;
-  }
-
   /**
    * Capture a terminal invocation snapshot and atomically materialize its
    * deterministic Micro Checkpoint.  This is called from snapshot finalization
@@ -173,9 +99,7 @@ export class RuntimeContextContinuityService {
       semantic_role: null,
       token_estimate: 0,
     }, "complete");
-    const checkpoint = await this.createMicroCheckpointInTransaction(db, authority);
-    await this.ensureCheckpointJob(db, authority, checkpoint.event_head_cursor);
-    return checkpoint;
+    return this.createMicroCheckpointInTransaction(db, authority);
   }
 
   /** Capture the final canonical assistant/failure message at the turn boundary. */
@@ -195,82 +119,7 @@ export class RuntimeContextContinuityService {
         semantic_role: input.messageId ? "reference_data" : null,
         token_estimate: 0,
       }, "complete");
-      const checkpoint = await this.createMicroCheckpointInTransaction(db, authority);
-      await this.ensureCheckpointJob(db, authority, checkpoint.event_head_cursor);
-      return checkpoint;
-    });
-  }
-
-  /**
-   * Conditional one-shot semantic extraction. Provider execution is outside a
-   * transaction; persistence re-locks and rejects stale/non-canonical output.
-   */
-  async runSemanticExtraction(input: {
-    spaceId: string;
-    workContextScopeId: string;
-    force?: boolean;
-  }): Promise<SemanticCheckpoint | null> {
-    if (!this.semanticProvider) return null;
-    const selected = await this.selectSemanticInput(input.spaceId, input.workContextScopeId);
-    if (!input.force && selected.events.length < 12 && !selected.events.some(isSemanticTrigger)) return null;
-    if (selected.events.length === 0) return selected.previous;
-    const result = await this.semanticProvider.extract({
-      spaceId: input.spaceId,
-      workContextScopeId: input.workContextScopeId,
-      previous: selected.previous,
-      events: selected.events,
-      egressPolicy: await this.resolveExtractionEgressPolicy(input.spaceId, input.workContextScopeId),
-    });
-    const extraction = protocol.SemanticCheckpointExtractionSchema.parse(result.extraction) as SemanticCheckpointExtraction;
-    return withQueryableTransaction(this.db, async (db) => {
-      const authority: InvocationAuthority = {
-        space_id: input.spaceId,
-        invocation_id: selected.events.at(-1)?.invocation_id ?? input.workContextScopeId,
-        work_context_scope_id: input.workContextScopeId,
-        actor_user_id: null,
-        agent_id: null,
-      };
-      await this.lockScope(db, authority);
-      const scope = await this.scopeRow(db, authority);
-      if (scope.event_head_cursor !== selected.safeHead) {
-        throw new HttpError(409, "Semantic checkpoint input became stale");
-      }
-      const sources = await this.validateExtractionRefs(db, authority, extraction, selected.events, selected.previous);
-      const current = await this.latestSemantic(db, input.spaceId, input.workContextScopeId, true);
-      if ((current?.id ?? null) !== (selected.previous?.id ?? null)) {
-        throw new HttpError(409, "Semantic checkpoint base became stale");
-      }
-      const version = (current?.version ?? 0) + 1;
-      const now = new Date().toISOString();
-      const checkpoint = protocol.SemanticCheckpointSchema.parse({
-        id: randomUUID(),
-        space_id: input.spaceId,
-        work_context_scope_id: input.workContextScopeId,
-        version,
-        covered_cursor: selected.safeHead,
-        ...enrichExtraction(extraction, sources),
-        source_refs: sources,
-        extractor_ref: result.extractorRef,
-        created_at: now,
-      }) as SemanticCheckpoint;
-      if (current) {
-        await db.query(`UPDATE context_semantic_checkpoints SET status='superseded' WHERE id=$1 AND status='active'`, [current.id]);
-      }
-      await db.query(
-        `INSERT INTO context_semantic_checkpoints
-           (id,space_id,work_context_scope_id,version,covered_cursor,status,checkpoint_json,extractor_ref_json,supersedes_id,created_at)
-         VALUES ($1,$2,$3,$4,$5,'active',$6::jsonb,$7::jsonb,$8,$9)`,
-        [checkpoint.id, input.spaceId, input.workContextScopeId, version,
-          selected.safeHead, JSON.stringify(checkpoint), JSON.stringify(result.extractorRef),
-          current?.id ?? null, now],
-      );
-      await db.query(
-        `UPDATE context_event_scopes
-            SET checkpoint_cursor=$3,active_semantic_checkpoint_id=$4,updated_at=$5
-          WHERE space_id=$1 AND work_context_scope_id=$2`,
-        [input.spaceId, input.workContextScopeId, selected.safeHead, checkpoint.id, now],
-      );
-      return checkpoint;
+      return this.createMicroCheckpointInTransaction(db, authority);
     });
   }
 
@@ -315,86 +164,8 @@ export class RuntimeContextContinuityService {
         semantic_role: "reference_data",
         token_estimate: 0,
       }, "complete", { skipCanonicalResolution: true, override: canonical });
-      const micro = await this.createMicroCheckpointInTransaction(db, authority);
-      await this.ensureCheckpointJob(db, authority, micro.event_head_cursor);
+      await this.createMicroCheckpointInTransaction(db, authority);
       return id;
-    });
-  }
-
-  /** Scan durable rows and expose sequence/ref/terminal mismatches as gaps. */
-  async reconcileScope(spaceId: string, workContextScopeId: string): Promise<"complete" | "recovered" | "partial"> {
-    return withQueryableTransaction(this.db, async (db) => {
-      const authority: InvocationAuthority = {
-        space_id: spaceId, invocation_id: workContextScopeId, work_context_scope_id: workContextScopeId,
-        actor_user_id: null, agent_id: null,
-      };
-      await this.lockScope(db, authority);
-      const scope = await this.scopeRow(db, authority);
-      const sequence = await db.query<{ count: number; maximum: number | null }>(
-        `SELECT count(*)::int AS count,max(scope_sequence)::int AS maximum
-           FROM context_events WHERE space_id=$1 AND work_context_scope_id=$2`,
-        [spaceId, workContextScopeId],
-      );
-      const count = Number(sequence.rows[0]?.count ?? 0);
-      const maximum = Number(sequence.rows[0]?.maximum ?? 0);
-      const refs = await db.query<{ id: string; canonical_ref_json: Ref }>(
-        `SELECT id,canonical_ref_json FROM context_events
-          WHERE space_id=$1 AND work_context_scope_id=$2 ORDER BY scope_sequence`,
-        [spaceId, workContextScopeId],
-      );
-      let badRefId: string | null = null;
-      for (const event of refs.rows) {
-        try {
-          await this.resolveCanonical(db, authority, event.canonical_ref_json);
-        } catch {
-          badRefId = event.id;
-          break;
-        }
-      }
-      const terminalGap = await db.query<{ id: string }>(
-        `SELECT snapshot.id FROM invocation_snapshots snapshot
-          JOIN execution_control_snapshots control ON control.run_id=snapshot.invocation_id AND control.space_id=snapshot.space_id
-         WHERE snapshot.space_id=$1 AND ${controlInScope("control", "$2")}
-           AND snapshot.status='finalized'
-           AND NOT EXISTS (
-             SELECT 1 FROM context_events event
-              WHERE event.space_id=snapshot.space_id AND event.invocation_id=snapshot.invocation_id
-                AND event.event_type='invocation_finalized'
-                AND event.canonical_ref_json->>'id'=snapshot.id
-           ) LIMIT 1`,
-        [spaceId, workContextScopeId],
-      );
-      const cursorMismatch = await db.query<{ id: string }>(
-        `SELECT snapshot.id FROM invocation_snapshots snapshot
-          JOIN execution_control_snapshots control ON control.run_id=snapshot.invocation_id AND control.space_id=snapshot.space_id
-         WHERE snapshot.space_id=$1 AND control.snapshot_json->>'work_context_scope_id'=$2
-           AND snapshot.safe_snapshot_json->>'capture_status'='complete'
-           AND (
-             snapshot.safe_snapshot_json->>'checkpoint_cursor' IS NULL
-             OR (snapshot.safe_snapshot_json->>'checkpoint_cursor')::int > $3
-           ) LIMIT 1`,
-        [spaceId, workContextScopeId, scope.event_head_cursor],
-      );
-      const partial = count !== maximum || maximum !== scope.event_head_cursor
-        || badRefId !== null || terminalGap.rows.length > 0 || cursorMismatch.rows.length > 0;
-      if (partial) {
-        await this.insertGapIfMissing(db, authority, "reconciliation_mismatch", scope.event_head_cursor,
-          `count=${count}; max=${maximum}; bad_ref=${badRefId ?? "none"}; terminal=${terminalGap.rows[0]?.id ?? "none"}; cursor=${cursorMismatch.rows[0]?.id ?? "none"}`);
-        await this.setCaptureStatus(db, authority, "partial");
-        return "partial";
-      }
-      // A mismatch gap is this scan's own finding, re-derived in full from
-      // durable rows each time, so a clean rescan resolves it. Capture gaps
-      // close only through their replay.
-      await db.query(
-        `UPDATE context_capture_gaps SET status='recovered',resolved_at=$3
-          WHERE space_id=$1 AND work_context_scope_id=$2 AND status='open' AND code='reconciliation_mismatch'`,
-        [spaceId, workContextScopeId, new Date().toISOString()],
-      );
-      const open = await db.query(`SELECT 1 FROM context_capture_gaps WHERE space_id=$1 AND work_context_scope_id=$2 AND status='open' LIMIT 1`, [spaceId, workContextScopeId]);
-      const status = open.rows.length > 0 ? "partial" : scope.capture_status === "partial" ? "recovered" : scope.capture_status;
-      await this.setCaptureStatus(db, authority, status);
-      return status;
     });
   }
 
@@ -497,7 +268,6 @@ export class RuntimeContextContinuityService {
       work_context_scope_id: authority.work_context_scope_id, version,
       event_head_cursor: scope.event_head_cursor,
       checkpoint_cursor: scope.checkpoint_cursor,
-      cli_known_cursor: scope.cli_known_cursor,
       capture_status: captureStatus,
       message_refs: byType(["message"]), artifact_refs: byType(["artifact"]),
       tool_refs: byType(["tool_result", "run_event"]),
@@ -554,22 +324,22 @@ export class RuntimeContextContinuityService {
   }
 
   private async scopeRow(db: Queryable, authority: InvocationAuthority): Promise<{
-    event_head_cursor: number; checkpoint_cursor: number; cli_known_cursor: number | null;
+    event_head_cursor: number; checkpoint_cursor: number;
     active_micro_checkpoint_id: string | null;
     capture_status: "complete" | "recovered" | "partial";
   }> {
     const result = await db.query<{
       event_head_cursor: string | number; checkpoint_cursor: string | number;
-      cli_known_cursor: string | number | null; active_micro_checkpoint_id: string | null;
+      active_micro_checkpoint_id: string | null;
       capture_status: "complete" | "recovered" | "partial";
     }>(
-      `SELECT event_head_cursor,checkpoint_cursor,cli_known_cursor,active_micro_checkpoint_id,capture_status
+      `SELECT event_head_cursor,checkpoint_cursor,active_micro_checkpoint_id,capture_status
          FROM context_event_scopes WHERE space_id=$1 AND work_context_scope_id=$2`,
       [authority.space_id, authority.work_context_scope_id],
     );
     const row = result.rows[0];
     if (!row) throw new Error("Context Event scope state is unavailable");
-    return { ...row, event_head_cursor: Number(row.event_head_cursor), checkpoint_cursor: Number(row.checkpoint_cursor), cli_known_cursor: row.cli_known_cursor === null ? null : Number(row.cli_known_cursor) };
+    return { ...row, event_head_cursor: Number(row.event_head_cursor), checkpoint_cursor: Number(row.checkpoint_cursor) };
   }
 
   private async resolveCanonical(db: Queryable, authority: InvocationAuthority, ref: Ref): Promise<CanonicalAuthority> {
@@ -657,14 +427,6 @@ export class RuntimeContextContinuityService {
       [authority.space_id, authority.work_context_scope_id, status, new Date().toISOString()]);
   }
 
-  private async insertGapIfMissing(db: Queryable, authority: InvocationAuthority, code: string, after: number, detail: string): Promise<void> {
-    const found = await db.query(`SELECT 1 FROM context_capture_gaps WHERE space_id=$1 AND work_context_scope_id=$2 AND code=$3 AND status='open' LIMIT 1`,
-      [authority.space_id, authority.work_context_scope_id, code]);
-    if (found.rows[0]) return;
-    await db.query(`INSERT INTO context_capture_gaps (id,space_id,work_context_scope_id,invocation_id,code,after_cursor,before_cursor,detail,status,created_at) VALUES ($1,$2,$3,$4,$5,$6,NULL,$7,'open',$8)`,
-      [randomUUID(), authority.space_id, authority.work_context_scope_id, authority.invocation_id, code, after, detail.slice(0, 2000), new Date().toISOString()]);
-  }
-
   private async latestSemantic(db: Queryable, spaceId: string, scopeId: string, lock = false): Promise<SemanticCheckpoint | null> {
     const result = await db.query<{ checkpoint_json: unknown }>(
       `SELECT checkpoint_json FROM context_semantic_checkpoints
@@ -676,87 +438,6 @@ export class RuntimeContextContinuityService {
     return protocol.SemanticCheckpointSchema.parse(result.rows[0].checkpoint_json) as SemanticCheckpoint;
   }
 
-  private async selectSemanticInput(spaceId: string, scopeId: string): Promise<{ previous: SemanticCheckpoint | null; events: ContextEvent[]; safeHead: number }> {
-    return withQueryableTransaction(this.db, async (db) => {
-      const authority: InvocationAuthority = { space_id: spaceId, invocation_id: scopeId, work_context_scope_id: scopeId, actor_user_id: null, agent_id: null };
-      await this.lockScope(db, authority);
-      const scope = await this.scopeRow(db, authority);
-      if (scope.capture_status === "partial") throw new HttpError(409, "Cannot extract a checkpoint across capture gaps");
-      const previous = await this.latestSemantic(db, spaceId, scopeId);
-      const after = previous?.covered_cursor ?? 0;
-      const rows = await db.query<{ event_json: unknown }>(
-        `SELECT jsonb_build_object('id',id,'space_id',space_id,'work_context_scope_id',work_context_scope_id,
-          'scope_sequence',scope_sequence,'event_type',event_type,'canonical_ref',canonical_ref_json,
-          'actor_user_id',actor_user_id,'agent_id',agent_id,'invocation_id',invocation_id,
-          'semantic_role',semantic_role,'trust',trust,'sensitivity',sensitivity,'token_estimate',token_estimate,
-          'confirmation_state',confirmation_state,'source_refs',source_refs_json,'capture_status',capture_status,'created_at',created_at) AS event_json
-         FROM context_events WHERE space_id=$1 AND work_context_scope_id=$2 AND scope_sequence>$3 AND scope_sequence<=$4 ORDER BY scope_sequence`,
-        [spaceId, scopeId, after, scope.event_head_cursor],
-      );
-      return { previous, events: rows.rows.map((row) => protocol.ContextEventSchema.parse(row.event_json) as ContextEvent), safeHead: scope.event_head_cursor };
-    });
-  }
-
-  private async ensureCheckpointJob(db: Queryable, authority: InvocationAuthority, targetCursor: number): Promise<void> {
-    const now = new Date().toISOString();
-    await db.query(
-      `INSERT INTO jobs
-         (id,space_id,user_id,agent_id,job_type,status,priority,payload_json,attempts,max_attempts,scheduled_at,created_at,updated_at)
-       SELECT $1::varchar(36),$2::varchar(36),$3::varchar(36),$4::varchar(36),
-              'runtime_context_checkpoint','pending',10,$5::jsonb,0,5,
-              $6::timestamptz,$6::timestamptz,$6::timestamptz
-        WHERE NOT EXISTS (
-          SELECT 1 FROM jobs WHERE space_id=$2::varchar(36) AND job_type='runtime_context_checkpoint'
-            AND payload_json->>'work_context_scope_id'=$7
-            AND (payload_json->>'target_cursor')::int=$8
-            AND status IN ('pending','claimed','running','completed')
-        ) ON CONFLICT DO NOTHING`,
-      [randomUUID(), authority.space_id, authority.actor_user_id, authority.agent_id,
-        JSON.stringify({ work_context_scope_id: authority.work_context_scope_id, target_cursor: targetCursor }),
-        now, authority.work_context_scope_id, targetCursor],
-    );
-    // This path inserts straight into `jobs` rather than going through
-    // `PgJobQueueRepository`, so it has to raise the wake itself.
-    wakeJobWorkers();
-  }
-
-  private async resolveExtractionEgressPolicy(spaceId: string, scopeId: string): Promise<RetrievalEgressPolicy> {
-    const result = await this.db.query<{ control_count: number; external_allowed: boolean }>(
-      `SELECT count(*)::int AS control_count,
-              COALESCE(bool_and((control.snapshot_json->'egress'->>'external_egress_allowed')::boolean),false) AS external_allowed
-         FROM execution_control_snapshots control
-        WHERE control.space_id=$1 AND ${controlInScope("control", "$2")}`,
-      [spaceId, scopeId],
-    );
-    return {
-      externalEgressEnabled: Number(result.rows[0]?.control_count ?? 0) > 0
-        && result.rows[0]?.external_allowed === true,
-    };
-  }
-
-  private async validateExtractionRefs(
-    db: Queryable,
-    authority: InvocationAuthority,
-    extraction: SemanticCheckpointExtraction,
-    events: ContextEvent[],
-    previous: SemanticCheckpoint | null,
-  ): Promise<Array<{ ref: Ref; confirmation_authority: "none" | "canonical_user" | "approved_domain" }>> {
-    const allowed = new Map<string, Ref>();
-    for (const event of events) {
-      allowed.set(refKey(event.canonical_ref), event.canonical_ref);
-      for (const source of event.source_refs) allowed.set(refKey(source), source);
-    }
-    for (const source of previous?.source_refs ?? []) allowed.set(refKey(source.ref), source.ref);
-    const cited = extractionRefs(extraction);
-    for (const ref of cited) if (!allowed.has(refKey(ref))) throw new HttpError(422, "Semantic checkpoint cited a ref outside its selected input");
-    const unique = [...new Map(cited.map((ref) => [refKey(ref), ref])).values()];
-    return Promise.all(unique.map(async (ref) => {
-      const canonical = await this.resolveCanonical(db, authority, ref);
-      return { ref, confirmation_authority: canonical.confirmationState === "confirmed" || canonical.confirmationState === "corrected"
-        ? canonical.trust === "user_confirmed" ? "canonical_user" as const : "approved_domain" as const
-        : "none" as const };
-    }));
-  }
 }
 
 /**
@@ -778,42 +459,3 @@ function controlInScope(alias: string, scope: string): string {
 }
 
 function refKey(ref: Ref): string { return `${ref.type}\u001f${ref.id}\u001f${ref.version ?? ""}`; }
-
-function extractionRefs(value: SemanticCheckpointExtraction): Ref[] {
-  return [value.goals, value.user_intent, value.decisions, value.constraints, value.facts,
-    value.open_questions, value.tasks].flat().flatMap((entry) => entry.source_refs)
-    .concat(value.artifact_refs, value.tool_refs, value.correction_refs);
-}
-
-function enrichExtraction(
-  extraction: SemanticCheckpointExtraction,
-  sources: Array<{ ref: Ref; confirmation_authority: "none" | "canonical_user" | "approved_domain" }>,
-): Record<string, unknown> {
-  const authority = new Map(sources.map((source) => [refKey(source.ref), source.confirmation_authority]));
-  const corrections = new Set(extraction.correction_refs.map(refKey));
-  const enrich = <T extends { confirmation_state: "candidate"; source_refs: Ref[] }>(entry: T) => ({
-    ...entry,
-    confirmation_state: entry.source_refs.some((ref) => corrections.has(refKey(ref)))
-      ? "corrected" as const
-      : entry.source_refs.some((ref) => authority.get(refKey(ref)) !== "none")
-        ? "confirmed" as const
-        : "candidate" as const,
-  });
-  return {
-    ...extraction,
-    goals: extraction.goals.map(enrich), user_intent: extraction.user_intent.map(enrich),
-    decisions: extraction.decisions.map(enrich), constraints: extraction.constraints.map(enrich),
-    facts: extraction.facts.map(enrich), open_questions: extraction.open_questions.map(enrich),
-  };
-}
-
-function isSemanticTrigger(value: { event_type: string }): boolean {
-  return SEMANTIC_TRIGGER_EVENTS.has(value.event_type)
-    || /(?:^|_)(?:error|failed|failure)(?:_|$)/.test(value.event_type);
-}
-
-const SEMANTIC_TRIGGER_EVENTS = new Set([
-  "artifact_produced", "checkpoint_corrected",
-  "approval_requested", "approval_resolved", "policy_checked",
-  "provider_compacted", "model_changed", "policy_changed", "epoch_started",
-]);

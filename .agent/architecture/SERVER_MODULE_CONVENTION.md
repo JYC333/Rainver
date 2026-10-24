@@ -33,7 +33,7 @@ server/src/
       service.ts           #     pure logic (no Fastify types)
       index.ts             #     exports the ServerModule object
     catalog/               #   read-only surface over top-level catalog/ definitions
-    capabilities/          #   capability/workflow/open-skill control plane
+    skills/                #   original Skill library and review/bindings
 ```
 
 - **`gateway/` is permanent.** It is the entry/routing layer of the service:
@@ -138,7 +138,7 @@ redact paths are a second check if that serializer changes.
   routes beat the catch-all, so an unclaimed static sibling (e.g.
   `/providers/presets`) would be swallowed by the parametric handler and
   mis-validated.
-- Capability framework rule: `catalog` reads bundled/local manifests;
-  `capabilities` owns canonical capability definitions, packs, workflow
-  templates, imported skill records, and runtime skill render bindings. Do not
-  add remote import, marketplace, or execution behavior to `catalog`.
+- Skill ownership rule: `catalog` reads diagnostic bundled/local manifests;
+  `skills` owns original imported packages, risk review, overlays and scoped
+  bindings. Workflows and callable Tools have separate owners. Do not add
+  remote import, marketplace, or execution behavior to `catalog`.

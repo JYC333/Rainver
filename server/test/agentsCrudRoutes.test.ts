@@ -46,7 +46,6 @@ vi.mock("../src/modules/sessions/executionContextRepository.js", () => ({
   PgConversationExecutionContextRepository: class {
     async lockDraft() { return { state: "draft" }; }
     async initialize() {}
-    async refreshGitBaseline() {}
   },
 }));
 
@@ -1389,10 +1388,9 @@ function hostBoundServices(steps: string[], options: { enqueueFails?: boolean } 
       async resolveBinding() {
         return {
           runtime_profile_id: "runtime-profile-1", runtime_key: "claude_code", binding_id: "binding-1",
-          runtime_state_key: "11111111-1111-4111-8111-111111111111", runtime_session_id: null,
-          runtime_context_fingerprint: null, model_name: null, model_provider_id: null,
+          model_name: null, model_provider_id: null,
           runtime_config_json: {}, runtime_policy_json: {}, execution_host_id: "host-1",
-          workspace_location_id: null, workspace_mode: "managed", runtime_installation: "own", retired_runtime_state_key: null,
+          workspace_location_id: null, workspace_mode: "managed", runtime_installation: "own",
         };
       },
     },

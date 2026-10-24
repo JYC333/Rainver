@@ -63,7 +63,6 @@ function runtimeContextDelivery(prompt: string): InvocationDelivery {
     provider_id: null,
     model: null,
     renderer_version: "managed-semantic.v1",
-    mode: "full",
     planned_items: [{ item_id: "current", semantic_role: "user_input", required: true }],
     message_blocks: [{ semantic_role: "user_input", content: prompt, source_item_ids: ["current"] }],
     control_ref: { type: "execution_control_snapshot", id: "40000000-0000-4000-8000-000000000003" },
@@ -275,7 +274,10 @@ describe("executeRemoteHostCliAdapter", () => {
       .join("\n");
     expect(promptText).toContain("Use the authorized current request only.");
     expect(promptText.split("Use the authorized current request only.")).toHaveLength(2);
-    expect(promptText).toContain("## Current user input");
+    // A turn that carries only the current message is sent verbatim: no
+    // channel notice, no section label (acpRuntimeContextPrompt.ts).
+    expect(promptText).not.toContain("## Current user input");
+    expect(promptText).not.toContain("ACP has one user-prompt channel");
     expect(promptText).not.toContain("add a test");
 
     registry.receiveOutput("host-1", "run-1", `${JSON.stringify({
@@ -708,7 +710,7 @@ describe("executeRemoteHostCliAdapter", () => {
       runtime_key: "claude_code",
       output_text: "done",
       metadata_json: {
-        cli_usage: { acp_turns: 1, occupancy_used: 9_000, occupancy_size: 1_000_000 },
+        cli_usage: { acp_turns: 1, occupancy_used: 9_000, occupancy_size: 1_000_000, usage_updates: 1, usage_updates_used_total: 9_000 },
         subscription_quota: {
           rate_limit_type: "seven_day",
           utilization: 0.42,

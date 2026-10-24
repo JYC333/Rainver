@@ -19,8 +19,6 @@ export type CredentialSetupKind =
   | "daily_report"
   | "imported_session_extraction"
   | "inquiry_advice"
-  | "room_summary"
-  | "context_checkpoint"
   | "conversation_title"
   | "retrieval_embedding"
   | "research_pipeline";
@@ -34,8 +32,6 @@ const PRE_AUTHORIZED_ORIGIN: Readonly<Record<ManagedExecutionKind | CredentialSe
   daily_report: "job",
   imported_session_extraction: "job",
   inquiry_advice: "job",
-  room_summary: "job",
-  context_checkpoint: "job",
   conversation_title: "job",
   retrieval_embedding: "job",
   research_pipeline: "job",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderWorkSkill, workSkillPromptPointer, workSkillPromptReminder } from "../src/modules/capabilities/workSkill.js";
+import { renderWorkSkill, workSkillPromptPointer } from "../src/modules/skills/workSkill.js";
 import { selectToolBridgeProtocol, workSkillOptionsForRun } from "../src/modules/runs/runWorkSurface.js";
 import type { RunRecord } from "../src/modules/runs/repository.js";
 
@@ -44,16 +44,6 @@ describe("the Skill a Run is given", () => {
     expect(ungranted.deliverOutputs).toBe(false);
     expect(renderWorkSkill(ungranted)).not.toContain("artifact.submit");
     expect(workSkillPromptPointer("/host/SKILL.md", ungranted)).not.toContain("artifact.submit");
-  });
-});
-
-describe("work skill reminder", () => {
-  it("is a short pointer that still names the file and the CLI", () => {
-    const reminder = workSkillPromptReminder("/host/SKILL.md");
-    expect(reminder.startsWith("## Reporting back to Rainver")).toBe(true);
-    expect(reminder).toContain("/host/SKILL.md");
-    expect(reminder).toContain("$RAINVER_CLI list|describe|call");
-    expect(reminder.length).toBeLessThan(workSkillPromptPointer("/host/SKILL.md").length / 2);
   });
 });
 

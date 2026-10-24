@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "../../db/pool.js";
+import { seedBuiltinSkillPackages } from "../skills/builtinPackages.js";
 
 const DEFAULT_NOTE_COLLECTIONS: readonly [string, string, number, boolean][] = [
   ["Inbox", "inbox", 0, true],
@@ -14,6 +15,7 @@ const DEFAULT_NOTE_COLLECTIONS: readonly [string, string, number, boolean][] = [
 ];
 
 export async function seedSpaceDefaults(client: PoolClient, spaceId: string, userId: string): Promise<void> {
+  await seedBuiltinSkillPackages(client, spaceId);
   await seedNoteCollections(client, spaceId);
   await seedRuntimeContextPolicy(client, spaceId, userId);
 }

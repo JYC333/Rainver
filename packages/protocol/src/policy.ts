@@ -596,68 +596,8 @@ export const POLICY_ACTION_REGISTRY = [
     record_failure_mode: "fail_closed",
   },
   {
-    action: "skill.convert",
-    resource_type: "skill_package",
-    default_risk_level: "high",
-    default_decision: "require_approval",
-    audit_required: true,
-    approval_capability: "approve_capability_change",
-    default_required_approver_role: "owner",
-    current_enforcement_point:
-      "server/src/modules/proposals/applyService.ts via proposal.apply",
-    description:
-      "Convert a reviewed Open Skill package into a disabled draft capability. Protected via proposal.apply gate and ProposalApplyService.",
-    lifecycle_status: "wired_via_proposal",
-    record_failure_mode: "fail_closed",
-  },
-  {
-    action: "capability.enable",
-    resource_type: "capability",
-    default_risk_level: "high",
-    default_decision: "require_approval",
-    audit_required: true,
-    approval_capability: "approve_capability_change",
-    default_required_approver_role: "owner",
-    current_enforcement_point:
-      "server/src/modules/proposals/applyService.ts via proposal.apply",
-    description:
-      "Enable a registered capability for agent runs in this space. Protected via proposal.apply gate and ProposalApplyService.",
-    lifecycle_status: "wired_via_proposal",
-    record_failure_mode: "fail_closed",
-  },
-  {
-    action: "capability.disable",
-    resource_type: "capability",
-    default_risk_level: "medium",
-    default_decision: "require_approval",
-    audit_required: true,
-    approval_capability: "approve_capability_change",
-    default_required_approver_role: "owner",
-    current_enforcement_point:
-      "server/src/modules/proposals/applyService.ts via proposal.apply",
-    description:
-      "Disable a registered capability for agent runs in this space. Protected via proposal.apply gate and ProposalApplyService.",
-    lifecycle_status: "wired_via_proposal",
-    record_failure_mode: "fail_closed",
-  },
-  {
-    action: "capability.update",
-    resource_type: "capability",
-    default_risk_level: "high",
-    default_decision: "require_approval",
-    audit_required: true,
-    approval_capability: "approve_capability_change",
-    default_required_approver_role: "owner",
-    current_enforcement_point:
-      "server/src/modules/proposals/applyService.ts via proposal.apply",
-    description:
-      "Update the manifest or configuration of a registered capability. Protected via proposal.apply gate and ProposalApplyService.",
-    lifecycle_status: "wired_via_proposal",
-    record_failure_mode: "fail_closed",
-  },
-  {
     action: "runtime_skill.binding_update",
-    resource_type: "runtime_skill_binding",
+    resource_type: "skill_binding",
     default_risk_level: "high",
     default_decision: "require_approval",
     audit_required: true,
@@ -666,7 +606,7 @@ export const POLICY_ACTION_REGISTRY = [
     current_enforcement_point:
       "server/src/modules/proposals/applyService.ts via proposal.apply",
     description:
-      "Update a runtime skill binding for a capability version. Protected via proposal.apply gate and ProposalApplyService.",
+      "Update a scoped binding to an immutable reviewed Skill package. Protected via proposal.apply gate and ProposalApplyService.",
     lifecycle_status: "wired_via_proposal",
     record_failure_mode: "fail_closed",
   },
@@ -724,6 +664,20 @@ export const POLICY_ACTION_REGISTRY = [
     current_enforcement_point:
       "server/src/modules/sessions/conversationInputResourceService.ts",
     description: "Search bounded text in an immutable conversation resource.",
+    lifecycle_status: "wired_direct",
+    record_failure_mode: "fail_closed",
+  },
+  {
+    action: "conversation.history.read",
+    resource_type: "session",
+    default_risk_level: "low",
+    default_decision: "allow",
+    audit_required: true,
+    approval_capability: null,
+    default_required_approver_role: null,
+    current_enforcement_point:
+      "server/src/modules/sessions/conversationHistorySystemActionExecutors.ts",
+    description: "Read or search the recorded history of the conversation a Run belongs to.",
     lifecycle_status: "wired_direct",
     record_failure_mode: "fail_closed",
   },
@@ -795,34 +749,6 @@ export const POLICY_ACTION_REGISTRY = [
     current_enforcement_point: "not_implemented",
     description:
       "Change a memory entry's visibility from private to space-shared.",
-    lifecycle_status: "reserved",
-    record_failure_mode: "best_effort",
-  },
-  {
-    action: "runtime_skill.render",
-    resource_type: "runtime_skill_binding",
-    default_risk_level: "medium",
-    default_decision: "require_approval",
-    audit_required: true,
-    approval_capability: "approve_capability_change",
-    default_required_approver_role: "owner",
-    current_enforcement_point: "server/src/modules/runtimeContext/productionAcquisition.ts",
-    description:
-      "Render a runtime-bound Open Skill for an adapter execution context.",
-    lifecycle_status: "wired_direct",
-    record_failure_mode: "best_effort",
-  },
-  {
-    action: "runtime_skill.execute",
-    resource_type: "runtime_skill_binding",
-    default_risk_level: "high",
-    default_decision: "require_approval",
-    audit_required: true,
-    approval_capability: "approve_capability_change",
-    default_required_approver_role: "owner",
-    current_enforcement_point: "not_implemented",
-    description:
-      "Execute a runtime-bound Open Skill through an adapter-native skill mechanism.",
     lifecycle_status: "reserved",
     record_failure_mode: "best_effort",
   },

@@ -11,7 +11,7 @@ metrics or telemetry store. `EvolutionSignalEmitter` lives at
 
 Signals are emitted only when an evolution target can be resolved. Evolution
 runs resolve through `evolution_selector_decisions`; ordinary task, workflow,
-automation, and capability-backed runs use a bounded source-keyed target
+and automation runs use a bounded source-keyed target
 provisioner only when a failure, repeat, or threshold rule is actually present.
 The provisioner creates one low/medium-policy target per source reference and
 never starts an evolution run itself. Proposal signals use the creating
@@ -128,3 +128,15 @@ The inventory covers the current durable event classes. The manual
 signal-create route is an explicit ingestion surface; neither represents a
 missing automatic performance emitter. There is no direct Artifact-edit
 signal. There is no authoritative Artifact revision event to emit one from.
+
+## Retired target kinds
+
+Evolution supports Agent versions, Memory, Knowledge, Workflows, Project Folders
+and system targets. Research stage ids never auto-provision targets. The two
+legacy capability-layer target kinds and runtime-binding evolvable assets are
+not registrations; their rows, versions and pins are archived by migration
+`0004_remove_capability_layer` (its second part, originally `0005_retire_evolution_targets_and_rename_skills`), with reasons on the owning
+rows. Historical labels and references remain readable only as archive data;
+constraints prevent them from becoming active, and API create/update accepts
+only supported target types. No retired target becomes a Skill. The Skill
+library's own review/binding proposal path remains separate from Evolution.

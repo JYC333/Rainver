@@ -233,7 +233,7 @@ describe('UsagePage', () => {
       ...events.items[0]!, execution_channel: 'local_cli', request_count: 0, request_count_known: false,
       cache_creation_input_tokens: 200, cache_creation_1h_input_tokens: 50, cache_read_input_tokens: 100,
       dimensions: { run_purpose: 'handoff', run_outcome: 'failed', run_attempt_number: 2 },
-      metadata: { cli_usage: { acp_turns: 2, occupancy_used: 9000, occupancy_size: 1000000, estimated_total: 500, estimate_instructions: 100, delivery_mode: 'full', rotation_reason: 'tool_policy_changed' } },
+      metadata: { cli_usage: { acp_turns: 2, occupancy_used: 9000, occupancy_size: 1000000, usage_scope: 'last_model_request', usage_updates: 7, usage_updates_used_total: 61000, estimated_total: 500, estimate_instructions: 100, resumed_session: false } },
     }] })
     render(<UsagePage />)
     expect(await screen.findByText('1 record did not report internal model calls')).toBeInTheDocument()
@@ -243,11 +243,13 @@ describe('UsagePage', () => {
     expect(within(diagnostics).getByText('Model calls').parentElement).toHaveTextContent('Unknown')
     expect(within(diagnostics).getByText('ACP requests').parentElement).toHaveTextContent('2')
     expect(within(diagnostics).getByText('Context used / capacity').parentElement).toHaveTextContent('9,000 / 1,000,000')
+    expect(within(diagnostics).getByText('Token counts cover').parentElement).toHaveTextContent('Last model request only (lower bound)')
+    expect(within(diagnostics).getByText('Context reports (one per model request)').parentElement).toHaveTextContent('7')
+    expect(within(diagnostics).getByText('Context volume processed').parentElement).toHaveTextContent('61,000')
     expect(within(diagnostics).getByText('This delivery estimate').parentElement).toHaveTextContent('500')
-    expect(within(diagnostics).getByText('Delivery mode').parentElement).toHaveTextContent('Full delivery')
+    expect(within(diagnostics).getByText('Native session').parentElement).toHaveTextContent('Started fresh')
     expect(within(diagnostics).getByText('Run purpose').parentElement).toHaveTextContent('Session handoff')
     expect(within(diagnostics).getByText('Run attempt number').parentElement).toHaveTextContent('2')
-    expect(within(diagnostics).getByText('Reconstruction reason').parentElement).toHaveTextContent('Tool permissions changed')
   })
 
   it('shows a lower bound when only part of the model call count is known', async () => {

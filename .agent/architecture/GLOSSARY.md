@@ -1,6 +1,6 @@
 # Runtime and Extension Glossary
 
-This glossary records the vocabulary used by the execution, capability, and
+This glossary records the vocabulary used by the execution, Skill, Tool, and
 workflow layers. It is a naming boundary, not a code-renaming plan.
 
 | Term | Meaning and ownership |
@@ -16,7 +16,7 @@ workflow layers. It is a naming boundary, not a code-renaming plan.
 | **ProviderTask** | A bounded, in-process model invocation with its own policy, control, delivery and safe-snapshot records (`provider_task_controls` and siblings) plus usage accounting. Short calls — title generation, rewriting, reranking, extraction — stay ledger entries; a bounded operation that needs Run lifecycle, retry, artifacts or verification becomes a `provider_task` Run. Never an Agent runtime, and it fabricates no Agent or Profile reference. |
 | **Server Runtime** | The built-in execution Host (`hosts.kind = 'server'`), which speaks the same daemon protocol as a paired Host. It is the product label for that Host and the default execution target; its managed OpenCode copy is pinned by the Rainver release and reconciled by the control plane. `host_kind`, never the label, is what code branches on. |
 | **RuntimeAdapterSpec** | The declarative catalog entry describing an adapter's executor family, invocation, credentials, sandbox, model, permissions, output, limits, and conservative runtime capability claims. The catalog is the source for adapter capabilities and dispatch selection. |
-| **RuntimeSkillBinding** | Maps a capability version to runtime-specific rendering or invocation settings. Do not let runtime artifacts or the binding become a second content authority. |
+| **SkillBinding** | Selects an immutable package version in one Space, user, Project or Agent scope. Review and enabled bindings govern Delivery eligibility; they confer no Tool permission. |
 | **Focus area** (`focus_area`; "Domain" in product language) | A user-created durable aggregation of a long-term focus — the Projects, Notes and Knowledge pointing at it. It holds no data and decides no access; `contentScopeSql()` never reads it. Distinguished from a module by whether the thing needs code, and from a Project by whether it has an end state. See [ADR 0015](../decisions/0015-focus-area-classification.md). The internal identifier avoids `domain`, which this codebase already uses for DDD aggregates, retrieval groupings, and hostnames. |
 | **ProductPlugin** | An optional product module with its own module lifecycle and UI/backend surface. It is distinct from a runtime extension, skill package, or CLI binary. |
 | **Agent Skill / Open Skill** | An untrusted external package that is the source of truth for its own procedural content. Rainver records its immutable snapshot, provenance, risk, approval, binding and Delivery audit; it does not canonically re-represent the content. Package declarations are requests only and never grant tools, hooks, scripts, MCP authority, or runtime permissions. |
@@ -31,9 +31,8 @@ workflow layers. It is a naming boundary, not a code-renaming plan.
 - An `agent` Run executes through the ACP adapter on a Host; a `provider_task`
   Run is a bounded ProviderTask with Run lifecycle. A ProviderTask is not an
   Agent runtime and never acquires an Agent or Profile reference.
-- A RuntimeSkillBinding is exposure, not authorization: it maps a capability
-  version to runtime rendering settings and will move to selecting approved
-  procedural content for governed Runtime Context Delivery.
+- A SkillBinding selects approved procedural content for governed Runtime
+  Context Delivery; original package bytes remain its content authority.
 - A ProductPlugin is a product module. It must not be used as a catch-all name
   for a runtime, skill, tool, or adapter.
 

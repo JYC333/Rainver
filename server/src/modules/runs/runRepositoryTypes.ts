@@ -350,15 +350,6 @@ export interface RunTerminalUpdate {
   completed_at: string;
 }
 
-export interface ConversationRuntimeTerminalSync {
-  binding_id: string;
-  runtime_state_key: string;
-  keep_session: boolean;
-  runtime_session_id: string | null;
-  context_fingerprint: string | null;
-  message_cursor_id?: string | null;
-}
-
 export interface RunAttemptRecord {
   id: string;
   space_id: string;

@@ -34,7 +34,7 @@ All other routes, including system-metadata endpoints, are auth-gated:
 
 - `GET /api/v1/auth/reauth/status` — reports only whether the current user's signed recent-auth grant remains valid and when it expires; the browser uses it to gate Security-page controls, while each sensitive mutation still enforces the grant server-side.
 - `POST /api/v1/invitations/accept` — an active account may consume only an unexpired, available invitation addressed to its own normalized email; membership and token consumption commit together.
-- `GET /api/v1/capability-definitions`, `GET /api/v1/capability-definitions/{id}`, `GET /api/v1/capability-packs`
+- `GET /api/v1/skill-packages`, its content/binding reads, and `/api/v1/skills/*` selection/overlay APIs
 - `GET /api/v1/server/catalog`, `/catalog/capabilities`, `/catalog/agent-templates`
 - `GET /api/v1/server/notifications/webhooks/policy`, `POST .../webhooks/dispatch`
 - `GET /api/v1/jobs/handlers`
@@ -1093,7 +1093,7 @@ paths, the extract/snapshot paths, and the declarative interpreters'
   message and the same persisted diagnostics, so the refusal is not an oracle
   for which internal names exist.
 - The Open Skill importer uses this same guard through
-  `capabilities/skillSourceFetch.ts`, adding a same-host GitHub allowlist on every
+  `skills/skillSourceFetch.ts`, adding a same-host GitHub allowlist on every
   hop before connecting. File bodies have a 256 KiB read ceiling and GitHub
   metadata an 8 MiB ceiling; excess and unsuccessful bodies are cancelled.
   The host daemon's egress proxy resolves without a DNS
