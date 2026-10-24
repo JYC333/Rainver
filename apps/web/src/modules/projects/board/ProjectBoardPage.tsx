@@ -162,7 +162,7 @@ export default function ProjectBoardPage() {
   }
 
   return (
-    <div className="flex h-full flex-col gap-4 p-6">
+    <div className="flex min-h-full flex-col gap-4 p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Board</h1>

@@ -29,11 +29,18 @@ export function ConversationCacheNotice({ runtimes, nameForAgent, disabled, onRe
     setSelected(null); setBusy(true); setError(false)
     try { await onReset(id) } catch { setError(true) } finally { setBusy(false) }
   }
-  return <div className="space-y-2 rounded border border-warning/40 bg-warning/5 p-2.5 text-xs" role="status">
-    {expired.map(runtime => <div key={runtime.agent_id} className="flex flex-wrap items-center gap-2">
-      <span className="min-w-0 flex-1">{t('conversation_ui.preflight.cache_expired_visible', { agent: nameForAgent(runtime.agent_id) })}</span>
-      <Button size="sm" variant="outline" disabled={disabled || busy} onClick={() => setSelected(runtime.agent_id)}>{t('conversation_ui.preflight.fresh_session', { agent: nameForAgent(runtime.agent_id) })}</Button>
-    </div>)}
+  return <div className="space-y-2 rounded border border-warning/40 bg-warning/5 px-2.5 py-1.5 text-xs" role="status">
+    <details>
+      <summary className="cursor-pointer font-medium" title={expired.map(runtime => nameForAgent(runtime.agent_id)).join(', ')}>
+        {t('conversation_ui.preflight.cache_expired_summary', { count: expired.length })}
+      </summary>
+      <div className="mt-2 max-h-48 space-y-2 overflow-y-auto overscroll-y-contain">
+        {expired.map(runtime => <div key={runtime.agent_id} className="flex flex-wrap items-center gap-2">
+          <span className="min-w-0 flex-1">{nameForAgent(runtime.agent_id)}</span>
+          <Button size="sm" variant="outline" disabled={disabled || busy} onClick={() => setSelected(runtime.agent_id)}>{t('conversation_ui.preflight.fresh_session', { agent: nameForAgent(runtime.agent_id) })}</Button>
+        </div>)}
+      </div>
+    </details>
     {error && <p role="alert" className="text-destructive">{t('conversation_ui.preflight.reset_failed')}</p>}
     <ConfirmDialog open={selected !== null} onOpenChange={open => { if (!open) setSelected(null) }}
       title={t('conversation_ui.preflight.fresh_session', { agent: selected ? nameForAgent(selected) : '' })}

@@ -22,7 +22,7 @@ import { Button } from '../../components/ui/button'
 import { Card } from '../../components/ui/card'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
-import { ConversationCacheNotice } from './ConversationCacheNotice'
+import { ConversationCacheNotice, isPromptCacheExpired } from './ConversationCacheNotice'
 import { ConversationGitContext } from './ConversationGitContext'
 
 interface ConversationExecutionPreflightProps {
@@ -395,7 +395,7 @@ function ConversationExecutionPreflightContent({
   if (loading && !preflight) return <Card className="m-3 p-3 text-xs text-muted-foreground"><Loader2 className="mr-1 inline size-3.5 animate-spin" />{t('conversation_ui.preflight.loading')}</Card>
   if (!preflight) return <Card className="m-3 space-y-2 p-3 text-xs"><p className="text-destructive">{error ?? t('conversation_ui.preflight.unavailable')}</p><Button size="sm" variant="outline" onClick={() => void reload()}><RefreshCw className="mr-1 size-3.5" />{t('conversation_ui.preflight.retry')}</Button></Card>
 
-  const cacheNotice = initialized && summary ? <ConversationCacheNotice
+  const cacheNotice = initialized && summary?.runtimes?.some(isPromptCacheExpired) ? <ConversationCacheNotice
     runtimes={summary.runtimes ?? []}
     nameForAgent={id => participantMembers.find(member => member.agent_id === id)?.agent_name
       ?? profiles.find(profile => profile.agent_id === id)?.agent_name ?? t('conversation_ui.preflight.unknown_agent')}
@@ -409,10 +409,10 @@ function ConversationExecutionPreflightContent({
 
   if (initialized && !executionDetailsOpen) {
     return (
-      <Card className="m-3 p-0" data-testid="execution-preflight-collapsed">
+      <Card className="mx-3 my-2 p-0" data-testid="execution-preflight-collapsed">
         <button
           type="button"
-          className="flex w-full items-center gap-2 p-2.5 text-left text-xs text-muted-foreground hover:text-foreground"
+          className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs text-muted-foreground hover:text-foreground"
           aria-expanded="false"
           onClick={() => setExecutionDetailsOpen(true)}
         >

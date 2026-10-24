@@ -251,6 +251,7 @@ export const conversationUiEn = {
       session_renewed: 'Session renewed from its handoff · ',
       summary_written: 'Summary written in this session ({{tokens}} tokens of context). Continuing resumes the full session; restart from the summary in the roster to start small · ',
       open_summary: 'Open summary',
+      cache_expired_summary: 'Prompt cache estimated expired ({{count}})',
       cache_expired_visible: '{{agent}}: prompt cache is estimated to have expired. Continuing may rewrite the context.',
       fresh_session: 'New session for {{agent}}',
       fresh_session_description: 'Only this Agent’s native session in the current conversation will reset. Other Agents and conversations are unchanged. Chat records remain, but native context and the previous handoff are cleared; the next call starts fresh.',

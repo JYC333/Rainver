@@ -251,6 +251,7 @@ export const conversationUiZhCN = {
       session_renewed: '会话已从交接内容续接 · ',
       summary_written: '本会话已写过总结（上下文约 {{tokens}} token）。继续会续接完整会话；要从总结重新开始请在成员面板里选"从总结重开" · ',
       open_summary: '打开总结',
+      cache_expired_summary: '估计缓存已过期：{{count}} 个 Agent',
       cache_expired_visible: '{{agent}}：按缓存时长估计已过期，继续调用可能重新写入上下文。',
       fresh_session: '为 {{agent}} 新开 session',
       fresh_session_description: '仅重置当前对话中该 Agent 的原生会话。其他 Agent 和对话不受影响。聊天记录保留，但原生上下文及先前交接将清空，下次调用从新 session 开始。',

@@ -103,8 +103,8 @@ export default function ProjectAreaLayout() {
 
   return (
     <ProjectFolderConversationProvider key={projectId} projectId={projectId}>
-      <div className="min-h-full lg:grid lg:grid-cols-[220px_minmax(0,1fr)]">
-      <aside className="border-b bg-muted/20 p-4 lg:border-b-0 lg:border-r">
+      <div className="min-h-full lg:h-full lg:min-h-0 lg:overflow-hidden lg:grid lg:grid-cols-[220px_minmax(0,1fr)]">
+      <aside data-project-navigation className="border-b border-border bg-muted/20 p-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain lg:border-b-0 lg:border-r">
         <div className="mb-5 px-2">
           <p className="truncate font-semibold">{project?.name ?? 'Project'}</p>
         </div>
@@ -128,7 +128,7 @@ export default function ProjectAreaLayout() {
             ))}
           </div>
 
-          <div className="border-t pt-3">
+          <div className="border-t border-border pt-3">
             <button
               type="button"
               className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground hover:bg-muted"
@@ -161,7 +161,7 @@ export default function ProjectAreaLayout() {
             workflow (research scan, screening review, …) has nowhere else to
             point the user back to the exact pending action. */}
         {(overview?.attention.length ?? 0) > 0 && (
-          <div className="mt-5 border-t pt-4">
+          <div className="mt-5 border-t border-border pt-4">
             <p className="mb-2 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Needs attention</p>
             <div className="space-y-1">
               {overview?.attention.map(item => {
@@ -184,8 +184,8 @@ export default function ProjectAreaLayout() {
       {/* The sidecar sits beside every Area, so discussing what you are looking
           at never means leaving it. It renders the Room's own conversation, not
           a private one. */}
-      <div className="flex min-w-0">
-        <main className="min-w-0 flex-1"><Outlet /></main>
+      <div className="flex min-w-0 lg:min-h-0 lg:overflow-hidden">
+        <main data-project-area-content className="min-w-0 flex-1 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain"><Outlet /></main>
         <ProjectChatSidecar />
       </div>
       </div>

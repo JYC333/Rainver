@@ -547,3 +547,8 @@ Agents/Conversations. The server retains Project writer/Room member/host-owner
 and dispatch-lock checks. Omitting `session_id` preserves the older roster
 latest-Conversation action. Reset threads report no last-Run timestamp for cache
 expiry until the new native session runs again.
+
+Cache expiry notices are aggregated into one collapsed count summary. The
+explicit Agent-specific reset choices are revealed on expansion in a bounded
+scroll area. No notice wrapper is mounted when no runtime is expired, keeping
+the configured execution row at its compact height.

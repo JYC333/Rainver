@@ -67,7 +67,8 @@ Agent Work is a personal module at `/agent-work`, under RequireAuth, with a Glob
 Rail entry and an explicit Home button. It never registers a Space-prefixed route
 and is a mobile primary tab. Its page owns selection, expansion, scroll and drafts. Shell mounts the account-keyed
 `AgentAttentionProvider`, which owns the authorized personal aggregate stream and
-mounted filter windows. Global Rail/Home expose needs-you/unread-work counts;
+mounted filter windows. Global Rail shows an accessible red dot when needs-you
+or unread work is nonzero; Home exposes needs-you/unread-work counts;
 Agent Work exposes freshness and explicit, default-off sound/desktop controls.
 Sound/system delivery uses per-user Web Locks/BroadcastChannel. A visible in-app
 toast broadcasts its revision identity to other same-account tabs, clearing their

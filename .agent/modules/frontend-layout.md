@@ -61,6 +61,19 @@ the shared accessible dialog, closes on selection, and scrolls within the viewpo
 
 The authenticated Shell is fixed to the dynamic viewport with a shrinkable main
 scroll area; the document does not scroll behind its bottom navigation. Mobile
-Agent Work uses an accessible red dot only when unread/needs-you is nonzero.
+Agent Work uses an accessible red dot only when unread/needs-you is nonzero,
+on both the desktop rail (collapsed or expanded) and mobile bottom navigation.
 Project conversation history contains scroll chaining; mobile conversation cards
 use dynamic viewport height instead of the desktop 640px minimum.
+
+At `lg` and above, ProjectAreaLayout fills the Shell content height: its Project
+navigation and Area content each own a bounded, contained vertical scroller.
+Scrolling Area content does not move the Project navigation, and long navigation
+remains independently reachable. Below `lg` the existing stacked layout remains.
+Project navigation and Files & Code separators explicitly use `border-border`
+rather than inheriting the text color.
+
+The Project Board uses a minimum page height rather than a fixed `h-full`, so
+lanes grow to enclose their full card lists. Long Boards scroll in the Area
+content while Project navigation remains independent; horizontal lane overflow
+is retained and cards are not clipped by individual lane scroll containers.

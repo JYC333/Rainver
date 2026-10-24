@@ -97,9 +97,11 @@ export function GlobalRail({
             : 'text-muted-foreground hover:text-foreground hover:bg-accent border border-transparent',
         )}
       >
-        <Icon className="size-[18px] shrink-0" />
+        <span className="relative shrink-0">
+          <Icon className="size-[18px]" />
+          {item.id === 'agent-work' && <AttentionBadge dot />}
+        </span>
         {expanded && <span className="text-[13px] font-medium truncate">{label}</span>}
-        {item.id === 'agent-work' && <AttentionBadge compact={!expanded} />}
         {item.id === 'review' && (
           <ReviewAttentionIndicator count={pendingReviewCount} compact={!expanded} />
         )}

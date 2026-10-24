@@ -419,3 +419,93 @@ test('Settings verifies the running build and exposes opt-in mobile layout diagn
     assert.equal('user' in diagnostic, false)
   } finally { await page.close() }
 })
+
+test('Project navigation scrolls independently and file separators use theme borders', async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 800 }, serviceWorkers: 'block' })
+  try {
+    await mockApi(page)
+    await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/files`)
+    const sidebar = page.locator('[data-project-navigation]')
+    const content = page.locator('[data-project-area-content]')
+    await sidebar.waitFor()
+    await page.getByRole('button', { name: 'first.txt', exact: true }).waitFor()
+    const themeBorder = await page.locator('header').first().evaluate(element => getComputedStyle(element).borderBottomColor)
+    assert.equal(await content.locator('.border-r').first().evaluate(element => getComputedStyle(element).borderRightColor), themeBorder)
+    assert.equal(await content.locator('.border-b').first().evaluate(element => getComputedStyle(element).borderBottomColor), themeBorder)
+    await page.evaluate(() => {
+      for (const selector of ['[data-project-area-content]', '[data-project-navigation]']) {
+        const extra = document.createElement('div'); extra.style.height = '2400px'
+        document.querySelector(selector).append(extra)
+      }
+    })
+    const sidebarBefore = await sidebar.boundingBox()
+    const contentBox = await content.boundingBox()
+    await page.mouse.move(contentBox.x + 30, contentBox.y + 30)
+    await page.mouse.wheel(0, 400)
+    await page.waitForFunction(() => document.querySelector('[data-project-area-content]').scrollTop > 0)
+    assert.equal(await sidebar.evaluate(element => element.scrollTop), 0)
+    assert.equal((await sidebar.boundingBox()).y, sidebarBefore.y)
+    const contentScroll = await content.evaluate(element => element.scrollTop)
+    await page.mouse.move(sidebarBefore.x + 30, sidebarBefore.y + 30)
+    await page.mouse.wheel(0, 400)
+    await page.waitForFunction(() => document.querySelector('[data-project-navigation]').scrollTop > 0)
+    assert.equal(await content.evaluate(element => element.scrollTop), contentScroll)
+    assert.equal(await sidebar.evaluate(element => getComputedStyle(element).borderRightColor),
+      await page.locator('header').first().evaluate(element => getComputedStyle(element).borderBottomColor))
+    assert.equal(await page.locator('.app-safe-shell > div > main').evaluate(element => element.scrollTop), 0)
+  } finally { await page.close() }
+})
+
+test('Board borders enclose long card lists without moving Project navigation', async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 800 }, serviceWorkers: 'block' })
+  try {
+    await mockApi(page)
+    await page.route('**/api/v1/projects/*/board', route => route.fulfill({ json: {
+      project: { id: project.id, name: project.name }, viewer_can_write: false, viewer_user_id: 'user-layout', filters: { all: 20, mine: 0, agent_held: 0, needs_me: 0 },
+      columns: [{ status_key: 'ready', label: 'Ready', wip_limit: null, count: 20 }],
+      cards: Array.from({ length: 20 }, (_, index) => ({ id: `board-long-${index}`, title: `Long Board card ${index}`, status: 'ready', column_key: 'ready', priority: 'normal', risk_level: 'low', due_at: null,
+        updated_at: now, loop_stage: null, loop_stage_label: null, responsible: { kind: null, id: null, display_name: null }, active_run_count: 0, latest_run_status: null, evaluation_recommendation: null, blocked_reason: null, completion: { ok: true, missing: [] } })),
+    } }))
+    await page.goto(`${baseUrl}/spaces/${room.space_id}/projects/${project.id}/board`)
+    const last = page.getByTestId('board-card-board-long-19')
+    await last.waitFor()
+    const lane = await page.getByTestId('board-column-ready').boundingBox()
+    const lastBox = await last.boundingBox()
+    assert.ok(lastBox.y + lastBox.height <= lane.y + lane.height, 'column border encloses the last card')
+    const sidebar = page.locator('[data-project-navigation]')
+    const top = (await sidebar.boundingBox()).y
+    await last.scrollIntoViewIfNeeded()
+    assert.equal((await sidebar.boundingBox()).y, top)
+    assert.ok(await page.locator('[data-project-area-content]').evaluate(element => element.scrollTop > 0))
+  } finally { await page.close() }
+})
+
+test('Execution context has no empty notice gap and aggregates expired Agents', async () => {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, serviceWorkers: 'block' })
+  let expired = 0
+  try {
+    await mockApi(page)
+    await page.route('**/api/v1/sessions/*/execution-context', route => route.fulfill({ json: {
+      summary: { session_id: session.id, state: 'initialized', host: null, runtime: null,
+        runtimes: Array.from({ length: expired }, (_, index) => ({ agent_id: `expired-${index}`, runtime_profile_id: `profile-${index}`, runtime_key: 'claude_code', runtime_installation: 'own', last_run_ended_at: '2020-01-01T00:00:00Z', prompt_cache_ttl_seconds: 3600 })),
+        primary: null, attachments: [], dispatch_locked: false, queue_paused_at: null, can_send: true, blocked_reason: null },
+      available_hosts: [], available_runtime_profiles: [], available_primary_locations: [],
+    } }))
+    const path = `${baseUrl}/spaces/${room.space_id}/projects/${project.id}/rooms?room=${room.id}&conversation=${session.id}`
+    await page.goto(path)
+    const panel = page.getByTestId('execution-preflight-collapsed')
+    await panel.waitFor()
+    const button = panel.getByRole('button', { name: 'Execution context configured' })
+    const box = await panel.boundingBox()
+    const buttonBox = await button.boundingBox()
+    assert.ok(box.height <= buttonBox.height + 2, 'no empty padding below the configured row')
+    expired = 4
+    await page.reload()
+    await panel.waitFor()
+    await panel.getByText('Prompt cache estimated expired (4)', { exact: true }).waitFor()
+    assert.ok((await panel.boundingBox()).height < 100, 'multiple expired Agents stay compact')
+    assert.equal(await panel.getByRole('button', { name: /New session for/ }).count(), 0)
+    await panel.locator('summary').click()
+    assert.equal(await panel.getByRole('button', { name: /New session for/ }).count(), 4)
+  } finally { await page.close() }
+})

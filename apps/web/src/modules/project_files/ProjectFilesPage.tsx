@@ -672,7 +672,7 @@ export default function ProjectFilesPage() {
           if (target) void unregisterFolder(target, true)
         }}
       />
-      <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b bg-card">
+      <div className="shrink-0 flex items-center gap-3 px-4 py-2.5 border-b border-border bg-card">
         <div
           className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
           style={{ background: 'color-mix(in oklch, var(--primary) 12%, transparent)', border: '1px solid color-mix(in oklch, var(--primary) 30%, transparent)' }}
@@ -771,7 +771,7 @@ export default function ProjectFilesPage() {
       )}
 
       <div className="flex-1 flex min-h-0">
-        <div className="w-64 shrink-0 border-r flex flex-col min-h-0 bg-card/50">
+        <div className="w-64 shrink-0 border-r border-border flex flex-col min-h-0 bg-card/50">
           <Tabs value={leftTab} onValueChange={value => setLeftTab(value as LeftTab)} className="flex flex-col flex-1 min-h-0">
             <div className="shrink-0 px-2 pt-2">
               <TabsList className="w-full grid grid-cols-2 h-8 text-[10px]">
@@ -938,7 +938,7 @@ export default function ProjectFilesPage() {
                 />
               ) : centerView.mode === 'diff' ? (
                 <div className="flex flex-col h-full">
-                  <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b bg-muted/30">
+                  <div className="shrink-0 flex items-center gap-2 px-4 py-2 border-b border-border bg-muted/30">
                     <FileDiff className="size-3.5 text-muted-foreground" />
                     <span className="text-xs font-mono text-muted-foreground">{centerView.path}</span>
                   </div>
@@ -956,7 +956,7 @@ export default function ProjectFilesPage() {
               )}
               {historyOpen && centerView.mode === 'file' && (
                 <div role="dialog" aria-label="File history" className="absolute inset-y-2 right-2 z-20 flex w-[min(28rem,calc(100%-1rem))] flex-col overflow-hidden rounded-lg border bg-background shadow-xl">
-                  <div className="flex shrink-0 items-center justify-between border-b px-3 py-2">
+                  <div className="flex shrink-0 items-center justify-between border-b border-border px-3 py-2">
                     <div><p className="text-xs font-semibold">History</p><p className="text-[10px] text-muted-foreground">Restore a revision as a draft; the Folder file is never changed here.</p></div>
                     <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[10px]" onClick={() => { setHistoryOpen(false); setRevisionPreview(null) }}>Close</Button>
                   </div>
