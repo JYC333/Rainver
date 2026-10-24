@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import DailyReportSettingsPage from '../DailyReportSettingsPage'
 import { dailyReportApi } from '../../../api/client'
@@ -26,7 +26,9 @@ describe('DailyReportSettingsPage schedule', () => {
     vi.mocked(dailyReportApi.updateSettings)
       .mockRejectedValueOnce(new Error('400 invalid timezone'))
       .mockResolvedValueOnce({ ...setting, timezone: 'Asia/Shanghai' })
-    render(<DailyReportSettingsPage />)
+    // Let initial settings and the schedule synchronization effect settle
+    // before editing; otherwise that effect can clear this edit under load.
+    await act(async () => { render(<DailyReportSettingsPage />) })
 
     fireEvent.change(await screen.findByDisplayValue('UTC'), { target: { value: 'Asia/Shanghaii' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))

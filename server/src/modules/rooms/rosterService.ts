@@ -363,7 +363,7 @@ export class RoomRosterService {
     return { ...result, managed_workspace_archive: archived };
   }
 
-  async resetAgentContext(identity: RoomIdentity, roomId: string, agentId: string) {
+  async resetAgentContext(identity: RoomIdentity, roomId: string, agentId: string, sessionId?: string) {
     return this.withRoomWriter(identity, roomId, async (client, room) => {
       const thread = await client.query<{
         id: string;
@@ -379,12 +379,13 @@ export class RoomRosterService {
            JOIN hosts host ON host.id = thread.execution_host_id
            JOIN agents agent ON agent.id = thread.agent_id
           WHERE conversation.space_id = $3 AND conversation.room_id = $1 AND thread.agent_id = $2
+            AND ($4::text IS NULL OR conversation.id = $4)
             AND thread.container_kind = 'conversation'
             AND thread.status IN ('active', 'session_reset')
           ORDER BY conversation.updated_at DESC, conversation.created_at DESC, conversation.id DESC
           LIMIT 1
           FOR UPDATE`,
-        [room.id, agentId, identity.spaceId],
+        [room.id, agentId, identity.spaceId, sessionId ?? null],
       );
       const current = thread.rows[0];
       if (!current) throw new HttpError(404, "Host-bound Conversation Agent thread not found");

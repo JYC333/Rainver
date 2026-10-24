@@ -1,5 +1,5 @@
 import { useConversationScope } from './ConversationScope'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { BookOpen, ChevronDown } from 'lucide-react'
 import { WORK_RETRIEVAL_DOMAINS, type WorkRetrievalDomain, type WorkRetrievalSwitch } from '@rainver/protocol'
 import { Button } from '../../components/ui/button'
@@ -19,26 +19,18 @@ import { useAppTranslation } from '../../i18n'
  * whether turns search the knowledge base on their own. What the person
  * attaches reaches the turn either way.
  */
-export function KnowledgeRetrievalToggle({ disabled = false, agentName = null, ...owner }: ({
-  /** A direct conversation's Work Context. Null before the conversation exists. */
+export function KnowledgeRetrievalToggle({ disabled = false, ...owner }: ({
   scopeId: string | null
 } | {
-  /** One Room recipient in this Conversation. Null before the Conversation exists. */
   sessionId: string | null
-  roomAgentMemberId: string
-}) & {
-  disabled?: boolean
-  /** Names the Agent when the switch belongs to one Room recipient. */
-  agentName?: string | null
-}) {
+}) & { disabled?: boolean }) {
   const scopeId = 'scopeId' in owner ? owner.scopeId : null
   const sessionId = 'sessionId' in owner ? owner.sessionId : null
-  const roomAgentMemberId = 'roomAgentMemberId' in owner ? owner.roomAgentMemberId : null
   const target = useMemo<RetrievalSwitchTarget | null>(() => (
-    scopeId ? { scopeId }
-      : sessionId && roomAgentMemberId ? { sessionId, roomAgentMemberId }
-        : null
-  ), [scopeId, sessionId, roomAgentMemberId])
+    scopeId ? { scopeId } : sessionId ? { sessionId } : null
+  ), [scopeId, sessionId])
+  const targetRef = useRef(target)
+  targetRef.current = target
   const scope = useConversationScope()
   const { t } = useAppTranslation()
   const [state, setState] = useState<WorkRetrievalSwitch | null>(null)
@@ -49,6 +41,7 @@ export function KnowledgeRetrievalToggle({ disabled = false, agentName = null, .
 
   useEffect(() => {
     setState(null)
+    setSaving(false)
     setFailed(false)
     setLoadFailed(false)
     if (!target) return
@@ -64,14 +57,15 @@ export function KnowledgeRetrievalToggle({ disabled = false, agentName = null, .
     setSaving(true)
     setFailed(false)
     try {
-      setState(await runtimeContextApi.setRetrievalSwitch(target, {
+      const next = await runtimeContextApi.setRetrievalSwitch(target, {
         enabled,
         ...(domains ? { preferred_domains: domains } : {}),
-      }, scope))
+      }, scope)
+      if (targetRef.current === target) setState(next)
     } catch {
-      setFailed(true)
+      if (targetRef.current === target) setFailed(true)
     } finally {
-      setSaving(false)
+      if (targetRef.current === target) setSaving(false)
     }
   }
 
@@ -97,10 +91,8 @@ export function KnowledgeRetrievalToggle({ disabled = false, agentName = null, .
     )
   }
 
-  const label = agentName
-    ? t(enabled ? 'conversation_retrieval.agent_on' : 'conversation_retrieval.agent_off', { agent: agentName })
-    : t(enabled ? 'conversation_retrieval.on' : 'conversation_retrieval.off')
-  const hint = agentName ? t('conversation_retrieval.room_hint', { agent: agentName }) : t('conversation_retrieval.hint')
+  const label = t(enabled ? 'conversation_retrieval.on' : 'conversation_retrieval.off')
+  const hint = t('conversation_retrieval.hint')
 
   return (
     <div className="flex items-center" role="group" aria-label={t('conversation_retrieval.group')}>

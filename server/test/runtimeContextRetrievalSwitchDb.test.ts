@@ -156,9 +156,9 @@ describe("conversation knowledge-retrieval switch (real Postgres)", () => {
 
     // Reading the switch is read-only: no scope row is created for it, and a
     // recipient nobody has set reads as a new conversation's default.
-    await expect(service.getRoomConversationRetrievalSwitch(identity, conversations[0]!, memberId))
+    await expect(service.getRoomConversationRetrievalSwitch(identity, conversations[0]!))
       .resolves.toEqual({ work_context_scope_id: null, enabled: false, preferred_domains: [], setup_version: null });
-    await expect(service.getRoomConversationRetrievalSwitch({ spaceId: SPACE, userId: OTHER }, conversations[0]!, memberId))
+    await expect(service.getRoomConversationRetrievalSwitch({ spaceId: SPACE, userId: OTHER }, conversations[0]!))
       .rejects.toMatchObject({ statusCode: 404 });
     const scopeRows = async () => Number((await db.pool.query<{ count: string }>(
       `SELECT count(*)::text AS count FROM room_conversation_recipients WHERE session_id = ANY($1::text[])`,
@@ -181,13 +181,34 @@ describe("conversation knowledge-retrieval switch (real Postgres)", () => {
     await expect(snapshots.resolveEffectiveBindingsForRun(runIn(conversations[0]!))).resolves.toMatchObject({ workContextScopeId: first });
     await expect(snapshots.resolveEffectiveBindingsForRun(runIn(conversations[1]!))).resolves.toMatchObject({ workContextScopeId: second });
 
-    // Turning retrieval on in one Conversation leaves the other off.
-    await expect(service.setRetrievalSwitch(identity, first, { enabled: true })).resolves.toMatchObject({ enabled: true, setup_version: 1 });
-    await expect(service.getRetrievalSwitch(identity, second)).resolves.toMatchObject({ enabled: false, setup_version: null });
-    // Once the scope exists, the read path reports it and its setting.
-    await expect(service.getRoomConversationRetrievalSwitch(identity, conversations[0]!, memberId))
-      .resolves.toEqual({ work_context_scope_id: first, enabled: true, preferred_domains: [], setup_version: 1 });
-    expect(await scopeRows()).toBe(2);
+    // One choice follows every recipient, including one first invoked after the toggle.
+    await expect(service.setRoomConversationRetrievalSwitch(identity, conversations[0]!, { enabled: true, preferred_domains: ["knowledge"] }))
+      .resolves.toMatchObject({ enabled: true, preferred_domains: ["knowledge"] });
+    await expect(service.getRoomConversationRetrievalSwitch(identity, conversations[1]!)).resolves.toMatchObject({ enabled: false });
+    const firstSetup = await service.ensureForInvocation(identity, first, { agentId: AGENT, runtimeProfileId: null });
+    expect(firstSetup.retrieval_preferences).toMatchObject({ enabled: true, preferred_domains: ["knowledge"] });
+    const secondAgent = randomUUID();
+    await db.pool.query(`INSERT INTO agents (id,space_id,owner_user_id,name,status,agent_kind,visibility,access_level,created_at,updated_at)
+      VALUES ($1,$2,$3,'Second','active','standard','space_shared','full',now(),now())`, [secondAgent, SPACE, USER]);
+    const secondMember = randomUUID();
+    await db.pool.query(`INSERT INTO room_agent_members (id,space_id,room_id,agent_id,role,status,created_at,updated_at)
+      VALUES ($1,$2,$3,$4,'member','active',now(),now())`, [secondMember, SPACE, room, secondAgent]);
+    const lateScope = await service.roomConversationScopeId(identity, conversations[0]!, secondMember);
+    expect((await service.ensureForInvocation(identity, lateScope, { agentId: secondAgent, runtimeProfileId: null })).retrieval_preferences)
+      .toMatchObject({ enabled: true, preferred_domains: ["knowledge"] });
+    await service.setRoomConversationRetrievalSwitch(identity, conversations[0]!, { enabled: false });
+    expect((await service.ensureForInvocation(identity, first, { agentId: AGENT, runtimeProfileId: null })).retrieval_preferences)
+      .toMatchObject({ enabled: false });
+    expect((await service.ensureForInvocation(identity, lateScope, { agentId: secondAgent, runtimeProfileId: null })).retrieval_preferences)
+      .toMatchObject({ enabled: false });
+    // Previously frozen setup versions keep their original choice.
+    expect((await db.pool.query(`SELECT retrieval_preferences_json FROM work_context_setups WHERE id=$1`, [firstSetup.id])).rows[0].retrieval_preferences_json.enabled).toBe(true);
+    await expect(service.setRoomConversationRetrievalSwitch({ spaceId: SPACE, userId: OTHER }, conversations[0]!, { enabled: true }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    await expect(service.setRoomConversationRetrievalSwitch({ spaceId: randomUUID(), userId: USER }, conversations[0]!, { enabled: true }))
+      .rejects.toMatchObject({ statusCode: 404 });
+    await expect(service.setRoomConversationRetrievalSwitch(identity, conversations[0]!, { enabled: "yes" }))
+      .rejects.toMatchObject({ statusCode: 422 });
 
     // Someone who is not in the Room gets no scope there.
     await expect(service.roomConversationScopeId({ spaceId: SPACE, userId: OTHER }, conversations[0]!, memberId))

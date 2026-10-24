@@ -263,7 +263,7 @@ cross-Space embedded Run detail surface.
 
 `apps/web/src/modules/agent_work/AgentWorkPage.tsx` is registered as a personal
 built-in module at `/agent-work`, inside RequireAuth. The Global Rail and Home
-link there without a Space prefix. No mobile primary tab is added. Filters
+link there without a Space prefix. Mobile navigation also links to it and reuses the personal attention badge. Filters
 (scope, source Space, Project id, group, current/history and history start date)
 are local state; they never change URL active Space. Selection, expanded members
 and list scroll position belong to this page, with no automatic selection.
@@ -272,10 +272,11 @@ The page is built from the shared UI primitives other modules use (the Tasks/Run
 page header, `Select`, `Input`, `DatePicker`, `Label`, `Badge`, `EmptyState`,
 `Skeleton`), not module-local controls; copy stays in the `agent_work` i18n
 namespace. Freshness is a status badge beside the delivery controls. In the detail
-pane the member (Run) list is a bounded, separately scrolling section (at most
-40% of the viewport while a reply conversation is mounted) so the embedded
-conversation keeps its own height instead of collapsing and spilling behind
-the rows; without a conversation the member list takes the remaining height.
+pane, work with an authorized reply conversation gives the available height to
+that conversation. It has no duplicate member (Run) list or execution-ID rows:
+the shared conversation owns turns, history and execution controls. Work without
+an authorized conversation retains the separately scrolling member list and
+expandable execution details in the remaining height.
 
 `useAgentWorkList` subscribes to the authenticated Shell's `AttentionStore`.
 The personal window comes from the user stream; mounted filters/history/cursor

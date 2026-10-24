@@ -3,12 +3,13 @@ import { useLocation } from 'react-router-dom'
 import { useSpaceNavigate as useNavigate } from '../../core/spaceNav'
 import { stripSpacePrefix } from '../../core/navigation'
 import { subscribeNoteChanged } from '../../core/noteEvents'
-import { FolderPlus, Plus, Search, X } from 'lucide-react'
+import { FolderPlus, Plus, Search } from 'lucide-react'
 import { toast } from 'sonner'
 import { ApiRequestError, notesApi, notesCollectionsApi, notesTreeApi } from '../../api/client'
 import { useSpace } from '../../contexts/SpaceContext'
 import { cn, errMsg } from '../../lib/utils'
 import type { Note, NoteCollection, NoteSummary } from '../../types/api'
+import { DocumentTab } from '../../components/ui/document-tab'
 import { Button } from '../../components/ui/button'
 import { Label } from '../../components/ui/label'
 import { Input } from '../../components/ui/input'
@@ -63,15 +64,6 @@ interface LinkedDeleteDialogState {
   notes: NoteDeleteTarget[]
   relatedLinkCount: number
 }
-
-// Chrome-style tab silhouette in a 176×32 viewBox: rounded top corners plus
-// curved feet flaring to the bottom edge. The fill path is closed; the stroke
-// path is the same outline minus the bottom edge, so the active tab's border is
-// open at the bottom and merges into the editor below.
-const TAB_FILL_PATH =
-  'M0 32 C6 32 10 27 10 22 L10 8 Q10 0 18 0 L158 0 Q166 0 166 8 L166 22 C166 27 170 32 176 32 Z'
-const TAB_STROKE_PATH =
-  'M0 32 C6 32 10 27 10 22 L10 8 Q10 0 18 0 L158 0 Q166 0 166 8 L166 22 C166 27 170 32 176 32'
 
 interface NotesPageProps {
   /** Where this surface lives — see {@link NotesSurfaceScope}. */
@@ -931,57 +923,10 @@ export default function NotesPage({ scope }: NotesPageProps) {
 
           {openIds.length > 0 && (
             <div role="tablist" aria-label="Open notes" className="note-tabs-strip flex items-end gap-0 overflow-x-auto bg-muted px-2 pt-2 shrink-0">
-              {openIds.map(id => {
-                const active = id === noteId
-                return (
-                  <div
-                    key={id}
-                    className={cn(
-                      // Equal-width tabs start around 11rem and shrink together
-                      // only when the strip runs out of room.
-                      'note-tab group relative flex h-8 min-w-[6.75rem] max-w-[200px] shrink basis-44 grow-0 items-center',
-                      active && 'note-tab--active z-10',
-                    )}
-                  >
-                    <svg className="note-tab__bg" viewBox="0 0 176 32" preserveAspectRatio="none" aria-hidden="true">
-                      <path className="note-tab__fill" d={TAB_FILL_PATH} />
-                      <path className="note-tab__stroke" vectorEffect="non-scaling-stroke" d={TAB_STROKE_PATH} />
-                    </svg>
-                    <span className="note-tab__hover" aria-hidden="true" />
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={active}
-                      aria-label={titleFor(id)}
-                      onClick={() => openNote(id)}
-                      className="absolute inset-0 z-10"
-                      title={titleFor(id)}
-                    >
-                      <span
-                        className={cn(
-                          'note-tab__label',
-                          active ? 'text-foreground' : 'text-muted-foreground group-hover:text-foreground',
-                        )}
-                      >
-                        <span className="truncate">
-                          {titleFor(id)}
-                        </span>
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        closeTab(id)
-                      }}
-                      aria-label={`Close ${titleFor(id)}`}
-                      className="note-tab__close"
-                    >
-                      <X className="size-3" />
-                    </button>
-                  </div>
-                )
-              })}
+              {openIds.map(id => (
+                <DocumentTab key={id} label={titleFor(id)} active={id === noteId}
+                  onSelect={() => openNote(id)} onClose={() => closeTab(id)} />
+              ))}
               <button
                 type="button"
                 onClick={createNote}

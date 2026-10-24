@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, FileCode, FileText, Folder, Loader } from 'lucide-react'
 import type { FileNode, GitChangedFile } from '../../types/api'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 import { useAppTranslation } from '../../i18n'
 
 export const STATUS_VARIANT: Record<string, string> = {
@@ -55,12 +56,14 @@ export function FileTreeNode({
   node: FileNode
   depth: number
   selectedPath: string | null
-  onFileSelect: (path: string) => void
+  onFileSelect: (path: string, mode?: 'preview' | 'pinned') => void
   /** From `changeIndex`; when given, changed files and their folders are tinted by status. */
   changes?: Map<string, GitChangedFile['status']>
   loadDirectory?: (path: string, offset?: number) => Promise<FileNode>
 }) {
   const { t } = useAppTranslation()
+  const fileButton = useRef<HTMLButtonElement>(null)
+  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null)
   const [open, setOpen] = useState(depth === 0)
   const [listing, setListing] = useState(node)
   const [loading, setLoading] = useState(false)
@@ -85,8 +88,22 @@ export function FileTreeNode({
     const status = changeStatusFor(node.path, changes)
     const tint = status ? STATUS_TEXT[status] : undefined
     return (
+      <>
       <button
+        ref={fileButton}
         onClick={() => onFileSelect(node.path)}
+        onDoubleClick={() => onFileSelect(node.path, 'pinned')}
+        onMouseDown={event => { if (event.button === 1) event.preventDefault() }}
+        onAuxClick={event => {
+          if (event.button !== 1) return
+          event.preventDefault()
+          onFileSelect(node.path, 'pinned')
+        }}
+        onContextMenu={event => {
+          event.preventDefault()
+          const bounds = event.currentTarget.getBoundingClientRect()
+          setMenuPosition({ x: event.clientX || bounds.left, y: event.clientY || bounds.bottom })
+        }}
         title={status ? `${node.name} · ${status}` : undefined}
         className={[
           'w-full flex items-center gap-1.5 py-[3px] text-xs text-left transition-colors rounded-sm',
@@ -108,6 +125,15 @@ export function FileTreeNode({
           {tint && <span className="font-semibold" aria-label={status ?? undefined}>{tint.letter}</span>}
         </span>
       </button>
+      <DropdownMenu open={menuPosition !== null} onOpenChange={next => { if (!next) setMenuPosition(null) }}>
+        <DropdownMenuTrigger asChild>
+          <span aria-hidden="true" style={{ position: 'fixed', left: menuPosition?.x ?? 0, top: menuPosition?.y ?? 0, width: 0, height: 0 }} />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" sideOffset={0} onCloseAutoFocus={event => { event.preventDefault(); fileButton.current?.focus() }}>
+          <DropdownMenuItem onSelect={() => onFileSelect(node.path, 'pinned')}>{t('fileTree.openInNewTab')}</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      </>
     )
   }
 

@@ -57,36 +57,27 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     }
   });
 
-  // A Room recipient's knowledge retrieval switch belongs to one Conversation:
-  // the client names the Conversation and the recipient, not the scope.
-  app.get("/api/v1/runtime-context/room-conversations/:sessionId/recipients/:memberId/retrieval", async (request, reply) => {
+  // One knowledge retrieval switch per Room Conversation, independent of recipients.
+  app.get("/api/v1/runtime-context/room-conversations/:sessionId/retrieval", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      // Read-only: the recipient's scope is created by the PUT below or by
-      // the first Run that resolves it, never by looking at the switch.
       return reply.send(protocol.WorkRetrievalSwitchSchema.parse(await workContexts().getRoomConversationRetrievalSwitch(
         identity,
         requiredString(params(request).sessionId, "session_id"),
-        requiredString(params(request).memberId, "member_id"),
       )));
     } catch (error) {
       return sendRouteError(reply, error);
     }
   });
 
-  app.put("/api/v1/runtime-context/room-conversations/:sessionId/recipients/:memberId/retrieval", async (request, reply) => {
+  app.put("/api/v1/runtime-context/room-conversations/:sessionId/retrieval", async (request, reply) => {
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
       const service = workContexts();
-      const scopeId = await service.roomConversationScopeId(
-        identity,
-        requiredString(params(request).sessionId, "session_id"),
-        requiredString(params(request).memberId, "member_id"),
-      );
       return reply.send(protocol.WorkRetrievalSwitchSchema.parse(
-        await service.setRetrievalSwitch(identity, scopeId, jsonBody(request)),
+        await service.setRoomConversationRetrievalSwitch(identity, requiredString(params(request).sessionId, "session_id"), jsonBody(request)),
       ));
     } catch (error) {
       return sendRouteError(reply, error);

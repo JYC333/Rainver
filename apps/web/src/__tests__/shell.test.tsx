@@ -70,15 +70,18 @@ describe('Shell scene sidebar collapse', () => {
 })
 
 describe('Shell mobile tab bar', () => {
-  it('lists the five daily destinations and keeps Command Center off the bar', () => {
+  it('lists Home, Agent Work, Projects and More with secondary destinations in More', () => {
     render(<MemoryRouter initialEntries={['/home']} future={routerFuture}><Shell /></MemoryRouter>)
 
     const tabs = screen.getByRole('navigation', { name: 'Primary' })
     expect(within(tabs).getByRole('link', { name: 'Home' })).toBeInTheDocument()
-    expect(within(tabs).getByRole('link', { name: 'Inbox' })).toBeInTheDocument()
-    expect(within(tabs).getByRole('link', { name: 'Library' })).toBeInTheDocument()
-    expect(within(tabs).getByRole('link', { name: 'Review' })).toBeInTheDocument()
-    expect(within(tabs).getByRole('link', { name: 'Tasks' })).toBeInTheDocument()
+    expect(within(tabs).getByRole('link', { name: /Agent Work/ })).toBeInTheDocument()
+    expect(within(tabs).getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '/spaces/personal-1/projects')
+    fireEvent.click(within(tabs).getByRole('button', { name: 'More' }))
+    const more = screen.getByRole('dialog')
+    for (const name of ['Inbox', 'Library', 'Review', 'Tasks', 'Command Center']) {
+      expect(within(more).getByRole('link', { name })).toBeInTheDocument()
+    }
     expect(within(tabs).queryByRole('link', { name: 'Command Center' })).toBeNull()
   })
 })
@@ -91,7 +94,9 @@ it('keeps one account aggregate stream across navigation and updates the Agent W
     items: [], next_cursor: null, counts: { needs_you: 3, recently_finished: 0, working: 0, waiting: 0, idle: 0 }, as_of: '2026-10-21T00:00:00Z',
   } }
   act(() => callback(frame))
-  const link = screen.getByRole('link', { name: /Agent Work/ })
+  const link = within(screen.getByRole('navigation', { name: 'Global navigation' })).getByRole('link', { name: /Agent Work/ })
+  const mobileLink = within(screen.getByRole('navigation', { name: 'Primary' })).getByRole('link', { name: /Agent Work/ })
+  expect(within(mobileLink).getByRole('status', { name: /3 need you.*42 unread/ })).toBeEmptyDOMElement()
   expect(within(link).getByRole('status', { name: /3 need you.*42 unread/ })).toBeVisible()
   fireEvent.click(link)
   expect(agentAttentionApi.stream).toHaveBeenCalledTimes(1)

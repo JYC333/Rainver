@@ -60,7 +60,7 @@ vi.mock('../../../api/client', async () => {
   return {
   ApiRequestError,
   conversationInputApi: { imageBlob: vi.fn() },
-  // Each addressed Room recipient's knowledge retrieval switch, off.
+  // One shared knowledge retrieval switch per Conversation, initially off.
   runtimeContextApi: {
     retrievalSwitch: vi.fn(async () => ({ work_context_scope_id: 'scope-1', enabled: false, preferred_domains: [], setup_version: null })),
     setRetrievalSwitch: vi.fn(),
@@ -423,7 +423,10 @@ describe('Project chat sidecar', () => {
     const attachment = currentFileAttachment()
     vi.mocked(roomsApi.sendMessage).mockResolvedValue({ message: { id: 'm-1', session_id: 'conv-2', role: 'user', content: 'inspect', input_parts: [] }, conversation: { id: 'conv-2', title: 'Depth repair' }, task_group_ids: [], run_ids: [] } as never)
     renderWithCurrentFile(`/spaces/space-1/projects/${PROJECT}/files`, attachment)
-    expect(await screen.findByTestId('current-file-bar')).toHaveTextContent('src/app.ts')
+    const bar = await screen.findByTestId('current-file-bar')
+    expect(bar).toHaveTextContent('src/app.ts')
+    const composer = await screen.findByLabelText('Room message')
+    expect(bar.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Remove current file' })).toBeInTheDocument()
     fireEvent.change(await screen.findByLabelText('Room message'), { target: { value: 'inspect' } })
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
@@ -604,6 +607,13 @@ describe('Project chat sidecar', () => {
     renderAt(`/spaces/space-1/projects/${PROJECT}/board`)
     expect(await screen.findByRole('button', { name: 'Open Project chat' })).toBeInTheDocument()
     expect(screen.queryByTestId('project-chat-sidecar')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Open Project chat' }))
+    expect(await screen.findByTestId('project-chat-sidecar')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Close Project chat' }))
+    expect(screen.queryByTestId('project-chat-sidecar')).not.toBeInTheDocument()
+    expect(localStorage.getItem(`project.sidecar.${PROJECT}.open`)).toBe('false')
+    fireEvent.click(screen.getByRole('button', { name: 'Open Project chat' }))
+    expect(await screen.findByTestId('project-chat-sidecar')).toBeInTheDocument()
   })
 
   it('is open on first arrival beside the page, and stays closed once closed', async () => {

@@ -3,7 +3,7 @@ import { Compartment, EditorState, type Extension } from '@codemirror/state'
 import { MergeView } from '@codemirror/merge'
 import {
   bracketMatching,
-  defaultHighlightStyle,
+  HighlightStyle,
   foldGutter,
   foldKeymap,
   indentOnInput,
@@ -25,6 +25,7 @@ import {
   rectangularSelection,
   crosshairCursor,
 } from '@codemirror/view'
+import { tags } from '@lezer/highlight'
 import { loadLanguage, type CodeMirrorLanguage } from './codeMirrorLanguages'
 
 interface CodeMirrorSelection {
@@ -39,6 +40,7 @@ interface CodeMirrorSelection {
 }
 
 interface CodeMirrorEditorProps {
+  colorMode?: 'light' | 'dark'
   value: string
   language?: CodeMirrorLanguage
   readOnly?: boolean
@@ -55,21 +57,36 @@ interface CodeMirrorEditorProps {
 
 const editorTheme = EditorView.theme({
   '&': { height: '100%', backgroundColor: 'transparent', color: 'var(--foreground)' },
-  '.cm-scroller': { overflow: 'auto', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', lineHeight: '1.5rem' },
+  '.cm-scroller': { overflow: 'auto', fontFamily: 'var(--font-mono)', fontSize: '13px', lineHeight: '1.5rem' },
   '.cm-content': { padding: '1rem 0' },
   '.cm-line': { padding: '0 1rem' },
-  '.cm-gutters': { backgroundColor: 'transparent', border: 'none', color: 'color-mix(in oklch, var(--muted-foreground) 55%, transparent)' },
+  '.cm-gutters': { backgroundColor: 'transparent', border: 'none', color: 'var(--muted-foreground)' },
   '.cm-activeLineGutter': { backgroundColor: 'color-mix(in oklch, var(--accent) 45%, transparent)' },
   '.cm-activeLine': { backgroundColor: 'color-mix(in oklch, var(--accent) 25%, transparent)' },
+  '&.cm-focused': { outline: 'none' },
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--foreground)' },
+  '.cm-panels, .cm-tooltip': { backgroundColor: 'var(--card)', color: 'var(--foreground)', borderColor: 'var(--border)' },
+  '.cm-search input, .cm-search button, .cm-button': { background: 'var(--background)', color: 'var(--foreground)', border: '1px solid var(--border)', borderRadius: 'var(--radius)' },
+  '.cm-searchMatch': { backgroundColor: 'color-mix(in oklch, var(--warning) 25%, transparent)' },
+  '.cm-searchMatch-selected': { backgroundColor: 'color-mix(in oklch, var(--primary) 35%, transparent)' },
   '.cm-selectionBackground': { backgroundColor: 'color-mix(in oklch, var(--primary) 25%, transparent) !important' },
-}, { dark: false })
-
-const editorDarkTheme = EditorView.theme({
-  '&': { backgroundColor: 'transparent', color: 'var(--foreground)' },
-  '.cm-gutters': { backgroundColor: 'transparent', color: 'color-mix(in oklch, var(--muted-foreground) 55%, transparent)' },
 })
 
-const highlight = syntaxHighlighting(defaultHighlightStyle, { fallback: true })
+const highlight = syntaxHighlighting(HighlightStyle.define([
+  { tag: tags.keyword, color: 'var(--accent-foreground)' },
+  { tag: [tags.string, tags.regexp], color: 'var(--success)' },
+  { tag: [tags.number, tags.bool, tags.null], color: 'var(--warning)' },
+  { tag: [tags.function(tags.variableName), tags.typeName, tags.className], color: 'var(--syntax-symbol)' },
+  { tag: tags.comment, color: 'var(--muted-foreground)', fontStyle: 'italic' },
+  { tag: [tags.operator, tags.punctuation], color: 'var(--foreground)' },
+  { tag: tags.invalid, color: 'var(--destructive)' },
+  { tag: tags.heading, color: 'var(--accent-foreground)', fontWeight: '600' },
+  { tag: tags.link, color: 'var(--syntax-symbol)', textDecoration: 'underline' },
+  { tag: tags.strong, fontWeight: '600' },
+  { tag: tags.emphasis, fontStyle: 'italic' },
+]))
+
+const modeTheme = (mode: 'light' | 'dark') => EditorView.theme({}, { dark: mode === 'dark' })
 
 function selectionFor(view: EditorView): CodeMirrorSelection {
   const range = view.state.selection.main
@@ -88,6 +105,7 @@ function selectionFor(view: EditorView): CodeMirrorSelection {
 }
 
 export function CodeMirrorEditor({
+  colorMode = 'dark',
   value,
   language = 'plain',
   readOnly = false,
@@ -103,6 +121,7 @@ export function CodeMirrorEditor({
 }: CodeMirrorEditorProps) {
   const host = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
+  const themeCompartment = useRef(new Compartment())
   const languageCompartment = useRef(new Compartment())
   const lineCompartment = useRef(new Compartment())
   const indentCompartment = useRef(new Compartment())
@@ -129,7 +148,7 @@ export function CodeMirrorEditor({
         highlightActiveLineGutter(),
         highlight,
         editorTheme,
-        editorDarkTheme,
+        themeCompartment.current.of(modeTheme(colorMode)),
         EditorState.readOnly.of(readOnly),
         EditorView.editable.of(!readOnly),
         EditorView.contentAttributes.of({ 'aria-label': ariaLabel, spellcheck: 'false' }),
@@ -172,6 +191,10 @@ export function CodeMirrorEditor({
   }, [readOnly, ariaLabel])
 
   useEffect(() => {
+    viewRef.current?.dispatch({ effects: themeCompartment.current.reconfigure(modeTheme(colorMode)) })
+  }, [colorMode])
+
+  useEffect(() => {
     const view = viewRef.current
     if (!view || view.state.doc.toString() === value) return
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } })
@@ -206,6 +229,7 @@ export function CodeMirrorEditor({
 }
 
 interface CodeMirrorMergeProps {
+  colorMode?: 'light' | 'dark'
   original: string
   current: string
   language?: CodeMirrorLanguage
@@ -214,19 +238,23 @@ interface CodeMirrorMergeProps {
 }
 
 /** Read-only comparison surface for explicit draft conflicts. */
-export function CodeMirrorMerge({ original, current, language = 'plain', ariaLabel = 'File conflict comparison', className }: CodeMirrorMergeProps) {
+export function CodeMirrorMerge({ colorMode = 'dark', original, current, language = 'plain', ariaLabel = 'File conflict comparison', className }: CodeMirrorMergeProps) {
   const host = useRef<HTMLDivElement>(null)
+  const mergeRef = useRef<MergeView | null>(null)
+  const themeA = useRef(new Compartment())
+  const themeB = useRef(new Compartment())
   useEffect(() => {
     if (!host.current) return
     let cancelled = false
     const languageA = new Compartment()
     const languageB = new Compartment()
-    const baseExtensions = (languageCompartment: Compartment): Extension[] => [
+    const baseExtensions = (languageCompartment: Compartment, themeCompartment: Compartment): Extension[] => [
       lineNumbers(),
       highlightSpecialChars(),
       drawSelection(),
       highlight,
       editorTheme,
+      themeCompartment.of(modeTheme(colorMode)),
       EditorState.readOnly.of(true),
       EditorView.editable.of(false),
       EditorView.contentAttributes.of({ 'aria-label': ariaLabel }),
@@ -235,9 +263,10 @@ export function CodeMirrorMerge({ original, current, language = 'plain', ariaLab
     const merge = new MergeView({
       orientation: 'a-b',
       parent: host.current,
-      a: { doc: original, extensions: baseExtensions(languageA) },
-      b: { doc: current, extensions: baseExtensions(languageB) },
+      a: { doc: original, extensions: baseExtensions(languageA, themeA.current) },
+      b: { doc: current, extensions: baseExtensions(languageB, themeB.current) },
     })
+    mergeRef.current = merge
     void loadLanguage(language).then(extension => {
       if (cancelled) return
       // Through a compartment, not a root reconfigure: replacing the whole
@@ -249,7 +278,12 @@ export function CodeMirrorMerge({ original, current, language = 'plain', ariaLab
     return () => {
       cancelled = true
       merge.destroy()
+      mergeRef.current = null
     }
   }, [original, current, language, ariaLabel])
+  useEffect(() => {
+    mergeRef.current?.a.dispatch({ effects: themeA.current.reconfigure(modeTheme(colorMode)) })
+    mergeRef.current?.b.dispatch({ effects: themeB.current.reconfigure(modeTheme(colorMode)) })
+  }, [colorMode])
   return <div ref={host} className={['h-full min-h-0 overflow-auto', className].filter(Boolean).join(' ')} />
 }

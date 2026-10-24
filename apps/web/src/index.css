@@ -37,9 +37,10 @@
   --color-ring:                var(--ring);
 }
 
-/* ── Theme (always dark) ──────────────────────────────────────────────────── */
+/* ── Default dark theme ──────────────────────────────────────────────────── */
 :root {
   --radius: 0.5rem;
+  --syntax-symbol: oklch(0.78 0.10 240);
 
   --background:           oklch(0.14 0.005 264);
   --foreground:           oklch(0.91 0.01  255);
@@ -78,6 +79,7 @@
 
 /* ── Light purple skin ────────────────────────────────────────────────────── */
 html.theme-light {
+  --syntax-symbol: oklch(0.43 0.13 260);
   --background:           oklch(0.985 0.005 300);   /* warm off-white */
   --foreground:           oklch(0.260 0.060 295);   /* deep plum */
 
@@ -201,7 +203,7 @@ pre {
   padding: 0.25rem 0 4rem;
 }
 
-/* SVG-based Chrome-style note tabs. The silhouette (rounded top + curved feet)
+/* Shared Notes / Files document tabs. The silhouette (rounded top + curved feet)
    is drawn by an inline SVG: a closed fill path plus a separate open stroke path
    that traces the top, sides, and feet but skips the bottom edge — so the active
    tab's 1px outline follows the curve yet still merges into the editor below.
@@ -621,4 +623,25 @@ pre {
   border: 0;
   padding: 0;
   background: transparent;
+}
+
+
+/* The Shell owns device insets once. Fixed overlays escape its padding and
+   must consume the same values rather than putting padding on their buttons. */
+:root {
+  --app-safe-top: env(safe-area-inset-top, 0px);
+  --app-safe-right: env(safe-area-inset-right, 0px);
+  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --app-safe-left: env(safe-area-inset-left, 0px);
+}
+.app-safe-shell {
+  padding: var(--app-safe-top) var(--app-safe-right) 0 var(--app-safe-left);
+}
+@media (max-width: 1023px) {
+  .project-chat-safe-overlay {
+    top: var(--app-safe-top);
+    bottom: var(--app-safe-bottom);
+    right: var(--app-safe-right);
+    max-width: calc(100vw - var(--app-safe-left) - var(--app-safe-right));
+  }
 }

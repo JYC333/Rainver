@@ -585,24 +585,29 @@ export function ConversationInputPartsView({ parts, text = '' }: { parts?: Array
   const { t } = useAppTranslation()
   if (!parts?.length) return null
   const inputParts = parts.filter((part): part is ConversationInputPart => 'kind' in part)
+  const images = inputParts.filter((part): part is ConversationInputImagePart => part.kind === 'image')
   const resourceParts = parts.filter((part): part is ConversationInputPart | ConversationInputResourceMessagePart => 'kind' in part && part.kind === 'input_resource')
   return (
-    <div className="mt-1 flex min-w-0 max-w-full flex-wrap gap-2" aria-label={t('conversation_ui.input.message_inputs')}>
+    <div className="mt-1 flex min-w-0 max-w-full flex-col items-start gap-2" aria-label={t('conversation_ui.input.message_inputs')}>
       <SelectedSkillChips parts={inputParts.filter(part => part.kind === 'skill' && !hasSkillReference(text, part))} />
-      {inputParts.filter((part): part is ConversationInputImagePart => part.kind === 'image').map(part => <ImageAttachment key={part.media_id} part={part} />)}
+      {images.length > 0 && (
+        <div className="flex max-w-full flex-wrap items-start gap-2">
+          {images.map(part => <ImageAttachment key={part.media_id} part={part} />)}
+        </div>
+      )}
       {inputParts.filter((part): part is ConversationInputFileReferencePart => part.kind === 'file_reference').map(part => (
-        <div key={`${part.project_folder_id}:${part.relative_path}`} className="flex items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1.5 text-xs" title={t('conversation_ui.input.referenced_file_title', { path: part.relative_path })} aria-label={t('conversation_ui.input.referenced_file_label', { path: part.relative_path })}>
-          <FileText className="size-3.5 text-muted-foreground" /> <span className="max-w-56 truncate">{part.relative_path}</span>
+        <div key={`${part.project_folder_id}:${part.relative_path}`} className="flex min-w-0 max-w-full items-center gap-1.5 text-xs font-normal" title={t('conversation_ui.input.referenced_file_title', { path: part.relative_path })} aria-label={t('conversation_ui.input.referenced_file_label', { path: part.relative_path })}>
+          <FileText className="size-3.5 shrink-0 opacity-70" /> <span className="min-w-0 break-all">{part.relative_path}</span>
         </div>
       ))}
       {resourceParts.map(part => {
         if (!('source_state' in part) || !('display_name' in part) || !('sha256' in part)) return null
         const path = 'relative_path' in part && part.relative_path ? part.relative_path : part.display_name
         return (
-          <div key={'resource_id' in part ? part.resource_id : `${part.source_state}:${part.display_name}:${part.sha256}`} className="flex items-center gap-1.5 rounded-md border border-border bg-background/70 px-2 py-1.5 text-xs" title={t('conversation_ui.input.current_file_title', { path })} aria-label={t('conversation_ui.input.current_file_label', { path })}>
-            <FileText className="size-3.5 text-muted-foreground" />
-            <span className="max-w-56 truncate">{path}</span>
-            <span className="rounded border px-1 text-[9px] text-muted-foreground">{part.source_state === 'draft' ? t('conversation_ui.input.state_draft') : t('conversation_ui.input.state_saved')}</span>
+          <div key={'resource_id' in part ? part.resource_id : `${part.source_state}:${part.display_name}:${part.sha256}`} className="flex min-w-0 max-w-full items-center gap-1.5 text-xs font-normal" title={t('conversation_ui.input.current_file_title', { path })} aria-label={t('conversation_ui.input.current_file_label', { path })}>
+            <FileText className="size-3.5 shrink-0 opacity-70" />
+            <span className="min-w-0 break-all">{path}</span>
+            <span className="shrink-0 rounded border border-current/30 px-1 text-[10px] opacity-70">{part.source_state === 'draft' ? t('conversation_ui.input.state_draft') : t('conversation_ui.input.state_saved')}</span>
           </div>
         )
       })}

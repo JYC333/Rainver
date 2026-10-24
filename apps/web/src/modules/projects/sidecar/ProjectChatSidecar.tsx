@@ -236,7 +236,7 @@ export default function ProjectChatSidecar() {
       <Button
         size="sm"
         variant="outline"
-        className="fixed bottom-4 right-4 z-40 shadow"
+        className="fixed bottom-[calc(4.5rem+var(--app-safe-bottom))] left-4 z-40 shadow md:bottom-4 md:left-auto md:right-4"
         onClick={() => setOpen(true)}
         aria-label="Open Project chat"
       >
@@ -254,7 +254,7 @@ export default function ProjectChatSidecar() {
         // of the row would halve the page it is meant to sit beside. There it
         // overlays instead. At `lg` it sits beside the page, stuck to the top
         // of the scroll container at that container's height.
-        'fixed inset-y-0 right-0 z-40 flex w-[min(22rem,100vw)] flex-col '
+        'project-chat-safe-overlay fixed right-0 z-40 flex min-h-0 w-[min(22rem,100vw)] flex-col overflow-hidden overscroll-none '
         + 'border-l border-border bg-card shadow-xl '
         + 'lg:relative lg:sticky lg:top-0 lg:z-auto lg:self-start lg:w-[var(--sidecar-w)] lg:h-[var(--sidecar-h,100dvh)] lg:shadow-none'
       }
@@ -280,13 +280,13 @@ export default function ProjectChatSidecar() {
           if (event.key === 'ArrowRight') setWidth(current => Math.max(MIN_WIDTH, current - 16))
         }}
       />
-      <div className="flex items-center justify-between gap-2 border-b border-border p-3">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border p-3">
         <span className="text-sm font-medium">Project Agent</span>
         <div className="flex items-center gap-1">
           <Button size="sm" variant="ghost" disabled={!room} onClick={startThread} aria-label="Start a separate thread">
             <Plus className="size-4" />
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => setOpen(false)} aria-label="Close Project chat">
+          <Button size="sm" variant="ghost" className="min-h-[44px] min-w-[44px] shrink-0 lg:min-h-0 lg:min-w-0" onClick={() => setOpen(false)} aria-label="Close Project chat">
             <PanelRightClose className="size-4" />
           </Button>
         </div>
@@ -331,14 +331,6 @@ export default function ProjectChatSidecar() {
         <>
           {/* The same conversation module the full Room page renders: one
               implementation of what a conversation is, two places it is read. */}
-          {onFilesArea && currentFileAttachment && (
-            <CurrentFileBar
-              attachment={currentFileAttachment}
-              included={currentFileIncluded}
-              availability={currentFileAvailability}
-              onToggle={() => setCurrentFileIncluded(value => !value)}
-            />
-          )}
           <ConversationSurface
             spaceId={spaceId}
             // Picking works here too: the panel has the Room's other
@@ -351,6 +343,14 @@ export default function ProjectChatSidecar() {
             executionReady={executionReady}
             inputFileSources={conversationInputSourcesFromExecutionSummary(executionSummary)}
             implicitInputResource={implicitInputResource}
+            composerAttachments={onFilesArea && currentFileAttachment && (
+              <CurrentFileBar
+                attachment={currentFileAttachment}
+                included={currentFileIncluded}
+                availability={currentFileAvailability}
+                onToggle={() => setCurrentFileIncluded(value => !value)}
+              />
+            )}
             executionPreflight={(
               <ConversationExecutionPreflight
                 projectId={projectId}

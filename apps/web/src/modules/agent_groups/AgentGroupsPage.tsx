@@ -560,7 +560,7 @@ export default function AgentGroupsPage() {
           </aside>
 
           <main aria-label="Conversation" className="min-w-0">
-            <Card className="flex h-[calc(100vh-10rem)] min-h-[640px] max-h-[900px] flex-col overflow-hidden">
+            <Card className="flex h-[calc(100dvh-12rem)] min-h-[280px] max-h-[900px] flex-col overflow-hidden lg:h-[calc(100vh-10rem)] lg:min-h-[640px]">
               {!currentConversation && conversations.length > 0 && !startingNew ? (
                 <div className="m-auto text-sm text-muted-foreground">Choose a conversation.</div>
               ) : (

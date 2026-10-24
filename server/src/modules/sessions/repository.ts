@@ -204,6 +204,28 @@ export class PgSessionRepository {
     return row ? sessionToOut(row) : null;
   }
 
+  async getConversationKnowledgeRetrieval(spaceId: string, userId: string, sessionId: string): Promise<Record<string, unknown> | null> {
+    if (!await this.getRoomConversation(spaceId, userId, sessionId)) return null;
+    const row = (await this.db.query<{ preferences: Record<string, unknown> | null }>(
+      "SELECT metadata_json->'knowledge_retrieval' AS preferences FROM sessions WHERE id=$1 AND space_id=$2",
+      [sessionId, spaceId],
+    )).rows[0];
+    return row ? row.preferences ?? {} : null;
+  }
+
+  /** A shared Conversation preference; unrelated session metadata is preserved. */
+  async setConversationKnowledgeRetrieval(spaceId: string, userId: string, sessionId: string, preferences: Record<string, unknown>): Promise<boolean> {
+    const conversation = await this.getRoomConversation(spaceId, userId, sessionId);
+    if (!conversation) return false;
+    const result = await this.db.query(
+      `UPDATE sessions SET metadata_json=jsonb_set(COALESCE(metadata_json,'{}'::jsonb),
+        '{knowledge_retrieval}', $4::jsonb), updated_at=now()
+       WHERE id=$1 AND space_id=$2 AND room_id=$3 AND status='active'`,
+      [sessionId, spaceId, conversation.room_id, JSON.stringify(preferences)],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
   async getConversationForBackendSelection(
     spaceId: string,
     userId: string,

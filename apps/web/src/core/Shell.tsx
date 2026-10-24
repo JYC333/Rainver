@@ -116,7 +116,6 @@ function SceneHeader({
   return (
     <header
       className="shrink-0 flex items-center gap-2.5 h-14 px-4 border-b border-border bg-card"
-      style={{ paddingTop: 'env(safe-area-inset-top)', height: 'calc(3.5rem + env(safe-area-inset-top, 0px))' }}
     >
       {hasSidebar && sidebarCollapsed ? (
         <button
@@ -235,7 +234,7 @@ function ShellContent() {
     // page. What it may offer as a destination is declared from below: the
     // Project shell names the Project, an Area names the object it is about.
     <ProjectCaptureTargetProvider>
-    <div className="flex h-screen overflow-hidden bg-background text-foreground">
+    <div className="app-safe-shell fixed inset-0 flex overflow-hidden overscroll-none bg-background text-foreground">
       <GlobalRail
         expanded={railExpanded}
         onToggle={() => setRailExpanded(v => !v)}
@@ -254,7 +253,7 @@ function ShellContent() {
         />
       )}
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-h-0 min-w-0">
         <SceneHeader
           title={title}
           isHome={isHome}
@@ -265,11 +264,11 @@ function ShellContent() {
 
         {scene && <SceneTabs scene={scene} spaceId={preferredSpaceId} />}
 
-        <main className="flex-1 overflow-y-auto">
+        <main className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
           <Outlet />
         </main>
 
-        <MobileTabBar spaceId={preferredSpaceId} pendingReviewCount={pendingReviewCount} />
+        <MobileTabBar spaceId={preferredSpaceId} pendingReviewCount={pendingReviewCount} canManageSpace={canManageSpace} canManageInstance={canManageInstance} pluginModules={pluginNavItems} />
       </div>
 
       <FloatingQuickCapture />

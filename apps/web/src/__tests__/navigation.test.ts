@@ -7,13 +7,13 @@ import {
 } from '../core/navigation'
 
 describe('navigation model', () => {
-  it('registers Agent Work as a user-level personal route and rail entry without a mobile tab', () => {
+  it('registers Agent Work as a user-level personal route and rail entry with a mobile tab', () => {
     const entry = MODULE_REGISTRY.find(item => item.id === 'agent-work')
     expect(entry).toMatchObject({ path: '/agent-work', perspectiveType: 'personal', source: 'built_in' })
     expect(RAIL_ITEMS.find(item => item.id === 'agent-work')).toMatchObject({ to: '/agent-work', scope: 'home' })
     expect(spacePath('space-a', '/agent-work')).toBe('/agent-work')
     expect(routeScopeForPath('/agent-work')).toBe('home')
-    expect(MOBILE_TAB_ITEMS.some(item => item.id === 'agent-work')).toBe(false)
+    expect(MOBILE_TAB_ITEMS.some(item => item.id === 'agent-work')).toBe(true)
   })
   it('treats Home/neutral surfaces as user-scoped and /spaces/:id routes as space-scoped', () => {
     expect(routeScopeForPath('/home')).toBe('home')
@@ -64,9 +64,9 @@ describe('navigation model', () => {
     expect(spaceSettings?.activePaths).not.toContain('/usage')
   })
 
-  it('keeps the mobile tab bar to five short daily destinations', () => {
+  it('keeps three primary mobile destinations alongside More', () => {
     expect(MOBILE_TAB_ITEMS.map(i => i.id)).toEqual([
-      'home', 'inbox', 'library', 'review', 'tasks',
+      'home', 'agent-work', 'projects',
     ])
   })
 

@@ -23,8 +23,7 @@ Describe the layout the web app actually uses.
 
 Below the `md` rail breakpoint, Home and Space Today stack their
 300px aside under the main column (`.page-dashboard`). The bottom tab
-bar is Home · Inbox · Library · Review · Tasks. Command Center stays
-on the desktop rail.
+bar is Home · Agent Work · Projects · More. Command Center remains on the desktop rail and is available in mobile More.
 
 Home is user-scoped (`/home`). Space routes are
 `/spaces/:spaceId/<module>`. Admin-only modules are wrapped at the route.
@@ -44,9 +43,24 @@ detail, Room sidecar) are owned by those pages.
 
 Agent Work owns a list/detail grid at user-level `/agent-work`. Below `md`, opening
 a detail hides the mounted list, and Back preserves local filters and list scroll.
-It adds no app-level inspector or mobile primary destination.
+It adds no app-level inspector.
 
 The Project Room page stacks navigation, conversation and Project state below
 `lg` in an explicit `minmax(0, 1fr)` grid column. This prevents a long truncated
 workspace name in navigation from widening the conversation behind Shell's
 scrolling viewport. At `lg` and `xl` it uses its existing two/three columns.
+
+Notes and Files & Code share `components/ui/document-tab.tsx` for the curved
+tab silhouette and active/hover/close treatment. CodeMirror stays specific to
+Files & Code, with global theme tokens and live light/dark reconfiguration.
+
+On mobile, More exposes the remaining rail destinations and enabled plugin links,
+with the same Space/instance admin visibility gates. Review attention remains
+visible on More; Agent Work reuses the personal attention badge. The menu uses
+the shared accessible dialog, closes on selection, and scrolls within the viewport.
+
+The authenticated Shell is fixed to the dynamic viewport with a shrinkable main
+scroll area; the document does not scroll behind its bottom navigation. Mobile
+Agent Work uses an accessible red dot only when unread/needs-you is nonzero.
+Project conversation history contains scroll chaining; mobile conversation cards
+use dynamic viewport height instead of the desktop 640px minimum.

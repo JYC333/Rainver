@@ -29,8 +29,7 @@ Sources · Review · Knowledge · Shared · Tasks · Projects · Agents ·
 Evolution · Instance Settings (instance admin) · Space Settings (space
 admin) · Settings.
 
-The mobile tab bar is the short daily subset: Home · Inbox · Library ·
-Review · Tasks. Command Center remains a rail destination. Static shell and
+The mobile tab bar is the short daily subset: Home · Agent Work · Projects · More. Command Center is also available in More. Static shell and
 navigation labels are translated through `apps/web/src/i18n/`; route IDs, Space
 scope, and permission gates remain language-independent.
 
@@ -66,7 +65,7 @@ does not render product data while auth context is loading.
 
 Agent Work is a personal module at `/agent-work`, under RequireAuth, with a Global
 Rail entry and an explicit Home button. It never registers a Space-prefixed route
-or a mobile primary tab. Its page owns selection, expansion, scroll and drafts. Shell mounts the account-keyed
+and is a mobile primary tab. Its page owns selection, expansion, scroll and drafts. Shell mounts the account-keyed
 `AgentAttentionProvider`, which owns the authorized personal aggregate stream and
 mounted filter windows. Global Rail/Home expose needs-you/unread-work counts;
 Agent Work exposes freshness and explicit, default-off sound/desktop controls.
@@ -82,3 +81,20 @@ notifications and later in-app toasts remain two explicit channels.
 A live connection is retained on foreground return. Capability degradation and
 logout cleanup remain explicit; see [Agent Attention](agent-attention.md#global-aggregation-and-delivery).
 The provider owns no message store, per-Run content stream or execution path.
+
+On mobile, More exposes the remaining rail destinations and enabled plugin links,
+with the same Space/instance admin visibility gates. Review attention remains
+visible on More; Agent Work reuses the personal attention badge. The menu uses
+the shared accessible dialog, closes on selection, and scrolls within the viewport.
+
+
+Settings ends with Application version: a per-build identifier embedded in the
+running JS and emitted as `/version.json`. Checks fetch the same-origin manifest
+with no-store and compare IDs (not ordering); failures never report current.
+Nginx and Workbox do not cache this manifest. Update requests the existing SW
+registration to update and waits for activation before reloading; main.tsx remains
+the sole registration/automatic reload owner. Development uses a per-Vite-process
+ID. Builds have distinct IDs even when made from the same commit.
+An opt-in layout diagnostic text area exposes build, browser, display mode,
+viewport/screen/scroll geometry and resolved safe insets, with no account,
+conversation, URL or workspace content. It is not transmitted automatically.

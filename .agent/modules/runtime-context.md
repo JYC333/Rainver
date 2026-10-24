@@ -112,8 +112,8 @@ and is excluded from historical rendering.
 
 A Room recipient's Work Context scope is one Conversation with that
 recipient: a `room_conversation_recipients` row, created on the first Run that
-resolves it (`policy/executionControlSnapshots.ts`) or when a person first sets
-its retrieval switch, and authorized through the
+resolves it (`policy/executionControlSnapshots.ts`) or explicitly configures
+its scope, and authorized through the
 recipient's Room membership in `workContextService.ts`. Its ledger, checkpoints
 and Setup belong to that Conversation alone; another
 Conversation's transcript never enters its history (ADR 0014 §11 amendment).
@@ -183,15 +183,17 @@ with retrieval off. Root tasks and workflows keep retrieving unless their setup
 turns it off. `GET`/`PUT /api/v1/runtime-context/work-contexts/:scopeId/retrieval`
 read and set the switch and its `preferred_domains` as the next Setup version
 for that person and scope; a direct chat's scope is its session. A Room
-recipient's switch is addressed as
-`/api/v1/runtime-context/room-conversations/:sessionId/recipients/:memberId/retrieval`,
-which resolves that Conversation's scope for a person active in the Room. Its
-`GET` is read-only: it never creates the `room_conversation_recipients` row,
-and a recipient without one reads as off with a null `work_context_scope_id`
-and `setup_version`; the `PUT` (or the first Run) creates the scope. Either
-way the choice holds for that one conversation. The direct-chat composer shows one switch;
-the Room composer shows one per Agent the next message reaches (the manager
-when nobody is named). Governing policy can still forbid retrieval.
+Conversation has one shared switch at
+`/api/v1/runtime-context/room-conversations/:sessionId/retrieval`, independent
+of which Agents are addressed. The session repository stores this preference
+in `sessions.metadata_json.knowledge_retrieval`, preserving other metadata;
+reads and writes require an active Room member with Project read access.
+Reading creates no recipient scopes. Each invocation copies the current
+Conversation choice into that recipient's versioned Work Context Setup before
+its execution snapshot is frozen. New recipients inherit the same choice;
+existing Runs keep their original version. With no explicit Conversation choice,
+retrieval is off. Both composers show one short switch without Agent names.
+Governing policy can still forbid retrieval.
 The switch also withholds the managed retrieval tools from a Run planned under
 an off setup, and narrows them to the chosen domains under an on one
 (knowledge, memory, projects → Project summaries, sources; inquiry has no

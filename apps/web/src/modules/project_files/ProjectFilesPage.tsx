@@ -10,6 +10,8 @@ import { Badge } from '../../components/ui/badge'
 import { Select } from '../../components/ui/select'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/tabs'
 import { EmptyState } from '../../components/ui/empty-state'
+import { DocumentTab } from '../../components/ui/document-tab'
+import { useTheme } from '../../contexts/ThemeContext'
 import { Button } from '../../components/ui/button'
 import { ConfirmDialog } from '../../components/ui/dialog'
 import { CenterEmpty, DiffViewer, FileTreeNode, STATUS_VARIANT, changeIndex } from './ProjectFilesParts'
@@ -85,6 +87,7 @@ function ReadErrorState({ error, onRetry }: { error: ReadError; onRetry: () => v
 }
 
 export default function ProjectFilesPage() {
+  const { theme } = useTheme()
   const { projectId = '' } = useParams<{ projectId: string }>()
   const [searchParams, setSearchParams] = useSearchParams()
   const preselectedId = searchParams.get('folder')
@@ -125,6 +128,24 @@ export default function ProjectFilesPage() {
 
   const [fileTree, setFileTree] = useState<FileNode | null>(null)
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null)
+  const [fileTabs, setFileTabs] = useState<{ paths: string[]; preview: string | null }>({ paths: [], preview: null })
+  const { paths: openFiles, preview: previewFilePath } = fileTabs
+  function setOpenFiles(update: string[] | ((paths: string[]) => string[])) {
+    setFileTabs(current => {
+      const paths = typeof update === 'function' ? update(current.paths) : update
+      return { paths, preview: current.preview && paths.includes(current.preview) ? current.preview : null }
+    })
+  }
+  function pinFile(path: string) {
+    setFileTabs(current => current.preview === path ? { ...current, preview: null } : current)
+  }
+  function openFileTab(path: string, pinned: boolean) {
+    setFileTabs(current => {
+      if (current.paths.includes(path)) return pinned && current.preview === path ? { ...current, preview: null } : current
+      const paths = !pinned && current.preview ? current.paths.filter(item => item !== current.preview) : current.paths
+      return { paths: [...paths, path], preview: pinned ? current.preview : path }
+    })
+  }
   const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null)
   const [leftTab, setLeftTab] = useState<LeftTab>('files')
   const [treeLoading, setTreeLoading] = useState(false)
@@ -244,7 +265,11 @@ export default function ProjectFilesPage() {
   }, [projectId])
 
   useEffect(() => {
+    setOpenFiles([])
     if (!selectedFolder) {
+      setCenterView({ mode: 'empty' })
+      setSelectedFilePath(null)
+      fileSelectionGeneration.current += 1
       readGeneration.current += 1
       activeFolderId.current = null
       setLocations([])
@@ -332,8 +357,12 @@ export default function ProjectFilesPage() {
     })
   }
 
-  async function handleFileSelect(path: string) {
-    if (!selectedFolder) return
+  async function handleFileSelect(path: string, mode: 'preview' | 'pinned' = 'preview') {
+    if (!selectedFolder || mutationLoading) return
+    if (mode === 'pinned' && centerView.mode === 'file' && centerView.data.path === path && selectedFilePath === path && openFiles.includes(path)) {
+      pinFile(path)
+      return
+    }
     const ready = flushEditorBeforeNavigation('Save the current draft before switching files')
     if (ready !== true && !await ready) return
     const folderId = selectedFolder.id
@@ -342,11 +371,14 @@ export default function ProjectFilesPage() {
     const cacheKey = fileCacheKey(folderId, path)
     const cachedFile = fileCache.current.get(cacheKey)
     setSelectedFilePath(path)
+    setHistoryOpen(false)
+    setRevisionPreview(null)
     setFileRevisions([])
     // The draft goes with the file it belongs to: cleared only when the next
     // file is shown. Clearing it up front unbound the draft from the editor
     // still showing the previous file, for good if the next read failed.
     const showFile = (data: FileContent) => {
+      openFileTab(path, mode === 'pinned')
       setCenterView({ mode: 'file', data })
       setCenterLoading(false)
       setFileDraft(null)
@@ -371,6 +403,14 @@ export default function ProjectFilesPage() {
     try {
       const fc = await projectFoldersApi.file(projectId, folderId, path)
       if (isCurrentSelection()) {
+        if (!cachedFile) {
+          const ready = flushEditorBeforeNavigation('Save the current draft before switching files')
+          if (ready !== true && !await ready) {
+            setSelectedFilePath(centerView.mode === 'file' ? centerView.data.path : null)
+            return
+          }
+          if (!isCurrentSelection()) return
+        }
         fileCache.current.set(cacheKey, fc)
         if (!cachedFile) showFile(fc)
         else setCenterView({ mode: 'file', data: fc })
@@ -383,13 +423,41 @@ export default function ProjectFilesPage() {
       const revisions = await revisionsPromise
       if (isCurrentSelection()) setFileRevisions(revisions)
     } catch (e) {
-      if (isCurrentSelection()) toast.error(errMsg(e))
+      if (isCurrentSelection()) {
+        toast.error(errMsg(e))
+        if (!cachedFile) {
+          setSelectedFilePath(centerView.mode === 'file' ? centerView.data.path : null)
+        }
+      }
     } finally {
       if (isCurrentSelection()) {
         setCenterLoading(false)
         setDraftLoading(false)
       }
     }
+  }
+
+  async function closeFile(path: string | null) {
+    if (mutationLoading) return
+    if (path !== selectedFilePath && !(centerView.mode === 'file' && centerView.data.path === path)) {
+      setOpenFiles(current => current.filter(item => item !== path))
+      return
+    }
+    const ready = flushEditorBeforeNavigation('Save the current draft before closing the file')
+    if (ready !== true && !await ready) return
+    fileSelectionGeneration.current += 1
+    const remaining = openFiles.filter(item => item !== path)
+    setOpenFiles(remaining)
+    setCenterView({ mode: 'empty' })
+    setSelectedFilePath(null)
+    setCenterLoading(false)
+    setFileDraft(null)
+    setDraftLoading(false)
+    setHistoryOpen(false)
+    setRevisionPreview(null)
+    setCurrentFileAttachment(null)
+    const next = remaining[Math.max(0, openFiles.indexOf(path ?? '') - 1)] ?? remaining[0]
+    if (next) await handleFileSelect(next)
   }
 
   async function handleNewFile() {
@@ -442,6 +510,7 @@ export default function ProjectFilesPage() {
         fileCache.current.set(fileCacheKey(selectedFolder.id, result.file.path), result.file)
         setCenterView({ mode: 'file', data: result.file })
         setSelectedFilePath(result.file.path)
+        openFileTab(result.file.path, true)
         setFileRevisions(previous => [result.revision, ...previous.filter(item => item.id !== result.revision.id)])
         await refreshAfterFileMutation(selectedFolder, result.file.path, generation)
       }
@@ -797,6 +866,19 @@ export default function ProjectFilesPage() {
         </div>
 
         <div className="relative flex-1 min-w-0 flex flex-col min-h-0 bg-background">
+          {openFiles.length > 0 && (
+            <div role="tablist" aria-label="Open files" className="note-tabs-strip flex shrink-0 items-end gap-0 overflow-x-auto bg-muted px-2 pt-2">
+              {openFiles.map(path => (
+                <DocumentTab key={path} fitLabel label={path.split('/').pop() ?? path} title={path}
+                  active={selectedFilePath === path && centerView.mode === 'file'} preview={previewFilePath === path}
+                  closeLabel="Close tab" onSelect={() => void handleFileSelect(path)}
+                  onDoubleClick={() => pinFile(path)} onClose={() => void closeFile(path)} />
+              ))}
+            </div>
+          )}
+          {(centerView.mode === 'new-file' || centerView.mode === 'diff') && (
+            <Button size="sm" variant="ghost" className="shrink-0 self-end" onClick={() => void closeFile(selectedFilePath)}>Close file</Button>
+          )}
           {centerLoading && (centerView.mode === 'empty' || centerView.mode === 'new-file') ? (
             <div className="flex items-center justify-center h-full">
               <Loader className="size-5 animate-spin text-muted-foreground" />
@@ -812,6 +894,7 @@ export default function ProjectFilesPage() {
                 />
               ) : centerView.mode === 'file' ? (
                 <ProjectFileEditor
+                  colorMode={theme}
                   ref={editorRef}
                   // Keyed on the file being rendered, never on the pending
                   // selection: the previous file stays visible while the next
@@ -832,9 +915,11 @@ export default function ProjectFilesPage() {
                   workspaceLocationId={selectedLocation?.id}
                   workspaceLocationAvailable={Boolean(selectedLocation?.execution_ready && selectedLocation.host_online)}
                   onAttachmentStateChange={publishCurrentFileAttachment}
+                  onEdit={() => pinFile(centerView.data.path)}
                 />
               ) : centerView.mode === 'new-file' ? (
                 <ProjectFileEditor
+                  colorMode={theme}
                   ref={editorRef}
                   key={`new:${selectedFolder?.id ?? ''}`}
                   file={null}

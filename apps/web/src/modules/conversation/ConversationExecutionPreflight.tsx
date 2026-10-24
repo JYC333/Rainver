@@ -22,6 +22,7 @@ import { Button } from '../../components/ui/button'
 import { Card } from '../../components/ui/card'
 import { Label } from '../../components/ui/label'
 import { Select } from '../../components/ui/select'
+import { ConversationCacheNotice } from './ConversationCacheNotice'
 import { ConversationGitContext } from './ConversationGitContext'
 
 interface ConversationExecutionPreflightProps {
@@ -394,6 +395,18 @@ function ConversationExecutionPreflightContent({
   if (loading && !preflight) return <Card className="m-3 p-3 text-xs text-muted-foreground"><Loader2 className="mr-1 inline size-3.5 animate-spin" />{t('conversation_ui.preflight.loading')}</Card>
   if (!preflight) return <Card className="m-3 space-y-2 p-3 text-xs"><p className="text-destructive">{error ?? t('conversation_ui.preflight.unavailable')}</p><Button size="sm" variant="outline" onClick={() => void reload()}><RefreshCw className="mr-1 size-3.5" />{t('conversation_ui.preflight.retry')}</Button></Card>
 
+  const cacheNotice = initialized && summary ? <ConversationCacheNotice
+    runtimes={summary.runtimes ?? []}
+    nameForAgent={id => participantMembers.find(member => member.agent_id === id)?.agent_name
+      ?? profiles.find(profile => profile.agent_id === id)?.agent_name ?? t('conversation_ui.preflight.unknown_agent')}
+    disabled={busy || loading || summary.dispatch_locked || !detail?.viewer_can_write}
+    onReset={async agentId => {
+      if (!sessionId) return
+      await roomsApi.resetAgentContext(roomId, agentId, sessionId, scope)
+      await reload()
+    }}
+  /> : null
+
   if (initialized && !executionDetailsOpen) {
     return (
       <Card className="m-3 p-0" data-testid="execution-preflight-collapsed">
@@ -407,6 +420,7 @@ function ConversationExecutionPreflightContent({
           <span className="flex-1">{t('conversation_ui.preflight.configured')}</span>
           <ChevronRight className="size-3.5" />
         </button>
+        {cacheNotice && <div className="px-2.5 pb-2.5">{cacheNotice}</div>}
       </Card>
     )
   }
@@ -424,6 +438,7 @@ function ConversationExecutionPreflightContent({
         </div>
       </div>
 
+      {cacheNotice}
       {initialized ? (
         <InitializedSummary summary={summary!} profiles={profiles} participants={participantMembers} />
       ) : (
@@ -544,11 +559,7 @@ function InitializedSummary({ summary, profiles, participants }: {
               {t('conversation_ui.preflight.summary_written', { tokens: formatTokens(pinned.context_tokens) })}<Link to={`/artifacts/${pinned.summary_artifact_id}`} className="underline">{t('conversation_ui.preflight.open_summary')}</Link>
             </div>
           ) : null}
-          {promptCacheCold(pinned) ? (
-            <div className="pl-26 text-muted-foreground">
-              {t('conversation_ui.preflight.cache_cold', { tokens: formatTokens(pinned.context_tokens) })}
-            </div>
-          ) : null}
+
         </div>
       )) : <SummaryRow label={t('conversation_ui.preflight.agent_cli')} value={t('conversation_ui.preflight.unavailable_value')} />}
     </div>
@@ -613,21 +624,6 @@ function AttachmentControls({ summary, locations, selectedLocationId, onLocation
 }
 
 type PinnedRuntime = ConversationExecutionSummary['runtimes'][number]
-
-/** Below this the notices stay quiet: rewriting a small session costs little. */
-const CACHE_NOTICE_MIN_TOKENS = 60_000
-
-/**
- * Whether the vendor's prompt cache for this session has gone cold: its last
- * Run ended longer ago than the runtime's declared cache lifetime, and the
- * session is large enough for the rewrite to matter. A notice, never an action.
- */
-function promptCacheCold(pinned: PinnedRuntime): boolean {
-  if (!pinned.last_run_ended_at || !pinned.prompt_cache_ttl_seconds) return false
-  if ((pinned.context_tokens ?? 0) < CACHE_NOTICE_MIN_TOKENS) return false
-  const ended = Date.parse(pinned.last_run_ended_at)
-  return Number.isFinite(ended) && Date.now() - ended > pinned.prompt_cache_ttl_seconds * 1000
-}
 
 function formatTokens(tokens: number | null | undefined): string {
   if (tokens == null) return i18n.t('conversation_ui.preflight.unknown_tokens')

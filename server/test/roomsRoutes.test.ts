@@ -36,6 +36,22 @@ function config() {
 }
 
 describe("Room routes", () => {
+  it("passes an explicit reset Conversation and rejects malformed targets", async () => {
+    __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
+    const calls: unknown[][] = [];
+    __setRoomServiceFactoryForTests(() => service({
+      resetAgentContext: async (...args: unknown[]) => { calls.push(args); return {}; },
+    }));
+    app = buildModuleServer(config(), [roomsModule]);
+    const url = "/api/v1/rooms/room-1/agents/agent-1/reset-context";
+    expect((await app.inject({ method: "POST", url, payload: { session_id: "conversation-1" } })).statusCode).toBe(200);
+    expect(calls).toEqual([[{ spaceId: "space-1", userId: "user-1" }, "room-1", "agent-1", "conversation-1"]]);
+    expect((await app.inject({ method: "POST", url, payload: { session_id: 123 } })).statusCode).toBe(422);
+    expect(calls).toHaveLength(1);
+    expect((await app.inject({ method: "POST", url, payload: {} })).statusCode).toBe(200);
+    expect(calls[1]?.[3]).toBeUndefined();
+  });
+
   it("creates a project-bound Room through the public boundary", async () => {
     __setAuthIdentityForTests({ spaceId: "space-1", userId: "user-1" });
     let seen: unknown;

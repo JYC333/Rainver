@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import type { PreRenderedChunk } from 'rollup'
 import { defineConfig } from 'vite'
@@ -9,6 +10,7 @@ import { VitePWA } from 'vite-plugin-pwa'
 // those requests to the server service inside the compose network. API_URL is
 // only a local-shell override; compose does not inject a backend URL.
 const apiProxyTarget = process.env.API_URL || 'http://server:8010'
+const appBuild = { id: `${new Date().toISOString().replace(/[-:.]/g, '')}-${randomUUID().slice(0, 6)}`, builtAt: new Date().toISOString() }
 const projectRoot = process.cwd()
 const repoRoot = resolve(projectRoot, '../..')
 
@@ -34,6 +36,7 @@ function chunkFileName(chunk: PreRenderedChunk): string {
 }
 
 export default defineConfig({
+  define: { __APP_BUILD__: JSON.stringify(appBuild) },
   build: {
     rollupOptions: {
       output: {
@@ -57,6 +60,17 @@ export default defineConfig({
     dedupe: ['react', 'react-dom'],
   },
   plugins: [
+    {
+      name: 'rainver-build-version',
+      generateBundle() { this.emitFile({ type: 'asset', fileName: 'version.json', source: JSON.stringify(appBuild) }) },
+      configureServer(server) {
+        server.middlewares.use('/version.json', (_req, res) => {
+          res.setHeader('Content-Type', 'application/json')
+          res.setHeader('Cache-Control', 'no-store')
+          res.end(JSON.stringify(appBuild))
+        })
+      },
+    },
     react(),
     tailwindcss(),
     VitePWA({
@@ -83,7 +97,7 @@ export default defineConfig({
         // server. Do not fall through to the SPA fallback. It serves the cached
         // index.html for it, the app loads at that URL, sees a 401 from /me,
         // and bounces to /login without ever leaving the browser.
-        navigateFallbackDenylist: [/^\/api\//],
+        navigateFallbackDenylist: [/^\/api\//, /^\/version\.json$/],
         globPatterns: ['**/*.{js,css,html}'],
         globIgnores: [
           '**/GraphView-*.js',
@@ -91,6 +105,7 @@ export default defineConfig({
           '**/graph-webgl-*.js',
         ],
         runtimeCaching: [
+          { urlPattern: /\/version\.json(?:\?|$)/, handler: 'NetworkOnly' },
           // POST/PATCH/DELETE mutations must never be served from cache.
           // Some operations (quota PTY refresh, workspace console runs) take
           // 20-30 s; the timeout below would cause a null response and a

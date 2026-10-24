@@ -3,7 +3,7 @@ import type { en } from './en'
 type TranslateShape<T> = { [K in keyof T]: T[K] extends string ? string : TranslateShape<T[K]> }
 
 export const zhCN = {
-  fileTree: { loading: '加载中…', empty: '没有文件', retry: '目录加载失败 · 重试', more: '加载更多' },
+  fileTree: { openInNewTab: '在新标签中打开', loading: '加载中…', empty: '没有文件', retry: '目录加载失败 · 重试', more: '加载更多' },
   agent_work: {
     badge: '{{needs}} 项需要你 · {{unread}} 项未读',
     alerts: { answer: 'Agent 正在等待你的回答', decision: 'Agent 工作需要决定', finished: 'Agent 一轮工作已结束', failed: 'Agent 一轮工作失败' },
@@ -117,6 +117,7 @@ export const zhCN = {
     },
   },
   nav: {
+    more: '更多',
     agent_work: 'Agent 工作台',
     home: '首页', command_center: '指挥中心', inbox: '收件箱', library: '资料库',
     source: '信息源', review: '审核', knowledge: '知识', publications: '共享',
@@ -143,6 +144,21 @@ export const zhCN = {
     switch: '切换空间', select: '选择空间', spaces: '空间', create: '创建空间…',
     personal: '个人空间', household: '家庭空间', team: '团队空间',
     role_owner: '所有者', role_admin: '管理员', role_member: '成员',
+  },
+  app_version: {
+    title: '应用版本',
+    running: '当前运行构建：',
+    description: '可与其他设备核对编号。重启服务不等于已打开的页面完成更新。',
+    check: '检查更新',
+    checking: '正在检查…',
+    current: '当前页面与此地址提供的构建一致。',
+    available: '发现另一构建版本',
+    reload: '更新并重新加载',
+    reload_hint: '重新加载会中断当前页面，请先完成正在输入的内容。',
+    updating: '正在更新…',
+    error: '无法核对或应用更新，请检查网络后重试。',
+    diagnostics: '布局诊断',
+    collect: '采集诊断（选中文字复制）',
   },
   settings: {
     title: '设置', subtitle: '管理账户安全、个人空间和偏好设置。',

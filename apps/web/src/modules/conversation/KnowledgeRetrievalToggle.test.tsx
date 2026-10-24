@@ -66,12 +66,12 @@ describe('KnowledgeRetrievalToggle', () => {
     expect(await screen.findByRole('button', { name: /Knowledge: on/ })).toBeEnabled()
   })
 
-  it('names the Agent and asks for its switch in this Conversation when it belongs to one Room recipient', async () => {
+  it('uses one switch for the Conversation without an Agent label', async () => {
     vi.mocked(runtimeContextApi.retrievalSwitch).mockResolvedValue({ work_context_scope_id: SCOPE, enabled: false, preferred_domains: [], setup_version: null })
-    render(<KnowledgeRetrievalToggle sessionId="conversation-1" roomAgentMemberId="member-1" agentName="Researcher" />)
-    expect(await screen.findByRole('button', { name: 'Researcher · Knowledge: off' })).toBeInTheDocument()
+    render(<KnowledgeRetrievalToggle sessionId="conversation-1" />)
+    expect(await screen.findByRole('button', { name: 'Knowledge: off' })).toBeInTheDocument()
     expect(runtimeContextApi.retrievalSwitch).toHaveBeenCalledWith(
-      { sessionId: 'conversation-1', roomAgentMemberId: 'member-1' },
+      { sessionId: 'conversation-1' },
       expect.any(Object),
     )
   })

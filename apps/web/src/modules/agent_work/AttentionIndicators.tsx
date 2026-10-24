@@ -3,9 +3,12 @@ import { formatNumber } from '../../i18n/format'
 import { Badge, type BadgeProps } from '../../components/ui/badge'
 import { useAttention, useAttentionState, useOptionalAttention } from './AgentAttentionProvider'
 
-export function AttentionBadge({ compact = false }: { compact?: boolean }) { return useOptionalAttention() ? <BadgeContent compact={compact} /> : null }
-function BadgeContent({ compact }: { compact: boolean }) {
+export function AttentionBadge({ compact = false, dot = false }: { compact?: boolean; dot?: boolean }) { return useOptionalAttention() ? <BadgeContent compact={compact} dot={dot} /> : null }
+function BadgeContent({ compact, dot }: { compact: boolean; dot: boolean }) {
   const state = useAttentionState(); const { t } = useAppTranslation()
+  if (dot) return state.unread > 0 || state.needsYou > 0
+    ? <span className="absolute -right-1 -top-1 size-2 rounded-full bg-destructive ring-2 ring-card" role="status" aria-label={t('agent_work.badge', { unread: formatNumber(state.unread), needs: formatNumber(state.needsYou) })} />
+    : null
   return <span className={`${compact ? 'absolute -right-2 -top-1' : 'ml-1'} rounded bg-primary/10 px-1 text-[10px]`} role="status" title={t(`agent_work.freshness.${state.freshness}`)} aria-label={t('agent_work.badge', { unread: formatNumber(state.unread), needs: formatNumber(state.needsYou) })}>
     {formatNumber(state.needsYou)} / {formatNumber(state.unread)}
   </span>

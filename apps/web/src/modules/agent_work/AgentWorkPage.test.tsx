@@ -179,6 +179,22 @@ describe('Agent Work page', () => {
     await openRun()
     expect((await screen.findByRole('link', { name: 'Open full Run' })).closest('section')).toHaveTextContent('2 hr')
   })
+  it('gives a conversation the detail pane without a duplicate Run list or execution IDs', async () => {
+    const source = { ...roomWork(), visible_run_count: 120, runs_next_cursor: 'older-executions' }
+    vi.mocked(agentAttentionApi.list).mockResolvedValue(page([source]))
+    vi.mocked(agentAttentionApi.item).mockResolvedValue(source)
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: /Build the report/ }))
+    expect(await screen.findByRole('textbox', { name: 'Reply editor' })).toBeVisible()
+    expect(screen.queryByRole('region', { name: /Runs/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Load more members/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Run run-b')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Display reply' }))
+    expect(await screen.findByText('Reply body')).toBeVisible()
+    expect(runsApi.get).not.toHaveBeenCalled()
+    expect(runsApi.turn).not.toHaveBeenCalled()
+  })
+
   it('preserves selection, existing content and input focus during an explicit refresh', async () => {
     const source = roomWork()
     vi.mocked(agentAttentionApi.list).mockResolvedValue(page([source]))
@@ -400,6 +416,8 @@ describe('Agent Work page', () => {
     const view = renderPage()
     fireEvent.click(await screen.findByRole('button', { name: /Build the report/ }))
     expect(await screen.findByText('A direct reply')).toBeVisible()
+    expect(screen.queryByRole('region', { name: /Runs/ })).not.toBeInTheDocument()
+    expect(screen.queryByText('Run run-b')).not.toBeInTheDocument()
     await waitFor(() => expect(agentAttentionApi.recordViews).toHaveBeenCalledOnce())
     fireEvent.click(screen.getByRole('button', { name: 'Mark unread and return' }))
     expect(agentAttentionApi.setReadState).not.toHaveBeenCalled()

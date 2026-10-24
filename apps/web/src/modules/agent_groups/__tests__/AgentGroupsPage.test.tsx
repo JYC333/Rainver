@@ -41,7 +41,7 @@ vi.mock('../../../api/client', async () => {
   const { ApiRequestError } = await import('../../../test/apiClientMock')
   return {
   ApiRequestError,
-  // Each addressed Room recipient's knowledge retrieval switch, off.
+  // One shared knowledge retrieval switch per Conversation, initially off.
   runtimeContextApi: {
     retrievalSwitch: vi.fn(async () => ({ work_context_scope_id: 'scope-1', enabled: false, preferred_domains: [], setup_version: null })),
     setRetrievalSwitch: vi.fn(),
@@ -730,12 +730,12 @@ describe('Rooms page', () => {
     expect(roomsApi.messages).not.toHaveBeenCalled()
   })
 
-  it('offers knowledge retrieval for the Room recipient the next message reaches', async () => {
+  it('offers one knowledge retrieval switch for the Conversation', async () => {
     renderRooms('/rooms?room=room-1&conversation=session-1')
-    // Nobody named: the manager answers, in its Work Context for this Conversation.
-    expect(await screen.findByRole('button', { name: 'Space Assistant · Knowledge: off' })).toBeInTheDocument()
+    // The switch belongs to the Conversation even when the manager answers.
+    expect(await screen.findByRole('button', { name: 'Knowledge: off' })).toBeInTheDocument()
     expect(runtimeContextApi.retrievalSwitch).toHaveBeenCalledWith(
-      { sessionId: 'session-1', roomAgentMemberId: 'agent-member-1' },
+      { sessionId: 'session-1' },
       expect.any(Object),
     )
   })

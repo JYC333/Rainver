@@ -23,7 +23,7 @@ filesystem directly.
   per-Folder snapshot retention overrides
 - Files & Code backend read APIs (tree, file content, git status, git diff)
 - Files & Code draft/save/revision APIs (the only human write path is Save to Folder)
-- CodeMirror editor lifecycle, draft autosave controller, and contextual history/restore UI
+- File tabs with individual close controls, CodeMirror editor lifecycle, draft autosave controller, and contextual history/restore UI
 - Project Folder CRUD (create via managed dir / clone / connect existing, update, archive,
   unregister, scan)
 
@@ -158,6 +158,9 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   50 MiB per-space/user aggregate cap, and rolling expiry; they are not a
   global draft list. Unregister reports active-draft counts before requiring
   explicit confirmation and removes confirmed rows in the same transaction.
+- Existing files show their path as selectable read-only text, with the full
+  path available on hover; only new files offer a path input. The path display
+  is not a rename control.
 - A writable file is always an editable CodeMirror 6 view. The first document
   change starts the serial 1.5-second idle / 10-second maximum-age draft queue;
   blur, file switch, Folder switch, and Cmd/Ctrl+S flush the same queue. A
@@ -211,6 +214,26 @@ GET/POST/PATCH /api/v1/projects/{projectId}/folders/{folderId}/execution-config
   Files & Code about its authorized Project Folders. A mounted Files page
   refreshes the matching tree and Git status immediately; it does not replace a
   file editor's in-progress content.
+- Files and Notes share the `DocumentTab` silhouette and existing tab-strip
+  styling. File tabs size to the complete filename without ellipsis, with room
+  for italic overhang; the strip scrolls horizontally when needed. Notes keep
+  their existing bounded tab widths. The file toolbar uses the shared control sizes; size, encoding and
+  line-ending details live in a bottom status bar. CodeMirror uses application
+  color tokens and a color-mode compartment from the global Theme Context,
+  including conflict comparisons. Theme changes preserve edits, selection and
+  undo history; the code surface retains its monospace font and line numbers.
+- A single click opens a file in one reusable preview tab (italic title); clicking
+  another unopened file replaces that preview. Double-clicking a file or its
+  tab fixes it in place. Middle-click and the file-only context menu's Open in
+  new tab action open a fixed internal tab. Already-open files are selected
+  without duplication. Editing a preview automatically fixes it in place.
+  Folder and other browser context menus remain unchanged. Closing an
+  inactive tab leaves the editor alone; closing the active tab selects a
+  neighboring file, or an empty editor after the last tab. Switching and closing
+  flush recovery drafts first and refuse to leave unacknowledged changes on a
+  failed flush. Folder switches clear the open tabs. The current-file reference
+  appears immediately above the sidecar message input, beside its attachments,
+  rather than above the transcript.
 - Selecting a file starts its content and revision-history reads together. The
   content viewer renders as soon as the file bytes arrive; revision history is
   supplementary and never adds a second blocking loading round trip. While a

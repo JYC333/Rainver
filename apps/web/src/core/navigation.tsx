@@ -45,19 +45,19 @@ export interface RailItem {
 /** Major destinations. Home is always first and stable. */
 export const RAIL_ITEMS: RailItem[] = [
   { id: 'home',       label: 'Home',       to: '/home',        icon: Home,        scope: 'home',  mobile: true },
-  { id: 'agent-work', label: 'Agent Work', to: '/agent-work', icon: Bot, scope: 'home' },
+  { id: 'agent-work', label: 'Agent Work', to: '/agent-work', icon: Bot, scope: 'home', mobile: true },
   // ADR 0016 D11: Command Center is the default landing page for a Space
   // (see App.tsx's `spaces/:spaceId` index redirect) — placed first among
   // the space-scoped rail items so it reads as the space's home surface.
   { id: 'command-center', label: 'Command Center', to: '/command-center', icon: Server, scope: 'space' },
-  { id: 'inbox',      label: 'Inbox',      to: '/activity',    icon: Inbox,       scope: 'space', mobile: true },
-  { id: 'library',    label: 'Library',    to: '/library',     icon: Library,     scope: 'space', mobile: true },
+  { id: 'inbox',      label: 'Inbox',      to: '/activity',    icon: Inbox,       scope: 'space' },
+  { id: 'library',    label: 'Library',    to: '/library',     icon: Library,     scope: 'space' },
   { id: 'source',     label: 'Sources',    to: '/sources',      icon: Rss,         scope: 'space' },
-  { id: 'review',     label: 'Review',     to: '/proposals',   icon: CheckCircle, scope: 'space', mobile: true },
+  { id: 'review',     label: 'Review',     to: '/proposals',   icon: CheckCircle, scope: 'space' },
   { id: 'knowledge',  label: 'Knowledge',  to: '/knowledge',   icon: BookOpen,    scope: 'space' },
   { id: 'publications', label: 'Shared', to: '/publications', icon: Share2, scope: 'space' },
-  { id: 'tasks',      label: 'Tasks',      to: '/tasks',       icon: ListTodo,    scope: 'space', mobile: true },
-  { id: 'projects',   label: 'Projects',   to: '/projects',    icon: FolderKanban, scope: 'space' },
+  { id: 'tasks',      label: 'Tasks',      to: '/tasks',       icon: ListTodo,    scope: 'space' },
+  { id: 'projects',   label: 'Projects',   to: '/projects',    icon: FolderKanban, scope: 'space', mobile: true },
   { id: 'agents',     label: 'Agents',     to: '/agents',      icon: Bot,         scope: 'space' },
   { id: 'evolution',  label: 'Evolution',  to: '/evolution',   icon: GitBranch,   scope: 'home' },
   { id: 'instance-settings', label: 'Instance Settings', to: '/instance-settings', icon: ServerCog, scope: 'home', footer: true, requiresInstanceAdmin: true },
@@ -65,7 +65,7 @@ export const RAIL_ITEMS: RailItem[] = [
   { id: 'settings',   label: 'Settings',   to: '/settings',    icon: Settings,    scope: 'home',  footer: true },
 ]
 
-/** Narrow-viewport primary destinations. Keep this to five short labels. */
+/** Narrow-viewport primary destinations, followed by the More menu. */
 export const MOBILE_TAB_ITEMS = RAIL_ITEMS.filter(i => i.mobile)
 
 /**

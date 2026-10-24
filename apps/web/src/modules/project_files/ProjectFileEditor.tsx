@@ -16,6 +16,7 @@ import { ProjectFileDraftController, conflictingDraft, sha256Utf8, type DraftCon
 import type { CurrentFileAttachment } from '../projects/ProjectFolderConversationContext'
 
 interface ProjectFileEditorProps {
+  colorMode?: 'light' | 'dark'
   file: FileContent | null
   draft: ProjectFileDraft | null
   draftLoading?: boolean
@@ -27,6 +28,7 @@ interface ProjectFileEditorProps {
   onConvert?: () => Promise<void>
   onHistory?: () => void
   onCancel?: () => void
+  onEdit?: () => void
   projectFolderId?: string | null
   workspaceLocationId?: string | null
   workspaceLocationAvailable?: boolean
@@ -87,6 +89,8 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
   onConvert,
   onHistory,
   onCancel,
+  onEdit,
+  colorMode = 'dark',
   projectFolderId = null,
   workspaceLocationId = null,
   workspaceLocationAvailable = true,
@@ -391,7 +395,6 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
   const canEdit = editable && !savePending
   const draftContent = snapshot.content
   const canSave = hasDraft && snapshot.status !== 'saving' && snapshot.status !== 'conflict' && !hostConflict
-  const pathLocked = Boolean(file)
 
   return (
     <>
@@ -404,39 +407,38 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
       variant="default"
       onConfirm={() => { void saveToFolder(true) }}
     />
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="shrink-0 flex flex-wrap items-center gap-2 border-b bg-muted/30 px-4 py-2">
+    <div className="flex h-full min-h-0 flex-1 flex-col bg-background">
+      <div className="shrink-0 flex flex-wrap items-center gap-3 border-b border-border bg-background px-4 py-3">
         {file ? <FileCode className="size-3.5 text-muted-foreground" /> : <FilePlus className="size-3.5 text-muted-foreground" />}
-        <Input
-          aria-label={t('management_ui.file_editor.file_path')}
-          value={path}
-          onChange={event => setPath(event.target.value)}
-          placeholder="path/to/file.txt"
-          className="h-7 max-w-md font-mono text-xs"
-          disabled={pathLocked || savePending}
-          readOnly={pathLocked}
-          autoFocus={!file}
-        />
-        <span role="status" className="text-[10px] text-muted-foreground">{statusLabel(snapshot, draftLoading, savePending)}</span>
+        {file ? (
+          <div role="group" aria-label={t('management_ui.file_editor.file_path')} title={path}
+            className="min-w-0 max-w-md truncate select-text font-mono text-xs">
+            {path}
+          </div>
+        ) : (
+          <Input
+            aria-label={t('management_ui.file_editor.file_path')}
+            value={path}
+            onChange={event => setPath(event.target.value)}
+            placeholder="path/to/file.txt"
+            className="h-7 max-w-md font-mono text-xs"
+            disabled={savePending}
+            autoFocus
+          />
+        )}
+        <span role="status" className="text-xs text-muted-foreground">{statusLabel(snapshot, draftLoading, savePending)}</span>
         <span className="ml-auto flex items-center gap-1.5">
-          {onHistory && <Button type="button" size="sm" variant="ghost" className="h-6 gap-1 px-2 text-[10px]" onClick={onHistory}><History className="size-3" /> {t('management_ui.file_editor.history')}</Button>}
-          {onCancel && !file && <Button type="button" size="sm" variant="ghost" className="h-6 px-2 text-[10px]" onClick={onCancel}>{t('management_ui.file_editor.cancel')}</Button>}
-          {hasDraft && <Button type="button" size="sm" variant="ghost" className="h-6 gap-1 px-2 text-[10px]" onClick={() => void discardDraft()} disabled={savePending}><Trash2 className="size-3" /> {t('management_ui.file_editor.discard')}</Button>}
-          <Button type="button" size="sm" className="h-6 gap-1 px-2 text-[10px]" onClick={() => void saveToFolder()} disabled={!canSave || savePending}><Save className="size-3" /> {t('management_ui.file_editor.save_to_folder')}</Button>
+          {onHistory && <Button type="button" size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={onHistory}><History className="size-3" /> {t('management_ui.file_editor.history')}</Button>}
+          {onCancel && !file && <Button type="button" size="sm" variant="ghost" className="h-8 px-2.5 text-xs" onClick={onCancel}>{t('management_ui.file_editor.cancel')}</Button>}
+          {hasDraft && <Button type="button" size="sm" variant="ghost" className="h-8 gap-1.5 px-2.5 text-xs" onClick={() => void discardDraft()} disabled={savePending}><Trash2 className="size-3" /> {t('management_ui.file_editor.discard')}</Button>}
+          <Button type="button" size="sm" className="h-8 gap-1.5 px-2.5 text-xs" onClick={() => void saveToFolder()} disabled={!canSave || savePending}><Save className="size-3" /> {t('management_ui.file_editor.save_to_folder')}</Button>
         </span>
-      </div>
-      <div className="shrink-0 flex flex-wrap items-center gap-2 border-b px-4 py-1.5 text-[10px] text-muted-foreground">
-        <span>{formatBytes(new TextEncoder().encode(draftContent).byteLength)} · {language}</span>
-        <span>· {lineMode === 'mixed' ? t('management_ui.file_editor.mixed_line_endings') : t('management_ui.file_editor.line_endings', { mode: lineMode.toUpperCase() })}</span>
-        {baseFile?.encoding && <Badge variant="muted" className="px-1.5 text-[9px]">{converted ? t('management_ui.file_editor.utf8_converted') : baseFile.encoding}</Badge>}
-        {hostConflict && <span className="text-amber-600 dark:text-amber-400">{t('management_ui.file_editor.host_changed')}</span>}
-        {!editable && onConvert && <Button type="button" size="sm" variant="outline" className="h-5 gap-1 px-2 text-[10px]" onClick={() => void convertFile()}><WandSparkles className="size-3" /> {t('management_ui.file_editor.convert_utf8')}</Button>}
       </div>
       {(hostConflict || draftConflict) && activeDraft && baseFile && (
         <div className="shrink-0 border-b border-amber-500/30 bg-amber-500/5 px-4 py-2 text-[11px] text-muted-foreground">
           <p className="mb-1">{hostConflict ? t('management_ui.file_editor.conflict_host') : t('management_ui.file_editor.conflict_tab')}</p>
           <div className="mb-2 h-40 min-h-0 overflow-hidden rounded border">
-            <CodeMirrorMerge original={baseFile.content} current={draftContent} language={language} />
+            <CodeMirrorMerge colorMode={colorMode} original={baseFile.content} current={draftContent} language={language} />
           </div>
           <div className="flex gap-2">
             <Button type="button" size="sm" variant="outline" className="h-6 text-[10px]" onClick={() => void rebaseDraft()}>{t('management_ui.file_editor.keep_rebase')}</Button>
@@ -446,13 +448,14 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
       )}
       <div className="min-h-0 flex-1">
         <CodeMirrorEditor
+          colorMode={colorMode}
           value={draftContent}
           language={language}
           readOnly={!canEdit || hostConflict || draftConflict || !path.trim()}
           lineSeparator={lineMode === 'crlf' ? '\r\n' : '\n'}
           indent={detectIndentUnit(draftContent)}
           ariaLabel={t('management_ui.file_editor.file_content')}
-          onChange={content => controller.setContent(content)}
+          onChange={content => { onEdit?.(); controller.setContent(content) }}
           onSelectionChange={next => {
             const nextSelection: InputResourceSelection = {
               start_line: next.startLine,
@@ -466,6 +469,13 @@ export const ProjectFileEditor = forwardRef<ProjectFileEditorHandle, ProjectFile
           onBlur={() => { void controller.flush().catch(() => {}) }}
           onSave={() => { void saveToFolder() }}
         />
+      </div>
+      <div className="shrink-0 flex flex-wrap items-center gap-2 border-t border-border bg-card/50 px-4 py-2 text-xs text-muted-foreground">
+        <span>{formatBytes(new TextEncoder().encode(draftContent).byteLength)} · {language}</span>
+        <span>· {lineMode === 'mixed' ? t('management_ui.file_editor.mixed_line_endings') : t('management_ui.file_editor.line_endings', { mode: lineMode.toUpperCase() })}</span>
+        {baseFile?.encoding && <Badge variant="muted" className="px-1.5 text-[10px]">{converted ? t('management_ui.file_editor.utf8_converted') : baseFile.encoding}</Badge>}
+        {hostConflict && <span className="text-amber-600 dark:text-amber-400">{t('management_ui.file_editor.host_changed')}</span>}
+        {!editable && onConvert && <Button type="button" size="sm" variant="outline" className="h-5 gap-1 px-2 text-[10px]" onClick={() => void convertFile()}><WandSparkles className="size-3" /> {t('management_ui.file_editor.convert_utf8')}</Button>}
       </div>
     </div>
     </>

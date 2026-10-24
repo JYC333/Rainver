@@ -529,3 +529,21 @@ provider records personal reads through the existing view endpoint; an open
 conversation does not suppress new-revision alerts. It is inert outside
 AgentAttentionProvider. Display evidence and reading revisions
 are described in [Agent Attention](../modules/agent-attention.md#web-workbench).
+
+Sent-message attachments use separate image and file rows in
+`ConversationInputPartsView`: image thumbnails wrap together; file references
+and immutable current-file resources each occupy a compact row below the
+images, without stretching to thumbnail height.
+
+
+Execution preflight surfaces each Agent's estimated prompt-cache expiry outside
+its collapsed details. It uses the runtime-declared TTL and last completed Run,
+without a token-count threshold or a universal one-hour assumption; unknown TTLs
+do not claim expiry. The existing visible-page 30s refresh advances the notice.
+The explicit, confirmed fresh-native-session action passes the current
+Conversation id to `/rooms/:roomId/agents/:agentId/reset-context` as `session_id`.
+It clears that Agent's native continuity and handoff, not chat history or other
+Agents/Conversations. The server retains Project writer/Room member/host-owner
+and dispatch-lock checks. Omitting `session_id` preserves the older roster
+latest-Conversation action. Reset threads report no last-Run timestamp for cache
+expiry until the new native session runs again.

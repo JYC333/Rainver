@@ -736,7 +736,7 @@ export class ConversationExecutionContextService {
         context_window_tokens: thread.context_window_tokens,
         handoff_artifact_id: thread.handoff_artifact_id,
         summary_artifact_id: thread.summary_artifact_id,
-        last_run_ended_at: thread.last_run_ended_at === null ? null : new Date(thread.last_run_ended_at).toISOString(),
+        last_run_ended_at: thread.status !== 'active' || thread.last_run_ended_at === null ? null : new Date(thread.last_run_ended_at).toISOString(),
         prompt_cache_ttl_seconds: getRuntimeAdapterSpec(thread.runtime_key)?.usage.prompt_cache_ttl_seconds ?? null,
       });
     }

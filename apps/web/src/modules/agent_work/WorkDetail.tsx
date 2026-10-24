@@ -164,10 +164,9 @@ function DetailContent({ item, childPage, onConflict, onUnread, onChanged, onRea
     {conversation
       ? <AttentionViewingGroup value={reading.viewingGroup}><WorkConversation item={item} onMessagesDisplayed={reading.messagesDisplayed} onReadError={onReadError} onChanged={onChanged} /></AttentionViewingGroup>
       : <p className="text-xs text-muted-foreground">{t(item.access_level === 'full' ? 'agent_work.no_reply_session' : 'agent_work.summary_only')}</p>}
-    {/* The member list is bounded so the embedded conversation keeps its own
-        height instead of being squeezed to zero and spilling behind the rows. */}
-    <section aria-label={t('agent_work.members', { count: formatNumber(item.visible_run_count) })}
-      className={cn('overflow-auto rounded-md border border-border', conversation ? 'max-h-[40vh] shrink-0' : 'min-h-0 flex-1')}>
+    {/* A reply conversation already owns its turns and execution controls. */}
+    {!conversation && <section aria-label={t('agent_work.members', { count: formatNumber(item.visible_run_count) })}
+      className="min-h-0 flex-1 overflow-auto rounded-md border border-border">
       <h3 className="sticky top-0 z-10 bg-card px-3 py-2 text-[11px] font-bold uppercase tracking-widest text-muted-foreground">{t('agent_work.members', { count: formatNumber(item.visible_run_count) })}</h3>
       {allRuns.map(run => <div key={run.run_id} className="border-t border-border">
         <button className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-accent/30" aria-expanded={expanded.has(run.run_id)} onClick={() => onToggle(run.run_id)}>
@@ -183,6 +182,6 @@ function DetailContent({ item, childPage, onConflict, onUnread, onChanged, onRea
       {(childPage ? childPage.runs_next_cursor : item.runs_next_cursor) && <div className="border-t border-border p-2">
         <Button size="sm" variant="outline" onClick={onMoreChildren}>{t('agent_work.more_children', { count: formatNumber(item.visible_run_count) })}</Button>
       </div>}
-    </section>
+    </section>}
   </>
 }

@@ -165,6 +165,7 @@ interface ConversationSurfaceProps {
   onBeforeContinue?: (action: ActionDecision) => Promise<void>
   /** Rendered between the transcript and the composer (the page's run settings). */
   runSettings?: ReactNode
+  composerAttachments?: ReactNode
   /** Persistent execution selection shown immediately above the composer. */
   executionPreflight?: ReactNode
   /** Primary and attached Folder roots authorized by the initialized context. */
@@ -209,6 +210,7 @@ function ConversationSurfaceContent({
   executionPreflight,
   inputFileSources,
   implicitInputResource = null,
+  composerAttachments,
   executionReady = true,
   isOwner = false,
   emptyHint,
@@ -660,10 +662,6 @@ function ConversationSurfaceContent({
     () => roomMessageRecipientIds(composerRoute, managerAgentId),
     [composerRoute, managerAgentId],
   )
-  // Knowledge retrieval is kept per person and Room recipient: each addressed
-  // Agent's membership row is its Work Context.
-  const retrievalRecipients = (detail?.agent_members ?? [])
-    .filter(member => member.status === 'active' && addressedAgentIds.includes(member.agent_id))
   const inputCapabilityMessage = useMemo(() => {
     if (!inputParts.some(part => part.kind === 'image')) return null
     const incompatible = addressedAgentIds.flatMap(agentId => {
@@ -1082,7 +1080,7 @@ function ConversationSurfaceContent({
         role="log"
         aria-label={t('conversation_ui.surface.messages')}
         aria-live="polite"
-        className={compact ? 'min-h-0 flex-1 space-y-3 overflow-y-auto p-3' : 'min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4'}
+        className={compact ? 'min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-y-contain p-3' : 'min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-y-contain px-5 py-4'}
         onScroll={event => {
           const container = event.currentTarget
           followRef.current = container.scrollHeight - container.scrollTop - container.clientHeight <= 80
@@ -1199,6 +1197,7 @@ function ConversationSurfaceContent({
         )}
         {executionPreflight}
         {runSettings}
+        {composerAttachments}
         <ConversationQuotaLine quota={quota} onContinueAnyway={!readOnly && detail?.viewer_can_write ? continuePastQuota : undefined} />
         <ConversationComposer
           renderInputReferences={false}
@@ -1225,9 +1224,7 @@ function ConversationSurfaceContent({
           />}
           controls={(
             <>
-              {retrievalRecipients.map(member => (
-                <KnowledgeRetrievalToggle key={member.id} sessionId={conversationId} roomAgentMemberId={member.id} agentName={member.agent_name} disabled={sending} />
-              ))}
+              <KnowledgeRetrievalToggle sessionId={conversationId} disabled={sending} />
               {activeDiscussion && (
                 <div role="group" aria-label={t('conversation_ui.surface.destination')} className="flex items-center gap-1 text-xs">
                   <span className="mr-1 text-muted-foreground">{t('conversation_ui.surface.send_to')}</span>

@@ -275,8 +275,8 @@ export class RoomService {
     return this.rosterService().removeAgent(identity, roomId, agentId);
   }
 
-  resetAgentContext(identity: RoomIdentity, roomId: string, agentId: string) {
-    return this.rosterService().resetAgentContext(identity, roomId, agentId);
+  resetAgentContext(identity: RoomIdentity, roomId: string, agentId: string, sessionId?: string) {
+    return this.rosterService().resetAgentContext(identity, roomId, agentId, sessionId);
   }
 
   /**

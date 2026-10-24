@@ -1,3 +1,4 @@
+import { EditorView } from '@codemirror/view'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { useEffect } from 'react'
@@ -8,6 +9,7 @@ import { ProjectFolderConversationProvider, useProjectFolderConversation, type C
 import { sha256Utf8 } from './draftController'
 import type { FileContent } from '../../types/api'
 import { notifyProjectFolderContentChanged } from '../../core/projectFolderEvents'
+import { ThemeProvider } from '../../contexts/ThemeContext'
 import { ProjectFileEditor } from './ProjectFileEditor'
 
 vi.mock('sonner', () => ({
@@ -86,7 +88,7 @@ function renderPage(
   onCurrentFileChange?: (attachment: CurrentFileAttachment | null) => void,
 ) {
   return render(
-    <MemoryRouter initialEntries={[path]}>
+    <ThemeProvider><MemoryRouter initialEntries={[path]}>
       <ProjectFolderConversationProvider projectId="project-1">
         {conversationFolderIds && <ConversationFolderSeed ids={conversationFolderIds} />}
         {onSelectedFolderChange && <SelectedFolderProbe onChange={onSelectedFolderChange} />}
@@ -95,7 +97,7 @@ function renderPage(
           <Route path="/projects/:projectId/files" element={<ProjectFilesPage />} />
         </Routes>
       </ProjectFolderConversationProvider>
-    </MemoryRouter>,
+    </MemoryRouter></ThemeProvider>,
   )
 }
 
@@ -709,6 +711,8 @@ describe('Project Files & Code Area', () => {
       await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading file' })).not.toBeInTheDocument())
 
       expect(screen.getByText('first, drafted')).toBeInTheDocument()
+      expect(screen.getByRole('tab', { name: 'first.txt' })).toHaveAttribute('aria-selected', 'true')
+      expect(screen.queryByRole('tab', { name: 'second.txt' })).not.toBeInTheDocument()
       expect(screen.getByRole('button', { name: /Discard/ })).toBeInTheDocument()
     } finally {
       vi.mocked(projectFoldersApi.draft).mockResolvedValue(null)
@@ -745,6 +749,105 @@ describe('Project Files & Code Area', () => {
 
     revalidation.resolve({ path: 'first.txt', content: 'first refreshed\n', size: 16, line_count: 2 })
     expect(await screen.findByText('first refreshed')).toBeInTheDocument()
+  })
+
+  it.each(['double click', 'middle click', 'context menu'] as const)('reuses one preview and keeps files opened with %s', async mode => {
+    vi.mocked(projectFoldersApi.list).mockResolvedValue({ items: [folder('folder-1', 'Source')], total: 1 } as never)
+    vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [
+      { name: 'first.txt', path: 'first.txt', type: 'file' }, { name: 'second.txt', path: 'second.txt', type: 'file' },
+    ] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
+    vi.mocked(projectFoldersApi.file).mockImplementation(async (_project, _folder, path) => ({ path, content: path, size: path.length, line_count: 1 }))
+    renderPage()
+    const first = await screen.findByRole('button', { name: 'first.txt' })
+    fireEvent.click(first)
+    expect(await screen.findByRole('tab', { name: 'first.txt' })).toHaveAttribute('data-preview', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'second.txt' }))
+    expect(await screen.findByRole('tab', { name: 'second.txt' })).toHaveAttribute('data-preview', 'true')
+    expect(screen.queryByRole('tab', { name: 'first.txt' })).not.toBeInTheDocument()
+    if (mode === 'double click') fireEvent.doubleClick(first)
+    else if (mode === 'middle click') fireEvent(first, new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
+    else {
+      fireEvent.contextMenu(first, { clientX: 20, clientY: 30 })
+      fireEvent.click(await screen.findByRole('menuitem', { name: 'Open in new tab' }))
+    }
+    expect(await screen.findByRole('tab', { name: 'first.txt' })).toHaveAttribute('data-preview', 'false')
+    expect(screen.getByRole('tab', { name: 'second.txt' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'second.txt' }))
+    fireEvent.doubleClick(screen.getByRole('tab', { name: 'second.txt' }))
+    expect(screen.getByRole('tab', { name: 'second.txt' })).toHaveAttribute('data-preview', 'false')
+  })
+
+  it('keeps multiple file tabs, switches them, and closes back to an empty editor', async () => {
+    vi.mocked(projectFoldersApi.list).mockResolvedValue({ items: [folder('folder-1', 'Source')], total: 1 } as never)
+    vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [
+      { name: 'first.txt', path: 'first.txt', type: 'file' }, { name: 'second.txt', path: 'second.txt', type: 'file' },
+    ] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
+    vi.mocked(projectFoldersApi.file).mockImplementation(async (_project, _folder, path) => ({ path, content: path, size: path.length, line_count: 1 }))
+    renderPage()
+    fireEvent.doubleClick(await screen.findByRole('button', { name: 'first.txt' }))
+    expect(await screen.findByRole('textbox', { name: 'File content' })).toHaveTextContent('first.txt')
+    fireEvent.click(screen.getByRole('button', { name: 'second.txt' }))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'File content' })).toHaveTextContent('second.txt'))
+    expect(screen.getAllByRole('tab', { name: /\.txt/ })).toHaveLength(2)
+    fireEvent.click(screen.getByRole('tab', { name: 'first.txt' }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'first.txt' })).toHaveAttribute('aria-selected', 'true'))
+    fireEvent.click(screen.getByTitle('Close first.txt'))
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'second.txt' })).toHaveAttribute('aria-selected', 'true'))
+    expect(screen.queryByRole('tab', { name: 'first.txt' })).not.toBeInTheDocument()
+    fireEvent.doubleClick(screen.getByRole('button', { name: 'first.txt' }))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'File content' })).toHaveTextContent('first.txt'))
+    fireEvent.click(screen.getByTitle('Close second.txt'))
+    expect(screen.queryByRole('tab', { name: 'second.txt' })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'File content' })).toHaveTextContent('first.txt')
+    fireEvent.click(screen.getByTitle('Close first.txt'))
+    expect(screen.queryByRole('tablist', { name: 'Open files' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: 'File content' })).not.toBeInTheDocument()
+  })
+
+  it('preserves and pins edits made while the next preview is loading if draft save fails', async () => {
+    const pendingFile = deferred<FileContent>()
+    vi.mocked(projectFoldersApi.list).mockResolvedValue({ items: [folder('folder-1', 'Source')], total: 1 } as never)
+    vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [
+      { name: 'first.txt', path: 'first.txt', type: 'file' }, { name: 'second.txt', path: 'second.txt', type: 'file' },
+    ] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
+    vi.mocked(projectFoldersApi.file)
+      .mockResolvedValueOnce({ path: 'first.txt', content: 'original', size: 8, line_count: 1, writable: true, encoding: 'utf8', sha256: 'a'.repeat(64), line_ending_mode: 'lf' })
+      .mockReturnValueOnce(pendingFile.promise)
+    vi.mocked(projectFoldersApi.upsertDraft).mockRejectedValue(new Error('offline'))
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'first.txt' }))
+    const textbox = await screen.findByRole('textbox', { name: 'File content' })
+    await waitFor(() => expect(textbox).toHaveAttribute('contenteditable', 'true'))
+    fireEvent.click(screen.getByRole('button', { name: 'second.txt' }))
+    const editor = EditorView.findFromDOM(textbox.closest('.cm-editor')!)!
+    act(() => { editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: 'keep this edit' } }) })
+    await act(async () => { pendingFile.resolve({ path: 'second.txt', content: 'second', size: 6, line_count: 1 }) })
+    await waitFor(() => expect(projectFoldersApi.upsertDraft).toHaveBeenCalled())
+    expect(screen.getByRole('textbox', { name: 'File content' })).toHaveTextContent('keep this edit')
+    expect(screen.getByRole('tab', { name: 'first.txt' })).toHaveAttribute('data-preview', 'false')
+    expect(screen.queryByRole('tab', { name: 'second.txt' })).not.toBeInTheDocument()
+  })
+
+  it('keeps a dirty tab open when its recovery draft cannot be acknowledged', async () => {
+    vi.mocked(projectFoldersApi.list).mockResolvedValue({ items: [folder('folder-1', 'Source')], total: 1 } as never)
+    vi.mocked(projectFoldersApi.tree).mockResolvedValue({ name: 'source', path: '.', type: 'dir', children: [{ name: 'first.txt', path: 'first.txt', type: 'file' }] })
+    vi.mocked(projectFoldersApi.gitStatus).mockResolvedValue({ is_repo: false, branch: null, files: [], truncated: false })
+    vi.mocked(projectFoldersApi.file).mockResolvedValue({ path: 'first.txt', content: 'original', size: 8, line_count: 1, writable: true, encoding: 'utf8', sha256: 'a'.repeat(64), line_ending_mode: 'lf' })
+    vi.mocked(projectFoldersApi.upsertDraft).mockRejectedValue(new Error('offline'))
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'first.txt' }))
+    const textbox = await screen.findByRole('textbox', { name: 'File content' })
+    await waitFor(() => expect(textbox).toHaveAttribute('contenteditable', 'true'))
+    const editor = EditorView.findFromDOM(textbox.closest('.cm-editor')!)!
+    act(() => { editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: 'unsaved changes' } }) })
+    expect(screen.getByRole('tab', { name: 'first.txt' })).toHaveAttribute('data-preview', 'false')
+    fireEvent.click(screen.getByTitle('Close first.txt'))
+    await waitFor(() => expect(projectFoldersApi.upsertDraft).toHaveBeenCalled())
+    expect(screen.getByRole('tab', { name: 'first.txt' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'File content' })).toHaveTextContent('unsaved changes')
   })
 
   it('uses No files found only for a successful empty tree', async () => {
@@ -875,13 +978,14 @@ describe('Project Files & Code Area', () => {
     renderPage()
 
     fireEvent.click(await screen.findByRole('button', { name: /a\.txt/ }))
-    await waitFor(() => expect(screen.getByRole('textbox', { name: 'File path' })).toHaveValue('a.txt'))
+    await waitFor(() => expect(screen.getByRole('group', { name: 'File path' })).toHaveTextContent('a.txt'))
+    expect(screen.queryByRole('textbox', { name: 'File path' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /b\.txt/ }))
-    expect(screen.getByRole('textbox', { name: 'File path' })).toHaveValue('a.txt')
+    expect(screen.getByRole('group', { name: 'File path' })).toHaveTextContent('a.txt')
 
     second.resolve({ path: 'b.txt', content: 'bb\n', size: 3, line_count: 2, sha256: 'b'.repeat(64), encoding: 'utf8', writable: true })
-    await waitFor(() => expect(screen.getByRole('textbox', { name: 'File path' })).toHaveValue('b.txt'))
+    await waitFor(() => expect(screen.getByRole('group', { name: 'File path' })).toHaveTextContent('b.txt'))
   })
 
   /** The message freezes the decoded body, so the attachment must describe

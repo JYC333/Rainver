@@ -198,7 +198,7 @@ logic by calling every domain API separately from the browser.
 ### Agent Work (`/agent-work`) — user-level workbench
 
 `registry.ts` registers a personal module under RequireAuth without a Space-prefixed
-alias or new mobile primary tab. Global Rail and Home link to it and display the
+alias. Global Rail, mobile navigation and Home link to it and display the
 account-keyed Shell provider's needs-you/unread-work counts. Filters use source
 Space/Project locally and never switch URL active Space or global reminder scope.
 The list uses server identity/groups/counts/cursors; a selected detail embeds the
@@ -226,7 +226,7 @@ Two stable tiers plus per-scene context (`src/core/navigation.tsx`, `src/compone
   Inbox · Library · Sources · Review · Knowledge · Shared · Tasks · Projects · Agents ·
   Evolution, with footer items Instance Settings (instance admin), Space Settings (space
   admin) and Settings. Collapsible/expandable. On mobile this becomes the five-item
-  bottom tab bar (`MOBILE_TAB_ITEMS`: Home · Inbox · Library · Review · Tasks).
+  bottom tab bar (`MOBILE_TAB_ITEMS`: Home · Agent Work · Projects · More).
 - **Scene Sidebar** (`SCENES`) — second-level navigation for the current scene, changes by
   scene (Inbox / Library / Review / Agents / Artifacts). Collapsible; when collapsed the expand
   handle is shown in the main header next to the scene title (e.g. "☰ Agents"). Home needs no

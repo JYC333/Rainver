@@ -540,3 +540,6 @@ export const ProjectReadersResponseSchema = z.object({
   readers: z.array(ProjectReaderSchema),
 }).strict();
 export type ProjectReadersResponse = z.infer<typeof ProjectReadersResponseSchema>;
+
+/** Optional exact Conversation target; absent preserves the legacy Room roster action. */
+export const RoomAgentResetContextRequestSchema = z.object({ session_id: IdSchema.optional() }).strict();

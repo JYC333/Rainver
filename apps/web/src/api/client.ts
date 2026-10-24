@@ -1523,8 +1523,8 @@ export const roomsApi = {
     post<RoomAgentMutationResponse>(`/rooms/${roomId}/owner-transfer`, body),
   claimOwner: (roomId: string) =>
     post<RoomAgentMutationResponse>(`/rooms/${roomId}/owner-claim`, {}),
-  resetAgentContext: (roomId: string, agentId: string) =>
-    post<RoomAgentMutationResponse>(`/rooms/${roomId}/agents/${agentId}/reset-context`, {}),
+  resetAgentContext: (roomId: string, agentId: string, sessionId?: string, options: RequestOptions = {}) =>
+    post<RoomAgentMutationResponse>(`/rooms/${roomId}/agents/${agentId}/reset-context`, sessionId ? { session_id: sessionId } : {}, options),
   summarizeAgentContext: (roomId: string, agentId: string) =>
     post<RoomAgentMutationResponse>(`/rooms/${roomId}/agents/${agentId}/summarize-context`, {}),
   restartFromSummary: (roomId: string, agentId: string) =>
@@ -3522,17 +3522,16 @@ export const researchDiscoveryApi = {
 
 /**
  * Whose knowledge-retrieval switch: a direct conversation names its scope; a
- * Room recipient names the Conversation and the recipient, and the server
- * resolves that pair's scope.
+ * Room conversation names its session independently of addressed Agents.
  */
 export type RetrievalSwitchTarget =
   | { scopeId: string }
-  | { sessionId: string; roomAgentMemberId: string }
+  | { sessionId: string }
 
 function retrievalSwitchPath(target: RetrievalSwitchTarget): string {
   return 'scopeId' in target
     ? `/runtime-context/work-contexts/${encodeURIComponent(target.scopeId)}/retrieval`
-    : `/runtime-context/room-conversations/${encodeURIComponent(target.sessionId)}/recipients/${encodeURIComponent(target.roomAgentMemberId)}/retrieval`
+    : `/runtime-context/room-conversations/${encodeURIComponent(target.sessionId)}/retrieval`
 }
 
 /** A conversation's knowledge-retrieval switch, kept per person and conversation. */

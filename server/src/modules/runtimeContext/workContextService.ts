@@ -8,6 +8,7 @@ import { contentReadSql, projectReadAccessSql } from "../access/contentAccessSql
 import { projectFolderReadAccessSql } from "../projectFolders/access.js";
 import { resolveRuntimeContextPolicyForExecution } from "../policy/runtimeContextPolicyRepository.js";
 import { ensureRoomConversationScope } from "../policy/executionControlSnapshots.js";
+import { PgSessionRepository } from "../sessions/repository.js";
 
 interface SetupRow { [key: string]: unknown; id: string; space_id: string; work_context_scope_id: string; scope_kind: string; version: number; user_id: string; project_id: string | null; project_folder_id: string | null; agent_id: string | null; runtime_ref_json: unknown; pinned_refs_json: unknown; excluded_refs_json: unknown; retrieval_preferences_json: unknown; continuity_preferences_json: unknown; project_brief_version_id: string | null; project_instruction_version_id: string | null; project_instruction_enabled: boolean; governing_policy_refs_json: unknown; setup_fingerprint: string; base_version: number | null; typed_diff_json: unknown; reason: string; policy_decision_record_id: string; created_by_user_id: string; created_at: unknown; }
 
@@ -75,10 +76,21 @@ export class WorkContextService {
     }
     const scopeKind = current?.scope_kind as WorkContextSetupWriteRequest["scope_kind"] | undefined
       ?? await inferWorkContextScopeKind(this.db, identity, scopeId);
+    let retrievalPreferences = recordValue(current?.retrieval_preferences_json);
+    if (scopeKind === "room_recipient") {
+      const session = (await this.db.query<{ session_id: string }>(
+        "SELECT session_id FROM room_conversation_recipients WHERE id=$1 AND space_id=$2", [scopeId, identity.spaceId],
+      )).rows[0];
+      if (!session) throw new HttpError(404, "Work Context scope not found");
+      const choice = await this.getRoomConversationRetrievalSwitch(identity, session.session_id);
+      retrievalPreferences = { ...retrievalPreferences, enabled: choice.enabled, preferred_domains: choice.preferred_domains };
+    }
+    const retrievalUnchanged = JSON.stringify(retrievalPreferences) === JSON.stringify(recordValue(current?.retrieval_preferences_json));
     const runtimeRef = invocation.runtimeProfileId
       ? { type: "runtime_profile" as const, id: invocation.runtimeProfileId }
       : null;
     if (current
+      && retrievalUnchanged
       && current.agent_id === invocation.agentId
       && runtimeProfileId(current.runtime_ref_json) === invocation.runtimeProfileId) {
       return toOut(current);
@@ -93,11 +105,11 @@ export class WorkContextService {
         runtime_ref: runtimeRef,
         pinned_refs: current?.pinned_refs_json ?? [],
         excluded_refs: current?.excluded_refs_json ?? [],
-        retrieval_preferences: current?.retrieval_preferences_json ?? {},
+        retrieval_preferences: retrievalPreferences,
         continuity_preferences: current?.continuity_preferences_json ?? {},
         base_version: current?.version ?? null,
         reason: current
-          ? "Bind managed invocation to the selected Agent/runtime"
+          ? retrievalUnchanged ? "Bind managed invocation to the selected Agent/runtime" : "Apply conversation knowledge retrieval choice"
           : "Bootstrap managed Runtime Context",
       });
     } catch (error) {
@@ -109,6 +121,7 @@ export class WorkContextService {
         [identity.spaceId, scopeId, identity.userId],
       )).rows[0];
       if (raced
+        && JSON.stringify(recordValue(raced.retrieval_preferences_json)) === JSON.stringify(retrievalPreferences)
         && raced.agent_id === invocation.agentId
         && runtimeProfileId(raced.runtime_ref_json) === invocation.runtimeProfileId) {
         return toOut(raced);
@@ -194,26 +207,22 @@ export class WorkContextService {
     return ensureRoomConversationScope(this.db, { spaceId: identity.spaceId, sessionId, roomAgentMemberId });
   }
 
-  /**
-   * A Room recipient's knowledge-retrieval switch in one Conversation, read
-   * without creating its scope: a recipient nobody has set and no Run has
-   * reached yet has the new-conversation default (off) and no scope id.
-   */
-  async getRoomConversationRetrievalSwitch(
-    identity: SpaceUserIdentity,
-    sessionId: string,
-    roomAgentMemberId: string,
-  ): Promise<protocol.WorkRetrievalSwitch> {
-    await this.assertRoomConversationRecipient(identity, sessionId, roomAgentMemberId);
-    const scope = await this.db.query<{ id: string }>(
-      `SELECT id FROM room_conversation_recipients
-        WHERE space_id=$1 AND session_id=$2 AND room_agent_member_id=$3`,
-      [identity.spaceId, sessionId, roomAgentMemberId],
-    );
-    const scopeId = scope.rows[0]?.id;
-    return scopeId
-      ? this.getRetrievalSwitch(identity, scopeId)
-      : retrievalSwitchOut(null, "room_recipient", {}, null);
+  /** Room knowledge retrieval is shared by all recipients of this Conversation. */
+  async getRoomConversationRetrievalSwitch(identity: SpaceUserIdentity, sessionId: string): Promise<protocol.WorkRetrievalSwitch> {
+    const preferences = await new PgSessionRepository(this.db).getConversationKnowledgeRetrieval(identity.spaceId, identity.userId, sessionId);
+    if (!preferences) throw new HttpError(404, "Room Conversation not found");
+    return retrievalSwitchOut(null, "room_recipient", preferences, null);
+  }
+
+  async setRoomConversationRetrievalSwitch(identity: SpaceUserIdentity, sessionId: string, raw: unknown): Promise<protocol.WorkRetrievalSwitch> {
+    const parsed = protocol.WorkRetrievalSwitchRequestSchema.safeParse(raw);
+    if (!parsed.success) throw new HttpError(422, "Invalid knowledge retrieval switch");
+    const current = await this.getRoomConversationRetrievalSwitch(identity, sessionId);
+    const preferences = { enabled: parsed.data.enabled, preferred_domains: parsed.data.preferred_domains ?? current.preferred_domains };
+    if (!await new PgSessionRepository(this.db).setConversationKnowledgeRetrieval(identity.spaceId, identity.userId, sessionId, preferences)) {
+      throw new HttpError(404, "Room Conversation not found");
+    }
+    return retrievalSwitchOut(null, "room_recipient", preferences, null);
   }
 
   /** The conversation's knowledge-retrieval switch as this person last set it. */

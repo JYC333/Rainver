@@ -1,3 +1,4 @@
+import { AppVersionPanel } from './AppVersionPanel'
 import { useState, useId } from 'react'
 import { useSpaceNavigate as useNavigate, SpaceLink as Link } from '../../core/spaceNav'
 import { Settings, Sun, Moon, Plus, KeyRound, BarChart3, Globe } from 'lucide-react'
@@ -231,6 +232,7 @@ export default function SettingsPage() {
 
         </>
       ) : null}
+      <AppVersionPanel />
     </div>
   )
 }

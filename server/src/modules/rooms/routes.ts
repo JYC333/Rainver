@@ -195,7 +195,9 @@ export function registerRoutes(app: FastifyInstance, context: ModuleContext): vo
     const identity = await resolveIdentity(context.config, request, reply);
     if (!identity) return reply;
     try {
-      return reply.send(await service(context).resetAgentContext(identity, roomId(request), agentId(request)));
+      const parsed = protocol.RoomAgentResetContextRequestSchema.safeParse(jsonBody(request));
+      if (!parsed.success) return reply.code(422).send({ detail: "Invalid reset-context request" });
+      return reply.send(await service(context).resetAgentContext(identity, roomId(request), agentId(request), parsed.data.session_id));
     } catch (error) {
       return sendRoomError(reply, error);
     }

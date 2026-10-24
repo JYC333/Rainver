@@ -8,7 +8,7 @@ import type { ConversationExecutionPreflightResponse, RoomDetail } from '../../t
 
 vi.mock('../../api/client', () => ({
   agentsApi: { listRuntimeProfiles: vi.fn() },
-  roomsApi: { get: vi.fn(), createConversation: vi.fn() },
+  roomsApi: { get: vi.fn(), createConversation: vi.fn(), resetAgentContext: vi.fn() },
   sessionsApi: { executionContext: vi.fn(), initializeExecution: vi.fn(), mutateExecutionAttachments: vi.fn() },
 }))
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
@@ -19,6 +19,7 @@ const host = {
   managed_workspace_available: true, daemon_last_heartbeat_at: null,
 }
 const detail = {
+  viewer_can_write: true,
   room: { id: 'room-1', project_id: 'project-1' },
   agent_members: [{ role: 'manager', agent_id: 'agent-1', agent_name: 'Project Agent' }],
 } as unknown as RoomDetail
@@ -297,10 +298,16 @@ describe('ConversationExecutionPreflight', () => {
       },
     } as never)
     renderPanel()
+    expect(await screen.findByText(/Project Agent: prompt cache is estimated to have expired/)).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: 'Execution context configured' }))
     expect(await screen.findByText(/Summary written in this session \(300k tokens of context\)/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open summary' })).toHaveAttribute('href', '/artifacts/artifact-summary')
-    expect(screen.getByText(/prompt cache for this session has expired; the next turn rewrites about 300k tokens/)).toBeInTheDocument()
+    expect(screen.getByText(/Project Agent: prompt cache is estimated to have expired/)).toBeInTheDocument()
+    vi.mocked(roomsApi.resetAgentContext).mockResolvedValue(detail as never)
+    fireEvent.click(screen.getByRole('button', { name: 'New session for Project Agent' }))
+    expect(roomsApi.resetAgentContext).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Start fresh session' }))
+    await waitFor(() => expect(roomsApi.resetAgentContext).toHaveBeenCalledWith('room-1', 'agent-1', 'session-1', expect.any(Object)))
   })
 
   it('reports an Agent with several CLIs as ready once one is chosen', async () => {

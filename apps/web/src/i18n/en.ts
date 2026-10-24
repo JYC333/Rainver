@@ -1,6 +1,6 @@
 /** English is the source locale. Keep keys stable when display wording changes. */
 export const en = {
-  fileTree: { loading: 'Loading…', empty: 'No files found', retry: 'Could not load directory · Retry', more: 'Load more' },
+  fileTree: { openInNewTab: 'Open in new tab', loading: 'Loading…', empty: 'No files found', retry: 'Could not load directory · Retry', more: 'Load more' },
   agent_work: {
     badge: '{{needs}} need you · {{unread}} unread',
     alerts: { answer: 'An Agent is waiting for your answer', decision: 'Agent work needs a decision', finished: 'An Agent turn finished', failed: 'An Agent turn failed' },
@@ -114,6 +114,7 @@ export const en = {
     },
   },
   nav: {
+    more: 'More',
     agent_work: 'Agent Work',
     home: 'Home', command_center: 'Command Center', inbox: 'Inbox', library: 'Library',
     source: 'Sources', review: 'Review', knowledge: 'Knowledge', publications: 'Shared',
@@ -140,6 +141,21 @@ export const en = {
     switch: 'Switch space', select: 'Select space', spaces: 'Spaces', create: 'Create space…',
     personal: 'Personal Space', household: 'Family Space', team: 'Team Space',
     role_owner: 'owner', role_admin: 'admin', role_member: 'member',
+  },
+  app_version: {
+    title: 'Application version',
+    running: 'Running build:',
+    description: 'Compare this build with your other devices. Restarting the server does not update an already open page.',
+    check: 'Check for updates',
+    checking: 'Checking…',
+    current: 'This page matches the build currently served by this address.',
+    available: 'Another build is available',
+    reload: 'Update and reload',
+    reload_hint: 'Reloading interrupts this page. Finish your current input before updating.',
+    updating: 'Updating…',
+    error: 'Could not verify or apply the update. Check your connection and retry.',
+    diagnostics: 'Layout diagnostics',
+    collect: 'Collect diagnostics (select text to copy)',
   },
   settings: {
     title: 'Settings', subtitle: 'Configure your account credentials, personal spaces, and preferences.',

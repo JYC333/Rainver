@@ -156,7 +156,7 @@ export function FloatingQuickCapture() {
         onClick={() => setOpen(true)}
         aria-label={t('capture.quick')}
         title={t('capture.quick')}
-        className="fixed bottom-20 right-5 md:bottom-5 z-40 flex items-center justify-center size-12 rounded-full shadow-lg transition-transform hover:scale-105 active:scale-95"
+        className="fixed bottom-[calc(5rem+var(--app-safe-bottom))] right-5 md:bottom-5 z-40 flex items-center justify-center size-12 rounded-full shadow-lg transition-transform hover:scale-105 active:scale-95"
         style={{ background: 'var(--primary)', color: 'var(--primary-foreground)', border: '1px solid var(--primary)' }}
       >
         <Plus className="size-5" />
@@ -166,7 +166,7 @@ export function FloatingQuickCapture() {
 
   return (
     <div
-      className="fixed bottom-20 right-5 md:bottom-5 z-40 w-[min(360px,calc(100vw-2.5rem))] rounded-xl border border-border bg-card shadow-2xl"
+      className="fixed bottom-[calc(5rem+var(--app-safe-bottom))] right-5 md:bottom-5 z-40 w-[min(360px,calc(100vw-2.5rem))] rounded-xl border border-border bg-card shadow-2xl"
       onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
       onDragLeave={() => setDragOver(false)}
       onDrop={onDrop}

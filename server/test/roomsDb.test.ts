@@ -5076,16 +5076,31 @@ describe("Room workflow (real Postgres)", () => {
       backends: [backend],
     })).rejects.toMatchObject({ statusCode: 403 });
 
-    await service.resetAgentContext(owner, created.room.id, agent.id);
+    // A Room can have a newer conversation. An explicit target must reset
+    // the one the person is reading, never silently fall back to the newest.
+    const newerConversation = await seedConversation(owner, created.room.id, "Newer reset target", {
+      hostId: "host-room-bound", primary: { kind: "location", workspace_location_id: "location-1" },
+    });
+    const newerThread = await db.pool.query<{ id: string }>(
+      `UPDATE host_threads SET vendor_session_id = 'untouched-newer-session'
+        WHERE session_id = $1 AND agent_id = $2 AND container_kind = 'conversation' RETURNING id`,
+      [newerConversation.id, agent.id],
+    );
+    const newerThreadId = newerThread.rows[0]!.id;
+    await expect(service.resetAgentContext(owner, created.room.id, agent.id, randomUUID()))
+      .rejects.toMatchObject({ statusCode: 404 });
+    await service.resetAgentContext(owner, created.room.id, agent.id, conversation.id);
+    expect((await db.pool.query(`SELECT vendor_session_id FROM host_threads WHERE id = $1`, [newerThreadId])).rows[0])
+      .toMatchObject({ vendor_session_id: "untouched-newer-session" });
     await expect(db.pool.query<{ status: string; vendor_session_id: string | null }>(
       `SELECT thread.status, thread.vendor_session_id
          FROM host_threads thread
          JOIN sessions conversation ON conversation.id = thread.session_id AND conversation.space_id = thread.space_id
         WHERE conversation.space_id = 'space-1' AND conversation.room_id = $1
-          AND thread.agent_id = $2 AND thread.container_kind = 'conversation'
+          AND thread.agent_id = $2 AND thread.container_kind = 'conversation' AND conversation.id = $3
         ORDER BY conversation.updated_at DESC, conversation.id DESC
         LIMIT 1`,
-      [created.room.id, agent.id],
+      [created.room.id, agent.id, conversation.id],
     )).resolves.toMatchObject({ rows: [{ status: "session_reset", vendor_session_id: null }] });
     await service.removeAgent(owner, created.room.id, agent.id);
     await expect(db.pool.query<{ status: string }>(
